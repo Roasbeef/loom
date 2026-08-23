@@ -1,0 +1,44 @@
+# Loom
+
+Loom is a BEAM-native coding agent harness written in Gleam. Sessions are
+supervision trees over a durable, write-once conversation store; all effects
+flow through a capability-checked broker into kernel-enforced sandboxes.
+
+## Required reading
+
+Before writing any code, read these in order:
+
+1. **`docs/gleam-style.md`** — code style, idiomatic Gleam, and a brief
+   language tour. Gleam is a new language; do not carry habits over from
+   other languages. Pay particular attention to Part III (idioms: error
+   handling, type design, actors, FFI) and Part IV (Loom-specific policy:
+   total decoders, no panics outside tests, FFI confinement, purity
+   layering).
+2. **`docs/loom-design.md`** — the high-level design: the three planes
+   (durability, orchestration, effect), Rule Zero (model-influenced code
+   never runs in the harness VM), the two-channel doctrine, and code mode.
+3. **`docs/loom-implementation-spec.md`** — work packages, frozen interface
+   contracts (Part 1), and normative conventions (§0.2). Where the spec and
+   design doc conflict, the spec wins on mechanics, the design doc on
+   intent.
+
+## Ground rules
+
+- Design priorities, in order: security & isolation, correctness,
+  robustness, performance, capability.
+- Gleam >= 1.6, Erlang/OTP >= 27. All code passes `gleam format --check`
+  and compiles warning-free before commit.
+- Interfaces in spec Part 1 are frozen. Changing one requires a
+  `protocol-change/NNN.md` proposal, never silent drift.
+- Pure packages (`loom_core`, `loom_machine`) perform no I/O. Every
+  durability/wire boundary uses total decoders.
+
+## Commits
+
+Make incremental, atomic commits that each tell one part of the story.
+Format: `subsystem: imperative summary under 50 chars`, then a body in
+natural prose explaining the why more than the what (no bullet-point
+dumps). Prefixes: package name for single-package changes (`loom_core:`),
+`pkg1+pkg2:` or `multi:` across packages, `docs:`, `build:`, `ci:`,
+`test:`. Lock files, generated files, and vendored code get their own
+commits.
