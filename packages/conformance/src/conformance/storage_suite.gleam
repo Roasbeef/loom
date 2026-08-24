@@ -214,6 +214,10 @@ fn scan_ids(store: Storage(handle), q: storage.BranchScan) -> List(EntryId) {
 
 // --- checks --------------------------------------------------------------
 
+// Proves all-or-none: a transaction whose write list contains a
+// corruption (a duplicate id, an unresolvable parent) leaves no trace at
+// all — not the register before it, not the valid entry beside it, not
+// even a consumed seq — and a clean commit afterward starts fresh.
 fn atomicity_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("atomicity")
   let ctx = new_ctx()
@@ -277,6 +281,10 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves seqs are strictly increasing — within a transaction, across
+// transactions, and on the stored rows themselves — while tolerating the
+// gaps that interleaved register writes legitimately consume; an empty
+// transaction is legal and assigns nothing.
 fn seq_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("seqs")
   let ctx = new_ctx()
@@ -340,6 +348,10 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves writes apply in list order within one transaction: a later
+// entry may name an earlier one (still in the same write list) as its
+// parent, and among repeated register writes to the same cell the last
+// one standing decides both the value and the stamped seq.
 fn write_order_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("write_order")
   let ctx = new_ctx()
@@ -385,6 +397,10 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves the id namespace is a single shared space: inserting an entry
+// or usage row under an id already in use is corruption, never a silent
+// update, whether the collision is same-kind or a usage row minted under
+// what is really an entry id.
 fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("duplicate_ids")
   let ctx = new_ctx()
@@ -421,6 +437,10 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves register lifecycle (set, replace, delete, delete-absent as a
+// no-op, recreate as a fresh cell with a fresh seq) and `list_registers`
+// ordering: key-ascending, prefix-filtered, namespace-scoped, and safe
+// against keys containing SQL LIKE metacharacters.
 fn register_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("registers")
   let model = storage.empty_stats()
@@ -523,6 +543,11 @@ fn register_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves the CAS expectation matrix: expect-absent passes on an absent
+// cell and fails on a present one, expect-some passes on a matching seq
+// and fails on a stale or missing one, several expectations on one
+// commit all must hold, and a deleted cell satisfies expect-absent again
+// — a failed expectation applies nothing.
 fn cas_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("cas")
   let model = storage.empty_stats()
@@ -681,6 +706,11 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves the branch scan's query surface on one fixed chain: ordering in
+// both directions, the kind/custom-type/id stop rules and their
+// interaction with the cursor, kind and custom-type filters, the
+// clamped-non-positive-limit rule, cursor paging reproducing a full
+// scan, and an unknown start entry surfacing as `UnknownEntry`.
 fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("branch_scan")
   let ctx = new_ctx()
@@ -978,6 +1008,11 @@ fn model_path(
   }
 }
 
+// Proves the session-wide entry scan: ordering both directions, the
+// kind and custom-type filters, the seq-range window, and the
+// non-positive-limit rule — SQLite's own `LIMIT -1` means unlimited, so
+// this guards against a backend that forwards the raw value instead of
+// clamping it.
 fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("entry_scan")
   let ctx = new_ctx()
@@ -1051,6 +1086,10 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves the usage-ledger scan: row shape (entry-attributed vs.
+// standalone, the adjustment flag), ordering and limiting, the
+// catch-up-by-seq window a projection resumes from, and the
+// non-positive-limit rule.
 fn usage_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("usage_scan")
   let ctx = new_ctx()
@@ -1113,6 +1152,9 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+// Proves close semantics (pi §1.5): idempotent — a second close still
+// answers `Ok(Nil)` — and a closed handle refuses reads in-band with
+// `HandleClosed` while a commit against it faults rather than crashing.
 fn close_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("close")
   let ctx = new_ctx()
