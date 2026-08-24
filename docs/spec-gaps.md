@@ -262,3 +262,39 @@ instead and are only referenced here.
    harness covers the enumerable core.
 9. **Writer events are minimal** (committed ordinal, seqs, timestamp);
    typed per-write events belong to the event bus work package.
+
+## From the M2 integration (`conformance/wiring`)
+
+1. **Shared clock requirement (found live).** Budget deadlines are
+   computed on the tool-side clock and checked against the broker-side
+   clock; nothing required the injected clocks to share an era, and
+   misaligned eras made the broker refuse every call as past deadline.
+   §0.2's time-injection rule should state that one clock (or one era)
+   must be injected across runtime, tools, and broker.
+2. **`stream_options` has no wire mapping.** The runtime carries an
+   opaque options bag the provider request shape cannot express; it is
+   dropped at the wire. Extend §1.5 or define the mapping.
+3. **No provider surface for deferred polls or structural summaries.**
+   The provider request type cannot express a continuation fetch; wiring
+   settles both in-band as transport failures, unreachable under default
+   hooks. Third and fifth milestones must extend WP-F.
+4. **Model facts vs durable identity.** The machine's model identity
+   lacks the context window and output ceiling the resolved model
+   carries; the adapter re-derives them by role resolution with config
+   fallbacks. Candidate for hoisting facts into the durable identity,
+   paired with the settled-message hoist from the WP-F section.
+5. **Thinking scale collapse.** The machine's seven levels map onto the
+   provider's four; the mapping is documented in the wiring module.
+6. **Clearance semantics.** Unspecified by the spec; interpreted as a
+   registry gate (unknown or inactive tool refuses in-band), with policy
+   composition deferred to the broker inside the tool's own call, and
+   arguments passed through unrewritten until a rewrite hook exists.
+7. **The wiring adapter lives in conformance source**, giving the
+   "test-only" package production-shaped dependencies, because only it
+   may depend on every layer. Bless this or promote the adapter into a
+   host package when one exists.
+8. **The system prompt has no home in the frozen contracts**; wiring
+   treats it as session-level configuration.
+9. **Lease expiry runs on injected time** — a crashed process holds the
+   lease until the TTL elapses in that clock's era; correct in
+   production, surprising under deterministic test fixtures.
