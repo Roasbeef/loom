@@ -1,6 +1,7 @@
 # protocol-change/002 — add `Fault` to the Action type
 
-**Status**: proposed · **Affects**: Part 1.3 `Action` · **Raised by**: WP-D
+**Status**: ACCEPTED 2026-08-24 · **Affects**: Part 1.3 `Action` ·
+**Raised by**: WP-D · **Implemented**: machine (as raised) + spec text
 
 ## Problem
 
@@ -37,4 +38,11 @@ implemented this way in `machine/planner`; this proposal regularizes it.
 
 ## Decision
 
-Pending maintainer sign-off.
+**Accepted.** The adversarial alternative — returning
+`Result(Action, CorruptionReport)` instead of a variant — was considered
+and dismissed as isomorphic but worse: it forces every call site to
+double-case, and a result type suggests the caller might recover, when
+the correct and only response is to fault the strand and let supervision
+policy decide. `Fault` is a directive exactly like the other five. The
+transaction-carrying `Transition`/`Finish` shapes are ratified with it:
+writes must travel with the expectations that guard them.
