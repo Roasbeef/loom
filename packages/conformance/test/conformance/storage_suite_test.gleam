@@ -5,7 +5,7 @@
 
 import conformance/storage_suite.{Backend}
 import core/clock
-import core/entry.{type Entry, MessageEntry}
+import core/entry.{type Entry, CompactionEntry, MessageEntry}
 import core/ids.{type EntryId}
 import core/message.{UserMessage, UserText}
 import core/tx.{Faulted, InsertEntry, Tx}
@@ -81,6 +81,27 @@ fn message_entry(
   #(entry, generator)
 }
 
+fn compaction_entry(
+  generator: ids.Generator,
+  parent: Option(EntryId),
+  summary: String,
+) -> #(Entry, ids.Generator) {
+  let #(id, generator) = ids.mint_entry(generator)
+  let entry =
+    CompactionEntry(
+      id:,
+      parent:,
+      seq: 0,
+      ts: 0,
+      summary:,
+      retained_tail: [],
+      tokens_before: 42,
+      from_hook: False,
+      usage: None,
+    )
+  #(entry, generator)
+}
+
 // --- writer lease: dueling writers ---------------------------------------
 
 pub fn sqlite_lease_duel_test() {
@@ -114,11 +135,21 @@ pub fn sqlite_lease_duel_test() {
 
   // The fenced-out writer's commit is refused as Faulted and applies
   // nothing.
-  let #(a2, _generator) = message_entry(generator, Some(a1.id), "late a")
+  let #(a2, generator) = message_entry(generator, Some(a1.id), "late a")
   let assert Error(Faulted(_)) =
     storage.commit(store_a, Tx(writes: [InsertEntry(a2)], expected: []))
   let assert Ok(found) = storage.get_entries(store_b, [a2.id])
   assert dict.size(found) == 0
+  // The refusal consumed nothing — not even a seq: the live writer's next
+  // commit continues directly after the last applied write (a1 = 1,
+  // b1 = 2).
+  let #(b2, _generator) = message_entry(generator, Some(b1.id), "b again")
+  let assert Ok(result) =
+    storage.commit(store_b, Tx(writes: [InsertEntry(b2)], expected: []))
+  assert result.first_seq == 3
+
+  // The fenced-out writer cannot renew the stolen lease either.
+  let assert Error(storage.BackendFault(_)) = sqlite.renew_lease(store_a.handle)
 
   // The stale owner's close must not release the replacement's lease.
   let assert Ok(Nil) = storage.close(store_a)
@@ -129,7 +160,7 @@ pub fn sqlite_lease_duel_test() {
     )
   // B keeps committing happily.
   let assert Ok(stats) = storage.stats(store_b)
-  assert stats.message_count == 2
+  assert stats.message_count == 3
   let assert Ok(Nil) = storage.close(store_b)
 }
 
@@ -150,21 +181,28 @@ pub fn sqlite_renew_lease_keeps_ownership_test() {
 
 pub fn sqlite_branch_scan_plan_test() {
   let store = open_sqlite("plan")
-  let assert Ok(lines) = sqlite.scan_branch_plan(store.handle)
-  let plan = string.join(lines, with: "\n")
-  // The scan must drive from branch_entries through the covering seq
-  // index, probing entries by primary key ...
-  assert string.contains(plan, "ix_be_seq")
-  let assert [first_step, ..rest] = lines
-  assert string.contains(first_step, "SEARCH b USING COVERING INDEX ix_be_seq")
-  assert list.any(rest, fn(line) {
-    string.contains(line, "SEARCH e USING PRIMARY KEY")
-    || string.contains(line, "SEARCH e USING INDEX")
+  // Both page-query variants are part of the contract: the DESC plan
+  // serves every NewestFirst scan and the ASC plan every OldestFirst
+  // scan, and a regression in either would be a silent table scan.
+  list.each([storage.NewestFirst, storage.OldestFirst], fn(order) {
+    let assert Ok(lines) = sqlite.scan_branch_plan(store.handle, order)
+    let plan = string.join(lines, with: "\n")
+    // The scan must drive from branch_entries through the covering seq
+    // index, probing entries by primary key ...
+    assert string.contains(plan, "ix_be_seq")
+    let assert [first_step, ..rest] = lines
+    assert string.contains(
+      first_step,
+      "SEARCH b USING COVERING INDEX ix_be_seq",
+    )
+    assert list.any(rest, fn(line) {
+      string.contains(line, "SEARCH e USING PRIMARY KEY")
+    })
+    // ... with no temporary sort and no scan of entries. Any of these in
+    // the plan is a CI-failing regression (spec Part 1.2 rule 5).
+    assert !string.contains(plan, "TEMP B-TREE")
+    assert !string.contains(plan, "SCAN e")
   })
-  // ... with no temporary sort and no scan of entries. Any of these in
-  // the plan is a CI-failing regression (spec Part 1.2 rule 5).
-  assert !string.contains(plan, "TEMP B-TREE")
-  assert !string.contains(plan, "SCAN e")
   let assert Ok(Nil) = storage.close(store)
 }
 
@@ -172,28 +210,39 @@ pub fn sqlite_branch_scan_plan_test() {
 
 pub fn sqlite_branch_meta_invariants_test() {
   let store = open_sqlite("meta")
-  // Build a branching shape: main chain, two divergences, one deep.
+  // Build a branching shape around a compaction, so the index must both
+  // full-copy (divergence with no compaction below) and base-link
+  // (divergence above the compaction):
+  //
+  //   e1 - e2 - c3 - e4 - e5      (c3 is a compaction; seqs 1..5)
+  //         └--- g3               (full-copy segment, base: none)
+  //              └(e4)--- f5      (compaction-bounded, base at c3)
   let #(e1, generator) = message_entry(generator(), None, "e1")
   let #(e2, generator) = message_entry(generator, Some(e1.id), "e2")
-  let #(e3, generator) = message_entry(generator, Some(e2.id), "e3")
-  let #(f3, generator) = message_entry(generator, Some(e2.id), "f3")
-  let #(f4, generator) = message_entry(generator, Some(f3.id), "f4")
-  let #(g4, _generator) = message_entry(generator, Some(f3.id), "g4")
-  let assert Ok(_) =
+  let #(c3, generator) = compaction_entry(generator, Some(e2.id), "checkpoint")
+  let #(e4, generator) = message_entry(generator, Some(c3.id), "e4")
+  let #(e5, generator) = message_entry(generator, Some(e4.id), "e5")
+  let #(f5, generator) = message_entry(generator, Some(e4.id), "f5")
+  let #(g3, _generator) = message_entry(generator, Some(e2.id), "g3")
+  let assert Ok(main) =
     storage.commit(
       store,
       Tx(
-        writes: [InsertEntry(e1), InsertEntry(e2), InsertEntry(e3)],
+        writes: [
+          InsertEntry(e1),
+          InsertEntry(e2),
+          InsertEntry(c3),
+          InsertEntry(e4),
+          InsertEntry(e5),
+        ],
         expected: [],
       ),
     )
+  let assert [_, _, compaction_seq, ..] = main.seqs
   let assert Ok(_) =
-    storage.commit(
-      store,
-      Tx(writes: [InsertEntry(f3), InsertEntry(f4)], expected: []),
-    )
+    storage.commit(store, Tx(writes: [InsertEntry(f5)], expected: []))
   let assert Ok(_) =
-    storage.commit(store, Tx(writes: [InsertEntry(g4)], expected: []))
+    storage.commit(store, Tx(writes: [InsertEntry(g3)], expected: []))
 
   let assert Ok(segments) = sqlite.segments(store.handle)
   // One segment per divergence plus the root segment.
@@ -205,14 +254,14 @@ pub fn sqlite_branch_meta_invariants_test() {
   assert list.sort(tips, string.compare)
     == list.sort(
       [
-        ids.entry_id_to_string(e3.id),
-        ids.entry_id_to_string(f4.id),
-        ids.entry_id_to_string(g4.id),
+        ids.entry_id_to_string(e5.id),
+        ids.entry_id_to_string(f5.id),
+        ids.entry_id_to_string(g3.id),
       ],
       string.compare,
     )
-  // Every base link names an existing segment and sits strictly below
-  // the segment's tip.
+  // Every base link names a live segment and sits strictly below the
+  // segment's own tip.
   let by_id =
     list.fold(over: segments, from: dict.new(), with: fn(by_id, segment) {
       dict.insert(by_id, segment.branch_id, segment)
@@ -226,6 +275,24 @@ pub fn sqlite_branch_meta_invariants_test() {
       None -> Nil
     }
   })
+  // And non-vacuously: the segment diverging above the compaction links
+  // its base to the main segment exactly at the compaction's seq, while
+  // the one diverging below it full-copies and carries no base.
+  let assert Ok(main_segment) =
+    list.find(segments, fn(segment) {
+      segment.tip_entry_id == ids.entry_id_to_string(e5.id)
+    })
+  let assert Ok(f_segment) =
+    list.find(segments, fn(segment) {
+      segment.tip_entry_id == ids.entry_id_to_string(f5.id)
+    })
+  let assert Ok(g_segment) =
+    list.find(segments, fn(segment) {
+      segment.tip_entry_id == ids.entry_id_to_string(g3.id)
+    })
+  assert main_segment.base == None
+  assert f_segment.base == Some(#(main_segment.branch_id, compaction_seq))
+  assert g_segment.base == None
   let assert Ok(Nil) = storage.close(store)
 }
 

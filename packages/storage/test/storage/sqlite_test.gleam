@@ -90,10 +90,24 @@ pub fn commit_and_read_back_test() {
 
 pub fn branch_plan_drives_from_branch_entries_test() {
   let store = open_store("plan", "w1")
-  let assert Ok(lines) = sqlite.scan_branch_plan(store.handle)
-  let plan = string.join(lines, with: "\n")
-  assert string.contains(plan, "ix_be_seq")
-  assert !string.contains(plan, "TEMP B-TREE")
+  // Both page-query variants — the DESC plan every NewestFirst scan uses
+  // and the ASC plan every OldestFirst scan uses — must drive from
+  // branch_entries through the covering seq index, probe entries by
+  // primary key, and use neither a temp sort nor an entries scan.
+  list.each([storage.NewestFirst, storage.OldestFirst], fn(order) {
+    let assert Ok(lines) = sqlite.scan_branch_plan(store.handle, order)
+    let plan = string.join(lines, with: "\n")
+    let assert [first_step, ..rest] = lines
+    assert string.contains(
+      first_step,
+      "SEARCH b USING COVERING INDEX ix_be_seq",
+    )
+    assert list.any(rest, fn(line) {
+      string.contains(line, "SEARCH e USING PRIMARY KEY")
+    })
+    assert !string.contains(plan, "TEMP B-TREE")
+    assert !string.contains(plan, "SCAN e")
+  })
   let assert Ok(Nil) = storage.close(store)
 }
 
@@ -150,4 +164,48 @@ pub fn lease_held_refuses_second_open_test() {
   let assert Ok(store) =
     sqlite.open(sqlite.config(path:, owner: "w2"), clock.fixed(at: 10_002))
   let assert Ok(Nil) = storage.close(store)
+}
+
+pub fn fenced_out_writer_commit_refused_test() {
+  // The zombie-writer refusal: once an expired lease is stolen with a
+  // bumped fence, the original writer's commit must fail with Faulted and
+  // apply nothing — not even a seq. The cross-writer duel with renewal
+  // and close semantics lives in the conformance package; this is the
+  // backend's own regression test for the fence arithmetic.
+  let path = fresh_path("fenced_commit")
+  let assert Ok(zombie) =
+    sqlite.open(
+      sqlite.config(path:, owner: "w1") |> sqlite.lease_ttl(1000),
+      clock.fixed(at: 10_000),
+    )
+  let ctx = fixtures.new_ctx()
+  let #(a, ctx) = fixtures.message_entry(ctx, None, "a")
+  let assert Ok(_) =
+    storage.commit(zombie, Tx(writes: [InsertEntry(a)], expected: []))
+
+  // The lease expires at 11_000; a second writer steals it after that.
+  let assert Ok(thief) =
+    sqlite.open(
+      sqlite.config(path:, owner: "w2") |> sqlite.lease_ttl(1000),
+      clock.fixed(at: 12_000),
+    )
+
+  // The fenced-out writer is refused in-band and leaves no row behind.
+  let #(b, _ctx) = fixtures.message_entry(ctx, Some(a.id), "late b")
+  let assert Error(tx.Faulted(_)) =
+    storage.commit(zombie, Tx(writes: [InsertEntry(b)], expected: []))
+  let assert Ok(found) = storage.get_entries(thief, [b.id])
+  assert dict.size(found) == 0
+  // The refused commit consumed no seq: the thief's next write continues
+  // directly after the last applied one.
+  let #(c, _) =
+    fixtures.message_entry(fixtures.new_ctx() |> advance(5), Some(a.id), "c")
+  let assert Ok(result) =
+    storage.commit(thief, Tx(writes: [InsertEntry(c)], expected: []))
+  assert result.first_seq == 2
+
+  // The fenced-out writer cannot renew its lease either.
+  let assert Error(storage.BackendFault(_)) = sqlite.renew_lease(zombie.handle)
+  let assert Ok(Nil) = storage.close(zombie)
+  let assert Ok(Nil) = storage.close(thief)
 }

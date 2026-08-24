@@ -183,8 +183,11 @@ pub opaque type Message {
   Stats(reply: Subject(Result(SessionStats, StorageError)))
   /// Renew the writer lease without committing anything.
   RenewLease(reply: Subject(Result(Nil, StorageError)))
-  /// Read the query plan of the branch segment query.
-  ScanBranchPlan(reply: Subject(Result(List(String), StorageError)))
+  /// Read the query plan of the branch segment query for one scan order.
+  ScanBranchPlan(
+    order: ScanOrder,
+    reply: Subject(Result(List(String), StorageError)),
+  )
   /// Read the branch-index segment metadata.
   Segments(reply: Subject(Result(List(Segment), StorageError)))
   /// Seal the handle: release the lease, close the file. Idempotent.
@@ -501,21 +504,26 @@ pub fn renew_lease(handle: Subject(Message)) -> Result(Nil, StorageError) {
   process.call_forever(handle, RenewLease)
 }
 
-/// The `EXPLAIN QUERY PLAN` detail lines of the branch segment query, for
-/// the conformance suite's plan assertions: the plan must drive from
-/// `branch_entries` via `ix_be_seq` and must not contain a
-/// `TEMP B-TREE FOR ORDER BY` step.
+/// The `EXPLAIN QUERY PLAN` detail lines of the branch segment query in
+/// the given scan order (`NewestFirst` explains the `ORDER BY … DESC`
+/// page query, `OldestFirst` the `… ASC` variant), for the conformance
+/// suite's plan assertions: in both orders the plan must open with a
+/// covering search of `ix_be_seq` on `branch_entries`, probe `entries` by
+/// primary key, and contain neither a `TEMP B-TREE FOR ORDER BY` step nor
+/// a scan of `entries`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(lines) = sqlite.scan_branch_plan(store.handle)
+/// let assert Ok(lines) =
+///   sqlite.scan_branch_plan(store.handle, storage.NewestFirst)
 /// ```
 ///
 pub fn scan_branch_plan(
   handle: Subject(Message),
+  order: ScanOrder,
 ) -> Result(List(String), StorageError) {
-  process.call_forever(handle, ScanBranchPlan)
+  process.call_forever(handle, ScanBranchPlan(order, _))
 }
 
 /// The branch-index segment metadata, for diagnostics and conformance
@@ -561,7 +569,7 @@ fn handle_closed(
     ScanUsage(reply:, ..) -> process.send(reply, Error(HandleClosed))
     Stats(reply:) -> process.send(reply, Error(HandleClosed))
     RenewLease(reply:) -> process.send(reply, Error(HandleClosed))
-    ScanBranchPlan(reply:) -> process.send(reply, Error(HandleClosed))
+    ScanBranchPlan(reply:, ..) -> process.send(reply, Error(HandleClosed))
     Segments(reply:) -> process.send(reply, Error(HandleClosed))
   }
   actor.continue(state)
@@ -610,8 +618,8 @@ fn handle_open(
       process.send(reply, do_renew_lease(state, now))
       actor.continue(ActorState(..state, clock:))
     }
-    ScanBranchPlan(reply:) -> {
-      process.send(reply, do_scan_branch_plan(state.conn))
+    ScanBranchPlan(order:, reply:) -> {
+      process.send(reply, do_scan_branch_plan(state.conn, order))
       actor.continue(state)
     }
     Segments(reply:) -> {
@@ -1834,10 +1842,17 @@ fn scan_window_pages(
   }
 }
 
-fn do_scan_branch_plan(conn: Connection) -> Result(List(String), StorageError) {
+fn do_scan_branch_plan(
+  conn: Connection,
+  order: ScanOrder,
+) -> Result(List(String), StorageError) {
+  let sql = case order {
+    NewestFirst -> segment_sql_desc
+    OldestFirst -> segment_sql_asc
+  }
   run(
     conn,
-    "EXPLAIN QUERY PLAN " <> segment_sql_desc,
+    "EXPLAIN QUERY PLAN " <> sql,
     [sqlight.text("b1"), sqlight.int(0), sqlight.int(100), sqlight.int(50)],
     decode.at([3], decode.string),
   )
@@ -1993,9 +2008,14 @@ fn direction_sql(order: ScanOrder) -> String {
   }
 }
 
+// A non-positive limit must return no rows (the shared scan contract —
+// see `storage.EntryScan`/`storage.UsageScan`). SQLite itself treats a
+// negative LIMIT as "no limit at all", the opposite meaning, so clamp
+// before it reaches the SQL text.
 fn limit_sql(limit: Option(Int)) -> String {
   case limit {
-    Some(n) -> " LIMIT " <> int.to_string(n)
+    Some(n) if n > 0 -> " LIMIT " <> int.to_string(n)
+    Some(_) -> " LIMIT 0"
     None -> ""
   }
 }

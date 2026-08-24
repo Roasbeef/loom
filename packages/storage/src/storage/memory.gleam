@@ -551,6 +551,9 @@ fn sort_by_seq(
   }
 }
 
+// A non-positive limit returns no rows (the shared scan contract):
+// `list.take` already yields `[]` for any `n <= 0`, matching the SQLite
+// backend's clamped `LIMIT 0`.
 fn take_limit(rows: List(row), limit: Option(Int)) -> List(row) {
   case limit {
     Some(n) -> list.take(from: rows, up_to: n)

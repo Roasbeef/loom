@@ -8,9 +8,10 @@
 //// (ordering, stops, filters, cursor paging), the branch-index
 //// invariants of pi §2.6 (every tip's scan reproduces the exact ancestor
 //// chain, stale branches stay valid), session-wide entry and usage
-//// scans, stats-equals-ledger-sum after every commit, and close
-//// semantics. A backend passes WP-B's exit criteria only when `run` is
-//// green.
+//// scans — including the non-positive-limit rule, where a limit of zero
+//// or below returns no rows in every backend — stats-equals-ledger-sum
+//// after every commit, and close semantics. A backend passes WP-B's exit
+//// criteria only when `run` is green.
 ////
 //// This module is test infrastructure: like a gleeunit test module its
 //// failure mechanism is the `assert` keyword, which is why asserts
@@ -742,6 +743,12 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   assert scan_ids(store, storage.branch_scan(from: m2.id)) == [m2.id, m1.id]
   // Limit.
   assert scan_ids(store, newest |> storage.branch_limit(2)) == [m6.id, m5.id]
+  // A zero or negative limit returns no rows — never "no limit". Callers
+  // compute limits like `budget - consumed`, so a negative result must
+  // mean "nothing left".
+  assert scan_ids(store, newest |> storage.branch_limit(0)) == []
+  assert scan_ids(store, newest |> storage.branch_limit(-1)) == []
+  assert scan_ids(store, newest |> storage.branch_limit(-100)) == []
 
   // Cursor paging: page size two until exhaustion reproduces the full
   // scan, both directions.
@@ -1023,6 +1030,23 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   let assert Ok(limited) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(2))
   assert ids_of(limited) == [m1.id, c2.id]
+  // A zero or negative limit returns no rows — never "no limit". SQLite's
+  // own `LIMIT -1` means unlimited, so an unclamped backend would return
+  // every row here while another returns none: a silent divergence.
+  let assert Ok(zero) =
+    storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(0))
+  assert zero == []
+  let assert Ok(negative) =
+    storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(-1))
+  assert negative == []
+  let assert Ok(very_negative) =
+    storage.scan_entries(
+      store,
+      storage.entry_scan()
+        |> storage.entry_kind(storage.Message)
+        |> storage.entry_limit(-100),
+    )
+  assert very_negative == []
   let assert Ok(Nil) = storage.close(store)
   Nil
 }
@@ -1076,6 +1100,14 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
       storage.usage_scan() |> storage.usage_seq_range(Some(r1.seq + 1), None),
     )
   assert list.map(catch_up, fn(row) { row.id }) == [u2.id, u3.id]
+
+  // A zero or negative limit returns no rows — never "no limit".
+  let assert Ok(zero) =
+    storage.scan_usage(store, storage.usage_scan() |> storage.usage_limit(0))
+  assert zero == []
+  let assert Ok(negative) =
+    storage.scan_usage(store, storage.usage_scan() |> storage.usage_limit(-1))
+  assert negative == []
   let _ = first
   let assert Ok(Nil) = storage.close(store)
   Nil

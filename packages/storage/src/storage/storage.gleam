@@ -123,8 +123,10 @@ pub type ScanOrder {
 /// Constructor invariants: `start` must name a committed entry;
 /// `custom_type` only matches `Custom` entries; `cursor` is an exclusive
 /// seq bound — `NewestFirst` retains `seq < cursor`, `OldestFirst` retains
-/// `seq > cursor`; `limit`, when present, is a positive row cap applied
-/// last.
+/// `seq > cursor`; `limit`, when present, is a row cap applied last —
+/// a limit of zero or below returns no rows, never "no limit". Every
+/// backend must implement that non-positive-limit rule identically; the
+/// conformance suite asserts it.
 pub type BranchScan {
   BranchScan(
     /// The entry whose root path is scanned.
@@ -150,7 +152,11 @@ pub type BranchScan {
 ///
 /// Constructor invariants: `from_seq`/`to_seq` are inclusive bounds;
 /// `custom_type` only matches `Custom` entries; `limit`, when present, is
-/// a positive row cap applied after ordering and filtering.
+/// a row cap applied after ordering and filtering — a limit of zero or
+/// below returns no rows, never "no limit". Every backend must implement
+/// that non-positive-limit rule identically (callers compute limits like
+/// `budget - consumed`, and a negative result must mean "nothing left",
+/// not "everything"); the conformance suite asserts it.
 pub type EntryScan {
   EntryScan(
     /// Keep only entries of this kind.
@@ -171,7 +177,9 @@ pub type EntryScan {
 /// A usage-ledger read over a seq range, in seq order.
 ///
 /// Constructor invariants: `from_seq`/`to_seq` are inclusive bounds;
-/// `limit`, when present, is a positive row cap.
+/// `limit`, when present, is a row cap — a limit of zero or below returns
+/// no rows, never "no limit". Every backend must implement that
+/// non-positive-limit rule identically; the conformance suite asserts it.
 pub type UsageScan {
   UsageScan(
     /// Inclusive lower seq bound.
@@ -463,7 +471,8 @@ pub fn branch_order(q: BranchScan, order: ScanOrder) -> BranchScan {
   BranchScan(..q, order:)
 }
 
-/// Caps the number of rows a branch scan returns.
+/// Caps the number of rows a branch scan returns. A limit of zero or
+/// below returns no rows.
 ///
 /// ## Examples
 ///
@@ -561,7 +570,8 @@ pub fn entry_order(q: EntryScan, order: ScanOrder) -> EntryScan {
   EntryScan(..q, order:)
 }
 
-/// Caps the number of rows an entry scan returns.
+/// Caps the number of rows an entry scan returns. A limit of zero or
+/// below returns no rows.
 ///
 /// ## Examples
 ///
@@ -615,7 +625,8 @@ pub fn usage_order(q: UsageScan, order: ScanOrder) -> UsageScan {
   UsageScan(..q, order:)
 }
 
-/// Caps the number of rows a usage scan returns.
+/// Caps the number of rows a usage scan returns. A limit of zero or
+/// below returns no rows.
 ///
 /// ## Examples
 ///
