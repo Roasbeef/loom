@@ -1,11 +1,13 @@
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/anthropic
 import provider/fixture.{sse_event}
+import provider/internal/wire
 import provider/model
 import provider/retry
 import provider/stream
@@ -415,6 +417,84 @@ pub fn usage_extraction_with_cache_test() {
   assert usage.cache_read == 2000
   assert usage.cache_write == 300
   assert usage.total_tokens == 2450
+}
+
+// A settled message's usage must always be storable: every counter (and
+// every composed total) must encode as a msgpack integer.
+fn assert_usage_encodable(usage: message.Usage) -> Nil {
+  let counters = [
+    usage.input,
+    usage.output,
+    usage.cache_read,
+    usage.cache_write,
+    option.unwrap(usage.cache_write_1h, 0),
+    option.unwrap(usage.reasoning, 0),
+    usage.total_tokens,
+  ]
+  list.each(counters, fn(counter) {
+    let assert Ok(_bytes) = msgpack.encode(msgpack.IntValue(counter))
+    Nil
+  })
+}
+
+pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
+  // A hostile proxy reports input_tokens above 2^64 - 1 — beyond what
+  // the durable msgpack codec can encode. The boundary clamp saturates
+  // it to wire.max_usage_count, so the settled message round-trips.
+  let huge = 100_000_000_000_000_000_000
+  let transcript =
+    message_start(huge, 0, 0)
+    <> message_delta("end_turn", 100)
+    <> message_stop()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: settled, usage:)] = events
+  assert usage.input == wire.max_usage_count
+  assert usage.output == 100
+  assert usage.total_tokens == wire.max_usage_count + 100
+  assert_usage_encodable(usage)
+  let assert message.AssistantMessage(usage: stored, ..) =
+    stream.message(settled)
+  assert_usage_encodable(stored)
+}
+
+pub fn negative_usage_counts_clamp_to_zero_test() {
+  // Negative counts are equally unreal, and letting them through would
+  // skew the overflow arithmetic downward.
+  let transcript =
+    message_start(-500, -2, -3)
+    <> message_delta("end_turn", -7)
+    <> message_stop()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: _, usage:)] = events
+  assert usage.input == 0
+  assert usage.output == 0
+  assert usage.cache_read == 0
+  assert usage.cache_write == 0
+  assert usage.total_tokens == 0
+  assert_usage_encodable(usage)
+}
+
+pub fn duplicate_message_start_does_not_zero_usage_test() {
+  // A second message_start with an empty usage object must not erase
+  // the counts the first one reported (a proxy could otherwise suppress
+  // usage accounting).
+  let empty_start =
+    sse_event(
+      "message_start",
+      "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_dup\","
+        <> "\"type\":\"message\",\"role\":\"assistant\",\"usage\":{}}}",
+    )
+  let transcript =
+    message_start(100, 2000, 300)
+    <> empty_start
+    <> message_delta("end_turn", 50)
+    <> message_stop()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: _, usage:)] = events
+  assert usage.input == 100
+  assert usage.cache_read == 2000
+  assert usage.cache_write == 300
+  assert usage.output == 50
 }
 
 // --- request construction -------------------------------------------------

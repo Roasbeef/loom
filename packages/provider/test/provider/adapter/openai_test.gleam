@@ -1,11 +1,13 @@
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/openai
 import provider/fixture.{sse_data}
+import provider/internal/wire
 import provider/model
 import provider/retry
 import provider/stream
@@ -239,6 +241,57 @@ pub fn silent_overflow_settles_as_error_test() {
   ) = stream.message(settled)
   assert stop_reason == message.Errored
   assert retry.is_overflow_message(error_message)
+}
+
+// --- usage-counter clamping ------------------------------------------------
+
+fn assert_usage_encodable(usage: message.Usage) -> Nil {
+  let counters = [
+    usage.input,
+    usage.output,
+    usage.cache_read,
+    usage.cache_write,
+    option.unwrap(usage.cache_write_1h, 0),
+    option.unwrap(usage.reasoning, 0),
+    usage.total_tokens,
+  ]
+  list.each(counters, fn(counter) {
+    let assert Ok(_bytes) = msgpack.encode(msgpack.IntValue(counter))
+    Nil
+  })
+}
+
+pub fn oversized_usage_counts_clamp_and_stay_encodable_test() {
+  // A hostile proxy reports prompt_tokens beyond 2^64 - 1; the boundary
+  // clamp saturates it so the settled message stays msgpack-encodable.
+  let transcript =
+    content_chunk("Hi")
+    <> finish_chunk("stop")
+    <> usage_chunk(100_000_000_000_000_000_000, 100, 0)
+    <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [_delta, stream.Settled(message: settled, usage:)] = events
+  assert usage.input == wire.max_usage_count
+  assert usage.output == 100
+  assert_usage_encodable(usage)
+  let assert message.AssistantMessage(usage: stored, ..) =
+    stream.message(settled)
+  assert_usage_encodable(stored)
+}
+
+pub fn negative_usage_counts_clamp_to_zero_test() {
+  let transcript =
+    content_chunk("Hi")
+    <> finish_chunk("stop")
+    <> usage_chunk(-260_000, -5, -9)
+    <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [_delta, stream.Settled(message: _, usage:)] = events
+  assert usage.input == 0
+  assert usage.output == 0
+  assert usage.cache_read == 0
+  assert usage.total_tokens == 0
+  assert_usage_encodable(usage)
 }
 
 // --- http errors --------------------------------------------------------------

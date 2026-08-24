@@ -5,6 +5,25 @@
 //// null numeric usage field reads as its default, because real proxies
 //// omit fields — while structurally malformed documents are still
 //// rejected by `core/json.parse` before these helpers ever run.
+////
+//// ## Usage-counter clamping
+////
+//// `core/json` integers are arbitrary precision, but usage counters
+//// flow into settled messages the durable planes must encode —
+//// `core/msgpack` rejects integers outside `[-2^63, 2^64 - 1]` — so the
+//// lenient read must not let untrusted wire produce an unencodable
+//// durable value. Usage counters are therefore read through
+//// `count_field_or`/`optional_count_field`, which **clamp** into
+//// `[0, max_usage_count]` rather than failing the stream: a count
+//// outside that range is physically impossible (no real request moves a
+//// trillion tokens), so only a lying or broken proxy is ever clamped and
+//// no real billing fact can be hidden. Saturation is the record of the
+//// lie — a counter equal to `max_usage_count` is itself the sentinel
+//// that the wire claimed more. Negative counts clamp to zero: they are
+//// equally unreal, and letting them through would skew the adapters'
+//// overflow arithmetic downward. The bound is far enough below `2^63`
+//// that any sum of clamped counters (totals are composed from at most a
+//// handful) stays msgpack-encodable.
 
 import core/json.{type JsonValue}
 import gleam/int
@@ -58,6 +77,32 @@ pub fn optional_int_field(value: JsonValue, name: String) -> Option(Int) {
     Ok(number) -> Some(number)
     Error(Nil) -> None
   }
+}
+
+/// The inclusive upper bound for provider-reported usage counters: one
+/// trillion tokens, four-plus orders of magnitude above any real request
+/// and far enough below `2^63` that sums of clamped counters stay
+/// msgpack-encodable. See the module documentation for the clamping
+/// rationale.
+pub const max_usage_count = 1_000_000_000_000
+
+/// A usage counter read leniently and clamped: absent, null, or
+/// non-integer reads as `or`, and the result saturates into
+/// `[0, max_usage_count]` so untrusted wire can never produce a count
+/// the durable planes cannot encode.
+pub fn count_field_or(value: JsonValue, name: String, or fallback: Int) -> Int {
+  clamp_count(int_field_or(value, name, or: fallback))
+}
+
+/// An optional usage counter: a present integer reads as `Some`, clamped
+/// into `[0, max_usage_count]`; anything else as `None`.
+pub fn optional_count_field(value: JsonValue, name: String) -> Option(Int) {
+  option.map(optional_int_field(value, name), clamp_count)
+}
+
+// Saturates a counter into the encodable, semantically-valid range.
+fn clamp_count(count: Int) -> Int {
+  int.clamp(count, min: 0, max: max_usage_count)
 }
 
 /// A string field read leniently: absent or non-string reads as `or`.

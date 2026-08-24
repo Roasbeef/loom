@@ -14,7 +14,13 @@
 //// settling as `error` with the canonical overflow message. Usage is
 //// extracted from the final usage chunk (`stream_options.include_usage`
 //// is always requested): `prompt_tokens` minus `cached_tokens` becomes
-//// `input`, `cached_tokens` becomes `cache_read`.
+//// `input`, `cached_tokens` becomes `cache_read`. Usage counters are
+//// clamped into `[0, wire.max_usage_count]` at the read (see
+//// `provider/internal/wire`'s module documentation), so no count an
+//// untrusted proxy reports can ever reach a settled message the durable
+//// planes cannot encode; beyond that range check the counters remain
+//// provider-reported facts that steer accounting and overflow
+//// classification only.
 ////
 //// The API key is accepted as an argument and written into one
 //// `authorization` header; it is never stored in the accumulator, any
@@ -530,29 +536,29 @@ fn handle_chunk_document(
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   Accumulator(
     ..acc,
-    prompt_tokens: wire.int_field_or(
+    prompt_tokens: wire.count_field_or(
       usage,
       "prompt_tokens",
       or: acc.prompt_tokens,
     ),
-    completion_tokens: wire.int_field_or(
+    completion_tokens: wire.count_field_or(
       usage,
       "completion_tokens",
       or: acc.completion_tokens,
     ),
     total_tokens: option.or(
-      wire.optional_int_field(usage, "total_tokens"),
+      wire.optional_count_field(usage, "total_tokens"),
       acc.total_tokens,
     ),
     cached_tokens: case wire.field(usage, "prompt_tokens_details") {
       Ok(details) ->
-        wire.int_field_or(details, "cached_tokens", or: acc.cached_tokens)
+        wire.count_field_or(details, "cached_tokens", or: acc.cached_tokens)
       Error(Nil) -> acc.cached_tokens
     },
     reasoning_tokens: case wire.field(usage, "completion_tokens_details") {
       Ok(details) ->
         option.or(
-          wire.optional_int_field(details, "reasoning_tokens"),
+          wire.optional_count_field(details, "reasoning_tokens"),
           acc.reasoning_tokens,
         )
       Error(Nil) -> acc.reasoning_tokens

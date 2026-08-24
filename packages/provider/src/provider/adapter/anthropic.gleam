@@ -21,7 +21,16 @@
 //// data fails the stream in-band as `MalformedStream`), while *fields*
 //// are read with pi's leniency — absent usage counters read as zero,
 //// unknown event and delta types are ignored as the Messages API
-//// versioning policy prescribes for forward compatibility.
+//// versioning policy prescribes for forward compatibility. Usage
+//// counters are additionally clamped into `[0, wire.max_usage_count]`
+//// at the read (see `provider/internal/wire`'s module documentation),
+//// so no count an untrusted proxy reports can ever reach a settled
+//// message the durable planes cannot encode. The counters remain
+//// provider-reported facts beyond that range check: they steer usage
+//// accounting and the overflow classification below, never any
+//// security decision, so a lying proxy can at worst waste a
+//// compact-and-retry cycle — no worse than the failure it could inject
+//// directly.
 ////
 //// The API key is accepted as an argument and written into one request
 //// header; it is never stored in the accumulator, any event, or any
@@ -560,6 +569,10 @@ fn handle_message(
   }
 }
 
+// Counters default to the accumulator, never to zero: a duplicate
+// `message_start` with an empty usage object must not erase counts an
+// earlier event already reported (a proxy could otherwise suppress
+// usage accounting).
 fn handle_message_start(acc: Accumulator, document: JsonValue) -> Accumulator {
   case wire.field(document, "message") {
     Error(Nil) -> acc
@@ -578,18 +591,25 @@ fn handle_message_start(acc: Accumulator, document: JsonValue) -> Accumulator {
           option.from_result(wire.string_field(started, "model")),
           acc.response_model,
         ),
-        input: wire.int_field_or(usage, "input_tokens", or: 0),
-        output: wire.int_field_or(usage, "output_tokens", or: 0),
-        cache_read: wire.int_field_or(usage, "cache_read_input_tokens", or: 0),
-        cache_write: wire.int_field_or(
+        input: wire.count_field_or(usage, "input_tokens", or: acc.input),
+        output: wire.count_field_or(usage, "output_tokens", or: acc.output),
+        cache_read: wire.count_field_or(
+          usage,
+          "cache_read_input_tokens",
+          or: acc.cache_read,
+        ),
+        cache_write: wire.count_field_or(
           usage,
           "cache_creation_input_tokens",
-          or: 0,
+          or: acc.cache_write,
         ),
         cache_write_1h: case wire.field(usage, "cache_creation") {
           Ok(creation) ->
-            wire.optional_int_field(creation, "ephemeral_1h_input_tokens")
-          Error(Nil) -> None
+            option.or(
+              wire.optional_count_field(creation, "ephemeral_1h_input_tokens"),
+              acc.cache_write_1h,
+            )
+          Error(Nil) -> acc.cache_write_1h
         },
       )
     }
@@ -776,14 +796,14 @@ fn handle_message_delta(
     Ok(usage) ->
       Accumulator(
         ..acc,
-        input: wire.int_field_or(usage, "input_tokens", or: acc.input),
-        output: wire.int_field_or(usage, "output_tokens", or: acc.output),
-        cache_read: wire.int_field_or(
+        input: wire.count_field_or(usage, "input_tokens", or: acc.input),
+        output: wire.count_field_or(usage, "output_tokens", or: acc.output),
+        cache_read: wire.count_field_or(
           usage,
           "cache_read_input_tokens",
           or: acc.cache_read,
         ),
-        cache_write: wire.int_field_or(
+        cache_write: wire.count_field_or(
           usage,
           "cache_creation_input_tokens",
           or: acc.cache_write,
@@ -791,7 +811,7 @@ fn handle_message_delta(
         reasoning: case wire.field(usage, "output_tokens_details") {
           Ok(details) ->
             option.or(
-              wire.optional_int_field(details, "thinking_tokens"),
+              wire.optional_count_field(details, "thinking_tokens"),
               acc.reasoning,
             )
           Error(Nil) -> acc.reasoning
