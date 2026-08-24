@@ -92,6 +92,11 @@ type Session struct {
 	escalations map[string]*escalationState
 	conns       map[*conn]struct{}
 	onCommand   OnCommand
+	// models is the catalogue served to the models command;
+	// strandModels tracks each strand's current catalogue name (from
+	// set_config model_name) for the config ack.
+	models       []proto.ModelInfo
+	strandModels map[string]string
 }
 
 type escalationState struct {
@@ -102,6 +107,15 @@ type escalationState struct {
 func (sess *Session) SetOnCommand(fn OnCommand) {
 	sess.mu.Lock()
 	sess.onCommand = fn
+	sess.mu.Unlock()
+}
+
+// SetModels replaces the model catalogue the models command serves.
+// Every entry should carry non-nil Roles/Active slices (the real
+// gateway always emits both arrays).
+func (sess *Session) SetModels(models ...proto.ModelInfo) {
+	sess.mu.Lock()
+	sess.models = models
 	sess.mu.Unlock()
 }
 
@@ -564,11 +578,41 @@ func (c *conn) applyCommandLocked(sess *Session, cmd proto.Command) bool {
 			Op: "op-compact", Strand: body.Strand, Phase: proto.PhaseCompacting,
 		}, c, cmd.ID)
 		return true
+	case proto.CmdModels:
+		models := make([]proto.ModelInfo, len(sess.models))
+		copy(models, sess.models)
+		c.sendReply(cmd.ID, proto.EventSnapshot, proto.SnapshotBody{
+			Mode: proto.SnapshotModels, Models: models,
+		})
+		return true
 	case proto.CmdSetConfig:
 		var body proto.SetConfigBody
 		if err := json.Unmarshal(cmd.Body, &body); err != nil {
 			c.sendError(cmd.ID, proto.ErrBadRequest, err.Error())
 			return false
+		}
+		// model_name resolves against the catalogue, per the contract:
+		// an unknown name is refused and nothing is applied.
+		if raw, ok := body.Config["model_name"]; ok {
+			name, ok := raw.(string)
+			if !ok {
+				c.sendError(cmd.ID, proto.ErrBadRequest, "model_name must be a string")
+				return false
+			}
+			if !sess.hasModelLocked(name) {
+				c.sendError(cmd.ID, proto.ErrBadRequest, "unknown model name: "+name)
+				return false
+			}
+			if sess.strandModels == nil {
+				sess.strandModels = make(map[string]string)
+			}
+			if body.Strand != "" {
+				sess.strandModels[body.Strand] = name
+			} else {
+				for _, s := range sess.strands {
+					sess.strandModels[s.ID] = name
+				}
+			}
 		}
 		raw, _ := json.Marshal(body.Config)
 		c.sendReply(cmd.ID, proto.EventSnapshot, proto.SnapshotBody{
@@ -605,6 +649,15 @@ func (c *conn) decideEscalationLocked(sess *Session, replyTo uint64, id, status 
 		EscalationID: id, Op: st.body.Op, Strand: st.body.Strand, Status: status,
 	}, c, replyTo)
 	return true
+}
+
+func (sess *Session) hasModelLocked(name string) bool {
+	for _, m := range sess.models {
+		if m.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (sess *Session) hasStrandLocked(id string) bool {

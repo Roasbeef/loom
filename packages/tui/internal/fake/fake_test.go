@@ -216,3 +216,59 @@ func TestUnknownSessionRefused(t *testing.T) {
 		t.Fatalf("want unknown_session, got %+v", body)
 	}
 }
+
+func TestModelsAndSwitchByName(t *testing.T) {
+	server, sess := newSession(t)
+	sess.SetModels(
+		proto.ModelInfo{Name: "anthropic-opus", Dialect: "anthropic", ModelID: "claude-opus-5",
+			Roles: []string{"main"}, Active: []string{"main"}},
+		proto.ModelInfo{Name: "baseten-oss", Dialect: "openai", ModelID: "openai/gpt-oss-120b",
+			Roles: []string{"main"}, Active: []string{}},
+	)
+	w := dialWire(t, server)
+	id := w.send(proto.CmdSubscribe, proto.SubscribeBody{Session: "s1"})
+	w.readReply(id)
+
+	// The catalogue comes back as a models snapshot.
+	id = w.send(proto.CmdModels, proto.ModelsBody{})
+	reply := w.readReply(id)
+	body, err := reply.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != proto.SnapshotModels || len(body.Models) != 2 {
+		t.Fatalf("wrong models snapshot: %+v", body)
+	}
+	if body.Models[1].Name != "baseten-oss" || body.Models[1].Dialect != "openai" {
+		t.Fatalf("catalogue rows lost: %+v", body.Models)
+	}
+
+	// Switching by a known name acks with the config echoed.
+	id = w.send(proto.CmdSetConfig, proto.SetConfigBody{
+		Strand: "main", Config: map[string]any{"model_name": "baseten-oss"},
+	})
+	reply = w.readReply(id)
+	body, err = reply.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Mode != proto.SnapshotConfig || !strings.Contains(string(body.Config), "baseten-oss") {
+		t.Fatalf("wrong config ack: %+v", body)
+	}
+
+	// An unknown name refuses in-band and applies nothing.
+	id = w.send(proto.CmdSetConfig, proto.SetConfigBody{
+		Strand: "main", Config: map[string]any{"model_name": "ghost"},
+	})
+	reply = w.readReply(id)
+	if reply.Event != proto.EventError {
+		t.Fatalf("unknown name accepted: %+v", reply)
+	}
+	errBody, err := reply.Error()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if errBody.Code != proto.ErrBadRequest {
+		t.Fatalf("wrong code: %+v", errBody)
+	}
+}

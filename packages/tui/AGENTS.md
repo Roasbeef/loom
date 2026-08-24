@@ -18,10 +18,11 @@ of the tree's two Go modules, alongside `sandbox`.
 - `internal/proto` — the hand-written protocol types: `Command` and
   `Event` envelopes, `DecodeCommand`/`DecodeEvent`, the frozen `Cmd*` and
   `Event*` name constants, one body struct per command and event
-  (`SubscribeBody`, `PromptBody`, `ForkBody`, ..., `SnapshotBody`,
-  `EntryBody`, `OpTransitionBody`, `StreamDeltaBody`, `UsageBody`,
-  `EscalationBody`, `StrandResultBody`, `ErrorBody`), the entry/message
-  parse tree, and `Denial`/`Grant`/`Network`/`Scratch` for the escalation
+  (`SubscribeBody`, `PromptBody`, `ForkBody`, `ModelsBody`, ...,
+  `SnapshotBody`, `EntryBody`, `OpTransitionBody`, `StreamDeltaBody`,
+  `UsageBody`, `EscalationBody`, `StrandResultBody`, `ErrorBody`), the
+  entry/message parse tree, `ModelInfo` for the model-catalogue
+  snapshot, and `Denial`/`Grant`/`Network`/`Scratch` for the escalation
   vocabulary. `protocol.md` beside it is the normative body document; the
   Gleam gateway builds to it and to `testdata/`.
 - `internal/client.Client` — the connection actor: `New`, `Run`,
@@ -32,7 +33,11 @@ of the tree's two Go modules, alongside `sandbox`.
   request/reply by command id.
 - `internal/ui.{Model, Config, Sender}` — the bubbletea program. `Update`
   is pure: sends are returned as `tea.Cmd` closures, so the whole
-  interaction surface is table-testable without a terminal.
+  interaction surface is table-testable without a terminal. The
+  `:models` palette command opens a modal picker over the catalogue
+  (the `models` snapshot); picking a row sends `set_config` with
+  `model_name` for the active strand, and the config ack pins the name
+  into the status bar.
 - `internal/fake.{Server, Session, OnCommand}` — a gateway that speaks
   the same protocol backed by in-memory state: snapshot on subscribe,
   resume-with-replay by seq, `catch_up`, per-command replies with
@@ -57,7 +62,9 @@ of the tree's two Go modules, alongside `sandbox`.
 
 - **Wire (websocket)** — commands out: `subscribe`, `catch_up`,
   `prompt`, `steer`, `follow_up`, `abort`, `approve`, `deny`, `fork`,
-  `navigate`, `compact`, `create_strand`, `set_config`. Events in:
+  `navigate`, `compact`, `create_strand`, `models`, `set_config`
+  (including the `model_name` key behind the `:models` picker). Events
+  in:
   `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`,
   `escalation`, `strand_result`, `error`. Auth is
   `Authorization: Bearer <token>` on the upgrade.

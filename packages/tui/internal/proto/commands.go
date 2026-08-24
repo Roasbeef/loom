@@ -91,9 +91,15 @@ type CreateStrandBody struct {
 	Name string `json:"name,omitempty"`
 }
 
+// ModelsBody requests the gateway's model catalogue; the reply is a
+// snapshot with mode "models". Deliberately empty today.
+type ModelsBody struct{}
+
 // SetConfigBody updates session (or, with Strand set, per-strand)
 // configuration. Keys are gateway-defined; unknown keys are refused
-// with an in-band error, not ignored.
+// with an in-band error, not ignored. The "model_name" key switches
+// the strand's (or, with no strand, every strand's) model by catalogue
+// name — the server resolves the name; an unknown one is refused.
 type SetConfigBody struct {
 	Strand string         `json:"strand,omitempty"`
 	Config map[string]any `json:"config"`

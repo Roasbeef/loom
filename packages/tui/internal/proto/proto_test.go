@@ -36,6 +36,8 @@ func commandBody(cmd string) any {
 		return &CompactBody{}
 	case CmdCreateStrand:
 		return &CreateStrandBody{}
+	case CmdModels:
+		return &ModelsBody{}
 	case CmdSetConfig:
 		return &SetConfigBody{}
 	default:

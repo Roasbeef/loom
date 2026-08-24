@@ -14,6 +14,7 @@ const (
 	SnapshotResume  = "resume"
 	SnapshotStrands = "strands"
 	SnapshotConfig  = "config"
+	SnapshotModels  = "models"
 )
 
 // SnapshotBody answers subscribe/catch_up and acks the strand- and
@@ -24,6 +25,7 @@ const (
 //     from_seq are replayed right after, with their original seqs.
 //   - "strands": Strands only (fork/create_strand/navigate ack).
 //   - "config": Config only (set_config ack).
+//   - "models": Models only (the models command's reply).
 type SnapshotBody struct {
 	Mode    string `json:"mode"`
 	Session string `json:"session,omitempty"`
@@ -38,6 +40,20 @@ type SnapshotBody struct {
 	// shape, verbatim.
 	Usage  *Usage          `json:"usage,omitempty"`
 	Config json.RawMessage `json:"config,omitempty"`
+	Models []ModelInfo     `json:"models,omitempty"`
+}
+
+// ModelInfo is one model-catalogue row in a "models" snapshot. Name is
+// the catalogue handle set_config's "model_name" key accepts; Roles
+// are the roles whose fallback chain lists this model, Active the
+// subset it currently resolves for. Dialect is an open set — display
+// unknown values verbatim.
+type ModelInfo struct {
+	Name    string   `json:"name"`
+	Dialect string   `json:"dialect"`
+	ModelID string   `json:"model_id"`
+	Roles   []string `json:"roles"`
+	Active  []string `json:"active"`
 }
 
 // Strand is one strand's summary, as listed in snapshots.

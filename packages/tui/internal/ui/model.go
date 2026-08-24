@@ -6,6 +6,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -36,6 +37,13 @@ type Config struct {
 // sendFailedMsg reports a Send that failed locally (queue full,
 // closed); shown in the status line.
 type sendFailedMsg struct{ err error }
+
+// modelPicker is the :models modal: the catalogue rows the gateway
+// listed and a cursor over them.
+type modelPicker struct {
+	models []proto.ModelInfo
+	cursor int
+}
 
 // streamState accumulates one strand's live deltas.
 type streamState struct {
@@ -69,6 +77,14 @@ type Model struct {
 	escalations []proto.EscalationBody
 	dismissed   bool
 
+	// picker is the :models modal while open. strandModels remembers
+	// each strand's catalogue model name as config acks report it;
+	// pendingModelStrand attributes the next config ack to the strand
+	// whose switch we sent (the ack body does not name it).
+	picker             *modelPicker
+	strandModels       map[string]string
+	pendingModelStrand string
+
 	showThinking bool
 	statusNote   string
 	quitting     bool
@@ -89,11 +105,12 @@ func New(cfg Config) Model {
 	input.ShowLineNumbers = false
 	input.Focus()
 	return Model{
-		cfg:         cfg,
-		transcripts: make(map[string][]proto.Entry),
-		streams:     make(map[string]*streamState),
-		input:       input,
-		connState:   client.StateConnecting,
+		cfg:          cfg,
+		transcripts:  make(map[string][]proto.Entry),
+		streams:      make(map[string]*streamState),
+		strandModels: make(map[string]string),
+		input:        input,
+		connState:    client.StateConnecting,
 	}
 }
 
@@ -212,11 +229,14 @@ func (m Model) onResize(msg tea.WindowSizeMsg) Model {
 }
 
 // chromeHeight is everything except the viewport: status bar, tabs,
-// input, help, and the overlay when showing.
+// input, help, and the overlays when showing.
 func (m *Model) chromeHeight() int {
 	h := 1 + 1 + m.input.Height() + 1
 	if m.overlayActive() {
 		h += lipgloss.Height(m.renderOverlay())
+	}
+	if m.picker != nil {
+		h += lipgloss.Height(m.renderPicker())
 	}
 	return h
 }
@@ -257,6 +277,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The :models picker is modal too, one notch below the approval
+	// prompt: it swallows keys until a pick or dismissal.
+	if m.picker != nil {
+		return m.onPickerKey(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		m.quitting = true
@@ -284,6 +310,47 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// onPickerKey drives the :models modal: j/k or arrows move, enter
+// switches the active strand to the highlighted catalogue name via
+// set_config, esc closes without touching anything.
+func (m Model) onPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := m.picker
+	switch msg.String() {
+	case "up", "k":
+		if p.cursor > 0 {
+			p.cursor--
+		}
+		return m.refresh(), nil
+	case "down", "j":
+		if p.cursor < len(p.models)-1 {
+			p.cursor++
+		}
+		return m.refresh(), nil
+	case "enter":
+		strand := m.activeStrand()
+		if strand == "" || p.cursor >= len(p.models) {
+			m.picker = nil
+			return m.refresh(), nil
+		}
+		name := p.models[p.cursor].Name
+		m.picker = nil
+		m.pendingModelStrand = strand
+		m.statusNote = "switching " + strand + " to " + name
+		return m.refresh(), m.send(proto.CmdSetConfig, proto.SetConfigBody{
+			Strand: strand,
+			Config: map[string]any{"model_name": name},
+		})
+	case "esc":
+		m.picker = nil
+		return m.refresh(), nil
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	default:
+		return m, nil
+	}
 }
 
 func (m Model) cycleStrand(dir int) Model {
@@ -319,7 +386,7 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 }
 
 // onPalette executes a ":" command: :fork [branch|tree] [name],
-// :compact [instructions], :abort, :strand [name], :quit.
+// :compact [instructions], :abort, :strand [name], :models, :quit.
 func (m Model) onPalette(text string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(strings.TrimPrefix(text, ":"))
 	if len(fields) == 0 {
@@ -359,6 +426,10 @@ func (m Model) onPalette(text string) (tea.Model, tea.Cmd) {
 			name = fields[1]
 		}
 		return m.refresh(), m.send(proto.CmdCreateStrand, proto.CreateStrandBody{Name: name})
+	case "models":
+		// The reply (snapshot mode "models") opens the picker.
+		m.statusNote = "fetching the model catalogue"
+		return m.refresh(), m.send(proto.CmdModels, proto.ModelsBody{})
 	default:
 		m.statusNote = "unknown command :" + fields[0]
 		return m.refresh(), nil
@@ -398,9 +469,35 @@ func (m Model) onSnapshot(msg client.SnapshotMsg) Model {
 		if m.active >= len(m.strands) {
 			m.active = 0
 		}
-	case proto.SnapshotResume, proto.SnapshotConfig:
-		// Resume is followed by replayed events; config acks carry no
-		// state the transcript shows.
+	case proto.SnapshotModels:
+		if len(body.Models) == 0 {
+			m.statusNote = "the model catalogue is empty"
+			break
+		}
+		m.picker = &modelPicker{models: body.Models}
+		// Start the cursor on the active strand's current model when
+		// we know it, so enter-without-moving is a no-op switch.
+		if current := m.strandModels[m.activeStrand()]; current != "" {
+			for i, info := range body.Models {
+				if info.Name == current {
+					m.picker.cursor = i
+				}
+			}
+		}
+	case proto.SnapshotConfig:
+		// The ack for a model switch echoes the effective config; pull
+		// the catalogue name out and pin it to the strand we switched.
+		var config struct {
+			ModelName string `json:"model_name"`
+		}
+		if err := json.Unmarshal(body.Config, &config); err == nil &&
+			config.ModelName != "" && m.pendingModelStrand != "" {
+			m.strandModels[m.pendingModelStrand] = config.ModelName
+			m.statusNote = m.pendingModelStrand + " → " + config.ModelName
+		}
+		m.pendingModelStrand = ""
+	case proto.SnapshotResume:
+		// Resume is followed by replayed events.
 	}
 	return m.refresh()
 }
@@ -531,6 +628,9 @@ func (m Model) View() string {
 	if m.overlayActive() {
 		sections = append(sections, m.renderOverlay())
 	}
+	if m.picker != nil {
+		sections = append(sections, m.renderPicker())
+	}
 	sections = append(sections, m.input.View(), m.renderHelp())
 	return strings.Join(sections, "\n")
 }
@@ -543,8 +643,12 @@ func (m *Model) renderStatusBar() string {
 			phase = s.LiveOp.Phase
 		}
 	}
-	left := fmt.Sprintf("loom │ %s │ %s │ %s: %s │ %s tok $%.4f",
-		m.cfg.Session, m.connState, strand, phase,
+	segment := ""
+	if name := m.strandModels[strand]; name != "" {
+		segment = " │ " + name
+	}
+	left := fmt.Sprintf("loom │ %s │ %s │ %s: %s%s │ %s tok $%.4f",
+		m.cfg.Session, m.connState, strand, phase, segment,
 		tokens(m.usage.TotalTokens), m.usage.Cost.Total)
 	bar := styleStatusBar.Render(left)
 	if m.statusNote != "" {
@@ -597,7 +701,55 @@ func (m *Model) renderOverlay() string {
 	return styleOverlay.MaxWidth(m.contentWidth()).Render(strings.TrimRight(b.String(), "\n"))
 }
 
+// renderPicker is the :models modal: one row per catalogue entry —
+// name, dialect, provider model id, the roles it backs with the active
+// ones starred — with the current strand's model marked.
+func (m *Model) renderPicker() string {
+	var b strings.Builder
+	b.WriteString(styleOverlayTitle.Render("model catalogue — "+m.activeStrand()) + "\n")
+	current := m.strandModels[m.activeStrand()]
+	for i, info := range m.picker.models {
+		marker := "  "
+		if i == m.picker.cursor {
+			marker = "▸ "
+		}
+		line := marker + info.Name + "  (" + info.Dialect + " · " + info.ModelID + ")"
+		if roles := roleTags(info); roles != "" {
+			line += "  " + roles
+		}
+		if info.Name == current {
+			line += "  ← current"
+		}
+		if i == m.picker.cursor {
+			b.WriteString(styleWant.Render(line) + "\n")
+		} else {
+			b.WriteString(line + "\n")
+		}
+	}
+	b.WriteString(styleHelp.Render("enter switch · j/k move · esc close"))
+	return styleOverlay.MaxWidth(m.contentWidth()).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// roleTags renders "roles: main*,plan" — every role whose chain lists
+// the model, a star on the ones it currently resolves for.
+func roleTags(info proto.ModelInfo) string {
+	if len(info.Roles) == 0 {
+		return ""
+	}
+	tags := make([]string, 0, len(info.Roles))
+	for _, role := range info.Roles {
+		tag := role
+		for _, active := range info.Active {
+			if active == role {
+				tag += "*"
+			}
+		}
+		tags = append(tags, tag)
+	}
+	return "roles: " + strings.Join(tags, ",")
+}
+
 func (m *Model) renderHelp() string {
 	return styleHelp.Render(
-		" enter send · tab strand · ctrl+t thinking · :fork :compact :abort :quit · ctrl+c exit")
+		" enter send · tab strand · ctrl+t thinking · :fork :compact :abort :models :quit · ctrl+c exit")
 }

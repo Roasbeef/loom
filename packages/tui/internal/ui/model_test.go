@@ -489,3 +489,144 @@ func TestStrandsSnapshotUpdatesSwitcher(t *testing.T) {
 		t.Fatalf("new strand not in tabs:\n%s", got)
 	}
 }
+
+// --- the :models picker ------------------------------------------------------
+
+func catalogueMsg() client.SnapshotMsg {
+	return client.SnapshotMsg{Body: proto.SnapshotBody{
+		Mode: proto.SnapshotModels,
+		Models: []proto.ModelInfo{
+			{Name: "anthropic-opus", Dialect: "anthropic", ModelID: "claude-opus-5",
+				Roles: []string{"main", "summarize"}, Active: []string{"main", "summarize"}},
+			{Name: "baseten-oss", Dialect: "openai", ModelID: "openai/gpt-oss-120b",
+				Roles: []string{"main"}, Active: []string{}},
+		},
+	}}
+}
+
+// openPicker drives the full request path: ":models" sends the command
+// and the models snapshot reply opens the modal.
+func openPicker(t *testing.T, m Model) Model {
+	t.Helper()
+	m = typeText(t, m, ":models")
+	m = apply(t, m, key("enter"))
+	m = apply(t, m, catalogueMsg())
+	if m.picker == nil {
+		t.Fatal("picker did not open on the models snapshot")
+	}
+	return m
+}
+
+func TestModelsCommandRequestsCatalogue(t *testing.T) {
+	m, sender := fixture(t)
+	m = typeText(t, m, ":models")
+	m = apply(t, m, key("enter"))
+	if len(sender.sent) != 1 || sender.sent[0].cmd != proto.CmdModels {
+		t.Fatalf("want a models command, got %+v", sender.sent)
+	}
+	if m.picker != nil {
+		t.Fatal("picker must wait for the snapshot reply")
+	}
+}
+
+func TestPickerShowsCatalogueRows(t *testing.T) {
+	m, _ := fixture(t)
+	m = openPicker(t, m)
+	view := m.View()
+	for _, want := range []string{
+		"model catalogue — main",
+		"anthropic-opus  (anthropic · claude-opus-5)  roles: main*,summarize*",
+		"baseten-oss  (openai · openai/gpt-oss-120b)  roles: main",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("picker missing %q:\n%s", want, view)
+		}
+	}
+	// Modal: printable keys must not reach the input.
+	m = apply(t, m, key("x"))
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("picker leaked key into input: %q", got)
+	}
+}
+
+// TestPickerNavigation drives cursor movement through Update alone.
+func TestPickerNavigation(t *testing.T) {
+	tests := []struct {
+		name   string
+		keys   []string
+		cursor int
+	}{
+		{"starts at the top", nil, 0},
+		{"down moves", []string{"down"}, 1},
+		{"j moves", []string{"j"}, 1},
+		{"down clamps at the last row", []string{"down", "down", "down"}, 1},
+		{"up clamps at the first row", []string{"up"}, 0},
+		{"down then k returns", []string{"down", "k"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := fixture(t)
+			m = openPicker(t, m)
+			for _, k := range tt.keys {
+				m = apply(t, m, key(k))
+			}
+			if m.picker == nil || m.picker.cursor != tt.cursor {
+				t.Fatalf("cursor: %+v, want %d", m.picker, tt.cursor)
+			}
+		})
+	}
+}
+
+func TestPickerEnterSwitchesByName(t *testing.T) {
+	m, sender := fixture(t)
+	m = openPicker(t, m)
+	m = apply(t, m, key("down"))
+	m = apply(t, m, key("enter"))
+	if m.picker != nil {
+		t.Fatal("picker still open after the pick")
+	}
+	// The pick is a set_config by catalogue name on the active strand.
+	last := sender.sent[len(sender.sent)-1]
+	if last.cmd != proto.CmdSetConfig {
+		t.Fatalf("want set_config, got %+v", sender.sent)
+	}
+	body := last.body.(proto.SetConfigBody)
+	if body.Strand != "main" || body.Config["model_name"] != "baseten-oss" {
+		t.Fatalf("wrong switch body: %+v", body)
+	}
+	// The config ack pins the name to the strand and the status bar.
+	m = apply(t, m, client.SnapshotMsg{Body: proto.SnapshotBody{
+		Mode:   proto.SnapshotConfig,
+		Config: json.RawMessage(`{"model_name":"baseten-oss"}`),
+	}})
+	if m.strandModels["main"] != "baseten-oss" {
+		t.Fatalf("model not tracked: %+v", m.strandModels)
+	}
+	if got := m.View(); !strings.Contains(got, "main: idle │ baseten-oss") {
+		t.Fatalf("status bar missing the model:\n%s", got)
+	}
+}
+
+func TestPickerEscClosesWithoutSending(t *testing.T) {
+	m, sender := fixture(t)
+	m = openPicker(t, m)
+	before := len(sender.sent)
+	m = apply(t, m, key("esc"))
+	if m.picker != nil {
+		t.Fatal("picker still open after esc")
+	}
+	if len(sender.sent) != before {
+		t.Fatalf("esc must not send: %+v", sender.sent[before:])
+	}
+}
+
+func TestEmptyCatalogueNeverOpensPicker(t *testing.T) {
+	m, _ := fixture(t)
+	m = apply(t, m, client.SnapshotMsg{Body: proto.SnapshotBody{Mode: proto.SnapshotModels}})
+	if m.picker != nil {
+		t.Fatal("picker opened on an empty catalogue")
+	}
+	if got := m.View(); !strings.Contains(got, "the model catalogue is empty") {
+		t.Fatalf("empty catalogue not reported:\n%s", got)
+	}
+}

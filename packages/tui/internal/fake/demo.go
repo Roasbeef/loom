@@ -26,6 +26,15 @@ func DemoSession(server *Server, stepDelay time.Duration) *Session {
 		proto.Strand{ID: "main", Name: "main"},
 		proto.Strand{ID: "research", Name: "research"},
 	)
+	// A two-entry catalogue so :models has something to pick from: the
+	// routed default plus an OpenAI-dialect alternative (the shape a
+	// Baseten endpoint registers as).
+	sess.SetModels(
+		proto.ModelInfo{Name: "anthropic-opus", Dialect: "anthropic", ModelID: "claude-opus-5",
+			Roles: []string{"main", "summarize"}, Active: []string{"main", "summarize"}},
+		proto.ModelInfo{Name: "baseten-oss", Dialect: "openai", ModelID: "openai/gpt-oss-120b",
+			Roles: []string{"main"}, Active: []string{}},
+	)
 
 	sess.AppendEntry("main", UserEntry("demo-hist-1",
 		"survey the fetcher package and tell me what is missing"))

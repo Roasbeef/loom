@@ -36,6 +36,7 @@ const (
 	CmdNavigate     = "navigate"
 	CmdCompact      = "compact"
 	CmdCreateStrand = "create_strand"
+	CmdModels       = "models"
 	CmdSetConfig    = "set_config"
 	CmdSubscribe    = "subscribe"
 	CmdCatchUp      = "catch_up"
