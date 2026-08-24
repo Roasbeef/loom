@@ -83,6 +83,16 @@ e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
 	@cd packages/conformance && gleam test
 
+# ------------------------------------------------------------ the simulator
+
+SOAK_SEEDS ?= 2000
+SOAK_FROM  ?= 1
+
+.PHONY: soak
+soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n)
+	@cd packages/conformance && \
+		LOOM_SOAK_SEEDS=$(SOAK_SEEDS) LOOM_SOAK_FROM=$(SOAK_FROM) gleam test
+
 # ---------------------------------------------------------------- utilities
 
 .PHONY: deps
