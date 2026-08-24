@@ -68,7 +68,13 @@ blank page.
    service, satellite nodes, cells. The README already promises the
    programming model; M4 makes it true. Most security-sensitive work
    remaining; plan an adversarial vetting corpus from day one.
-4. Standing: GitHub default-branch flip + stale branch delete (proxy
+4. **Architecture docs are stale where M3 landed** (doc-graph refresh
+   findings): both where-the-code-lives tables omit the new modules
+   (session/repo, events entirely, runtime registry/hooks/escalation),
+   and no architecture doc covers the client/TUI protocol plane at
+   all — a fourth doc, or a client section in orchestration, belongs
+   with the M3 review wave.
+5. Standing: GitHub default-branch flip + stale branch delete (proxy
    refuses); `make selftest` on a target-tier kernel; periodic
    `make soak`.
 
