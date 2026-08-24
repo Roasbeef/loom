@@ -175,11 +175,15 @@ pub type RequestAdmission {
   /// unavailable; `error` carries the stable configuration-failure code.
   AdmissionUnavailable(error: OperationError)
   /// Admitted: `stream_options` is the composed per-attempt options value
-  /// the request must use; the two limits are persisted in the intent.
+  /// the request must use; the two limits and `api` (the resolved
+  /// adapter api the request will be made against) are persisted in the
+  /// intent — deferred-handle validity compares against the captured
+  /// `api`, never the response's self-reported one (ORCH-L4).
   Admitted(
     stream_options: JsonValue,
     intended_output_limit: Int,
     context_window: Int,
+    api: String,
   )
 }
 
@@ -985,6 +989,7 @@ fn assistant_action(
           stream_options:,
           intended_output_limit:,
           context_window:,
+          api: request_api,
         )) -> {
           let #(response_entry, generator) = ids.mint_entry(in.generator)
           let #(usage, _generator) = ids.mint_usage(generator)
@@ -999,6 +1004,7 @@ fn assistant_action(
                 usage:,
                 intended_output_limit:,
                 context_window:,
+                request_api:,
               )),
               inbox:,
               latest_assistant: latest,
@@ -1034,6 +1040,7 @@ fn assistant_action(
       usage:,
       intended_output_limit:,
       context_window: _,
+      request_api:,
     ) ->
       case in.observation {
         ObservedAssistantSettled(settled:, overflow_preparation:) ->
@@ -1047,6 +1054,7 @@ fn assistant_action(
             response_entry,
             usage,
             intended_output_limit,
+            request_api,
             inbox,
             latest,
             settled,
@@ -1105,6 +1113,7 @@ fn settle_assistant(
   response_entry: EntryId,
   usage_id: UsageId,
   intended_output_limit: Int,
+  request_api: String,
   inbox: Inbox,
   latest: Option(EntryId),
   settled: SettledAssistantMessage,
@@ -1116,7 +1125,10 @@ fn settle_assistant(
       control:,
       intended_output_limit:,
       expected_model: context.configuration.model,
-      expected_api: message_api(message),
+      // The captured request api from the intent, never the response's
+      // self-reported one (ORCH-L4): a handle whose api differs from the
+      // request must be invalid even when the response echoes it.
+      expected_api: request_api,
       error_retryable: settled_retryable(message),
     )
   case classification.classify(settled, classify_ctx) {
@@ -1674,6 +1686,15 @@ fn advance_batch(
 /// With no observation, decide what to ask the runtime for next — or, for
 /// a planned call that must not execute (cancelled control, truncated
 /// source response), stage the machine-built synthetic result directly.
+///
+/// The batch's execution mode decides which call is worked (pi §3.8,
+/// review finding ORCH-M2): `Sequential` works the frontier's head only,
+/// so one call clears, executes, and settles at a time; `Parallel` works
+/// the first still-*planned* call even while earlier calls are
+/// effect-pending, so clearance and intents issue in source order and
+/// their effects settle independently. Tree materialization stays
+/// source-ordered in both modes — the frontier's contiguous outcome-ready
+/// run is handled before this function is reached.
 fn request_batch_work(
   op: Operation,
   in: PlannerInputs,
@@ -1702,28 +1723,35 @@ fn request_batch_work(
             expected: "materialization to have handled the frontier",
             context: "outcome_ready or completed at the frontier",
           ))
-        CallPlanned(source_index:, result_entry: _) -> {
-          let synthetic_text = case control, message_stop_reason(source) {
-            CancelRequested(..), _ ->
-              Some(
-                "tool call aborted: cancellation was requested before execution",
-              )
-            Running, Length ->
-              Some(
-                "tool call not executed: the response hit its output limit and "
-                <> "the call arguments may be truncated; answer with corrected "
-                <> "calls",
-              )
-            Running, _ -> None
-          }
-          case synthetic_text {
-            Some(text) ->
-              case
-                synthetic_tool_result(source, source_index, text, None, in.now)
-              {
-                Error(report) -> Fault(report:)
-                Ok(result) ->
-                  stage_result(
+        CallPlanned(source_index:, result_entry: _) ->
+          work_planned_call(
+            op,
+            in,
+            control,
+            settings,
+            batch,
+            inbox,
+            latest,
+            source,
+            source_index,
+          )
+        CallEffectPending(source_index:, result_entry:, replay: _) ->
+          case settings.tool_execution {
+            operation.Sequential ->
+              AwaitEffect(key: ToolKey(
+                operation: op.id,
+                step_id: batch.turn_id,
+                source_index:,
+                result_entry:,
+              ))
+            operation.Parallel ->
+              // Work the next planned call while this one is in flight;
+              // only once every unfinished call is effect-pending does
+              // the batch park on the first of them (any pending call's
+              // observation satisfies the key).
+              case first_planned(frontier) {
+                Some(planned_index) ->
+                  work_planned_call(
                     op,
                     in,
                     control,
@@ -1731,27 +1759,83 @@ fn request_batch_work(
                     batch,
                     inbox,
                     latest,
-                    source_index,
-                    result,
-                    False,
+                    source,
+                    planned_index,
                   )
+                None ->
+                  AwaitEffect(key: ToolKey(
+                    operation: op.id,
+                    step_id: batch.turn_id,
+                    source_index:,
+                    result_entry:,
+                  ))
               }
-            None ->
-              AwaitEffect(key: ToolClearanceKey(
-                operation: op.id,
-                step_id: batch.turn_id,
-                source_index:,
-              ))
           }
-        }
-        CallEffectPending(source_index:, result_entry:, replay: _) ->
-          AwaitEffect(key: ToolKey(
-            operation: op.id,
-            step_id: batch.turn_id,
-            source_index:,
-            result_entry:,
-          ))
       }
+  }
+}
+
+/// The source index of the first still-planned call at the frontier, if
+/// any — parallel mode's next unit of work.
+fn first_planned(frontier: List(ToolCallState)) -> Option(Int) {
+  case frontier {
+    [] -> None
+    [CallPlanned(source_index:, ..), ..] -> Some(source_index)
+    [CallEffectPending(..), ..rest]
+    | [CallOutcomeReady(..), ..rest]
+    | [CallCompleted(..), ..rest] -> first_planned(rest)
+  }
+}
+
+/// Works one planned call: stage the machine-built synthetic when the
+/// call must not execute (cancelled control, truncated source response),
+/// otherwise ask for its clearance.
+fn work_planned_call(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  batch: ToolBatch,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  source: AgentMessage,
+  source_index: Int,
+) -> Action {
+  let synthetic_text = case control, message_stop_reason(source) {
+    CancelRequested(..), _ ->
+      Some("tool call aborted: cancellation was requested before execution")
+    Running, Length ->
+      Some(
+        "tool call not executed: the response hit its output limit and "
+        <> "the call arguments may be truncated; answer with corrected "
+        <> "calls",
+      )
+    Running, _ -> None
+  }
+  case synthetic_text {
+    Some(text) ->
+      case synthetic_tool_result(source, source_index, text, None, in.now) {
+        Error(report) -> Fault(report:)
+        Ok(result) ->
+          stage_result(
+            op,
+            in,
+            control,
+            settings,
+            batch,
+            inbox,
+            latest,
+            source_index,
+            result,
+            False,
+          )
+      }
+    None ->
+      AwaitEffect(key: ToolClearanceKey(
+        operation: op.id,
+        step_id: batch.turn_id,
+        source_index:,
+      ))
   }
 }
 
@@ -2376,7 +2460,7 @@ fn settle_poll(
   configuration: StrandConfiguration,
   stream_options: JsonValue,
   inbox: Inbox,
-  latest: Option(EntryId),
+  _latest: Option(EntryId),
   settled: SettledAssistantMessage,
 ) -> Action {
   let message = classification.message(settled)
@@ -2392,19 +2476,32 @@ fn settle_poll(
     )
   case classification.classify(settled, classify_ctx) {
     CorruptClassification(report:) -> Fault(report:)
-    CancelledClassification ->
-      settle_cancelled_poll(
+    // A really-settled poll under cancelled control commits normalized to
+    // aborted, retaining its content and reported usage (pi §4.6 —
+    // review finding ORCH-M3): only an *unknown-outcome* orphan gets the
+    // zero-usage synthetic below.
+    CancelledClassification -> {
+      let aborted = normalize_stop(message, Aborted, None)
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Checkpoint(checkpoint: CheckpointPhase(
+            continuation: MayFinish(include_final_assistant: True),
+            trigger: response_entry,
+            threshold_checked: None,
+            skip_inbox_once: False,
+          )),
+          inbox:,
+          latest_assistant: Some(response_entry),
+        )
+      transition(
         op,
         in,
-        control,
-        settings,
-        response_entry,
-        usage_id,
-        configuration,
-        message_content(message),
-        inbox,
-        latest,
+        next,
+        settle_writes(op, response_entry, aborted, usage_id, in.leaf, next),
       )
+    }
     DeferredValidClassification(handle:) ->
       // A pending response must carry a handle completely equal to its
       // source handle; it becomes the next source. A mismatch is
@@ -2591,9 +2688,11 @@ fn settle_poll_failure(
   )
 }
 
-/// Synthetic settlement of a cancelled poll under the existing reserved
-/// ids, preserving partial content — then a cancelled may-finish
-/// checkpoint leads to the aborted terminal transaction.
+/// Synthetic settlement of a cancelled *unknown-outcome* poll under the
+/// existing reserved ids — the orphan path only; a really-settled poll
+/// under cancelled control retains its reported usage in `settle_poll`
+/// (pi §4.6). A cancelled may-finish checkpoint then leads to the
+/// aborted terminal transaction.
 fn settle_cancelled_poll(
   op: Operation,
   in: PlannerInputs,
@@ -2797,6 +2896,7 @@ fn reconcile_run(
       usage:,
       intended_output_limit:,
       context_window: _,
+      request_api:,
     )) ->
       case in.observation {
         ObservedAssistantSettled(settled:, overflow_preparation: _) ->
@@ -2810,6 +2910,7 @@ fn reconcile_run(
             response_entry,
             usage,
             intended_output_limit,
+            request_api,
             inbox,
             latest,
             settled,
@@ -4088,13 +4189,6 @@ fn message_stop_reason(message: AgentMessage) -> message.StopReason {
   case message {
     AssistantMessage(stop_reason:, ..) -> stop_reason
     _ -> message.Stop
-  }
-}
-
-fn message_content(message: AgentMessage) -> List(message.AssistantBlock) {
-  case message {
-    AssistantMessage(content:, ..) -> content
-    _ -> []
   }
 }
 

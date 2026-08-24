@@ -9,6 +9,7 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import gleam/list
 import gleam/option.{None, Some}
 import machine/acceptance.{AcceptCompaction, AcceptNavigation, AcceptRun}
 import machine/operation.{
@@ -38,6 +39,7 @@ fn admitted() -> planner.Observation {
     stream_options: json.Object([]),
     intended_output_limit: 4096,
     context_window: 200_000,
+    api: "acme-api",
   ))
 }
 
@@ -171,6 +173,100 @@ pub fn deferred_suspend_poll_resume_test() {
   let assert Ok(#(_world, action)) =
     scenario.step(world, ObservedRunEnd(follow_up: None), opts())
   let assert Finish(result: _, tx: _) = action
+}
+
+pub fn deferred_handle_api_checked_against_request_api_test() {
+  // ORCH-L4: handle validity compares against the *captured request*
+  // api, not the response's self-reported one. A response that reports a
+  // different api and carries a handle echoing that same api must be
+  // invalid, because the request was admitted under "acme-api".
+  let world = start_run("run this as a batch job")
+  let foreign_handle =
+    message.DeferredHandle(
+      provider: "acme",
+      model_id: "loom-1",
+      api: "other-api",
+      id: "job-x",
+      expires_at: None,
+      poll_after_ms: Some(1000),
+      data: None,
+    )
+  let base = fixture.assistant_deferred(Some(foreign_handle))
+  let response = case base {
+    message.AssistantMessage(..) ->
+      message.AssistantMessage(..base, api: "other-api")
+    _ -> base
+  }
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(response),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let assert Ok(RunState(phase: operation.FailureDrain(error:, ..), ..)) =
+    scenario.read_op_state(world.store, world.op.id)
+  assert error.code == "invalid_deferred_handle"
+}
+
+pub fn cancelled_poll_retains_reported_usage_test() {
+  // ORCH-M3 (pi §4.6): a poll that really settled while cancellation was
+  // durable commits normalized to aborted, retaining its reported usage —
+  // never the zero-usage synthetic reserved for unknown-outcome orphans.
+  let world = start_run("run this as a batch job")
+  let deferred = fixture.assistant_deferred(Some(fixture.handle("job-c")))
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(deferred),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let permit = StepOptions(..opts(), poll_permit: True)
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, permit)
+  let assert Ok(#(world, action)) =
+    scenario.step(world, ObservedResolution(resolution: ModelResolved), permit)
+  let assert Dispatch(intent: planner.DeferredFetch(..), ..) = action
+  // Durable cancellation lands while the fetch is in flight.
+  let assert Ok(state) = scenario.read_op_state(world.store, world.op.id)
+  let assert Ok(#(op_state_seq, _)) =
+    store.get_register(
+      world.store,
+      register.OpState,
+      ids.op_id_to_string(world.op.id),
+    )
+  let assert queue.AbortPlanned(tx: abort_tx, ..) =
+    queue.request_abort(world.op, state, op_state_seq, scenario.now(world))
+  let assert Ok(aborted_store) = store.apply(world.store, abort_tx)
+  let world = World(..world, store: aborted_store)
+  // The genuinely-settled poll result arrives with real usage.
+  let ready = fixture.assistant(message.Stop, "batch finished", 30)
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(
+      world,
+      ObservedDeferredSettled(settled: fixture.settled(ready)),
+      permit,
+    )
+  assert writes
+    == ["insert:message", "set:strand.leaf", "insert:usage", "set:op.state"]
+  // Committed normalized to aborted, with the reported usage in the
+  // ledger row.
+  let assert Ok(RunState(latest_assistant: Some(response_id), ..)) =
+    scenario.read_op_state(world.store, world.op.id)
+  let assert Ok(entry.MessageEntry(
+    message: message.AssistantMessage(stop_reason: message.Aborted, ..),
+    ..,
+  )) = store.get_entry(world.store, ids.entry_id_to_string(response_id))
+  let assert [row] =
+    world.store.usage
+    |> list.filter(fn(row) { row.entry_id == Some(response_id) })
+  // 100 input + 30 output — the fixture's real reported usage, not the
+  // zero-usage synthetic.
+  assert row.usage.total_tokens == 130
 }
 
 pub fn poll_handle_mismatch_drains_as_failure_test() {

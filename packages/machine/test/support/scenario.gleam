@@ -144,6 +144,7 @@ pub fn accept(
       strand_state:,
       strand_state_seq: strand_seq,
       leaf:,
+      leaf_seq: read_leaf_seq(world.store),
       settings: settings(),
       pending: pending_payloads(world.store),
     )
@@ -280,6 +281,13 @@ fn read_strand_state(store_value: Store) -> #(Int, strand.StrandState) {
       0,
       StrandState(current_operation: None, pending_next_run: []),
     )
+  }
+}
+
+fn read_leaf_seq(store_value: Store) -> Option(Int) {
+  case store.get_register(store_value, register.StrandLeaf, "main") {
+    Ok(#(seq, _value)) -> Some(seq)
+    Error(Nil) -> None
   }
 }
 

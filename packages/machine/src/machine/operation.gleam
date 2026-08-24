@@ -296,8 +296,12 @@ pub type GenerationContext {
 /// entry id and usage id minted at intent — settlement writes under
 /// exactly those ids, and synthetic recovery settlements do too.
 /// `intended_output_limit` and `context_window` are persisted in the
-/// intent so overflow classification is stable across recovery.
-/// `GenerationRetryWait.not_before` is the Unix-ms wake time.
+/// intent so overflow classification is stable across recovery, and
+/// `request_api` is the resolved adapter api the request was admitted
+/// against — deferred-handle validity compares against this captured
+/// value, never against the api the response reports about itself
+/// (review finding ORCH-L4). `GenerationRetryWait.not_before` is the
+/// Unix-ms wake time.
 pub type Generation {
   /// Snapshot taken; the pre-request hook and identity resolution are
   /// next. Attempt numbering starts at 1.
@@ -311,6 +315,7 @@ pub type Generation {
     usage: UsageId,
     intended_output_limit: Int,
     context_window: Int,
+    request_api: String,
   )
   /// A retryable failure settled; the next attempt starts at `not_before`.
   GenerationRetryWait(

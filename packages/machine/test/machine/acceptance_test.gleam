@@ -2,7 +2,10 @@
 
 import core/clock
 import core/ids
+import core/register
+import core/tx
 import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import machine/acceptance.{
   AcceptCompaction, AcceptCtx, AcceptNavigation, AcceptRun, AcceptancePlan,
@@ -29,6 +32,7 @@ fn idle_ctx() -> acceptance.AcceptCtx {
     strand_state: StrandState(current_operation: None, pending_next_run: []),
     strand_state_seq: 3,
     leaf: None,
+    leaf_seq: Some(2),
     settings: scenario.settings(),
     pending: dict.new(),
   )
@@ -186,6 +190,61 @@ pub fn navigation_validations_test() {
       ),
       ctx,
     )
+}
+
+pub fn acceptance_expects_the_leaf_seq_test() {
+  // ORCH-L6: the acceptance transaction carries a strand.leaf seq
+  // expectation, so a concurrent idle tree-write moving the leaf between
+  // the read and the commit refuses the acceptance instead of
+  // mis-parenting its prompt entries.
+  let assert Ok(AcceptancePlan(tx: plan_tx, ..)) =
+    acceptance.accept_prompt(
+      AcceptRun(prompts: [fixture.user("hello")]),
+      idle_ctx(),
+    )
+  assert list.contains(
+    plan_tx.expected,
+    tx.Expect(ns: register.StrandLeaf, key: "main", seq: Some(2)),
+  )
+}
+
+pub fn stale_leaf_refuses_acceptance_test() {
+  // Behavioral half of ORCH-L6: compute an acceptance against the seeded
+  // leaf, move the leaf as an idle tree-write would, then try to commit
+  // the stale plan — the leaf CAS must refuse it even though the
+  // strand-state seq still matches.
+  let world = scenario.fresh()
+  let assert Ok(#(strand_state_seq, _value)) =
+    store.get_register(world.store, register.StrandState, "main")
+  let assert Ok(#(leaf_seq, _value)) =
+    store.get_register(world.store, register.StrandLeaf, "main")
+  let assert Ok(AcceptancePlan(tx: stale_tx, ..)) =
+    acceptance.accept_prompt(
+      AcceptRun(prompts: [fixture.user("parent me on the old leaf")]),
+      AcceptCtx(
+        ..idle_ctx(),
+        strand_state_seq: strand_state_seq,
+        leaf_seq: Some(leaf_seq),
+      ),
+    )
+  // The concurrent idle tree-write: a fresh entry becomes the leaf,
+  // touching neither strand.state nor any op register.
+  let #(moved_to, _generator) = ids.mint_entry(generator())
+  let assert Ok(moved) =
+    store.apply(
+      world.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.StrandLeaf,
+            key: "main",
+            value: register.leaf_value(Some(moved_to)),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+  let assert Error(_message) = store.apply(moved, stale_tx)
 }
 
 pub fn acceptance_rejections_write_nothing_test() {

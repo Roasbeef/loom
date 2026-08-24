@@ -144,6 +144,7 @@ fn all_states() -> List(OperationState) {
         usage: usage_id(1),
         intended_output_limit: 4096,
         context_window: 200_000,
+        request_api: "acme-api",
       )),
     ),
     run(

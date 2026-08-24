@@ -919,6 +919,7 @@ fn encode_generation(generation: Generation) -> JsonValue {
       usage:,
       intended_output_limit:,
       context_window:,
+      request_api:,
     ) ->
       json.Object([
         #("status", json.String("effect_pending")),
@@ -928,6 +929,7 @@ fn encode_generation(generation: Generation) -> JsonValue {
         #("usageId", json.String(ids.usage_id_to_string(usage))),
         #("intendedOutputLimit", json.Int(intended_output_limit)),
         #("contextWindow", json.Int(context_window)),
+        #("requestApi", json.String(request_api)),
       ])
     GenerationRetryWait(context:, next_attempt:, not_before:, error_message:) ->
       json.Object([
@@ -969,6 +971,7 @@ fn decode_generation(value: JsonValue) -> Result(Generation, CorruptionReport) {
         "contextWindow",
         where,
       ))
+      use request_api <- result.try(require_string(fields, "requestApi", where))
       Ok(GenerationEffectPending(
         context:,
         attempt:,
@@ -976,6 +979,7 @@ fn decode_generation(value: JsonValue) -> Result(Generation, CorruptionReport) {
         usage:,
         intended_output_limit:,
         context_window:,
+        request_api:,
       ))
     }
     "retry_wait" -> {

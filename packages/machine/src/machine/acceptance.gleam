@@ -64,10 +64,15 @@ pub type AcceptRequest {
 ///
 /// Constructor invariants: `strand_state`/`strand_state_seq` and `leaf`
 /// are the current values read on the strand's serialization line;
-/// `settings` is the current global run-settings snapshot captured into
-/// the run; `pending` holds the payloads of every id in
-/// `strand_state.pending_next_run`; `generator` must be fresh (see
-/// `PlannerInputs.generator`); `now` is the injected clock time.
+/// `leaf_seq` is the seq `strand.leaf` was read at (`None` when the
+/// register does not exist yet) — the acceptance transaction expects it,
+/// so a concurrent idle tree-write moving the leaf between the read and
+/// the commit refuses the acceptance instead of mis-parenting its
+/// entries (review finding ORCH-L6); `settings` is the current global
+/// run-settings snapshot captured into the run; `pending` holds the
+/// payloads of every id in `strand_state.pending_next_run`; `generator`
+/// must be fresh (see `PlannerInputs.generator`); `now` is the injected
+/// clock time.
 pub type AcceptCtx {
   AcceptCtx(
     strand: String,
@@ -76,6 +81,7 @@ pub type AcceptCtx {
     strand_state: StrandState,
     strand_state_seq: Seq,
     leaf: Option(EntryId),
+    leaf_seq: Option(Seq),
     settings: RunSettings,
     pending: Dict(String, PendingEntry),
   )
@@ -422,6 +428,7 @@ fn plan(
     state:,
     tx: Tx(writes:, expected: [
       build.expect_strand_state(ctx.strand, ctx.strand_state_seq),
+      build.expect_leaf(ctx.strand, ctx.leaf_seq),
       ..build.expect_op_absent(operation.id)
     ]),
   )

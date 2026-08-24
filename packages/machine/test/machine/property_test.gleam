@@ -130,6 +130,7 @@ fn respond(world: World, key: EffectKey, script: Script) -> Observation {
         stream_options: json.Object([]),
         intended_output_limit: 4096,
         context_window: 200_000,
+        api: "acme-api",
       ))
     planner.AssistantKey(..) -> {
       let answered =

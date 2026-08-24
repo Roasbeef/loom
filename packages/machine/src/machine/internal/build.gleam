@@ -173,6 +173,14 @@ pub fn expect_configuration(strand_name: String, seq: Seq) -> SeqExpectation {
   Expect(ns: register.StrandConfig, key: strand_name, seq: Some(seq))
 }
 
+/// Expects `strand.leaf/{strand}` at the seq the leaf was read at
+/// (`None`: the register must not exist). Guards acceptance against a
+/// concurrent idle tree-write moving the leaf between the read and the
+/// commit (review finding ORCH-L6).
+pub fn expect_leaf(strand_name: String, seq: Option(Seq)) -> SeqExpectation {
+  Expect(ns: register.StrandLeaf, key: strand_name, seq:)
+}
+
 // --- entries --------------------------------------------------------------
 
 /// Builds a message-entry insert. `seq` and `ts` are placeholders —
