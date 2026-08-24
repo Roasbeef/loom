@@ -6,10 +6,14 @@ import core/clock
 import core/register
 import core/tx.{InsertEntry, InsertUsage, SetRegister, Tx}
 import gleam/dict
+import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import simplifile
+import sqlight
 import storage/sqlite
 import storage/storage
 import support/fixtures
@@ -208,4 +212,76 @@ pub fn fenced_out_writer_commit_refused_test() {
   let assert Error(storage.BackendFault(_)) = sqlite.renew_lease(zombie.handle)
   let assert Ok(Nil) = storage.close(zombie)
   let assert Ok(Nil) = storage.close(thief)
+}
+
+// How one racer in the concurrent-create test ended: an opened (and then
+// closed) handle, an in-band refusal, or the corruption/crash outcomes
+// the M3-05 fix forbids.
+type Racer {
+  RacerOpened
+  RacerRefused
+  RacerCorrupt
+}
+
+// M3-05: N processes racing to create the same fresh session file must
+// yield exactly one catalog row, and every racer must get an in-band
+// answer — before the fix, unserialized creators inserted several catalog
+// rows (bricking the file forever) and one could die on the binding's
+// unhandled '$busy' clause instead of returning `OpenFailed`.
+pub fn racing_creates_write_one_catalog_row_test() {
+  let path = fresh_path("create_race")
+  let results = process.new_subject()
+  let racers = [1, 2, 3, 4, 5, 6, 7, 8]
+  list.each(racers, fn(n) {
+    process.spawn_unlinked(fn() {
+      let opened =
+        sqlite.open(
+          sqlite.config(path:, owner: "racer-" <> int.to_string(n)),
+          clock.stepping(from: 10_000, by: 1),
+        )
+      let outcome = case opened {
+        Ok(store) -> {
+          let _ = storage.close(store)
+          RacerOpened
+        }
+        // Losing the lease race or timing out on the write lock are the
+        // in-band answers contention is allowed to produce.
+        Error(sqlite.LeaseHeld(..)) | Error(sqlite.OpenFailed(..)) ->
+          RacerRefused
+        Error(sqlite.CorruptSession(..))
+        | Error(sqlite.UnsupportedVersion(..)) -> RacerCorrupt
+      }
+      process.send(results, outcome)
+    })
+  })
+  // Every racer must reply — a missing reply means one crashed rather
+  // than returning an `OpenError`.
+  let outcomes =
+    list.map(racers, fn(_) {
+      let assert Ok(outcome) = process.receive(results, 10_000)
+      outcome
+    })
+  assert !list.any(outcomes, fn(outcome) { outcome == RacerCorrupt })
+  assert list.any(outcomes, fn(outcome) { outcome == RacerOpened })
+
+  // Exactly one catalog row made it in, and the file is not bricked: it
+  // still opens and answers.
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok([rows]) =
+    sqlight.query(
+      "SELECT COUNT(*) FROM session",
+      on: conn,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+  assert rows == 1
+  let assert Ok(Nil) = sqlight.close(conn)
+  let assert Ok(survivor) =
+    sqlite.open(
+      sqlite.config(path:, owner: "after-the-dust"),
+      clock.fixed(at: 900_000),
+    )
+  let assert Ok(stats) = storage.stats(survivor)
+  assert stats.message_count == 0
+  let assert Ok(Nil) = storage.close(survivor)
 }

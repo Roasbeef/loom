@@ -263,12 +263,14 @@ pub fn open(
 
 /// `open` with a migrate-on-open chain: a stored `storage_version` below
 /// this build's runs the matching `Migration` steps in ascending order —
-/// each step's statements and its version bump commit atomically — before
-/// the lease is acquired; a version above this build's is refused with
-/// `UnsupportedVersion` (never misread), as is an older version the chain
-/// has no step for. The chain itself is owned by the session layer
-/// (WP-C), which passes it here; today it is empty because version 1 is
-/// the only version that has ever existed.
+/// each step's statements and its version bump commit atomically — under
+/// the writer lease, which is acquired first (pi §2.8: migrations run
+/// under the lease, over quiescent state). A version above this build's
+/// is refused with `UnsupportedVersion` (never misread), as is an older
+/// version the chain has no step for; either refusal — and a `LeaseHeld`
+/// one — leaves the file's bytes untouched. The chain itself is owned by
+/// the session layer (WP-C), which passes it here; today it is empty
+/// because version 1 is the only version that has ever existed.
 ///
 /// ## Examples
 ///
@@ -297,18 +299,49 @@ pub fn open_with_migrations(
   }
 }
 
+// The open path in refuse-before-write order. First the connection-local
+// busy timeout (no file write), then one BEGIN IMMEDIATE admission
+// transaction that reads the stored version, refuses anything this build
+// cannot own (a newer file, an uncovered older one, a held lease) with
+// *nothing* written, and otherwise claims the lease — creating the schema
+// and catalog first when the file is fresh. Holding the write lock across
+// the whole probe is also what serializes racing creators: exactly one
+// writes the catalog row, the rest wait on the lock and then find it.
+// Only after admission commits do the migration chain and the WAL switch
+// run, both under the lease this writer now holds (pi §2.8: migrations
+// run under the writer lease, over quiescent state).
 fn initialize(
   conn: Connection,
   config: Config,
   now: Int,
   migrations: List(Migration),
 ) -> Result(Int, OpenError) {
-  use Nil <- result.try(
-    pragmas(conn, config.busy_timeout_ms)
-    |> result.map_error(open_failed),
-  )
-  use Nil <- result.try(ensure_schema(conn, now, migrations))
-  acquire_lease(conn, config, now)
+  use Nil <- result.try(set_busy_timeout(conn, config.busy_timeout_ms))
+  use Nil <- result.try(begin_immediate(conn) |> result.map_error(open_failed))
+  let admitted = case admit(conn, config, now, migrations) {
+    Ok(opened) ->
+      commit_sql(conn)
+      |> result.map_error(open_failed)
+      |> result.replace(opened)
+    Error(open_error) -> {
+      let _ = rollback(conn)
+      Error(open_error)
+    }
+  }
+  use Opened(fence:, migrate_from:) <- result.try(admitted)
+  let readied = {
+    use Nil <- result.try(migrate(conn, migrate_from, migrations))
+    set_wal_journal(conn)
+  }
+  case readied {
+    Ok(Nil) -> Ok(fence)
+    // The lease was claimed but this open cannot deliver a usable handle;
+    // release the claim so the file is not locked out for a whole TTL.
+    Error(open_error) -> {
+      let _ = abandon_lease(conn, config.owner, fence)
+      Error(open_error)
+    }
+  }
 }
 
 fn open_failed(fail: Fail) -> OpenError {
@@ -320,62 +353,81 @@ fn open_failed(fail: Fail) -> OpenError {
   }
 }
 
-fn pragmas(conn: Connection, busy_timeout_ms: Int) -> Result(Nil, Fail) {
-  // Both pragmas return a result row, so run them as queries and discard
-  // the rows.
-  use _ <- result.try(run(
-    conn,
+// Pragmas (and the other row-less statements on contended paths) run
+// through `sqlight.exec`, never `run`: the prepared-statement step path
+// surfaces SQLITE_BUSY as an atom the binding has no clause for — a crash
+// in the caller — while sqlite3_exec returns it as an ordinary error this
+// open can report as `OpenFailed`. The journal-mode switch is the one
+// statement that reliably contends cross-process, so this totality is
+// load-bearing (a contended open must refuse, never crash).
+fn set_busy_timeout(
+  conn: Connection,
+  busy_timeout_ms: Int,
+) -> Result(Nil, OpenError) {
+  sqlight.exec(
     "PRAGMA busy_timeout = " <> int.to_string(busy_timeout_ms),
-    [],
-    decode.dynamic,
-  ))
-  use _ <- result.map(run(conn, "PRAGMA journal_mode = WAL", [], decode.dynamic))
-  Nil
+    on: conn,
+  )
+  |> result.map_error(fn(error) {
+    OpenFailed(reason: "busy_timeout: " <> describe_sqlight(error))
+  })
 }
 
-fn ensure_schema(
+// WAL only after admission: switching the journal mode writes the file
+// header, and a refused open must leave the file byte-identical.
+fn set_wal_journal(conn: Connection) -> Result(Nil, OpenError) {
+  sqlight.exec("PRAGMA journal_mode = WAL", on: conn)
+  |> result.map_error(fn(error) {
+    OpenFailed(reason: "journal_mode: " <> describe_sqlight(error))
+  })
+}
+
+// What the admission transaction concluded: the lease fence this writer
+// now holds, and the stored version the migration chain resumes from
+// (`storage_version` itself when no migration is needed).
+type Opened {
+  Opened(fence: Int, migrate_from: Int)
+}
+
+// The admission body, run inside the caller's BEGIN IMMEDIATE. Decides
+// fresh-create versus existing-open, refuses before writing, and claims
+// the lease. The caller commits on Ok and rolls back on Error.
+fn admit(
   conn: Connection,
+  config: Config,
   now: Int,
   migrations: List(Migration),
-) -> Result(Nil, OpenError) {
-  use Nil <- result.try(
-    sqlight.exec(schema_sql, on: conn)
-    |> result.map_error(fn(error) {
-      OpenFailed(reason: "schema: " <> describe_sqlight(error))
-    }),
-  )
-  let versions =
-    run(
-      conn,
-      "SELECT storage_version FROM session",
-      [],
-      decode.at([0], decode.int),
-    )
+) -> Result(Opened, OpenError) {
+  use versions <- result.try(read_catalog_versions(conn))
   case versions {
-    Ok([]) -> {
-      // Fresh file: write the single session catalog row.
-      run(
-        conn,
-        "INSERT INTO session(created_at, parent_session_id, storage_version,
-           metadata, message_count, usage_payload, next_seq)
-         VALUES (?1, NULL, ?2, NULL, 0, ?3, 1)",
-        [
-          sqlight.int(now),
-          sqlight.int(storage_version),
-          blob_of_json(codec.encode_usage(storage.empty_usage())),
-        ],
-        decode.dynamic,
-      )
-      |> result.map_error(open_failed)
-      |> result.replace(Nil)
+    // No catalog row: a fresh file, or one whose creation crashed between
+    // the DDL and the catalog write (the IF NOT EXISTS batch makes the
+    // retry harmless). Create everything and claim the first lease inside
+    // this same transaction — a racing creator either waits on the write
+    // lock and then finds the row, or finds it outright; neither can
+    // insert a second one.
+    None | Some([]) -> {
+      use Nil <- result.try(exec_schema(conn))
+      use Nil <- result.try(insert_catalog_row(conn, now))
+      use fence <- result.try(claim_lease(conn, config, now))
+      Ok(Opened(fence:, migrate_from: storage_version))
     }
-    Ok([version]) if version == storage_version -> Ok(Nil)
-    // A newer file is refused outright; an older one enters the chain,
-    // which refuses at the first missing step.
-    Ok([version]) if version > storage_version ->
+    // A newer file is refused before any write: a schema the newer build
+    // dropped or renamed must not be resurrected into it.
+    Some([version]) if version > storage_version ->
       Error(UnsupportedVersion(found: version, supported: storage_version))
-    Ok([version]) -> migrate(conn, version, migrations)
-    Ok([_, ..]) ->
+    Some([version]) -> {
+      // Refuse a version the chain cannot reach *before* taking the
+      // lease — an unopenable file must not be written at all — then
+      // claim, and only then apply this build's DDL. The DDL stays ahead
+      // of the chain's steps (`Migration` doc: steps run after the
+      // current CREATE ... IF NOT EXISTS batch).
+      use Nil <- result.try(check_chain(version, migrations))
+      use fence <- result.try(claim_lease(conn, config, now))
+      use Nil <- result.try(exec_schema(conn))
+      Ok(Opened(fence:, migrate_from: version))
+    }
+    Some([_, ..]) ->
       Error(
         CorruptSession(report: corruption.report(
           at: "storage/sqlite.open",
@@ -384,7 +436,76 @@ fn ensure_schema(
           context: "multiple rows",
         )),
       )
-    Error(fail) -> Error(open_failed(fail))
+  }
+}
+
+// The stored versions, or `None` when the file has no `session` table at
+// all (a genuinely fresh database — reading the catalog directly would
+// conjure an error, not an answer).
+fn read_catalog_versions(
+  conn: Connection,
+) -> Result(Option(List(Int)), OpenError) {
+  let probed =
+    run(
+      conn,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'",
+      [],
+      decode.at([0], decode.string),
+    )
+  use tables <- result.try(probed |> result.map_error(open_failed))
+  case tables {
+    [] -> Ok(None)
+    [_, ..] ->
+      run(
+        conn,
+        "SELECT storage_version FROM session",
+        [],
+        decode.at([0], decode.int),
+      )
+      |> result.map(Some)
+      |> result.map_error(open_failed)
+  }
+}
+
+fn exec_schema(conn: Connection) -> Result(Nil, OpenError) {
+  sqlight.exec(schema_sql, on: conn)
+  |> result.map_error(fn(error) {
+    OpenFailed(reason: "schema: " <> describe_sqlight(error))
+  })
+}
+
+fn insert_catalog_row(conn: Connection, now: Int) -> Result(Nil, OpenError) {
+  run(
+    conn,
+    "INSERT INTO session(created_at, parent_session_id, storage_version,
+       metadata, message_count, usage_payload, next_seq)
+     VALUES (?1, NULL, ?2, NULL, 0, ?3, 1)",
+    [
+      sqlight.int(now),
+      sqlight.int(storage_version),
+      blob_of_json(codec.encode_usage(storage.empty_usage())),
+    ],
+    decode.dynamic,
+  )
+  |> result.map_error(open_failed)
+  |> result.replace(Nil)
+}
+
+// Verifies, purely, that the chain has a step for every version from
+// `from` up to this build's; the first gap is the refusal, reported
+// before anything has been written.
+fn check_chain(
+  from: Int,
+  migrations: List(Migration),
+) -> Result(Nil, OpenError) {
+  case from >= storage_version {
+    True -> Ok(Nil)
+    False ->
+      case list.find(migrations, fn(step) { step.from_version == from }) {
+        Ok(_) -> check_chain(from + 1, migrations)
+        Error(Nil) ->
+          Error(UnsupportedVersion(found: from, supported: storage_version))
+      }
   }
 }
 
@@ -435,7 +556,14 @@ fn migrate(
   }
 }
 
-fn acquire_lease(
+// Claims the writer lease inside the caller's admission transaction: a
+// missing lease is claimed at fence 1, an expired one stolen with a
+// bumped fence (so the previous holder's commits are fenced out even if
+// it comes back), and an unexpired one refuses the open. The refusal
+// happens before this writer has written anything durable — an
+// existing-file admission claims last, and a create-path admission's
+// writes roll back with the refusal.
+fn claim_lease(
   conn: Connection,
   config: Config,
   now: Int,
@@ -446,53 +574,62 @@ fn acquire_lease(
     use expires_at_ms <- decode.field(2, decode.int)
     decode.success(#(owner, fence, expires_at_ms))
   }
-  let acquired = {
-    use Nil <- result.try(begin_immediate(conn))
-    use rows <- result.try(run(
+  use rows <- result.try(
+    run(
       conn,
       "SELECT owner_id, fence, expires_at_ms FROM writer_lease",
       [],
       lease_decoder,
+    )
+    |> result.map_error(open_failed),
+  )
+  use fence <- result.try(case rows {
+    [] -> Ok(1)
+    [#(_, fence, expires_at_ms)] if expires_at_ms <= now -> Ok(fence + 1)
+    [#(owner, _, expires_at_ms), ..] -> Error(LeaseHeld(owner:, expires_at_ms:))
+  })
+  let written = {
+    use _ <- result.try(run(
+      conn,
+      "DELETE FROM writer_lease",
+      [],
+      decode.dynamic,
     ))
-    let claim = fn(fence: Int) {
-      use _ <- result.try(run(
-        conn,
-        "DELETE FROM writer_lease",
-        [],
-        decode.dynamic,
-      ))
-      use _ <- result.try(run(
-        conn,
-        "INSERT INTO writer_lease(owner_id, fence, expires_at_ms) VALUES (?1, ?2, ?3)",
-        [
-          sqlight.text(config.owner),
-          sqlight.int(fence),
-          sqlight.int(now + config.lease_ttl_ms),
-        ],
-        decode.dynamic,
-      ))
-      use Nil <- result.map(commit_sql(conn))
-      Ok(fence)
-    }
-    case rows {
-      [] -> claim(1)
-      // Steal an expired lease with a bumped fence, so the previous
-      // holder's commits are fenced out even if it comes back.
-      [#(_, fence, expires_at_ms)] if expires_at_ms <= now -> claim(fence + 1)
-      [#(owner, _, expires_at_ms), ..] -> {
-        let _ = rollback(conn)
-        Ok(Error(LeaseHeld(owner:, expires_at_ms:)))
-      }
-    }
+    run(
+      conn,
+      "INSERT INTO writer_lease(owner_id, fence, expires_at_ms) VALUES (?1, ?2, ?3)",
+      [
+        sqlight.text(config.owner),
+        sqlight.int(fence),
+        sqlight.int(now + config.lease_ttl_ms),
+      ],
+      decode.dynamic,
+    )
   }
-  case acquired {
-    Ok(Ok(fence)) -> Ok(fence)
-    Ok(Error(open_error)) -> Error(open_error)
-    Error(fail) -> {
-      let _ = rollback(conn)
-      Error(open_failed(fail))
-    }
-  }
+  written
+  |> result.map_error(open_failed)
+  |> result.replace(fence)
+}
+
+// Best-effort release of a lease this open claimed but cannot use (a
+// migration or journal-mode failure after admission committed). Scoped to
+// our own (owner, fence) pair like `Close`, and issued through `exec` —
+// the busy-total path — with the owner quoted as a SQL literal, because
+// no transaction protects this statement from cross-process contention.
+fn abandon_lease(
+  conn: Connection,
+  owner: String,
+  fence: Int,
+) -> Result(Nil, Nil) {
+  sqlight.exec(
+    "DELETE FROM writer_lease WHERE owner_id = "
+      <> sql_quote(owner)
+      <> " AND fence = "
+      <> int.to_string(fence),
+    on: conn,
+  )
+  |> result.replace(Nil)
+  |> result.replace_error(Nil)
 }
 
 const schema_sql = "
@@ -651,42 +788,68 @@ pub type Rewrite {
 }
 
 /// Why a precise rewrite refused or failed. In every failure case the
-/// original session file is untouched: the rewrite works on a copy and
-/// only an atomic rename replaces the original.
+/// original session file's *content* is untouched: the rewrite works on a
+/// copy and only an atomic rename replaces the original. (A failed
+/// rewrite also releases the writer lease it held while running.)
 pub type RewriteError {
-  /// A writer holds an unexpired lease on the session file. A rewrite is
-  /// an offline admin operation; close (or let expire) the writer first.
+  /// A writer holds an unexpired lease on the session file — or stole it
+  /// mid-rewrite after the rewrite's own lease expired. A rewrite is an
+  /// offline admin operation; close (or let expire) the writer first.
   RewriteLeaseHeld(owner: String, expires_at_ms: Int)
   /// A stored payload failed its total decode, the file is not a
-  /// current-version Loom session, or the transform broke an invariant
+  /// current-version Loom session, or a transform broke an invariant
   /// (changed an entry's id, parent, or kind, or reported corruption).
   RewriteCorrupt(report: CorruptionReport)
-  /// The copy, update, vacuum, or swap failed at the SQL or file level.
+  /// The copy, update, vacuum, swap, or sibling cleanup failed at the SQL
+  /// or file level.
   RewriteFailed(reason: String)
 }
 
-/// Precisely rewrites a **closed** session file: copies it coherently with
-/// `VACUUM INTO`, applies `rewrite` to every entry payload in the copy
-/// (`Ok(None)` keeps the entry, `Ok(Some(new))` replaces its payload —
-/// id, parent, and kind must be preserved; retained-tail copies inside
-/// compaction entries are ordinary payload content and are rewritten with
-/// them), bumps the generation counter in the session metadata, vacuums
-/// the copy so the replaced bytes do not survive in free pages, and
-/// atomically swaps the copy over the original via rename.
+// The reserved lease identity a precise rewrite holds while it runs.
+// Writer configs must not use this owner id, or their lease is
+// indistinguishable from a rewrite's.
+const rewrite_owner = "rewrite"
+
+// The rewrite's lease TTL. Generous, because it must cover the whole
+// copy-transform-vacuum-swap pass; bounded, so a crashed rewrite does not
+// lock the file out forever — the lease expires and the next opener
+// steals it with a bumped fence.
+const rewrite_lease_ttl_ms = 600_000
+
+/// Precisely rewrites a **closed** session file. The rewrite first claims
+/// the writer lease in the original under the reserved `"rewrite"` owner
+/// and holds it for the whole operation, so a concurrent `open` is
+/// refused with `LeaseHeld` instead of committing into a file the swap
+/// would discard. It then retires the original's WAL (checkpointing every
+/// frame into the main file and truncating the `-wal` to zero bytes, so
+/// no pre-rewrite page can ever be replayed into the swapped-in file),
+/// copies the file coherently with `VACUUM INTO`, applies `rewrite` to
+/// every entry payload in the copy (`Ok(None)` keeps the entry,
+/// `Ok(Some(new))` replaces its payload — id, parent, and kind must be
+/// preserved; retained-tail copies inside compaction entries are ordinary
+/// payload content and are rewritten with them) and `rewrite_value` to
+/// every register payload and usage-ledger details blob, bumps the
+/// generation counter in the session metadata, vacuums the copy so the
+/// replaced bytes do not survive in free pages, re-verifies the lease is
+/// still its own, and atomically swaps the copy over the original via
+/// rename. The swapped-in file starts unleased.
 ///
 /// This is the sole sanctioned exception to "entries are never modified"
 /// (pi §2.9): compliance-grade erasure. No harness surface calls it; it is
 /// repository tooling above the harness. The audit contract is that after
 /// erasing a string, that string appears nowhere in the new file's raw
-/// bytes.
+/// bytes — entries, registers (queued pending messages, tool arguments,
+/// compaction preparation, facts), and usage details included.
 ///
-/// The clock is used only to judge writer-lease expiry; an unexpired
-/// lease refuses the rewrite with `RewriteLeaseHeld`.
+/// The clock is read once, to judge lease expiry and stamp the rewrite's
+/// own claim; an unexpired writer lease refuses the rewrite with
+/// `RewriteLeaseHeld`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sqlite.rewrite_into(path: "/tmp/s.db", clock:, rewrite: erase)
+/// // sqlite.rewrite_into(path: "/tmp/s.db", clock:,
+/// //   rewrite: erase, rewrite_value: erase_value)
 /// // -> Ok(sqlite.Rewrite(generation: 1, entries_rewritten: 3))
 /// ```
 ///
@@ -694,37 +857,258 @@ pub fn rewrite_into(
   path path: String,
   clock clock: Clock,
   rewrite rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+  rewrite_value rewrite_value: fn(JsonValue) ->
+    Result(Option(JsonValue), CorruptionReport),
 ) -> Result(Rewrite, RewriteError) {
-  let temp = path <> ".rewrite"
-  // A leftover copy from a crashed rewrite is dead weight; remove it.
-  let _ = simplifile.delete(temp)
   let #(now, _clock) = clock.read(clock)
   use Nil <- result.try(require_session_file(path))
-  use Nil <- result.try(copy_source(path, temp, now))
-  case rewrite_copy(temp, rewrite) {
-    Ok(outcome) ->
-      case simplifile.rename(at: temp, to: path) {
-        Ok(Nil) -> {
-          // Stale WAL/SHM siblings of the replaced file would still carry
-          // the old bytes on disk; SQLite itself would discard them (salt
-          // mismatch), but the audit contract says the erased content must
-          // not survive anywhere.
-          let _ = simplifile.delete(path <> "-wal")
-          let _ = simplifile.delete(path <> "-shm")
-          Ok(outcome)
-        }
+  case sqlight.open(path) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) ->
+      case stage_rewrite(conn, path, now, rewrite, rewrite_value) {
+        Ok(#(temp, fence, outcome)) -> swap(conn, path, temp, fence, outcome)
         Error(error) -> {
-          let _ = simplifile.delete(temp)
-          Error(RewriteFailed(
-            reason: "swap: " <> simplifile.describe_error(error),
-          ))
+          let _ = sqlight.close(conn)
+          Error(error)
         }
       }
+  }
+}
+
+// Everything up to (but not including) the swap: claim the lease in the
+// original, retire its WAL, take the copy, transform it, and re-verify
+// the lease. On any failure after the claim the lease is released and the
+// temp copy removed, leaving the original exactly as it was found.
+fn stage_rewrite(
+  conn: Connection,
+  path: String,
+  now: Int,
+  rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+  rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
+) -> Result(#(String, Int, Rewrite), RewriteError) {
+  // The claim transaction below contends with concurrent open probes;
+  // without a busy timeout it would fail spuriously instead of waiting.
+  use Nil <- result.try(
+    sqlight.exec("PRAGMA busy_timeout = 5000", on: conn)
+    |> result.map_error(fn(error) {
+      RewriteFailed(reason: "busy_timeout: " <> describe_sqlight(error))
+    }),
+  )
+  use fence <- result.try(claim_rewrite_lease(conn, now))
+  let temp = path <> ".rewrite"
+  let staged = {
+    // Only a lease holder reaps a leftover copy from a crashed rewrite,
+    // so a refused rewrite can never delete a live one's temp file.
+    use Nil <- result.try(remove_file(temp, "stale rewrite copy"))
+    use Nil <- result.try(retire_wal(conn))
+    use Nil <- result.try(
+      run(conn, "VACUUM INTO " <> sql_quote(temp), [], decode.dynamic)
+      |> result.map_error(rewrite_fail)
+      |> result.replace(Nil),
+    )
+    use outcome <- result.try(rewrite_copy(temp, rewrite, rewrite_value))
+    // Re-verify immediately before the swap: if the rewrite outlived its
+    // TTL and a writer stole the lease, that writer's commits are in the
+    // original and the copy is stale — abort rather than discard them
+    // with the rename.
+    use Nil <- result.map(verify_rewrite_lease(conn, fence))
+    #(temp, fence, outcome)
+  }
+  case staged {
+    Ok(ok) -> Ok(ok)
     Error(error) -> {
       let _ = simplifile.delete(temp)
+      let _ = release_rewrite_lease(conn, fence)
       Error(error)
     }
   }
+}
+
+// The atomic swap and its aftermath. After the rename, the original's
+// inode (still open on `conn`) is unlinked from the path and the copy —
+// erased, vacuumed, lease cleared — is the session file; closing `conn`
+// then drops the last reference to the old bytes. The sibling deletes are
+// belt-and-braces (the WAL was retired before the copy was even taken),
+// but a failure to remove an on-disk remnant is an audit failure and is
+// reported, never discarded (M3-01: a swallowed unlink error reported a
+// clean erasure that the next open silently undid).
+fn swap(
+  conn: Connection,
+  path: String,
+  temp: String,
+  fence: Int,
+  outcome: Rewrite,
+) -> Result(Rewrite, RewriteError) {
+  case simplifile.rename(at: temp, to: path) {
+    Ok(Nil) -> {
+      let _ = sqlight.close(conn)
+      use Nil <- result.try(remove_file(path <> "-wal", "stale wal sibling"))
+      use Nil <- result.map(remove_file(path <> "-shm", "stale shm sibling"))
+      outcome
+    }
+    Error(error) -> {
+      // The rename never happened, so the original is intact: release the
+      // rewrite's lease from it before reporting.
+      let _ = simplifile.delete(temp)
+      let _ = release_rewrite_lease(conn, fence)
+      let _ = sqlight.close(conn)
+      Error(RewriteFailed(reason: "swap: " <> simplifile.describe_error(error)))
+    }
+  }
+}
+
+// Deletes a file, treating "already absent" as success and any other
+// failure as a real error — a rewrite that cannot remove an on-disk
+// remnant must say so, not report a clean erasure over it.
+fn remove_file(path: String, what: String) -> Result(Nil, RewriteError) {
+  case simplifile.delete(path) {
+    Ok(Nil) -> Ok(Nil)
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) ->
+      Error(RewriteFailed(
+        reason: what <> " " <> path <> ": " <> simplifile.describe_error(error),
+      ))
+  }
+}
+
+// Retires the original's WAL before the copy is taken: a TRUNCATE
+// checkpoint moves every frame into the main database file and truncates
+// the `-wal` to zero bytes, so nothing on disk can replay pre-rewrite
+// pages into the swapped-in file (M3-01 — SQLite recovers any WAL whose
+// checksums and page size match the database at its path, and the old
+// WAL matches the copy by construction). The pragma reports rather than
+// fails when it cannot finish — a lingering reader leaves its first
+// column at 1 — so the row is read and anything short of a complete
+// checkpoint refuses the rewrite instead of shipping an audit that the
+// next open would undo. (Leaving WAL mode entirely would delete the
+// siblings too, but that needs every other connection to the file gone,
+// which a freshly closed handle's not-yet-collected statement objects
+// can defeat; a truncated WAL is just as unreplayable.) On a non-WAL
+// file the pragma is a no-op reporting success.
+fn retire_wal(conn: Connection) -> Result(Nil, RewriteError) {
+  use rows <- result.try(
+    run(conn, "PRAGMA wal_checkpoint(TRUNCATE)", [], decode.at([0], decode.int))
+    |> result.map_error(rewrite_fail),
+  )
+  case rows {
+    [0] -> Ok(Nil)
+    [_, ..] | [] ->
+      Error(RewriteFailed(
+        reason: "wal checkpoint could not complete (readers still active)",
+      ))
+  }
+}
+
+// Admission for the rewrite, in one immediate transaction: verify the
+// file is a current-version session with exactly one catalog row, then
+// claim the writer lease under the reserved owner — refusing an unexpired
+// holder, stealing an expired one with a bumped fence. Unlike the
+// sample-once check this replaces (M3-02), the claim *holds*: from here
+// until the swap, or a failure's release, a concurrent `open` is refused
+// with `LeaseHeld` instead of committing into a file the rename is about
+// to discard.
+fn claim_rewrite_lease(
+  conn: Connection,
+  now: Int,
+) -> Result(Int, RewriteError) {
+  use Nil <- result.try(begin_immediate(conn) |> result.map_error(rewrite_fail))
+  let claimed = {
+    use Nil <- result.try(check_source_version(conn))
+    let lease_decoder = {
+      use owner <- decode.field(0, decode.string)
+      use fence <- decode.field(1, decode.int)
+      use expires_at_ms <- decode.field(2, decode.int)
+      decode.success(#(owner, fence, expires_at_ms))
+    }
+    use rows <- result.try(
+      run(
+        conn,
+        "SELECT owner_id, fence, expires_at_ms FROM writer_lease",
+        [],
+        lease_decoder,
+      )
+      |> result.map_error(rewrite_fail),
+    )
+    use fence <- result.try(case rows {
+      [] -> Ok(1)
+      [#(_, fence, expires_at_ms)] if expires_at_ms <= now -> Ok(fence + 1)
+      [#(owner, _, expires_at_ms), ..] ->
+        Error(RewriteLeaseHeld(owner:, expires_at_ms:))
+    })
+    use _ <- result.try(
+      run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
+      |> result.map_error(rewrite_fail),
+    )
+    use _ <- result.try(
+      run(
+        conn,
+        "INSERT INTO writer_lease(owner_id, fence, expires_at_ms) VALUES (?1, ?2, ?3)",
+        [
+          sqlight.text(rewrite_owner),
+          sqlight.int(fence),
+          sqlight.int(now + rewrite_lease_ttl_ms),
+        ],
+        decode.dynamic,
+      )
+      |> result.map_error(rewrite_fail),
+    )
+    use Nil <- result.map(commit_sql(conn) |> result.map_error(rewrite_fail))
+    fence
+  }
+  case claimed {
+    Ok(fence) -> Ok(fence)
+    Error(error) -> {
+      let _ = rollback(conn)
+      Error(error)
+    }
+  }
+}
+
+// Re-reads the lease: it must still be the claim this rewrite made.
+// Anything else means the TTL lapsed and another owner took over.
+fn verify_rewrite_lease(
+  conn: Connection,
+  fence: Int,
+) -> Result(Nil, RewriteError) {
+  let lease_decoder = {
+    use owner <- decode.field(0, decode.string)
+    use held_fence <- decode.field(1, decode.int)
+    use expires_at_ms <- decode.field(2, decode.int)
+    decode.success(#(owner, held_fence, expires_at_ms))
+  }
+  use rows <- result.try(
+    run(
+      conn,
+      "SELECT owner_id, fence, expires_at_ms FROM writer_lease",
+      [],
+      lease_decoder,
+    )
+    |> result.map_error(rewrite_fail),
+  )
+  case rows {
+    [#(owner, held_fence, _)] if owner == rewrite_owner && held_fence == fence ->
+      Ok(Nil)
+    [#(owner, _, expires_at_ms), ..] ->
+      Error(RewriteLeaseHeld(owner:, expires_at_ms:))
+    [] -> Error(RewriteFailed(reason: "writer lease vanished during rewrite"))
+  }
+}
+
+// Best-effort release scoped to this rewrite's own claim; runs on every
+// failure path where the original file survives. Issued through `exec` —
+// the busy-total path — with program-constant operands, because no
+// transaction protects this statement from cross-process contention.
+fn release_rewrite_lease(conn: Connection, fence: Int) -> Result(Nil, Nil) {
+  sqlight.exec(
+    "DELETE FROM writer_lease WHERE owner_id = "
+      <> sql_quote(rewrite_owner)
+      <> " AND fence = "
+      <> int.to_string(fence),
+    on: conn,
+  )
+  |> result.replace(Nil)
+  |> result.replace_error(Nil)
 }
 
 /// Reads the session file's precise-rewrite generation counter without
@@ -775,92 +1159,58 @@ fn rewrite_fail(fail: Fail) -> RewriteError {
   }
 }
 
-// Verifies the source is a current-version, unleased session file and
-// copies it coherently into `temp` with `VACUUM INTO` (which reads
-// through any WAL, so the copy is complete and compact).
-fn copy_source(
-  path: String,
-  temp: String,
-  now: Int,
-) -> Result(Nil, RewriteError) {
-  case sqlight.open(path) {
-    Error(error) ->
-      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
-    Ok(conn) -> {
-      let outcome = {
-        use versions <- result.try(
-          run(
-            conn,
-            "SELECT storage_version FROM session",
-            [],
-            decode.at([0], decode.int),
+// Verifies, inside the claim transaction, that the source is a
+// current-version session file with exactly one catalog row.
+fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
+  use versions <- result.try(
+    run(
+      conn,
+      "SELECT storage_version FROM session",
+      [],
+      decode.at([0], decode.int),
+    )
+    |> result.map_error(rewrite_fail),
+  )
+  case versions {
+    [version] ->
+      case version == storage_version {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            RewriteCorrupt(report: corruption.report(
+              at: "storage/sqlite.rewrite_into",
+              on: "session.storage_version",
+              expected: "version "
+                <> int.to_string(storage_version)
+                <> " (open the file once to migrate it first)",
+              context: int.to_string(version),
+            )),
           )
-          |> result.map_error(rewrite_fail),
-        )
-        use Nil <- result.try(case versions {
-          [version] ->
-            case version == storage_version {
-              True -> Ok(Nil)
-              False ->
-                Error(
-                  RewriteCorrupt(report: corruption.report(
-                    at: "storage/sqlite.rewrite_into",
-                    on: "session.storage_version",
-                    expected: "version "
-                      <> int.to_string(storage_version)
-                      <> " (open the file once to migrate it first)",
-                    context: int.to_string(version),
-                  )),
-                )
-            }
-          [] | [_, ..] ->
-            Error(
-              RewriteCorrupt(report: corruption.report(
-                at: "storage/sqlite.rewrite_into",
-                on: "session catalog",
-                expected: "exactly one session row",
-                context: int.to_string(list.length(versions)) <> " rows",
-              )),
-            )
-        })
-        let lease_decoder = {
-          use owner <- decode.field(0, decode.string)
-          use expires_at_ms <- decode.field(1, decode.int)
-          decode.success(#(owner, expires_at_ms))
-        }
-        use leases <- result.try(
-          run(
-            conn,
-            "SELECT owner_id, expires_at_ms FROM writer_lease",
-            [],
-            lease_decoder,
-          )
-          |> result.map_error(rewrite_fail),
-        )
-        use Nil <- result.try(case leases {
-          [] -> Ok(Nil)
-          [#(owner, expires_at_ms), ..] ->
-            case expires_at_ms > now {
-              True -> Error(RewriteLeaseHeld(owner:, expires_at_ms:))
-              False -> Ok(Nil)
-            }
-        })
-        run(conn, "VACUUM INTO " <> sql_quote(temp), [], decode.dynamic)
-        |> result.map_error(rewrite_fail)
-        |> result.replace(Nil)
       }
-      let _ = sqlight.close(conn)
-      outcome
-    }
+    [] | [_, ..] ->
+      Error(
+        RewriteCorrupt(report: corruption.report(
+          at: "storage/sqlite.rewrite_into",
+          on: "session catalog",
+          expected: "exactly one session row",
+          context: int.to_string(list.length(versions)) <> " rows",
+        )),
+      )
   }
 }
 
-// Applies the transform to every entry payload of the copy inside one
-// transaction, bumps the generation, then vacuums so no replaced bytes
-// survive in free pages.
+// Applies the transforms to the copy inside one transaction — entry
+// payloads through `rewrite`, register payloads and usage details through
+// `rewrite_value` (the audit contract covers every store a needle can
+// reach, not just entries: queued pending messages, tool arguments,
+// compaction preparation, facts, and usage details are exactly where a
+// leaked secret also lands) — clears the lease table so the swapped-in
+// file starts unleased, bumps the generation, then vacuums so no replaced
+// bytes survive in free pages.
 fn rewrite_copy(
   temp: String,
   rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+  rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
 ) -> Result(Rewrite, RewriteError) {
   case sqlight.open(temp) {
     Error(error) ->
@@ -885,6 +1235,14 @@ fn rewrite_copy(
               rewrite_row(conn, row, rewrite, count)
             }),
           )
+          use Nil <- result.try(rewrite_registers(conn, rewrite_value))
+          use Nil <- result.try(rewrite_usage_details(conn, rewrite_value))
+          // The lease this rewrite holds lives in the *original* and dies
+          // with it at the swap; the copy must not carry it over.
+          use _ <- result.try(
+            run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
+            |> result.map_error(rewrite_fail),
+          )
           use generation <- result.try(bump_generation(conn))
           use Nil <- result.map(
             commit_sql(conn) |> result.map_error(rewrite_fail),
@@ -906,6 +1264,98 @@ fn rewrite_copy(
       outcome
     }
   }
+}
+
+// Runs the value transform over every register payload in the copy.
+// Register payloads are free-form JSON at this boundary (the machine
+// codecs interpret them later), so the rewritten value needs no
+// structural re-decode here — but a needle that collides with an id a
+// register carries (a strand leaf, an operation id) will surface as
+// corruption at the machine-level read, exactly like an id collision
+// inside an entry surfaces at the entry codec.
+fn rewrite_registers(
+  conn: Connection,
+  rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
+) -> Result(Nil, RewriteError) {
+  let cell_decoder = {
+    use ns <- decode.field(0, decode.string)
+    use key <- decode.field(1, decode.string)
+    use blob <- decode.field(2, decode.bit_array)
+    decode.success(#(ns, key, blob))
+  }
+  use rows <- result.try(
+    run(conn, "SELECT ns, key, value FROM registers", [], cell_decoder)
+    |> result.map_error(rewrite_fail),
+  )
+  list.try_fold(over: rows, from: Nil, with: fn(_, row) {
+    let #(ns, key, blob) = row
+    use value <- result.try(
+      json_of_blob(blob, ns <> "/" <> key)
+      |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+    )
+    use replacement <- result.try(
+      rewrite_value(value)
+      |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+    )
+    case replacement {
+      None -> Ok(Nil)
+      Some(new) ->
+        run(
+          conn,
+          "UPDATE registers SET value = ?1 WHERE ns = ?2 AND key = ?3",
+          [blob_of_json(new), sqlight.text(ns), sqlight.text(key)],
+          decode.dynamic,
+        )
+        |> result.map_error(rewrite_fail)
+        |> result.replace(Nil)
+    }
+  })
+}
+
+// Runs the value transform over every usage-ledger details blob in the
+// copy. Details are opaque JSON written straight through at commit, and
+// straight through here on the way back out.
+fn rewrite_usage_details(
+  conn: Connection,
+  rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
+) -> Result(Nil, RewriteError) {
+  let row_decoder = {
+    use id_text <- decode.field(0, decode.string)
+    use blob <- decode.field(1, decode.bit_array)
+    decode.success(#(id_text, blob))
+  }
+  use rows <- result.try(
+    run(
+      conn,
+      "SELECT id, details FROM usage_ledger WHERE details IS NOT NULL",
+      [],
+      row_decoder,
+    )
+    |> result.map_error(rewrite_fail),
+  )
+  list.try_fold(over: rows, from: Nil, with: fn(_, row) {
+    let #(id_text, blob) = row
+    use value <- result.try(
+      json_of_blob(blob, id_text)
+      |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+    )
+    use replacement <- result.try(
+      rewrite_value(value)
+      |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+    )
+    case replacement {
+      None -> Ok(Nil)
+      Some(new) ->
+        run(
+          conn,
+          "UPDATE usage_ledger SET details = ?1 WHERE id = ?2",
+          [blob_of_json(new), sqlight.text(id_text)],
+          decode.dynamic,
+        )
+        |> result.map_error(rewrite_fail)
+        |> result.replace(Nil)
+    }
+  })
 }
 
 fn rewrite_row(

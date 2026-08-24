@@ -36,6 +36,10 @@ by WP-C-full.
 - `storage/sqlite.{Rewrite, RewriteError, rewrite_into, generation}` — the
   offline precise rewrite (pi §2.9) over a **closed** file, and the
   rewrite-generation counter external indexes key their cursors on.
+  `rewrite_into` takes two transforms: an entry rewrite for `entries`
+  payloads and a value rewrite for register payloads and usage-ledger
+  details, because the audit contract covers every store a needle can
+  reach.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.
@@ -114,20 +118,35 @@ by WP-C-full.
   on reads and faulted on commits rather than crashing.
 - **Stats equal the ledger sum after every commit** — the conformance suite
   asserts it at each transaction, not just at the end.
-- **A version is migrated or refused, never misread.** `open_with_migrations`
-  runs one step per version from the stored `storage_version` up to
-  `sqlite.storage_version`; a higher stored version, or a lower one the
-  caller's chain has no step for, is `UnsupportedVersion(found, supported)`.
-  A step's `statements` and its version bump commit in one transaction.
+- **A version is migrated or refused, never misread — and a refusal writes
+  nothing.** Open runs in refuse-before-write order: one `BEGIN IMMEDIATE`
+  admission transaction reads the stored version, refuses a newer file or
+  an uncovered older one (`UnsupportedVersion(found, supported)`) or a held
+  lease with the file byte-untouched, and otherwise claims the lease;
+  schema DDL, the migration chain, and the WAL journal switch run only
+  after that, under the lease (pi §2.8). A step's `statements` and its
+  version bump commit in one transaction. The same admission transaction
+  serializes racing creators, so N concurrent opens of a fresh path write
+  exactly one catalog row and every loser gets an in-band `OpenError`.
 - **The precise rewrite is the sole sanctioned exception to "entries are
   never modified"** (pi §2.9), and it is offline: an unexpired writer lease
-  refuses it with `RewriteLeaseHeld`. It works on a `VACUUM INTO` copy and
-  only an atomic rename replaces the original, so every failure path leaves
-  the original file untouched.
-- **A rewrite must leave no erased bytes behind.** The copy is vacuumed so
-  replaced content does not survive in free pages, and the swapped-out
-  file's `-wal`/`-shm` siblings are unlinked — the audit contract is that
-  the erased string appears nowhere in the new file's raw bytes.
+  refuses it with `RewriteLeaseHeld`. The rewrite then *claims and holds*
+  the lease in the original under the reserved owner `"rewrite"` for its
+  whole duration — a concurrent open is refused `LeaseHeld` instead of
+  committing into a file the swap would discard — and re-verifies the
+  claim immediately before the rename, aborting if it was stolen. It works
+  on a `VACUUM INTO` copy and only an atomic rename replaces the original,
+  so every failure path leaves the original file's content untouched (and
+  releases the lease).
+- **A rewrite must leave no erased bytes behind.** The source's WAL is
+  retired *before* the copy is taken (a verified TRUNCATE checkpoint —
+  SQLite would replay any matching WAL into the swapped-in file on the
+  next open, resurrecting the erased text), the copy is vacuumed so
+  replaced content does not survive in free pages, and the leftover
+  `-wal`/`-shm` siblings are unlinked after the swap with failures
+  *propagated*, never discarded. The transforms reach entries, register
+  payloads, and usage details alike — the audit contract is that the
+  erased string appears nowhere in the new file's raw bytes.
 - **A rewrite preserves each entry's id, parent, and kind**; a transform
   that moves an entry, or reports corruption, aborts the whole rewrite with
   nothing swapped. Every rewrite bumps the `generation` counter, which is
@@ -144,6 +163,6 @@ by WP-C-full.
   why `sqlight`.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-B/T": the two
   extra indexes, actor-per-backend, close idempotence, CAS-only commits.
-  "From WP-C-full": rewrite scope (entry payloads only), the memory
-  backend's absent generation counter.
+  "From WP-C-full": rewrite scope, the memory backend's absent
+  generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
