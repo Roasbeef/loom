@@ -236,7 +236,7 @@ conventions:
   not `proc_dat(ss)`. The ecosystem uses full words even for long names
   (`absolute_value`, `exclusive_or`).
 - **Acronyms are single words**: `Json`, `parse_http` — never `JSON`.
-- **Module names are singular** (`loom/register`, not `loom/registers`), one
+- **Module names are singular** (`core/register`, not `core/registers`), one
   concept per module, path segments included.
 - **No design-pattern or category-theory names.** `monadic_bind`,
   `app/utilities`, `Monoid` — all officially called out as anti-patterns.
@@ -272,10 +272,10 @@ have no `get_` prefix unless paired with a `set_` (`get_header`/`set_header`).
   official conventions doc explicitly warns that fragmenting into
   `client`/`config`/`error`/`types` modules is an anti-pattern "especially
   common with AI-generated code." Split by business domain
-  (`loom/storage`, `loom/lane`), never by kind (`loom/types`,
-  `loom/helpers`).
+  (`storage/sqlite`, `runtime/strand`), never by kind (`core/types`,
+  `core/helpers`).
 - All modules live under the package's namespace directory
-  (`src/loom_core.gleam` + `src/loom_core/...`); never place modules in
+  (`src/core.gleam` + `src/core/...`); never place modules in
   another package's namespace.
 - Code that must be `pub` for testing but is not API goes in
   `internal` modules (the default `internal_modules` glob covers
@@ -448,7 +448,7 @@ replicating what they provide; they are the ecosystem's shared foundation.
 `gleam_http` also models the official **sans-io pattern** for API surfaces:
 a package of pure types plus request-builder and response-parser functions,
 with the actual I/O supplied by the caller. Loom's effect plane is this
-pattern writ large — pure planning in `loom_machine`, I/O only at the
+pattern writ large — pure planning in `machine`, I/O only at the
 broker — so prefer sans-io shapes for any protocol code.
 
 ### Decoders and encoders
@@ -557,7 +557,7 @@ tighten the ecosystem defaults:
 4. **FFI confinement**: `@external` only in `*/internal/ffi_*.gleam`
    modules; every external carries a comment naming the OTP function used
    and why no pure alternative exists. CI greps enforce this.
-5. **Purity layering**: `loom_core` and `loom_machine` are pure — no I/O
+5. **Purity layering**: `core` and `machine` are pure — no I/O
    imports at all. Effects live behind the broker; the state machine is
    `State × Inputs -> Action`.
 6. **Time and identity are injected**: timestamps come from a `Clock`

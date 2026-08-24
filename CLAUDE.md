@@ -30,7 +30,7 @@ Before writing any code, read these in order:
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
   `protocol-change/NNN.md` proposal, never silent drift.
-- Pure packages (`loom_core`, `loom_machine`) perform no I/O. Every
+- Pure packages (`core`, `machine`) perform no I/O. Every
   durability/wire boundary uses total decoders.
 
 ## Commits
@@ -38,7 +38,7 @@ Before writing any code, read these in order:
 Make incremental, atomic commits that each tell one part of the story.
 Format: `subsystem: imperative summary under 50 chars`, then a body in
 natural prose explaining the why more than the what (no bullet-point
-dumps). Prefixes: package name for single-package changes (`loom_core:`),
+dumps). Prefixes: package name for single-package changes (`core:`),
 `pkg1+pkg2:` or `multi:` across packages, `docs:`, `build:`, `ci:`,
 `test:`. Lock files, generated files, and vendored code get their own
 commits.

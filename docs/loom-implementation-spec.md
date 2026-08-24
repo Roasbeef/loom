@@ -13,24 +13,30 @@
 ```
 loom/
 ├── packages/
-│   ├── loom_core/        WP-A  ids, entries, registers, tx, codecs  (pure)
-│   ├── loom_storage/     WP-B  Storage behaviour, Memory, SQLite, lease
-│   ├── loom_session/     WP-C  Session/Repo, tree views, branch index, forks
-│   ├── loom_machine/     WP-D  operation ADTs, next_action, classification (pure)
-│   ├── loom_runtime/     WP-E  StorageWriter, StrandSup, driver loop, recovery
-│   ├── loom_provider/    WP-F  provider SDK, streaming, routing, retries
-│   ├── loom_broker/      WP-G  ToolBroker, tokens, policies, exec protocol
-│   ├── loom_sandbox/     WP-H  helper binary (Rust) + platform drivers
-│   ├── loom_tools/       WP-I  bash, fs+hashline, grep; later lsp, dap
-│   ├── loom_codemode/    WP-J  vet lint, prelude, satellite proto, compile svc
-│   ├── loom_cap/         WP-J  the cap/* prelude (separate build target)
-│   ├── loom_events/      WP-K  EventBus, projections, search service
-│   ├── loom_client/      WP-L  ClientGateway protocol + server; TUI
-│   ├── loom_ext/         WP-M  ExtensionZone, skill store, promotion
-│   └── loom_conformance/ WP-T  shared test suites, chaos & interleave harness
+│   ├── core/        WP-A  ids, entries, registers, tx, codecs  (pure)
+│   ├── storage/     WP-B  Storage behaviour, Memory, SQLite, lease
+│   ├── session/     WP-C  Session/Repo, tree views, branch index, forks
+│   ├── machine/     WP-D  operation ADTs, next_action, classification (pure)
+│   ├── runtime/     WP-E  StorageWriter, StrandSup, driver loop, recovery
+│   ├── provider/    WP-F  provider SDK, streaming, routing, retries
+│   ├── broker/      WP-G  ToolBroker, tokens, policies, exec protocol
+│   ├── sandbox/     WP-H  helper binary (Rust) + platform drivers
+│   ├── tools/       WP-I  bash, fs+hashline, grep; later lsp, dap
+│   ├── codemode/    WP-J  vet lint, prelude, satellite proto, compile svc
+│   ├── cap/         WP-J  the cap/* prelude (separate build target)
+│   ├── events/      WP-K  EventBus, projections, search service
+│   ├── client/      WP-L  ClientGateway protocol + server; TUI
+│   ├── ext/         WP-M  ExtensionZone, skill store, promotion
+│   └── conformance/ WP-T  shared test suites, chaos & interleave harness
 ├── protocol/             frozen wire schemas (this doc, Part 1) as source of truth
 └── tools/                dev scripts, CI, fixture repos for sandbox tests
 ```
+
+Package names are unprefixed: they are monorepo-internal and never
+published, so the short names cannot collide on Hex, and each package still
+namespaces its modules under its own directory (`core/entry`,
+`runtime/strand`). If a package is ever published (the `cap` prelude is the
+plausible candidate), it takes a `loom_`-prefixed name at that point.
 
 Dependency DAG (→ = depends on):
 
@@ -55,7 +61,7 @@ I → G            J → G,I          K → A,B,C        L → A,C,K        M �
 ### 0.3 Agent working protocol (for the implementing agents)
 
 - One WP = one long-lived branch; land via PRs cut at exit-criteria boundaries.
-- **Interfaces in Part 1 are frozen.** A WP needing an interface change files a `protocol-change/NNN.md` proposal; no silent drift. Mock implementations of every Part-1 interface live in `loom_conformance` and are the substitute until the real WP lands.
+- **Interfaces in Part 1 are frozen.** A WP needing an interface change files a `protocol-change/NNN.md` proposal; no silent drift. Mock implementations of every Part-1 interface live in `conformance` and are the substitute until the real WP lands.
 - Every WP ships its own tests + registers into the conformance suite where applicable. A WP is done when its exit criteria pass in CI on Linux and macOS (Windows: WP-H phase 3 only).
 
 ---
@@ -65,13 +71,13 @@ I → G            J → G,I          K → A,B,C        L → A,C,K        M �
 ### 1.1 Core types (WP-A exposes; everyone consumes)
 
 ```gleam
-// loom_core/ids
+// core/ids
 pub opaque type EntryId    // UUIDv7; constructors: mint(Clock), mint_follower(EntryId)
 pub opaque type UsageId
 pub opaque type OpId
 pub type Seq = Int         // storage-assigned, strictly increasing per session
 
-// loom_core/entry
+// core/entry
 pub type Entry {
   MessageEntry(id: EntryId, parent: Option(EntryId), seq: Seq, ts: Int,
                message: AgentMessage, terminate: Bool)
@@ -85,7 +91,7 @@ pub type Entry {
               custom_type: String, data: Option(Json))
 }
 
-// loom_core/register — closed namespace enum; the value type is forced by it
+// core/register — closed namespace enum; the value type is forced by it
 pub type RegisterNs {
   StrandLeaf      // key: strand name        → Option(EntryId)
   StrandConfig    // key: strand name        → StrandConfiguration
@@ -99,7 +105,7 @@ pub type RegisterNs {
   FactName | FactLabel | FactCustom
 }
 
-// loom_core/tx
+// core/tx
 pub type Write {
   InsertEntry(Entry)                  // seq/ts assigned by storage at commit
   InsertUsage(UsageRow)
@@ -207,13 +213,13 @@ s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
 
 ## Part 2 — Work packages
 
-### WP-A `loom_core` — types & codecs *(no deps; freeze first)*
+### WP-A `core` — types & codecs *(no deps; freeze first)*
 
 **Scope**: everything in §1.1; `AgentMessage` model (user/assistant/tool-result + custom roles with registered runtime schemas); msgpack + JSON codecs; UUIDv7 generator (follower minting); `CorruptionReport`.
 **Must not**: perform I/O; import anything but stdlib.
 **Exit**: property tests — codec roundtrip for every type (incl. adversarial junk → decode error, never crash); UUIDv7 ordering & follower-prefix laws; ≥95% branch coverage on decoders.
 
-### WP-B `loom_storage` — backends
+### WP-B `storage` — backends
 
 **Scope**: Storage behaviour; Memory backend (maps + children index); SQLite backend (schema below); writer lease; JSONL import shim for pi format-4 (read-only, re-mints ids — see Follow-ups).
 **SQLite schema** (from pi §1.7, plus CAS support is free since seqs are stored):
@@ -240,33 +246,33 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 
 **Exit**: both backends pass the WP-T storage conformance suite (atomicity, seq monotonicity, CAS, placement invariant, branch-index invariants incl. the two mandatory correctness rules from pi §2.6, lease fencing under simulated dueling writers); `EXPLAIN QUERY PLAN` assertions in CI; stats projection equals ledger sum after every commit.
 
-### WP-C `loom_session` — session layer, repo, forks
+### WP-C `session` — session layer, repo, forks
 
 **Scope**: `Session`/`SessionRepo` (create/open/list/delete/fork); typed tree views per strand; context projection (scan → reverse → drop errors/aborted/deferred → project customs → transform hook seam); fork (branch/tree scopes, fresh StrandState, ledger zeroed, orphan-call healing at request construction); precise-rewrite as a repo-level admin op (VACUUM-INTO copy + swap); migrate-on-open version chain.
 **Exit**: fork/projection property tests (append-only context invariant: across a strand's successive projections, the prior projection is a prefix except across a compaction); precise rewrite passes an "erase X" audit test incl. retained-tail copies; v-mismatch open refusal.
 
-### WP-D `loom_machine` — the pure state machine
+### WP-D `machine` — the pure state machine
 
 **Scope**: full transcription of pi Part 3 into ADTs + `next_action`/`classify`/acceptance/checkpoint-procedure/terminal-result computation; the transition table as exhaustive cases; queue drain modes; `skip_inbox_once`; abort drain; overflow one-shot flag; threshold dedup by trigger id.
 **Must not**: import storage or runtime; everything is `State × Inputs → Action`.
 **Exit**: the WP-T *machine suite* — a scenario DSL replaying pi's worked examples (§0.4 Slack thread, §0.5 crash-mid-tool, §3.9 overflow) transaction-for-transaction; property tests for the invariants ("every tool call has a result", "no state after terminal", "cancelled + running-aborted-response unreachable"); 100% constructor coverage on `OperationState`.
 
-### WP-E `loom_runtime` — OTP assembly
+### WP-E `runtime` — OTP assembly
 
 **Scope**: SessionSupervisor (rest-for-one), StorageWriter gen_server (commit queue; publishes events post-commit), StrandSupervisor + Strand driver (monitors as DriveState; dispatch/await/settle; retry timers), recovery/restore (register point-lookups + bounded validation from pi §3.3 as decoders), abort, close, inter-strand messaging (durable enqueue + doorbell `Nudge(strand)` message; doorbell loss must be harmless by construction — the checkpoint poll must find the item).
 **Exit**: the **interleaving harness** (WP-T) green: for a library of scenarios, kill/restart between *every* adjacent commit pair and assert convergence to the same terminal state and ledger; chaos tier (random process kills under load, 10-min soak) with invariants asserted; doorbell-dropped tests.
 
-### WP-F `loom_provider`
+### WP-F `provider`
 
 **Scope**: streaming HTTP client (Erlang `httpc`/`gun` shim), SSE + provider-specific stream parsing on dedicated processes, Anthropic + OpenAI-compatible adapters first, usage extraction, retry policy normalization, role routing + fallback chains, secret injection from OS keychain (FFI: macOS `security`, Linux secret-service; env fallback), canonical overflow detection.
 **Exit**: recorded-fixture tests per adapter (happy, tool-calls, overflow, 429-retry, mid-stream disconnect → `Failed`, unknown stop reason → in-band); fallback-chain tests; secrets never appear in any logged/persisted structure (grep-based leak test over a full session fixture).
 
-### WP-G `loom_broker` — ToolBroker
+### WP-G `broker` — ToolBroker
 
 **Scope**: token mint/check/revoke; policy composition (session base ⊕ tool requirements ⊕ escalation grants, most-restrictive-wins except explicit grants); the framing protocol (Part 1.4) client+server; ExecPool supervision (helper lifecycle, pgroup/cgroup ownership, heartbeats, 2s-cancel-escalation); per-execution pooled budgets (outstanding-effect cap, shared cgroup, wall deadline); escalation objects (structured denial → approval → single re-execution, all durable via WP-E callbacks); MCP adapter (spawn-in-sandbox, schema validation, provenance tagging).
 **Exit**: protocol fuzz tests (malformed frames never crash the broker; connection drops → in-band effect failure); token property tests (wrong/expired/revoked token always refused); budget tests (10k-parallel-read amplification capped); escalation lifecycle tests.
 
-### WP-H `loom_sandbox` — helper binary + drivers *(Rust; parallel from day one)*
+### WP-H `sandbox` — helper binary + drivers *(Rust; parallel from day one)*
 
 **Scope**: one static `loom-exec` binary: parse `SandboxPolicyV1` from fd 3, apply platform restrictions to self, exec target; speak the framing protocol on stdio.
 - **Phase 1 Linux**: bwrap filesystem view + Landlock rules + seccomp network filter; cgroup v2 limits; pgroup management.
@@ -275,36 +281,36 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 - Egress proxy sidecar for `Proxy(allowlist)` (CONNECT-only, host-glob allowlist, per-execution logs).
 **Exit**: the **sandbox regression suite** (WP-T, runs in CI on real kernels): write-outside-roots, protected-path write, direct socket under Off, non-allowlisted host under Proxy, env leakage, setsid escape, fork-bomb vs pids limit, output-flood truncation, orphaned-grandchild reaping — all must fail closed on both platforms. `loom-exec --self-test` runs the suite locally.
 
-### WP-I `loom_tools` — core tool set
+### WP-I `tools` — core tool set
 
 **Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed), `dap_*`.
 **Exit**: hashline property tests (edit after concurrent modification always rejected; applied edits byte-exact); tool results conform to schema; `replay` honored in interleave scenarios (a `Never` bash mid-crash yields synthetic interrupted result — the pi §0.5 scenario verbatim).
 
-### WP-J `loom_codemode` + `loom_cap`
+### WP-J `codemode` + `cap`
 
 **Scope**:
 - **Vetting lint**: parse submitted Gleam (reuse `glance` or the compiler's parser via shim); reject any `@external`, any import outside allowlist, any dependency not the pinned prelude. Output: pass | structured rejection (fed to the model in-band).
 - **Compile service**: hermetic `gleam build` inside an executor jail (no network; vendored prelude + stdlib); artifact = `.beam` set + manifest hash.
 - **Satellite runtime**: `erl` launched in-jail, `-proto_dist` disabled/no epmd, framing channel on stdio; boot module loads artifacts, runs `main`, marshals `report.Outcome`; per-process `max_heap_size`; kept-alive mode for cells (recycled after N calls or any vetting warning).
-- **`loom_cap` prelude**: `cap/fs, proc, git, lsp, report, task, actor, kv` — RPC stubs over `cap_call`. `cap/task`: `parallel_map(order-preserving, max_concurrency, fail_fast opt-in)`, `race` (real cancellation → broker revoke), `both/all`. `cap/actor`: `spawn(init, handler) -> Address(msg)`, `send`, `call(timeout)`, `get`; bounded mailboxes; all under one program-root supervisor, all-for-one.
+- **`cap` prelude**: `cap/fs, proc, git, lsp, report, task, actor, kv` — RPC stubs over `cap_call`. `cap/task`: `parallel_map(order-preserving, max_concurrency, fail_fast opt-in)`, `race` (real cancellation → broker revoke), `both/all`. `cap/actor`: `spawn(init, handler) -> Address(msg)`, `send`, `call(timeout)`, `get`; bounded mailboxes; all under one program-root supervisor, all-for-one.
 **Exit**: vetting corpus tests (50+ adversarial programs: hidden FFI via nested deps, unicode-lookalike imports, prelude shadowing — all rejected); end-to-end: the migration sample program from the design discussion runs against a fixture repo; concurrency semantics tests (order preservation, real cancellation kills executor pgroups, budget cap under 1000-way fanout); escaped-satellite tabletop: a hand-written malicious `.beam` loaded directly (bypassing vetting) can reach *nothing* but token-checked RPCs and is killed at deadline.
 
-### WP-K `loom_events` — bus, projections, search
+### WP-K `events` — bus, projections, search
 
 **Scope**: `pg`-based EventBus (typed topics per session); projection behaviour (persisted high-water seq, catch-up via scans, rebuildable); stats projection; FTS search service (standalone SQLite FTS5 DB over repo; pull-based sync, notify-as-hint, generation counter for precise-rewrite invalidation — pi's search section verbatim).
 **Exit**: lost-event tests (drop every Nth event; projections converge via catch-up); rebuild-from-zero equals incremental state.
 
-### WP-L `loom_client` — gateway + TUI
+### WP-L `client` — gateway + TUI
 
 **Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI (Gleam→Erlang, or ratatui-style via a small Rust shim — implementer's choice, protocol-only coupling): stream rendering, strand switcher, approval prompts, diff viewer, transcript browser.
 **Exit**: protocol conformance tests both directions (golden transcripts); reconnect/catch-up fuzz; a scripted end-to-end demo session driven purely through the public protocol (this doubles as the acceptance test for M3).
 
-### WP-M `loom_ext` — skills & extension zone
+### WP-M `ext` — skills & extension zone
 
 **Scope**: L1 skill store (named code-mode programs as entries; invoke-by-name re-vets + re-compiles from source); L2 candidate pipeline (extension prelude allowlist; test-in-jail runner attaching results durably); L3: extension behaviours (`ExtTool`, `ExtHook`, `ExtProjection`), harness-side compile, `code:load_binary` under `ext_{name}_{vsn}` names, supervised time-boxed invocation wrappers, unload/rollback, durable load/unload events, org policy for auto-approval of signed sources.
 **Exit**: promotion-ladder integration test (agent-authored fixture tool goes L0→L3 and serves a live tool call; rollback restores prior version mid-session); a hostile L2 candidate (attempts FFI, oversleeps, leaks) is rejected/killed at each defense layer; TCB freeze test — extension API cannot reach StorageWriter/broker internals (compile-time visibility + runtime name checks).
 
-### WP-T `loom_conformance` — the shared suites *(continuous)*
+### WP-T `conformance` — the shared suites *(continuous)*
 
 Storage suite · machine scenario DSL + suites · **interleaving harness** (instrumented StorageWriter decorator: enumerate commit boundaries, script kills, assert convergence — pi Part 9's order-assertion decorator, upgraded into a crash scheduler) · chaos runner · sandbox regression suite · protocol fuzzers · fixture repos (a small polyglot repo with tests, for tool/code-mode/e2e suites) · golden end-to-end transcripts.
 
@@ -367,7 +373,7 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 
 1. **Settle the Part-7 ADRs that sit under frozen interfaces** — specifically the SQLite binding strategy (under the Storage behaviour) and the msgpack library shared by the Gleam and Rust sides (under the framing protocol). Deciding these after WPs are in flight causes churn inside otherwise-frozen contracts; deciding them first costs a day.
 2. **Decide `AgentMessage` fidelity to pi's provider-message shapes** (WP-A). Mirroring pi's `AgentMessage`/`ToolResultMessage` structure closely makes the format-4 import (Follow-up 6) mostly mechanical decode-and-re-mint; diverging makes it a semantic mapping project. Recommendation: mirror the shapes, diverge only in representation (ADTs over tagged unions). Record the decision as ADR-001.
-3. **Bootstrap `loom_core` (WP-A) and the WP-T scenario DSL together, before everything else.** WP-A is the frozen vocabulary; the scenario DSL is how every other WP proves itself. All other packages key off these two — mocks for every Part-1 interface live in `loom_conformance` from day one so {B, D, F, H} can start against them immediately.
+3. **Bootstrap `core` (WP-A) and the WP-T scenario DSL together, before everything else.** WP-A is the frozen vocabulary; the scenario DSL is how every other WP proves itself. All other packages key off these two — mocks for every Part-1 interface live in `conformance` from day one so {B, D, F, H} can start against them immediately.
 4. **Stand up CI with the conformance suites as the integration mechanism** before the second WP branch exists. Agents integrate by making shared suites green, not by coordinating with each other; that only works if the suites are the first thing that runs.
 
 ## Part 7 — Open implementation questions (owners decide, document in ADRs)
