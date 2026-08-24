@@ -346,3 +346,25 @@ instead and are only referenced here.
    a rebuilt handle is its invalidation.
 7. **Erase leaves object keys alone**; a needle colliding with
    structural vocabulary aborts as corruption rather than corrupting.
+
+## From the M3 runtime wave (`runtime`, `machine`)
+
+1. **Additive machine fields.** Admission gained the resolved adapter
+   api, captured durably with the generation intent, so classification
+   validates deferred handles against the request's api rather than the
+   response's claim. Outside the frozen Part 1 surfaces; production
+   admission hooks must supply it.
+2. **Acceptance now expects the leaf.** The acceptance transaction
+   carries an expectation on the strand leaf at its read sequence — live
+   now that forks and idle tree-writes exist.
+3. **Escalations are registers, not entries**: mutable current state
+   with point lookups on the clearance path, never moving a leaf or
+   entering projection. Grants are consumed before dispatch — a crash
+   spends the grant without execution, failing safe.
+4. **Grant JSON crosses the runtime opaquely**; decoding it back to
+   broker policy grants for the widened re-execution is gateway-wave
+   wiring.
+5. **Abort-marker race exhaustion re-delivers with pacing** instead of
+   halting the strand — idempotent, converging, no silent loss.
+6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
+   pooled budget remains the concurrency ceiling underneath.
