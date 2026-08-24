@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-gleam_packages=(core storage session machine runtime provider broker tools conformance)
-targets=("${@:-${gleam_packages[@]}}")
+packages=(core storage session machine runtime provider broker tools conformance sandbox)
+targets=("${@:-${packages[@]}}")
 
 for pkg in "${targets[@]}"; do
   if [ "$pkg" = "sandbox" ]; then
