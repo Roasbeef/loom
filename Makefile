@@ -122,6 +122,10 @@ docs: ## Build HexDocs-style API documentation for every Gleam package
 		echo "==> $$p"; (cd packages/$$p && gleam docs build); \
 	done
 
+.PHONY: doc-check
+doc-check: ## Check the per-package doc graph (coverage, AGENTS.md mirror, staleness)
+	@scripts/doc_check.sh
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	@rm -rf packages/*/build $(HELPER)

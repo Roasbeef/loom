@@ -48,6 +48,21 @@ named for the work itself — `storage/branch-index-repair`,
 that produced it. One work package or one fix per branch; merge to `main`
 once its exit criteria pass.
 
+## Per-package docs
+
+Each package with source carries a `CLAUDE.md` — purpose, key types, real
+dependency edges, its actor/register/wire traffic with concrete type
+names, and the invariants that break things when violated. Read the one
+for the package you are about to change; it is denser and more current
+than this file about that package.
+
+`AGENTS.md` beside it is a byte-identical mirror, produced by `cp`, never
+hand-edited. `make doc-check` enforces coverage and the mirror, and warns
+when a package's source has been committed more recently than its docs.
+The `/doc-gardening` skill (`.claude/skills/doc-gardening/`) is what grows
+and refreshes the graph; run it for a package after changing its types,
+messages, or dependencies.
+
 ## Commits
 
 Make incremental, atomic commits that each tell one part of the story.
