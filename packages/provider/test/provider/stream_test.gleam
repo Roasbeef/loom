@@ -4,6 +4,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import provider/fixture
 import provider/http
 import provider/stream
@@ -92,6 +93,65 @@ pub fn sse_incomplete_event_not_dispatched_test() {
   let #(_parser, events) =
     stream.feed(stream.new_parser(), <<"data: incomplete\n":utf8>>)
   assert events == []
+}
+
+// --- carry bound (a hostile terminator-less stream) ----------------------
+
+fn megabyte_of(byte: String) -> BitArray {
+  bit_array.from_string(string.repeat(byte, 1_048_576))
+}
+
+pub fn terminator_less_stream_fails_in_band_at_the_bound_test() {
+  // Five 1 MiB chunks with no line terminator anywhere: the parser must
+  // report a framing defect as soon as the carry passes max_line_bytes
+  // (4 MiB), rather than buffering without limit.
+  let chunk = megabyte_of("a")
+  let #(parser, events) =
+    list.fold(
+      [chunk, chunk, chunk, chunk],
+      #(stream.new_parser(), []),
+      fn(folded, chunk) {
+        let #(parser, events) = folded
+        let #(parser, new_events) = stream.feed(parser, chunk)
+        #(parser, list.append(events, new_events))
+      },
+    )
+  // Exactly at the bound: still buffering, nothing emitted.
+  assert events == []
+  // One byte past the bound: the malformed event fires.
+  let #(parser, events) = stream.feed(parser, <<"a":utf8>>)
+  let assert [stream.SseMalformed(reason:)] = events
+  assert string.contains(reason, "without a line terminator")
+  // The buffered line was discarded and the parser stays usable.
+  let #(_parser, events) =
+    stream.feed(parser, <<
+      "data: after
+
+":utf8,
+    >>)
+  assert events == [stream.SseMessage(event: None, data: "after")]
+}
+
+pub fn long_data_line_just_under_the_bound_parses_test() {
+  // A legitimate very long single data line — "data: " plus payload,
+  // just under max_line_bytes — must still parse, chunked or not.
+  let payload_size = stream.max_line_bytes - 100
+  let payload = string.repeat("a", payload_size)
+  let bytes = bit_array.from_string("data: " <> payload <> "
+
+")
+  let #(_parser, events) =
+    list.fold(
+      fixture.chunked(bytes, 1_048_576),
+      #(stream.new_parser(), []),
+      fn(folded, chunk) {
+        let #(parser, events) = folded
+        let #(parser, new_events) = stream.feed(parser, chunk)
+        #(parser, list.append(events, new_events))
+      },
+    )
+  let assert [stream.SseMessage(event: None, data:)] = events
+  assert data == payload
 }
 
 // --- chunk-boundary invariance ------------------------------------------

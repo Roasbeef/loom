@@ -7,7 +7,11 @@
 //// - The SSE framing parser (`SseParser`) is pure: bytes in, events out,
 ////   plus carry state. Feeding the same bytes in any chunking yields the
 ////   same events, which is what makes it property-testable without
-////   processes.
+////   processes. It is also *bounded*: the carry buffer never exceeds
+////   `max_line_bytes`, and every byte is scanned exactly once, so a
+////   hostile or broken proxy streaming a terminator-less line cannot
+////   exhaust memory or drive quadratic re-scans — the stream fails
+////   in-band as a framing defect instead.
 //// - Adapters compose the parser with their own pure accumulator into a
 ////   `ResponseMachine` — a fold over `HttpEvent`s producing
 ////   `StreamEvent`s.
@@ -194,9 +198,10 @@ pub fn describe_error(error: ProviderError) -> String {
 ///
 /// Constructor invariants: `SseMessage.event` is the `event:` field when
 /// one was sent; `data` is the `data:` lines joined with `\n` per the SSE
-/// specification; `SseMalformed` reports a line that was not valid UTF-8 —
-/// the only framing-level defect SSE admits — and consumers surface it as
-/// an in-band failure, never a crash.
+/// specification; `SseMalformed` reports a framing-level defect — a line
+/// that was not valid UTF-8, or a line that exceeded `max_line_bytes`
+/// without a terminator — and consumers surface it as an in-band
+/// failure, never a crash.
 pub type SseEvent {
   /// A dispatched event.
   SseMessage(event: Option(String), data: String)
@@ -204,16 +209,30 @@ pub type SseEvent {
   SseMalformed(reason: String)
 }
 
+/// The maximum byte size of the carry buffer — the bytes of a single SSE
+/// line still awaiting its terminator. Real provider frames top out well
+/// under a megabyte (the largest are tool-argument fragments and base64
+/// image payloads inside one `data:` line), so four mebibytes is
+/// generous; a line that exceeds it without a terminator is not a
+/// provider frame but a hostile or broken proxy, and the parser reports
+/// it as a framing defect (`SseMalformed`) rather than buffering without
+/// bound.
+pub const max_line_bytes = 4_194_304
+
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
 /// and even UTF-8 codepoints); the field buffers hold the in-progress
 /// event awaiting its blank-line dispatch.
 pub opaque type SseParser {
   /// Invariants: `carry` contains no complete line except possibly a
-  /// trailing lone `\r` awaiting a potential `\n`; `data_lines` is in
-  /// reverse arrival order.
+  /// trailing lone `\r` awaiting a potential `\n`, and never exceeds
+  /// `max_line_bytes`; the first `scanned` bytes of `carry` are known to
+  /// contain no line terminator, so re-feeding resumes past them and
+  /// every byte is examined once; `data_lines` is in reverse arrival
+  /// order.
   SseParser(
     carry: BitArray,
+    scanned: Int,
     event_name: Option(String),
     data_lines: List(String),
   )
@@ -230,12 +249,17 @@ pub opaque type SseParser {
 /// ```
 ///
 pub fn new_parser() -> SseParser {
-  SseParser(carry: <<>>, event_name: None, data_lines: [])
+  SseParser(carry: <<>>, scanned: 0, event_name: None, data_lines: [])
 }
 
 /// Feeds one chunk of bytes, returning the successor parser and the
 /// events completed by this chunk. Chunk boundaries are invisible:
-/// feeding a byte stream in any chunking yields the same events.
+/// feeding a byte stream in any chunking yields the same events. Runs in
+/// time linear in the chunk (each byte is scanned once, resuming past
+/// the already-scanned carry prefix); if an unterminated line grows past
+/// `max_line_bytes` the parser emits `SseMalformed`, discards the
+/// buffered line, and stays usable — consumers settle the stream in-band
+/// on the malformed event.
 ///
 /// ## Examples
 ///
@@ -251,43 +275,79 @@ pub fn feed(
   chunk: BitArray,
 ) -> #(SseParser, List(SseEvent)) {
   let buffer = bit_array.append(parser.carry, chunk)
-  let parser = SseParser(..parser, carry: <<>>)
-  feed_loop(parser, buffer, [])
+  let from = parser.scanned
+  let parser = SseParser(..parser, carry: <<>>, scanned: 0)
+  feed_loop(parser, buffer, from, [])
 }
 
 fn feed_loop(
   parser: SseParser,
   buffer: BitArray,
+  from: Int,
   events: List(SseEvent),
 ) -> #(SseParser, List(SseEvent)) {
-  case take_line(buffer, 0) {
-    Ok(#(line, rest)) -> {
+  case take_line(buffer, from) {
+    LineFound(line:, rest:) -> {
       let #(parser, new_events) = handle_line(parser, line)
-      feed_loop(parser, rest, list.append(events, new_events))
+      feed_loop(parser, rest, 0, list.append(events, new_events))
     }
-    Error(Nil) -> #(SseParser(..parser, carry: buffer), events)
+    NoTerminator(scanned:) ->
+      case bit_array.byte_size(buffer) > max_line_bytes {
+        // The carry bound: an unterminated line this long is not a
+        // provider frame. Report it and drop the buffer so memory stays
+        // bounded no matter what the wire sends next.
+        True -> #(
+          SseParser(..parser, carry: <<>>, scanned: 0),
+          list.append(events, [
+            SseMalformed(
+              reason: "sse line exceeded "
+              <> int.to_string(max_line_bytes)
+              <> " bytes without a line terminator",
+            ),
+          ]),
+        )
+        False -> #(SseParser(..parser, carry: buffer, scanned:), events)
+      }
   }
 }
 
-// Finds the first line terminator (\n, \r\n, or lone \r) and splits the
-// buffer around it. A trailing \r with nothing after it stays in the
-// carry: the next chunk may begin with \n, and splitting early would make
-// the result depend on chunk boundaries.
-fn take_line(buffer: BitArray, at: Int) -> Result(#(BitArray, BitArray), Nil) {
+// The outcome of scanning the buffer for one line: a line split around
+// its terminator, or the offset up to which no terminator exists (the
+// resume point for the next feed, so no byte is scanned twice).
+type LineScan {
+  LineFound(line: BitArray, rest: BitArray)
+  NoTerminator(scanned: Int)
+}
+
+// Finds the first line terminator (\n, \r\n, or lone \r) at or after
+// `at` and splits the buffer around it. A trailing \r with nothing after
+// it stays unscanned: the next chunk may begin with \n, and splitting
+// early would make the result depend on chunk boundaries.
+fn take_line(buffer: BitArray, at: Int) -> LineScan {
   case bit_array.slice(buffer, at, 1) {
     Ok(<<0x0A>>) ->
-      Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 1)))
+      LineFound(
+        line: slice_or_empty(buffer, 0, at),
+        rest: drop_bytes(buffer, at + 1),
+      )
     Ok(<<0x0D>>) ->
       case bit_array.slice(buffer, at + 1, 1) {
         Ok(<<0x0A>>) ->
-          Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 2)))
+          LineFound(
+            line: slice_or_empty(buffer, 0, at),
+            rest: drop_bytes(buffer, at + 2),
+          )
         Ok(_) ->
-          Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 1)))
-        // A lone trailing \r: wait for the next chunk.
-        Error(Nil) -> Error(Nil)
+          LineFound(
+            line: slice_or_empty(buffer, 0, at),
+            rest: drop_bytes(buffer, at + 1),
+          )
+        // A lone trailing \r: wait for the next chunk, re-scanning from
+        // the \r itself.
+        Error(Nil) -> NoTerminator(scanned: at)
       }
     Ok(_) -> take_line(buffer, at + 1)
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> NoTerminator(scanned: at)
   }
 }
 
