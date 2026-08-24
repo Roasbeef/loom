@@ -59,6 +59,18 @@ positions too (`during turn 2`, `during call t00write`, `at the terminal
 commit`), never dispatch ordinals, and each fires once per session under
 a claim held by a process outside the tree.
 
+Interventions triggered at the terminal commit are the one case that
+fires from inside the writer rather than from an effect, and they are
+never waited for: admission calls back into that same writer, so
+awaiting one deadlocks it. Only cancellation is generated there.
+A steer or follow-up at that boundary fires after the terminal
+transaction is already durable, so the operation it would attach to no
+longer exists and admission can only be refused — and firing
+asynchronously, in a script with a second operation, it could attach to
+that one instead, which is a race with no property behind it. The DSL
+still expresses it, and the pinned corpus uses it, because the runner
+must stay correct under it; the generator does not draw it.
+
 Faults may use ordinals, because a fault need not mean the same thing
 twice — only the outcome must. Commit-indexed faults name a global
 commit ordinal counted across writer restarts, so "kill after commit 7"
@@ -96,7 +108,17 @@ writer's committed events; while they arrive, the session is working and
 time stands still. When a millisecond passes with none, either the
 session is waiting for a deadline or it is inside an effect, and
 advancing the clock releases the first and costs the second one wasted
-planning pass. The one wall-clock wait left in a simulated session is
+planning pass.
+
+Finishing is observed the same way, and needs one more condition. A
+commit is durable — and its terminal result readable — *before* the
+writer runs the post-commit seam that a crash schedule fires from, so a
+runner that took the terminal result the moment it appeared could end a
+run while the fault armed on its last commit was still queued. The
+runner therefore waits for the seam to close before accepting a terminal
+result, and a crash counts as the seam closing, since the writer was
+killed inside it. That is what keeps a commit-indexed fault's chance to
+fire part of the run rather than a race against the observer. The one wall-clock wait left in a simulated session is
 the provider surface's own settlement timeout, which only a scripted
 timeout fault reaches.
 
