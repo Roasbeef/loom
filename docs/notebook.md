@@ -9,6 +9,90 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ---
 
+## 2026-08-24 (later still) — DST simulation runner landed; it found a bug
+
+### State of the world
+
+The deterministic simulation runner is built, green, and pushed on
+`main`. Gate: `make check` — **609 tests**, whole run in ~38 seconds.
+Conformance grew 24→37; machine 67→68 (the regression test below).
+
+### What it is
+
+One seed splits two streams: one draws a session *script* (what turns
+settle with, what tools return, when the user steers or aborts), the
+other draws a *fault schedule*. The script runs twice against the real
+tree — clean, then faulted — and the pair is held to named checks. The
+split is the load-bearing idea: semantics live in the script so they
+happen in both runs, which makes "every schedule converges" a claim
+rather than a tautology with exceptions.
+
+Requests are answered by the **phase of the projected context**, never a
+counter, so a synthetic settlement written during recovery cannot shift
+what comes next. That is what makes a seed reproduce exactly.
+
+Fault taxonomy: crash at any commit boundary, crash *during* a live
+effect, refused/stale commits, read faults, lease theft, dropped and
+delayed doorbells, slow effects in logical time, effects that die or
+time out, plus torn/corrupted frames against the framing decoders.
+
+### The bug it found
+
+**An orphaned deferred poll faulted the strand forever.** After a crash
+left a poll pending with no live continuation, the planner asked for
+identity resolution, then matched only the orphan report — so the
+resolution answer it had itself requested fell through to the unknown
+observation path and faulted. Every restart faulted again; the poll was
+never replaced; the operation could never terminate. One-pattern fix;
+the code's own comment already stated the intent.
+
+This is exactly the row ORCH-H1 named as having zero crash coverage.
+Deferring that finding to the runner instead of writing four scenarios
+by hand was the right call, and this is the evidence.
+
+Second, cosmetic: effect settlements raised at a strand name a reboot
+had unregistered. Harmless (the message was always droppable) but noisy.
+
+### Verification I did myself
+
+Reverted the planner fix; the pinned machine-level regression test fails
+with a pattern-match error on exactly that path; restored, green. Don't
+take a fix report's word for a test's discriminating power.
+
+### Honest limits (also in `docs/architecture/simulation.md`)
+
+It drives **real processes, not a simulated scheduler**, so BEAM message
+interleaving is not reproducible: a failure depending on a rare
+interleaving may not reproduce on demand. Making that reproducible means
+putting the whole runtime on an injected scheduler — a much bigger
+change, not attempted. Also: one backend, one strand, one session; no
+real effect plane (wire faults cover only framing); shallow scripts; a
+monotone, non-adversarial clock.
+
+Shrinking is real and validated (with the fix reverted, a three-fault
+schedule shrinks to the single fault that still fails). Scripts are not
+shrunk, deliberately: a turn's settlement depends on the phase its
+predecessors produced, so dropping a turn yields a *different* session,
+not a smaller one — a "minimal script" that way would be a fiction.
+
+### API change other packages must know
+
+`runtime/effects.Effects` gained a `Timers` field (`real_timers()` in
+production). Every construction site must supply it; the two that
+existed are updated. This is also the structural fix for the M2 clock-era
+drift — one clock now serves store, driver, effects, and id minting in a
+simulated session.
+
+### Next
+
+M3 kickoff: WP-C-full (forks, compaction projection, transform hook),
+WP-K events + the parrot pilot per ADR-004, WP-L client gateway + Go
+TUI, multi-strand demo. macOS Seatbelt deferred (no macOS here). Also
+outstanding: run `make selftest` on a target-tier kernel to verify the
+sandbox enforcement matrix, and `make soak` periodically.
+
+---
+
 ## 2026-08-24 (later) — review-fix wave landed; branch is now `main`
 
 ### State of the world
