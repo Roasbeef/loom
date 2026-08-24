@@ -3,3 +3,5 @@
 /packages/*/build
 erl_crash.dump
 /packages/sandbox/loom-exec
+/bin/
+/build/
