@@ -7,7 +7,8 @@
 -module(client_ffi).
 
 -export([system_time_ms/0, unique_positive_integer/0, find_executable/1,
-         wait_for_sigterm/0, halt/1]).
+         wait_for_sigterm/0, halt/1, constant_time_equal/2,
+         create_exclusive_private_file/2]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -40,6 +41,33 @@ wait_for_sigterm() ->
 
 halt(Code) ->
     erlang:halt(Code).
+
+%% crypto:hash/2 (sha256) over each operand followed by
+%% crypto:hash_equals/2 on the two fixed-size digests -- the bearer
+%% check's presented side is attacker-controlled length, unlike
+%% broker_ffi's fixed-32-byte tokens, so comparing raw bytes would let
+%% hash_equals's length-mismatch fast path leak the presented length via
+%% timing. Hashing first means the comparison never branches on the
+%% input length at all: every call, right or wrong, compares two 32-byte
+%% sha256 digests.
+constant_time_equal(A, B) when is_bitstring(A), is_bitstring(B) ->
+    crypto:hash_equals(crypto:hash(sha256, A), crypto:hash(sha256, B)).
+
+%% file:write_file/3 with the exclusive option (O_EXCL: refuses rather
+%% than follows a symlink or truncates an existing file) followed by
+%% file:change_mode/2 -- the same "create exclusively, then tighten"
+%% shape broker_ffi:write_private_file/3 uses. Errors of every kind
+%% collapse to {error, nil}: the caller's token-file recourse is
+%% identical whichever step failed.
+create_exclusive_private_file(Path, Bytes) ->
+    try
+        PathList = unicode:characters_to_list(Path),
+        ok = file:write_file(PathList, Bytes, [exclusive, raw]),
+        ok = file:change_mode(PathList, 8#600),
+        {ok, nil}
+    catch
+        _:_ -> {error, nil}
+    end.
 
 %% --- gen_event callbacks ---------------------------------------------------
 %% State is the pid waiting in wait_for_sigterm/0. Swap-installed

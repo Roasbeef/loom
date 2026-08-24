@@ -32,7 +32,11 @@
 //// websocket state exists.
 
 import client/gateway.{type Gateway}
+import client/internal/ffi_crypto
+import client/internal/ffi_file
+import client/internal/ffi_os
 
+import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process.{type Subject}
 import gleam/http/request.{type Request}
@@ -183,12 +187,44 @@ fn take_hex(seeds: List(Int), accumulator: List(String)) -> List(String) {
   }
 }
 
+// Writes `token` to `path` with no window in which anything at `path`
+// is readable by more than its owner (GW-token-perms): the bytes are
+// created at an unpredictable temp name in the same directory,
+// exclusively and already at mode 0600 (`ffi_file`), then moved onto
+// `path` with a single atomic rename. A rename replaces whatever is at
+// the destination -- file, or a pre-planted symlink -- without ever
+// reading through it, so a symlink race on the well-known token path is
+// refused the same way a plain TOCTOU is: the destination's contents
+// never influence what gets written.
 fn write_token_file(
   path: String,
   token: String,
 ) -> Result(Nil, simplifile.FileError) {
-  use Nil <- result.try(simplifile.write(path, token))
-  simplifile.set_permissions_octal(path, 0o600)
+  let temp_path =
+    path <> ".tmp-" <> int.to_string(ffi_os.unique_positive_integer())
+  case
+    ffi_file.create_exclusive_private_file(
+      temp_path,
+      bit_array.from_string(token),
+    )
+  {
+    Error(Nil) ->
+      Error(simplifile.Unknown(
+        "failed to create the token file exclusively at " <> temp_path,
+      ))
+    Ok(Nil) ->
+      case simplifile.rename(at: temp_path, to: path) {
+        Ok(Nil) -> Ok(Nil)
+        Error(reason) -> {
+          // The rename failed; the temp file is not the token file
+          // anyone reads, so leaving it behind would only leak the
+          // token to a second local user under a name nobody is
+          // watching for -- clean it up on a best-effort basis.
+          let _ = simplifile.delete_file(temp_path)
+          Error(reason)
+        }
+      }
+  }
 }
 
 // --- routing ---------------------------------------------------------------
@@ -209,10 +245,30 @@ fn route(
   }
 }
 
+const bearer_prefix = "Bearer "
+
+// GW-token-timing: the presented bytes are compared to the expected
+// token in constant time (`ffi_crypto.constant_time_equal`, the same
+// `crypto:hash_equals` primitive `broker/token` checks capability
+// tokens with) rather than with `==`, which short-circuits at the first
+// differing byte and turns response latency into an oracle on the
+// secret. The `starts_with` check ahead of it only branches on the
+// scheme name, which is public, never on the token.
 fn authorized(request: Request(Connection), token: String) -> Bool {
   case request.get_header(request, "authorization") {
-    Ok(header) -> header == "Bearer " <> token
     Error(Nil) -> False
+    Ok(header) ->
+      case string.starts_with(header, bearer_prefix) {
+        False -> False
+        True -> {
+          let presented =
+            string.drop_start(header, string.length(bearer_prefix))
+          ffi_crypto.constant_time_equal(
+            bit_array.from_string(presented),
+            bit_array.from_string(token),
+          )
+        }
+      }
   }
 }
 
