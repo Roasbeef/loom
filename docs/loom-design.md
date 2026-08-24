@@ -226,7 +226,7 @@ All security properties are **enforced below the model** — kernel primitives a
 
 **Executor sandbox, per platform** (Codex's proven stack):
 
-- **Linux**: `bwrap` constructs the filesystem view (read-only `/`, tmpfs scratch, bind-mounted writable roots); **Landlock** as a second file-access layer; **seccomp** filters syscalls and blocks socket creation under network-off. The executor is a small static helper (Rust/Zig) that parses a serialized policy, applies restrictions to itself, then `exec`s the target.
+- **Linux**: `bwrap` constructs the filesystem view (read-only `/`, tmpfs scratch, bind-mounted writable roots); **Landlock** as a second file-access layer; **seccomp** filters syscalls and blocks socket creation under network-off. The executor is a small static helper (Go; bwrap owns namespace construction, keeping the helper clear of the fork-in-a-multithreaded-runtime problem) that parses a serialized policy, applies restrictions to itself, then `exec`s the target.
 - **macOS**: `sandbox-exec` with dynamically generated Seatbelt profiles; deny-by-default, parameterized writable roots.
 - **Windows**: restricted tokens + ACLs + firewall rules (later milestone).
 - **Hard tier**: the entire executor pool inside a microVM (Firecracker) or container for hosted/multi-tenant deployments — same policy language, different driver.

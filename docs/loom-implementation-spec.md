@@ -20,7 +20,7 @@ loom/
 │   ├── runtime/     WP-E  StorageWriter, StrandSup, driver loop, recovery
 │   ├── provider/    WP-F  provider SDK, streaming, routing, retries
 │   ├── broker/      WP-G  ToolBroker, tokens, policies, exec protocol
-│   ├── sandbox/     WP-H  helper binary (Rust) + platform drivers
+│   ├── sandbox/     WP-H  helper binary (Go) + platform drivers
 │   ├── tools/       WP-I  bash, fs+hashline, grep; later lsp, dap
 │   ├── codemode/    WP-J  vet lint, prelude, satellite proto, compile svc
 │   ├── cap/         WP-J  the cap/* prelude (separate build target)
@@ -272,9 +272,21 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 **Scope**: token mint/check/revoke; policy composition (session base ⊕ tool requirements ⊕ escalation grants, most-restrictive-wins except explicit grants); the framing protocol (Part 1.4) client+server; ExecPool supervision (helper lifecycle, pgroup/cgroup ownership, heartbeats, 2s-cancel-escalation); per-execution pooled budgets (outstanding-effect cap, shared cgroup, wall deadline); escalation objects (structured denial → approval → single re-execution, all durable via WP-E callbacks); MCP adapter (spawn-in-sandbox, schema validation, provenance tagging).
 **Exit**: protocol fuzz tests (malformed frames never crash the broker; connection drops → in-band effect failure); token property tests (wrong/expired/revoked token always refused); budget tests (10k-parallel-read amplification capped); escalation lifecycle tests.
 
-### WP-H `sandbox` — helper binary + drivers *(Rust; parallel from day one)*
+### WP-H `sandbox` — helper binary + drivers *(Go; parallel from day one)*
 
 **Scope**: one static `loom-exec` binary: parse `SandboxPolicyV1` from fd 3, apply platform restrictions to self, exec target; speak the framing protocol on stdio.
+
+Go implementation constraints (load-bearing): **bwrap owns all namespace and
+filesystem-view construction** — the Go helper never calls `unshare`/`fork`,
+which the multithreaded Go runtime cannot do safely (the runc `nsexec.c`
+problem). The helper only stacks restrictions on itself and execs: Landlock
+via `go-landlock`, seccomp via a pure-Go BPF filter installed with
+`SECCOMP_FILTER_FLAG_TSYNC` (so it binds every runtime thread), cgroup v2
+writes, rlimits, pgroup setup. Both Landlock rulesets and seccomp filters
+persist across `execve`, so restrict-then-exec composes. If a future phase
+needs the helper to own namespaces itself (e.g. dropping the bwrap
+dependency), that piece becomes a pre-runtime C constructor or a small
+native shim — record it in an ADR at that point, do not bend the Go rule.
 - **Phase 1 Linux**: bwrap filesystem view + Landlock rules + seccomp network filter; cgroup v2 limits; pgroup management.
 - **Phase 2 macOS**: generated Seatbelt profiles (deny-default; parameterized writable roots; network by policy); rlimits.
 - **Phase 3 Windows**: restricted tokens + ACLs + firewall (follow-up milestone).
@@ -371,7 +383,7 @@ Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step
 
 The DAG says *what can* parallelize; this says *what must happen first*:
 
-1. **Settle the Part-7 ADRs that sit under frozen interfaces** — specifically the SQLite binding strategy (under the Storage behaviour) and the msgpack library shared by the Gleam and Rust sides (under the framing protocol). Deciding these after WPs are in flight causes churn inside otherwise-frozen contracts; deciding them first costs a day.
+1. **Settle the Part-7 ADRs that sit under frozen interfaces** — specifically the SQLite binding strategy (under the Storage behaviour) and the msgpack library shared by the Gleam and Go sides (under the framing protocol). Deciding these after WPs are in flight causes churn inside otherwise-frozen contracts; deciding them first costs a day.
 2. **Decide `AgentMessage` fidelity to pi's provider-message shapes** (WP-A). Mirroring pi's `AgentMessage`/`ToolResultMessage` structure closely makes the format-4 import (Follow-up 6) mostly mechanical decode-and-re-mint; diverging makes it a semantic mapping project. Recommendation: mirror the shapes, diverge only in representation (ADTs over tagged unions). Record the decision as ADR-001.
 3. **Bootstrap `core` (WP-A) and the WP-T scenario DSL together, before everything else.** WP-A is the frozen vocabulary; the scenario DSL is how every other WP proves itself. All other packages key off these two — mocks for every Part-1 interface live in `conformance` from day one so {B, D, F, H} can start against them immediately.
 4. **Stand up CI with the conformance suites as the integration mechanism** before the second WP branch exists. Agents integrate by making shared suites green, not by coordinating with each other; that only works if the suites are the first thing that runs.
@@ -380,7 +392,7 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 
 - **ADR-001 (bootstrap-blocking)**: `AgentMessage` fidelity to pi shapes — see Part 6 item 2.
 - **ADR-002 (bootstrap-blocking)**: `sqlight` vs custom NIF for SQLite (need: BLOB params, `EXPLAIN` access, busy-handler control).
-- **ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring for the framing protocol on both Gleam and Rust sides.
+- **ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring for the framing protocol on both Gleam and Go sides.
 - Satellite boot time target: measure `erl -noshell` cold start with preloaded prelude; decide pool-warm default.
 - Hashline anchor length (8 hex vs 12) vs collision odds on pathological files; whether anchors include line number salt.
 - TUI implementation substrate (pure Erlang termbox shim vs Rust sidecar over the client protocol — the protocol makes this swappable).
