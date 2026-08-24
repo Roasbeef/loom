@@ -1,0 +1,420 @@
+//// The interleave harness: run a scenario to completion, optionally
+//// killing the session tree after its N-th commit, and report a
+//// structural fingerprint of what the session converged to.
+////
+//// The crash scheduler is the writer's `after_commit` seam: the armed
+//// recorder counts every commit made after arming and the chosen one
+//// kills the writer *before the committer observes the commit* — the
+//// exact "crash between TX_n and TX_{n+1}" state. The rest-for-one
+//// supervisor then reboots the tree and recovery drives the same
+//// scripted effects to completion.
+////
+//// Fingerprints are structural (roles, texts, call ids, stop kinds) —
+//// never minted ids or timestamps, which legitimately differ between
+//// runs of the same scenario.
+
+import core/clock
+import core/entry
+import core/ids
+import core/message.{
+  type AgentMessage, AssistantMessage, AssistantText, AssistantThinking,
+  AssistantToolCall, CustomMessage, ToolResultImage, ToolResultMessage,
+  ToolResultText, UserImage, UserMessage, UserText,
+}
+import core/register
+import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import machine/operation.{type LastResult, type ReplayPolicy}
+import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
+import runtime/api
+import runtime/effects
+import runtime/supervisor
+import session/session.{type Session}
+import storage/storage
+import support/fake
+import support/recorder
+
+/// One interleave scenario.
+pub type Scenario {
+  Scenario(
+    name: String,
+    /// Tool registry: name to replay policy.
+    registry: List(#(String, ReplayPolicy)),
+    /// The provider script (also sees the recorder for conditionals).
+    provider: fn(Subject(recorder.Message), effects.RequestSpec) ->
+      fake.ProviderResult,
+    /// The tool script.
+    tool: fn(Subject(recorder.Message), effects.ToolRun) -> fake.ToolResult,
+    /// The run's prompt messages.
+    prompt: List(AgentMessage),
+    /// A steer admitted (quietly) after acceptance, before driving.
+    steer: Option(AgentMessage),
+    /// When present, the harness pumps abort requests whenever the
+    /// condition holds until the run terminates.
+    abort_when: Option(fn(Subject(recorder.Message)) -> Bool),
+  )
+}
+
+/// What one scenario run converged to.
+pub type Report {
+  Report(
+    outcome: LastResult,
+    /// Fingerprint lines of the final projected context.
+    projection: List(String),
+    /// Ledger total tokens.
+    usage_total: Int,
+    /// Commits counted from arming (the crash-boundary count `C`).
+    commits: Int,
+    rec: Subject(recorder.Message),
+  )
+}
+
+/// The strand configuration scenarios run under.
+pub fn configuration() -> strand.StrandConfiguration {
+  StrandConfiguration(
+    model: ModelIdentity(provider: "acme", model_id: "loom-1"),
+    thinking_level: ThinkingOff,
+    active_tool_names: ["read", "write", "slow"],
+  )
+}
+
+/// Runs a scenario over a fresh memory session, killing the tree after
+/// armed commit `kill_at` (0 = never). Panics if the scenario does not
+/// converge — non-convergence is the failure the harness exists to catch.
+pub fn run(scenario: Scenario, kill_at: Int) -> Report {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      scenario.registry,
+      fn(spec) { scenario.provider(rec, spec) },
+      fn(tool_run) { scenario.tool(rec, tool_run) },
+    )
+  let base = api.default_options(configuration())
+  let options =
+    api.Options(
+      ..base,
+      retry_policy: operation.NormalizedRetryPolicy(
+        max_attempts: 3,
+        base_delay_ms: 30,
+      ),
+      poll_interval_ms: 250,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+      after_commit: fn(_) {
+        case recorder.on_commit(rec) {
+          // Crash between this commit and the next: the commit is
+          // durable, the committer never learns it succeeded.
+          True -> process.kill(process.self())
+          False -> Nil
+        }
+      },
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.accept_quietly(rt, scenario.prompt)
+    as "acceptance must succeed on an idle strand"
+  case scenario.steer {
+    Some(message) -> {
+      let assert Ok(_) = api.steer_quietly(rt, message)
+        as "steer admission must succeed on the open run"
+      Nil
+    }
+    None -> Nil
+  }
+  recorder.arm(rec, kill_at)
+  api.nudge(rt)
+  let outcome = wait_terminal(rt, sess, op, scenario, rec, 20_000)
+  // A run armed to crash must actually have crashed: a bomb that never
+  // fired would make the interleave loop vacuous.
+  case kill_at > 0 {
+    True ->
+      case recorder.fired(rec) {
+        True -> Nil
+        False -> panic as "the armed crash bomb never fired"
+      }
+    False -> Nil
+  }
+  let commits = recorder.commit_count(rec)
+  let projection = final_projection(sess)
+  let usage_total = ledger_total(sess)
+  assert_placement_invariants(sess)
+  process.kill(rt.tree.supervisor)
+  Report(outcome:, projection:, usage_total:, commits:, rec:)
+}
+
+fn wait_terminal(
+  rt: api.Runtime,
+  sess: Session,
+  op: ids.OpId,
+  scenario: Scenario,
+  rec: Subject(recorder.Message),
+  remaining: Int,
+) -> LastResult {
+  case remaining <= 0 {
+    True -> panic as "the scenario did not converge to a terminal result"
+    False -> {
+      case scenario.abort_when {
+        Some(condition) ->
+          case condition(rec) {
+            // The pump runs in a disposable process: sends to a
+            // mid-restart strand panic, and that must not kill the test.
+            True -> {
+              let _pid = process.spawn_unlinked(fn() { api.abort(rt) })
+              Nil
+            }
+            False -> Nil
+          }
+        None -> Nil
+      }
+      case session.last_result(sess, "main") {
+        Ok(Some(session.Cell(value: last, ..))) ->
+          case last_operation(last) == op {
+            True -> last
+            False -> retry_wait(rt, sess, op, scenario, rec, remaining)
+          }
+        _ -> retry_wait(rt, sess, op, scenario, rec, remaining)
+      }
+    }
+  }
+}
+
+fn retry_wait(
+  rt: api.Runtime,
+  sess: Session,
+  op: ids.OpId,
+  scenario: Scenario,
+  rec: Subject(recorder.Message),
+  remaining: Int,
+) -> LastResult {
+  process.sleep(10)
+  wait_terminal(rt, sess, op, scenario, rec, remaining - 10)
+}
+
+fn last_operation(last: LastResult) -> ids.OpId {
+  case last {
+    operation.RunLastResult(operation: op, ..) -> op
+    operation.CompactionLastResult(operation: op, ..) -> op
+    operation.NavigationLastResult(operation: op, ..) -> op
+  }
+}
+
+// --- reporting ------------------------------------------------------------
+
+/// The fingerprint of the final projected context from the strand's leaf.
+pub fn final_projection(sess: Session) -> List(String) {
+  let leaf = case session.strand_leaf(sess, "main") {
+    Ok(Some(session.Cell(value: leaf, ..))) -> leaf
+    _ -> None
+  }
+  let assert Ok(messages) = session.project_context(sess, leaf)
+    as "the final projection must read cleanly"
+  list.map(messages, fingerprint)
+}
+
+/// One message's structural fingerprint.
+pub fn fingerprint(message: AgentMessage) -> String {
+  case message {
+    UserMessage(content:, ..) ->
+      "user:"
+      <> string.join(
+        list.map(content, fn(block) {
+          case block {
+            UserText(text:, ..) -> text
+            UserImage(..) -> "<image>"
+          }
+        }),
+        "|",
+      )
+    AssistantMessage(content:, stop_reason:, ..) ->
+      "assistant:"
+      <> stop_tag(stop_reason)
+      <> ":"
+      <> string.join(
+        list.map(content, fn(block) {
+          case block {
+            AssistantText(text:, ..) -> text
+            AssistantThinking(..) -> "<thinking>"
+            AssistantToolCall(call:) -> "call(" <> call.id <> ")" <> call.name
+          }
+        }),
+        "|",
+      )
+    ToolResultMessage(tool_name:, tool_call_id:, content:, is_error:, ..) ->
+      "tool:"
+      <> tool_name
+      <> ":"
+      <> tool_call_id
+      <> ":"
+      <> case is_error {
+        True -> "err"
+        False -> "ok"
+      }
+      <> ":"
+      <> string.join(
+        list.map(content, fn(block) {
+          case block {
+            ToolResultText(text:, ..) -> text
+            ToolResultImage(..) -> "<image>"
+          }
+        }),
+        "|",
+      )
+    CustomMessage(schema:, ..) -> "custom:" <> schema
+  }
+}
+
+fn stop_tag(stop: message.StopReason) -> String {
+  case stop {
+    message.Pending -> "pending"
+    message.Stop -> "stop"
+    message.Length -> "length"
+    message.ToolUse -> "tool_use"
+    message.Errored -> "error"
+    message.Aborted -> "aborted"
+    message.Deferred -> "deferred"
+  }
+}
+
+/// The ledger's total token count.
+pub fn ledger_total(sess: Session) -> Int {
+  let assert Ok(rows) = storage.scan_usage(sess.store, storage.usage_scan())
+    as "the ledger must read cleanly"
+  list.fold(rows, 0, fn(total, row) { total + row.usage.total_tokens })
+}
+
+/// The placement invariant at a terminal boundary: no operation-owned or
+/// pending registers survive, the strand is idle, and every tool call in
+/// the tree has exactly one result entry.
+pub fn assert_placement_invariants(sess: Session) -> Nil {
+  assert_empty_ns(sess, register.OpMeta)
+  assert_empty_ns(sess, register.OpState)
+  assert_empty_ns(sess, register.OpToolArgs)
+  assert_empty_ns(sess, register.OpPreparation)
+  assert_empty_ns(sess, register.PendingEntry)
+  let assert Ok(Some(session.Cell(value: strand_state, ..))) =
+    session.strand_state(sess, "main")
+    as "the strand state must exist at a terminal boundary"
+  assert strand_state.current_operation == None
+  assert_calls_answered(sess)
+}
+
+fn assert_empty_ns(sess: Session, ns: register.RegisterNs) -> Nil {
+  let assert Ok(cells) = storage.list_registers(sess.store, ns, None)
+    as "register listings must read cleanly"
+  assert cells == []
+  Nil
+}
+
+// Every tool call block in an assistant entry has a matching tool-result
+// entry ("every tool call has a result" — pi invariant).
+fn assert_calls_answered(sess: Session) -> Nil {
+  let assert Ok(entries) =
+    storage.scan_entries(sess.store, storage.entry_scan())
+    as "the entry inventory must read cleanly"
+  let messages =
+    list.filter_map(entries, fn(row) {
+      case row {
+        entry.MessageEntry(message:, ..) -> Ok(message)
+        _ -> Error(Nil)
+      }
+    })
+  let answered =
+    list.filter_map(messages, fn(message) {
+      case message {
+        ToolResultMessage(tool_call_id:, ..) -> Ok(tool_call_id)
+        _ -> Error(Nil)
+      }
+    })
+  let called =
+    list.flat_map(messages, fn(message) {
+      case message {
+        AssistantMessage(content:, ..) ->
+          list.filter_map(content, fn(block) {
+            case block {
+              AssistantToolCall(call:) -> Ok(call.id)
+              _ -> Error(Nil)
+            }
+          })
+        _ -> []
+      }
+    })
+  list.each(called, fn(id) {
+    case list.contains(answered, id) {
+      True -> Nil
+      False -> panic as { "tool call " <> id <> " has no result entry" }
+    }
+  })
+}
+
+/// Whether two projections match, allowing a crashed run's tool-result
+/// line to be the synthetic interruption for the same call — the one
+/// legitimate transcript divergence commit-boundary crashes can produce
+/// for `replay: Never` tools.
+pub fn converged_with_tool_allowance(
+  base: List(String),
+  crashed: List(String),
+) -> Bool {
+  case base, crashed {
+    [], [] -> True
+    [b, ..base_rest], [c, ..crashed_rest] ->
+      case b == c || interrupted_variant(b, c) {
+        True -> converged_with_tool_allowance(base_rest, crashed_rest)
+        False -> False
+      }
+    _, _ -> False
+  }
+}
+
+// Same tool and call id, but the crashed line is an error result (the
+// synthetic interruption) where the base line is the scripted result.
+fn interrupted_variant(base: String, crashed: String) -> Bool {
+  case string.split(base, ":"), string.split(crashed, ":") {
+    ["tool", name_b, id_b, ..], ["tool", name_c, id_c, "err", ..] ->
+      name_b == name_c && id_b == id_c
+    _, _ -> False
+  }
+}
+
+/// Runs the whole interleave loop for a scenario: the uninterrupted run
+/// fixes the commit count `C`, then every `k` in `1..C` runs fresh, is
+/// killed after commit `k`, and must satisfy `check(base, crashed)`.
+pub fn interleave(
+  scenario: Scenario,
+  check: fn(Report, Report, Int) -> Nil,
+) -> Report {
+  let base = run(scenario, 0)
+  assert base.commits > 0
+  int.range(from: 1, to: base.commits + 1, with: Nil, run: fn(_, k) {
+    let crashed = run(scenario, k)
+    check(base, crashed, k)
+  })
+  base
+}
+
+/// A run-completed outcome's shape check.
+pub fn assert_completed(outcome: LastResult) -> Nil {
+  case outcome {
+    operation.RunLastResult(outcome: operation.RunCompleted(..), ..) -> Nil
+    _ -> panic as "expected a completed run outcome"
+  }
+}
+
+/// A run-aborted outcome's shape check.
+pub fn assert_aborted(outcome: LastResult) -> Nil {
+  case outcome {
+    operation.RunLastResult(outcome: operation.RunAborted, ..) -> Nil
+    _ -> panic as "expected an aborted run outcome"
+  }
+}
+
+/// Formats a scenario/k context for assertion messages.
+pub fn context(name: String, k: Int) -> String {
+  name <> " (killed after commit " <> int.to_string(k) <> ")"
+}
