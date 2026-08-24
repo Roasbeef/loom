@@ -1,0 +1,14 @@
+name = "events"
+version = "0.1.0"
+gleam = ">= 1.11.0"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+core = { path = "../core" }
+storage = { path = "../storage" }
+session = { path = "../session" }
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := core storage session machine runtime provider broker tools conformance
+PACKAGES := core storage session machine runtime provider broker tools events client conformance
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 
