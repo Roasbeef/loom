@@ -461,8 +461,17 @@ fn wait_for_death(pid: process.Pid, attempts: Int) -> Nil {
 }
 
 /// Polls (reading the session store directly, so it survives tree
-/// restarts) until the named operation's terminal result is recorded on
-/// the addressed strand, returning it. `Error(Nil)` on timeout.
+/// restarts) until the named operation's terminal result is recorded,
+/// returning it. `Error(Nil)` on timeout.
+///
+/// The wait is keyed by the *operation*, not by the strand's latest
+/// result: the terminal transaction records the outcome under the
+/// operation-keyed `operation-result/{op}` fact atomically with
+/// `strand.last_result`, so a child that has already started (or even
+/// finished) a second run cannot make the first result unobservable —
+/// latest-wins overwrites the strand register, never the operation's
+/// own row. The strand register is still consulted as a fallback for
+/// sessions recorded before the operation-keyed row existed.
 ///
 /// ## Examples
 ///
@@ -475,13 +484,34 @@ pub fn await_result(
   operation: OpId,
   within_ms timeout_ms: Int,
 ) -> Result(LastResult, Nil) {
-  case session.last_result(runtime.session, runtime.strand) {
-    Ok(Some(session.Cell(value: last, ..))) ->
-      case result_operation(last) == operation {
-        True -> Ok(last)
-        False -> await_result_wait(runtime, operation, timeout_ms)
+  case operation_result(runtime, operation) {
+    Some(last) -> Ok(last)
+    None ->
+      case session.last_result(runtime.session, runtime.strand) {
+        Ok(Some(session.Cell(value: last, ..))) ->
+          case result_operation(last) == operation {
+            True -> Ok(last)
+            False -> await_result_wait(runtime, operation, timeout_ms)
+          }
+        _ -> await_result_wait(runtime, operation, timeout_ms)
       }
-    _ -> await_result_wait(runtime, operation, timeout_ms)
+  }
+}
+
+// The operation-keyed terminal record, read straight from the session
+// store (like the fallback register) so the await survives tree
+// restarts. An unreadable or undecodable row reads as absent — the
+// caller keeps polling and times out rather than faulting, exactly as a
+// missing result behaves.
+fn operation_result(runtime: Runtime, op: OpId) -> Option(LastResult) {
+  let key = operation.result_fact_key(op)
+  case storage.get_register(runtime.session.store, register.FactCustom, key) {
+    Ok(Some(storage.Register(value:, ..))) ->
+      case codec.decode_last_result(value.payload) {
+        Ok(last) -> Some(last)
+        Error(_report) -> None
+      }
+    _ -> None
   }
 }
 
@@ -732,7 +762,9 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
 // --- the blackboard (design §4.6) ------------------------------------------
 
 /// Writes one `fact.custom` cell — the shared, transactional multi-agent
-/// blackboard. Keys under the reserved `escalation/` prefix are refused.
+/// blackboard. Keys under the reserved prefixes — `escalation/` (durable
+/// escalation records) and `operation-result/` (operation-keyed terminal
+/// results) — are refused, so no fact can forge either kind of record.
 /// Registers are durable state, not a communication medium: pair a fact
 /// write with a `send_to_strand` (or rely on the reader's checkpoint)
 /// when the reader must act on it.
@@ -748,7 +780,7 @@ pub fn put_fact(
   key: String,
   value: JsonValue,
 ) -> Result(Nil, ApiError) {
-  case string.starts_with(key, escalation.key_prefix) {
+  case reserved_fact_key(key) {
     True -> Error(ReservedFactKey(key:))
     False -> {
       let plan_tx =
@@ -790,7 +822,7 @@ pub fn fact(
 }
 
 /// Lists `fact.custom` cells under an optional key prefix, excluding the
-/// reserved escalation records.
+/// reserved escalation and operation-result records.
 ///
 /// ## Examples
 ///
@@ -810,7 +842,7 @@ pub fn facts(
       cells
       |> list.filter_map(fn(pair) {
         let #(key, storage.Register(value:, ..)) = pair
-        case string.starts_with(key, escalation.key_prefix) {
+        case reserved_fact_key(key) {
           True -> Error(Nil)
           False -> Ok(#(key, value.payload))
         }
@@ -819,12 +851,47 @@ pub fn facts(
   }
 }
 
+// The reserved corners of the `fact.custom` namespace: escalation
+// records and operation-keyed terminal results. Both are runtime-owned
+// state that a blackboard write must not be able to forge or shadow.
+fn reserved_fact_key(key: String) -> Bool {
+  string.starts_with(key, escalation.key_prefix)
+  || string.starts_with(key, operation.result_fact_prefix)
+}
+
 // --- durable escalations (design §5.3) --------------------------------------
 
-/// Records a raised escalation durably (status pending). The denial is
-/// the broker's structured denial as JSON — reason, source, and the
-/// wanted policy diff. The record must be durable before the denial is
-/// surfaced for decision; the gateway (WP-L) drives approve/deny.
+/// Records a raised escalation durably (status pending), attributed to
+/// the exact call the denial was raised for. The denial is the broker's
+/// structured denial as JSON — reason, source, and the wanted policy
+/// diff — and `scope` is the call identity (`{operation, strand, step,
+/// source index, call id}`) an approval will be spent on: the driver's
+/// clearance path loads a grant only for the clearance whose coordinates
+/// match, so approving this escalation can never widen any other call.
+/// The record must be durable before the denial is surfaced for
+/// decision; the gateway (WP-L) drives approve/deny.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.raise_escalation_for(runtime, "esc-1", denial_json, scope)
+/// ```
+///
+pub fn raise_escalation_for(
+  runtime: Runtime,
+  id: String,
+  denial: JsonValue,
+  scope scope: escalation.CallScope,
+) -> Result(Nil, ApiError) {
+  commit_raised(runtime, id, escalation.raised(id, denial, Some(scope)))
+}
+
+/// Records a raised escalation with no call attribution. Deliberately
+/// narrow: an unscoped approval is *never* loaded by any tool clearance
+/// — nothing in the session widens from it silently — and can only be
+/// spent through an explicit `consume_escalation` by a host that
+/// re-executes the denied action itself. Prefer `raise_escalation_for`
+/// whenever the denied call's coordinates are known.
 ///
 /// ## Examples
 ///
@@ -837,6 +904,14 @@ pub fn raise_escalation(
   id: String,
   denial: JsonValue,
 ) -> Result(Nil, ApiError) {
+  commit_raised(runtime, id, escalation.raised(id, denial, None))
+}
+
+fn commit_raised(
+  runtime: Runtime,
+  id: String,
+  record: Escalation,
+) -> Result(Nil, ApiError) {
   let key = escalation.register_key(id)
   let plan_tx =
     tx.Tx(
@@ -844,9 +919,7 @@ pub fn raise_escalation(
         tx.SetRegister(
           ns: register.FactCustom,
           key:,
-          value: register.value(
-            escalation.encode(escalation.raised(id, denial)),
-          ),
+          value: register.value(escalation.encode(record)),
         ),
       ],
       expected: [tx.Expect(ns: register.FactCustom, key:, seq: None)],
@@ -889,9 +962,12 @@ pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
 
 /// Approves a pending escalation with exactly these grants (a subset of
 /// the denial's wanted diff — validated by the broker layer that raised
-/// it). The next tool clearance on any strand consumes the approval and
-/// carries the grants into the re-execution (`ClearanceQuery.grants` →
-/// tool `Ctx.grants`) — one re-execution per approval, by CAS.
+/// it). The clearance of the exact call the escalation was raised for —
+/// and only that call — consumes the approval and carries the grants
+/// into the re-execution (`ClearanceQuery.grants` → tool `Ctx.grants`):
+/// one re-execution per approval, consumed by CAS *before* the grants
+/// are used, so a lost race or a crash spends the approval without a
+/// widened execution, never the reverse.
 ///
 /// ## Examples
 ///
@@ -923,9 +999,11 @@ pub fn deny_escalation(runtime: Runtime, id: String) -> Result(Nil, ApiError) {
 }
 
 /// Explicitly consumes an approved escalation, returning its grants —
-/// for callers that re-execute outside the strand's own clearance path.
-/// The ordinary path is implicit: the driver consumes approvals at the
-/// first passing tool clearance.
+/// for callers that re-execute outside the strand's own clearance path
+/// (and the only way an *unscoped* approval can ever be spent). The
+/// ordinary path is implicit: the driver consumes a scoped approval at
+/// the clearance of exactly the call it was raised for, before the
+/// grants are used.
 ///
 /// ## Examples
 ///

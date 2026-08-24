@@ -26,11 +26,23 @@
 //// `grant_to_json`); the runtime records and returns them without
 //// interpreting them, keeping the spec's `E → A,B,C,D` dependency
 //// direction intact (no broker import here).
+////
+//// An approval is attributed, never ambient (design §5.3: *one*
+//// re-execution of the denied action, not a session-wide widening). The
+//// record therefore carries the exact call identity the denial was
+//// raised for — `{operation, strand, step, source index, call id}` — and
+//// the driver's clearance path spends a grant only on a clearance whose
+//// coordinates match. A record raised without a scope can still be spent
+//// explicitly (`api.consume_escalation`) by a host that re-executes
+//// outside the strand's own clearance, but no tool clearance will ever
+//// load it: an unattributable grant failing to widen anything is the
+//// safe direction.
 
 import core/corruption.{type CorruptionReport}
+import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -47,20 +59,45 @@ pub type Status {
   Consumed
 }
 
+/// The exact call a denial was raised for: which planned tool call, on
+/// which strand, inside which operation and step. This is the unit an
+/// approval attaches to — a clearance spends a grant only when every
+/// coordinate matches, so an approval granted for one call can never
+/// widen a different one (a different strand's, a different step's, or a
+/// retry the model re-issued under a new call id).
+///
+/// Constructor invariants: `operation`, `step_id`, and `source_index`
+/// are the planner's coordinates for the planned call (the same triple
+/// `ToolClearanceKey` carries); `strand` is the strand whose driver
+/// clears it; `call_id` is the provider-minted tool call id, which names
+/// exactly one call in the tree.
+pub type CallScope {
+  CallScope(
+    operation: OpId,
+    strand: String,
+    step_id: String,
+    source_index: Int,
+    call_id: String,
+  )
+}
+
 /// One durable escalation record — the `fact.custom` payload stored
 /// under `escalation/{id}`.
 ///
 /// Constructor invariants: `id` is the caller-assigned stable escalation
 /// id; `denial` is the structured denial as opaque JSON (reason, source,
-/// wanted grants); `grants` is empty until approval and then holds the
-/// approved grant JSON values, a subset of the denial's wanted diff
-/// (enforced by the broker layer that raises and approves, not re-checked
-/// here); `status` moves only Pending → Approved → Consumed or Pending →
-/// Rejected.
+/// wanted grants); `scope` is the exact call the denial was raised for
+/// (`None` only for records raised through the unscoped legacy path,
+/// which no clearance will ever spend); `grants` is empty until approval
+/// and then holds the approved grant JSON values, a subset of the
+/// denial's wanted diff (enforced by the broker layer that raises and
+/// approves, not re-checked here); `status` moves only Pending →
+/// Approved → Consumed or Pending → Rejected.
 pub type Escalation {
   Escalation(
     id: String,
     denial: JsonValue,
+    scope: Option(CallScope),
     grants: List(JsonValue),
     status: Status,
   )
@@ -94,9 +131,24 @@ pub fn encode(escalation: Escalation) -> JsonValue {
   json.Object([
     #("id", json.String(escalation.id)),
     #("denial", escalation.denial),
+    #("scope", encode_scope(escalation.scope)),
     #("grants", json.Array(escalation.grants)),
     #("status", json.String(status_to_string(escalation.status))),
   ])
+}
+
+fn encode_scope(scope: Option(CallScope)) -> JsonValue {
+  case scope {
+    None -> json.Null
+    Some(scope) ->
+      json.Object([
+        #("operation", json.String(ids.op_id_to_string(scope.operation))),
+        #("strand", json.String(scope.strand)),
+        #("stepId", json.String(scope.step_id)),
+        #("sourceIndex", json.Int(scope.source_index)),
+        #("callId", json.String(scope.call_id)),
+      ])
+  }
 }
 
 /// Decodes a stored escalation payload. Total: anything malformed is a
@@ -114,6 +166,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
     json.Object(fields) -> {
       use id <- result.try(require_string(fields, "id", where))
       use denial <- result.try(require(fields, "denial", where))
+      use scope <- result.try(decode_scope(fields, where))
       use grants_value <- result.try(require(fields, "grants", where))
       use grants <- result.try(case grants_value {
         json.Array(items) -> Ok(items)
@@ -127,13 +180,53 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
       })
       use status_text <- result.try(require_string(fields, "status", where))
       use status <- result.try(status_from_string(status_text, where))
-      Ok(Escalation(id:, denial:, grants:, status:))
+      Ok(Escalation(id:, denial:, scope:, grants:, status:))
     }
     other ->
       Error(corruption.report(
         at: where,
         on: "payload",
         expected: "an escalation object",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+// A stored scope decodes totally: an absent or null field is an unscoped
+// record (the legacy shape, spendable only explicitly), while a present
+// object must decode in full — a half-readable scope is corruption, not
+// a record to fall back to unscoped, because falling back would change
+// which calls the grant reaches.
+fn decode_scope(
+  fields: List(#(String, JsonValue)),
+  where: String,
+) -> Result(Option(CallScope), CorruptionReport) {
+  case list.key_find(fields, "scope") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.Object(scope_fields)) -> {
+      use operation_text <- result.try(require_string(
+        scope_fields,
+        "operation",
+        where,
+      ))
+      use operation <- result.try(ids.parse_op_id(operation_text))
+      use strand <- result.try(require_string(scope_fields, "strand", where))
+      use step_id <- result.try(require_string(scope_fields, "stepId", where))
+      use source_index <- result.try(require_int(
+        scope_fields,
+        "sourceIndex",
+        where,
+      ))
+      use call_id <- result.try(require_string(scope_fields, "callId", where))
+      Ok(
+        Some(CallScope(operation:, strand:, step_id:, source_index:, call_id:)),
+      )
+    }
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: "scope",
+        expected: "null or a call-scope object",
         context: json.to_string(other),
       ))
   }
@@ -202,6 +295,24 @@ fn require_string(
   }
 }
 
+fn require_int(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  where: String,
+) -> Result(Int, CorruptionReport) {
+  use value <- result.try(require(fields, key, where))
+  case value {
+    json.Int(number) -> Ok(number)
+    other ->
+      Error(corruption.report(
+        at: where,
+        on: key,
+        expected: "an integer",
+        context: json.to_string(other),
+      ))
+  }
+}
+
 /// Whether a decided escalation may transition to `to` from its current
 /// status: Pending decides (Approved/Rejected), Approved consumes.
 ///
@@ -245,16 +356,37 @@ pub fn consume(record: Escalation) -> Escalation {
   Escalation(..record, status: Consumed)
 }
 
-/// A fresh pending record for a raised denial.
+/// A fresh pending record for a raised denial. `scope` is the exact call
+/// the denial names; `None` records a legacy unscoped escalation that
+/// only an explicit `consume_escalation` can ever spend.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.raised("esc-1", denial_json)
+/// // escalation.raised("esc-1", denial_json, Some(scope))
 /// ```
 ///
-pub fn raised(id: String, denial: JsonValue) -> Escalation {
-  Escalation(id:, denial:, grants: [], status: Pending)
+pub fn raised(
+  id: String,
+  denial: JsonValue,
+  scope: Option(CallScope),
+) -> Escalation {
+  Escalation(id:, denial:, scope:, grants: [], status: Pending)
+}
+
+/// Whether an escalation's scope names exactly this call. Unscoped
+/// records match nothing — a grant that cannot be attributed must not
+/// widen anything (the safe direction: skipping a record can only
+/// narrow what a call receives).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalation.scoped_to(record, scope) == True
+/// ```
+///
+pub fn scoped_to(record: Escalation, scope: CallScope) -> Bool {
+  record.scope == Some(scope)
 }
 
 /// The record after an approval with `grants`.

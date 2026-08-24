@@ -40,9 +40,11 @@ extended by the M3 runtime wave.
 - `runtime/hooks.Registry` — the one seam production wiring, tests, and the
   simulation runner all build their `effects.Hooks` through: safe defaults,
   a pipeable setter per slot, `build` at the end.
-- `runtime/escalation.{Escalation, Status}` — the durable record of a
-  broker denial awaiting a decision, its decision, and its single consumed
-  re-execution.
+- `runtime/escalation.{Escalation, CallScope, Status}` — the durable
+  record of a broker denial awaiting a decision, its decision, and its
+  single consumed re-execution. `CallScope` is the exact call identity
+  (`{operation, strand, step, source index, call id}`) an approval is
+  attributed to; only the clearance whose coordinates match can spend it.
 
 ## Relationships
 
@@ -133,10 +135,18 @@ extended by the M3 runtime wave.
   `PollTick` finds queued work anyway, and any commit racing the strand's
   own surfaces as a stale expectation, forcing a reload that sees it. The
   `_quietly` admission variants commit without ringing at all.
-- **Effect processes are spawned unlinked and monitored.** An effect
-  process that dies without reporting settles **in-band** — a transport
-  failure response or a synthetic tool error — so the harness never wedges
-  and never faults the strand on a worker's death.
+- **Effect processes are monitored by the driver and linked to its
+  reaper.** An effect process that dies without reporting settles
+  **in-band** — a transport failure response or a synthetic tool error —
+  so the harness never wedges and never faults the strand on a worker's
+  death. Each driver incarnation also spawns a *reaper*: a tiny trapping
+  process, linked to the driver, that every effect links to at birth and
+  that kills itself (taking the linked effects with it) the moment the
+  driver dies. A strand-actor restart therefore cannot leak a live effect
+  into the next incarnation — the exclusivity gate and the
+  orphan-versus-live replay decision read the incarnation-local `live`
+  list, and both are sound only because no effect outlives its
+  incarnation.
 - **`after_commit` is the crash seam.** It runs in the writer process after
   the commit is durable and published but *before* the committer's reply,
   so an observer that kills the writer produces exactly "commit N durable,
@@ -163,10 +173,18 @@ extended by the M3 runtime wave.
   mutable state (pending → approved → consumed) needing a bounded point
   lookup on the clearance path, and it must never move a strand's leaf or
   enter a context projection — a mid-batch denial cannot be allowed to
-  reparent the conversation. Status transitions are CAS-guarded through the
-  writer, so a lost race is a refused commit, never a double consume, and
-  the grant is consumed *before* dispatch: a crash spends the grant without
-  executing, which fails safe.
+  reparent the conversation. Status transitions are CAS-guarded through
+  the writer, so a lost race is a refused commit, never a double consume.
+- **An approval is attributed, and consumed before its grants are used.**
+  The record carries the exact `CallScope` its denial was raised for; a
+  clearance loads only the approvals scoped to the call it is clearing
+  (unscoped records match nothing — an unattributable grant must not
+  widen anything), consumes them by CAS *first*, and passes into
+  `tools.clear` only the grants whose consumption commit won. A lost CAS
+  drops that record's grants and the clearance proceeds under the base
+  policy; a crash after the consumption spends the approval without an
+  execution. Both directions fail safe: one approval is worth at most one
+  widened execution, of exactly the call a human approved.
 - **Grant and denial payloads cross the runtime opaquely.** They are stored
   as JSON in the broker's escalation vocabulary and returned uninterpreted,
   which is what keeps the spec's `E → A,B,C,D` direction intact — there is

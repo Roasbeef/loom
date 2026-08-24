@@ -1,6 +1,7 @@
 //// Direct writer and api coverage: committed-event publication through
-//// the writer's subscriber seam, read routing, and follow-up draining at
-//// a may-finish checkpoint.
+//// the writer's subscriber seam, read routing, follow-up draining at a
+//// may-finish checkpoint, and awaiting a result the strand register has
+//// since moved past.
 
 import core/clock
 import core/json
@@ -112,5 +113,54 @@ pub fn follow_up_is_drained_at_may_finish_test() {
       "assistant:stop:Second",
     ]
   harness.assert_placement_invariants(sess)
+  process.kill(rt.tree.supervisor)
+}
+
+pub fn await_result_survives_a_later_run_test() {
+  // `strand.last_result` is one latest-wins register per strand, so a
+  // second run overwrites the first's terminal record. A waiter keyed on
+  // the first operation — a parent polling a fast child, say — must
+  // still observe that operation's own result: the terminal transaction
+  // records it operation-keyed, immune to the overwrite. Before that
+  // record existed this await spun to timeout and returned `Error(Nil)`,
+  // indistinguishable from "still running".
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(spec) {
+        case fake.turn(spec) {
+          0 -> fake.Reply(fake.answer("first answer", 3))
+          _ -> fake.Reply(fake.answer("second answer", 4))
+        }
+      },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the session tree must boot"
+  let assert Ok(first_op) = api.prompt(rt, [fake.user("one")])
+    as "the first prompt must be accepted"
+  let assert Ok(first) = api.await_result(rt, first_op, within_ms: 5000)
+    as "the first run must complete"
+  harness.assert_completed(first)
+  // A second run lands and overwrites the strand's latest-wins register.
+  let assert Ok(second_op) = api.prompt(rt, [fake.user("two")])
+    as "the second prompt must be accepted"
+  let assert Ok(second) = api.await_result(rt, second_op, within_ms: 5000)
+    as "the second run must complete"
+  harness.assert_completed(second)
+  // The first operation's result is still observable, and is genuinely
+  // the first operation's — not the latest one relabeled.
+  let assert Ok(replayed) = api.await_result(rt, first_op, within_ms: 1000)
+    as "the first operation's result must survive the second run"
+  assert replayed == first
   process.kill(rt.tree.supervisor)
 }

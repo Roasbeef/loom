@@ -14,10 +14,16 @@
 //// the supervisor restarts it, and recovery is the same loop over the
 //// restored registers, spec §3.1). `strand.last_result` is never read.
 ////
-//// Live effects run on spawned, unlinked processes the driver monitors;
-//// their outcomes come back as ordinary messages. An effect process that
-//// dies without reporting settles in-band (a transport-failure response
-//// or a synthetic tool error) — the harness never wedges.
+//// Live effects run on spawned processes the driver monitors; their
+//// outcomes come back as ordinary messages. An effect process that dies
+//// without reporting settles in-band (a transport-failure response or a
+//// synthetic tool error) — the harness never wedges. Every effect
+//// process is also linked to the incarnation's **reaper** (a tiny
+//// trapping companion process that dies when the driver does), so a
+//// driver restart cannot leak a live effect into the next incarnation:
+//// the exclusivity gate and the replay decision both read the
+//// incarnation-local `live` list, and both are sound only because no
+//// effect outlives its incarnation.
 ////
 //// Doorbells: `Nudge` triggers a re-plan and its loss is harmless by
 //// construction — the periodic `PollTick` (the checkpoint poll) finds
@@ -149,6 +155,10 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    /// This incarnation's reaper process: every effect process links to
+    /// it at birth, and it kills itself (taking the linked effects with
+    /// it) the moment this driver process dies. See `start_reaper`.
+    reaper: Pid,
     live: List(Live),
     observations: List(Observation),
     poll_permit: Bool,
@@ -224,6 +234,7 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
+      reaper: start_reaper(),
       live: [],
       observations: [],
       poll_permit: False,
@@ -1030,6 +1041,83 @@ fn with_projection(
   }
 }
 
+// --- the effect reaper -----------------------------------------------------
+//
+// A strand-actor restart must not leak its live effect processes: the
+// exclusivity gate (`tool_may_start`) and the orphan-versus-live decision
+// (`resolve_key`) both consult the incarnation-local `live` list, so an
+// effect that outlived its incarnation would run *concurrently* with the
+// replacement's recovery — a `ReplaySafe` tool re-executed beside its
+// still-running first execution, an assistant request retried while the
+// original still streams and bills, an `Exclusive` tool started beside
+// the previous incarnation's. The fix is a kernel-level ownership chain:
+// no effect process may outlive the driver incarnation that dispatched
+// it.
+//
+// Linking effects to the driver directly would force the driver to trap
+// exits, entangling the actor's supervision shutdown with effect
+// lifecycle. Instead each incarnation spawns one *reaper*: a tiny
+// process, linked to the driver, that traps exits and does exactly one
+// thing — when the driver dies (any reason: a fault halt, a supervisor
+// shutdown, a kill), it kills itself, and every effect process linked to
+// it dies with it. Effect deaths reach the reaper as trapped messages it
+// discards; the driver still learns of them through its monitors, so the
+// in-band settlement paths are unchanged.
+//
+// The chain is race-free by construction. The reaper exists before any
+// effect is spawned, and an effect's *first* act is linking to the
+// reaper: if the reaper is already gone (its driver died between the
+// spawn and the link), the link refuses and the effect exits without
+// performing its work; if the link lands, any later reaper death kills
+// the effect. The reap is asynchronous — exit signals, not a barrier —
+// but the signal to the effects is emitted at the moment the reaper
+// dies, which itself is triggered by the driver's death, strictly before
+// the factory restarts the driver; the replacement then performs several
+// storage round-trips before it can dispatch any recovery replay.
+
+// Spawns this incarnation's reaper: linked to the calling driver,
+// trapping exits from the moment before any effect can exist.
+fn start_reaper() -> Pid {
+  let driver = process.self()
+  process.spawn(fn() {
+    process.trap_exits(True)
+    reap_when_driver_dies(driver)
+  })
+}
+
+// Waits for the driver's exit among the trapped link signals. Effect
+// exits (normal completions and abnormal deaths alike) are discarded —
+// the driver's monitors own settlement — and only the driver's own death
+// triggers the reap. `process.kill` is untrappable, so the reaper dies
+// even though it traps, and its linked effects receive the `killed`
+// signal none of them trap.
+fn reap_when_driver_dies(driver: Pid) -> Nil {
+  let exits =
+    process.new_selector()
+    |> process.select_trapped_exits(fn(message) { message })
+  let process.ExitMessage(pid:, reason: _) =
+    process.selector_receive_forever(exits)
+  case pid == driver {
+    True -> process.kill(process.self())
+    False -> reap_when_driver_dies(driver)
+  }
+}
+
+// Spawns one effect process bound to this incarnation: unlinked from the
+// driver (a worker's death must settle in-band, never fault the strand),
+// but linked to the reaper as its first act so it cannot outlive the
+// incarnation. A refused link means the incarnation is already gone —
+// the effect exits without running, exactly as if the reap had caught it
+// a moment later.
+fn spawn_effect(reaper: Pid, body: fn() -> Nil) -> Pid {
+  process.spawn_unlinked(fn() {
+    case process.link(reaper) {
+      True -> body()
+      False -> Nil
+    }
+  })
+}
+
 fn spawn_provider(
   state: State,
   token: EffectToken,
@@ -1039,7 +1127,7 @@ fn spawn_provider(
   let parent = state.self
   let surface = state.effects.provider
   let pid =
-    process.spawn_unlinked(fn() {
+    spawn_effect(state.reaper, fn() {
       let handle = surface.request(spec)
       let terminal = case
         stream.await_terminal(handle, within: surface.timeout_ms)
@@ -1069,7 +1157,7 @@ fn spawn_tool(
   let runner = state.effects.tools.run
   let call = run.call
   let pid =
-    process.spawn_unlinked(fn() {
+    spawn_effect(state.reaper, fn() {
       let outcome = runner(run)
       wake(parent, ToolDone(token:, outcome:))
     })
@@ -1341,9 +1429,27 @@ fn tool_may_start(state: State, name: String) -> Bool {
   }
 }
 
-// Clearance for one planned call: load the approved escalation grants,
-// clear through the tool surface, and consume the approvals once the
-// clearance passes.
+// Clearance for one planned call: select the approvals attributed to
+// *exactly this call*, consume them, and only then clear through the
+// tool surface with the grants the consumption actually won.
+//
+// Two orderings matter here, both security boundaries (design §5.3):
+//
+// - **Attribution before anything.** An approval names the exact
+//   `{operation, strand, step, source index, call id}` its denial was
+//   raised for; a clearance loads only its own approvals, so a grant a
+//   human approved for one call can never widen a different call, on
+//   this strand or any other. Unscoped records match nothing — failing
+//   to widen is the safe direction.
+// - **Consume before clearing.** The capability is *exercised* the
+//   moment `tools.clear` composes the grants into policy, so the CAS
+//   that enforces "one re-execution per approval" must win before that
+//   moment, not after it. A lost CAS (a concurrent decision or an
+//   explicit consume won the record) drops that record's grants and the
+//   clearance proceeds under whatever remains — usually the base policy
+//   — instead of dispatching under a grant somebody else already spent.
+//   A crash between the consumption commit and the dispatch spends the
+//   approval without an execution: fail-safe, never a silent widening.
 fn clear_tool_call(
   state: State,
   loaded: Loaded,
@@ -1355,41 +1461,47 @@ fn clear_tool_call(
 ) -> KeyResolution {
   case approved_escalations(state) {
     Error(reason) -> KeyHalt(reason)
-    Ok(approved) ->
-      case
-        state.effects.tools.clear(effects.ClearanceQuery(
+    Ok(approved) -> {
+      let scope =
+        escalation.CallScope(
           operation:,
+          strand: state.strand,
           step_id:,
           source_index:,
-          call:,
-          configuration: loaded.configuration,
-          grants: list.flat_map(approved, fn(cell) {
-            let #(_seq, record) = cell
-            record.grants
-          }),
-        ))
-      {
-        effects.Cleared(effective_arguments:, replay:) ->
-          // Consume before acting (design §5.3: one re-execution per
-          // approval). A crash between this commit and the dispatch
-          // spends the grant without an execution — fail-safe, never a
-          // silent widening; the re-cleared call then runs (or refuses)
-          // under the base policy.
-          case consume_escalations(state, approved) {
-            Error(reason) -> KeyHalt(reason)
-            Ok(Nil) ->
+          call_id: call.id,
+        )
+      let matching =
+        list.filter(approved, fn(cell) {
+          let #(_seq, record) = cell
+          escalation.scoped_to(record, scope)
+        })
+      case consume_escalations(state, matching) {
+        Error(reason) -> KeyHalt(reason)
+        Ok(grants) ->
+          case
+            state.effects.tools.clear(effects.ClearanceQuery(
+              operation:,
+              step_id:,
+              source_index:,
+              call:,
+              configuration: loaded.configuration,
+              grants:,
+            ))
+          {
+            effects.Cleared(effective_arguments:, replay:) ->
               KeyObservation(planner.ObservedToolCleared(
                 source_index:,
                 effective_arguments:,
                 replay:,
               ))
+            effects.ClearanceRefused(reason:) ->
+              KeyObservation(planner.ObservedToolRefused(
+                source_index:,
+                result: synthetic_tool_error(call, reason, now),
+              ))
           }
-        effects.ClearanceRefused(reason:) ->
-          KeyObservation(planner.ObservedToolRefused(
-            source_index:,
-            result: synthetic_tool_error(call, reason, now),
-          ))
       }
+    }
   }
 }
 
@@ -1426,14 +1538,17 @@ fn approved_escalations(
 }
 
 // Marks each passed escalation consumed, CAS-guarded by the seq it was
-// read at. A stale expectation means a concurrent decision won — the
-// record is left as that decision made it; consumption never overwrites
-// blindly.
+// read at, and returns the grants of exactly the records whose
+// consumption commit *won*. A stale expectation means a concurrent
+// decision won the record — an explicit consume, a rejection, another
+// clearance — so that record's grants are dropped rather than used: the
+// caller clears with only the grants it durably owns, which is what
+// makes one approval worth at most one widened execution.
 fn consume_escalations(
   state: State,
-  approved: List(#(Seq, escalation.Escalation)),
-) -> Result(Nil, String) {
-  list.try_each(approved, fn(cell) {
+  matching: List(#(Seq, escalation.Escalation)),
+) -> Result(List(JsonValue), String) {
+  list.try_fold(matching, [], fn(won, cell) {
     let #(seq, record) = cell
     let key = escalation.register_key(record.id)
     let consumed = escalation.consume(record)
@@ -1451,8 +1566,8 @@ fn consume_escalations(
         ],
       )
     case writer.commit(state.writer, plan_tx) {
-      Ok(_) -> Ok(Nil)
-      Error(tx.StaleExpectation(..)) -> Ok(Nil)
+      Ok(_) -> Ok(list.append(won, record.grants))
+      Error(tx.StaleExpectation(..)) -> Ok(won)
       Error(tx.Corruption(report:)) -> Error(corruption.describe(report))
       Error(tx.Faulted(reason:)) -> Error(reason)
     }

@@ -19,7 +19,7 @@ packages = [
   { name = "session", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib", "machine", "storage"], source = "local", path = "../session" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "sqlight", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite", "gleam_stdlib"], otp_app = "sqlight", source = "hex", outer_checksum = "841768D0A81107EE2DB46B949354F284A68B2E8098315C28A1FE3C07D206C17A" },
-  { name = "storage", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "sqlight"], source = "local", path = "../storage" },
+  { name = "storage", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "simplifile", "sqlight"], source = "local", path = "../storage" },
 ]
 
 [requirements]
