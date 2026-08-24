@@ -365,8 +365,16 @@ instead and are only referenced here.
    now that forks and idle tree-writes exist.
 3. **Escalations are registers, not entries**: mutable current state
    with point lookups on the clearance path, never moving a leaf or
-   entering projection. Grants are consumed before dispatch — a crash
-   spends the grant without execution, failing safe.
+   entering projection. An approval is attributed to the exact call its
+   denial was raised for (`CallScope`) and consumed by CAS *before* the
+   clearance uses its grants — a lost consume race drops the grants and
+   the call clears under base policy, and a crash after consumption
+   spends the grant without execution: both directions fail safe.
+3a. **Terminal results are recorded twice, atomically**: the latest-wins
+   `strand.last_result` (pi §3.13) and an operation-keyed copy under the
+   reserved `fact.custom/operation-result/{op}` prefix, which is what
+   `api.await_strand_result` keys on — a child's second run can no
+   longer make its first result unobservable.
 4. **Grant JSON crosses the runtime opaquely**; decoding it back to
    broker policy grants for the widened re-execution is gateway-wave
    wiring.
@@ -377,9 +385,15 @@ instead and are only referenced here.
 
 ## From WP-L (`client`)
 
-1. **Escalation records lack op and strand attribution**; the protocol
-   body requires both, so the hub attributes best-effort. The fix
-   belongs in the runtime's escalation record shape.
+1. **Escalation records now carry call attribution** (the M3 fix wave):
+   `runtime/escalation.CallScope` records the exact
+   `{operation, strand, step, source index, call id}` a denial was
+   raised for, and only that call's clearance can spend the approval.
+   The gateway still surfaces records without their scope and raises
+   through the unscoped legacy path (`api.raise_escalation`), whose
+   approvals no clearance will ever load — a production denial-raiser
+   should move to `api.raise_escalation_for` and the protocol body can
+   now attribute exactly rather than best-effort.
 2. **No api entry points for compaction or navigation** — the gateway,
    like the conformance runner, builds acceptance plans itself and
    commits through the writer. Two copies of that pattern argue for
