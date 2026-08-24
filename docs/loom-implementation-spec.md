@@ -17,7 +17,7 @@ loom/
 │   ├── loom_storage/     WP-B  Storage behaviour, Memory, SQLite, lease
 │   ├── loom_session/     WP-C  Session/Repo, tree views, branch index, forks
 │   ├── loom_machine/     WP-D  operation ADTs, next_action, classification (pure)
-│   ├── loom_runtime/     WP-E  StorageWriter, LaneSup, driver loop, recovery
+│   ├── loom_runtime/     WP-E  StorageWriter, StrandSup, driver loop, recovery
 │   ├── loom_provider/    WP-F  provider SDK, streaming, routing, retries
 │   ├── loom_broker/      WP-G  ToolBroker, tokens, policies, exec protocol
 │   ├── loom_sandbox/     WP-H  helper binary (Rust) + platform drivers
@@ -87,10 +87,10 @@ pub type Entry {
 
 // loom_core/register — closed namespace enum; the value type is forced by it
 pub type RegisterNs {
-  LaneLeaf      // key: lane name        → Option(EntryId)
-  LaneConfig    // key: lane name        → LaneConfiguration
-  LaneState     // key: lane name        → LaneState
-  LaneLastResult
+  StrandLeaf      // key: strand name        → Option(EntryId)
+  StrandConfig    // key: strand name        → StrandConfiguration
+  StrandState     // key: strand name        → StrandState
+  StrandLastResult
   OpMeta        // key: op id            → Operation      (write-once)
   OpState       // key: op id            → OperationState (the PC)
   OpToolArgs    // key: op:step:idx      → Json           (write-once)
@@ -195,13 +195,13 @@ Websocket, JSON (client-friendliness beats msgpack here), versioned:
 
 ```
 c→s: {v:1, id, cmd: "prompt"|"steer"|"follow_up"|"abort"|"approve"|"deny"
-              |"fork"|"navigate"|"compact"|"create_lane"|"set_config"
+              |"fork"|"navigate"|"compact"|"create_strand"|"set_config"
               |"subscribe"|"catch_up", body}
 s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
-              |"usage"|"escalation"|"lane_result"|"error", seq?, body}
+              |"usage"|"escalation"|"strand_result"|"error", seq?, body}
 ```
 
-`subscribe{session, from_seq}` → `snapshot` (lanes, leaves, open ops, recent entries) then live events; reconnect = `catch_up{from_seq}` (events are rebuildable from `scan_*`). Stream deltas are ephemeral (never persisted; pi's non-goal preserved) and flagged `ephemeral:true`.
+`subscribe{session, from_seq}` → `snapshot` (strands, leaves, open ops, recent entries) then live events; reconnect = `catch_up{from_seq}` (events are rebuildable from `scan_*`). Stream deltas are ephemeral (never persisted; pi's non-goal preserved) and flagged `ephemeral:true`.
 
 ---
 
@@ -242,8 +242,8 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 
 ### WP-C `loom_session` — session layer, repo, forks
 
-**Scope**: `Session`/`SessionRepo` (create/open/list/delete/fork); typed tree views per lane; context projection (scan → reverse → drop errors/aborted/deferred → project customs → transform hook seam); fork (branch/tree scopes, fresh LaneState, ledger zeroed, orphan-call healing at request construction); precise-rewrite as a repo-level admin op (VACUUM-INTO copy + swap); migrate-on-open version chain.
-**Exit**: fork/projection property tests (append-only context invariant: across a lane's successive projections, the prior projection is a prefix except across a compaction); precise rewrite passes an "erase X" audit test incl. retained-tail copies; v-mismatch open refusal.
+**Scope**: `Session`/`SessionRepo` (create/open/list/delete/fork); typed tree views per strand; context projection (scan → reverse → drop errors/aborted/deferred → project customs → transform hook seam); fork (branch/tree scopes, fresh StrandState, ledger zeroed, orphan-call healing at request construction); precise-rewrite as a repo-level admin op (VACUUM-INTO copy + swap); migrate-on-open version chain.
+**Exit**: fork/projection property tests (append-only context invariant: across a strand's successive projections, the prior projection is a prefix except across a compaction); precise rewrite passes an "erase X" audit test incl. retained-tail copies; v-mismatch open refusal.
 
 ### WP-D `loom_machine` — the pure state machine
 
@@ -253,7 +253,7 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 
 ### WP-E `loom_runtime` — OTP assembly
 
-**Scope**: SessionSupervisor (rest-for-one), StorageWriter gen_server (commit queue; publishes events post-commit), LaneSupervisor + Lane driver (monitors as DriveState; dispatch/await/settle; retry timers), recovery/restore (register point-lookups + bounded validation from pi §3.3 as decoders), abort, close, inter-lane messaging (durable enqueue + doorbell `Nudge(lane)` message; doorbell loss must be harmless by construction — the checkpoint poll must find the item).
+**Scope**: SessionSupervisor (rest-for-one), StorageWriter gen_server (commit queue; publishes events post-commit), StrandSupervisor + Strand driver (monitors as DriveState; dispatch/await/settle; retry timers), recovery/restore (register point-lookups + bounded validation from pi §3.3 as decoders), abort, close, inter-strand messaging (durable enqueue + doorbell `Nudge(strand)` message; doorbell loss must be harmless by construction — the checkpoint poll must find the item).
 **Exit**: the **interleaving harness** (WP-T) green: for a library of scenarios, kill/restart between *every* adjacent commit pair and assert convergence to the same terminal state and ledger; chaos tier (random process kills under load, 10-min soak) with invariants asserted; doorbell-dropped tests.
 
 ### WP-F `loom_provider`
@@ -296,7 +296,7 @@ writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 
 ### WP-L `loom_client` — gateway + TUI
 
-**Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI (Gleam→Erlang, or ratatui-style via a small Rust shim — implementer's choice, protocol-only coupling): stream rendering, lane switcher, approval prompts, diff viewer, transcript browser.
+**Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI (Gleam→Erlang, or ratatui-style via a small Rust shim — implementer's choice, protocol-only coupling): stream rendering, strand switcher, approval prompts, diff viewer, transcript browser.
 **Exit**: protocol conformance tests both directions (golden transcripts); reconnect/catch-up fuzz; a scripted end-to-end demo session driven purely through the public protocol (this doubles as the acceptance test for M3).
 
 ### WP-M `loom_ext` — skills & extension zone
@@ -314,7 +314,7 @@ Storage suite · machine scenario DSL + suites · **interleaving harness** (inst
 
 ### 3.1 Recovery procedure (normative, WP-E)
 
-On lane start: read `lane.state`, `lane.leaf`, `lane.config`, and if an op is named, `op.meta` + `op.state`; batch-fetch every entry/register the state names; run the bounded validation checks (pi §3.3 list, as decoders); then enter the driver loop — `next_action` on a restored state must be indistinguishable from live operation. Crash-position policy: assistant/deferred `effect_pending` with running control → abandon reserved ids, fresh intent (unknown-outcome attempt); tool `effect_pending` → replay policy; cancelled control → synthetic settlements under existing reserved ids. `lane.last_result` is never a recovery input.
+On strand start: read `strand.state`, `strand.leaf`, `strand.config`, and if an op is named, `op.meta` + `op.state`; batch-fetch every entry/register the state names; run the bounded validation checks (pi §3.3 list, as decoders); then enter the driver loop — `next_action` on a restored state must be indistinguishable from live operation. Crash-position policy: assistant/deferred `effect_pending` with running control → abandon reserved ids, fresh intent (unknown-outcome attempt); tool `effect_pending` → replay policy; cancelled control → synthetic settlements under existing reserved ids. `strand.last_result` is never a recovery input.
 
 ### 3.2 Context projection & budget (WP-C + WP-E)
 
@@ -331,7 +331,7 @@ Projection per pi §2.5 (stop at compaction inclusive; drop error/aborted/deferr
 
 ### 3.4 Telemetry
 
-Structured logs (Erlang `logger`, JSON handler) with `{session, lane, op, step}` context everywhere; OpenTelemetry export optional; usage events mirrored to the ledger are the billing source of truth (telemetry is observability only).
+Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step}` context everywhere; OpenTelemetry export optional; usage events mirrored to the ledger are the billing source of truth (telemetry is observability only).
 
 ---
 
@@ -342,7 +342,7 @@ Structured logs (Erlang `logger`, JSON handler) with `{session, lane, op, step}`
 | M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms |
 | M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly |
 | M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live |
-| M3 | +C-full,K,L,H(macOS) | multi-lane demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live |
+| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm |
 | M6 | +M | promotion-ladder integration test; rollback live |

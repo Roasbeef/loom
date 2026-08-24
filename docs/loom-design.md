@@ -9,13 +9,13 @@
 
 Loom is a next-generation coding agent harness built in **Gleam on the BEAM**. It synthesizes three lineages:
 
-- **pi's durable harness** (earendil-works/pi, dev branch): write-once conversation trees, a durable program counter, atomic transitions, the effect sandwich, lanes, and crash-anywhere recovery.
+- **pi's durable harness** (earendil-works/pi, dev branch): write-once conversation trees, a durable program counter, atomic transitions, the effect sandwich, lanes (our *strands*), and crash-anywhere recovery.
 - **Codex CLI's security model**: kernel-enforced, deny-by-default OS sandboxing (Seatbelt / Landlock+seccomp / bwrap), network-off defaults, and escalation-by-approval rather than approval fatigue.
 - **omp's tool-surface wisdom**: hash-anchored edits, LSP/DAP as first-class semantic tools, subagents, role-based model routing, and context-frugal rule injection.
 
 And it adds what none of them have, because none of them run on the BEAM:
 
-- **Native actor-model orchestration**: sessions as supervision trees, lanes as processes, subagents as cheap spawns, crash recovery by supervisor + durable state rather than defensive coding.
+- **Native actor-model orchestration**: sessions as supervision trees, strands as processes, subagents as cheap spawns, crash recovery by supervisor + durable state rather than defensive coding.
 - **Code mode with real concurrency**: agent-written Gleam programs that fan out, race, pipeline, and hold stateful actors — on a runtime built for it.
 - **A staged self-improvement loop**: the agent writes Gleam, compiles it, proves it in a sandbox, and — behind an explicit trust gate — hot-loads `.beam` modules into its own extension zone without restarting.
 
@@ -29,9 +29,9 @@ Design priorities, in order: **security & isolation, correctness, robustness, pe
 
 | Property | What it means for a harness |
 |---|---|
-| Preemptive lightweight processes | Every lane, subagent, tool execution, LSP client, and stream parser is its own process. Millions are cheap. No async coloring, no event-loop starvation. |
+| Preemptive lightweight processes | Every strand, subagent, tool execution, LSP client, and stream parser is its own process. Millions are cheap. No async coloring, no event-loop starvation. |
 | Supervision trees | Crash recovery is *structural*. A dying tool executor is restarted by its supervisor; durable operation state says where to resume. |
-| Fault isolation | A panicking decoder in one lane cannot corrupt another lane's heap. Per-process GC; no global pauses. |
+| Fault isolation | A panicking decoder in one strand cannot corrupt another strand's heap. Per-process GC; no global pauses. |
 | `gen_statem` heritage | pi's operation state machine is literally the shape of this OTP behaviour. |
 | Hot code loading | The self-improvement loop is a native VM feature. |
 | Distribution | Trusted harness nodes can cluster; location transparency makes remote executors a driver, not an architecture change (§5.6). |
@@ -65,9 +65,9 @@ Design priorities, in order: **security & isolation, correctness, robustness, pe
 │  SessionSupervisor (one per open session)                          │
 │   ├── StorageWriter      gen_server; THE single writer; owns       │
 │   │                      the commit queue + SQLite handle          │
-│   ├── LaneSupervisor                                               │
-│   │    ├── Lane "main"   gen_statem-shaped; drives the op machine  │
-│   │    ├── Lane "sub:1"  subagent lane (same code, own cursor)     │
+│   ├── StrandSupervisor                                               │
+│   │    ├── Strand "main"   gen_statem-shaped; drives the op machine  │
+│   │    ├── Strand "sub:1"  subagent strand (same code, own cursor)     │
 │   │    └── ...                                                     │
 │   ├── EventBus           pg-based pub/sub of harness events        │
 │   └── ProjectionSup      rebuildable read models (search, stats)   │
@@ -91,7 +91,7 @@ Design priorities, in order: **security & isolation, correctness, robustness, pe
 Three planes, strictly layered:
 
 1. **Durability plane** — storage, the three stores, the conversation tree. Knows nothing about agents. (§3)
-2. **Orchestration plane** — lanes, operations, queues, the state machine, events, hooks, inter-agent messaging. Pure Gleam over the durability plane. (§4)
+2. **Orchestration plane** — strands, operations, queues, the state machine, events, hooks, inter-agent messaging. Pure Gleam over the durability plane. (§4)
 3. **Effect plane** — everything that touches the world: providers, tools, sandboxes, code mode, remote executors. All effects flow through typed brokers with capability tokens. (§5–6)
 
 ---
@@ -112,7 +112,7 @@ Every durable payload lives in exactly one. Projections (branch index, FTS, stat
 
 ### 3.2 The durable program counter
 
-After every step, one register — `op.state/{operation_id}` — is overwritten with the **complete, total** current state of the operation. Recovery reads that register and switches on it. No journal replay, no inference from absence. The terminal transaction deletes the operation's registers and records `lane.last_result`. A finished session holds exactly: conversation, ledger, a handful of lane/fact registers.
+After every step, one register — `op.state/{operation_id}` — is overwritten with the **complete, total** current state of the operation. Recovery reads that register and switches on it. No journal replay, no inference from absence. The terminal transaction deletes the operation's registers and records `strand.last_result`. A finished session holds exactly: conversation, ledger, a handful of strand/fact registers.
 
 ```gleam
 pub type OperationState {
@@ -154,8 +154,8 @@ Every commit publishes typed events (`entry_added`, `op_transition`, `usage`, ..
 
 Registers are session-scoped storage, but *ownership is baked into the key structure* — almost none are shared cells:
 
-- `lane.*` keys are keyed by lane name: disjoint per lane; no lane writes another's keys (the Session API simply offers no cross-lane writes).
-- `op.*` keys are keyed by operation id: owned by exactly one lane at a time; created at acceptance, deleted by the terminal transaction.
+- `strand.*` keys are keyed by strand name: disjoint per strand; no strand writes another's keys (the Session API simply offers no cross-strand writes).
+- `op.*` keys are keyed by operation id: owned by exactly one strand at a time; created at acceptance, deleted by the terminal transaction.
 - `pending.entry/{id}` is owned by whichever queue list references the id.
 - **`fact.*` is the one genuinely shared namespace** — the multi-agent blackboard (§4.6).
 
@@ -163,9 +163,9 @@ Concurrency safety comes from three layers, not locks:
 
 1. **Total write ordering** — all commits flow through the StorageWriter; no concurrent writers exist.
 2. **Atomic transactions** — all-or-none with strictly increasing seqs; no reader ever observes half a commit.
-3. **Seq-conditional commits (optimistic CAS)** — each register carries the seq of its last write; a transition commit asserts the expected seqs (`op.state`, `lane.state`, config when snapshotting). Stale expectation → commit refused → the lane reloads and replans. Transactions rewriting `lane.state` re-read the latest value and change only their own fields, so terminal cleanup coexists with a concurrently enqueued `next_run` without clobbering.
+3. **Seq-conditional commits (optimistic CAS)** — each register carries the seq of its last write; a transition commit asserts the expected seqs (`op.state`, `strand.state`, config when snapshotting). Stale expectation → commit refused → the strand reloads and replans. Transactions rewriting `strand.state` re-read the latest value and change only their own fields, so terminal cleanup coexists with a concurrently enqueued `next_run` without clobbering.
 
-Registers are durable state, **not a communication medium**: there is no watch/notify on a cell. Change notification is the EventBus (hints) plus doorbells (§4.6); registers are what you read at decision points and what recovery reads after a crash — five point-lookups per lane and you know exactly where you were.
+Registers are durable state, **not a communication medium**: there is no watch/notify on a cell. Change notification is the EventBus (hints) plus doorbells (§4.6); registers are what you read at decision points and what recovery reads after a crash — five point-lookups per strand and you know exactly where you were.
 
 ---
 
@@ -173,13 +173,13 @@ Registers are durable state, **not a communication medium**: there is no watch/n
 
 ### 4.1 Sessions as supervision trees
 
-Opening a session boots a `SessionSupervisor` (rest-for-one): StorageWriter first, then LaneSupervisor, EventBus, projections. Killing the OS process, killing any child, or `close()` converge on one path: reboot the tree; each Lane reads its registers, validates the entries/registers they name (bounded checks as total decoders: parse fully or report corruption), and resumes. **Crash recovery and cold start are the same code.**
+Opening a session boots a `SessionSupervisor` (rest-for-one): StorageWriter first, then StrandSupervisor, EventBus, projections. Killing the OS process, killing any child, or `close()` converge on one path: reboot the tree; each Strand reads its registers, validates the entries/registers they name (bounded checks as total decoders: parse fully or report corruption), and resumes. **Crash recovery and cold start are the same code.**
 
-### 4.2 Lanes as processes
+### 4.2 Strands as processes
 
-A lane runs the driver loop: load planner inputs (bounded, exact-id reads) → `next_action` (pure) → perform (`transition` commit / `dispatch` effect / `await` / `wait` / `finish`). Live effects are monitored children; a lane crash mid-effect *is* the crash-recovery path — one recovery story, not two.
+A strand runs the driver loop: load planner inputs (bounded, exact-id reads) → `next_action` (pure) → perform (`transition` commit / `dispatch` effect / `await` / `wait` / `finish`). Live effects are monitored children; a strand crash mid-effect *is* the crash-recovery path — one recovery story, not two.
 
-Subagents are lanes: same code, own cursor into the shared tree, own model config, spawned under the same supervisor. Forks, parallel approaches over shared history, and thread-style fan-out are all "spawn a lane at entry X."
+Subagents are strands: same code, own cursor into the shared tree, own model config, spawned under the same supervisor. Forks, parallel approaches over shared history, and thread-style fan-out are all "spawn a strand at entry X."
 
 ### 4.3 Queues, steering, abort (adopted from pi)
 
@@ -191,24 +191,24 @@ Subagents are lanes: same code, own cursor into the shared tree, own model confi
 
 ### 4.5 Hooks and extensions
 
-Hook points (`before_run`, `before_request`, `before_tool`, `after_tool`, `transform_context`, `before_run_end`, structural decisions) are behaviour-shaped callbacks. First-party hooks are ordinary Gleam. Agent-written hooks live in the ExtensionZone (§7) under supervised, time-boxed, killable wrappers — a misbehaving extension is killed and reported in-band, never able to wedge a lane.
+Hook points (`before_run`, `before_request`, `before_tool`, `after_tool`, `transform_context`, `before_run_end`, structural decisions) are behaviour-shaped callbacks. First-party hooks are ordinary Gleam. Agent-written hooks live in the ExtensionZone (§7) under supervised, time-boxed, killable wrappers — a misbehaving extension is killed and reported in-band, never able to wedge a strand.
 
 ### 4.6 Inter-agent communication: durable payloads, ephemeral doorbells
 
-Lanes are processes, so raw `Process.send` between subagents is *possible* — and forbidden as a transport, because a BEAM mailbox evaporates on crash. An unread "found the bug at auth.gleam:42" is simply gone after a supervisor restart: never in the transcript, invisible to recovery, believed delivered. That is exactly the ghost-state the durability plane exists to kill.
+Strands are processes, so raw `Process.send` between subagents is *possible* — and forbidden as a transport, because a BEAM mailbox evaporates on crash. An unread "found the bug at auth.gleam:42" is simply gone after a supervisor restart: never in the transcript, invisible to recovery, believed delivered. That is exactly the ghost-state the durability plane exists to kill.
 
-> **Doctrine: payloads travel durably; process messages are only doorbells.** Sending a message to another lane = a `steer`/`follow_up` enqueue onto that lane (one commit writing its `pending.entry` register), plus an ephemeral nudge so the target wakes immediately instead of at its next checkpoint poll. A lost nudge costs latency, never data.
+> **Doctrine: payloads travel durably; process messages are only doorbells.** Sending a message to another strand = a `steer`/`follow_up` enqueue onto that strand (one commit writing its `pending.entry` register), plus an ephemeral nudge so the target wakes immediately instead of at its next checkpoint poll. A lost nudge costs latency, never data.
 
 Patterns, all from existing machinery:
 
-- **Request/reply** — parent spawns a subagent lane with a task-brief entry; the subagent's terminal result is an entry the parent's checkpoint consumes.
-- **Peer-to-peer** — mutual steer-enqueues; two lanes genuinely converse, every turn durable.
+- **Request/reply** — parent spawns a subagent strand with a task-brief entry; the subagent's terminal result is an entry the parent's checkpoint consumes.
+- **Peer-to-peer** — mutual steer-enqueues; two strands genuinely converse, every turn durable.
 - **Blackboard** — `fact.custom` registers: shared, transactional session state ("reviewer posts findings; implementer reads them").
-- **Broadcast** — EventBus for ephemeral awareness ("lane 3 finished tests"); anything actionable is also written durably.
+- **Broadcast** — EventBus for ephemeral awareness ("strand 3 finished tests"); anything actionable is also written durably.
 
 Consequences: every inter-agent exchange is *in the tree* — replayable, forkable, compactable; a stuck agent's inbox is inspectable durable state, not an opaque mailbox. Multi-agent debugging becomes a read of the transcript.
 
-Scope notes: this is a **correctness** rule, not security — subagent lanes are trusted harness code (the model influences their *content*, not their code). Raw ephemeral messages remain legitimate for advisory signals where loss is harmless: progress ticks, heartbeats, cancellation hints ahead of the durable abort. The line: **if the recipient would act differently having received it, it goes through a commit; if it only affects pacing or display, a plain message is fine.**
+Scope notes: this is a **correctness** rule, not security — subagent strands are trusted harness code (the model influences their *content*, not their code). Raw ephemeral messages remain legitimate for advisory signals where loss is harmless: progress ticks, heartbeats, cancellation hints ahead of the durable abort. The line: **if the recipient would act differently having received it, it goes through a commit; if it only affects pacing or display, a plain message is fine.**
 
 ---
 
@@ -273,7 +273,7 @@ Erlang distribution is location-transparent (`send`, monitors, spawn across mach
 
 What can live on another machine, all via the data plane:
 
-- **Remote executor pools** — the same sandbox helper + policy on a build server, GPU box, or customer VM, tunneled. The lane's state machine is unchanged: the effect sandwich already assumes effects are uncertain and remote; a partition mid-command is just the recovery path. This is Codex-cloud-style remote execution nearly for free.
+- **Remote executor pools** — the same sandbox helper + policy on a build server, GPU box, or customer VM, tunneled. The strand's state machine is unchanged: the effect sandwich already assumes effects are uncertain and remote; a partition mid-command is just the recovery path. This is Codex-cloud-style remote execution nearly for free.
 - **Remote satellite nodes** — code-mode programs near the repo or the compute.
 - **Session mobility** — a session is one SQLite file + a supervision tree booted from it: close, copy, open elsewhere (§8.5).
 
@@ -336,7 +336,7 @@ Semantics pinned: `parallel_map` preserves input order regardless of completion 
 
 **Tier 3 is the punchline**: an L3 extension (§7) is literally an OTP actor — a supervised process implementing a typed behaviour. The agent prototypes a stateful helper as a jailed actor, proves it, and promotion turns the same actor-shaped code into a durable, supervised citizen of the harness. Same programming model at every trust level.
 
-Deliberately **not** exposed in code mode: links/monitors with custom trap-exit logic or self-defined supervision strategies. Policy is fixed (all-for-one under the program root); crashes propagate up; the program fails as a unit; the lane sees a structured error. Exotic OTP surface is for L3, where a human approved it.
+Deliberately **not** exposed in code mode: links/monitors with custom trap-exit logic or self-defined supervision strategies. Policy is fixed (all-for-one under the program root); crashes propagate up; the program fails as a unit; the strand sees a structured error. Exotic OTP surface is for L3, where a human approved it.
 
 ---
 
@@ -370,14 +370,14 @@ Payoff: the agent hits a workflow gap, writes the tool, proves it against tests 
 
 ## 8. Context & conversation intelligence
 
-- **Tree + lanes** (pi): branching, forking, parallel exploration over shared history; compaction as self-contained checkpoints (summary + retained tail; context never reads past a compaction); append-only context tail preserving provider KV caches; one-shot overflow compact-and-retry.
-- **Triggered rules** (omp's TTSR, adapted): project rules dormant at zero context cost; a per-lane stream-scanner process injects a rule when its trigger fires in model output. Cheap, killable, off the hot path.
+- **Tree + strands** (pi's lanes): branching, forking, parallel exploration over shared history; compaction as self-contained checkpoints (summary + retained tail; context never reads past a compaction); append-only context tail preserving provider KV caches; one-shot overflow compact-and-retry.
+- **Triggered rules** (omp's TTSR, adapted): project rules dormant at zero context cost; a per-strand stream-scanner process injects a rule when its trigger fires in model output. Cheap, killable, off the hot path.
 - **Hindsight memory**: session-end reflection distills per-workspace lessons (facts/entries in a memory session), surfaced by relevance; promoting a lesson to an L1 skill is one step.
 - **Subagent context discipline**: scoped context (branch + task brief) in, structured results out; full transcripts stay in the tree for audit without polluting the parent's context.
 
 ### 8.5 Thin clients and session mobility
 
-Because a session is one file plus a tree booted from it, the UI is **always a thin client**: the TUI, editor plugins, and web/mobile surfaces speak one ClientGateway protocol — subscribe to the event stream (snapshot + live events with catch-up-by-seq), send commands (`prompt`, `steer`, `abort`, `approve`, `fork`, lane ops). The local TUI talking to a local harness and a phone talking to a cloud harness are the same protocol; Gleam's JS target lets the wire types be shared source. Session mobility = close, copy the file, open elsewhere; a fleet of orchestrator nodes (control-plane clustered, §5.6) routes clients by session id.
+Because a session is one file plus a tree booted from it, the UI is **always a thin client**: the TUI, editor plugins, and web/mobile surfaces speak one ClientGateway protocol — subscribe to the event stream (snapshot + live events with catch-up-by-seq), send commands (`prompt`, `steer`, `abort`, `approve`, `fork`, strand ops). The local TUI talking to a local harness and a phone talking to a cloud harness are the same protocol; Gleam's JS target lets the wire types be shared source. Session mobility = close, copy the file, open elsewhere; a fleet of orchestrator nodes (control-plane clustered, §5.6) routes clients by session id.
 
 ---
 
@@ -385,7 +385,7 @@ Because a session is one file plus a tree booted from it, the UI is **always a t
 
 - **Types first.** Transition tables, classification order, queue semantics, and the placement invariant ("at every commit boundary a queued id has register XOR entry XOR neither") encoded so illegal states don't construct. Total decoders at every durability boundary: parse fully or report corruption; never partially trust.
 - **pi's conformance suite, ported.** One suite over all backends; invariants + race catalog as property-based tests; plus a **deterministic interleaving harness**: because commits serialize through the StorageWriter and effects are messages, "crash between TX_n and TX_{n+1}" is scriptable for *every* adjacent pair — crash-testing is a for-loop, not an ops exercise.
-- **Chaos tier**: randomly kill lanes, executors, satellites, and the whole node under load; assert store invariants and that no `replay: Never` effect ran twice.
+- **Chaos tier**: randomly kill strands, executors, satellites, and the whole node under load; assert store invariants and that no `replay: Never` effect ran twice.
 - **Sandbox regression suite**: known-escape probes (dial-out, writes outside roots, protected paths, env leakage, pgroup orphaning) against every policy tier, every platform, in CI. The sandbox is tested like a product.
 - **In-band failure doctrine**: unknown tools, missing providers, vetting rejections, compile errors, policy denials all settle as structured error results the model can react to; the harness never wedges.
 
@@ -400,9 +400,9 @@ Because a session is one file plus a tree booted from it, the UI is **always a t
 ## 11. Build order
 
 1. **M0 — Durability plane.** Storage ADTs, Memory + SQLite backends, conformance suite, branch index.
-2. **M1 — State machine.** Operation ADTs, pure `next_action`, StorageWriter, single-lane drive loop, crash-anywhere harness.
+2. **M1 — State machine.** Operation ADTs, pure `next_action`, StorageWriter, single-strand drive loop, crash-anywhere harness.
 3. **M2 — Effects.** ProviderGateway, effect sandwich, broker skeleton, bash/read/write/hashline tools **with the Linux sandbox from day one**.
-4. **M3 — Lanes & subagents.** Multi-lane sessions, queues/steering/abort, inter-agent messaging, forks, compaction, events. macOS Seatbelt.
+4. **M3 — Strands & subagents.** Multi-strand sessions, queues/steering/abort, inter-agent messaging, forks, compaction, events. macOS Seatbelt.
 5. **M4 — Code mode.** Capability prelude (incl. `cap/task`, `cap/actor`), vetting lint, sandboxed compile, satellite nodes, cells.
 6. **M5 — Semantic tools.** LSP, DAP, role routing, TTSR, hindsight memory. ClientGateway + TUI thin client.
 7. **M6 — Self-improvement.** Skill store (L1), extension API + test-in-jail (L2), approval + hot-load + rollback (L3).
@@ -422,9 +422,9 @@ Because a session is one file plus a tree booted from it, the UI is **always a t
 
 | Source | What we take | What we change |
 |---|---|---|
-| **pi harness spec** | Three stores; write-once tree; durable total-state PC; effect sandwich; lanes; queues; compaction; terminal transactions; conformance discipline | Single writer becomes a gen_server (structural, not leased); recovery = supervisor restart; TS type gymnastics become ADTs; inter-agent messaging built on the queue machinery |
+| **pi harness spec** | Three stores; write-once tree; durable total-state PC; effect sandwich; lanes (renamed strands); queues; compaction; terminal transactions; conformance discipline | Single writer becomes a gen_server (structural, not leased); recovery = supervisor restart; TS type gymnastics become ADTs; inter-agent messaging built on the queue machinery |
 | **Codex CLI** | Kernel-enforced deny-by-default sandbox; network-off default; escalation-by-approval; sandbox-the-tools-not-the-harness; policy as data | Policies as durable typed transcript values; capability tokens; pooled per-execution budgets; egress proxy; satellite tier; remote pools over data-plane channels |
-| **omp** | Hashline edits; LSP/DAP as tools; subagents; role routing + fallbacks; TTSR; hindsight memory; cells | Subagents become lanes over the shared durable tree; cells become satellite nodes; rules as stream-scanner processes |
+| **omp** | Hashline edits; LSP/DAP as tools; subagents; role routing + fallbacks; TTSR; hindsight memory; cells | Subagents become strands over the shared durable tree; cells become satellite nodes; rules as stream-scanner processes |
 | **BEAM/Gleam** | Supervision, processes, hot loading, distribution, `pg`, `disk_log`; sound types; no-reflection capability analysis | Rule Zero (kernel isolates threats, BEAM isolates faults); two-channel doctrine (distribution never crosses trust boundaries); curated concurrency capabilities in code mode |
 
 ---
