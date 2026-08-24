@@ -86,7 +86,7 @@ touches the world.
 | `sandbox` | effect | The `loom-exec` helper binary and platform drivers. Go. |
 | `tools` | effect | bash, hash-anchored filesystem reads and edits, grep. |
 | `tui` | client | A terminal client over the gateway protocol, runnable against a fake with `--demo`. Go. |
-| `client` | client | The Gleam side of that gateway protocol. A skeleton today. |
+| `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loom-server` entry point. |
 | `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
 
 Two commits bracket every effect, and the gap between them is the
@@ -312,24 +312,83 @@ a remote client against a hosted one differ only in the socket.
   kernel. The Linux jail is also the only one that exists — macOS Seatbelt
   and the Windows sandbox are designed and unbuilt.
 
-## Building it
+## Building and running
 
 You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or newer
 for the sandbox helper and the terminal client. Nothing is published to
 Hex; the packages are monorepo-internal and are built where they sit.
 
 ```
-make check      # the full gate: format check, warning-free build, all tests
-make selftest   # build the helper, then report ENFORCED/SKIPPED per probe
-make e2e        # the jailed end-to-end against a freshly built helper
-make soak       # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
-make help       # everything else
+make check            # the full gate: format check, warning-free build, all tests
+make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
+make server-shipment  # the server: build/erlang-shipment + bin/loom-server
+make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
+make e2e              # the jailed end-to-end against a freshly built helper
+make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
+make help             # everything else
 ```
 
 `make check` is exactly what CI runs, and `make check-<package>` narrows
 it to one package. Run `make selftest` on the kernel you actually intend
 to run agents on: the sandbox is only as strong as the layers that machine
 provides, and the self-test is how you find out which ones those are.
+
+Three binaries come out of a build. `bin/loom-exec` is the Go sandbox
+helper the broker spawns into jails. `bin/loom-tui` is the Go terminal
+client; it depends on nothing but the wire protocol, and `bin/loom-tui
+--demo` runs it against an in-process fake with a canned session — no
+server, no network, a fine first thing to try. `bin/loom-server` is the
+session server: `make server-shipment` exports the Gleam `client` package
+as an Erlang shipment into `build/erlang-shipment` and writes the
+launcher. A shipment bundles compiled BEAM files, not the runtime system,
+so running it needs an Erlang/OTP installation on the machine — where
+that is unwanted, `make run-server` runs the same server from source
+through Gleam instead.
+
+### Running a session
+
+The TUI never starts a server. That is the thin-client design, not an
+omission: one server owns the session file and its writer lease, and any
+number of clients — several terminals, an editor plugin, a phone —
+subscribe to the same session over the gateway protocol and catch up by
+sequence number. So a real session is two processes, typically two
+terminals:
+
+```
+# terminal 1 — the server owns the session
+bin/loom-server --session ~/sessions/myproj.db --workspace ~/src/myproj
+# prints: loom-server: session myproj listening on ws://127.0.0.1:44123/v1/ws
+#         (token file ~/sessions/myproj.db.token)
+
+# terminal 2 — a client attaches
+bin/loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
+  --token "$(cat ~/sessions/myproj.db.token)"
+```
+
+The session file is created if absent; the session name clients subscribe
+with is the file's base name. The bearer token is minted at startup into
+a `0600` file next to the session, which is the local-auth story: reading
+it proves you are the same user, and remote clients get the same header
+over their own transport. `make run-server SESSION=path` and
+`make run-tui ADDR=... SESSION=...` wrap the two halves; `make dev` does
+the whole loop in one command — builds the binaries, starts a server on a
+scratch session (or `$SESSION`), waits for the port line, attaches the
+TUI, and tears the server down when the TUI exits. `make dev` is
+interactive and wants a real terminal; `scripts/dev.sh --smoke` is the
+non-interactive variant that boots, probes the endpoints, and verifies a
+clean shutdown.
+
+What the server needs: the `loom-exec` helper (found on `PATH` or in
+`./bin`, or named with `--helper`), an Erlang/OTP installation if run
+from the shipment, and — optionally — a provider key. `ANTHROPIC_API_KEY`
+is read from the environment at dispatch time; without it the server
+boots and serves normally and generation requests fail in-band, which is
+enough to inspect a session, replay history, or develop a client. By
+default the server demands full sandbox enforcement, under which a
+kernel that cannot provide the jail layers gets its tool calls refused;
+`--best-effort` accepts a degraded helper for development machines, and
+`make selftest` tells you honestly which of the two postures your kernel
+can back.
 
 ## Reading further
 
