@@ -1,5 +1,6 @@
 import core/json
 import gleam/list
+import gleam/string
 import support/generate
 
 // --- parsing basics -----------------------------------------------------
@@ -67,9 +68,45 @@ pub fn parse_empty_containers_test() {
   assert json.parse("[]") == Ok(json.Array([]))
 }
 
-pub fn parse_preserves_duplicate_keys_in_order_test() {
-  assert json.parse("{\"a\":1,\"a\":2}")
-    == Ok(json.Object([#("a", json.Int(1)), #("a", json.Int(2))]))
+pub fn parse_rejects_duplicate_keys_test() {
+  // A duplicated key has no single meaning across decoders (first- versus
+  // last-occurrence precedence), so the parser refuses to pick one.
+  let assert Error(_report) = json.parse("{\"a\":1,\"a\":2}")
+  // Also in a nested object, and with more fields around the duplicate.
+  let assert Error(_report) = json.parse("{\"o\":{\"b\":1,\"c\":2,\"b\":3}}")
+  // The same key in two different objects is fine.
+  assert json.parse("{\"o\":{\"a\":1},\"p\":{\"a\":2}}")
+    == Ok(
+      json.Object([
+        #("o", json.Object([#("a", json.Int(1))])),
+        #("p", json.Object([#("a", json.Int(2))])),
+      ]),
+    )
+}
+
+pub fn parse_depth_at_bound_still_decodes_test() {
+  // Exactly max_depth nested arrays decode ...
+  let text =
+    string.repeat("[", json.max_depth) <> string.repeat("]", json.max_depth)
+  let assert Ok(_value) = json.parse(text)
+  // ... and so do exactly max_depth nested objects.
+  let objects =
+    string.repeat("{\"k\":", json.max_depth - 1)
+    <> "{}"
+    <> string.repeat("}", json.max_depth - 1)
+  let assert Ok(_value) = json.parse(objects)
+}
+
+pub fn parse_depth_past_bound_rejected_test() {
+  let over = json.max_depth + 1
+  let arrays = string.repeat("[", over) <> string.repeat("]", over)
+  let assert Error(_report) = json.parse(arrays)
+  let objects =
+    string.repeat("{\"k\":", over - 1) <> "{}" <> string.repeat("}", over - 1)
+  let assert Error(_report) = json.parse(objects)
+  // Far past the bound — thousands of one-byte headers — is refused
+  // in-band too, not by exhausting the parser.
+  let assert Error(_report) = json.parse(string.repeat("[", 100_000))
 }
 
 // --- strings and unicode ------------------------------------------------
@@ -202,6 +239,14 @@ pub fn adversarial_corpus_test() {
     // a float literal beyond ieee 754 double range
     "1e999",
     "-1e999",
+    // duplicated object keys
+    "{\"v\":1,\"v\":2}",
+    "{\"a\":1,\"b\":{\"c\":1,\"c\":2}}",
+    // nesting past the depth bound, arrays and objects
+    string.repeat("[", json.max_depth + 1)
+      <> string.repeat("]", json.max_depth + 1),
+    string.repeat("[", 50_000),
+    string.repeat("{\"k\":", json.max_depth + 1) <> "0",
   ]
   list.each(corpus, fn(text) {
     let assert Error(_report) = json.parse(text)

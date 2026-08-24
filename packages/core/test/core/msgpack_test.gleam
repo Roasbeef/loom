@@ -1,4 +1,5 @@
 import core/msgpack
+import gleam/bit_array
 import gleam/list
 import support/generate
 
@@ -182,6 +183,67 @@ pub fn encode_rejects_ragged_binary_test() {
     msgpack.encode(msgpack.BinaryValue(<<1:size(3)>>))
 }
 
+// --- duplicate map keys -------------------------------------------------
+
+pub fn decode_rejects_duplicate_map_keys_test() {
+  // {"a": 1, "a": 2}: a duplicated key has no single meaning across
+  // decoders (first- versus last-occurrence precedence), so decode
+  // refuses to pick one.
+  let assert Error(_report) =
+    msgpack.decode(<<0x82, 0xa1, "a":utf8, 0x01, 0xa1, "a":utf8, 0x02>>)
+  // Non-string keys compare structurally: {0: nil, 0: nil}.
+  let assert Error(_report) = msgpack.decode(<<0x82, 0x00, 0xc0, 0x00, 0xc0>>)
+  // A duplicate inside a nested map is rejected the same way.
+  let assert Error(_report) =
+    msgpack.decode(<<
+      0x81, 0xa1, "k":utf8, 0x82, 0xa1, "a":utf8, 0x01, 0xa1, "a":utf8, 0x02,
+    >>)
+  // The same key in two different maps is fine.
+  let assert Ok(_) =
+    msgpack.decode(<<
+      0x82, 0xa1, "x":utf8, 0x81, 0xa1, "a":utf8, 0x01, 0xa1, "y":utf8, 0x81,
+      0xa1, "a":utf8, 0x02,
+    >>)
+}
+
+// --- nesting depth ------------------------------------------------------
+
+// `count` one-element array headers wrapping an empty array: nesting
+// depth `count + 1`.
+fn nested_arrays(count: Int) -> BitArray {
+  list.fold(generate.range(1, count), from: <<0x90>>, with: fn(inner, _) {
+    <<0x91, inner:bits>>
+  })
+}
+
+pub fn decode_depth_at_bound_still_decodes_test() {
+  let assert Ok(_value) = msgpack.decode(nested_arrays(msgpack.max_depth - 1))
+  // Maps at the bound too: {"k": {"k": ... {}}}.
+  let nested_maps =
+    list.fold(
+      generate.range(1, msgpack.max_depth - 1),
+      from: <<0x80>>,
+      with: fn(inner, _) { <<0x81, 0xa1, "k":utf8, inner:bits>> },
+    )
+  let assert Ok(_value) = msgpack.decode(nested_maps)
+}
+
+pub fn decode_depth_past_bound_rejected_test() {
+  let assert Error(_report) = msgpack.decode(nested_arrays(msgpack.max_depth))
+  let nested_maps =
+    list.fold(
+      generate.range(1, msgpack.max_depth),
+      from: <<0x80>>,
+      with: fn(inner, _) { <<0x81, 0xa1, "k":utf8, inner:bits>> },
+    )
+  let assert Error(_report) = msgpack.decode(nested_maps)
+  // Far past the bound — thousands of one-byte fixarray headers, the
+  // cheap adversarial shape — is refused in-band, not by exhausting the
+  // decoder.
+  let deep = bit_array.concat(list.repeat(<<0x91>>, times: 100_000))
+  let assert Error(_report) = msgpack.decode(deep)
+}
+
 // --- roundtrip properties -----------------------------------------------
 
 fn roundtrip(value: msgpack.MsgPackValue) -> Nil {
@@ -258,6 +320,12 @@ pub fn adversarial_corpus_test() {
     // non-byte-aligned input
     <<1:size(3)>>,
     <<0xc0, 1:size(3)>>,
+    // duplicated map keys, string and integer
+    <<0x82, 0xa1, "a":utf8, 0x01, 0xa1, "a":utf8, 0x02>>,
+    <<0x82, 0x07, 0xc0, 0x07, 0xc0>>,
+    // containers nested past the depth bound
+    nested_arrays(msgpack.max_depth),
+    bit_array.concat(list.repeat(<<0x91>>, times: 50_000)),
   ]
   list.each(corpus, fn(bytes) {
     let assert Error(_report) = msgpack.decode(bytes)

@@ -14,24 +14,47 @@
 ////   whose magnitude exceeds the IEEE 754 double range is reported as
 ////   corruption rather than rounded to infinity, which the BEAM cannot
 ////   represent.
-//// - Object fields keep their textual order, and duplicate keys are kept
-////   as-is; readers that look fields up take the first occurrence.
+//// - Object fields keep their textual order. A duplicated key within one
+////   object is corruption: decoders disagree on duplicate-key precedence
+////   (first- versus last-occurrence wins), so at a durability boundary a
+////   document carrying duplicates has no single meaning — the parser
+////   rejects it rather than picking one. Data this module serialized
+////   never contains duplicates, so nothing well-formed is lost.
+//// - Containers (objects and arrays) may nest at most `max_depth` levels
+////   deep. Deeper input — cheap to fabricate adversarially, one `[` per
+////   level — is a corruption report, never a runaway recursion that
+////   exhausts the parsing process's stack or heap.
 //// - Strings must be valid JSON: unescaped control characters are
 ////   rejected, `\uXXXX` escapes are decoded including surrogate pairs, and
 ////   lone surrogates are rejected.
 
 import core/corruption.{type CorruptionReport}
+import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import gleam/string_tree.{type StringTree}
+
+/// The maximum container nesting depth `parse` accepts: objects and arrays
+/// may nest at most this many levels deep. Generous for real durable
+/// payloads (entries and register values nest a handful of levels); the
+/// bound exists so hostile input is refused in-band instead of driving
+/// the parser into unbounded recursion.
+pub const max_depth = 256
 
 /// A JSON document as plain data. Constructors carry no invariants beyond
 /// their types except:
 ///
-/// - `Object`: field order is meaningful and preserved; duplicate keys are
-///   representable and readers take the first occurrence.
+/// - `Object`: field order is meaningful and preserved; field names must
+///   be unique — `parse` never produces duplicates (a duplicated key is
+///   corruption), and a hand-built object with duplicated names
+///   serializes to text that will not parse back. Readers that look
+///   fields up take the first occurrence as the tiebreak for hand-built
+///   values.
+/// - `Object`/`Array`: containers nest at most `max_depth` levels; a
+///   deeper value serializes to text that will not parse back.
 /// - `Float`: always a finite IEEE 754 double (the BEAM has no NaN or
 ///   infinity), so serialization is always well-formed JSON.
 pub type JsonValue {
@@ -53,7 +76,8 @@ pub type JsonValue {
 
 /// Parses a single JSON document. Total: every failure — malformed syntax,
 /// trailing content, invalid escapes, lone surrogates, unrepresentable
-/// numbers — is a `CorruptionReport`, never a crash.
+/// numbers, duplicated object keys, containers nested past `max_depth` —
+/// is a `CorruptionReport`, never a crash.
 ///
 /// ## Examples
 ///
@@ -75,7 +99,7 @@ pub fn parse(text: String) -> Result(JsonValue, CorruptionReport) {
       ),
       offset: 0,
     )
-  case parse_value(skip_whitespace(cursor)) {
+  case parse_value(skip_whitespace(cursor), 0) {
     Ok(#(value, cursor)) -> {
       let cursor = skip_whitespace(cursor)
       case cursor.rest {
@@ -216,14 +240,32 @@ fn skip_whitespace(cursor: Cursor) -> Cursor {
   }
 }
 
+// `depth` counts the containers already entered; a new object or array is
+// admitted only while `depth < max_depth`, which bounds the recursion.
 fn parse_value(
   cursor: Cursor,
+  depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   case cursor.rest {
-    [0x7B, ..rest] ->
-      parse_members(advance(cursor, rest, by: 1), [], expect_first: True)
-    [0x5B, ..rest] ->
-      parse_items(advance(cursor, rest, by: 1), [], expect_first: True)
+    [0x7B, ..rest] -> {
+      use Nil <- result.try(check_depth(cursor, depth))
+      parse_members(
+        advance(cursor, rest, by: 1),
+        [],
+        dict.new(),
+        expect_first: True,
+        depth: depth + 1,
+      )
+    }
+    [0x5B, ..rest] -> {
+      use Nil <- result.try(check_depth(cursor, depth))
+      parse_items(
+        advance(cursor, rest, by: 1),
+        [],
+        expect_first: True,
+        depth: depth + 1,
+      )
+    }
     [0x22, ..rest] ->
       case parse_string_body(advance(cursor, rest, by: 1), []) {
         Ok(#(text, cursor)) -> Ok(#(String(text), cursor))
@@ -246,25 +288,41 @@ fn parse_value(
 
 // --- objects and arrays -------------------------------------------------
 
+// `seen` indexes the field names parsed so far in this object, so
+// duplicate detection costs one dict probe per field rather than a
+// quadratic rescan an adversarial many-field object could exploit.
 fn parse_members(
   cursor: Cursor,
   fields: List(#(String, JsonValue)),
+  seen: Dict(String, Nil),
   expect_first expect_first: Bool,
+  depth depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   let cursor = skip_whitespace(cursor)
   case cursor.rest, expect_first {
     [0x7D, ..rest], True -> Ok(#(Object([]), advance(cursor, rest, by: 1)))
     _, _ ->
-      case parse_member(cursor) {
-        Ok(#(field, cursor)) -> {
-          let fields = [field, ..fields]
+      case parse_member(cursor, depth) {
+        Ok(#(#(name, value), cursor)) -> {
+          use Nil <- result.try(case dict.has_key(seen, name) {
+            False -> Ok(Nil)
+            True ->
+              Error(fail(
+                cursor,
+                "unique object keys (\"" <> name <> "\" repeats)",
+              ))
+          })
+          let fields = [#(name, value), ..fields]
+          let seen = dict.insert(seen, name, Nil)
           let cursor = skip_whitespace(cursor)
           case cursor.rest {
             [0x2C, ..rest] ->
               parse_members(
                 advance(cursor, rest, by: 1),
                 fields,
+                seen,
                 expect_first: False,
+                depth:,
               )
             [0x7D, ..rest] ->
               Ok(#(Object(list.reverse(fields)), advance(cursor, rest, by: 1)))
@@ -278,6 +336,7 @@ fn parse_members(
 
 fn parse_member(
   cursor: Cursor,
+  depth: Int,
 ) -> Result(#(#(String, JsonValue), Cursor), CorruptionReport) {
   case cursor.rest {
     [0x22, ..rest] ->
@@ -286,7 +345,12 @@ fn parse_member(
           let cursor = skip_whitespace(cursor)
           case cursor.rest {
             [0x3A, ..rest] ->
-              case parse_value(skip_whitespace(advance(cursor, rest, by: 1))) {
+              case
+                parse_value(
+                  skip_whitespace(advance(cursor, rest, by: 1)),
+                  depth,
+                )
+              {
                 Ok(#(value, cursor)) -> Ok(#(#(name, value), cursor))
                 Error(report) -> Error(report)
               }
@@ -303,12 +367,13 @@ fn parse_items(
   cursor: Cursor,
   items: List(JsonValue),
   expect_first expect_first: Bool,
+  depth depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   let cursor = skip_whitespace(cursor)
   case cursor.rest, expect_first {
     [0x5D, ..rest], True -> Ok(#(Array([]), advance(cursor, rest, by: 1)))
     _, _ ->
-      case parse_value(cursor) {
+      case parse_value(cursor, depth) {
         Ok(#(item, cursor)) -> {
           let items = [item, ..items]
           let cursor = skip_whitespace(cursor)
@@ -318,6 +383,7 @@ fn parse_items(
                 advance(cursor, rest, by: 1),
                 items,
                 expect_first: False,
+                depth:,
               )
             [0x5D, ..rest] ->
               Ok(#(Array(list.reverse(items)), advance(cursor, rest, by: 1)))
@@ -326,6 +392,21 @@ fn parse_items(
         }
         Error(report) -> Error(report)
       }
+  }
+}
+
+// Refuses to open one more container once `max_depth` levels are already
+// open, keeping parser recursion bounded by a constant.
+fn check_depth(cursor: Cursor, depth: Int) -> Result(Nil, CorruptionReport) {
+  case depth < max_depth {
+    True -> Ok(Nil)
+    False ->
+      Error(fail(
+        cursor,
+        "containers nested at most "
+          <> int.to_string(max_depth)
+          <> " levels deep",
+      ))
   }
 }
 

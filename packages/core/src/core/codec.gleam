@@ -1024,7 +1024,9 @@ fn fields_of(
   }
 }
 
-// First occurrence wins for duplicate keys, matching `core/json` policy.
+// Parsed documents never carry duplicate keys (`core/json.parse` rejects
+// them), so this lookup normally sees unique names; for hand-constructed
+// values the first occurrence wins, matching the `core/json` tiebreak.
 fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
   case fields {
     [] -> Error(Nil)

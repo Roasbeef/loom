@@ -12,6 +12,19 @@
 //// never crashes. Non-finite float64 payloads (NaN, infinities) are also
 //// reported as corruption — the BEAM cannot represent them.
 ////
+//// Two further defenses against adversarial input on this wire boundary:
+////
+//// - **Nesting is bounded.** Containers may nest at most `max_depth`
+////   levels deep; input nested past that (cheap to fabricate — one byte
+////   per level) is a corruption report, never a runaway recursion that
+////   exhausts the decoding process's stack or heap.
+//// - **Map keys must be unique.** A map with a duplicated key (compared
+////   structurally) is a corruption report. Different decoders disagree on
+////   duplicate-key precedence (first- versus last-occurrence wins), so a
+////   frame carrying duplicates could legally read as two different
+////   messages on the two ends of a channel; rejecting outright is the
+////   only rule with a single interpretation.
+////
 //// Encoding is canonical: every value is written in the smallest encoding
 //// that fits, so equal values always produce identical bytes. The golden
 //// fixtures under `protocol/msgpack-fixtures/` pin this canonical form for
@@ -20,10 +33,18 @@
 import core/corruption.{type CorruptionReport}
 import gleam/bit_array
 import gleam/bytes_tree.{type BytesTree}
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+
+/// The maximum container nesting depth `decode` accepts: arrays and maps
+/// may nest at most this many levels deep. Real protocol payloads are a
+/// handful of levels; the bound exists so adversarial input (thousands of
+/// one-byte array headers) is refused in-band instead of driving the
+/// decoder into unbounded recursion.
+pub const max_depth = 256
 
 /// A msgpack value as plain data. Constructor invariants:
 ///
@@ -32,8 +53,12 @@ import gleam/string
 /// - `FloatValue`: always finite (a BEAM float).
 /// - `StringValue`: a valid utf-8 string (a Gleam `String`).
 /// - `BinaryValue`: byte-aligned; a ragged bit array fails to encode.
-/// - `MapValue`: entry order is meaningful and preserved; duplicate keys
-///   are representable and readers take the first occurrence.
+/// - `MapValue`: entry order is meaningful and preserved; keys must be
+///   unique — `decode` never produces duplicates (a duplicated key is
+///   corruption), and a hand-built map with duplicated keys encodes to
+///   bytes that will not decode back.
+/// - `ArrayValue`/`MapValue`: containers nest at most `max_depth` levels;
+///   a deeper value encodes to bytes that will not decode back.
 pub type MsgPackValue {
   /// The msgpack nil.
   NilValue
@@ -84,8 +109,9 @@ pub fn encode(value: MsgPackValue) -> Result(BitArray, EncodeError) {
 }
 
 /// Decodes exactly one msgpack value from `bytes`, requiring the whole
-/// input to be consumed. Total: every malformed input is a
-/// `CorruptionReport`, never a crash.
+/// input to be consumed. Total: every malformed input — including
+/// containers nested past `max_depth` and maps with duplicated keys — is
+/// a `CorruptionReport`, never a crash.
 ///
 /// ## Examples
 ///
@@ -98,7 +124,7 @@ pub fn encode(value: MsgPackValue) -> Result(BitArray, EncodeError) {
 /// ```
 ///
 pub fn decode(bytes: BitArray) -> Result(MsgPackValue, CorruptionReport) {
-  case decode_value(bytes) {
+  case decode_value(bytes, 0) {
     Ok(#(value, rest)) ->
       case bit_array.bit_size(rest) {
         0 -> Ok(value)
@@ -237,8 +263,11 @@ fn excerpt(bytes: BitArray) -> String {
   }
 }
 
+// `depth` counts the containers already entered; a new array or map is
+// admitted only while `depth < max_depth`, which bounds the recursion.
 fn decode_value(
   bytes: BitArray,
+  depth: Int,
 ) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
   case bytes {
     <<0xc0, rest:bits>> -> Ok(#(NilValue, rest))
@@ -259,16 +288,16 @@ fn decode_value(
     <<0xc4, length:size(8), rest:bits>> -> decode_binary(length, rest)
     <<0xc5, length:size(16), rest:bits>> -> decode_binary(length, rest)
     <<0xc6, length:size(32), rest:bits>> -> decode_binary(length, rest)
-    <<0xdc, length:size(16), rest:bits>> -> decode_array(length, rest)
-    <<0xdd, length:size(32), rest:bits>> -> decode_array(length, rest)
-    <<0xde, length:size(16), rest:bits>> -> decode_map(length, rest)
-    <<0xdf, length:size(32), rest:bits>> -> decode_map(length, rest)
+    <<0xdc, length:size(16), rest:bits>> -> decode_array(length, rest, depth)
+    <<0xdd, length:size(32), rest:bits>> -> decode_array(length, rest, depth)
+    <<0xde, length:size(16), rest:bits>> -> decode_map(length, rest, depth)
+    <<0xdf, length:size(32), rest:bits>> -> decode_map(length, rest, depth)
     <<tag, rest:bits>> if tag <= 0x7f -> Ok(#(IntValue(value: tag), rest))
     <<tag, rest:bits>> if tag >= 0xe0 -> Ok(#(IntValue(value: tag - 256), rest))
     <<tag, rest:bits>> if tag >= 0x80 && tag <= 0x8f ->
-      decode_map(tag - 0x80, rest)
+      decode_map(tag - 0x80, rest, depth)
     <<tag, rest:bits>> if tag >= 0x90 && tag <= 0x9f ->
-      decode_array(tag - 0x90, rest)
+      decode_array(tag - 0x90, rest, depth)
     <<tag, rest:bits>> if tag >= 0xa0 && tag <= 0xbf ->
       decode_string(tag - 0xa0, rest)
     <<tag, _rest:bits>> -> Error(tag_error(bytes, tag))
@@ -341,8 +370,15 @@ fn take_bytes(
 fn decode_array(
   length: Int,
   bytes: BitArray,
+  depth: Int,
 ) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
-  use #(items, rest) <- result.map(decode_array_loop(length, bytes, []))
+  use Nil <- result.try(check_depth(bytes, depth))
+  use #(items, rest) <- result.map(decode_array_loop(
+    length,
+    bytes,
+    [],
+    depth + 1,
+  ))
   #(ArrayValue(items:), rest)
 }
 
@@ -350,12 +386,13 @@ fn decode_array_loop(
   remaining: Int,
   bytes: BitArray,
   accumulator: List(MsgPackValue),
+  depth: Int,
 ) -> Result(#(List(MsgPackValue), BitArray), CorruptionReport) {
   case remaining {
     0 -> Ok(#(list.reverse(accumulator), bytes))
     _ -> {
-      use #(item, rest) <- result.try(decode_value(bytes))
-      decode_array_loop(remaining - 1, rest, [item, ..accumulator])
+      use #(item, rest) <- result.try(decode_value(bytes, depth))
+      decode_array_loop(remaining - 1, rest, [item, ..accumulator], depth)
     }
   }
 }
@@ -363,22 +400,60 @@ fn decode_array_loop(
 fn decode_map(
   length: Int,
   bytes: BitArray,
+  depth: Int,
 ) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
-  use #(entries, rest) <- result.map(decode_map_loop(length, bytes, []))
+  use Nil <- result.try(check_depth(bytes, depth))
+  use #(entries, rest) <- result.map(decode_map_loop(
+    length,
+    bytes,
+    [],
+    dict.new(),
+    depth + 1,
+  ))
   #(MapValue(entries:), rest)
 }
 
+// `seen` indexes the keys decoded so far (structural equality), so
+// duplicate detection costs one dict probe per entry rather than a
+// quadratic rescan an adversarial many-entry map could exploit.
 fn decode_map_loop(
   remaining: Int,
   bytes: BitArray,
   accumulator: List(#(MsgPackValue, MsgPackValue)),
+  seen: Dict(MsgPackValue, Nil),
+  depth: Int,
 ) -> Result(#(List(#(MsgPackValue, MsgPackValue)), BitArray), CorruptionReport) {
   case remaining {
     0 -> Ok(#(list.reverse(accumulator), bytes))
     _ -> {
-      use #(key, rest) <- result.try(decode_value(bytes))
-      use #(value, rest) <- result.try(decode_value(rest))
-      decode_map_loop(remaining - 1, rest, [#(key, value), ..accumulator])
+      use #(key, rest) <- result.try(decode_value(bytes, depth))
+      use Nil <- result.try(case dict.has_key(seen, key) {
+        False -> Ok(Nil)
+        True -> Error(fail(bytes, "unique map keys (a key repeats)"))
+      })
+      use #(value, rest) <- result.try(decode_value(rest, depth))
+      decode_map_loop(
+        remaining - 1,
+        rest,
+        [#(key, value), ..accumulator],
+        dict.insert(seen, key, Nil),
+        depth,
+      )
     }
+  }
+}
+
+// Refuses to open one more container once `max_depth` levels are already
+// open, keeping decoder recursion bounded by a constant.
+fn check_depth(bytes: BitArray, depth: Int) -> Result(Nil, CorruptionReport) {
+  case depth < max_depth {
+    True -> Ok(Nil)
+    False ->
+      Error(fail(
+        bytes,
+        "containers nested at most "
+          <> int.to_string(max_depth)
+          <> " levels deep",
+      ))
   }
 }

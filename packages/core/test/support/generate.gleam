@@ -220,8 +220,31 @@ pub fn json_value(seed: Seed, depth: Int) -> #(JsonValue, Seed) {
           let #(value, seed) = json_value(seed, depth - 1)
           #(#(name, value), seed)
         })
-      #(json.Object(fields), seed)
+      #(json.Object(unique_by_key(fields)), seed)
     }
+  }
+}
+
+// Keeps the first entry per key: parsed documents never carry duplicate
+// keys (`core/json.parse` and `core/msgpack.decode` reject them), so
+// generated containers must not either, or roundtrips would fail.
+fn unique_by_key(pairs: List(#(k, v))) -> List(#(k, v)) {
+  unique_by_key_loop(pairs, [], [])
+}
+
+fn unique_by_key_loop(
+  pairs: List(#(k, v)),
+  seen: List(k),
+  accumulator: List(#(k, v)),
+) -> List(#(k, v)) {
+  case pairs {
+    [] -> list.reverse(accumulator)
+    [#(key, value), ..rest] ->
+      case list.contains(seen, key) {
+        True -> unique_by_key_loop(rest, seen, accumulator)
+        False ->
+          unique_by_key_loop(rest, [key, ..seen], [#(key, value), ..accumulator])
+      }
   }
 }
 
@@ -286,7 +309,7 @@ pub fn msgpack_value(seed: Seed, depth: Int) -> #(MsgPackValue, Seed) {
           let #(value, seed) = msgpack_value(seed, depth - 1)
           #(#(key, value), seed)
         })
-      #(msgpack.MapValue(entries), seed)
+      #(msgpack.MapValue(unique_by_key(entries)), seed)
     }
   }
 }
