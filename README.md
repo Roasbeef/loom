@@ -5,23 +5,24 @@ session is a supervision tree over a write-once conversation store: every
 step an agent takes — the prompt it received, the tool call it made, the
 result that came back, the tokens it spent — is committed to a per-session
 SQLite file before anything else can depend on it, so killing the OS
-process at any instant loses no work and re-runs no side effect. Everything
-the model influences executes outside the harness virtual machine, in
-kernel-sandboxed OS processes reached through a single capability-checked
-broker. Three existing harnesses supply the parts: the durability model
-comes from pi, the sandbox posture from Codex CLI, and the tool surface
-from omp. The BEAM supplies what none of them have, because a harness is
-already an actor system — strands, subagents, tool executions, and stream
-parsers are processes, and crash recovery is a supervisor plus durable
-state rather than defensive code. It is also why code mode is worth
-building: an agent-written Gleam program that fans out, races two
-strategies, and holds stateful actors gets real concurrency from a runtime
-built for it. That part is designed and not yet written; see Status.
+process at any instant loses no work and re-runs no side effect.
+Everything the model influences executes outside the harness virtual
+machine, in kernel-sandboxed OS processes reached through a single
+capability-checked broker.
+
+Three existing harnesses supply the parts: the durability model comes from
+pi, the sandbox posture from Codex CLI, and the tool surface from omp. The
+BEAM supplies what none of them have, because a harness is already an
+actor system — strands, subagents, tool executions, and stream parsers are
+processes, and crash recovery is a supervisor plus durable state rather
+than defensive code. It is also why code mode is worth building: an
+agent-written Gleam program that fans out, races two strategies, and holds
+stateful actors gets real concurrency from a runtime built for it.
 
 ## Rule Zero
 
-BEAM processes give fault isolation, not security isolation. Any process in
-the virtual machine can call `os:cmd/1`, open any file the OS user can
+BEAM processes give fault isolation, not security isolation. Any process
+in the virtual machine can call `os:cmd/1`, open any file the OS user can
 open, and dial the network; there is no capability model inside the VM to
 lean on. So the harness leans on the kernel instead:
 
@@ -42,132 +43,280 @@ exact policy difference — "wants: network to registry.npmjs.org" — and an
 approval buys one re-execution, recorded. Prompts are a user interface,
 never a control.
 
-## Status
+## The three planes
 
-The design is complete; the implementation is partway through it. Three
-milestones are built, tested, and documented as-built:
+The planes are strictly layered: the durability plane knows nothing about
+agents, the orchestration plane knows nothing about sandboxes, and
+everything crossing the trust boundary goes through the one door.
 
-- **M0 — durability plane.** Three stores (entries, registers, usage), one
-  atomic commit primitive with compare-and-swap expectations, two
-  interchangeable backends, a fenced writer lease, and a segmented branch
-  index.
-- **M1 — orchestration plane.** A pure state machine whose entire surface
-  is `next_action(op, state, inputs) -> Action`, and an OTP runtime that
-  carries the decisions out: one storage writer as the serialization point,
-  strands as processes, recovery that reads five registers and resumes.
-- **M2 — effect plane.** The broker, a framed msgpack wire protocol, a
-  small Go helper that restricts itself and then execs the target, and a
-  tool set — bash, hash-anchored reads and edits, grep — whose correctness
-  does not depend on the model behaving. A stale edit anchor is rejected
-  before it can corrupt a file, and a tool failure comes back as data the
-  model can read rather than as a crash.
+```mermaid
+graph TD
+  subgraph VM["harness BEAM VM — trusted, one OS process"]
+    ST["strands<br/>one process each"]
+    WR["StorageWriter<br/>the one writer, one file per session"]
+    EV["EventBus<br/>projections, search"]
+    BR["ToolBroker<br/>policy, tokens, budgets"]
+    ST -->|commit| WR
+    WR -->|events| EV
+    ST -->|ask for an effect| BR
+  end
+  subgraph JAIL["kernel-enforced jails — untrusted"]
+    EX["sandboxed executors<br/>bash, edits, grep"]
+    SA["satellite nodes<br/>agent-written programs"]
+    LS["language servers<br/>MCP servers"]
+  end
+  BR ==>|"capability token over framed msgpack"| JAIL
+```
 
-**M3 is in progress**: the event bus and projections, the client gateway
-protocol, a Go TUI that drives a session entirely through that protocol,
-forks and compaction, and a multi-strand demo where a parent and two
-subagents collaborate through durable messaging. The `events`, `client`,
-and `tui` packages are skeletons today.
+The **durability** plane stores rows, answers queries, and decides
+nothing. The **orchestration** plane decides what happens next and what
+must be durable before it happens. The **effect** plane is everything that
+touches the world.
 
-Code mode (M4), the LSP and DAP tools (M5), and the extension promotion
-ladder (M6) are specified in the design and spec documents and not yet
-written. macOS Seatbelt and the Windows sandbox are likewise designed and
-unbuilt; the Linux jail is the one that exists.
+| Package | Plane | What it holds |
+|---|---|---|
+| `core` | durability | Ids, entries, registers, transactions, and total decoders. Pure. |
+| `storage` | durability | The storage interface, the in-memory and SQLite backends, the fenced lease. |
+| `session` | durability | The session and repository layer, tree views, the branch index, forks. |
+| `machine` | orchestration | Operation types, `next_action`, classification order. Pure; no I/O, no state between calls. |
+| `runtime` | orchestration | The storage writer, the strand supervisor, the driver loop, recovery, the multi-strand surface. |
+| `events` | orchestration | The event bus (OTP `pg` process groups), rebuildable projections, full-text search across a repository's sessions. |
+| `provider` | effect | Typed provider clients, streaming, retries, role-based routing with fallback chains. |
+| `broker` | effect | The ToolBroker: policies, capability tokens, budgets, escalation. |
+| `sandbox` | effect | The `loom-exec` helper binary and platform drivers. Go. |
+| `tools` | effect | bash, hash-anchored filesystem reads and edits, grep. |
+| `tui` | client | A terminal client over the gateway protocol, runnable against a fake with `--demo`. Go. |
+| `client` | client | The Gleam side of that gateway protocol. A skeleton today. |
+| `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
 
-### What "tested" means here
+Two commits bracket every effect, and the gap between them is the
+session's only non-durable window.
+
+```mermaid
+sequenceDiagram
+  participant S as strand
+  participant W as StorageWriter
+  participant B as ToolBroker
+  S->>W: intent — args, reserved output ids, sandbox policy
+  W-->>S: durable
+  S->>B: run it (the only non-durable window)
+  B-->>S: output
+  S->>W: settlement — output, usage, next state
+  W-->>S: durable
+```
+
+Tools declare whether replaying them is safe. Recovery finds an effect
+that was in flight and, on that declaration, either re-executes it from
+the persisted arguments or settles the reserved id with a synthetic error.
+Nothing runs twice, every call ends with a result, and the token ledger
+survives a kill at any instant.
+
+## Strands that talk to each other
+
+A subagent is a strand: same driver code, its own leaf in the tree, its
+own durable configuration. Strands are processes, so a raw `Process.send`
+between them is possible — and forbidden as a transport, because a BEAM
+mailbox evaporates on crash. An unread "found the bug at auth.gleam:42" is
+simply gone after a supervisor restart: never in the transcript, invisible
+to recovery, believed delivered.
+
+> **Payloads travel durably; process messages are only doorbells.**
+> Sending to another strand enqueues onto that strand in one commit, then
+> rings an ephemeral nudge so the target wakes now rather than at its next
+> checkpoint poll. A lost nudge costs latency, never data.
+
+Four patterns fall out of that rule, and the runtime exposes each:
+
+- **Request/reply** — a parent creates a subagent strand with a task
+  brief, then consumes the child's terminal result as an entry.
+- **Peer to peer** — two strands steer each other, and every turn of the
+  conversation is a commit.
+- **Blackboard** — `fact.*` registers hold shared, transactional session
+  state: the reviewer posts findings, the implementer reads them.
+- **Broadcast** — the event bus carries awareness ("strand 3 finished the
+  tests"), and anything actionable is written durably too, because events
+  are hints and pulls are truth.
+
+So every exchange between agents sits in the tree, replayable and
+forkable, and a stuck agent's inbox is durable state you can read. The
+line is sharp: if the recipient would act differently for having received
+it, it goes through a commit; if it only affects pacing or display, a
+plain message is fine.
+
+## Code mode: Gleam as the tool language
+
+Instead of a round-trip per tool call, the model writes a program that
+composes tools locally — loops, conditionals, intermediate values,
+concurrency — and the harness runs it and returns one structured result.
+The language is Gleam itself, which buys a property no scripting language
+can offer:
+
+> **A program's maximal capability set is computable from its source** —
+> the transitive closure of its imports plus its own `@external`
+> declarations.
+
+Pure Gleam cannot perform I/O, and there is no eval, no reflection, no
+dynamic module lookup, and no macros, so every effect must enter through
+an import. Vetting is therefore a compiler-adjacent lint: reject
+`@external` in submitted source, reject imports outside the allowlist, pin
+the rest to the harness capability prelude. That prelude *is* the
+capability system — `cap/fs`, `cap/proc`, `cap/net`, `cap/lsp`, `cap/git`,
+`cap/task`, `cap/actor`, `cap/report` — typed modules whose
+implementations are broker calls carrying the execution's token. The type
+checker becomes the tool-argument validator, so malformed tool use fails
+at compile time, a cheaper loop than a runtime tool error.
+
+The programming model is specified; the prelude lands with the satellite
+runtime. What an agent writes looks like this:
+
+```gleam
+import cap/fs
+import cap/lsp
+import cap/proc
+import cap/report
+import cap/task
+
+// These imports are the program's whole capability set. It cannot open a
+// socket: cap/net is absent, and no runtime trick can conjure it.
+
+pub fn main() -> report.Report {
+  // The language server knows where the call sites are; ripgrep guesses
+  // fast. Race them — the loser is cancelled where it stands, and the
+  // kernel jail behind it is killed.
+  let sites =
+    task.race([
+      fn() { lsp.reference_paths(symbol: "decode_entry") },
+      fn() { proc.lines(proc.run("rg", ["-l", "decode_entry", "src/"])) },
+    ])
+
+  // Eight at a time, results in input order, all eight sharing one
+  // budget: one deadline, one cgroup, one ceiling on outstanding effects.
+  let edited =
+    task.parallel_map(sites, max_concurrency: 8, fn(path) {
+      fs.replace(in: path, each: "decode_entry", with: "entry_decoder")
+    })
+
+  case proc.run("gleam", ["build", "--warnings-as-errors"]) {
+    Ok(_) -> report.ok(edited)
+    Error(failure) -> report.failed("the rename broke the build", failure)
+  }
+}
+```
+
+Vetting is strong, and the design does not bet on it alone. Programs run
+in a **satellite node**: a disposable `erl` process launched inside the
+executor sandbox with distribution disabled, the network off except for
+the socket back to the broker, a heap ceiling, a cgroup, and a wall-clock
+deadline — and killable as a unit. A hostile module that slipped the lint
+still sits in a jail whose only reachable effects are token-checked broker
+calls, so an escape needs both a vetting bypass and a kernel escape.
+
+Every task is a child of the program root, so the loser of a race is not
+merely ignored: its capability calls are revoked and its process groups
+killed. `cap/actor` extends the same discipline to typed, program-scoped
+actors with bounded mailboxes, which earn their keep when state outlives
+one call — watching a build's output for the first error, coordinating a
+debugger, running a work queue whose items generate more items.
+
+Every executed program is an entry in the tree, and so a candidate for
+promotion: **L0** ephemeral and satellite-jailed, **L1** the same program
+saved as a named session skill at L0 privileges, **L2** a candidate
+compiled against the wider extension API and passing its own tests in the
+sandbox, **L3** an installed extension hot-loaded after a human approves
+it, **L4** a pull request against Loom itself. L3 is the only rung that
+touches the harness VM, and even there the harness compiles the source
+itself — it never loads a `.beam` it did not build. Nothing self-promotes,
+every rung is revocable, and the trusted computing base — storage, state
+machine, broker, sandbox drivers — is not runtime-extensible at all.
+
+## Beyond one machine
+
+Erlang distribution is location-transparent and fully trusting after the
+handshake: a connected node can run anything on any peer. That makes it a
+fine control plane and a disastrous data plane, so the design keeps the
+two apart.
+
+> **Data plane** — length-prefixed msgpack over stdio, Unix sockets, SSH
+> tunnels, or mutually authenticated TLS, to everything untrusted or
+> semi-trusted: executors, satellites, language servers, MCP servers, and
+> their remote equivalents. Every message is parsed and validated as data.
+>
+> **Control plane** — TLS-wrapped native distribution, strictly between
+> orchestrator nodes you operate, for session routing and event fan-out.
+> Native distribution never crosses a trust boundary.
+
+Because the broker already treats every effect as uncertain and remote, a
+remote executor pool is a driver rather than an architecture change: the
+same helper and the same policy on a build server or a customer VM,
+tunneled over the data plane, with a partition mid-command taking the
+recovery path the effect sandwich already defines. Satellite nodes travel
+the same way, putting agent-written programs next to the repository or
+next to the compute.
+
+Sessions move too, because a session is one file plus a tree booted from
+it: close it, copy it, open it elsewhere. Clients are always thin — a
+terminal, an editor plugin, and a phone all speak the same gateway
+protocol, subscribing to the event stream with catch-up by sequence number
+and sending commands back — so a local client against a local harness and
+a remote client against a hosted one differ only in the socket.
+
+## How it is tested
 
 - **Storage conformance.** One suite, parameterized over a backend
-  constructor and run against both the in-memory and the SQLite backend,
-  defines what "correct backend" means: atomicity, seq ordering, the
-  expectation matrix, branch scans, catch-up reads, and a branching torture
-  script that re-scans every entry ever written to its root path after
-  every commit. Three further checks are SQLite-only — the writer-lease
-  duel, `EXPLAIN QUERY PLAN` assertions, and branch-index invariants. A
-  10,000-entry session scans its newest 50 entries with a median of about
-  2 ms in the development container, against a target of 5 ms.
+  constructor, runs against both the in-memory and the SQLite backend and
+  defines what "correct backend" means: atomicity, sequence ordering, the
+  expectation matrix, branch scans, catch-up reads, and a torture script
+  that re-scans every entry ever written after every commit. Three checks
+  are SQLite-only: the writer-lease duel, `EXPLAIN QUERY PLAN` assertions,
+  and branch-index invariants. A 10,000-entry session scans its newest 50
+  entries in a median of about 2 ms in the development container, against
+  a target of 5 ms.
 - **Crash exploration by enumeration.** The storage writer exposes a seam
   that runs after a commit is durable but before the committer learns of
   it — precisely the state a crash leaves behind. Five scenarios run once
   to fix their commit counts, then once per boundary with the kill armed
   there: **42 crashed runs**, each of which must converge on the same
   terminal outcome, the same projected context, and the same ledger total,
-  with no replay-unsafe tool executed twice. A run armed to crash must also
-  have crashed, so the loop cannot pass vacuously.
+  with no replay-unsafe tool executed twice. A run armed to crash must
+  also have crashed, so the loop cannot pass vacuously.
 - **Crash exploration by generation.** Enumeration is only as good as its
-  hand-written list, so a deterministic simulation runner replaces the list
-  with a seed. One integer splits into a *script* (what the session is
-  asked to do) and a *schedule* (what goes wrong while it does it); the
-  script runs clean and then faulted, and the pair is held to named checks.
+  hand-written list, so a deterministic simulation runner replaces the
+  list with a seed. One integer splits into a *script* (what the session
+  is asked to do) and a *schedule* (what goes wrong while it does it); the
+  script runs clean, then faulted, and the pair is held to named checks.
   Every fault in the taxonomy is transparent by construction — crashes at
-  commit boundaries and during live effects, refused and stale commits,
-  read faults, lease theft, dropped and delayed doorbells, slow and dying
+  commit boundaries and mid-effect, refused and stale commits, read
+  faults, lease theft, dropped and delayed doorbells, slow and dying
   effects, torn frames — so anything that legitimately changes the outcome
   lives in the script and happens in both runs. Failing schedules shrink,
-  and cases that found real defects are pinned as hand-built regressions
-  rather than as seeds. Its honest limits are in
-  `docs/architecture/simulation.md`: real processes rather than a simulated
-  scheduler, so BEAM message interleaving is not reproducible; one backend,
-  one strand, one session; no real effect plane.
+  and one that found a real defect is pinned as a hand-built regression
+  rather than as a seed. The honest limits are in
+  `docs/architecture/simulation.md`: real processes rather than a
+  simulated scheduler, so BEAM message interleaving is not reproducible;
+  one backend, one strand, one session; no real effect plane.
 - **A jailed end-to-end.** A scripted provider drives the real broker, the
   real executor pool, and the freshly built Go helper against a real
-  workspace: prompt, tool calls, sandboxed bash and edits, byte-exact file,
-  exact ledger, and a crash rider over the integrated stack.
+  workspace: prompt, tool calls, sandboxed bash and edits, byte-exact
+  file, exact ledger, and a crash rider over the integrated stack.
 - **A sandbox self-test that reports what the kernel actually gave it.**
-  `loom-exec --self-test` runs seven probes through the real jail path —
-  writing outside the writable roots, writing to a protected path, creating
+  `loom-exec --self-test` runs seven probes through the real jail path:
+  writing outside the writable roots, writing to a protected path, opening
   a socket under network-off, reading a non-allowlisted environment
-  variable, a fork bomb against the pids cap, an output flood, and an
+  variable, a fork bomb against the process cap, an output flood, and an
   orphaned grandchild. A probe whose layer the environment cannot provide
   prints `SKIPPED` with the reason; a probe whose layer is available must
-  enforce or the run fails. Enforced and skipped are summarized separately,
-  so a green self-test in a neutered container cannot be mistaken for a
-  verified sandbox. The development container enforces four of the seven;
-  bubblewrap, Landlock, and delegated cgroups need a fuller kernel.
-
-## The three planes
-
-The planes are strictly layered: the durability plane knows nothing about
-agents, and the orchestration plane knows nothing about sandboxes. Each
-package belongs to exactly one of them.
-
-**Durability plane** — stores rows, answers queries, decides nothing.
-
-| Package | What it holds |
-|---|---|
-| `core` | Ids, entries, registers, transactions, and total decoders. Pure. |
-| `storage` | The storage interface, the in-memory and SQLite backends, the fenced lease. |
-| `session` | The session and repository layer, tree views, the branch index, forks. |
-
-**Orchestration plane** — decides what happens next and what must be
-durable before it happens.
-
-| Package | What it holds |
-|---|---|
-| `machine` | Operation types, `next_action`, classification order. Pure; no I/O, no state between calls. |
-| `runtime` | The storage writer, the strand supervisor, the driver loop, recovery. |
-| `events` | The event bus, rebuildable projections, search. In progress. |
-
-**Effect plane** — everything that touches the world.
-
-| Package | What it holds |
-|---|---|
-| `provider` | Typed provider clients, streaming, retries, role-based routing with fallback chains. |
-| `broker` | The ToolBroker: policies, capability tokens, budgets, escalation. |
-| `sandbox` | The `loom-exec` helper binary and platform drivers. Go. |
-| `tools` | bash, hash-anchored filesystem reads and edits, grep. |
-
-**Clients and tests.**
-
-| Package | What it holds |
-|---|---|
-| `client` | The client gateway protocol and server. In progress. |
-| `tui` | A thin terminal client speaking that protocol. Go; in progress. |
-| `conformance` | The shared suites: storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
+  enforce or the run fails. Enforced and skipped are summarized
+  separately, so a green self-test in a neutered container cannot be
+  mistaken for a verified sandbox. The development container enforces four
+  of the seven; bubblewrap, Landlock, and delegated cgroups need a fuller
+  kernel. The Linux jail is also the only one that exists — macOS Seatbelt
+  and the Windows sandbox are designed and unbuilt.
 
 ## Building it
 
 You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or newer
-for the sandbox helper and the TUI. Nothing is published to Hex; the
-packages are monorepo-internal and are built where they sit.
+for the sandbox helper and the terminal client. Nothing is published to
+Hex; the packages are monorepo-internal and are built where they sit.
 
 ```
 make check      # the full gate: format check, warning-free build, all tests
@@ -177,23 +326,22 @@ make soak       # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
 make help       # everything else
 ```
 
-`make check` is exactly what CI runs, and `make check-<package>` narrows it
-to one package. Run `make selftest` on the kernel you actually intend to
-run agents on: the sandbox is only as strong as the layers that machine
+`make check` is exactly what CI runs, and `make check-<package>` narrows
+it to one package. Run `make selftest` on the kernel you actually intend
+to run agents on: the sandbox is only as strong as the layers that machine
 provides, and the self-test is how you find out which ones those are.
 
 ## Reading further
 
 - `docs/architecture/` — the system as built, one document per plane
-  (`durability.md`, `orchestration.md`, `effects.md`) plus
-  `simulation.md` for the crash-exploration runner. Start here to
-  understand the code that exists.
+  (`durability.md`, `orchestration.md`, `effects.md`) plus `simulation.md`
+  for the crash-exploration runner. Start here to understand the code that
+  exists.
 - `docs/loom-design.md` — the intent: why the BEAM, the three planes, Rule
   Zero, the two-channel doctrine, code mode, and the staged trust pipeline.
 - `docs/loom-implementation-spec.md` — the work packages, the frozen
-  interface contracts, and the milestone acceptance criteria. Changing a
-  frozen interface takes a proposal in `protocol-change/`, never silent
-  drift.
+  interface contracts, and the acceptance criteria. Changing a frozen
+  interface takes a proposal in `protocol-change/`, never silent drift.
 - `docs/gleam-style.md` — a language tour and the house style. Gleam is
   young enough that habits from other languages mislead; read this before
   contributing.
