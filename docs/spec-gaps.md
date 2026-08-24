@@ -321,3 +321,28 @@ instead and are only referenced here.
 5. **Search indexes** message text and compaction/branch summaries;
    thinking blocks and tool-call arguments are deliberately not indexed.
    pi's metadata-filtering question stays open, as in pi.
+
+## From WP-C-full (`session`, `storage`)
+
+1. **Branch-fork configuration source.** pi does not say which strand's
+   configuration seeds a branch-scoped fork's main strand; the fork
+   request names it explicitly, and an unconfigured source forks to an
+   unconfigured main.
+2. **Fork re-stamps placement.** The destination assigns fresh seqs and
+   timestamps; ids and order are preserved. pi is silent on placement in
+   the copy.
+3. **No parent-session record.** Loom has no session-id concept yet, so
+   the schema's parent-session column stays unwritten; revisit with the
+   gateway's canonical id (also WP-K gap 4).
+4. **Fact semantics across forks**: names copy in both scopes, labels
+   copy with their entries, custom facts never copy — pi's
+   application-value rule read strictly.
+5. **Healing placement.** Orphaned-call healing happens at projection
+   (request construction), inserting the synthetic unknown-outcome
+   result directly after its assistant message, before the transform
+   hook. Forks copy verbatim.
+6. **Rewrite scope** is entry payloads only; registers and usage details
+   are not rewritten. The memory backend has no persisted generation —
+   a rebuilt handle is its invalidation.
+7. **Erase leaves object keys alone**; a needle colliding with
+   structural vocabulary aborts as corruption rather than corrupting.
