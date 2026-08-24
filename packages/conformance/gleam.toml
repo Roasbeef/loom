@@ -1,0 +1,12 @@
+name = "conformance"
+version = "0.1.0"
+gleam = ">= 1.11.0"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+core = { path = "../core" }
+storage = { path = "../storage" }
+machine = { path = "../machine" }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

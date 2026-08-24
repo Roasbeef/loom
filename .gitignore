@@ -1,0 +1,5 @@
+*.beam
+*.ez
+/packages/*/build
+erl_crash.dump
+/packages/sandbox/loom-exec
