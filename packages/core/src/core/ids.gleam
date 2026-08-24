@@ -310,6 +310,9 @@ fn mint_uuid(generator: Generator) -> #(Uuid, Generator) {
   mint_uuid_at(Generator(..generator, clock: next_clock), now)
 }
 
+// Shared by `mint_uuid` (reads the clock) and `mint_follower` (reuses a
+// leader's timestamp instead), so the two id-shapes draw randomness through
+// one path and differ only in where `ms` comes from.
 fn mint_uuid_at(generator: Generator, ms: Int) -> #(Uuid, Generator) {
   let #(a, state) = next_random(generator.state)
   let #(b, state) = next_random(state)

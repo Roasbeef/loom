@@ -1824,6 +1824,14 @@ fn decode_file_ops(
 type Fields =
   List(#(String, JsonValue))
 
+/// Builds an object keeping only the `Some` fields — the encoder-side half
+/// of the module doc's absent-vs-null distinction. The `Option` here is
+/// about the *field*, not the payload: `None` omits it from the wire
+/// entirely, while `Some(json.Null)` still writes a literal `null`. This
+/// is how opaque fields typed `Option(JsonValue)` (`details`, `data`) tell
+/// "the caller supplied no value" apart from "the caller supplied JSON
+/// null" — `option.map(identity)` over the stored option preserves that
+/// distinction through to the wire.
 fn object_of(pairs: List(#(String, Option(JsonValue)))) -> JsonValue {
   json.Object(
     list.filter_map(pairs, fn(pair) {

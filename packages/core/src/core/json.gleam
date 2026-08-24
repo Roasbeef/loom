@@ -671,6 +671,10 @@ fn parse_exponent(
   }
 }
 
+// Rebuilds the digits into one Gleam float literal and hands it to
+// `float.parse` rather than computing the value by hand, so parsing and
+// serialization agree with the runtime's own float-literal semantics
+// instead of a second, possibly divergent, arithmetic path.
 fn finish_float(
   start: Cursor,
   cursor: Cursor,

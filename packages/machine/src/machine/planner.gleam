@@ -584,6 +584,14 @@ fn begin_run(
 
 // --- the checkpoint procedure (pi §3.12) ----------------------------------
 
+/// The seven-step procedure, in this normative order (pi §3.12): deferred
+/// writes, steer, threshold compaction, generation, follow-up, run-end
+/// hook, finish. This function and `after_inbox` together are the
+/// dispatcher; each step's own commit-shaped work lives in the function
+/// named after it below. Every step that does anything is its own commit,
+/// so a crash always resumes at the next undone step in the same order —
+/// `skip_inbox_once`, set by whichever drain just ran, is what makes that
+/// resumption skip straight past steps 1–2 instead of re-evaluating them.
 fn checkpoint_action(
   op: Operation,
   in: PlannerInputs,
@@ -3740,6 +3748,14 @@ fn navigation_action(
 /// Builds the terminal transaction: optional publication writes, deletion
 /// of every operation-owned register, the strand's terminal result, and
 /// the strand-state clear preserving concurrently accepted next-run ids.
+///
+/// `tool_args_keys` and `preparation_keys` are the runtime's listing of
+/// this operation's existing registers, not a scan the pure machine could
+/// perform itself — deletion is therefore over-approximate by
+/// construction, matching pi's own defensive scan. Deleting an
+/// already-absent key is a no-op, so listing one extra key costs nothing
+/// and missing one leaves an orphaned register rather than corrupting the
+/// commit (spec-gaps WP-D item 4).
 fn finish(
   op: Operation,
   in: PlannerInputs,

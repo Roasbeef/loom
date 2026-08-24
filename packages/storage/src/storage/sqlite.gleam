@@ -1128,6 +1128,10 @@ fn handle_open(
       actor.continue(state)
     }
     Close(reply:) -> {
+      // Matching on this writer's own (owner, fence) pair means a stale
+      // owner that lost the lease to a steal cannot delete its
+      // replacement's row on the way out (module doc: close is scoped to
+      // the writer's own pair).
       let released =
         run(
           state.conn,
@@ -1308,6 +1312,10 @@ fn check_expectations(
   })
 }
 
+// Every write — including a register delete — consumes the next seq
+// before it is dispatched, so seqs stay strictly increasing across a
+// transaction's writes in write order even though only some write kinds
+// touch `entries` (storage rule: seqs increase strictly, gaps legal).
 fn apply_write(
   conn: Connection,
   step: #(Session, List(Seq)),

@@ -134,6 +134,9 @@ fn check_expectations(
   })
 }
 
+// Every write, register deletes included, consumes the next seq before
+// dispatch, so seqs increase strictly across the transaction in write
+// order regardless of which writes touch which store.
 fn apply_write(
   step: #(MemoryState, List(Seq)),
   write: tx.Write,
@@ -181,6 +184,8 @@ fn insert_entry(
     None -> Ok(Nil)
   })
   let stamped = storage.stamp(entry, seq:, ts:)
+  // Each child list is built by prepending, so insertion stays O(1); readers
+  // (`children_of`) reverse it back into append order.
   let children = case entry.parent {
     Some(parent) -> {
       let parent_text = ids.entry_id_to_string(parent)

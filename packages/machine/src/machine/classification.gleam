@@ -167,6 +167,11 @@ pub fn classify(
                 context: "aborted with running control",
               ))
             _ ->
+              // Rung 2 checked before dispatch into the ordinary rungs
+              // below: an oversized request must compact rather than
+              // retrying unchanged, so overflow pre-empts even a
+              // retryable-error verdict `classify_running` would
+              // otherwise reach for the same `Errored` stop reason.
               case is_overflow(stop_reason, error_message, usage.output, ctx) {
                 True -> OverflowClassification
                 False ->
