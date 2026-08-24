@@ -21,25 +21,36 @@
 ////   current directory.
 //// - `--helper <path>` — the `loom-exec` sandbox helper; default the
 ////   first of `loom-exec` on `PATH` and `./bin/loom-exec`.
+//// - `--config <loom.toml>` — a model catalogue file (`client/catalog`;
+////   `docs/examples/loom.toml` is the worked example). A file that does
+////   not parse or validate refuses the boot with a worded message —
+////   the documented halt path, never a partial start.
 //// - `--best-effort` — accept a degraded sandbox helper (development
 ////   kernels without bwrap/Landlock). The default demands full
 ////   enforcement, under which a degraded helper is refused at dispatch
 ////   — the server still runs, tool calls fail in-band. Run
 ////   `make selftest` to learn which posture your kernel supports.
 ////
-//// ## Environment
+//// ## Model configuration and precedence
 ////
-//// Provider configuration comes from the environment through the
-//// provider secret env store: `ANTHROPIC_API_KEY` is the API key
-//// secret the gateway reads at dispatch. Without it the server still
-//// boots and serves — generation requests then fail in-band with the
+//// Flags beat the config file, the config file beats the environment,
+//// and built-in defaults fill whatever remains. Concretely: with
+//// `--config` the catalogue file is the whole model surface — the
+//// `LOOM_MODEL`/`LOOM_BASE_URL`/`LOOM_CONTEXT_WINDOW`/
+//// `LOOM_MAX_OUTPUT_TOKENS` variables are not consulted — and without
+//// it those variables shape a one-entry catalogue named `anthropic`
+//// (model `claude-opus-5`, the built-in default) so the zero-config
+//// boot keeps working unchanged. Either way `LOOM_SYSTEM_PROMPT` is
+//// read from the environment, and API keys *only* ever come from the
+//// environment: the catalogue names the variable per model
+//// (`api_key_env`; `ANTHROPIC_API_KEY` in the env fallback), and the
+//// gateway reads it at dispatch. A keyless environment still boots and
+//// serves — generation requests then fail in-band with the
 //// missing-secret error, exactly as the effect doctrine prescribes.
-//// `LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
-//// `LOOM_CONTEXT_WINDOW`, and `LOOM_MAX_OUTPUT_TOKENS` shape the one
-//// configured route. The default thinking level is off, which sends no
-//// thinking field at all — on current Anthropic models that means
-//// server-chosen adaptive thinking, and it sidesteps the adapter's
-//// `budget_tokens` vocabulary, which newer models reject.
+//// The env fallback's thinking level is off, which sends no thinking
+//// field at all — on current Anthropic models that means server-chosen
+//// adaptive thinking, and it sidesteps the adapter's `budget_tokens`
+//// vocabulary, which newer models reject.
 ////
 //// ## Failure and shutdown
 ////
@@ -55,11 +66,12 @@ import broker/broker.{type Broker}
 import broker/exec.{type EnforcementDemand, type Pool}
 import broker/policy
 import broker/token
+import client/catalog
 import client/gateway as hub
 import client/internal/ffi_os
 import client/server
 import client/wiring
-import core/clock.{type Clock}
+import core/clock
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -89,9 +101,11 @@ import tools/tool.{type Registry}
 ///
 /// Constructor invariants: paths are as given (relative paths resolve
 /// against the working directory); `bind_port` may be `0` for an
-/// ephemeral port; `model` names the identity the configured route
-/// resolves, and `context_window` / `max_output_tokens` are its
-/// positive fallback facts (`client/wiring`'s config doc).
+/// ephemeral port; `catalog` is the catalogue `gateway` was built from
+/// (the hub serves it and resolves name switches against it); `model`
+/// names the identity the configured main route resolves, and
+/// `context_window` / `max_output_tokens` are its positive fallback
+/// facts (`client/wiring`'s config doc).
 pub type Settings {
   Settings(
     /// The SQLite session file, created if absent.
@@ -112,6 +126,8 @@ pub type Settings {
     demand: EnforcementDemand,
     /// The provider gateway, fully routed.
     gateway: provider_gateway.Gateway,
+    /// The model catalogue behind the gateway's registry.
+    catalog: catalog.Catalog,
     /// The system prompt, if any.
     system: Option(String),
     /// The identity new strands are configured with.
@@ -191,6 +207,7 @@ type Flags {
     token_file: Option(String),
     workspace: Option(String),
     helper: Option(String),
+    config: Option(String),
     best_effort: Bool,
   )
 }
@@ -204,6 +221,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       token_file: None,
       workspace: None,
       helper: None,
+      config: None,
       best_effort: False,
     ),
   )
@@ -222,6 +240,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, workspace: Some(value)))
     ["--helper", value, ..rest] ->
       parse_loop(rest, Flags(..flags, helper: Some(value)))
+    ["--config", value, ..rest] ->
+      parse_loop(rest, Flags(..flags, config: Some(value)))
     ["--best-effort", ..rest] ->
       parse_loop(rest, Flags(..flags, best_effort: True))
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
@@ -233,10 +253,15 @@ const usage = "usage: loom-server --session <path.db>
   [--token-file <path>]    bearer token file (default <session>.token)
   [--workspace <dir>]      workspace root (default the current directory)
   [--helper <path>]        loom-exec binary (default: PATH, then ./bin)
+  [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
   [--best-effort]          accept a degraded sandbox helper"
 
-// Fills every default and builds the provider gateway from the
-// environment, turning Flags into a bootable Settings.
+// Fills every default and builds the provider gateway from the model
+// catalogue — the `--config` file when given, the environment-shaped
+// one-entry catalogue otherwise — turning Flags into a bootable
+// Settings. The new-strand identity and the wiring's fallback model
+// facts all come from the main route's head entry, so one catalogue is
+// the single source for everything model-shaped.
 fn resolve(flags: Flags) -> Result(Settings, String) {
   use session_path <- result.try(case flags.session {
     Some(path) -> Ok(path)
@@ -254,6 +279,14 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       })
   })
   use helper_path <- result.try(find_helper(flags.helper))
+  use catalogue <- result.try(load_catalog(flags.config))
+  // parse guarantees a routed, resolvable main chain, and the env
+  // catalogue routes one by construction; the check stays for
+  // directly-constructed catalogues.
+  use main_entry <- result.try(
+    catalog.main_model(catalogue)
+    |> result.replace_error("the catalogue routes no usable main model"),
+  )
   let clock = clock.from_function(ffi_os.system_time_ms)
   Ok(Settings(
     session_path:,
@@ -267,15 +300,43 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       True -> exec.BestEffort
       False -> exec.FullEnforcement
     },
-    gateway: env_gateway(clock),
+    gateway: catalog.gateway(
+      catalogue,
+      transport: http.httpc_transport(),
+      secrets: secret.env(),
+      clock:,
+    ),
+    catalog: catalogue,
     system: option.from_result(env_text("LOOM_SYSTEM_PROMPT")),
     model: machine_strand.ModelIdentity(
-      provider: "anthropic",
-      model_id: env_text_or("LOOM_MODEL", default_model),
+      provider: main_entry.name,
+      model_id: main_entry.model_id,
     ),
-    context_window: env_int_or("LOOM_CONTEXT_WINDOW", 1_000_000),
-    max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),
+    context_window: main_entry.context_window,
+    max_output_tokens: main_entry.max_output_tokens,
   ))
+}
+
+// The catalogue ladder: an explicit file must load and validate or the
+// boot refuses (a typoed config silently ignored would serve the wrong
+// model); no file falls back to the environment surface.
+fn load_catalog(flag: Option(String)) -> Result(catalog.Catalog, String) {
+  case flag {
+    None -> Ok(env_catalog())
+    Some(path) ->
+      case simplifile.read(path) {
+        Error(error) ->
+          Error(
+            "the config file "
+            <> path
+            <> " is unreadable: "
+            <> string.inspect(error),
+          )
+        Ok(text) ->
+          catalog.parse(text)
+          |> result.map_error(fn(reason) { path <> ": " <> reason })
+      }
+  }
 }
 
 // Splits `host:port` on the *last* colon, because IPv6 hosts carry
@@ -357,31 +418,27 @@ fn env_int_or(name: String, fallback: Int) -> Int {
   |> result.unwrap(fallback)
 }
 
-// The real provider gateway: httpc transport, env secrets, one
-// Anthropic provider, one Main route. The API key is *named* here and
-// read only at dispatch, so a keyless environment boots fine and fails
-// in-band per request.
-fn env_gateway(clock: Clock) -> provider_gateway.Gateway {
-  let model_id = env_text_or("LOOM_MODEL", default_model)
-  provider_gateway.new(
-    transport: http.httpc_transport(),
-    secrets: secret.env(),
-    clock:,
+// The zero-config surface as a one-entry catalogue: one Anthropic
+// entry named `anthropic` (so pre-catalogue durable identities keep
+// resolving) shaped by the LOOM_* variables, routed as main. The API
+// key is *named* here and read only at dispatch, so a keyless
+// environment boots fine and fails in-band per request.
+fn env_catalog() -> catalog.Catalog {
+  catalog.Catalog(
+    models: [
+      catalog.CatalogModel(
+        name: "anthropic",
+        dialect: catalog.Anthropic,
+        base_url: env_text_or("LOOM_BASE_URL", "https://api.anthropic.com"),
+        api_key_env: "ANTHROPIC_API_KEY",
+        model_id: env_text_or("LOOM_MODEL", default_model),
+        context_window: env_int_or("LOOM_CONTEXT_WINDOW", 1_000_000),
+        max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),
+        thinking: model.ThinkingOff,
+      ),
+    ],
+    roles: [#(model.Main, ["anthropic"])],
   )
-  |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
-    name: "anthropic",
-    base_url: env_text_or("LOOM_BASE_URL", "https://api.anthropic.com"),
-    api_key_secret: "ANTHROPIC_API_KEY",
-  ))
-  |> provider_gateway.route(model.Main, [
-    model.ResolvedModel(
-      provider: "anthropic",
-      model_id:,
-      thinking: model.ThinkingOff,
-      context_window: env_int_or("LOOM_CONTEXT_WINDOW", 1_000_000),
-      max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),
-    ),
-  ])
 }
 
 // --- boot ------------------------------------------------------------------
@@ -504,7 +561,11 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
     }),
   )
   use _hub <- result.try(
-    hub.start(hub.default_options(settings.session_id, runtime), name)
+    hub.start(
+      hub.default_options(settings.session_id, runtime)
+        |> hub.with_catalog(settings.catalog),
+      name,
+    )
     |> result.map_error(fn(error) {
       "the gateway hub did not start: " <> string.inspect(error)
     }),

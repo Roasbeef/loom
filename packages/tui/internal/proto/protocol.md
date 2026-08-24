@@ -56,6 +56,7 @@ peer credentials; remote connections send `Authorization: Bearer
 | `create_strand`| `snapshot` (mode `strands`)                |
 | `navigate`     | `snapshot` (mode `strands`)                |
 | `compact`      | `op_transition` (phase `compacting`)       |
+| `models`       | `snapshot` (mode `models`)                 |
 | `set_config`   | `snapshot` (mode `config`)                 |
 
 ## Subscription, catch-up, reconnect
@@ -103,15 +104,25 @@ once, in seq order**.
 - `navigate` `{strand, to_entry: entry-id}` — move the strand's leaf.
 - `compact` `{strand, instructions?: string}`
 - `create_strand` `{name?: string}`
+- `models` `{}` — request the gateway's model catalogue; the reply is
+  a `models` snapshot. The body is deliberately empty in v1.
 - `set_config` `{strand?: string, config: object}` — gateway-defined
-  keys; unknown keys are refused (`bad_request`), never ignored.
+  keys; unknown keys are refused (`bad_request`), never ignored. The
+  defined keys: `queue_mode` (`"consume_all"`|`"one_at_a_time"`) and
+  `tool_execution` (`"sequential"`|`"parallel"`) are session-wide run
+  settings; `model_name` (a catalogue name from the `models` listing —
+  the gateway resolves it, an unknown name is refused) switches the
+  named strand's model, or every strand's when `strand` is absent;
+  `model` (`{provider, model_id}`), `thinking_level`, and
+  `active_tools` require a `strand` and set that strand's durable
+  configuration directly.
 
 ## Event bodies
 
 ### `snapshot`
 
 `{mode, session?, next_seq?, strands?, entries?, escalations?, usage?,
-config?}`
+config?, models?}`
 
 - `mode: "full"` — `session`, `next_seq`, `strands`, `entries` (recent
   window, oldest first, each in the `entry` body shape), `escalations`
@@ -119,7 +130,17 @@ config?}`
   camelCase). The client rebuilds from scratch.
 - `mode: "resume"` — `next_seq` only; replay follows (see above).
 - `mode: "strands"` — `strands` only (full replacement list).
-- `mode: "config"` — `config` only (the effective config object).
+- `mode: "config"` — `config` only (the effective config object; it
+  carries the defined `set_config` keys, plus `model_name` when the
+  strand's model identity is one the catalogue knows).
+- `mode: "models"` — `models` only: the model catalogue, one row per
+  entry, `{name, dialect, model_id, roles: [role], active: [role]}`.
+  `name` is the handle `set_config`'s `model_name` accepts; `dialect`
+  is `"anthropic"` or `"openai"` (open set — display unknown values
+  verbatim); `roles` are the roles whose fallback chain lists the
+  model and `active` the subset it currently resolves for (both always
+  present, possibly empty). A gateway with no configured catalogue
+  answers an empty list.
 
 Strand: `{id, name?, leaf?: entry-id, live_op?: {op, phase}}`.
 
@@ -208,9 +229,12 @@ document does not yet decide.
 2. **Rich user turns** — `prompt`/`steer`/`follow_up` carry `text`
    only. Images (core codec `UserImage`) need an additive optional
    `blocks` field.
-3. **`set_config` keys** — the accepted key set (model role, queue
-   mode, tool toggles) is gateway-defined and still open; the TUI
-   passes an opaque object.
+3. **`set_config` keys** — answered above (the "Command bodies" entry
+   is normative): `queue_mode`, `tool_execution`, `model_name`,
+   `model`, `thinking_level`, `active_tools`. The set stays
+   gateway-extensible; the TUI still passes an opaque object. Still
+   open within this item: per-role switching (`model_name` moves a
+   strand's — or every strand's — model, not one role's chain).
 4. **Event seq durability** — catch_up across gateway restarts
    requires the seq assignment to be rebuildable from `scan_*`; confirm
    whether entry/usage events reuse storage seqs or a materialized

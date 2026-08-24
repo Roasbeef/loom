@@ -8,6 +8,7 @@
 //// is exactly the keyless-environment boot story the module documents.
 
 import broker/exec
+import client/catalog
 import client/protocol
 import client/serve
 import core/clock
@@ -25,29 +26,35 @@ import support/internal/ffi_ws
 
 const root = "build/serve-test"
 
-// A routed gateway over a transport that never answers: subscribe and
-// healthz touch no provider, so the smoke boot needs reachability of
-// the seam, not a live wire.
+// A one-entry catalogue whose gateway rides a transport that never
+// answers: subscribe and healthz touch no provider, so the smoke boot
+// needs reachability of the seam, not a live wire — and building the
+// gateway *from* the catalogue is exactly what `resolve` does.
+fn scripted_catalog() -> catalog.Catalog {
+  catalog.Catalog(
+    models: [
+      catalog.CatalogModel(
+        name: "acme",
+        dialect: catalog.Anthropic,
+        base_url: "https://acme.test",
+        api_key_env: "ACME_KEY",
+        model_id: "loom-1",
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        thinking: model.ThinkingOff,
+      ),
+    ],
+    roles: [#(model.Main, ["acme"])],
+  )
+}
+
 fn scripted_gateway() -> provider_gateway.Gateway {
-  provider_gateway.new(
+  catalog.gateway(
+    scripted_catalog(),
     transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
-  |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
-    name: "acme",
-    base_url: "https://acme.test",
-    api_key_secret: "ACME_KEY",
-  ))
-  |> provider_gateway.route(model.Main, [
-    model.ResolvedModel(
-      provider: "acme",
-      model_id: "loom-1",
-      thinking: model.ThinkingOff,
-      context_window: 100_000,
-      max_output_tokens: 4096,
-    ),
-  ])
 }
 
 fn settings() -> serve.Settings {
@@ -63,6 +70,7 @@ fn settings() -> serve.Settings {
     session_id: "session",
     demand: exec.BestEffort,
     gateway: scripted_gateway(),
+    catalog: scripted_catalog(),
     system: None,
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,

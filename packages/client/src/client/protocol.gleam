@@ -119,6 +119,8 @@ pub type Command {
   Compact(strand: String, instructions: Option(String))
   /// Create a fresh strand.
   CreateStrand(name: Option(String))
+  /// Request the model catalogue; answered by a `models` snapshot.
+  ListModels
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
   /// A well-formed envelope with an unknown command name, kept as data.
@@ -155,6 +157,25 @@ pub type Snapshot {
   StrandsSnapshot(strands: List(Strand))
   /// The effective config object.
   ConfigSnapshot(config: JsonValue)
+  /// The model catalogue (the `models` command's reply).
+  ModelsSnapshot(models: List(ModelInfo))
+}
+
+/// One catalogue entry as the protocol lists it.
+///
+/// Constructor invariants: `name` is the catalogue name `set_config`'s
+/// `model_name` key accepts; `dialect` is `"anthropic"` or `"openai"`
+/// (open set — clients display unknown dialects verbatim); `roles` are
+/// the roles whose fallback chain lists this entry, and `active` the
+/// subset it currently resolves for, both possibly empty.
+pub type ModelInfo {
+  ModelInfo(
+    name: String,
+    dialect: String,
+    model_id: String,
+    roles: List(String),
+    active: List(String),
+  )
 }
 
 /// One strand in a snapshot.
@@ -388,6 +409,7 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "create_strand",
       object_of([#("name", option.map(name, json.String))]),
     )
+    ListModels -> #("models", json.Object([]))
     SetConfig(strand:, config:) -> #(
       "set_config",
       object_of([
@@ -531,6 +553,8 @@ fn decode_command_body(
       use name <- result.try(optional_string(fields, "name"))
       Ok(CreateStrand(name:))
     }
+    // The body is deliberately empty today; tolerant reading applies.
+    "models" -> Ok(ListModels)
     "set_config" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(optional_string(fields, "strand"))
@@ -681,7 +705,22 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       ])
     ConfigSnapshot(config:) ->
       json.Object([#("mode", json.String("config")), #("config", config)])
+    ModelsSnapshot(models:) ->
+      json.Object([
+        #("mode", json.String("models")),
+        #("models", json.Array(list.map(models, encode_model_info))),
+      ])
   }
+}
+
+fn encode_model_info(info: ModelInfo) -> JsonValue {
+  json.Object([
+    #("name", json.String(info.name)),
+    #("dialect", json.String(info.dialect)),
+    #("model_id", json.String(info.model_id)),
+    #("roles", json.Array(list.map(info.roles, json.String))),
+    #("active", json.Array(list.map(info.active, json.String))),
+  ])
 }
 
 fn encode_strand(strand: Strand) -> JsonValue {
@@ -927,7 +966,43 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       })
       Ok(SnapshotEvent(ConfigSnapshot(config:)))
     }
+    "models" -> {
+      use models <- result.try(case list.key_find(fields, "models") {
+        Error(Nil) -> Ok([])
+        Ok(json.Array(items)) -> list.try_map(items, decode_model_info)
+        Ok(_) -> Error("models must be an array")
+      })
+      Ok(SnapshotEvent(ModelsSnapshot(models:)))
+    }
     other -> Error("unknown snapshot mode: " <> other)
+  }
+}
+
+fn decode_model_info(value: JsonValue) -> Result(ModelInfo, String) {
+  use fields <- result.try(body_fields(value))
+  use name <- result.try(required_string(fields, "name"))
+  use dialect <- result.try(required_string(fields, "dialect"))
+  use model_id <- result.try(required_string(fields, "model_id"))
+  use roles <- result.try(string_array(fields, "roles"))
+  use active <- result.try(string_array(fields, "active"))
+  Ok(ModelInfo(name:, dialect:, model_id:, roles:, active:))
+}
+
+// A possibly-absent array of strings (absent reads as empty).
+fn string_array(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(List(String), String) {
+  case list.key_find(fields, key) {
+    Error(Nil) -> Ok([])
+    Ok(json.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          json.String(text) -> Ok(text)
+          _ -> Error(key <> " entries must be strings")
+        }
+      })
+    Ok(_) -> Error(key <> " must be an array of strings")
   }
 }
 

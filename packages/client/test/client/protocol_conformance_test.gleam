@@ -42,9 +42,10 @@ pub fn command_fixtures_roundtrip_test() {
   [
     "cmd_abort.json", "cmd_approve.json", "cmd_approve_all.json",
     "cmd_catch_up.json", "cmd_compact.json", "cmd_create_strand.json",
-    "cmd_deny.json", "cmd_follow_up.json", "cmd_fork.json", "cmd_navigate.json",
-    "cmd_prompt.json", "cmd_set_config.json", "cmd_steer.json",
-    "cmd_subscribe.json", "cmd_subscribe_resume.json",
+    "cmd_deny.json", "cmd_follow_up.json", "cmd_fork.json", "cmd_models.json",
+    "cmd_navigate.json", "cmd_prompt.json", "cmd_set_config.json",
+    "cmd_set_config_model.json", "cmd_steer.json", "cmd_subscribe.json",
+    "cmd_subscribe_resume.json",
   ]
   |> list.each(roundtrip_command)
 }
@@ -55,10 +56,11 @@ pub fn event_fixtures_roundtrip_test() {
     "event_entry_tool_result.json", "event_entry_user.json", "event_error.json",
     "event_escalation_approved.json", "event_escalation_pending.json",
     "event_op_transition.json", "event_snapshot_full.json",
-    "event_snapshot_resume.json", "event_snapshot_strands.json",
-    "event_strand_result_done.json", "event_strand_result_failed.json",
-    "event_stream_delta_text.json", "event_stream_delta_thinking.json",
-    "event_stream_delta_tool_call.json", "event_usage.json",
+    "event_snapshot_models.json", "event_snapshot_resume.json",
+    "event_snapshot_strands.json", "event_strand_result_done.json",
+    "event_strand_result_failed.json", "event_stream_delta_text.json",
+    "event_stream_delta_thinking.json", "event_stream_delta_tool_call.json",
+    "event_usage.json",
   ]
   |> list.each(roundtrip_event)
 }
@@ -71,7 +73,7 @@ pub fn corpus_is_complete_test() {
     files
     |> list.filter(string.ends_with(_, ".json"))
     |> list.sort(string.compare)
-  assert list.length(json_files) == 32
+  assert list.length(json_files) == 35
 }
 
 // --- strictness and tolerance ----------------------------------------------

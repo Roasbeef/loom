@@ -2,6 +2,7 @@
 //// unknown names tolerated with `unsupported`, subscription gating,
 //// and the semantic error codes of the command table.
 
+import client/catalog
 import client/gateway
 import client/protocol
 import core/clock
@@ -9,9 +10,10 @@ import core/json
 import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import machine/strand as machine_strand
+import provider/model
 import provider/stream
 import runtime/api
 import runtime/effects
@@ -24,6 +26,41 @@ type Harness {
 }
 
 fn start_harness() -> Harness {
+  start_harness_with(catalog: None)
+}
+
+// A two-entry catalogue whose second entry ("fallback") is routed but
+// not the main head, so switching to it exercises the interesting
+// half of set-by-name.
+fn test_catalog() -> catalog.Catalog {
+  catalog.Catalog(
+    models: [
+      catalog.CatalogModel(
+        name: "acme",
+        dialect: catalog.Anthropic,
+        base_url: "https://acme.test",
+        api_key_env: "ACME_KEY",
+        model_id: "loom-1",
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        thinking: model.ThinkingOff,
+      ),
+      catalog.CatalogModel(
+        name: "fallback",
+        dialect: catalog.OpenAiCompatible,
+        base_url: "https://fallback.test/v1",
+        api_key_env: "FALLBACK_KEY",
+        model_id: "fb-9",
+        context_window: 64_000,
+        max_output_tokens: 2048,
+        thinking: model.ThinkingOff,
+      ),
+    ],
+    roles: [#(model.Main, ["acme", "fallback"])],
+  )
+}
+
+fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
   let assert Ok(counter) =
@@ -96,8 +133,12 @@ fn start_harness() -> Harness {
         forwarder.data,
       ]),
     )
-  let assert Ok(_started) =
-    gateway.start(gateway.default_options("sess-01", runtime), name)
+  let options = gateway.default_options("sess-01", runtime)
+  let options = case catalogue {
+    Some(catalogue) -> gateway.with_catalog(options, catalogue)
+    None -> options
+  }
+  let assert Ok(_started) = gateway.start(options, name)
   let hub = gateway.Gateway(name:)
   let inbox = process.new_subject()
   let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
@@ -247,4 +288,126 @@ pub fn set_config_queue_mode_applies_test() {
   // The per-strand keys ride along when a strand is named.
   let assert Ok(json.Object(model_fields)) = list.key_find(fields, "model")
   assert list.key_find(model_fields, "model_id") == Ok(json.String("loom-1"))
+}
+
+// --- the model catalogue ---------------------------------------------------
+
+pub fn models_lists_catalogue_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  send(harness, 10, protocol.ListModels)
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(10)
+  let assert protocol.SnapshotEvent(protocol.ModelsSnapshot(models:)) =
+    envelope.event
+  assert models
+    == [
+      protocol.ModelInfo(
+        name: "acme",
+        dialect: "anthropic",
+        model_id: "loom-1",
+        roles: ["main"],
+        active: ["main"],
+      ),
+      protocol.ModelInfo(
+        name: "fallback",
+        dialect: "openai",
+        model_id: "fb-9",
+        roles: ["main"],
+        active: [],
+      ),
+    ]
+}
+
+pub fn models_without_catalogue_lists_nothing_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 10, protocol.ListModels)
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(10)
+  let assert protocol.SnapshotEvent(protocol.ModelsSnapshot(models: [])) =
+    envelope.event
+}
+
+pub fn set_config_model_name_switches_strand_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  send(
+    harness,
+    11,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("fallback"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(11)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  // The durable identity switched to the resolved catalogue facts, and
+  // the effective config names the entry back.
+  let assert json.Object(fields) = config
+  let assert Ok(json.Object(model_fields)) = list.key_find(fields, "model")
+  assert list.key_find(model_fields, "provider") == Ok(json.String("fallback"))
+  assert list.key_find(model_fields, "model_id") == Ok(json.String("fb-9"))
+  assert list.key_find(fields, "model_name") == Ok(json.String("fallback"))
+}
+
+pub fn set_config_unknown_model_name_refused_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  send(
+    harness,
+    12,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("ghost"))]),
+    ),
+  )
+  expect_error(harness, 12, "bad_request")
+}
+
+pub fn set_config_model_name_needs_a_catalogue_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    13,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("acme"))]),
+    ),
+  )
+  expect_error(harness, 13, "bad_request")
+}
+
+// Without a strand the switch is session-wide: every strand's durable
+// configuration moves to the named entry.
+pub fn set_config_model_name_without_strand_switches_all_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  send(
+    harness,
+    14,
+    protocol.SetConfig(
+      strand: None,
+      config: json.Object([#("model_name", json.String("fallback"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(14)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(..)) =
+    envelope.event
+  // Read the switch back through a strand-scoped effective config.
+  send(
+    harness,
+    15,
+    protocol.SetConfig(strand: Some("main"), config: json.Object([])),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(15)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  let assert json.Object(fields) = config
+  assert list.key_find(fields, "model_name") == Ok(json.String("fallback"))
 }

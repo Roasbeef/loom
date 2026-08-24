@@ -77,6 +77,7 @@
 
 import broker/escalation as broker_escalation
 import broker/policy.{type Grant}
+import client/catalog
 import client/grants
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
@@ -124,17 +125,21 @@ pub type Gateway {
 /// with; `runtime` is an open session runtime whose writer was given the
 /// `commit_forwarder` subject (so commit hints reach the hub);
 /// `recent_entries` bounds the full snapshot's entry window; `bus`, when
-/// present, adds events-bus publications as extra pull hints.
+/// present, adds events-bus publications as extra pull hints; `catalog`,
+/// when present, backs the `models` command and `set_config`'s
+/// `model_name` key (without one the listing is empty and name switches
+/// are refused in-band).
 pub type Options {
   Options(
     session_id: String,
     runtime: api.Runtime,
     recent_entries: Int,
     bus: Option(bus.Bus),
+    catalog: Option(catalog.Catalog),
   )
 }
 
-/// Sensible defaults: a 50-entry snapshot window, no bus.
+/// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue.
 ///
 /// ## Examples
 ///
@@ -143,7 +148,20 @@ pub type Options {
 /// ```
 ///
 pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
-  Options(session_id:, runtime:, recent_entries: 50, bus: None)
+  Options(session_id:, runtime:, recent_entries: 50, bus: None, catalog: None)
+}
+
+/// Supplies the model catalogue the hub serves and switches by name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_catalog(catalogue)
+/// ```
+///
+pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
+  Options(..options, catalog: Some(catalog))
 }
 
 /// Messages understood by the hub. Opaque in spirit: callers use the
@@ -174,6 +192,8 @@ type State {
     live: Dict(String, String),
     // entry id (text) → strand attribution cache.
     entry_strand: Dict(String, String),
+    // The model catalogue, when the host configured one.
+    catalog: Option(catalog.Catalog),
   )
 }
 
@@ -219,6 +239,7 @@ pub fn start(
         high_water: 0,
         live: dict.new(),
         entry_strand: dict.new(),
+        catalog: options.catalog,
       )
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
@@ -1084,6 +1105,7 @@ fn run_command(
       compact(state, connection, id, strand, instructions)
     protocol.CreateStrand(name:), True ->
       create_strand(state, connection, id, name)
+    protocol.ListModels, True -> list_models(state, connection, id)
     protocol.SetConfig(strand:, config:), True ->
       set_config(state, connection, id, strand, config)
   }
@@ -2252,12 +2274,49 @@ fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
   }
 }
 
+// --- the model catalogue ---------------------------------------------------
+
+// `models`: the catalogue as a `models` snapshot. A hub without a
+// configured catalogue answers an empty listing — the honest shape for
+// "there is nothing to pick from", and the same reply a client gets
+// either way, so it needs no special case.
+fn list_models(state: State, connection: Int, id: Int) -> State {
+  let models = case state.catalog {
+    None -> []
+    Some(catalogue) -> catalog_listing(catalogue)
+  }
+  reply(
+    state,
+    connection,
+    id,
+    protocol.SnapshotEvent(protocol.ModelsSnapshot(models:)),
+  )
+  state
+}
+
+// One wire row per catalogue entry: its identity facts plus which role
+// chains list it and which it currently heads (and therefore resolves
+// for — every catalogue entry is a registered provider).
+fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
+  list.map(catalogue.models, fn(entry) {
+    protocol.ModelInfo(
+      name: entry.name,
+      dialect: catalog.dialect_to_string(entry.dialect),
+      model_id: entry.model_id,
+      roles: catalog.routed_roles(catalogue, entry.name),
+      active: catalog.active_roles(catalogue, entry.name),
+    )
+  })
+}
+
 // --- set_config ------------------------------------------------------------
 
 // The accepted key set (protocol.md open question 3, answered):
 // `queue_mode` ("consume_all" | "one_at_a_time"), `tool_execution`
 // ("sequential" | "parallel") — session-wide run settings captured into
-// subsequent acceptances — and, with a `strand`, the durable
+// subsequent acceptances — `model_name` (a catalogue name, resolved
+// server-side; with a `strand` it switches that strand, without one it
+// switches every strand) — and, with a `strand`, the durable
 // per-strand configuration keys `model` ({provider, model_id}),
 // `thinking_level`, and `active_tools`. Unknown keys are refused
 // (`bad_request`) and nothing is applied.
@@ -2320,7 +2379,7 @@ type ConfigChange =
   fn(State) -> Result(State, String)
 
 fn validate_config_key(
-  _state: State,
+  state: State,
   strand: Option(String),
   field: #(String, JsonValue),
 ) -> Result(ConfigChange, String) {
@@ -2357,6 +2416,39 @@ fn validate_config_key(
           )
         }
         Some(_), _ -> Error("model must be an object")
+      }
+    // The by-name variant of `model`: the catalogue resolves the name
+    // into the durable identity, so clients never handle raw provider
+    // facts. Scoped to one strand when named, to every strand (the
+    // session's model) otherwise.
+    "model_name" ->
+      case value {
+        json.String(name) ->
+          case state.catalog {
+            None -> Error("no model catalogue is configured")
+            Some(catalogue) ->
+              case catalog.find(catalogue, name) {
+                Error(Nil) -> Error("unknown model name: " <> name)
+                Ok(entry) -> {
+                  let identity =
+                    machine_strand.ModelIdentity(
+                      provider: entry.name,
+                      model_id: entry.model_id,
+                    )
+                  let change = fn(configuration) {
+                    machine_strand.StrandConfiguration(
+                      ..configuration,
+                      model: identity,
+                    )
+                  }
+                  case strand {
+                    Some(strand) -> Ok(update_configuration(_, strand, change))
+                    None -> Ok(update_all_configurations(_, change))
+                  }
+                }
+              }
+          }
+        _ -> Error("model_name must be a string (a catalogue model name)")
       }
     "thinking_level" ->
       case strand, value {
@@ -2466,6 +2558,21 @@ fn update_configuration(
   }
 }
 
+// The session-wide variant: the same durable update applied to every
+// strand with a configuration register. Validation ran before any
+// change (apply_config's contract), so a mid-fold commit refusal is a
+// writer-level failure, reported as such.
+fn update_all_configurations(
+  state: State,
+  change: fn(machine_strand.StrandConfiguration) ->
+    machine_strand.StrandConfiguration,
+) -> Result(State, String) {
+  list.fold(strand_names(state), Ok(state), fn(state, strand) {
+    use state <- result.try(state)
+    update_configuration(state, strand, change)
+  })
+}
+
 fn parse_thinking_level(
   text: String,
 ) -> Result(machine_strand.ThinkingLevel, String) {
@@ -2505,25 +2612,53 @@ fn effective_config(state: State, strand: Option(String)) -> JsonValue {
       case session.strand_configuration(state.runtime.session, strand) {
         Ok(Some(session.Cell(value:, ..))) ->
           json.Object(
-            list.append(base, [
-              #(
-                "model",
-                json.Object([
-                  #("provider", json.String(value.model.provider)),
-                  #("model_id", json.String(value.model.model_id)),
-                ]),
-              ),
-              #(
-                "thinking_level",
-                json.String(thinking_level_text(value.thinking_level)),
-              ),
-              #(
-                "active_tools",
-                json.Array(list.map(value.active_tool_names, json.String)),
-              ),
+            list.flatten([
+              base,
+              [
+                #(
+                  "model",
+                  json.Object([
+                    #("provider", json.String(value.model.provider)),
+                    #("model_id", json.String(value.model.model_id)),
+                  ]),
+                ),
+              ],
+              // The catalogue name rides along whenever the identity
+              // is one the catalogue knows, so clients can display
+              // and re-select by the same handle they switched with.
+              catalog_name_of(state, value.model),
+              [
+                #(
+                  "thinking_level",
+                  json.String(thinking_level_text(value.thinking_level)),
+                ),
+                #(
+                  "active_tools",
+                  json.Array(list.map(value.active_tool_names, json.String)),
+                ),
+              ],
             ]),
           )
         _ -> json.Object(base)
+      }
+  }
+}
+
+// The catalogue name behind a durable identity, when there is one: the
+// entry whose name is the identity's provider and whose model id
+// matches. Zero or one field, spliced into the effective config.
+fn catalog_name_of(
+  state: State,
+  identity: machine_strand.ModelIdentity,
+) -> List(#(String, JsonValue)) {
+  case state.catalog {
+    None -> []
+    Some(catalogue) ->
+      case catalog.find(catalogue, identity.provider) {
+        Ok(entry) if entry.model_id == identity.model_id -> [
+          #("model_name", json.String(entry.name)),
+        ]
+        _ -> []
       }
   }
 }
