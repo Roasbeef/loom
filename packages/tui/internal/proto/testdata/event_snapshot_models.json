@@ -1,0 +1,1 @@
+{"v":1,"reply_to":14,"event":"snapshot","body":{"mode":"models","models":[{"name":"anthropic-opus","dialect":"anthropic","model_id":"claude-opus-5","roles":["main"],"active":["main"]},{"name":"baseten-oss","dialect":"openai","model_id":"openai/gpt-oss-120b","roles":["main","summarize"],"active":["summarize"]}]}}

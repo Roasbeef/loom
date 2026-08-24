@@ -1,0 +1,60 @@
+# loom.toml — an example model catalogue for the session server.
+#
+#     bin/loom-server --session ./session.db --config loom.toml
+#
+# The catalogue names models and routes roles onto them. Each
+# [models.<name>] entry registers one provider endpoint in the gateway;
+# the [roles] table gives each role an ordered fallback chain of those
+# names. The entry *name* is the handle everything else uses: the TUI's
+# :models picker switches a strand by it (`set_config` with
+# `model_name`), and it becomes the `provider` half of the durable
+# {provider, model_id} identity strands store.
+#
+# Precedence: --config replaces the LOOM_* environment surface entirely
+# (flags > config file > environment > built-in defaults). API keys are
+# the exception — they NEVER live in this file. `api_key_env` names an
+# environment variable, read only at dispatch time; a missing key still
+# boots the server and fails requests in-band.
+
+# An OpenAI-compatible endpoint hosted on Baseten. Baseten speaks the
+# chat-completions dialect, so `dialect = "openai"` selects that
+# adapter, and `base_url` points at the inference host — either the
+# shared root or the dedicated per-model URL your Baseten model page
+# shows (this one is a placeholder; substitute your own, e.g.
+# https://inference.baseten.co/v1). The bearer key from `api_key_env`
+# is the only credential the adapters send; per-model `headers` are not
+# supported (a config that sets them is refused, not ignored).
+[models.baseten-oss]
+dialect = "openai"
+base_url = "https://inference.baseten.example/v1"
+api_key_env = "BASETEN_API_KEY"
+# The id the provider expects in the request body, verbatim.
+model_id = "openai/gpt-oss-120b"
+# Static model facts. context_window drives overflow detection, so use
+# the provider's real figure; max_output_tokens is the default per-turn
+# output ceiling.
+context_window = 128000
+max_output_tokens = 16000
+# off | low | medium | high | unsupported. "unsupported" is for models
+# with no reasoning mode; like "off" it sends no reasoning field at
+# all. Omitting the key means "off".
+thinking = "unsupported"
+
+# An Anthropic Messages API endpoint. base_url is omitted, so the
+# dialect default (https://api.anthropic.com) applies.
+[models.anthropic-opus]
+dialect = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model_id = "claude-opus-5"
+context_window = 1000000
+max_output_tokens = 32000
+
+# Role routing: which model serves which purpose, best entry first.
+# The five routable roles are main, subagent, plan, summarize, and
+# vision; only main is required. A later entry is the fallback — used
+# when an attempt on the earlier one fails retryably (rate limit,
+# transport error), never after a settled response.
+[roles]
+main = ["baseten-oss", "anthropic-opus"]
+subagent = ["baseten-oss"]
+summarize = ["anthropic-opus"]
