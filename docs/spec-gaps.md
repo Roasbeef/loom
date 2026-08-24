@@ -298,3 +298,26 @@ instead and are only referenced here.
 9. **Lease expiry runs on injected time** — a crashed process holds the
    lease until the TTL elapses in that clock's era; correct in
    production, surprising under deterministic test fixtures.
+
+## From WP-K (`events`)
+
+1. **The catch-up frontier rule** (load-bearing, promote to convention):
+   a projection catch-up that reads more than one scan must bound every
+   scan by a frontier sequence read before the first one. Without it, a
+   commit landing between two scans advances the high-water past rows
+   the earlier scan never saw, losing them permanently. Sequences are
+   strictly increasing and rows write-once, so the bounded window is
+   immutable and the batch consistent.
+2. **Checkpoints persist state and high-water together.** The spec says
+   "persisted high-water seq"; for a stateful in-memory projection a
+   high-water without its matching state is meaningless. Search persists
+   cursor-only because its state is the database itself.
+3. **Operation-transition events carry a display string**, not a machine
+   type — keeping events off a machine dependency per the DAG; the
+   register remains the truth.
+4. **Session identity on the bus and in search is a caller-supplied
+   string** — core defines no session-id type. Revisit when the gateway
+   needs a canonical id.
+5. **Search indexes** message text and compaction/branch summaries;
+   thinking blocks and tool-call arguments are deliberately not indexed.
+   pi's metadata-filtering question stays open, as in pi.

@@ -59,3 +59,22 @@ surface with no regression risk proves the workflow first: the schema
 script, the generation step, the wrapper. The retrofit then proceeds
 under the same plan assertions that guard the code today, so every step
 is arbitrated by a test rather than by review.
+
+## Pilot verdict (2026-08-24, WP-K)
+
+The pilot ran on the search database and the verdict is positive with
+findings. FTS5 virtual tables, snippet functions, rank ordering, and
+upsert cursors all generate clean typed modules with the SQL emitted
+verbatim; regeneration is byte-reproducible; no hand-written fallback
+was needed. Two constraints surfaced. The parser rejects the
+table-valued match form, and the column-qualified form is the working
+substitute — arguably the better spelling anyway. More seriously, the
+generator slices queries by byte offset while counting characters, so
+any non-ASCII character in a query file silently corrupts the generated
+SQL of every later query in it. Query files are ASCII-only until that
+is fixed upstream, the regeneration script's header carries the rule,
+and the bug deserves an upstream report. The generated module makes
+parrot's small runtime a real dependency of the events package, as this
+decision anticipated. The retrofit of the storage package's plain
+statements can proceed on this evidence when convenient; the
+plan-asserted queries still move last.
