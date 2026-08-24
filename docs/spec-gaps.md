@@ -165,3 +165,36 @@ instead and are only referenced here.
    work because writes apply in order.
 6. **The JSONL/format-4 import shim** named in WP-B's scope is deferred
    to follow-up track 6; nothing before M7 depends on it.
+
+## From WP-D (`machine`)
+
+1. **`Fault` action variant.** A pure total planner cannot crash, so
+   corrupt inputs surface as a sixth Action variant carrying a corruption
+   report. Extends frozen §1.3 — raised as `protocol-change/002`, which
+   also records that `Transition`/`Finish` carry a full `Tx` rather than
+   bare expectations.
+2. **No list store.** pi persists streamed assistant frames, tool output
+   checkpoints, and tool memos in list stores; Loom's frozen Tx has no
+   list writes, so those are unrepresentable durably. Streamed partials
+   and checkpoints instead reach recovery as observations
+   (`ObservedAssistantOrphaned`, `ObservedToolOrphaned`). If frame-level
+   persistence is ever wanted, it needs a runtime-side mechanism or a
+   protocol change.
+3. **Adapter retryability convention.** No field on the settled message
+   carries the adapter's retryable judgment; the planner derives it from
+   `raw_stop_reason == "retryable"` and `ClassifyCtx.error_retryable`
+   carries it. The runtime must bridge provider's `retry.classify` into
+   this convention — reconcile when wiring WP-E.
+4. **Prefix scans.** Terminal cleanup deletes tool-args and preparation
+   registers from caller-supplied key lists, since the pure machine
+   cannot scan; delete-absent being a no-op keeps this as over-approximate
+   as pi's defensive scan.
+5. **Entry labels** are written to `fact.label` keyed by entry id; Loom
+   has no dedicated entry-label namespace.
+6. **Faithful-but-surprising transcriptions**, kept deliberately: a
+   completed tool batch sets skip-inbox-once (steer waits one turn, per
+   pi §3.12's sentence); the threshold check also runs at may-finish
+   checkpoints; backoff is base times two to the attempt, saturating at
+   exponent twenty; overflow during a deferred poll drains as failure
+   (pi's poll table has no compaction path); summary usage rows carry no
+   entry id because they commit before the result entry exists.
