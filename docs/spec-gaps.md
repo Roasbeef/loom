@@ -36,3 +36,38 @@ instead and are only referenced here.
 8. **Numeric edges.** JSON floats beyond IEEE 754 double range decode as
    corruption (the BEAM has no Inf/NaN); JSON ints are arbitrary
    precision; msgpack ints outside `[-2^63, 2^64-1]` are encode errors.
+
+## From WP-H (`sandbox`)
+
+1. **Policy source.** Part 1.4 lists `policy` inside `exec_start` while
+   WP-H says "parse SandboxPolicyV1 from fd 3". Resolution: fd 3 is
+   required and is the default policy; a policy in `exec_start` overrides
+   per-exec; the restrict-and-exec inner stage always reads fd 3
+   literally.
+2. **`exec_start.limits`.** The spec lists `limits` beside `policy`
+   although the policy already contains limits. The helper accepts and
+   ignores the outer field (policy governs); reserved for per-exec
+   overrides.
+3. **`output_bytes`** is enforced per stream (stdout and stderr each get
+   the cap); after truncation the helper drains and discards so the child
+   never blocks on a full pipe.
+4. **Hello ordering.** The spec does not say who speaks first. The helper
+   sends its hello first so the broker learns features before committing
+   work, and requires the broker's hello before any other frame.
+5. **One execution at a time** per helper; a second `exec_start` gets a
+   `busy` error. Concurrency lives in the broker's ExecPool, which keeps
+   "kill the pgroup" unambiguous.
+6. **Network-off filtering** blocks inet/netlink/packet `socket` creation
+   by domain (seccomp cannot inspect sockaddr); AF_UNIX stays usable and
+   is confined by the filesystem layers; bwrap's network unshare is the
+   independent second layer.
+7. **Degraded mode.** When bwrap/Landlock/cgroup are unavailable (as in
+   the development container) the helper enforces what it can, reports
+   the truth in `hello.features` and per-exec `enforcement`, and the
+   broker is expected to refuse degraded helpers by policy where the
+   policy demands full enforcement. Protected paths inside writable roots
+   are unenforceable without bwrap — reported, not hidden.
+8. **Unknown input policy.** Unknown policy/body keys are rejected
+   (fail-closed); unknown frame kinds get an in-band error without
+   closing (forward compatibility); malformed frames close the channel
+   per §3.3 invariant 6.
