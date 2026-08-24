@@ -12,9 +12,12 @@
 //// **Indexing is pull-based; events are only hints.** `sync` reads
 //// entries past the cursor and indexes them; a bus event (or any other
 //// notification) should only prompt a `sync` call — it never carries
-//// content. A lost hint is caught by the next sweep. The cursor
-//// advances in the same database transaction as the index rows, so a
-//// crash mid-batch simply re-runs the batch into the same state.
+//// content. A lost hint is caught by the next sweep. The cursor is
+//// *read* and advanced in the same `BEGIN IMMEDIATE` transaction as the
+//// index rows: a crash mid-batch simply re-runs the batch into the same
+//// state, and two concurrent syncs of the same session serialize on the
+//// write lock instead of both reading the same stale cursor and both
+//// inserting the same rows.
 ////
 //// **Rewrite invalidation.** A precise rewrite swaps a session's store
 //// and may renumber seqs, so the cursor is stored with the session's
@@ -157,10 +160,12 @@ pub fn close(search: Search) -> Result(Nil, SearchError) {
 }
 
 /// Pulls a session's entries past the stored cursor into the index —
-/// the sync utility. Idempotent and crash-safe: index rows and the
-/// advanced cursor commit in one transaction, so re-running after any
-/// failure converges on the same state. Run it at startup, on a
-/// schedule, and on every notification hint.
+/// the sync utility. Idempotent and crash-safe: the cursor is read,
+/// index rows are written, and the advanced cursor is written, all
+/// inside one transaction, so re-running after any failure — or racing
+/// a concurrent sync of the same session — converges on the same state
+/// rather than double-indexing. Run it at startup, on a schedule, and on
+/// every notification hint.
 ///
 /// `generation` is the session store's rewrite-generation counter,
 /// bumped by the precise rewrite when it swaps the store: for SQLite
@@ -182,41 +187,54 @@ pub fn sync(
   session session_id: String,
   generation generation: Int,
 ) -> Result(Nil, SearchError) {
-  use cursor <- result.try(read_cursor(search, session_id))
-  // A missing cursor and a generation mismatch converge on the same
-  // path: drop whatever rows the session may have and index from zero.
-  let #(stale, high_water) = case cursor {
-    Some(sql.GetCursor(generation: stored, high_water:))
-      if stored == generation
-    -> #(False, high_water)
-    Some(sql.GetCursor(..)) -> #(True, 0)
-    None -> #(True, 0)
-  }
-  use entries <- result.try(
-    storage.scan_entries(
-      store,
-      storage.entry_scan()
-        |> storage.entry_seq_range(Some(high_water + 1), None)
-        |> storage.entry_order(storage.OldestFirst),
+  // The cursor read decides what this call writes (how far back to
+  // scan, whether to drop and re-index), so it must happen *inside* the
+  // same `BEGIN IMMEDIATE` as the write, not before it. `BEGIN
+  // IMMEDIATE` takes the write lock up front, so two concurrent syncs
+  // serialize here: the second one's cursor read waits for the first's
+  // commit and then sees the advanced high-water, rather than both
+  // reading the same stale cursor and both inserting the same rows
+  // (EV-sync-txn — was reproducible as five entries indexing as ten).
+  in_transaction(search, fn() {
+    use cursor <- result.try(read_cursor(search, session_id))
+    // A missing cursor and a generation mismatch converge on the same
+    // path: drop whatever rows the session may have and index from
+    // zero.
+    let #(stale, high_water) = case cursor {
+      Some(sql.GetCursor(generation: stored, high_water:))
+        if stored == generation
+      -> #(False, high_water)
+      Some(sql.GetCursor(..)) -> #(True, 0)
+      None -> #(True, 0)
+    }
+    use entries <- result.try(
+      storage.scan_entries(
+        store,
+        storage.entry_scan()
+          |> storage.entry_seq_range(Some(high_water + 1), None)
+          |> storage.entry_order(storage.OldestFirst),
+      )
+      |> result.map_error(SessionReadFault),
     )
-    |> result.map_error(SessionReadFault),
-  )
-  let new_high_water =
-    list.fold(entries, high_water, fn(seen, entry) { int.max(seen, entry.seq) })
-  let rows =
-    list.filter_map(entries, fn(entry) {
-      let text = entry_text(entry)
-      case text {
-        "" -> Error(Nil)
-        _ -> Ok(#(ids.entry_id_to_string(entry.id), text))
-      }
-    })
-  // Nothing new, no invalidation, cursor already recorded: skip the
-  // write entirely so hint-driven syncs on idle sessions stay cheap.
-  case stale, rows, new_high_water == high_water, cursor {
-    False, [], True, Some(_) -> Ok(Nil)
-    _, _, _, _ ->
-      in_transaction(search, fn() {
+    let new_high_water =
+      list.fold(entries, high_water, fn(seen, entry) {
+        int.max(seen, entry.seq)
+      })
+    let rows =
+      list.filter_map(entries, fn(entry) {
+        let text = entry_text(entry)
+        case text {
+          "" -> Error(Nil)
+          _ -> Ok(#(ids.entry_id_to_string(entry.id), text))
+        }
+      })
+    // Nothing new, no invalidation, cursor already recorded: skip the
+    // write entirely so hint-driven syncs on idle sessions stay cheap.
+    // Now that the read happened under the lock, this is also what a
+    // second racing sync converges on once the first commits.
+    case stale, rows, new_high_water == high_water, cursor {
+      False, [], True, Some(_) -> Ok(Nil)
+      _, _, _, _ -> {
         use Nil <- result.try(case stale {
           True -> run_statement(search, sql.delete_session_index(session_id))
           False -> Ok(Nil)
@@ -242,8 +260,9 @@ pub fn sync(
             high_water: new_high_water,
           ),
         )
-      })
-  }
+      }
+    }
+  })
 }
 
 /// The notification hint entry point: identical to `sync`, named for

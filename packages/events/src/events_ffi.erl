@@ -14,6 +14,7 @@
     pg_start/1,
     pg_start_link/1,
     pg_join/2,
+    pg_is_member/2,
     pg_leave/2,
     pg_member_count/2,
     pg_publish/3,
@@ -41,6 +42,15 @@ pg_start_link(Scope) ->
 pg_join(Scope, Group) ->
     ok = pg:join(Scope, Group, self()),
     nil.
+
+%% pg counts multiplicity: joining the same pid to a group twice makes it
+%% a member twice, and get_local_members/2 returns it twice, so a naive
+%% double-join double-delivers. This is the guard bus.subscribe uses to
+%% stay idempotent per {scope, group, pid}: check membership before
+%% joining, from the same (single-threaded) process that would join, so
+%% there is no window for the check to race the join it guards.
+pg_is_member(Scope, Group) ->
+    lists:member(self(), pg:get_local_members(Scope, Group)).
 
 %% pg:leave/3 — leaving a group one is not in is a no-op, matching the
 %% hint semantics of the bus (nothing depends on membership).

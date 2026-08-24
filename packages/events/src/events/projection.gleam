@@ -19,10 +19,12 @@ import core/ids.{type Seq}
 import events/bus.{type Bus}
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
+import gleam/string
 import storage/storage.{type SessionStats, type Storage, type StorageError}
 
 /// One committed change, as fed to a projection's fold in seq order.
@@ -48,17 +50,28 @@ pub type Projection(state) {
 
 /// Where a driver persists its progress between restarts.
 ///
-/// Constructor invariants: `save(state, high_water)` stores both
-/// together — state without its high-water (or the reverse) is
-/// meaningless; `load` returns the most recently saved pair, or `None`
-/// to start from zero. Persistence is best-effort: a checkpoint that
-/// loses writes only costs a longer catch-up, never correctness.
+/// Constructor invariants: `save(state, high_water, generation)` stores
+/// all three together — state without its high-water (or either
+/// without the generation they were folded under) is meaningless;
+/// `load` returns the most recently saved triple, or `None` to start
+/// from zero. Persistence is best-effort: a checkpoint that loses writes
+/// only costs a longer catch-up, never correctness.
+///
+/// `generation` mirrors `events/search`'s rewrite-invalidation cursor:
+/// it is the store's rewrite-generation counter at the moment `state`
+/// was folded (`storage/sqlite.generation`; memory sessions have none,
+/// so callers pass `0`). A precise rewrite preserves seq numbering while
+/// replacing payloads, so the frontier rule alone cannot see it — a
+/// checkpoint whose generation no longer matches the store's current
+/// one is folded over erased-or-renumbered history and must be
+/// discarded, not resumed from.
 pub type Checkpoint(state) {
   Checkpoint(
-    /// The most recently saved pair, or `None` for a cold start.
-    load: fn() -> Option(#(state, Seq)),
-    /// Stores a state together with the high-water it corresponds to.
-    save: fn(state, Seq) -> Nil,
+    /// The most recently saved triple, or `None` for a cold start.
+    load: fn() -> Option(#(state, Seq, Int)),
+    /// Stores a state together with the high-water and generation it
+    /// corresponds to.
+    save: fn(state, Seq, Int) -> Nil,
   )
 }
 
@@ -72,7 +85,9 @@ pub type Checkpoint(state) {
 /// ```
 ///
 pub fn ephemeral() -> Checkpoint(state) {
-  Checkpoint(load: fn() { None }, save: fn(_state, _high_water) { Nil })
+  Checkpoint(load: fn() { None }, save: fn(_state, _high_water, _generation) {
+    Nil
+  })
 }
 
 /// Pulls every change past `after` from the store and folds it into
@@ -266,12 +281,22 @@ pub type Hints {
 
 /// Driver configuration.
 ///
-/// Constructor invariants: `store` is the session's open storage;
-/// `projection` obeys the `Projection` invariants; `checkpoint` obeys
-/// the `Checkpoint` invariants; the driver assumes nothing else.
+/// Constructor invariants: `store`, called fresh on every pull, returns
+/// the session's *current* open storage — never a value the caller
+/// captured once, since a precise rewrite swaps the store the driver
+/// must read (EV-proj-rewrite: a driver that cached its `Storage(handle)`
+/// at start would keep reading a stale or closed handle forever after a
+/// rewrite). `generation`, likewise called fresh, returns the store's
+/// current rewrite-generation counter (`storage/sqlite.generation`;
+/// `fn() { 0 }` for memory sessions, which have none) — this is what
+/// lets a pull notice a rewrite happened at all, the same way
+/// `events/search.sync`'s caller-supplied generation does. `projection`
+/// obeys the `Projection` invariants; `checkpoint` obeys the
+/// `Checkpoint` invariants; the driver assumes nothing else.
 pub type Options(state, handle) {
   Options(
-    store: Storage(handle),
+    store: fn() -> Storage(handle),
+    generation: fn() -> Int,
     projection: Projection(state),
     checkpoint: Checkpoint(state),
     hints: Hints,
@@ -288,11 +313,17 @@ pub opaque type Message(state) {
 
 type DriverState(state, handle) {
   DriverState(
-    store: Storage(handle),
+    get_store: fn() -> Storage(handle),
+    get_generation: fn() -> Int,
     projection: Projection(state),
     checkpoint: Checkpoint(state),
     state: state,
     high_water: Seq,
+    /// The generation `state`/`high_water` were folded under. Compared
+    /// against `get_generation()` on every pull; a mismatch means a
+    /// rewrite happened underneath this checkpoint and the fold must
+    /// restart from `projection.initial` at seq zero.
+    generation: Int,
   )
 }
 
@@ -306,7 +337,8 @@ type DriverState(state, handle) {
 /// ## Examples
 ///
 /// ```gleam
-/// // projection.start(projection.Options(store:, projection: stats_projection(),
+/// // projection.start(projection.Options(store: fn() { store },
+/// //   generation: fn() { 0 }, projection: stats_projection(),
 /// //   checkpoint: projection.ephemeral(), hints: projection.FromBus(bus, "s1")))
 /// ```
 ///
@@ -325,21 +357,30 @@ pub fn start(
         process.new_selector()
         |> process.select(subject)
     }
-    let #(state, high_water) = case options.checkpoint.load() {
+    // A cold start has nothing checkpointed to compare a generation
+    // against, so it simply records whatever generation the store is
+    // at now — there is no rewrite to detect before the first fold.
+    let #(state, high_water, generation) = case options.checkpoint.load() {
       Some(saved) -> saved
-      None -> #(options.projection.initial, 0)
+      None -> #(options.projection.initial, 0, options.generation())
     }
     let driver =
       DriverState(
-        store: options.store,
+        get_store: options.store,
+        get_generation: options.generation,
         projection: options.projection,
         checkpoint: options.checkpoint,
         state:,
         high_water:,
+        generation:,
       )
     // First convergence at start; a fault keeps the checkpointed state
     // and the next hint retries.
-    let #(driver, _result) = pull(driver)
+    let #(driver, result) = pull(driver)
+    case result {
+      Ok(Nil) -> Nil
+      Error(error) -> surface_pull_fault(error)
+    }
     actor.initialised(driver)
     |> actor.selecting(selector)
     |> actor.returning(subject)
@@ -370,7 +411,17 @@ fn handle_message(
 ) -> actor.Next(DriverState(state, handle), Message(state)) {
   case message {
     Hinted -> {
-      let #(driver, _result) = pull(driver)
+      // A hint carries no reply channel to return a fault to, but the
+      // fault must not vanish silently either (EV-proj-rewrite's other
+      // aggravator: a driver reading a closed or stale handle would
+      // otherwise serve its last good state forever with nothing ever
+      // surfacing the read failure). Log it; an explicit `sync` still
+      // returns it to a caller that is watching.
+      let #(driver, result) = pull(driver)
+      case result {
+        Ok(Nil) -> Nil
+        Error(error) -> surface_pull_fault(error)
+      }
       actor.continue(driver)
     }
     Read(reply:) -> {
@@ -390,23 +441,56 @@ fn handle_message(
 
 /// One catch-up pull; on success the checkpoint is saved. On fault the
 /// previous state is kept.
+///
+/// Re-reads both the store and the generation fresh on every call
+/// (EV-proj-rewrite) rather than trusting anything captured at start: a
+/// precise rewrite swaps the store and bumps its generation, and a
+/// driver that cached either at start would keep folding a stale
+/// handle, or keep extending a fold that was already invalidated,
+/// forever. A generation that no longer matches the one `driver.state`
+/// was folded under means exactly that a rewrite happened underneath
+/// this checkpoint, so the fold restarts from `projection.initial` at
+/// seq zero — the same rebuild `catch_up` always does for a store with
+/// nothing owed yet, just aimed at the *current* store instead of the
+/// one this driver last saw.
 fn pull(
   driver: DriverState(state, handle),
 ) -> #(DriverState(state, handle), Result(Nil, StorageError)) {
-  case
-    catch_up(
-      driver.store,
-      driver.projection,
-      driver.state,
-      after: driver.high_water,
-    )
-  {
+  let store = driver.get_store()
+  let current_generation = driver.get_generation()
+  let #(state, high_water) = case current_generation == driver.generation {
+    True -> #(driver.state, driver.high_water)
+    False -> #(driver.projection.initial, 0)
+  }
+  case catch_up(store, driver.projection, state, after: high_water) {
     Ok(#(state, high_water)) -> {
-      driver.checkpoint.save(state, high_water)
-      #(DriverState(..driver, state:, high_water:), Ok(Nil))
+      driver.checkpoint.save(state, high_water, current_generation)
+      #(
+        DriverState(
+          ..driver,
+          state:,
+          high_water:,
+          generation: current_generation,
+        ),
+        Ok(Nil),
+      )
     }
+    // A fault leaves the driver exactly as it was — including its
+    // recorded generation — so a rewrite detected but not yet folded
+    // (the scan that would prove it failed) is retried in full on the
+    // next pull rather than being half-adopted.
     Error(error) -> #(driver, Error(error))
   }
+}
+
+/// Logs a pull fault that has no reply channel to return to (the hint
+/// path, and the driver's own start-time convergence pull). The
+/// checkpointed state is kept either way; this only makes the fault
+/// visible instead of silently swallowed.
+fn surface_pull_fault(error: StorageError) -> Nil {
+  io.println_error(
+    "events/projection: catch-up pull failed: " <> string.inspect(error),
+  )
 }
 
 /// Nudges a driver to catch up, fire-and-forget — what an external hint

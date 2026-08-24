@@ -1,12 +1,15 @@
 //// Projection semantics: catch-up equals rebuild, hints are lossy but
 //// convergence is pull-based, checkpoints resume without refolding.
 
+import core/entry as core_entry
+import core/message
 import events/bus
 import events/projection.{EntryAppended, UsageAppended}
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/otp/actor
 import storage/storage
 import support/fixtures
 
@@ -117,7 +120,8 @@ pub fn lost_events_converge_via_catch_up_test() {
   let store = fixtures.open_store()
   let assert Ok(started) =
     projection.start(projection.Options(
-      store:,
+      store: fn() { store },
+      generation: fn() { 0 },
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.FromBus(bus:, session:),
@@ -153,7 +157,8 @@ pub fn total_event_loss_still_converges_test() {
   let #(store, _ctx) = seeded_store(5)
   let assert Ok(started) =
     projection.start(projection.Options(
-      store:,
+      store: fn() { store },
+      generation: fn() { 0 },
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.NoHints,
@@ -169,7 +174,8 @@ pub fn hint_triggers_catch_up_test() {
   let store = fixtures.open_store()
   let assert Ok(started) =
     projection.start(projection.Options(
-      store:,
+      store: fn() { store },
+      generation: fn() { 0 },
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.FromBus(bus:, session:),
@@ -203,7 +209,8 @@ pub fn read_lags_until_poked_test() {
   let store = fixtures.open_store()
   let assert Ok(started) =
     projection.start(projection.Options(
-      store:,
+      store: fn() { store },
+      generation: fn() { 0 },
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.NoHints,
@@ -232,14 +239,15 @@ pub fn checkpoint_resumes_without_refolding_test() {
   let saves = process.new_subject()
   let checkpoint =
     projection.Checkpoint(
-      load: fn() { option.Some(#(marker, high_water)) },
-      save: fn(saved_state, saved_high_water) {
-        process.send(saves, #(saved_state, saved_high_water))
+      load: fn() { option.Some(#(marker, high_water, 0)) },
+      save: fn(saved_state, saved_high_water, saved_generation) {
+        process.send(saves, #(saved_state, saved_high_water, saved_generation))
       },
     )
   let assert Ok(started) =
     projection.start(projection.Options(
-      store:,
+      store: fn() { store },
+      generation: fn() { 0 },
       projection: stats,
       checkpoint:,
       hints: projection.NoHints,
@@ -247,13 +255,130 @@ pub fn checkpoint_resumes_without_refolding_test() {
   let driver = started.data
   assert projection.read(driver).message_count == 100
   // The start-time convergence pull found nothing new but still saved.
-  let assert Ok(#(saved, saved_high_water)) = process.receive(saves, 500)
+  let assert Ok(#(saved, saved_high_water, saved_generation)) =
+    process.receive(saves, 500)
   assert saved == marker
   assert saved_high_water == high_water
+  assert saved_generation == 0
   // New commits fold on top of the resumed state (the threaded ctx
   // keeps minted ids disjoint from the seeded ones).
   let #(entry, _ctx) = fixtures.message_entry(ctx, None, "after checkpoint")
   fixtures.commit_entries(store, [entry])
   let assert Ok(after) = projection.sync(driver)
   assert after.message_count == 101
+}
+
+// --- rewrite invalidation ---------------------------------------------------
+
+/// A projection that folds each message entry's text into a list — the
+/// stats projection only counts, so it cannot show *content* surviving
+/// a rewrite; this one can.
+fn text_projection() -> projection.Projection(List(String)) {
+  projection.Projection(initial: [], apply: fn(seen, change) {
+    case change {
+      EntryAppended(entry:) -> [entry_user_text(entry), ..seen]
+      UsageAppended(..) -> seen
+    }
+  })
+}
+
+fn entry_user_text(entry: core_entry.Entry) -> String {
+  case entry {
+    core_entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
+      case content {
+        [message.UserText(text:, ..), ..] -> text
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+/// A single mutable cell, actor-backed — the test double for "wherever
+/// the driver's `store`/`generation` thunks actually read from" (a
+/// session registry in production). Its whole point is that `cell_get`
+/// after a `cell_set` returns the *new* value, unlike a plain closure
+/// over a `let`-bound variable.
+type CellMessage(value) {
+  CellGet(reply: Subject(value))
+  CellSet(value: value)
+}
+
+fn start_cell(initial: value) -> Subject(CellMessage(value)) {
+  let assert Ok(started) =
+    actor.new(initial)
+    |> actor.on_message(fn(state, message) {
+      case message {
+        CellGet(reply:) -> {
+          process.send(reply, state)
+          actor.continue(state)
+        }
+        CellSet(value:) -> actor.continue(value)
+      }
+    })
+    |> actor.start
+    as "cell actor must start"
+  started.data
+}
+
+fn cell_get(cell: Subject(CellMessage(value))) -> value {
+  process.call(cell, waiting: 1000, sending: CellGet)
+}
+
+fn cell_set(cell: Subject(CellMessage(value)), value: value) -> Nil {
+  process.send(cell, CellSet(value))
+}
+
+/// EV-proj-rewrite: a precise rewrite preserves seq numbering while
+/// replacing payloads, so the frontier rule alone cannot see it — a
+/// projection checkpointed over the store before the rewrite must
+/// notice the generation moved and rebuild from zero instead of
+/// serving the pre-rewrite state forever.
+///
+/// The rewrite is simulated exactly as `events/search`'s own
+/// `generation_bump_invalidates_and_reindexes_test` simulates it: a
+/// fresh store under the same session, at a bumped generation — which
+/// is precisely what a real `storage/sqlite.rewrite_into` swap looks
+/// like from a reader's side (same seq numbering could apply; here a
+/// fresh store is simplest and keeps the test backend-agnostic, since
+/// the driver's contract is the generation counter, not the swap
+/// mechanism). `store`/`generation` are cell-backed rather than plain
+/// closures over a `let`-bound store, so the test can swap them the way
+/// a real session would after a rewrite — and so this test would still
+/// catch a driver that only re-reads `generation` but keeps its store
+/// handle from `start`.
+pub fn rewrite_invalidates_checkpointed_projection_test() {
+  let before_store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(secret, _ctx) =
+    fixtures.message_entry(ctx, None, "the doomed passphrase")
+  fixtures.commit_entries(before_store, [secret])
+
+  let store_cell = start_cell(before_store)
+  let generation_cell = start_cell(0)
+
+  let assert Ok(started) =
+    projection.start(projection.Options(
+      store: fn() { cell_get(store_cell) },
+      generation: fn() { cell_get(generation_cell) },
+      projection: text_projection(),
+      checkpoint: projection.ephemeral(),
+      hints: projection.NoHints,
+    ))
+  let driver = started.data
+  let assert Ok(before) = projection.sync(driver)
+  assert list.contains(before, "the doomed passphrase")
+
+  // The rewrite: a fresh store (fresh seq numbering, no trace of the
+  // erased entry) under a bumped generation — swapped in through the
+  // cells, exactly as a session would after a real rewrite.
+  let after_store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(kept, _ctx) = fixtures.message_entry(ctx, None, "the surviving remark")
+  fixtures.commit_entries(after_store, [kept])
+  cell_set(store_cell, after_store)
+  cell_set(generation_cell, 1)
+
+  let assert Ok(after) = projection.sync(driver)
+  assert !list.contains(after, "the doomed passphrase")
+  assert list.contains(after, "the surviving remark")
 }

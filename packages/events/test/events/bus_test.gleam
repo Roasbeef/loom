@@ -69,6 +69,63 @@ pub fn publish_without_subscribers_is_legal_test() {
     == Nil
 }
 
+/// EV-sub-idempotent: `pg` counts multiplicity (two joins from one pid
+/// are two memberships), so without a guard a second `subscribe` would
+/// double-deliver and one `unsubscribe` would leave a membership behind.
+/// `subscribe` must dedup per `{session, topic, pid}`.
+pub fn double_subscribe_delivers_once_test() {
+  let bus = bus.start()
+  let session = "bus-double-subscribe"
+  bus.subscribe(bus, session:, topic: bus.Commits)
+  bus.subscribe(bus, session:, topic: bus.Commits)
+  assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 1
+  let event = Committed(seqs: [1], ts: 1)
+  bus.publish(bus, session:, event:)
+  assert receive_published(500) == Ok(Published(session:, event:))
+  // A second delivery of the same event would arrive here if the double
+  // join were live; there must be none.
+  assert receive_published(50) == Error(Nil)
+  // One unsubscribe now fully undoes the one membership subscribe left.
+  bus.unsubscribe(bus, session:, topic: bus.Commits)
+  assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 0
+}
+
+/// EV-bridge-sup: `bridge` is `actor.start`, which links the new actor
+/// to its caller like every OTP start. The mapping closure is
+/// caller-supplied and runs inside the bridge actor, so a closure that
+/// crashes must not take its starter down with it. A separate "host"
+/// process starts the bridge (so the link under test is the bridge's,
+/// not gleeunit's own test process), triggers the crash, then proves it
+/// is still alive by answering a ping afterward.
+pub fn bridge_crash_does_not_kill_starter_test() {
+  let bus = bus.start()
+  let session = "bus-bridge-crash"
+  // A subject can only be received on by the process that created it, so
+  // the host creates its own ping subject and hands it back over
+  // `ready_relay` rather than the test handing one in.
+  let ready_relay = process.new_subject()
+  let _host =
+    process.spawn_unlinked(fn() {
+      let assert Ok(started) =
+        bus.bridge(bus, session:, map: fn(_incoming: Int) -> bus.Event {
+          panic as "a caller-supplied mapping closure may crash"
+        })
+      let ping = process.new_subject()
+      process.send(ready_relay, #(started.data, ping))
+      // Stay alive to answer a ping after the bridge has (maybe)
+      // crashed — that is the property under test.
+      let assert Ok(reply) = process.receive(ping, 2000)
+      process.send(reply, True)
+    })
+  let assert Ok(#(bridge_subject, ping)) = process.receive(ready_relay, 500)
+  process.send(bridge_subject, 1)
+  // Give the crash time to propagate before checking survival.
+  process.sleep(100)
+  let pong = process.new_subject()
+  process.send(ping, pong)
+  assert process.receive(pong, 500) == Ok(True)
+}
+
 pub fn subscriber_count_test() {
   let bus = bus.start()
   let session = "bus-subscriber-count"

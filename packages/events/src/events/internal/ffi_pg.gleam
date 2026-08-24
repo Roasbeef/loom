@@ -61,6 +61,15 @@ pub fn start_link(scope: Scope) -> Result(Pid, Nil)
 @external(erlang, "events_ffi", "pg_join")
 pub fn join(scope: Scope, group: group) -> Nil
 
+/// Whether the *calling process* is already a local member of a group.
+/// `pg` counts multiplicity — joining twice makes two memberships, not
+/// one — so this is what makes `join` idempotent per `{scope, group,
+/// pid}` from the caller's side: check before joining.
+///
+/// Binds `pg:get_local_members/2` via `events_ffi:pg_is_member/2`.
+@external(erlang, "events_ffi", "pg_is_member")
+pub fn is_member(scope: Scope, group: group) -> Bool
+
 /// Removes the calling process from a group; a no-op if it never
 /// joined.
 ///

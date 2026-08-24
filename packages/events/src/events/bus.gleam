@@ -175,6 +175,13 @@ pub fn publish(bus: Bus, session session: String, event event: Event) -> Nil {
 /// process dies. Receive the events by folding `select_published` into
 /// the process's selector.
 ///
+/// Idempotent per `{session, topic}`: a process already subscribed that
+/// subscribes again stays a single member. `pg` itself counts
+/// multiplicity — two joins from the same pid deliver every event
+/// twice, and one `unsubscribe` would only undo one of them — so this
+/// checks membership before joining rather than relying on `pg` to
+/// dedup.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -182,7 +189,11 @@ pub fn publish(bus: Bus, session session: String, event event: Event) -> Nil {
 /// ```
 ///
 pub fn subscribe(bus: Bus, session session: String, topic topic: Topic) -> Nil {
-  ffi_pg.join(bus.scope, #(session, topic))
+  let group = #(session, topic)
+  case ffi_pg.is_member(bus.scope, group) {
+    True -> Nil
+    False -> ffi_pg.join(bus.scope, group)
+  }
 }
 
 /// Subscribes the calling process to every topic of one session. Events
@@ -273,7 +284,13 @@ pub fn select_published(
 ///
 /// The bridge inherits the bus's loss semantics: if it dies, events are
 /// missed until it is restarted, and that is legal — subscribers
-/// converge by pulling.
+/// converge by pulling. `map` is caller-supplied and runs inside the
+/// bridge actor, so it must be total: `actor.start` links the new
+/// process to its caller the way every OTP start does, and a `map` that
+/// crashes would otherwise take the starter down with it. `bridge`
+/// unlinks immediately after a successful start so that crash stays
+/// local to the bridge, exactly as the "missed until restarted" promise
+/// above already assumes.
 ///
 /// ## Examples
 ///
@@ -291,10 +308,18 @@ pub fn bridge(
   session session: String,
   map map: fn(incoming) -> Event,
 ) -> actor.StartResult(Subject(incoming)) {
-  actor.new(Nil)
-  |> actor.on_message(fn(_state, incoming) {
-    publish(bus, session:, event: map(incoming))
-    actor.continue(Nil)
-  })
-  |> actor.start
+  case
+    actor.new(Nil)
+    |> actor.on_message(fn(_state, incoming) {
+      publish(bus, session:, event: map(incoming))
+      actor.continue(Nil)
+    })
+    |> actor.start
+  {
+    Ok(started) -> {
+      process.unlink(started.pid)
+      Ok(started)
+    }
+    Error(error) -> Error(error)
+  }
 }

@@ -6,6 +6,8 @@ import core/entry as core_entry
 import core/ids
 import core/message
 import events/search
+import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -48,6 +50,83 @@ pub fn repeated_sync_does_not_duplicate_test() {
   let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
   let assert Ok(hits) = search.query(service, text: "singular", limit: 10)
   assert list.length(hits) == 1
+}
+
+/// EV-sync-txn: the cursor must be read inside the same write
+/// transaction it is advanced in, or two concurrent syncs of a
+/// session's new entries both read the same not-stale cursor and both
+/// insert the same rows — five entries indexing as ten, permanently
+/// (nothing about the incremental path ever deletes-then-reinserts to
+/// heal it, unlike the generation-mismatch path).
+///
+/// Two real connections to one on-disk index file race a "slow" and a
+/// "fast" sync of the same second wave of entries. The interleaving is
+/// forced with a slow entry scan (what a large session file's scan looks
+/// like) rather than a hard rendezvous: the slow sync's cursor-read
+/// decision is made either before the write lock (pre-fix — reads the
+/// same not-yet-advanced cursor the fast sync will race against) or
+/// while holding it (post-fix — the fast sync then simply waits its
+/// turn and re-reads).
+pub fn concurrent_sync_does_not_duplicate_rows_test() {
+  let _ = simplifile.create_directory_all("build/test_db")
+  let path = "build/test_db/search_concurrent_sync.db"
+  let _ = simplifile.delete(path)
+  let _ = simplifile.delete(path <> "-wal")
+  let _ = simplifile.delete(path <> "-shm")
+
+  let store = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(first, ctx) = fixtures.message_entry(ctx, None, "first wave alpha")
+  fixtures.commit_entries(store, [first])
+
+  // Establish a real, non-stale cursor first. The race under test is
+  // the incremental "second wave" path (`stale == False`), which is the
+  // one with no self-healing delete.
+  let assert Ok(warm_up) = search.open(path) as "search database must open"
+  let assert Ok(Nil) =
+    search.sync(warm_up, store, session: "race", generation: 0)
+  let assert Ok(Nil) = search.close(warm_up)
+
+  // A second wave of five new entries for the two racing syncs to index.
+  let _ctx =
+    int.range(from: 1, to: 6, with: ctx, run: fn(ctx, i) {
+      let #(entry, ctx) =
+        fixtures.message_entry(
+          ctx,
+          Some(first.id),
+          "second wave " <> int.to_string(i),
+        )
+      fixtures.commit_entries(store, [entry])
+      ctx
+    })
+
+  // Two independent connections to the same file, exactly as two
+  // independent processes would open it.
+  let slow_store =
+    storage.Storage(..store, scan_entries: fn(handle, query) {
+      process.sleep(1500)
+      store.scan_entries(handle, query)
+    })
+  let done = process.new_subject()
+  let _slow =
+    process.spawn_unlinked(fn() {
+      let assert Ok(service_slow) = search.open(path)
+        as "search database must open"
+      let result =
+        search.sync(service_slow, slow_store, session: "race", generation: 0)
+      process.send(done, result)
+    })
+  // Let the slow sync start (and, pre-fix, finish its unlocked cursor
+  // read) before the fast one runs to completion underneath it.
+  process.sleep(200)
+  let assert Ok(fast_service) = search.open(path) as "search database must open"
+  let assert Ok(Nil) =
+    search.sync(fast_service, store, session: "race", generation: 0)
+  let assert Ok(slow_result) = process.receive(done, 5000)
+  let assert Ok(Nil) = slow_result
+
+  let assert Ok(hits) = search.query(fast_service, text: "second", limit: 100)
+  assert list.length(hits) == 5
 }
 
 pub fn incremental_sync_indexes_new_entries_test() {
@@ -238,7 +317,12 @@ pub fn sqlite_rewrite_invalidates_index_test() {
     }
   }
   let assert Ok(sqlite.Rewrite(generation: bumped, ..)) =
-    sqlite.rewrite_into(path:, clock:, rewrite: erase)
+    sqlite.rewrite_into(
+      path:,
+      clock:,
+      rewrite: erase,
+      rewrite_value: fn(_value) { Ok(None) },
+    )
   assert bumped == generation + 1
 
   // Sync against the swapped store under the bumped generation: the
