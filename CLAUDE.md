@@ -33,6 +33,21 @@ Before writing any code, read these in order:
 - Pure packages (`core`, `machine`) perform no I/O. Every
   durability/wire boundary uses total decoders.
 
+## Working in the repo
+
+`make help` lists the common commands. `make check` is the full gate —
+format check, warning-free build, and tests across every package — and is
+exactly what CI runs; `make check-<package>` narrows it to one. Other
+regulars: `make fmt` before committing, `make selftest` to see which
+sandbox enforcement layers the current kernel actually provides, and
+`make e2e` for the jailed end-to-end against a freshly built helper.
+
+`main` is the primary branch. Work happens on short-lived topic branches
+named for the work itself — `storage/branch-index-repair`,
+`fix/hashline-replay`, `wp-j/vetting-lint` — never for the tool or agent
+that produced it. One work package or one fix per branch; merge to `main`
+once its exit criteria pass.
+
 ## Commits
 
 Make incremental, atomic commits that each tell one part of the story.
