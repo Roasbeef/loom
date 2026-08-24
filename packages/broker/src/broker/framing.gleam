@@ -691,8 +691,16 @@ fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
             Ok(#(payload, remainder)) ->
               case decode_payload(payload) {
                 Ok(frame) -> push_loop(remainder, [Known(frame:), ..seen])
+                // Well-formed but unrecognized: not a poisoning fault.
+                // The deframer keeps scanning `remainder` normally so
+                // later, understood frames still arrive — only a
+                // genuinely broken envelope kills the channel.
                 Error(UnknownKind(id:, kind:)) ->
                   push_loop(remainder, [UnknownInbound(id:, kind:), ..seen])
+                // Both faults below poison the deframer via `faulted`:
+                // every subsequent `push` reports the same fault instead
+                // of resuming the scan, matching the close-the-channel
+                // contract (spec §3.3 invariant 6).
                 Error(Malformed(report:)) ->
                   faulted(buffer, seen, CorruptFrame(report:))
                 Error(UnsupportedVersion(version:)) ->

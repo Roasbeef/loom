@@ -760,6 +760,11 @@ fn handle_block_delta(
   }
 }
 
+// Applies `update` to the block at `index`. `events == []` is a found
+// guard, not an accumulator: block indices are provider-assigned and
+// expected unique per stream, but this ensures only the first match
+// updates even if a proxy ever duplicates one, rather than silently
+// applying the delta twice.
 fn append_to_block(
   acc: Accumulator,
   index: Int,

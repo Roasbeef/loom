@@ -275,6 +275,12 @@ pub fn feed(
   chunk: BitArray,
 ) -> #(SseParser, List(SseEvent)) {
   let buffer = bit_array.append(parser.carry, chunk)
+  // `from` is the old carry's already-scanned prefix, still valid against
+  // `buffer` because the new chunk is appended after it: scanning resumes
+  // exactly there instead of re-examining bytes this or an earlier feed
+  // already ruled out as terminator-free. carry/scanned are cleared here
+  // since feed_loop will repopulate them (via NoTerminator) if this feed
+  // ends mid-line.
   let from = parser.scanned
   let parser = SseParser(..parser, carry: <<>>, scanned: 0)
   feed_loop(parser, buffer, from, [])
@@ -544,12 +550,18 @@ fn run_loop(
       }
     }
     Ok(http.ResponseEnd) ->
+      // A well-behaved machine's on_end always yields a terminal once the
+      // status is known; None here means the body ended before the
+      // adapter ever saw enough to settle (e.g. status never arrived),
+      // which is itself a disconnection, not a silent success.
       case forward(machine.on_end(state), deliver) {
         Some(terminal) -> terminal
         None ->
           Failed(StreamDisconnected(context: "response ended without settling"))
       }
     Ok(http.RequestFailed(reason:)) ->
+      // Mirrors on_end: a machine that has already settled (acc.done)
+      // answers with no events, so this default only fires pre-settlement.
       case forward(machine.on_failure(state, reason), deliver) {
         Some(terminal) -> terminal
         None -> Failed(TransportFailed(reason:))

@@ -440,6 +440,9 @@ fn handle_relay_down(
   down: process.Down,
 ) -> actor.Next(State, Msg) {
   case down {
+    // Unreachable in practice: the selector only monitors relay pids via
+    // `process.select_monitors`, and relays are ordinary processes, never
+    // ports. Handled anyway because `Down` is exhaustive over both.
     process.PortDown(..) -> actor.continue(state)
     process.ProcessDown(pid:, monitor: _, reason: _) ->
       case call_of_relay(state.active, pid) {
@@ -659,6 +662,11 @@ fn dispatch(
       )
     })
   let monitor = process.monitor(relay_pid)
+  // The relay must own the subject it receives exec events on (subjects
+  // are tied to their owning process), so it creates `exec_events` itself
+  // and hands it back over `ready` before this function dispatches
+  // anything to it — closing the race where exec.run could fire before
+  // the relay is listening.
   case process.receive(ready, 1000) {
     Error(Nil) -> {
       process.demonitor_process(monitor)

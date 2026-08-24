@@ -533,6 +533,10 @@ fn handle_chunk_document(
   }
 }
 
+// Every count defaults to the accumulator's current value, never to zero,
+// so a later chunk carrying a partial usage object cannot erase counts an
+// earlier chunk already reported (mirrors the Anthropic adapter's
+// handle_message_start).
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   Accumulator(
     ..acc,

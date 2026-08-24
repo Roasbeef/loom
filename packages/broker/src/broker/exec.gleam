@@ -514,6 +514,10 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
         None -> actor.continue(state)
         Some(exec) ->
           case exec.id == exec_id {
+            // The exec that scheduled this deadline already settled and
+            // a new one started (one helper runs one execution at a
+            // time, so ids never overlap) — a stale timer must not
+            // escalate against a request it knows nothing about.
             False -> actor.continue(state)
             True -> {
               // Belt and braces: the helper missed its own 2s ladder.

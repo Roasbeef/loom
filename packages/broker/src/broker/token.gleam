@@ -174,6 +174,11 @@ pub fn check_for(
   step_id step_id: String,
   now now: Int,
 ) -> Result(Binding, Refusal) {
+  // `check` settles Unknown/Revoked/Expired before this function's own
+  // binding comparison ever runs, so a token that is both dead and
+  // wrong-bound reports the deader fact — the caller learns the token is
+  // unusable at all, not merely misdirected, which is the more actionable
+  // diagnosis regardless of which came "first".
   case check(vault, presented, now:) {
     Error(refusal) -> Error(refusal)
     Ok(binding) ->
