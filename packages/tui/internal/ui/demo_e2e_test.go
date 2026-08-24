@@ -26,8 +26,7 @@ func TestDemoHeadless(t *testing.T) {
 	defer ts.Close()
 
 	c := client.New(client.Config{
-		Addr:        "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws",
-		Session:     "demo",
+		Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws", Session: "demo",
 		BackoffBase: 5 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())

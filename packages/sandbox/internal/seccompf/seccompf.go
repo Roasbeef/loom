@@ -165,10 +165,7 @@ func Install() error {
 	for i, ins := range raw {
 		filters[i] = unix.SockFilter{Code: ins.Op, Jt: ins.Jt, Jf: ins.Jf, K: ins.K}
 	}
-	fprog := unix.SockFprog{
-		Len:    uint16(len(filters)),
-		Filter: &filters[0],
-	}
+	fprog := unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
 
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("seccompf: set no_new_privs: %w", err)
@@ -177,10 +174,8 @@ func Install() error {
 	// incompatible filter the call fails with that thread's id, which we
 	// surface as an error — a partially filtered process would be a lie.
 	r1, _, errno := unix.Syscall(
-		unix.SYS_SECCOMP,
-		unix.SECCOMP_SET_MODE_FILTER,
-		unix.SECCOMP_FILTER_FLAG_TSYNC,
-		uintptr(unsafe.Pointer(&fprog)),
+		unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER,
+		unix.SECCOMP_FILTER_FLAG_TSYNC, uintptr(unsafe.Pointer(&fprog)),
 	)
 	if errno != 0 {
 		return fmt.Errorf("seccompf: seccomp(SET_MODE_FILTER, TSYNC): %w", errno)

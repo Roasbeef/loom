@@ -31,10 +31,8 @@ func newHarness(t *testing.T, session string) *harness {
 	t.Cleanup(ts.Close)
 
 	c := New(Config{
-		Addr:        "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws",
-		Session:     session,
-		BackoffBase: 5 * time.Millisecond,
-		BackoffMax:  20 * time.Millisecond,
+		Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws", Session: session,
+		BackoffBase: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -259,11 +257,8 @@ func TestBadTokenRefused(t *testing.T) {
 	defer ts.Close()
 
 	c := New(Config{
-		Addr:        "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws",
-		Session:     "s1",
-		Token:       "wrong",
-		BackoffBase: time.Millisecond,
-		BackoffMax:  2 * time.Millisecond,
+		Addr: "ws" + strings.TrimPrefix(ts.URL, "http") + "/v1/ws", Session: "s1",
+		Token: "wrong", BackoffBase: time.Millisecond, BackoffMax: 2 * time.Millisecond,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

@@ -182,10 +182,8 @@ func New(cfg Config) *Client {
 		cfg.BackoffMax = 5 * time.Second
 	}
 	return &Client{
-		cfg:     cfg,
-		msgs:    make(chan Msg, 256),
-		out:     make(chan proto.Command, 64),
-		pending: make(map[uint64]chan proto.Event),
+		cfg: cfg, msgs: make(chan Msg, 256),
+		out: make(chan proto.Command, 64), pending: make(map[uint64]chan proto.Event),
 	}
 }
 
@@ -338,10 +336,8 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	if c.haveSnapshot.Load() {
 		from = c.lastSeq.Load() + 1
 	}
-	sub, err := proto.NewCommand(c.nextID.Add(1), proto.CmdSubscribe, proto.SubscribeBody{
-		Session: c.cfg.Session,
-		FromSeq: from,
-	})
+	sub, err := proto.NewCommand(c.nextID.Add(1), proto.CmdSubscribe,
+		proto.SubscribeBody{Session: c.cfg.Session, FromSeq: from})
 	if err != nil {
 		return err
 	}
@@ -393,6 +389,11 @@ func (c *Client) failPendingLocked() {
 	}
 }
 
+// readLoop is the connection's single reader: it decodes each frame,
+// resolves any Request awaiting that reply, then applies seq bookkeeping
+// and delivers the typed message. It returns (ending the connection)
+// only on a read error; a malformed frame is reported and the loop
+// continues, matching decode errors elsewhere in this package.
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		_, data, err := conn.Read(ctx)
@@ -482,11 +483,8 @@ func (c *Client) handleEvent(ctx context.Context, ev proto.Event) {
 			return
 		}
 		c.emit(ctx, EntryMsg{
-			Seq:     ev.Seq,
-			ReplyTo: ev.ReplyTo,
-			Strand:  body.Strand,
-			Entry:   entry,
-			Raw:     body.Entry,
+			Seq: ev.Seq, ReplyTo: ev.ReplyTo, Strand: body.Strand,
+			Entry: entry, Raw: body.Entry,
 		})
 	case proto.EventOpTransition:
 		body, err := ev.OpTransition()

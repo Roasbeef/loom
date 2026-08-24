@@ -54,11 +54,7 @@ func run() error {
 		return fmt.Errorf("--addr and --session are required (or use --demo)")
 	}
 
-	c := client.New(client.Config{
-		Addr:    *addr,
-		Session: *session,
-		Token:   *token,
-	})
+	c := client.New(client.Config{Addr: *addr, Session: *session, Token: *token})
 	clientDone := make(chan error, 1)
 	go func() { clientDone <- c.Run(ctx) }()
 

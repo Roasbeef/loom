@@ -36,11 +36,7 @@ func NewServer(token string) *Server {
 
 // AddSession registers a session and returns it for scripting.
 func (s *Server) AddSession(id string) *Session {
-	sess := &Session{
-		id:      id,
-		nextSeq: 1,
-		conns:   make(map[*conn]struct{}),
-	}
+	sess := &Session{id: id, nextSeq: 1, conns: make(map[*conn]struct{})}
 	s.mu.Lock()
 	s.sessions[id] = sess
 	s.mu.Unlock()
@@ -279,6 +275,10 @@ type conn struct {
 	ctx     context.Context
 }
 
+// serve pumps one connection: a writer goroutine drains sendCh while
+// this goroutine reads commands. On read error it cancels the writer and
+// joins it before unregistering from the session, so no send racing the
+// close ever reaches a socket that already stopped writing.
 func (c *conn) serve(ctx context.Context) {
 	defer c.ws.CloseNow()
 	c.ctx = ctx
@@ -429,8 +429,7 @@ func (c *conn) resumeLocked(sess *Session, replyTo uint64, fromSeq uint64) {
 		return
 	}
 	c.sendReply(replyTo, proto.EventSnapshot, proto.SnapshotBody{
-		Mode:    proto.SnapshotResume,
-		NextSeq: sess.nextSeq,
+		Mode: proto.SnapshotResume, NextSeq: sess.nextSeq,
 	})
 	for _, logged := range sess.log {
 		if logged.seq >= fromSeq {
@@ -573,8 +572,7 @@ func (c *conn) applyCommandLocked(sess *Session, cmd proto.Command) bool {
 		}
 		raw, _ := json.Marshal(body.Config)
 		c.sendReply(cmd.ID, proto.EventSnapshot, proto.SnapshotBody{
-			Mode:   proto.SnapshotConfig,
-			Config: raw,
+			Mode: proto.SnapshotConfig, Config: raw,
 		})
 		return true
 	default:
@@ -587,8 +585,7 @@ func (c *conn) strandsReplyLocked(sess *Session, replyTo uint64) {
 	strands := make([]proto.Strand, len(sess.strands))
 	copy(strands, sess.strands)
 	c.sendReply(replyTo, proto.EventSnapshot, proto.SnapshotBody{
-		Mode:    proto.SnapshotStrands,
-		Strands: strands,
+		Mode: proto.SnapshotStrands, Strands: strands,
 	})
 }
 
@@ -605,10 +602,7 @@ func (c *conn) decideEscalationLocked(sess *Session, replyTo uint64, id, status 
 	st.body.Status = status
 	st.body.Denial = nil
 	sess.broadcastLocked(proto.EventEscalation, proto.EscalationBody{
-		EscalationID: id,
-		Op:           st.body.Op,
-		Strand:       st.body.Strand,
-		Status:       status,
+		EscalationID: id, Op: st.body.Op, Strand: st.body.Strand, Status: status,
 	}, c, replyTo)
 	return true
 }

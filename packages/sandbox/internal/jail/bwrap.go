@@ -89,11 +89,7 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 
 	// The base view: the entire host filesystem, read-only, then fresh
 	// /proc and a minimal /dev for the new namespaces.
-	args = append(args,
-		"--ro-bind", "/", "/",
-		"--proc", "/proc",
-		"--dev", "/dev",
-	)
+	args = append(args, "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev")
 
 	// Explicit read-only binds. Usually redundant with the ro root, but
 	// kept explicit so a readable root nested inside a writable root is
