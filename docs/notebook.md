@@ -9,6 +9,62 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ---
 
+## 2026-08-24 — style wave and the build story
+
+### State
+
+`main` green: 11 Gleam packages (719 tests) + 2 Go suites; `make
+doc-check` clean; `scripts/dev.sh --smoke` proves server boot, health,
+websocket auth refusal, and clean close. Tree clean, all pushed.
+
+### The formatter ruling (settled, in the style guide)
+
+`gleam format` gives a call exactly two layouts — one line when it fits
+80 columns, one argument per line otherwise — no packed middle, no
+config, verified empirically before acting. Hand-packing Gleam would
+fail the gate, so vertical space in wide Gleam calls is the language's
+canon. Go is the opposite: gofmt keeps author breaks, so the two Go
+modules were packed to ~80–100 cols (net −27 lines). The style guide
+records both rulings plus the one honest Gleam lever (write forms that
+fit).
+
+### The literate-comment wave's real result
+
+Six package audits, and the verdict is the interesting part: the
+codebase already carried the register — the style-guide update codified
+converged practice rather than imposing new practice. Net additions:
+~100 targeted lines at genuine gaps (seq-consumption order in both
+backends, the checkpoint seven-step order, deframer poisoning boundary,
+token refusal precedence, storage-suite check headers) and zero padding
+of already-explained code. Three of six agents produced deliberately
+tiny or zero diffs and said so.
+
+### The build story (new)
+
+The harness is now startable: `client/serve` boots the whole stack from
+flags/env and prints one line with the address and token file; `make
+binaries` + `make server-shipment` produce bin/loom-exec, bin/loom-tui,
+and a bin/loom-server launcher (needs OTP ≥27 on PATH — shipments
+bundle beam files, not ERTS). The TUI never starts a server (thin
+client; `--demo` needs none). Two-terminal flow and `make dev` are in
+the README. The production wiring moved from conformance into client —
+the triage's "when a host package exists" deferral, resolved by the
+host existing. Found live: `gleam run` does not forward signals to the
+BEAM, so dev.sh manages its own process group.
+
+### Errata
+
+The commit "build: update client manifest for the entry point"
+(1-line diff) actually updates *conformance's* manifest; misdescribed,
+left as-is rather than rewriting pushed history.
+
+### Next
+
+Unchanged from the M3 entry: adversarial review + soak over the M3
+surface, then M4 code mode. Standing items likewise.
+
+---
+
 ## 2026-08-24 — M3 complete: multi-strand, events, gateway, TUI
 
 ### State of the world
