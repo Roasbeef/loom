@@ -212,7 +212,9 @@ the orphan observation.
 intent transaction and only then spawns the effect — an unlinked,
 monitored process whose outcome comes back as a message. `Wait` sets a
 retry timer, or parks the strand until the next poll tick grants a
-deferred permit. `Fault` stops the actor abnormally, as does exhausting
+deferred permit. Both of those delays go through an injected timer seam
+rather than the VM's timer wheel directly, so a simulated session runs
+them on logical time; production passes `effects.real_timers()`. `Fault` stops the actor abnormally, as does exhausting
 the loop's fuel bound of ten thousand planning steps.
 
 Two failure paths deserve naming. A commit refused with
@@ -447,6 +449,16 @@ re-execution. None appears: the synthetic interrupted result is in the
 tree with its warning, the run completes, and the invocation counter
 (held by a recorder that outlives the tree) still reads one.
 
+The enumeration's other limit is that someone had to write the list. Its
+five scenarios never reach a deferred poll, a compaction, a structural
+summary, or a navigation, and its steer is admitted before the run
+starts, so a concurrent admission never races a live effect. The
+**deterministic simulation runner** generates that list instead, from a
+seed, and injects faults the enumeration has no vocabulary for — stale
+commit refusals, lease theft, lost doorbells, starved effects, a tree
+killed mid-flight. `docs/architecture/simulation.md` describes it; the
+interleave harness remains as the fixed, readable enumeration underneath.
+
 **Cold open** raises the same claim to a whole session on disk. Eleven
 runs over a SQLite session — twenty-two assistant turns, a tool call in
 every run — with the eleventh run's tool hung when the tree is killed.
@@ -472,9 +484,10 @@ hold.
 | `runtime/writer.gleam` | The StorageWriter: the single commit path, committed events, the `after_commit` seam, lease renewal. |
 | `runtime/supervisor.gleam` | The rest-for-one session tree. |
 | `runtime/api.gleam` | Open/recover, prompt, steer, follow-up, abort, close. |
-| `runtime/effects.gleam` | The injected effect seam: provider, tools, hooks, clock, entropy. |
+| `runtime/effects.gleam` | The injected effect seam: provider, tools, hooks, clock, entropy, timers. |
 | `session/session.gleam` | Session open/close, strand seeding, typed register access, context projection. |
 | `runtime/test/support/harness.gleam` | The interleave harness: scenarios, the crash scheduler, fingerprints, convergence checks. |
+| `conformance/src/conformance/simulation/` | The deterministic simulation runner: seeded scripts, fault schedules, logical time, the named checks. |
 
 Each path is relative to its package's source root — `machine/planner.gleam`
 is `packages/machine/src/machine/planner.gleam`. For intent and contracts,

@@ -444,7 +444,12 @@ are computed on the tool-side clock and checked against the broker-side
 clock, and nothing in the contracts required the injected clocks to share
 an era; misaligned eras made the broker refuse every call as already past
 its deadline. The fix is a convention the spec should state: one clock,
-or at least one era, injected across runtime, tools, and broker.
+or at least one era, injected across runtime, tools, and broker. The
+simulation runner makes that convention structural for a simulated
+session: one logical clock is shared by everything that reads time, and
+the driver's own delayed wakeups go through an injected timer seam
+(`effects.Timers`, with `effects.real_timers()` for production) so they
+run on the same time base rather than on the VM's timer wheel.
 
 Finally, the honest enforcement matrix. In the development container
 `loom-exec` reports `rlimits, pgroup, degraded, seccomp` — no bubblewrap
