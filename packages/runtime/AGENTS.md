@@ -6,24 +6,43 @@ The orchestration plane's live half: the OTP tree that turns an open
 session into a running one. One StorageWriter owns the commit path, one
 strand driver per strand interprets the pure machine's actions against an
 injected effect seam, and `runtime/api` is the session-facing surface —
-open/recover, prompt, steer, follow-up, abort, close. WP-E.
+open/recover, prompt, steer, follow-up, abort, close, plus the multi-strand
+operations (create a subagent strand, message another strand, await its
+result), the `fact.*` blackboard, and durable escalation decisions. WP-E,
+extended by the M3 runtime wave.
 
 ## Key Types
 
 - `runtime/api.Runtime` — the live session handle: the `SessionTree`, the
   `Session`, the `Effects` record, the strand name, and the `RunSettings`.
-- `runtime/supervisor.SessionTree` — a rest-for-one supervisor whose first
-  child is the writer and whose second is the StrandSupervisor
-  (one-for-one over strand drivers; one driver, `"main"`, today).
+  It addresses **one strand at a time**; `api.on_strand` rebinds the same
+  tree to a sibling, so every operation works for subagents too.
+- `runtime/api.{CreateStrandError, Delivery}` — subagent creation, and
+  whether a cross-strand message landed as a `Steered(entry)` on an open
+  run or `Started(operation)` on an idle strand.
+- `runtime/supervisor.SessionTree` — a rest-for-one supervisor over four
+  children in order: the strand **registry**, the **StorageWriter**, the
+  **StrandSupervisor** (a `factory_supervisor` of strand drivers, one per
+  strand, restarted individually), and the **strand booter** (a worker
+  whose start lists the `strand.*` registers and starts a driver for every
+  strand found).
+- `runtime/registry.Message` — the strand-name registry actor: strand name
+  ↔ the process name its driver registers under.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
 - `runtime/effects.Effects` — everything the driver does to the world, in
   one injected record: `clock`, `entropy`, `timers`, `provider`
   (`ProviderSurface`), `tools` (`ToolSurface`), `hooks` (`Hooks`).
-- `runtime/effects.{RequestSpec, ToolRun, ToolOutcome, Clearance}` — the
-  shapes the seam is written in; `conformance/wiring` fills them with the
-  real gateway, broker, and registry.
+- `runtime/effects.{RequestSpec, ToolRun, ToolOutcome, Clearance,
+  ExecutionMode}` — the shapes the seam is written in; `conformance/wiring`
+  and `client/demo` fill them with the real gateway, broker, and registry.
+- `runtime/hooks.Registry` — the one seam production wiring, tests, and the
+  simulation runner all build their `effects.Hooks` through: safe defaults,
+  a pipeable setter per slot, `build` at the end.
+- `runtime/escalation.{Escalation, Status}` — the durable record of a
+  broker denial awaiting a decision, its decision, and its single consumed
+  re-execution.
 
 ## Relationships
 
@@ -32,7 +51,8 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
   (`stream.StreamHandle` and `retry.classify` — the spec DAG §0.1 writes
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
   about), `gleam_erlang`, `gleam_otp`.
-- **Depended on by**: `conformance` (the simulation runner drives sessions
+- **Depended on by**: `client` (the gateway dispatches protocol commands
+  onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
 - **FFI**: none. Time, entropy, and timers arrive through `Effects`;
   everything effectful is injected, which is why the whole plane runs under
@@ -50,8 +70,14 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
     `PollTick` (the checkpoint poll, which also grants one deferred poll
     permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
     `ToolDone(token, outcome)`, `EffectExit(down)`.
+  - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
+    return the process name a strand's driver registers under — plus
+    `Lookup(strand, reply_with)` and `Known(reply_with)`. Senders:
+    `runtime/supervisor`'s strand factory and booter, and `runtime/api`
+    when it rings a doorbell or addresses a sibling strand.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
-    pub/sub over process subjects; the `pg`-based EventBus proper is WP-K.
+    pub/sub over process subjects, which `events/bus.bridge` and
+    `client/gateway.commit_forwarder` adopt as their hint source.
 - **Commits**: every post-boot `Tx` in the session flows through
   `writer.commit`, whose mailbox *is* the serialization order. The driver
   commits exactly what the planner hands it — `Transition`/`Finish`
@@ -62,6 +88,12 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
   (`op.tool_args`, `op.preparation`, `pending.entry`) through
   `session`'s typed accessors, then writes back whatever the planner's
   transactions carry. `strand.last_result` is written and never read.
+  `api.create_strand` seeds a new strand's `strand.config` / `strand.leaf`
+  / `strand.state` before starting its driver. The blackboard and
+  escalations are `fact.*`: `api.put_fact` / `fact` / `facts` over
+  `fact.custom`, and `runtime/escalation` stores its records in
+  `fact.custom` under the reserved `escalation/` key prefix, guarded by the
+  register's own seq.
 - **Wire**: consumes `provider/stream.StreamEvent` — zero or more `Delta`
   then exactly one `Settled` or `Failed` — from a `StreamHandle`, and
   `effects.ToolOutcome` from the tool surface.
@@ -79,8 +111,23 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
   `Wait` schedule a timer or a poll permit; on `Fault` stop abnormally.
 - **Crash recovery and cold start are the same code.** A restarted strand's
   first drive re-reads its registers and resumes (spec §3.1); the tree is
-  rest-for-one, so a writer crash restarts the writer *and* every strand,
-  while a strand crash restarts only that strand.
+  rest-for-one, so a writer crash restarts the writer *and* the whole
+  strand factory, while a strand crash restarts only that strand.
+- **Recovery boots *all* strands, not just `"main"`.** The booter lists the
+  `strand.*` registers and starts a driver for every strand it finds, so a
+  cold open, a writer crash (the factory restarts empty and the booter
+  repopulates it), and a booter crash all converge on "list the store,
+  start what is missing". Subagents created mid-session seed their
+  registers first, which is why every later reboot finds them.
+- **Process names are minted once per strand and outlive their drivers.**
+  The registry sits first in the rest-for-one order, so it survives writer
+  and strand crashes; a replacement driver registers under the *same* name
+  and stays addressable, and doorbells resolve through `lookup` at ring
+  time rather than caching pids. Only a whole-tree reboot starts it empty.
+- **Inter-strand messaging is the queue machinery, not a mailbox.**
+  `send_to_strand` durably enqueues a steer onto the target's open run — or
+  accepts a fresh run when it is idle — and only then rings the doorbell,
+  so the payload is durable before any ephemeral signal (design §4.6).
 - **Doorbell loss is harmless by construction.** `Nudge` only wakes the
   strand early; the payload always travels in the commit. The periodic
   `PollTick` finds queued work anyway, and any commit racing the strand's
@@ -100,6 +147,34 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
   and live effects are cancelled by their owner; a pre-commit crash loses
   the request exactly as pi's no-live-task case does, and callers
   re-request.
+- **A lost abort race re-delivers, it never halts the strand** (ORCH-L5).
+  Exhausting the stale-retry ladder must not drop a fire-and-forget request
+  (nobody would learn it was lost) and must not restart the strand for a
+  transient race, so the driver re-sends `RequestAbort` to itself after a
+  pacing delay and keeps running; every retry re-reads durable state, so
+  the loop converges once the concurrent committers quiet down.
+- **Interrupted effects stay registered, and settle faithfully.** Live
+  effects are cancelled *after* the durable marker (pi §4.6 order) but are
+  not deregistered: an effect that already delivered a real settlement
+  still queued in the mailbox commits under its reserved ids as `aborted`
+  **retaining its reported usage** (ORCH-M3), while one that dies unreported
+  settles through the monitor as a synthetic zero-usage abort.
+- **Escalations are registers, not entries.** An escalation is current
+  mutable state (pending → approved → consumed) needing a bounded point
+  lookup on the clearance path, and it must never move a strand's leaf or
+  enter a context projection — a mid-batch denial cannot be allowed to
+  reparent the conversation. Status transitions are CAS-guarded through the
+  writer, so a lost race is a refused commit, never a double consume, and
+  the grant is consumed *before* dispatch: a crash spends the grant without
+  executing, which fails safe.
+- **Grant and denial payloads cross the runtime opaquely.** They are stored
+  as JSON in the broker's escalation vocabulary and returned uninterpreted,
+  which is what keeps the spec's `E → A,B,C,D` direction intact — there is
+  no broker import here. `client/grants` does the decoding.
+- **Hooks decide from durable state.** The `hooks.threshold` constructor
+  derives its signal from the strand's *durable* projection, so a decision
+  taken before a crash is taken again after it — the same rule the
+  simulation hooks follow.
 - **Close is a controlled crash** (pi §4.7). The static supervisor offers
   no graceful external shutdown, so close kills the tree — commits are
   atomic in the storage actor, so durable state stops at a commit boundary
@@ -121,5 +196,6 @@ open/recover, prompt, steer, follow-up, abort, close. WP-E.
   what the deterministic runner does to this tree.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-E": crash
   semantics, boot seeding, close-as-crash, injected entropy, minimal writer
-  events.
+  events. "From the M3 runtime wave": escalations as registers, opaque
+  grant JSON, abort-race pacing, parallel dispatch's exclusivity.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

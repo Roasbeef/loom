@@ -5,9 +5,10 @@
 One session's durable store behind a uniform, backend-agnostic handle:
 the `Storage` behaviour of the frozen contract (spec Part 1.2) plus its two
 implementations — `memory` (pure maps in an actor) and `sqlite` (one
-database file per session, writer lease, private segmented branch index).
-Both pass the same conformance suite; that suite is the definition of
-correct. WP-B.
+database file per session, writer lease, private segmented branch index,
+migrate-on-open, and the offline precise rewrite). Both pass the same
+conformance suite; that suite is the definition of correct. WP-B, extended
+by WP-C-full.
 
 ## Key Types
 
@@ -26,6 +27,15 @@ correct. WP-B.
   can drive the model with no process involved.
 - `storage/sqlite.{Config, OpenError, Segment}` — file path, lease owner,
   lease TTL, busy timeout; the segmented branch-index window type.
+  `OpenError.UnsupportedVersion(found, supported)` is the fail-closed
+  answer to a file this build cannot read.
+- `storage/sqlite.Migration(from_version, statements)` — one migrate-on-open
+  step, run by `open_with_migrations`; the chain itself is owned by
+  `session.migration_chain`. `sqlite.storage_version` is 1, so the chain is
+  empty today.
+- `storage/sqlite.{Rewrite, RewriteError, rewrite_into, generation}` — the
+  offline precise rewrite (pi §2.9) over a **closed** file, and the
+  rewrite-generation counter external indexes key their cursors on.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.
@@ -33,11 +43,14 @@ correct. WP-B.
 ## Relationships
 
 - **Depends on**: `core` (ids, entries, registers, tx, codecs,
-  corruption), `sqlight` (the SQLite binding, ADR-002), `gleam_erlang` +
-  `gleam_otp` (both backends are actors).
-- **Depended on by**: `session` (wraps one open handle), `runtime` (the
-  StorageWriter owns it), `conformance` (the suite and the instrumented
-  simulation store).
+  corruption), `sqlight` (the SQLite binding, ADR-002), `simplifile` (the
+  rewrite's copy/rename/unlink), `gleam_erlang` + `gleam_otp` (both
+  backends are actors).
+- **Depended on by**: `session` (wraps one open handle; owns the migration
+  chain and drives the rewrite), `runtime` (the StorageWriter owns it),
+  `events` (projections and the search service scan sessions through the
+  `Storage` record), `client` (the gateway's catch-up scans), `conformance`
+  (the suite and the instrumented simulation store).
 - **FFI**: none directly; SQLite reaches the world through `sqlight`.
 
 ## Traffic
@@ -48,7 +61,10 @@ correct. WP-B.
   `GetRegister(ns, key, reply)`, `ListRegisters(ns, prefix, reply)`,
   `ScanBranch(q, reply)`, `ScanEntries(q, reply)`, `ScanUsage(q, reply)`,
   `Stats(reply)`, `Close(reply)`. Every variant is a call. `sqlite` adds
-  lease renewal, driven from `runtime/writer`'s `RenewTick`.
+  lease renewal, driven from `runtime/writer`'s `RenewTick`, and
+  `Segments(reply)` for the branch-index diagnostics the conformance suite
+  asserts on. `rewrite_into` and `generation` take a **path**, not a
+  handle: they are offline operations with no actor involved.
 - **Commits**: applies `core/tx.Write` — `InsertEntry`, `InsertUsage`,
   `SetRegister`, `DeleteRegister` — in list order, after evaluating every
   `SeqExpectation`. Assigns `seq` and `ts` at commit; `storage.stamp`
@@ -58,8 +74,9 @@ correct. WP-B.
   history, no interpretation of `strand.*` / `op.*` payloads.
 - **Wire**: the SQLite file schema — write-once `entries` and
   `usage_ledger`, mutable `registers`, `branch_entries` + `branch_meta`,
-  a single-row `session` catalog, and `writer_lease`. `storage_version`
-  is 1.
+  a single-row `session` catalog (carrying `storage_version` and the
+  rewrite `generation` in its metadata blob), and `writer_lease`.
+  `storage_version` is 1.
 
 ## Invariants
 
@@ -97,6 +114,26 @@ correct. WP-B.
   on reads and faulted on commits rather than crashing.
 - **Stats equal the ledger sum after every commit** — the conformance suite
   asserts it at each transaction, not just at the end.
+- **A version is migrated or refused, never misread.** `open_with_migrations`
+  runs one step per version from the stored `storage_version` up to
+  `sqlite.storage_version`; a higher stored version, or a lower one the
+  caller's chain has no step for, is `UnsupportedVersion(found, supported)`.
+  A step's `statements` and its version bump commit in one transaction.
+- **The precise rewrite is the sole sanctioned exception to "entries are
+  never modified"** (pi §2.9), and it is offline: an unexpired writer lease
+  refuses it with `RewriteLeaseHeld`. It works on a `VACUUM INTO` copy and
+  only an atomic rename replaces the original, so every failure path leaves
+  the original file untouched.
+- **A rewrite must leave no erased bytes behind.** The copy is vacuumed so
+  replaced content does not survive in free pages, and the swapped-out
+  file's `-wal`/`-shm` siblings are unlinked — the audit contract is that
+  the erased string appears nowhere in the new file's raw bytes.
+- **A rewrite preserves each entry's id, parent, and kind**; a transform
+  that moves an entry, or reports corruption, aborts the whole rewrite with
+  nothing swapped. Every rewrite bumps the `generation` counter, which is
+  how an external index (WP-K search) learns its cursors are invalid;
+  `generation` reads it without taking the lease, and never conjures a file
+  that does not exist.
 
 ## Deep Docs
 
@@ -107,4 +144,6 @@ correct. WP-B.
   why `sqlight`.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-B/T": the two
   extra indexes, actor-per-backend, close idempotence, CAS-only commits.
+  "From WP-C-full": rewrite scope (entry payloads only), the memory
+  backend's absent generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

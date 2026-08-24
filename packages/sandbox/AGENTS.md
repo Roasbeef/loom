@@ -6,8 +6,8 @@
 spawns to run untrusted commands inside a real jail. It speaks the frozen
 effect-plane framing protocol on stdio, builds the jail from a strict
 `SandboxPolicyV1` decode, and reports honestly what the running kernel
-actually enforced. WP-H, Linux phase 1. This is the only Go module in the
-tree besides the (empty) `tui`.
+actually enforced. WP-H, Linux phase 1. One of the tree's two Go modules,
+alongside `tui`.
 
 ## Key Types
 

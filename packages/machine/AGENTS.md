@@ -34,6 +34,10 @@ package is wrong.
   for a run, standalone compaction, or navigation.
 - `machine/classification.{settle, classify}` — the normative
   first-match-wins order over a settled assistant response.
+  `ClassifyCtx.expected_api` is the *captured* request api, not the
+  response's self-report.
+- `machine/operation.ToolExecution` — `Sequential` or `Parallel`, the
+  batch's scheduling mode; it decides which call `next_action` works next.
 - `machine/strand.{StrandConfiguration, StrandState}` — the strand-scoped
   register payloads.
 - `machine/codec` — total JSON codecs for every register payload above.
@@ -66,7 +70,9 @@ package is wrong.
     reserved `EntryId`), `strand.leaf`, `strand.state`,
     `strand.last_result`, and `fact.label` (entry labels, keyed by entry
     id — Loom has no dedicated label namespace);
-  - reads `strand.config` and `strand.state` seqs to build expectations.
+  - reads `strand.config`, `strand.state`, and `strand.leaf` seqs to build
+    expectations (`build.expect_leaf` takes `Option(Seq)` — `None` when the
+    leaf register does not exist yet).
 - **Effect intents** — `ProviderRequest`, `ToolRequest`, `ToolReplay`,
   `DeferredFetch`, `SummaryProviderRequest`; their outcomes return as
   `Observation` variants (`ObservedAssistantSettled`,
@@ -86,10 +92,29 @@ package is wrong.
 - **Large payloads live at sibling registers, not inline.** Tool arguments,
   structural preparations, and queued entry payloads are written once under
   deterministic keys; queue lists carry only ids.
-- **Acceptance must observe an idle strand** (pi invariant 14). The
-  acceptance transaction expects the strand-state seq the caller read, so a
-  losing concurrent accept fails `StaleExpectation` and reports `StrandBusy`
-  after reload. Pre-acceptance rejections write nothing.
+- **Acceptance must observe an idle strand *and* an unmoved leaf** (pi
+  invariant 14; review finding ORCH-L6). The acceptance transaction expects
+  the strand-state seq **and** the `strand.leaf` seq the caller read, so a
+  losing concurrent accept fails `StaleExpectation` and reports
+  `StrandBusy` after reload, and a concurrent idle tree-write moving the
+  leaf between the read and the commit refuses the acceptance instead of
+  mis-parenting its entries. Pre-acceptance rejections write nothing.
+- **Deferred handles are validated against the captured request api**, not
+  the response's claim (ORCH-L4). Admission resolves the api, the intent
+  transaction persists it as `Generation.request_api`, and classification
+  compares `{provider, model_id, api}` against that stored value — so a
+  routing change between dispatch and settlement cannot smuggle a handle in.
+- **Batch scheduling mode decides which call is worked next** (pi §3.8,
+  ORCH-M2). `Sequential` works the frontier's head only, so one call
+  clears, executes, and settles at a time; `Parallel` works the first
+  still-*planned* call even while earlier calls are effect-pending, and
+  parks on the first pending call only once nothing is left to plan. Tree
+  materialization stays source-ordered in both modes.
+- **A really-settled response under cancelled control keeps its content and
+  its reported usage** (pi §4.6, ORCH-M3), committed normalized to
+  `aborted`. Only an *unknown-outcome* orphan gets the synthetic
+  zero-usage settlement — abort must not fabricate a cost of zero for work
+  the provider actually did.
 - **Classification order is normative and first match wins** (spec §1.3):
   cancelled control, overflow, valid deferred handle, retryable error, tool
   use, stop. Two normalizations happen at commit and both are deliberate: a
@@ -122,6 +147,9 @@ package is wrong.
   drive loop.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-D (`machine`)":
   the `Fault` variant, the absent list store, prefix scans, entry labels.
+  "From the M3 runtime wave": the additive admission api field, the leaf
+  expectation on acceptance, and parallel dispatch adding per-tool
+  exclusivity only (the broker's pooled budget stays the ceiling).
 - [protocol-change/](../../protocol-change/) — amendments to the frozen
   interfaces this package implements.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

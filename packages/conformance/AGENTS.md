@@ -21,7 +21,9 @@ them from their own test mains.
 - `conformance/simulation/runner.{run, check, examine, soak, Verdict,
   Report}` — seed in, verdict out.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
-  semantic half: what the session is *asked* to do.
+  semantic half: what the session is *asked* to do. `Script.subagent` is
+  the multi-strand coda: an optional brief that spawns a subagent strand
+  and sends its findings back to main.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -36,10 +38,12 @@ them from their own test mains.
 
 ## Relationships
 
-- **Depends on**: every Gleam package — `core`, `storage`, `session`,
-  `machine`, `runtime`, `provider`, `broker`, `tools` — plus
+- **Depends on**: every Gleam package it tests — `core`, `storage`,
+  `session`, `machine`, `runtime`, `provider`, `broker`, `tools` — plus
   `gleam_erlang` and `gleam_otp`. This is deliberate and unique.
-- **Depended on by**: nothing. It is the leaf.
+- **Depended on by**: nothing. It is the leaf, and stays one: `client/demo`
+  copies the simulation's effect-surface shape rather than importing it,
+  because this package's surface is test support, not a library.
 - **FFI**: `conformance/test/support/internal/ffi_time` and `ffi_shell` —
   test-side only, for the jailed e2e harness.
 - **Note**: the wiring adapter living here gives the "test-only" package
@@ -65,6 +69,12 @@ them from their own test mains.
 - **Registers**: `simulation/invariant` reads `op.state`, `op.meta`, and
   `strand.*` through `machine/codec` to check placement and terminal
   register cleanup; `storage_suite` exercises every namespace generically.
+- **Multi-strand traffic**: a share of seeds drive the subagent coda —
+  `api.create_strand` (fork-in-place at the main leaf), the child's brief
+  run to a terminal result, then `api.send_to_strand` delivering its
+  findings back to main as a durable steer-or-start admission. Coverage
+  now *requires* both the spawn and the cross-strand message, so crashes
+  during a child's effects exercise the boot-all-strands recovery path.
 - **Wire**: `simulation/wire` generates byte streams straight into
   `broker/framing`'s deframer — no helper involved; the jailed e2e drives
   the real `loom-exec` through the broker.
@@ -84,6 +94,12 @@ them from their own test mains.
   scripted call id. Errored, aborted, and deferred responses never enter a
   projection, so a synthetic settlement written by recovery cannot shift
   the phase, and a script means the same thing under every schedule.
+- **Answered-call checks scope to *executable* responses.** Faithful abort
+  retention means an aborted entry can carry tool calls that never ran, so
+  demanding a result for every call in every retained response is wrong.
+- **Split-summary progress is counted at the commit boundary**, not at
+  send time: a settlement lost with a halted strand must lead to another
+  request rather than to a summary the ledger never paid for.
 - **Fault addressing is ordinal, not temporal.** Commit-indexed faults name
   a global commit ordinal counted across writer restarts; effect-indexed
   faults name a dispatch ordinal. Neither is a wall-clock instant, so a
