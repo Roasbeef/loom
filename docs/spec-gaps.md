@@ -345,9 +345,11 @@ instead and are only referenced here.
    (request construction), inserting the synthetic unknown-outcome
    result directly after its assistant message, before the transform
    hook. Forks copy verbatim.
-6. **Rewrite scope** is entry payloads only; registers and usage details
-   are not rewritten. The memory backend has no persisted generation —
-   a rebuilt handle is its invalidation.
+6. **Rewrite scope** covers entry payloads, every register payload, and
+   usage-ledger details — every store a needle can hide in (widened from
+   entry-payloads-only by the M3 review fix; the audit test plants the
+   needle in each store). The memory backend has no persisted generation
+   — a rebuilt handle is its invalidation.
 7. **Erase leaves object keys alone**; a needle colliding with
    structural vocabulary aborts as corruption rather than corrupting.
 
