@@ -565,7 +565,7 @@ fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
               False -> Nil
               True -> {
                 control.mark(ctl, intervention_path(intervention))
-                apply(ctl, intervention)
+                apply(ctl, intervention, awaited: True)
               }
             }
         }
@@ -594,30 +594,43 @@ pub fn intervention_path(intervention: script.Intervention) -> String {
 /// the writer's post-commit seam fires terminal-commit interventions
 /// from outside any effect.
 ///
+/// `awaited` decides whether the caller waits for the admission to
+/// commit. An effect script waits, because the whole point of steering
+/// from inside a live effect is that the steer is durable *before* the
+/// settlement that must then lose its seq race to it. The writer's
+/// post-commit seam must not wait: admission calls back into that same
+/// writer, so waiting there deadlocks it for the length of the timeout.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // surface.apply(ctl, script.Abort(script.AtTerminalCommit))
+/// // surface.apply(ctl, script.Abort(script.AtTerminalCommit), awaited: False)
 /// ```
 ///
-pub fn apply(ctl: Control, intervention: script.Intervention) -> Nil {
+pub fn apply(
+  ctl: Control,
+  intervention: script.Intervention,
+  awaited awaited: Bool,
+) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
     Some(runtime) -> {
-      let _outcome =
-        control.attempt(
-          fn() {
-            case intervention {
-              script.Steer(text:, ..) ->
-                discard(api.steer_quietly(runtime, user(text)))
-              script.FollowUp(text:, ..) ->
-                discard(api.follow_up(runtime, user(text)))
-              script.Abort(..) -> api.abort(runtime)
-            }
-          },
-          within_ms: 2000,
-        )
-      Nil
+      let act = fn() {
+        case intervention {
+          script.Steer(text:, ..) ->
+            discard(api.steer_quietly(runtime, user(text)))
+          script.FollowUp(text:, ..) ->
+            discard(api.follow_up(runtime, user(text)))
+          script.Abort(..) -> api.abort(runtime)
+        }
+      }
+      case awaited {
+        True -> {
+          let _outcome = control.attempt(act, within_ms: 2000)
+          Nil
+        }
+        False -> control.detached(act)
+      }
     }
   }
 }

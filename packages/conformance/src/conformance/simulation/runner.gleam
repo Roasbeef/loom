@@ -553,8 +553,15 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let assert Ok(runtime) = api.open(instrumented, surfaces, options)
     as "the session tree must boot"
   control.set_runtime(ctl, runtime)
+  // Every commit from here is the writer's, and the writer closes its
+  // own seam. Anything the open path committed before the writer existed
+  // has no seam to close, so start from closed.
+  control.seam_done(ctl)
   let ctx = Context(ctl:, vc:, raw:, runtime:, script:, schedule:, events:)
   let #(outcomes, stalled) = drive_ops(ctx, script.ops, [], False)
+  // Never read the run's story while the writer is still telling it: a
+  // seam still running is a scheduled fault that has not had its turn.
+  settle_seam(ctl, 200)
   let report =
     Report(
       outcomes: list.reverse(outcomes),
@@ -577,6 +584,20 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   vclock.stop(vc)
   control.stop(ctl)
   report
+}
+
+// Waits, briefly and boundedly, for the writer's post-commit seam to
+// finish. Exhausting the wait is not an error here: a run that stalled
+// may have left a writer wedged, and `run/terminated` is the check that
+// reports it.
+fn settle_seam(ctl: Control, attempts: Int) -> Nil {
+  case attempts <= 0 || control.seam_quiet(ctl) {
+    True -> Nil
+    False -> {
+      process.sleep(1)
+      settle_seam(ctl, attempts - 1)
+    }
+  }
 }
 
 /// The strand configuration simulated sessions run under.
@@ -617,11 +638,17 @@ fn post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
     False -> Nil
     True -> fire_post_commit(ctl, script, schedule)
   }
+  // Closed on every path: the runner treats an open seam as a commit
+  // whose schedule has not had its turn yet, so a seam that never
+  // closed would park the run rather than end it. The one path that
+  // does not reach here is the crash itself, which kills this process
+  // — and that is recorded separately.
+  control.seam_done(ctl)
 }
 
 fn fire_post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
   let landed = control.commits(ctl)
-  terminal_abort(ctl, script)
+  terminal_interventions(ctl, script)
   case
     list.any(schedule.faults, fn(item) {
       case item {
@@ -643,7 +670,12 @@ fn fire_post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
   }
 }
 
-fn terminal_abort(ctl: Control, script: Script) -> Nil {
+// Interventions triggered at the terminal commit fire from here, inside
+// the writer process. They must not be waited for: admission calls back
+// into this very writer, so awaiting one deadlocks it until the wait
+// times out — which is how a crash armed on the terminal commit came to
+// lose a race against the runner's own terminal detection.
+fn terminal_interventions(ctl: Control, script: Script) -> Nil {
   case control.read(ctl, "terminal_commits") >= 1 {
     False -> Nil
     True ->
@@ -660,7 +692,7 @@ fn terminal_abort(ctl: Control, script: Script) -> Nil {
               False -> Nil
               True -> {
                 control.mark(ctl, surface.intervention_path(intervention))
-                surface.apply(ctl, intervention)
+                surface.apply(ctl, intervention, awaited: False)
               }
             }
         }
@@ -926,7 +958,18 @@ fn pump(ctx: Context, op_id: OpId, remaining: Int) -> Result(LastResult, Nil) {
     True -> Error(Nil)
     False ->
       case terminal(ctx.raw, op_id) {
-        Some(last) -> Ok(last)
+        // A terminal result is visible before the writer has run the
+        // post-commit seam for the transaction that wrote it, so taking
+        // it here would end the run while a fault aimed at that commit
+        // was still queued. Wait for the seam to close.
+        Some(last) ->
+          case control.seam_quiet(ctx.ctl) {
+            True -> Ok(last)
+            False -> {
+              process.sleep(1)
+              pump(ctx, op_id, remaining - 1)
+            }
+          }
         None ->
           case process.receive(ctx.events, 1) {
             // A commit landed: the session is working, so leave time

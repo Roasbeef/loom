@@ -31,6 +31,8 @@ pub opaque type Message {
   Read(key: String, reply: Subject(Int))
   Once(key: String, reply: Subject(Bool))
   NoteCommit(reply: Subject(Int))
+  SeamDone
+  SeamQuiet(reply: Subject(Bool))
   Arm(reply: Subject(Nil))
   Commits(reply: Subject(Int))
   Events(reply: Subject(Int))
@@ -53,6 +55,7 @@ type State {
     events: Int,
     runtime: Option(api.Runtime),
     armed: Bool,
+    seam_open: Bool,
     crashed: Bool,
     notes: List(String),
     marks: Set(String),
@@ -81,6 +84,7 @@ pub fn start() -> Control {
       events: 0,
       runtime: None,
       armed: False,
+      seam_open: False,
       crashed: False,
       notes: [],
       marks: set.new(),
@@ -124,11 +128,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     NoteCommit(reply:) -> {
       let commits = state.commits + 1
       process.send(reply, commits)
-      actor.continue(State(..state, commits:, events: state.events + 1))
+      actor.continue(
+        State(
+          ..state,
+          commits:,
+          events: state.events + 1,
+          // The writer runs its post-commit seam between applying this
+          // commit and replying for it. Until that seam finishes, a
+          // schedule aimed at this commit has not had its chance.
+          seam_open: state.armed,
+        ),
+      )
+    }
+    SeamDone -> actor.continue(State(..state, seam_open: False))
+    SeamQuiet(reply:) -> {
+      // A crash *is* the seam not finishing: the writer was killed
+      // inside it, so waiting for it to close would wait forever.
+      process.send(reply, !state.seam_open || state.crashed)
+      actor.continue(state)
     }
     Arm(reply:) -> {
       process.send(reply, Nil)
-      actor.continue(State(..state, armed: True, commits: 0))
+      actor.continue(State(..state, armed: True, commits: 0, seam_open: False))
     }
     Commits(reply:) -> {
       // Unarmed, the answer is a number no schedule can name, so a fault
@@ -427,4 +448,36 @@ pub fn marks(ctl: Control) -> List(String) {
 ///
 pub fn arm(ctl: Control) -> Nil {
   process.call_forever(ctl.subject, Arm)
+}
+
+/// Reports that the writer has finished its post-commit seam for the
+/// commit that most recently landed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.seam_done(ctl)
+/// ```
+///
+pub fn seam_done(ctl: Control) -> Nil {
+  process.send(ctl.subject, SeamDone)
+}
+
+/// Whether no post-commit seam is still running.
+///
+/// A commit becomes visible in the store before the writer runs the seam
+/// that a crash schedule fires from, so a runner that took the terminal
+/// result the moment it appeared could end a run while the fault aimed
+/// at its last commit was still queued behind an intervention. Waiting
+/// for the seam is what makes a commit-indexed fault's chance to fire
+/// part of the run rather than a race against the observer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // case control.seam_quiet(ctl) { True -> take_result() False -> wait() }
+/// ```
+///
+pub fn seam_quiet(ctl: Control) -> Bool {
+  process.call_forever(ctl.subject, SeamQuiet)
 }
