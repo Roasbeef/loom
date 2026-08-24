@@ -16,16 +16,18 @@ over one session file. WP-L.
 ## Key Types
 
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
-  envelope `{v, id, cmd, body}` and its thirteen commands (`Subscribe`,
+  envelope `{v, id, cmd, body}` and its fourteen commands (`Subscribe`,
   `CatchUp`, `Prompt`, `Steer`, `FollowUp`, `Abort`, `Approve`, `Deny`,
-  `Fork`, `Navigate`, `Compact`, `CreateStrand`, `SetConfig`) plus
-  `UnknownCommand`, which keeps an unrecognized name as data.
+  `Fork`, `Navigate`, `Compact`, `CreateStrand`, `ListModels` (wire
+  name `models`), `SetConfig`) plus `UnknownCommand`, which keeps an
+  unrecognized name as data.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
   `EscalationEvent`, `StrandResultEvent`, `ErrorEvent`, `UnknownEvent`),
   with `Snapshot`, `Strand`, `LiveOp`, `EntryRecord`, `EscalationRecord`,
-  and `Denial` as the body shapes.
+  `Denial`, and `ModelInfo` as the body shapes (`ModelsSnapshot` is the
+  `models` command's reply).
 - `client/protocol.ProtocolFault` — what a malformed frame decodes to;
   nothing here crashes.
 - `client/gateway.{Gateway, Options, Message, start}` — the hub actor,
@@ -43,6 +45,16 @@ over one session file. WP-L.
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
 - `client/grants` — decoding the runtime's opaque escalation JSON back
   into `broker/policy.Grant`, and encoding it again. Pure and total.
+- `client/catalog.{Catalog, CatalogModel, Dialect, parse, gateway}` —
+  the model catalogue: a total, strict parser for the `loom.toml`
+  format (via the `tom` TOML package; `docs/examples/loom.toml` is the
+  worked example) and the builder that turns a catalogue into the
+  provider gateway's registry — one provider per entry, named by the
+  entry (so durable identities store `{catalogue-name, model_id}`),
+  one route per `[roles]` row. The hub serves it as the `models`
+  listing and resolves `set_config`'s `model_name` against it; `serve`
+  loads it from `--config` or shapes a one-entry catalogue from the
+  `LOOM_*` environment.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
@@ -72,7 +84,8 @@ over one session file. WP-L.
   tap types against `provider/stream`, and grants are broker policy
   values — and are worth knowing about rather than papering over. The
   wiring promotion added `tools` (the registry and per-call `Ctx`);
-  `client/serve` added `argv` (flags).
+  `client/serve` added `argv` (flags); `client/catalog` added `tom`
+  (the pure-Gleam TOML parser behind `--config`).
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
   `client/wiring` (legal — T depends on all). `packages/tui` is its Go
   client, coupled only through the protocol and the golden fixtures.

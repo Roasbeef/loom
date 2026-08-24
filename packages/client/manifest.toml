@@ -61,4 +61,5 @@ runtime = { path = "../runtime" }
 session = { path = "../session" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 storage = { path = "../storage" }
+tom = { version = ">= 2.1.0 and < 3.0.0" }
 tools = { path = "../tools" }
