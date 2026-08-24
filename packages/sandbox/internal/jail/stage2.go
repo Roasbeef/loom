@@ -1,0 +1,149 @@
+package jail
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"syscall"
+
+	"github.com/roasbeef/loom/sandbox/internal/llock"
+	"github.com/roasbeef/loom/sandbox/internal/policy"
+	"github.com/roasbeef/loom/sandbox/internal/seccompf"
+
+	"golang.org/x/sys/unix"
+)
+
+// Stage2Config is the restrict-and-exec configuration, passed on the
+// command line by the supervising helper (the policy itself arrives on
+// fd 3 — the spec's own contract for the helper, reused verbatim for
+// the inner stage).
+type Stage2Config struct {
+	Cwd  string
+	Argv []string
+}
+
+const (
+	policyFD = 3
+	reportFD = 4
+)
+
+// RunStage2 is the spec's helper in its purest form: parse the policy
+// from fd 3, apply every in-process restriction to *ourselves*, report
+// what was applied on fd 4, then execve the target. Landlock domains,
+// seccomp filters, rlimits, and no_new_privs all persist across execve,
+// which is why restrict-then-exec composes: the target starts life
+// already inside the cage with no code of ours left in its address
+// space.
+//
+// On success this function does not return. A missing kernel feature is
+// not an error — it is reported and skipped (degraded enforcement is
+// the broker's call to refuse); only real failures (bad policy, exec
+// failure, a layer that *should* work erroring) return.
+func RunStage2(cfg Stage2Config) error {
+	if len(cfg.Argv) == 0 {
+		return fmt.Errorf("stage2: empty argv")
+	}
+
+	policyFile := os.NewFile(policyFD, "policy")
+	if policyFile == nil {
+		return fmt.Errorf("stage2: fd 3 (policy) not open")
+	}
+	pol, err := policy.ReadFrom(policyFile)
+	policyFile.Close()
+	if err != nil {
+		return err
+	}
+
+	var rep Report
+
+	// Working directory first: a bad cwd should fail loudly before any
+	// restriction muddies the diagnosis.
+	if cfg.Cwd != "" {
+		if err := os.Chdir(cfg.Cwd); err != nil {
+			return fmt.Errorf("stage2: chdir: %w", err)
+		}
+	}
+
+	// rlimits: per-process ceilings that need no kernel opt-in.
+	// RLIMIT_FSIZE turns runaway file growth into SIGXFSZ/EFBIG;
+	// RLIMIT_CPU turns CPU spins into SIGXCPU (and SIGKILL at the hard
+	// ceiling). Both inherited across fork+exec by all descendants.
+	if n := pol.Limits.FsizeBytes; n > 0 {
+		lim := unix.Rlimit{Cur: n, Max: n}
+		if err := unix.Setrlimit(unix.RLIMIT_FSIZE, &lim); err != nil {
+			return fmt.Errorf("stage2: setrlimit fsize: %w", err)
+		}
+		rep.Applied = append(rep.Applied, "rlimit-fsize")
+	}
+	if n := pol.Limits.CPUSeconds; n > 0 {
+		lim := unix.Rlimit{Cur: n, Max: n + 1}
+		if err := unix.Setrlimit(unix.RLIMIT_CPU, &lim); err != nil {
+			return fmt.Errorf("stage2: setrlimit cpu: %w", err)
+		}
+		rep.Applied = append(rep.Applied, "rlimit-cpu")
+	}
+
+	// Landlock: second filesystem layer (first, in degraded mode).
+	if abi, reason := llock.ABIVersion(); abi > 0 {
+		view := llock.PolicyView{
+			WritableRoots: pol.WritableRoots,
+			ReadableRoots: pol.ReadableRoots,
+		}
+		if !pol.ScratchIsTmpfs() {
+			view.ScratchPath = pol.Scratch
+		} else {
+			// The tmpfs scratch is mounted at ScratchMount by bwrap;
+			// grant write there so the mount is actually usable. In
+			// degraded mode there is no tmpfs — granting RW on the
+			// mount point is then still correct (it is the designated
+			// scratch), just backed by the host tmp.
+			view.ScratchPath = ScratchMount
+		}
+		if err := llock.Apply(llock.Rules(view)); err != nil {
+			return fmt.Errorf("stage2: landlock: %w", err)
+		}
+		rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
+	} else {
+		rep.Skipped = append(rep.Skipped, "landlock: "+reason)
+	}
+
+	// no_new_privs unconditionally: nothing exec'd from a jail may ever
+	// acquire privilege via setuid/fscaps, whether or not seccomp below
+	// also demands it. Cheap, irreversible, inherited.
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("stage2: set no_new_privs: %w", err)
+	}
+	rep.Applied = append(rep.Applied, "no-new-privs")
+
+	// seccomp network filter, only under network mode "off".
+	if pol.Network.Mode == policy.NetworkOff {
+		if seccompf.Supported() {
+			if err := seccompf.Install(); err != nil {
+				return fmt.Errorf("stage2: seccomp: %w", err)
+			}
+			rep.Applied = append(rep.Applied, "seccomp-net")
+		} else {
+			rep.Skipped = append(rep.Skipped, "seccomp: kernel lacks seccomp filter support")
+		}
+	}
+
+	// Report, then sever the plumbing: fds 3 and 4 must not leak into
+	// the target (fd 4 doubles as the parent's EOF signal that the
+	// report is complete).
+	reportFile := os.NewFile(reportFD, "report")
+	if reportFile != nil {
+		_ = WriteReport(reportFile, rep)
+		reportFile.Close()
+	}
+
+	path, err := exec.LookPath(cfg.Argv[0])
+	if err != nil {
+		return fmt.Errorf("stage2: resolve %q: %w", cfg.Argv[0], err)
+	}
+	// execve: the restrictions above ride along; our code does not.
+	if err := syscall.Exec(path, cfg.Argv, os.Environ()); err != nil {
+		return fmt.Errorf("stage2: exec %q: %w", path, err)
+	}
+	return nil // unreachable
+}
