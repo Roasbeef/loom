@@ -1,0 +1,44 @@
+Loom msgpack golden fixtures (ADR-003)
+
+Each .bin file holds exactly one msgpack value in the canonical
+(smallest) encoding produced by core/msgpack (Gleam side of the
+framing protocol). Conformance requirement for every implementation:
+encoding the described value must produce the file's bytes exactly,
+and decoding the file's bytes must produce the described value and
+consume the whole file.
+
+Mirrored in packages/core/test/core/msgpack_test.gleam (golden_*
+tests). Adding or changing a fixture requires updating that test
+suite, the Go helper's suite, and ADR-003.
+
+file: description
+
+nil.bin: nil = 0xc0
+bool-false.bin: false = 0xc2
+bool-true.bin: true = 0xc3
+int-fixint-0.bin: int 0 (positive fixint) = 0x00
+int-fixint-127.bin: int 127 (positive fixint max) = 0x7f
+int-fixint-neg-1.bin: int -1 (negative fixint) = 0xff
+int-fixint-neg-32.bin: int -32 (negative fixint min) = 0xe0
+int-uint8-128.bin: int 128 (uint8) = 0xcc80
+int-uint16-256.bin: int 256 (uint16) = 0xcd0100
+int-uint32-65536.bin: int 65536 (uint32) = 0xce00010000
+int-uint64-max.bin: int 18446744073709551615 (uint64 max) = 0xcfffffffffffffffff
+int-int8-neg-33.bin: int -33 (int8) = 0xd0df
+int-int16-neg-129.bin: int -129 (int16) = 0xd1ff7f
+int-int32-neg-32769.bin: int -32769 (int32) = 0xd2ffff7fff
+int-int64-min.bin: int -9223372036854775808 (int64 min) = 0xd38000000000000000
+float64-1.5.bin: float64 1.5 = 0xcb3ff8000000000000
+float64-neg-2.0.bin: float64 -2.0 = 0xcbc000000000000000
+str-empty.bin: str "" (fixstr) = 0xa0
+str-hello.bin: str "hello" (fixstr) = 0xa568656c6c6f
+str-unicode.bin: str "h\u00e9llo" (fixstr, 6 utf-8 bytes) = 0xa668c3a96c6c6f
+str8-32-chars.bin: str "abcdefghijklmnopqrstuvwxyzabcdef" (str8, 32 bytes) = 0xd9206162636465666768696a6b6c6d6e6f707172737475767778797a616263646566
+bin-empty.bin: bin <<>> (bin8) = 0xc400
+bin-1-2-3.bin: bin <<1,2,3>> (bin8) = 0xc403010203
+array-empty.bin: array [] (fixarray) = 0x90
+array-1-2-3.bin: array [1,2,3] (fixarray) = 0x93010203
+array16-0-to-15.bin: array [0..15] (array16, 16 elements) = 0xdc0010000102030405060708090a0b0c0d0e0f
+map-empty.bin: map {} (fixmap) = 0x80
+map-a-1.bin: map {"a": 1} (fixmap) = 0x81a16101
+nested.bin: map {"k": [nil, true, -1]} = 0x81a16b93c0c3ff
