@@ -2,14 +2,18 @@
 //// the production `FileSystem` seam and workspace path discipline.
 ////
 //// `fs_read` renders hashline-anchored windows (`line:anchor|text`)
-//// with the total line count, so edits can reference exact content;
-//// `fs_edit` applies a multi-hunk anchor-checked plan and rejects any
-//// stale anchor with fresh anchors for the stale regions; `fs_write`
-//// creates or replaces a whole file. All three resolve paths under the
-//// workspace root and reject escapes (`..`, absolute paths outside the
-//// root) as structured errors — defense in depth: these tools run in
-//// the harness, not in a jail, so path discipline is their own
-//// responsibility.
+//// with the total line count and the whole-file digest, so edits can
+//// reference exact content; `fs_edit` applies a multi-hunk
+//// anchor-checked, digest-bound plan and rejects any staleness with
+//// fresh anchors for replanning; `fs_write` creates or replaces a
+//// whole file. All three resolve paths against the *real* filesystem
+//// (`resolve_real`): symlinks are resolved component by component and
+//// the resolved path must land under the (equally resolved) workspace
+//// root, so neither `..` nor a symlink planted inside the workspace
+//// can reach outside it. This is not defense in depth but the sole
+//// boundary: these tools run in the harness and never pass through
+//// the broker or the kernel jail, so path discipline is entirely
+//// their own responsibility.
 ////
 //// ## Replay safety
 ////
@@ -18,12 +22,19 @@
 //// - `fs_read` is a read.
 //// - `fs_write` is idempotent: re-running writes the same bytes to the
 ////   same path.
-//// - `fs_edit` is guarded by its anchors: applying a plan consumes the
-////   anchors it referenced (the replaced lines are gone afterwards),
-////   so re-executing the same call against the already-edited file is
-////   *rejected* as stale rather than applied twice. Re-execution after
-////   a crash therefore either repeats an edit that never landed or
-////   fails in-band — it can never double-apply.
+//// - `fs_edit` is bound by its digest: the plan carries the digest of
+////   the exact content it was planned against, and `hashline.apply`
+////   rejects any other content — including the plan's own output, and
+////   including content where an identical sibling line shifted into a
+////   referenced position (which defeats per-line anchors alone). A
+////   crash replay therefore either repeats an edit that never landed
+////   (the pre-image is intact, the edit applies exactly as intended)
+////   or fails in-band as stale — it cannot double-apply. The residual
+////   window is a digest collision between the pre- and post-image,
+////   which requires equal byte length and equal FNV-64 (see
+////   `tools/hashline`): impossible in practice by accident, and
+////   deliberate construction gains nothing — the caller already holds
+////   arbitrary write access to the same file through this very tool.
 
 import broker/policy
 import core/json.{type JsonValue}
@@ -36,6 +47,7 @@ import gleam/string
 import simplifile
 import tools/blob
 import tools/hashline
+import tools/internal/ffi_path
 import tools/tool.{type Ctx, type FileSystem, type FsError, type ToolOutcome}
 
 /// Default number of lines an `fs_read` without `limit` returns.
@@ -46,12 +58,16 @@ pub const default_read_lines = 2000
 /// unboundedly large files are read with jailed shell tools instead.
 pub const max_read_bytes = 8_388_608
 
-/// Why a path was rejected before touching the filesystem.
+/// Why a path was rejected before any read or write.
 pub type PathError {
   /// The path argument was empty.
   EmptyPath
   /// The path resolves outside the workspace root.
   EscapesWorkspace(path: String)
+  /// The path could not be resolved against the real filesystem: an
+  /// unreadable component, or a symlink chain longer than the
+  /// resolution budget (a loop).
+  Unresolvable(path: String, reason: String)
 }
 
 /// The production `FileSystem` seam, backed by simplifile.
@@ -73,6 +89,10 @@ pub fn real_filesystem() -> FileSystem {
       simplifile.is_file(path)
       |> result.map_error(map_file_error(path, _))
     },
+    read_link: fn(path) {
+      ffi_path.read_link(path)
+      |> result.map_error(fn(reason) { tool.FsFailure(path:, reason:) })
+    },
   )
 }
 
@@ -86,12 +106,15 @@ fn map_file_error(path: String, error: simplifile.FileError) -> FsError {
   }
 }
 
-/// Resolves a tool-supplied path under the workspace root. Relative
-/// paths join under the root; absolute paths must already be under it.
-/// `.` and `..` segments are normalized lexically (no symlink
-/// traversal — the sandbox owns that concern for jailed processes;
-/// this is harness-side defense in depth), and any result outside the
-/// root is rejected.
+/// Resolves a tool-supplied path under the workspace root **lexically**
+/// only: relative paths join under the root, `.` and `..` segments
+/// collapse textually, and any result outside the root is rejected. No
+/// symlink is resolved, so this is *not* a containment boundary on a
+/// real filesystem — a symlink inside the workspace can point anywhere.
+/// It is sufficient only where symlinks cannot betray it: for paths
+/// handed to *jailed* executions (`grep`, where the kernel jail owns
+/// containment) and for tests over filesystems without symlinks. The
+/// harness-side fs tools use `resolve_real` instead.
 ///
 /// ## Examples
 ///
@@ -114,6 +137,162 @@ pub fn resolve_path(
     "" -> Error(EmptyPath)
     "/" <> _ -> check_under(root, normalize(path), path)
     _ -> check_under(root, normalize(root <> "/" <> path), path)
+  }
+}
+
+/// How many symlinks one resolution may follow before it is treated as
+/// a loop (mirrors the kernel's `ELOOP` discipline).
+pub const max_link_follows = 40
+
+/// Resolves a tool-supplied path under the workspace root against the
+/// **real** filesystem — the resolution the harness-side fs tools
+/// trust, since they run outside every jail. Relative paths join under
+/// the root; then both the root and the candidate are walked component
+/// by component through `read_link`: symlinks are replaced by their
+/// targets (POSIX order — a link is resolved *before* a following
+/// `..`), `.`/`..` collapse against the resolved prefix, and
+/// components past the deepest existing ancestor are kept verbatim
+/// (they cannot be symlinks — nothing exists there). The fully
+/// resolved candidate must land under the fully resolved root; the
+/// returned path is the resolved one, so subsequent reads and writes
+/// traverse no symlink at all. A symlinked workspace root works: the
+/// root resolves once and containment compares resolved to resolved.
+///
+/// This closes the lexical hole: a symlink planted inside the
+/// workspace (checked into a repo, or written by a jailed process) and
+/// pointing outside it is rejected, dangling symlinks included — a
+/// write through `link -> /outside/absent` would land outside, so the
+/// link is resolved to its target and the target fails containment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /work/link -> /etc on disk:
+/// assert fs.resolve_real(filesystem, "/work", "link/passwd")
+///   == Error(fs.EscapesWorkspace("link/passwd"))
+/// ```
+///
+pub fn resolve_real(
+  filesystem filesystem: FileSystem,
+  workspace workspace: String,
+  path path: String,
+) -> Result(String, PathError) {
+  let root = strip_trailing_slash(workspace)
+  case path {
+    "" -> Error(EmptyPath)
+    _ -> {
+      let joined = case path {
+        "/" <> _ -> path
+        _ -> root <> "/" <> path
+      }
+      use real_root <- result.try(
+        walk(filesystem, root)
+        |> result.map_error(Unresolvable(path:, reason: _)),
+      )
+      use resolved <- result.try(
+        walk(filesystem, joined)
+        |> result.map_error(Unresolvable(path:, reason: _)),
+      )
+      check_under(real_root, resolved, path)
+    }
+  }
+}
+
+// Resolves an absolute path against the real filesystem, component by
+// component. The accumulator stack holds resolved components (each
+// verified not to be a symlink, or known missing); `..` pops it, which
+// is sound exactly because no stack entry is a link. Once a component
+// is missing, everything deeper is kept verbatim: nothing can exist —
+// or be a symlink — below a missing component.
+fn walk(filesystem: FileSystem, path: String) -> Result(String, String) {
+  walk_loop(
+    filesystem,
+    stack: [],
+    remaining: string.split(path, on: "/"),
+    missing: False,
+    budget: max_link_follows,
+  )
+}
+
+fn walk_loop(
+  filesystem: FileSystem,
+  stack stack: List(String),
+  remaining remaining: List(String),
+  missing missing: Bool,
+  budget budget: Int,
+) -> Result(String, String) {
+  case remaining {
+    [] -> Ok("/" <> string.join(list.reverse(stack), with: "/"))
+    ["", ..rest] | [".", ..rest] ->
+      walk_loop(filesystem, stack:, remaining: rest, missing:, budget:)
+    ["..", ..rest] -> {
+      let stack = case stack {
+        [] -> []
+        [_, ..parent] -> parent
+      }
+      walk_loop(filesystem, stack:, remaining: rest, missing:, budget:)
+    }
+    [segment, ..rest] ->
+      case missing {
+        True ->
+          walk_loop(
+            filesystem,
+            stack: [segment, ..stack],
+            remaining: rest,
+            missing: True,
+            budget:,
+          )
+        False -> {
+          let candidate =
+            "/" <> string.join(list.reverse([segment, ..stack]), with: "/")
+          case filesystem.read_link(candidate) {
+            Error(error) -> Error(fs_error_text(error))
+            Ok(tool.NotALink) ->
+              walk_loop(
+                filesystem,
+                stack: [segment, ..stack],
+                remaining: rest,
+                missing: False,
+                budget:,
+              )
+            Ok(tool.LinkMissing) ->
+              walk_loop(
+                filesystem,
+                stack: [segment, ..stack],
+                remaining: rest,
+                missing: True,
+                budget:,
+              )
+            Ok(tool.LinkTarget(target:)) ->
+              case budget < 1 {
+                True -> Error("too many symlinks (loop?)")
+                False -> {
+                  let target_segments = string.split(target, on: "/")
+                  let #(stack, remaining) = case target {
+                    "/" <> _ -> #([], list.append(target_segments, rest))
+                    _ -> #(stack, list.append(target_segments, rest))
+                  }
+                  walk_loop(
+                    filesystem,
+                    stack:,
+                    remaining:,
+                    missing: False,
+                    budget: budget - 1,
+                  )
+                }
+              }
+          }
+        }
+      }
+  }
+}
+
+// A short description of a seam error for `Unresolvable`.
+fn fs_error_text(error: FsError) -> String {
+  case error {
+    tool.FsNotFound(path:) -> "not found: " <> path
+    tool.FsPermissionDenied(path:) -> "permission denied: " <> path
+    tool.FsFailure(path:, reason:) -> reason <> ": " <> path
   }
 }
 
@@ -167,7 +346,8 @@ pub fn read_tool() -> tool.Tool {
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
       <> "Use offset/limit to window large files; anchors are what fs_edit "
-      <> "hunks must reference.",
+      <> "hunks must reference, and the details carry the file digest "
+      <> "fs_edit requires.",
     schema: tool.object_schema(
       [
         #("path", tool.string_property("file path under the workspace root")),
@@ -202,7 +382,13 @@ fn run_read(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   case offset < 1 || limit < 1 {
     True -> tool.failure("invalid arguments: offset and limit must be >= 1")
     False ->
-      case resolve_path(workspace: ctx.workspace, path:) {
+      case
+        resolve_real(
+          filesystem: ctx.filesystem,
+          workspace: ctx.workspace,
+          path:,
+        )
+      {
         Error(error) -> path_outcome(error)
         Ok(resolved) ->
           case read_text(ctx, resolved) {
@@ -254,6 +440,7 @@ fn read_outcome(
           #("total_lines", json.Int(window.total_lines)),
           #("has_more", json.Bool(window.has_more)),
           #("trailing_newline", json.Bool(window.trailing_newline)),
+          #("digest", json.String(hashline.digest(content))),
           #("anchor_version", json.Int(hashline.anchor_version)),
         ]),
       )
@@ -312,7 +499,9 @@ pub fn write_tool() -> tool.Tool {
 fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use content <- tool.with_arg(tool.required_string(args, "content"))
-  case resolve_path(workspace: ctx.workspace, path:) {
+  case
+    resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:)
+  {
     Error(error) -> path_outcome(error)
     Ok(resolved) -> {
       let filesystem = ctx.filesystem
@@ -361,9 +550,10 @@ fn parent_directory(path: String) -> String {
 pub fn edit_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
-    description: "Apply anchored edit hunks to a file. Each hunk references "
-      <> "lines by the {line, anchor} pairs from fs_read; a stale anchor "
-      <> "rejects the whole edit and returns fresh anchors.",
+    description: "Apply anchored edit hunks to a file. Pass the digest from "
+      <> "fs_read's details; each hunk references lines by the {line, anchor} "
+      <> "pairs from fs_read. A stale anchor or a changed file rejects the "
+      <> "whole edit and returns fresh anchors and the fresh digest.",
     schema: edit_schema(),
     replay: tool.Safe,
     execution_mode: tool.Exclusive,
@@ -420,6 +610,13 @@ fn edit_schema() -> JsonValue {
       json.Object([
         #("path", tool.string_property("file path under the workspace root")),
         #(
+          "digest",
+          tool.string_property(
+            "the file digest from fs_read's details; the edit applies only "
+            <> "if the file is still exactly that content",
+          ),
+        ),
+        #(
           "hunks",
           json.Object([
             #("type", json.String("array")),
@@ -427,29 +624,39 @@ fn edit_schema() -> JsonValue {
             #(
               "description",
               json.String(
-                "edit hunks; all anchors are checked before any "
-                <> "hunk is applied",
+                "edit hunks; all anchors and the digest are checked before "
+                <> "any hunk is applied",
               ),
             ),
           ]),
         ),
       ]),
     ),
-    #("required", json.Array([json.String("path"), json.String("hunks")])),
+    #(
+      "required",
+      json.Array([
+        json.String("path"),
+        json.String("digest"),
+        json.String("hunks"),
+      ]),
+    ),
     #("additionalProperties", json.Bool(False)),
   ])
 }
 
 fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
+  use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
-  case resolve_path(workspace: ctx.workspace, path:) {
+  case
+    resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:)
+  {
     Error(error) -> path_outcome(error)
     Ok(resolved) ->
       case read_text(ctx, resolved) {
         Error(outcome) -> outcome
         Ok(content) ->
-          case hashline.apply(content, hashline.Plan(hunks:)) {
+          case hashline.apply(content, hashline.Plan(digest:, hunks:)) {
             Error(error) -> apply_error_outcome(error)
             Ok(edited) -> {
               let filesystem = ctx.filesystem
@@ -469,6 +676,7 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
                       #("path", json.String(path)),
                       #("hunks_applied", json.Int(list.length(hunks))),
                       #("total_lines", json.Int(total_lines)),
+                      #("digest", json.String(hashline.digest(edited))),
                       #("anchor_version", json.Int(hashline.anchor_version)),
                     ]),
                   )
@@ -606,6 +814,38 @@ fn apply_error_outcome(error: hashline.ApplyError) -> ToolOutcome {
         ]),
       )
     }
+    hashline.StaleContent(digest:, fresh:) ->
+      tool.failure(
+        "stale content: the file is no longer the exact content this edit "
+        <> "was planned against (or the edit already applied); re-plan "
+        <> "against digest "
+        <> digest
+        <> " and these fresh anchors\n"
+        <> {
+          fresh
+          |> list.map(hashline.render_line)
+          |> string.join(with: "\n")
+        },
+      )
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("stale_content")),
+          #("digest", json.String(digest)),
+          #(
+            "fresh",
+            json.Array(
+              list.map(fresh, fn(anchored) {
+                json.Object([
+                  #("line", json.Int(anchored.line)),
+                  #("anchor", json.String(anchored.anchor)),
+                  #("text", json.String(anchored.text)),
+                ])
+              }),
+            ),
+          ),
+          #("anchor_version", json.Int(hashline.anchor_version)),
+        ]),
+      )
   }
 }
 
@@ -630,6 +870,8 @@ fn path_outcome(error: PathError) -> ToolOutcome {
     EmptyPath -> tool.failure("invalid arguments: `path` must not be empty")
     EscapesWorkspace(path:) ->
       tool.failure("path `" <> path <> "` resolves outside the workspace root")
+    Unresolvable(path:, reason:) ->
+      tool.failure("path `" <> path <> "` could not be resolved: " <> reason)
   }
 }
 

@@ -46,6 +46,15 @@ pub fn filesystem(fs: MemoryFs) -> FileSystem {
     is_file: fn(path) {
       Ok(process.call(fs.subject, waiting: 1000, sending: IsFile(path, _)))
     },
+    // The flat store holds no symlinks and no directories: a stored
+    // path is a plain file, everything else is missing — under which
+    // real-path resolution degrades to the lexical walk.
+    read_link: fn(path) {
+      case process.call(fs.subject, waiting: 1000, sending: IsFile(path, _)) {
+        True -> Ok(tool.NotALink)
+        False -> Ok(tool.LinkMissing)
+      }
+    },
   )
 }
 

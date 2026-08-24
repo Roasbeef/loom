@@ -135,6 +135,8 @@ pub fn read_renders_anchored_lines_test() {
   assert list.key_find(fields, "total_lines") == Ok(json.Int(2))
   assert list.key_find(fields, "has_more") == Ok(json.Bool(False))
   assert list.key_find(fields, "trailing_newline") == Ok(json.Bool(True))
+  assert list.key_find(fields, "digest")
+    == Ok(json.String(hashline.digest("alpha\nbeta\n")))
   assert list.key_find(fields, "anchor_version")
     == Ok(json.Int(hashline.anchor_version))
 }
@@ -260,6 +262,10 @@ pub fn write_missing_content_test() {
 
 // --- fs_edit -------------------------------------------------------------
 
+fn digest_of(content: String) -> json.JsonValue {
+  json.String(hashline.digest(content))
+}
+
 fn anchor_ref(content: String, line: Int) -> json.JsonValue {
   let assert Ok(anchored) =
     list.find(hashline.annotate(content), fn(anchored) { anchored.line == line })
@@ -278,6 +284,7 @@ pub fn edit_replace_roundtrip_test() {
       ctx,
       args([
         #("path", json.String("e.txt")),
+        #("digest", digest_of(content)),
         #(
           "hunks",
           json.Array([
@@ -292,6 +299,11 @@ pub fn edit_replace_roundtrip_test() {
       ]),
     )
   assert outcome.is_error == False
+  // Success details carry the post-edit digest, so a follow-up edit can
+  // chain without re-reading.
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "digest")
+    == Ok(json.String(hashline.digest("one\nTWO\nthree\n")))
   let filesystem = ctx.filesystem
   let assert Ok(bytes) = filesystem.read("/work/e.txt")
   assert bytes == <<"one\nTWO\nthree\n":utf8>>
@@ -306,6 +318,7 @@ pub fn edit_multi_hunk_test() {
       ctx,
       args([
         #("path", json.String("m.txt")),
+        #("digest", digest_of(content)),
         #(
           "hunks",
           json.Array([
@@ -339,6 +352,7 @@ pub fn edit_stale_anchor_structured_rejection_test() {
       ctx,
       args([
         #("path", json.String("s.txt")),
+        #("digest", digest_of(original)),
         #(
           "hunks",
           json.Array([
@@ -387,6 +401,7 @@ pub fn edit_unknown_op_test() {
       ctx,
       args([
         #("path", json.String("x.txt")),
+        #("digest", digest_of("a\n")),
         #("hunks", json.Array([json.Object([#("op", json.String("mangle"))])])),
       ]),
     )
@@ -399,7 +414,11 @@ pub fn edit_empty_hunks_test() {
   let outcome =
     fs.edit_tool().run(
       ctx,
-      args([#("path", json.String("x.txt")), #("hunks", json.Array([]))]),
+      args([
+        #("path", json.String("x.txt")),
+        #("digest", digest_of("")),
+        #("hunks", json.Array([])),
+      ]),
     )
   assert outcome.is_error
 }
@@ -411,6 +430,7 @@ pub fn edit_escape_rejected_test() {
       ctx,
       args([
         #("path", json.String("../../etc/passwd")),
+        #("digest", digest_of("")),
         #(
           "hunks",
           json.Array([
@@ -424,6 +444,67 @@ pub fn edit_escape_rejected_test() {
     )
   assert outcome.is_error
   assert string.contains(first_text(outcome), "outside the workspace")
+}
+
+pub fn edit_missing_digest_rejected_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "d.txt", "a\n")
+  let outcome =
+    fs.edit_tool().run(
+      ctx,
+      args([
+        #("path", json.String("d.txt")),
+        #(
+          "hunks",
+          json.Array([
+            json.Object([
+              #("op", json.String("insert_at_start")),
+              #("lines", json.Array([json.String("x")])),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "`digest` is required")
+}
+
+pub fn edit_replay_of_duplicate_line_delete_rejected_test() {
+  // The C1 crash-replay scenario at tool level: fs_edit is replay-Safe
+  // because re-dispatching the identical call after the write landed
+  // must reject in-band — even when the deleted line has an identical
+  // sibling that shifted into its position.
+  let #(ctx, _filesystem) = memory_ctx()
+  let content = "x\nx\n"
+  write_file(ctx, "r.txt", content)
+  let call =
+    args([
+      #("path", json.String("r.txt")),
+      #("digest", digest_of(content)),
+      #(
+        "hunks",
+        json.Array([
+          json.Object([
+            #("op", json.String("delete")),
+            #("from", anchor_ref(content, 1)),
+            #("to", anchor_ref(content, 1)),
+          ]),
+        ]),
+      ),
+    ])
+  let first = fs.edit_tool().run(ctx, call)
+  assert first.is_error == False
+  let second = fs.edit_tool().run(ctx, call)
+  assert second.is_error
+  assert string.contains(first_text(second), "stale content")
+  let assert Some(json.Object(fields)) = second.details
+  assert list.key_find(fields, "error") == Ok(json.String("stale_content"))
+  assert list.key_find(fields, "digest")
+    == Ok(json.String(hashline.digest("x\n")))
+  // The file was edited exactly once.
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/r.txt")
+  assert bytes == <<"x\n":utf8>>
 }
 
 // --- against a real disk -------------------------------------------------
@@ -452,6 +533,7 @@ pub fn real_disk_write_read_edit_roundtrip_test() {
       ctx,
       args([
         #("path", json.String("nested/dir/file.txt")),
+        #("digest", digest_of(content)),
         #(
           "hunks",
           json.Array([
@@ -516,4 +598,177 @@ pub fn read_oversized_window_refused_test() {
     fs.read_tool().run(ctx, args([#("path", json.String("wide.txt"))]))
   assert outcome.is_error
   assert string.contains(first_text(outcome), "smaller window")
+}
+
+// --- symlink containment (real filesystem) -------------------------------
+
+// A directory guaranteed to sit outside the given workspace root.
+fn outside_dir(root: String) -> String {
+  let outside = root <> "_outside"
+  let _ = simplifile.delete(outside)
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+  outside
+}
+
+pub fn symlink_directory_escape_refused_test() {
+  let #(ctx, _filesystem) = real_ctx("h2_dir")
+  let outside = outside_dir(ctx.workspace)
+  let assert Ok(Nil) = simplifile.write(outside <> "/secret.txt", "secret\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: outside, from: ctx.workspace <> "/link")
+  // Reading through the link is refused.
+  let read =
+    fs.read_tool().run(ctx, args([#("path", json.String("link/secret.txt"))]))
+  assert read.is_error
+  assert string.contains(first_text(read), "outside the workspace")
+  // Writing through the link is refused, and nothing lands outside.
+  let write =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("link/planted.txt")),
+        #("content", json.String("nope")),
+      ]),
+    )
+  assert write.is_error
+  assert string.contains(first_text(write), "outside the workspace")
+  assert simplifile.is_file(outside <> "/planted.txt") == Ok(False)
+}
+
+pub fn symlink_file_escape_refused_test() {
+  let #(ctx, _filesystem) = real_ctx("h2_file")
+  let outside = outside_dir(ctx.workspace)
+  let assert Ok(Nil) = simplifile.write(outside <> "/secret.txt", "secret\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: outside <> "/secret.txt",
+      from: ctx.workspace <> "/alias.txt",
+    )
+  let read =
+    fs.read_tool().run(ctx, args([#("path", json.String("alias.txt"))]))
+  assert read.is_error
+  assert string.contains(first_text(read), "outside the workspace")
+  let write =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("alias.txt")),
+        #("content", json.String("clobbered")),
+      ]),
+    )
+  assert write.is_error
+  let assert Ok(untouched) = simplifile.read(outside <> "/secret.txt")
+  assert untouched == "secret\n"
+}
+
+pub fn dangling_symlink_write_refused_test() {
+  // A dangling link is the treacherous case: the target does not exist,
+  // so a resolver that treats "missing" as "safe suffix" would let the
+  // write create the target outside the workspace.
+  let #(ctx, _filesystem) = real_ctx("h2_dangling")
+  let outside = outside_dir(ctx.workspace)
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: outside <> "/absent.txt",
+      from: ctx.workspace <> "/dangle",
+    )
+  let write =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("dangle")),
+        #("content", json.String("nope")),
+      ]),
+    )
+  assert write.is_error
+  assert string.contains(first_text(write), "outside the workspace")
+  assert simplifile.is_file(outside <> "/absent.txt") == Ok(False)
+}
+
+pub fn symlink_inside_workspace_allowed_test() {
+  // Symlinks that stay under the root are legitimate and keep working,
+  // absolute and relative targets alike.
+  let #(ctx, _filesystem) = real_ctx("h2_inside")
+  let assert Ok(Nil) = simplifile.create_directory_all(ctx.workspace <> "/sub")
+  let assert Ok(Nil) = simplifile.write(ctx.workspace <> "/sub/f.txt", "hi\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: ctx.workspace <> "/sub",
+      from: ctx.workspace <> "/alias_abs",
+    )
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: "sub", from: ctx.workspace <> "/alias_rel")
+  let via_abs =
+    fs.read_tool().run(ctx, args([#("path", json.String("alias_abs/f.txt"))]))
+  assert via_abs.is_error == False
+  assert string.contains(first_text(via_abs), "|hi")
+  let via_rel =
+    fs.read_tool().run(ctx, args([#("path", json.String("alias_rel/f.txt"))]))
+  assert via_rel.is_error == False
+  assert string.contains(first_text(via_rel), "|hi")
+}
+
+pub fn symlinked_workspace_root_allowed_test() {
+  // The workspace root itself being a symlink must not break the tools:
+  // the root resolves once and containment compares resolved to
+  // resolved.
+  let assert Ok(here) = simplifile.current_directory()
+  let base = here <> "/build/fs_test/h2_root"
+  let _ = simplifile.delete(base)
+  let assert Ok(Nil) = simplifile.create_directory_all(base <> "/real")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: base <> "/real", from: base <> "/rootlink")
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace: base <> "/rootlink",
+      filesystem: fs.real_filesystem(),
+      now: 1000,
+      script: [],
+      recorded:,
+    )
+  let write =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("a.txt")),
+        #("content", json.String("hi\n")),
+      ]),
+    )
+  assert write.is_error == False
+  // The write landed under the resolved root.
+  assert simplifile.is_file(base <> "/real/a.txt") == Ok(True)
+  let read = fs.read_tool().run(ctx, args([#("path", json.String("a.txt"))]))
+  assert read.is_error == False
+  assert string.contains(first_text(read), "|hi")
+  // Escapes are still refused from a symlinked root.
+  let escape =
+    fs.read_tool().run(ctx, args([#("path", json.String("../../secret"))]))
+  assert escape.is_error
+  assert string.contains(first_text(escape), "outside the workspace")
+}
+
+pub fn symlink_loop_is_unresolvable_test() {
+  let #(ctx, _filesystem) = real_ctx("h2_loop")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: ctx.workspace <> "/loop",
+      from: ctx.workspace <> "/loop",
+    )
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("loop/x.txt"))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "could not be resolved")
+}
+
+pub fn resolve_real_is_lexical_without_symlinks_test() {
+  // Over a filesystem with no symlinks (the in-memory fake reports
+  // everything missing), real resolution degrades to the lexical walk.
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  assert fs.resolve_real(filesystem:, workspace: "/work", path: "a/./b/../c")
+    == Ok("/work/a/c")
+  assert fs.resolve_real(filesystem:, workspace: "/work", path: "../etc")
+    == Error(fs.EscapesWorkspace("../etc"))
+  assert fs.resolve_real(filesystem:, workspace: "/work", path: "")
+    == Error(fs.EmptyPath)
 }

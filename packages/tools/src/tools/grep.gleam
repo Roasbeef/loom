@@ -135,6 +135,12 @@ fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
           Error(tool.failure(
             "path `" <> path <> "` resolves outside the workspace root",
           ))
+        // Lexical resolution never inspects the real filesystem; the
+        // jailed rg owns symlink containment for this tool.
+        Error(fs.Unresolvable(path:, reason:)) ->
+          Error(tool.failure(
+            "path `" <> path <> "` could not be resolved: " <> reason,
+          ))
       }
   }
 }
