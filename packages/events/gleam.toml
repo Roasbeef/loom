@@ -9,6 +9,11 @@ storage = { path = "../storage" }
 session = { path = "../session" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
+sqlight = ">= 1.0.0 and < 2.0.0"
+# The parrot pilot (ADR-004): generated `events/sql` imports `parrot/dev`
+# at runtime; the code generator itself runs only via scripts/gen-sql.sh.
+parrot = ">= 2.3.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
