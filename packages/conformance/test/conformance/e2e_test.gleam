@@ -57,8 +57,10 @@ pub fn crash_mid_tool_recovers_test() {
 
 // --- the happy path -------------------------------------------------------
 
-// The byte-exact file content after the bash write plus the anchored
-// edit ("alpha\nbeta\n" -> line 2 replaced with two lines).
+// The byte-exact file the jailed bash write produces, and the content
+// after the anchored edit replaces line 2 with two lines.
+const notes_before_edit = "alpha\nbeta\n"
+
 const notes_after_edit = "alpha\nbeta improved\ngamma\n"
 
 const answer_text = "The notes file now ends with gamma."
@@ -88,6 +90,9 @@ fn happy_turns() -> List(script.Turn) {
       tool: "fs_edit",
       arguments: json.Object([
         #("path", json.String("notes.txt")),
+        // The digest binds the plan to the exact pre-image the bash
+        // write produces, so a replayed edit cannot apply twice.
+        #("digest", json.String(hashline.digest(notes_before_edit))),
         #(
           "hunks",
           json.Array([
