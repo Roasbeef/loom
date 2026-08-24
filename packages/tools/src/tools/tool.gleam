@@ -49,8 +49,9 @@ pub type ReplaySafety {
   /// synthesize an interrupted result instead (the pi §0.5 scenario).
   Never
   /// Re-execution with the persisted arguments is harmless: the tool is
-  /// a read, or its writes are idempotent and guarded (fs_edit's
-  /// anchors make double-apply impossible — see `tools/fs`).
+  /// a read, or its writes are idempotent and guarded (fs_edit's plan
+  /// is digest-bound to the exact pre-image content, so a replay after
+  /// the write landed is rejected in-band — see `tools/fs`).
   Safe
 }
 
@@ -82,10 +83,28 @@ pub type FsError {
   FsFailure(path: String, reason: String)
 }
 
+/// What symlink inspection (lstat semantics — the path itself is never
+/// followed) found at a path. This is the primitive workspace
+/// containment is built on: `fs.resolve_real` walks a path component
+/// by component, following each `LinkTarget` itself, so the final
+/// path handed to `read`/`write` contains no symlinks to escape
+/// through.
+pub type LinkStatus {
+  /// The path is a symlink; `target` is its stored target, verbatim —
+  /// possibly relative to the symlink's own directory.
+  LinkTarget(target: String)
+  /// The path exists and is not a symlink.
+  NotALink
+  /// Nothing exists at the path (including an ancestor that is not a
+  /// directory).
+  LinkMissing
+}
+
 /// The file-system seam: a record of functions over absolute paths.
-/// Production uses `fs.real_filesystem` (simplifile); tests substitute
-/// an in-memory fake. Tools must resolve paths under the workspace root
-/// (`fs.resolve_path`) before calling these.
+/// Production uses `fs.real_filesystem` (simplifile plus a confined
+/// `file:read_link_all` shim); tests substitute an in-memory fake.
+/// Tools must resolve paths under the workspace root against the real
+/// filesystem (`fs.resolve_real`) before calling these.
 pub type FileSystem {
   FileSystem(
     /// Reads a whole file as bytes.
@@ -97,6 +116,9 @@ pub type FileSystem {
     create_directory_all: fn(String) -> Result(Nil, FsError),
     /// Whether the path names an existing regular file.
     is_file: fn(String) -> Result(Bool, FsError),
+    /// The path's own link status, without following it (lstat
+    /// semantics).
+    read_link: fn(String) -> Result(LinkStatus, FsError),
   )
 }
 

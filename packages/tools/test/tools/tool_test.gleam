@@ -83,8 +83,8 @@ pub fn duplicate_name_keeps_later_tool_test() {
 
 pub fn replay_flags_test() {
   // bash is Never (arbitrary external effect); everything else here is
-  // Safe — fs_edit via anchor idempotency, fs_write via idempotent
-  // overwrite, reads trivially.
+  // Safe — fs_edit via its digest binding to the exact pre-image
+  // content, fs_write via idempotent overwrite, reads trivially.
   assert bash.tool().replay == tool.Never
   assert grep.tool().replay == tool.Safe
   assert fs.read_tool().replay == tool.Safe
