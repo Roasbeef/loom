@@ -398,3 +398,21 @@ instead and are only referenced here.
    does not address the distinction.
 7. **Provider deltas tee through a wrapper** around the provider
    surface — the documented seam; the runtime needed no change.
+8. **Off-route model facts fall back.** A strand switched by
+   `set_config` `model_name` to a catalogue entry that is not what the
+   configured role resolves to dispatches `ForResolved` with the
+   wiring config's fallback context-window/output facts, not the
+   entry's own — `client/wiring.Config` has no per-identity fact
+   lookup. Dispatch (dialect, base URL, key) is exact; only overflow
+   arithmetic is approximate. Fix belongs in the wiring seam.
+9. **Per-model headers are refused, not carried.** The provider
+   registry's `ProviderConfig` has no header slot, so the catalogue
+   parser rejects a `headers` key with a worded message rather than
+   ignoring it. Baseten's OpenAI-compatible endpoints need none (the
+   bearer key suffices); revisit if a dialect genuinely requires one.
+10. **Role chains are boot-time only.** The catalogue's `[roles]`
+    routing is baked into the gateway registry the wiring closures
+    capture at boot; `model_name` switches strand identities, and a
+    session-scoped switch (no `strand`) rewrites every strand's
+    durable configuration — but re-routing a *role's* fallback chain
+    at runtime would need a mutable registry or a reboot.

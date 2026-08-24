@@ -398,6 +398,7 @@ The server's full configuration surface, flags first:
 --token-file <path>   bearer token file (default <session>.token, mode 0600)
 --workspace <dir>     the jail's writable root (default: current directory)
 --helper <path>       loom-exec location (default: PATH, then ./bin)
+--config <loom.toml>  model catalogue file (default: the LOOM_* env vars)
 --best-effort         accept a degraded jail (dev kernels); default refuses
 ```
 
@@ -405,6 +406,18 @@ Environment: `ANTHROPIC_API_KEY` (optional, read at dispatch),
 `LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
 `LOOM_CONTEXT_WINDOW` (default 1000000), `LOOM_MAX_OUTPUT_TOKENS`
 (default 32000), `LOOM_SYSTEM_PROMPT`.
+
+`--config` points at a model catalogue — a TOML file of named model
+entries (`dialect`, `base_url`, `api_key_env`, `model_id`, context and
+output limits, thinking level) plus role → fallback-chain routing.
+`docs/examples/loom.toml` is the commented example, wiring a
+Baseten-hosted OpenAI-compatible endpoint next to an Anthropic one.
+Precedence is flags > config file > environment > defaults: with
+`--config` the catalogue replaces the `LOOM_MODEL`-family variables
+entirely, and without it those variables act as a one-entry catalogue.
+API keys never live in the file — each entry's `api_key_env` names the
+environment variable to read at dispatch. The TUI lists the catalogue
+with `:models` and switches the active strand's model by name.
 
 ## Reading further
 
