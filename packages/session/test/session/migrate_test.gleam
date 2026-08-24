@@ -76,6 +76,110 @@ pub fn older_version_without_a_step_refuses_to_open_test() {
     )
 }
 
+// M3-04(a): schema DDL and migrations must not run before the lease. A
+// refused open — here an intruder with a migration chain, against a file
+// whose lease a live writer holds — must leave the file's schema and
+// version exactly as it found them.
+pub fn lease_refused_open_migrates_nothing_test() {
+  let path = fresh_path("migrate_lease_refused")
+  let assert Ok(live) =
+    session.open_sqlite(
+      path:,
+      owner: "live-writer",
+      lease_ttl_ms: 600_000,
+      clock: clock.fixed(at: 10_000),
+    )
+  // Stamp the version down out of band, simulating an older file the
+  // live writer (an older build) is still committing into.
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok(_) =
+    sqlight.query(
+      "UPDATE session SET storage_version = 0",
+      on: conn,
+      with: [],
+      expecting: decode.dynamic,
+    )
+  let assert Ok(Nil) = sqlight.close(conn)
+
+  let step =
+    sqlite.Migration(
+      from_version: 0,
+      statements: "CREATE TABLE migration_canary(x INTEGER)",
+    )
+  let assert Error(sqlite.LeaseHeld(owner: "live-writer", ..)) =
+    sqlite.open_with_migrations(
+      sqlite.config(path:, owner: "intruder"),
+      clock.fixed(at: 20_000),
+      [step],
+    )
+
+  // The refusal wrote nothing: no canary, version untouched, and the
+  // live writer's session still works.
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok([canaries]) =
+    sqlight.query(
+      "SELECT COUNT(*) FROM sqlite_master
+       WHERE type = 'table' AND name = 'migration_canary'",
+      on: conn,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+  assert canaries == 0
+  let assert Ok([version]) =
+    sqlight.query(
+      "SELECT storage_version FROM session",
+      on: conn,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+  assert version == 0
+  let assert Ok(Nil) = sqlight.close(conn)
+  let assert Ok(Nil) = session.close(live)
+}
+
+// M3-04(b): an `UnsupportedVersion` refusal must be a clean refusal. A
+// file holding only a newer build's catalog must not have this build's
+// tables resurrected into it on the way to the error.
+pub fn newer_version_refusal_writes_nothing_test() {
+  let path = fresh_path("migrate_v99_untouched")
+  // Hand-build a minimal file containing only a newer catalog — as if
+  // the newer schema had dropped or renamed every other table.
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "CREATE TABLE session(created_at INTEGER, parent_session_id TEXT,
+         storage_version INTEGER, metadata BLOB, message_count INTEGER,
+         usage_payload BLOB, next_seq INTEGER);
+       INSERT INTO session(storage_version) VALUES (99);",
+      on: conn,
+    )
+  let assert Ok(Nil) = sqlight.close(conn)
+
+  let assert Error(session.SqliteOpenFailed(error: sqlite.UnsupportedVersion(
+    found: 99,
+    supported: 1,
+  ))) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-1",
+      lease_ttl_ms: 5000,
+      clock: clock.fixed(at: 50_000),
+    )
+
+  // The refusal recreated nothing inside the newer file.
+  let assert Ok(conn) = sqlight.open(path)
+  let assert Ok([resurrected]) =
+    sqlight.query(
+      "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+       AND name IN ('entries', 'registers', 'writer_lease', 'branch_meta')",
+      on: conn,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+  assert resurrected == 0
+  let assert Ok(Nil) = sqlight.close(conn)
+}
+
 pub fn older_version_runs_the_chain_test() {
   let path = tampered_file("migrate_step", 0)
   let step =

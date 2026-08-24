@@ -18,8 +18,9 @@
 //// half-states across successive reads. Fork and rewrite are therefore
 //// defined over a *quiescent* source: the caller (an admin surface, never
 //// the harness hot path) must ensure no writer is committing. The SQLite
-//// rewrite enforces this with the writer lease; the in-process operations
-//// trust their caller.
+//// rewrite enforces this by holding the writer lease for its whole
+//// duration — a concurrent open is refused with `LeaseHeld` — while the
+//// in-process operations trust their caller.
 
 import core/clock.{type Clock}
 import core/codec as core_codec
@@ -344,6 +345,16 @@ fn require_empty(destination: Session) -> Result(Nil, ForkError) {
 pub type EntryRewrite =
   fn(Entry) -> Result(Option(Entry), CorruptionReport)
 
+/// The value transform a precise rewrite applies to the stores that are
+/// not entries — register payloads (queued pending messages, tool
+/// arguments, compaction preparation, facts) and usage-ledger details:
+/// `Ok(None)` keeps the stored value, `Ok(Some(new))` replaces it, and
+/// `Error` aborts the whole rewrite with nothing swapped. A rewrite takes
+/// both transforms because the audit contract covers every store a
+/// needle can reach, not just entry payloads.
+pub type ValueRewrite =
+  fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport)
+
 /// An `EntryRewrite` that erases `needle` from every string value in an
 /// entry's stored payload, replacing each occurrence with `replacement`.
 /// It works on the entry's canonical JSON encoding, so it reaches every
@@ -376,6 +387,34 @@ pub fn erase_text(
       True ->
         core_codec.decode_entry(rewritten)
         |> result.map(Some)
+    }
+  }
+}
+
+/// The `ValueRewrite` companion of `erase_text`: erases `needle` from
+/// every string value of a register payload or usage-details blob. These
+/// payloads are free-form JSON at the storage boundary, so there is no
+/// codec to collide with here — but a needle that overlaps an id a
+/// register carries (a strand leaf, an operation id) will surface as
+/// corruption when the machine codecs next read that cell, the same
+/// deferred failure an id collision inside an entry has at the entry
+/// codec. Pass both erasers, built from the same needle, to a rewrite.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // repo.erase_value(needle: "s3cr3t", replacement: "[erased]")
+/// ```
+///
+pub fn erase_value(
+  needle needle: String,
+  replacement replacement: String,
+) -> ValueRewrite {
+  fn(value: JsonValue) {
+    let #(rewritten, changed) = erase_json(value, needle, replacement)
+    case changed {
+      False -> Ok(None)
+      True -> Ok(Some(rewritten))
     }
   }
 }
@@ -420,12 +459,17 @@ fn erase_json(
 }
 
 /// Precisely rewrites a **closed** SQLite session file (pi §2.9): the
-/// file is copied coherently with `VACUUM INTO`, every entry payload in
-/// the copy runs through `rewrite`, the copy is vacuumed so no replaced
-/// bytes survive, and an atomic rename swaps it over the original. The
-/// generation counter in the session metadata is bumped so external
-/// indexes (WP-K search) detect the invalidation; `sqlite.generation`
-/// reads it. An unexpired writer lease refuses the rewrite.
+/// rewrite claims and holds the writer lease in the original for its
+/// whole duration (a concurrent open is refused with `LeaseHeld`),
+/// retires the original's WAL so no pre-rewrite page can be replayed into
+/// the result, copies the file coherently with `VACUUM INTO`, runs every
+/// entry payload through `rewrite` and every register payload and
+/// usage-details blob through `rewrite_value`, vacuums the copy so no
+/// replaced bytes survive, re-verifies the lease, and atomically renames
+/// the copy over the original. The generation counter in the session
+/// metadata is bumped so external indexes (WP-K search) detect the
+/// invalidation; `sqlite.generation` reads it. An unexpired writer lease
+/// refuses the rewrite.
 ///
 /// This is the sole sanctioned exception to "entries are never modified":
 /// compliance-grade erasure, branch pruning, id re-minting. It is tooling
@@ -435,15 +479,17 @@ fn erase_json(
 ///
 /// ```gleam
 /// // repo.rewrite_sqlite(path:, clock:,
-/// //   rewrite: repo.erase_text(needle: "s3cr3t", replacement: "[gone]"))
+/// //   rewrite: repo.erase_text(needle: "s3cr3t", replacement: "[gone]"),
+/// //   rewrite_value: repo.erase_value(needle: "s3cr3t", replacement: "[gone]"))
 /// ```
 ///
 pub fn rewrite_sqlite(
   path path: String,
   clock clock: Clock,
   rewrite rewrite: EntryRewrite,
+  rewrite_value rewrite_value: ValueRewrite,
 ) -> Result(sqlite.Rewrite, sqlite.RewriteError) {
-  sqlite.rewrite_into(path:, clock:, rewrite:)
+  sqlite.rewrite_into(path:, clock:, rewrite:, rewrite_value:)
 }
 
 /// The outcome of a memory-backend rewrite: the rebuilt session and how
@@ -459,9 +505,12 @@ pub type MemoryRewrite {
 pub type RewriteError {
   /// Reading the source failed.
   RewriteSourceRead(error: session.SessionError)
-  /// The transform reported corruption, or changed an entry's id, parent,
-  /// or kind.
+  /// The entry transform reported corruption, or changed an entry's id,
+  /// parent, or kind.
   RewriteEntryFailed(report: CorruptionReport)
+  /// The value transform reported corruption for a register payload or a
+  /// usage-details blob.
+  RewriteValueFailed(report: CorruptionReport)
   /// The rebuilt destination refused to open.
   RewriteDestinationOpen(error: session.OpenError)
   /// The rebuild transaction was refused.
@@ -469,22 +518,26 @@ pub type RewriteError {
 }
 
 /// Precisely rewrites a memory-backed session by rebuilding it: entries
-/// run through `rewrite` (same contract as the SQLite path), and — unlike
-/// a fork — *everything else* is retained: every register namespace is
-/// copied verbatim and the usage ledger is re-appended row for row, since
-/// a rewrite erases content, not history. Returns the rebuilt session as
-/// a new handle; the source is untouched and remains open.
+/// run through `rewrite` and register payloads and usage details through
+/// `rewrite_value` (same contracts as the SQLite path), and — unlike a
+/// fork — *everything else* is retained: every register cell is carried
+/// over (transformed, not dropped) and the usage ledger is re-appended
+/// row for row, since a rewrite erases content, not history. Returns the
+/// rebuilt session as a new handle; the source is untouched and remains
+/// open.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // repo.rewrite_memory(source:, clock:,
-/// //   rewrite: repo.erase_text(needle: "s3cr3t", replacement: "[gone]"))
+/// //   rewrite: repo.erase_text(needle: "s3cr3t", replacement: "[gone]"),
+/// //   rewrite_value: repo.erase_value(needle: "s3cr3t", replacement: "[gone]"))
 /// ```
 ///
 pub fn rewrite_memory(
   source source: Session,
   rewrite rewrite: EntryRewrite,
+  rewrite_value rewrite_value: ValueRewrite,
   clock clock: Clock,
 ) -> Result(MemoryRewrite, RewriteError) {
   use entries <- result.try(
@@ -526,17 +579,46 @@ pub fn rewrite_memory(
       RewriteSourceRead(error: session.StoreFailure(error:))
     }),
   )
+  // Usage details are opaque JSON and can carry the needle (provider
+  // echoes, request annotations); they go through the value transform on
+  // the way into the rebuild, matching the SQLite path's audit scope.
+  use usage_rows <- result.try(
+    list.try_map(usage_rows, fn(row) {
+      case row.details {
+        None -> Ok(row)
+        Some(details) ->
+          case rewrite_value(details) {
+            Ok(None) -> Ok(row)
+            Ok(Some(new)) -> Ok(entry.UsageRow(..row, details: Some(new)))
+            Error(report) -> Error(RewriteValueFailed(report:))
+          }
+      }
+    }),
+  )
+  // Every register cell is retained — a rewrite erases content, not
+  // history — but its payload runs through the value transform first:
+  // pending messages, tool arguments, and preparation copies are exactly
+  // where an erased secret also lives.
   use register_writes <- result.try(
     list.try_fold(over: every_namespace(), from: [], with: fn(writes, ns) {
-      storage.list_registers(source.store, ns, None)
-      |> result.map(fn(cells) {
-        list.fold(over: cells, from: writes, with: fn(writes, cell) {
-          let #(key, storage.Register(value:, ..)) = cell
-          [SetRegister(ns:, key:, value:), ..writes]
-        })
-      })
-      |> result.map_error(fn(error) {
-        RewriteSourceRead(error: session.StoreFailure(error:))
+      use cells <- result.try(
+        storage.list_registers(source.store, ns, None)
+        |> result.map_error(fn(error) {
+          RewriteSourceRead(error: session.StoreFailure(error:))
+        }),
+      )
+      list.try_fold(over: cells, from: writes, with: fn(writes, cell) {
+        let #(key, storage.Register(value:, ..)) = cell
+        let payload = core_codec.encode_register_value(value)
+        use replaced <- result.map(
+          rewrite_value(payload)
+          |> result.map_error(fn(report) { RewriteValueFailed(report:) }),
+        )
+        let value = case replaced {
+          None -> value
+          Some(new) -> register.value(new)
+        }
+        [SetRegister(ns:, key:, value:), ..writes]
       })
     }),
   )

@@ -35,9 +35,12 @@ the rewrite exists for. WP-C plus WP-C-full.
   coherent view of a source session (`ForkStrand` / `ForkBranch`) into a
   fresh destination (`ForkIntoMemory` / `ForkIntoSqlite`), as one atomic
   destination transaction.
-- `session/repo.{EntryRewrite, erase_text, rewrite_sqlite, rewrite_memory,
-  MemoryRewrite, RewriteError}` — the precise rewrite for both backends and
-  the erase-a-string transform it exists for.
+- `session/repo.{EntryRewrite, ValueRewrite, erase_text, erase_value,
+  rewrite_sqlite, rewrite_memory, MemoryRewrite, RewriteError}` — the
+  precise rewrite for both backends and the erase-a-string transforms it
+  exists for. Every rewrite takes both an entry transform and a value
+  transform (register payloads, usage details): the audit contract covers
+  every store a needle can reach, not just entries.
 
 ## Relationships
 
@@ -134,13 +137,17 @@ the rewrite exists for. WP-C plus WP-C-full.
   through the storage actor, but successive reads interleaved with live
   commits could observe two half-states, so the caller — an admin surface,
   never the harness hot path — must ensure no writer is committing. The
-  SQLite rewrite enforces this with the writer lease; the in-process
+  SQLite rewrite enforces this by holding the writer lease for its whole
+  duration (a concurrent open is refused `LeaseHeld`); the in-process
   operations trust their caller.
 - **Erasure is total at the boundary.** `erase_text` rewrites string values
   in an entry's canonical JSON and leaves object keys alone; the result is
   decoded back through the entry codec, so a needle colliding with
   structural vocabulary aborts the rewrite as corruption rather than
-  producing an unreadable store.
+  producing an unreadable store. `erase_value` does the same over the
+  free-form register and usage-details JSON, where there is no codec to
+  collide with (an id collision inside a register surfaces at the machine
+  codecs instead).
 
 ## Deep Docs
 
