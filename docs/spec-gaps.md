@@ -72,6 +72,50 @@ instead and are only referenced here.
    closing (forward compatibility); malformed frames close the channel
    per §3.3 invariant 6.
 
+## From WP-G (`broker`)
+
+1. **fd-3 delivery through ports.** Erlang ports cannot map arbitrary
+   file descriptors, but the helper requires its base policy on fd 3.
+   Resolution: the broker writes the policy to a mode-0600 file inside
+   a mode-0700 directory and spawns the helper via
+   `/bin/sh -c 'exec 3<"$2" "$1"' loom-exec <helper> <policy-file>`;
+   the file is unlinked the moment the helper's hello proves it was
+   read. Per-exec `exec_start.policy` remains the authoritative policy
+   for each execution. (`broker/exec` module doc.)
+2. **Port ownership.** Port messages are delivered to the opening
+   process, so the helper port is opened inside the helper actor's
+   initialiser; the public `Transport` is a spawn spec, not an open
+   port.
+3. **`step_id` type.** Part 1.4 says tokens are valid for one
+   `{op_id, step_id}` but never defines a step-id type; `op_id` is
+   `core/ids.OpId`, `step_id` is a caller-chosen `String` until WP-D's
+   step identity lands.
+4. **`cap_result` shape.** Part 1.4 writes `{ok|err, value|error,
+   usage?}`; transcribed as `{ok: bool, value (when ok) | error:
+   {code, msg} (when err), usage?}`. The helper never sends it; WP-J's
+   satellite implements against this reading.
+5. **Nil-vs-empty arrays.** The Go helper's msgpack encoder writes nil
+   slices as msgpack `nil`; broker decoders accept `nil` for arrays,
+   binaries, and maps as empty, while always emitting real values.
+6. **Degraded refusal semantics.** "Policy demands full enforcement" is
+   broker-side data (`EnforcementDemand`), not a SandboxPolicyV1 field
+   (frozen shape). `FullEnforcement` refuses degraded helpers at
+   dispatch (hello features) and additionally fails executions whose
+   `exec_exit` reports `degraded` — the ground-truth check.
+7. **Escalation grant bounds.** Approving an escalation only accepts
+   grants drawn from the denial's wanted diff (subset allowed); wider
+   grants are a separate explicit policy decision, and session-policy
+   widening is the caller applying approved grants to the session base
+   explicitly (design §5.3's "never silently").
+8. **Root composition is prefix-aware, exact-string sets otherwise.**
+   Requirement roots are granted when covered by a base root
+   (`/work` covers `/work/sub`); env/allowlist composition is exact
+   string intersection; proxy-vs-proxy network meets intersect
+   allowlists and always keep the base's (harness-owned) proxy address.
+9. **MCP adapter deferred.** WP-G's MCP adapter (spawn-in-sandbox,
+   schema validation, provenance tagging) is post-M2 work layered on
+   the same `clear_call` path; noted in `broker/broker`'s module doc.
+
 ## From WP-F (`provider`)
 
 1. **`SettledAssistantMessage` home.** The frozen contract uses the type
