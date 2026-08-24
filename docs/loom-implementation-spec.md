@@ -314,7 +314,7 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 
 ### WP-L `client` — gateway + TUI
 
-**Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI (Gleam→Erlang, or ratatui-style via a small Rust shim — implementer's choice, protocol-only coupling): stream rendering, strand switcher, approval prompts, diff viewer, transcript browser.
+**Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI: a standalone Go binary on the bubbletea/lipgloss stack (bubbles components; glamour for markdown rendering), coupled to the harness *only* through the Part 1.6 websocket protocol — protocol events map onto bubbletea messages, commands onto websocket sends. It hand-writes the protocol types (small, versioned JSON; the Gleam-JS shared wire types serve web clients instead). Features: stream rendering, strand switcher, approval prompts, diff viewer, transcript browser.
 **Exit**: protocol conformance tests both directions (golden transcripts); reconnect/catch-up fuzz; a scripted end-to-end demo session driven purely through the public protocol (this doubles as the acceptance test for M3).
 
 ### WP-M `ext` — skills & extension zone
@@ -395,4 +395,4 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 - **ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring for the framing protocol on both Gleam and Go sides.
 - Satellite boot time target: measure `erl -noshell` cold start with preloaded prelude; decide pool-warm default.
 - Hashline anchor length (8 hex vs 12) vs collision odds on pathological files; whether anchors include line number salt.
-- TUI implementation substrate (pure Erlang termbox shim vs Rust sidecar over the client protocol — the protocol makes this swappable).
+- ~~TUI implementation substrate~~ — settled: Go sidecar (bubbletea) over the client protocol; the protocol keeps this swappable if a BEAM-native TUI ever becomes viable.
