@@ -11,6 +11,36 @@
 //// its running executions — revocation kills the OS process group via
 //// the helper's cancel ladder.
 ////
+//// ## The pooled budget is keyed per execution: `{op_id, step_id}`
+////
+//// Design §6.5 pools broker-side limits "per execution, not per call":
+//// one token backs many in-flight effects, and a token is valid for
+//// exactly one `{op_id, step_id}` (spec Part 1.4) — so that pair *is*
+//// the execution identity, and the broker holds one `budget.Ledger`
+//// per live `{op_id, step_id}`. Every clearance reserves against the
+//// stored ledger (the first clearance for a key opens it with that
+//// call's budget; later clearances under the same key reserve against
+//// the stored budget, which their own budget field cannot widen), so
+//// 10,000 polite parallel reads under one execution share one
+//// `max_outstanding` cap and one aggregate wall deadline. Reservations
+//// are released on settlement, freed wholesale on `abort`, and
+//// reclaimed when a call's relay process dies unsettled (the broker
+//// monitors every relay), so a crashed or cancelled call cannot leak a
+//// slot. Releases are generation-checked: a stale settlement from
+//// before an abort never frees budget of a later ledger under the same
+//// key.
+////
+//// ## Network proxy mode fails closed (phase 1)
+////
+//// The egress proxy sidecar is unimplemented, so a composed policy
+//// asking for `NetworkProxy` cannot be enforced as requested. Rather
+//// than silently widening, `clear_call` narrows it to `NetworkOff` via
+//// `policy.narrow_unenforceable` before dispatch: under
+//// `RefuseNarrowed` the caller gets a structured denial naming the
+//// unenforceable grant; under `ProceedNarrowed` the execution runs
+//// with no network at all. Either way nothing ever claims a proxy
+//// allowlist was enforced (see the `broker/policy` module doc).
+////
 //// Effects are injected: the pool is a pair of checkout/checkin
 //// functions and entropy/time are injected values, so the entire flow
 //// runs against an in-process fake helper in tests.
@@ -28,8 +58,9 @@ import broker/token
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
@@ -68,7 +99,11 @@ pub type CallSpec {
     /// Working directory inside the jail.
     cwd: String,
     /// The pooled per-execution budget: outstanding-effect cap and the
-    /// aggregate wall deadline (also the token deadline).
+    /// aggregate wall deadline (also the token deadline). The first
+    /// clearance for an `{op_id, step_id}` opens the execution's ledger
+    /// with this budget; later clearances under the same key reserve
+    /// against the stored ledger, and their own budget field cannot
+    /// widen it (see the module doc).
     budget: Budget,
   )
 }
@@ -154,11 +189,33 @@ pub opaque type Msg {
   CancelCall(handle: CallHandle)
   AbortOp(op_id: OpId)
   Settle(call_id: Int)
+  RelayDown(down: process.Down)
+  QueryRelay(handle: CallHandle, reply: Subject(Result(Pid, Nil)))
   StopBroker
 }
 
 type Active {
-  Active(helper: Helper, op_id: OpId, token_bytes: BitArray)
+  Active(
+    helper: Helper,
+    op_id: OpId,
+    step_id: String,
+    token_bytes: BitArray,
+    // The monitored relay process; its unsettled death reclaims the
+    // call's budget slot, token, and helper.
+    relay_pid: Pid,
+    monitor: process.Monitor,
+    // Which incarnation of the execution's ledger this call reserved
+    // against; releases only apply to a matching generation.
+    ledger_generation: Int,
+  )
+}
+
+// One execution's pooled budget account. The generation distinguishes
+// ledger incarnations under a reused key: after an abort drops a
+// ledger, late settlements of its calls carry the old generation and
+// release nothing from any successor ledger.
+type LedgerSlot {
+  LedgerSlot(generation: Int, ledger: budget.Ledger)
 }
 
 type State {
@@ -168,6 +225,11 @@ type State {
     vault: token.Vault,
     next_call: Int,
     active: Dict(Int, Active),
+    // Pooled per-execution budgets, keyed by execution identity (see
+    // the module doc). A key is present exactly while it has
+    // outstanding reservations.
+    ledgers: Dict(#(OpId, String), LedgerSlot),
+    next_generation: Int,
     // The broker's own subject, handed to relays for Settle reports.
     self: Subject(Msg),
   )
@@ -187,9 +249,19 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
         vault: token.new(entropy: config.entropy),
         next_call: 1,
         active: dict.new(),
+        ledgers: dict.new(),
+        next_generation: 1,
         self: subject,
       )
+    // The broker monitors every relay it spawns; the selector routes
+    // their DOWN messages so an unsettled relay death reclaims the
+    // call's reservations.
+    let selector =
+      process.new_selector()
+      |> process.select(subject)
+      |> process.select_monitors(RelayDown)
     actor.initialised(state)
+    |> actor.selecting(selector)
     |> actor.returning(subject)
     |> Ok
   })
@@ -242,6 +314,21 @@ pub fn abort(broker: Broker, op_id: OpId) -> Nil {
 /// Stops the broker actor. Callers should abort operations first.
 pub fn stop(broker: Broker) -> Nil {
   process.send(broker.subject, StopBroker)
+}
+
+/// The pid of a cleared call's relay process, or `Error(Nil)` once the
+/// call settled. Exists so tests can kill a relay and prove the broker
+/// reclaims the call's budget slot, token, and helper; not part of the
+/// broker's API.
+@internal
+pub fn relay_pid(
+  broker: Broker,
+  handle: CallHandle,
+  waiting timeout: Int,
+) -> Result(Pid, Nil) {
+  process.call(broker.subject, waiting: timeout, sending: fn(reply) {
+    QueryRelay(handle:, reply:)
+  })
 }
 
 /// The structured denial hiding in an execution failure, when the
@@ -307,21 +394,80 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
           False -> Nil
         }
       })
-      actor.continue(State(..state, vault:))
+      // Abort frees the operation's pooled reservations wholesale; the
+      // late settlements of its cancelled calls carry retired ledger
+      // generations and release nothing further.
+      let ledgers =
+        dict.filter(state.ledgers, fn(key, _slot) { key.0 != op_id })
+      actor.continue(State(..state, vault:, ledgers:))
     }
     Settle(call_id:) ->
       case dict.get(state.active, call_id) {
         Error(Nil) -> actor.continue(state)
         Ok(active) -> {
+          // The relay exits right after settling; with the settlement
+          // in hand its death is expected, so stop watching (which also
+          // flushes an already-queued DOWN).
+          process.demonitor_process(active.monitor)
           state.config.checkin(active.helper)
           // Tokens are single-use: settlement revokes.
           let vault = token.revoke(state.vault, active.token_bytes)
-          let active = dict.delete(state.active, call_id)
-          actor.continue(State(..state, vault:, active:))
+          let state = release_budget(state, active)
+          actor.continue(
+            State(..state, vault:, active: dict.delete(state.active, call_id)),
+          )
         }
       }
+    RelayDown(down:) -> handle_relay_down(state, down)
+    QueryRelay(handle:, reply:) -> {
+      case dict.get(state.active, handle.id) {
+        Ok(active) -> process.send(reply, Ok(active.relay_pid))
+        Error(Nil) -> process.send(reply, Error(Nil))
+      }
+      actor.continue(state)
+    }
     StopBroker -> actor.stop()
   }
+}
+
+// A relay died without settling (a normal exit settles first, and
+// settlement demonitors): its call can no longer reach the caller, so
+// fail closed — cancel the execution, return the helper (the pool
+// retires it if it died too), revoke the token, and free the budget
+// slot so a crashed call never leaks a reservation.
+fn handle_relay_down(
+  state: State,
+  down: process.Down,
+) -> actor.Next(State, Msg) {
+  case down {
+    process.PortDown(..) -> actor.continue(state)
+    process.ProcessDown(pid:, monitor: _, reason: _) ->
+      case call_of_relay(state.active, pid) {
+        Error(Nil) -> actor.continue(state)
+        Ok(#(call_id, active)) -> {
+          exec.cancel(active.helper)
+          state.config.checkin(active.helper)
+          let vault = token.revoke(state.vault, active.token_bytes)
+          let state = release_budget(state, active)
+          actor.continue(
+            State(..state, vault:, active: dict.delete(state.active, call_id)),
+          )
+        }
+      }
+  }
+}
+
+// The active call whose relay is `pid`, if any.
+fn call_of_relay(
+  active: Dict(Int, Active),
+  pid: Pid,
+) -> Result(#(Int, Active), Nil) {
+  dict.fold(active, Error(Nil), fn(found, call_id, call) {
+    case call.relay_pid == pid {
+      True -> Ok(#(call_id, call))
+      False -> found
+    }
+  })
 }
 
 fn do_clear_call(
@@ -329,18 +475,28 @@ fn do_clear_call(
   spec: CallSpec,
   events: Subject(CallEvent),
 ) -> #(State, Result(CallHandle, Refusal)) {
-  // 1. Policy composition: most-restrictive-wins except explicit grants.
-  let #(final_policy, narrowings) =
+  // 1. Policy composition: most-restrictive-wins except explicit
+  // grants — then the phase-1 downgrade of enforcement that does not
+  // exist yet (network proxy mode), which fails closed as one more
+  // narrowing rather than dispatching an unconfined jail.
+  let #(composed, narrowings) =
     policy.compose(
       base: spec.base_policy,
       requirements: spec.requirements,
       grants: spec.grants,
     )
+  let #(final_policy, unenforceable) = policy.narrow_unenforceable(composed)
+  let narrowings = list.append(narrowings, unenforceable)
   case narrowings, spec.response {
     [_, ..], RefuseNarrowed -> {
+      let reason = case unenforceable {
+        [] -> "tool requirements exceed the session policy"
+        [_, ..] ->
+          "network proxy mode is not enforceable in phase 1 (the egress proxy sidecar is unimplemented); proxy-mode calls fail closed"
+      }
       let denial =
         escalation.Denial(
-          reason: "tool requirements exceed the session policy",
+          reason:,
           source: escalation.PolicyDenial,
           wanted: policy.wanted_grants(narrowings),
         )
@@ -360,12 +516,13 @@ fn authorize(
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
 ) -> #(State, Result(CallHandle, Refusal)) {
-  // 2. Budget: reserve the one exec slot against cap and deadline.
+  // 2. Budget: reserve one effect slot in the execution's pooled
+  // ledger, against its aggregate cap and wall deadline.
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
-  case budget.reserve(budget.open(spec.budget), now:) {
+  case reserve_budget(state, spec, now) {
     Error(refusal) -> #(state, Error(BudgetRefused(refusal:)))
-    Ok(_ledger) ->
+    Ok(#(state, generation)) ->
       // 3. Token: mint bound to {op_id, step_id, policy, deadline}.
       case
         token.mint(
@@ -378,15 +535,93 @@ fn authorize(
           ),
         )
       {
-        Error(error) -> #(state, Error(MintRefused(error:)))
+        Error(error) -> {
+          // Nothing dispatched: hand the slot back.
+          let state = release_slot(state, spec.op_id, spec.step_id, generation)
+          #(state, Error(MintRefused(error:)))
+        }
         Ok(#(vault, minted)) -> {
           let state = State(..state, vault:)
           // 4. Helper: borrow through the pool seam.
           case state.config.checkout() {
-            Error(error) -> #(state, Error(NoHelper(error:)))
+            Error(error) -> {
+              // Nothing dispatched: hand back the slot and the token
+              // (its bytes never left the broker, but a live entry for
+              // an execution that will not run has no business in the
+              // vault).
+              let state =
+                release_slot(state, spec.op_id, spec.step_id, generation)
+              let vault = token.revoke(state.vault, token.to_bytes(minted))
+              #(State(..state, vault:), Error(NoHelper(error:)))
+            }
             Ok(helper) ->
-              dispatch(state, spec, final_policy, minted, helper, events)
+              dispatch(
+                state,
+                spec,
+                final_policy,
+                minted,
+                helper,
+                events,
+                generation,
+              )
           }
+        }
+      }
+  }
+}
+
+// Reserves one effect slot in the execution's pooled ledger, opening a
+// fresh ledger (with this call's budget) when the key has none.
+fn reserve_budget(
+  state: State,
+  spec: CallSpec,
+  now: Int,
+) -> Result(#(State, Int), budget.Refusal) {
+  let key = #(spec.op_id, spec.step_id)
+  let #(slot, next_generation) = case dict.get(state.ledgers, key) {
+    Ok(slot) -> #(slot, state.next_generation)
+    Error(Nil) -> #(
+      LedgerSlot(
+        generation: state.next_generation,
+        ledger: budget.open(spec.budget),
+      ),
+      state.next_generation + 1,
+    )
+  }
+  use ledger <- result.map(budget.reserve(slot.ledger, now:))
+  let ledgers = dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
+  #(State(..state, ledgers:, next_generation:), slot.generation)
+}
+
+// Releases the reservation an active call holds.
+fn release_budget(state: State, active: Active) -> State {
+  release_slot(state, active.op_id, active.step_id, active.ledger_generation)
+}
+
+// Returns one reserved slot to an execution's ledger, provided the
+// reservation belongs to the ledger's current incarnation — a stale
+// release from before an abort must not free budget of a successor
+// ledger under the same key. A ledger with nothing outstanding leaves
+// the table.
+fn release_slot(
+  state: State,
+  op_id: OpId,
+  step_id: String,
+  generation: Int,
+) -> State {
+  let key = #(op_id, step_id)
+  case dict.get(state.ledgers, key) {
+    Error(Nil) -> state
+    Ok(slot) ->
+      case slot.generation == generation {
+        False -> state
+        True -> {
+          let ledger = budget.settle(slot.ledger)
+          let ledgers = case budget.outstanding(ledger) {
+            0 -> dict.delete(state.ledgers, key)
+            _ -> dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
+          }
+          State(..state, ledgers:)
         }
       }
   }
@@ -399,14 +634,16 @@ fn dispatch(
   minted: token.Token,
   helper: Helper,
   events: Subject(CallEvent),
+  generation: Int,
 ) -> #(State, Result(CallHandle, Refusal)) {
   let call_id = state.next_call
   let broker_subject = state.self
   // 5. Relay: a per-call process owning the exec-event subject. It
   // forwards output to the caller, enforces the aggregate wall
-  // deadline, and reports settlement back to the broker.
+  // deadline, and reports settlement back to the broker. The broker
+  // monitors it so an unsettled death reclaims the call's reservations.
   let ready = process.new_subject()
-  let _relay =
+  let relay_pid =
     process.spawn_unlinked(fn() {
       let exec_events = process.new_subject()
       process.send(ready, exec_events)
@@ -421,9 +658,12 @@ fn dispatch(
         Streaming,
       )
     })
+  let monitor = process.monitor(relay_pid)
   case process.receive(ready, 1000) {
     Error(Nil) -> {
+      process.demonitor_process(monitor)
       state.config.checkin(helper)
+      let state = release_slot(state, spec.op_id, spec.step_id, generation)
       #(
         State(..state, vault: token.revoke(state.vault, token.to_bytes(minted))),
         Error(BrokerUnavailable),
@@ -440,7 +680,15 @@ fn dispatch(
           demand: spec.demand,
         )
       let active =
-        Active(helper:, op_id: spec.op_id, token_bytes: token.to_bytes(minted))
+        Active(
+          helper:,
+          op_id: spec.op_id,
+          step_id: spec.step_id,
+          token_bytes: token.to_bytes(minted),
+          relay_pid:,
+          monitor:,
+          ledger_generation: generation,
+        )
       let state =
         State(
           ..state,

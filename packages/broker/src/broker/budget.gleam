@@ -7,9 +7,10 @@
 //// reads or 50 spawned test runs share one ledger and are refused past
 //// the cap, however politely they ask.
 ////
-//// Pure accounting; the broker owns the ledger for each live token and
+//// Pure accounting; the broker owns one ledger per live execution
+//// (keyed `{op_id, step_id}`, the identity a token is valid for) and
 //// calls `reserve` before dispatching any effect and `settle` when one
-//// completes.
+//// completes, is aborted, or is reclaimed after a relay crash.
 
 /// The budget attached to one execution's token.
 pub type Budget {

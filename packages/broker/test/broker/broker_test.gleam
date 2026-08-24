@@ -9,6 +9,7 @@ import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/option.{Some}
+import gleam/string
 
 fn op() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 3)
@@ -49,6 +50,32 @@ fn spec(op_id: ids.OpId) -> broker.CallSpec {
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",
     budget: budget.Budget(max_outstanding: 4, deadline_ms: 100_000),
+  )
+}
+
+// A broker whose checkout seam spawns a fresh fake helper per call, so
+// concurrency is bounded only by the pooled budget under test.
+fn broker_with_fresh_helpers(
+  script: fake_helper.Script,
+  at now: Int,
+) -> #(broker.Broker, Subject(exec.Helper)) {
+  let checkins = process.new_subject()
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: now),
+        checkout: fn() { Ok(fake_helper.start_helper(script)) },
+        checkin: fn(helper) { process.send(checkins, helper) },
+      ),
+    )
+  #(started, checkins)
+}
+
+fn capped_spec(op_id: ids.OpId, cap: Int) -> broker.CallSpec {
+  broker.CallSpec(
+    ..spec(op_id),
+    budget: budget.Budget(max_outstanding: cap, deadline_ms: 100_000),
   )
 }
 
@@ -216,5 +243,197 @@ pub fn cancel_through_handle_test() {
   assert result.signal == 15
   // Cancel after settlement is a harmless no-op.
   broker.cancel(started, handle)
+  broker.stop(started)
+}
+
+// --- pooled per-execution budget ----------------------------------------
+
+pub fn budget_cap_refuses_excess_concurrent_calls_test() {
+  let #(started, _checkins) =
+    broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
+  let op_id = op()
+  let pooled = capped_spec(op_id, 2)
+  let events = process.new_subject()
+  let assert Ok(_first) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Ok(_second) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  // A third concurrent effect under the same {op_id, step_id}: the
+  // pooled ledger is at its cap, however politely it asks.
+  assert broker.clear_call(started, pooled, events:, waiting: 2000)
+    == Error(
+      broker.BudgetRefused(refusal: budget.OutstandingCapReached(cap: 2)),
+    )
+  // A different step is a different execution with its own ledger.
+  let other_step = broker.CallSpec(..pooled, step_id: "step-2")
+  let assert Ok(_other) =
+    broker.clear_call(started, other_step, events:, waiting: 2000)
+  broker.abort(started, op_id)
+  broker.stop(started)
+}
+
+pub fn settling_one_call_frees_exactly_one_slot_test() {
+  let #(started, _checkins) =
+    broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
+  let op_id = op()
+  let pooled = capped_spec(op_id, 2)
+  let events = process.new_subject()
+  let assert Ok(first) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Ok(_second) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  // Settle the first call; its slot (and only its slot) frees.
+  broker.cancel(started, first)
+  let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+    process.receive(events, 2000)
+  assert result.signal == 15
+  let assert Ok(_third) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  broker.abort(started, op_id)
+  broker.stop(started)
+}
+
+pub fn abort_frees_all_op_reservations_test() {
+  let #(started, _checkins) =
+    broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
+  let op_id = op()
+  let pooled = capped_spec(op_id, 2)
+  let events = process.new_subject()
+  let assert Ok(_first) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Ok(_second) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  // Abort frees the whole operation's reservations at once...
+  broker.abort(started, op_id)
+  let assert Ok(_third) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Ok(_fourth) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  // ...and the late settlements of the aborted calls (arriving now,
+  // signal 15) release nothing from the successor ledger.
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 2000)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  broker.abort(started, op_id)
+  broker.stop(started)
+}
+
+pub fn relay_death_reclaims_slot_and_helper_test() {
+  let #(started, checkins) =
+    broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
+  let op_id = op()
+  let pooled = capped_spec(op_id, 1)
+  let events = process.new_subject()
+  let assert Ok(first) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  // Kill the call's relay outright: no settlement will ever arrive,
+  // and the broker must reclaim everything the call held.
+  let assert Ok(relay) = broker.relay_pid(started, first, waiting: 1000)
+  process.kill(relay)
+  // The helper went back to the pool seam...
+  let assert Ok(_helper) = process.receive(checkins, 2000)
+  // ...and the budget slot is free again.
+  let assert Ok(_second) =
+    broker.clear_call(started, pooled, events:, waiting: 2000)
+  broker.abort(started, op_id)
+  broker.stop(started)
+}
+
+// --- network proxy mode fails closed (phase 1) --------------------------
+
+fn proxy_network() -> policy.NetworkPolicy {
+  policy.NetworkProxy(allow: ["registry.npmjs.org"], proxy: "127.0.0.1:3128")
+}
+
+pub fn proxy_mode_refused_with_structured_denial_test() {
+  let #(started, _helper, _checkins) =
+    broker_with(fake_helper.EchoNetwork, at: 1000)
+  let asking =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      network: proxy_network(),
+    )
+  let refusing =
+    broker.CallSpec(..spec(op()), base_policy: asking, requirements: asking)
+  let events = process.new_subject()
+  let assert Error(broker.PolicyRefused(denial)) =
+    broker.clear_call(started, refusing, events:, waiting: 2000)
+  // The denial names the unimplemented capability and carries the
+  // exact unenforceable grant.
+  assert string.contains(denial.reason, "phase 1")
+  assert denial.wanted == [policy.GrantNetwork(network: proxy_network())]
+  // Nothing was dispatched.
+  assert process.receive(events, 200) == Error(Nil)
+  broker.stop(started)
+}
+
+pub fn proxy_mode_proceeds_with_network_off_test() {
+  let #(started, _helper, _checkins) =
+    broker_with(fake_helper.EchoNetwork, at: 1000)
+  let asking =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      network: proxy_network(),
+    )
+  let proceeding =
+    broker.CallSpec(
+      ..spec(op()),
+      base_policy: asking,
+      requirements: asking,
+      response: broker.ProceedNarrowed,
+    )
+  let events = process.new_subject()
+  let assert Ok(_handle) =
+    broker.clear_call(started, proceeding, events:, waiting: 2000)
+  // The execution's effective network is off — never the unrestricted
+  // egress a phase-1 proxy jail would silently have.
+  let assert Ok(broker.CallOutput(data: <<"off\n":utf8>>, ..)) =
+    process.receive(events, 1000)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 1000)
+  broker.stop(started)
+}
+
+pub fn full_mode_unaffected_by_proxy_downgrade_test() {
+  let #(started, _helper, _checkins) =
+    broker_with(fake_helper.EchoNetwork, at: 1000)
+  let open =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/work"),
+      network: policy.NetworkFull,
+    )
+  let full =
+    broker.CallSpec(..spec(op()), base_policy: open, requirements: open)
+  let events = process.new_subject()
+  let assert Ok(_handle) =
+    broker.clear_call(started, full, events:, waiting: 2000)
+  let assert Ok(broker.CallOutput(data: <<"full\n":utf8>>, ..)) =
+    process.receive(events, 1000)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 1000)
+  broker.stop(started)
+}
+
+pub fn off_mode_unaffected_by_proxy_downgrade_test() {
+  let #(started, _helper, _checkins) =
+    broker_with(fake_helper.EchoNetwork, at: 1000)
+  let events = process.new_subject()
+  let assert Ok(_handle) =
+    broker.clear_call(started, spec(op()), events:, waiting: 2000)
+  let assert Ok(broker.CallOutput(data: <<"off\n":utf8>>, ..)) =
+    process.receive(events, 1000)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 1000)
   broker.stop(started)
 }
