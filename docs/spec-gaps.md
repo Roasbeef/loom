@@ -368,3 +368,29 @@ instead and are only referenced here.
    halting the strand — idempotent, converging, no silent loss.
 6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
    pooled budget remains the concurrency ceiling underneath.
+
+## From WP-L (`client`)
+
+1. **Escalation records lack op and strand attribution**; the protocol
+   body requires both, so the hub attributes best-effort. The fix
+   belongs in the runtime's escalation record shape.
+2. **No api entry points for compaction or navigation** — the gateway,
+   like the conformance runner, builds acceptance plans itself and
+   commits through the writer. Two copies of that pattern argue for
+   api.compact and api.navigate.
+3. **Strand creation always takes a task brief**; protocol fork and
+   create-strand need idle strands, so the gateway seeds registers
+   itself. An optional-brief variant would close this.
+4. **Protocol fork forks in place** (own strand, shared tree); forking
+   into a new session file is unreachable through protocol v1, whose
+   snapshot cannot name a second session. Documented at the type.
+5. **Fixture-vs-codec drift** (tool-call nesting, an always-present
+   redacted flag, float text): adapted wire-side both directions; if
+   the corpus is ever regenerated from the core codec, this needs a
+   protocol-change note.
+6. **Queued versus placed acks**: steer and follow-up acks describe the
+   durably queued item with a reserved id and no sequence; the placed
+   entry broadcasts on consumption. The protocol document's reply table
+   does not address the distinction.
+7. **Provider deltas tee through a wrapper** around the provider
+   surface — the documented seam; the runtime needed no change.
