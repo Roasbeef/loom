@@ -1,0 +1,125 @@
+# provider
+
+## Purpose
+
+The provider SDK: a typed registry of provider configurations and role
+routes, a pure incremental server-sent-events parser, two wire adapters
+(Anthropic Messages, OpenAI chat-completions), retry and overflow
+classification, and the secret-injection seam. Everything above the raw
+HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
+
+## Key Types
+
+- `provider/gateway.Gateway` — opaque, built with the builder pattern
+  (`new`, `add_provider`, `route`, `with_attempt_timeout`); exposes the
+  frozen contract `resolve(gw, role)` and `request(gw, req)`. Nothing
+  touches the network until `request`.
+- `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
+  ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
+  static model facts an adapter needs: context window, output ceiling,
+  thinking level. `RequestTarget` is `ForRole` (resolve at dispatch) or
+  `ForResolved` (dispatch to exactly this identity).
+- `provider/stream.StreamHandle` — the consumption contract WP-E relies
+  on: zero or more `Delta` events, then exactly one terminal `Settled` or
+  `Failed`, and nothing after it.
+- `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
+  `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
+  the same events.
+- `provider/stream.ResponseMachine(state)` — a fold over `HttpEvent`s
+  producing `StreamEvent`s; each adapter supplies one.
+- `provider/http.{Transport, HttpRequest, HttpEvent}` — the injected
+  transport seam; `httpc_transport()` is the production wiring.
+- `provider/secret.SecretStore` — an injected `fn(String) ->
+  Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
+- `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
+  `is_overflow_message`, `overflow_message`.
+
+## Relationships
+
+- **Depends on**: `core` (json, messages, corruption — for the durable
+  message shapes and total JSON parsing), `gleam_erlang` (the stream pump
+  runs on its own process).
+- **Depended on by**: `runtime` (`effects.ProviderSurface` is
+  type-compatible with `StreamHandle`, and `settle_failure` bridges
+  `retry.classify` into the machine's retryability convention),
+  `conformance` (wiring and the e2e).
+- **FFI**: `provider/internal/ffi_httpc` — drives OTP `httpc` in
+  asynchronous streaming mode, because the Gleam ecosystem has no streaming
+  HTTP client (`gleam_httpc` is synchronous only). `provider/internal/
+  ffi_env` — `os:getenv` for the environment secret store. These two are
+  the package's complete inventory of impurity.
+
+## Traffic
+
+- **Actor messages**: `stream.run` spawns the transport on its own process
+  and delivers `StreamEvent`s to the caller's subject:
+  `Delta(...)` zero or more times, then exactly one `Settled(settled,
+  usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
+  from the transport into that pump.
+- **Commits / registers**: none. This package persists nothing; the
+  durable identity it resolves is stored by `machine` and committed by
+  `runtime`.
+- **Wire**:
+  - Anthropic Messages SSE events — `message_start`,
+    `content_block_start`, `content_block_delta`, `content_block_stop`,
+    `message_delta`, `message_stop`, `error`, `ping`.
+  - OpenAI chat-completions SSE — unnamed events whose `data:` is a chunk
+    document, terminated by the literal `[DONE]`; tool calls arrive as
+    `choices[0].delta.tool_calls` fragments carrying a provider-side index.
+  - `api_name` constants pin the two dialects: `"anthropic-messages"`,
+    `"openai-completions"`.
+
+## Invariants
+
+- **Secrets exist only in request memory.** A key is read from the
+  `SecretStore` at dispatch, copied into one outbound header, and appears
+  nowhere else — not in the gateway value, not in an accumulator, not in
+  any `StreamEvent`, error, or persisted structure. `ProviderError` carries
+  secret *names* only (spec §3.3 invariant 4).
+- **Exactly one terminal event per stream.** Deltas are ephemeral display
+  data and never prove anything about settlement; nothing follows the
+  terminal.
+- **Stop reasons map totally.** A stop or finish reason an adapter does not
+  know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
+  crash.
+- **The fallback chain walks only on retryable failures.** A terminal
+  error, or an exhausted chain, delivers the failure in-band as `Failed`
+  preserving retryability. A *settled* response never falls back, and
+  `ForResolved` never falls back at all — that is the recovery path, where
+  the machine re-dispatches exactly what it stored.
+- **Overflow is checked before retry.** The machine's classification order
+  puts overflow ahead of retryable error (an oversized request must
+  compact, not retry unchanged), which is why the overflow patterns live
+  beside the retry classifier. Adapter-computable overflow — input plus
+  cache-read exceeding the context window with negligible output (≤ 64
+  tokens) — settles as stop reason `error` with `retry.overflow_message`,
+  preserving the raw stop reason.
+- **The SSE parser is bounded.** The carry buffer never exceeds
+  `max_line_bytes` (4 MiB) and every byte is scanned exactly once, so a
+  hostile or broken proxy streaming a terminator-less line fails the stream
+  in-band as a framing defect rather than exhausting memory or driving
+  quadratic re-scans.
+- **Wire leniency is deliberate and asymmetric.** SSE `data:` payloads must
+  parse as JSON (malformed data fails the stream in-band as
+  `MalformedStream`), but *fields* are read leniently — absent usage
+  counters read as zero, unknown event and delta types are ignored per the
+  Messages API versioning policy. The total-decoder doctrine governs *our*
+  durability boundaries, not foreign wire vocabularies.
+- **Usage counters are clamped, not trusted.** `wire.count_field_or` /
+  `optional_count_field` clamp into `[0, max_usage_count]` (1e12) at the
+  read, so no count an untrusted proxy reports can reach a settled message
+  the durable planes cannot encode (`core/msgpack` rejects integers outside
+  `[-2^63, 2^64-1]`). Saturation is itself the record of the lie. Counters
+  steer accounting and overflow classification only — never a security
+  decision — so a lying proxy can at worst waste a compact-and-retry cycle.
+- **Usage costs are zeroed**; token extraction only. Pricing tables are a
+  ledger-side concern, not an adapter's.
+
+## Deep Docs
+
+- [docs/architecture/effects.md](../../docs/architecture/effects.md) —
+  "Providers", and the plane this package sits in.
+- [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-F (`provider`)":
+  the settled-message home, fallback semantics, the quantified "negligible
+  output", wire leniency, deferred keychain backends.
+- [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
