@@ -1,0 +1,514 @@
+//// Streaming machinery: typed stream events, the pure incremental SSE
+//// parser, and the process pump that turns a raw HTTP chunk stream into
+//// `StreamEvent` messages.
+////
+//// Layering, per the sans-io pattern:
+////
+//// - The SSE framing parser (`SseParser`) is pure: bytes in, events out,
+////   plus carry state. Feeding the same bytes in any chunking yields the
+////   same events, which is what makes it property-testable without
+////   processes.
+//// - Adapters compose the parser with their own pure accumulator into a
+////   `ResponseMachine` — a fold over `HttpEvent`s producing
+////   `StreamEvent`s.
+//// - `run` is the only impure piece: it spawns the transport on its own
+////   process, folds the machine over the received chunks, forwards deltas
+////   as they appear, and returns the single terminal event.
+////
+//// Consumption contract for `StreamHandle` (what WP-E relies on): the
+//// subject delivers zero or more `Delta` events followed by exactly one
+//// terminal event — `Settled` or `Failed` — and nothing after it. Deltas
+//// are ephemeral display data and never prove anything about settlement.
+
+import core/corruption.{type CorruptionReport}
+import core/message.{type AgentMessage, type Usage, AssistantMessage, Pending}
+import gleam/bit_array
+import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import provider/http.{type HttpRequest, type Transport}
+
+// --- stream events ------------------------------------------------------
+
+/// One streamed fragment of an in-progress assistant response. Deltas are
+/// ephemeral: they exist for live display and frame persistence, and the
+/// settled message is always authoritative.
+///
+/// Constructor invariants: `index` is the content-block index within the
+/// accumulating response (provider-assigned, not necessarily contiguous);
+/// `ToolCallDelta.call_id` and `name` are the values known so far and may
+/// be empty on continuation fragments from providers that only send them
+/// once.
+pub type Delta {
+  /// A fragment of a text block.
+  TextDelta(index: Int, text: String)
+  /// A fragment of a tool call's streamed JSON arguments.
+  ToolCallDelta(
+    index: Int,
+    call_id: String,
+    name: String,
+    arguments_json: String,
+  )
+  /// A fragment of a thinking block.
+  ThinkingDelta(index: Int, thinking: String)
+}
+
+/// One event on a provider stream, per the frozen contract (spec §1.5).
+///
+/// Constructor invariants: a stream delivers zero or more `Delta`s and
+/// then exactly one `Settled` or `Failed`; `Settled.usage` equals the
+/// usage inside the settled message and is repeated for direct ledger
+/// writes; `Failed` errors carry redacted context only — never request
+/// headers, bodies, or secrets.
+pub type StreamEvent {
+  /// A streamed fragment of the in-progress response.
+  Delta(delta: Delta)
+  /// The response settled completely.
+  Settled(message: SettledAssistantMessage, usage: Usage)
+  /// The request failed before settling; in-band, never a crash.
+  Failed(error: ProviderError)
+}
+
+/// A provider response that has finished streaming: an assistant
+/// `AgentMessage` whose stop reason is no longer `Pending`. Built from
+/// `core`'s message types; the smart constructor is the proof boundary.
+pub opaque type SettledAssistantMessage {
+  /// Invariant: `message` is an `AssistantMessage` with a settled
+  /// (non-`Pending`) stop reason.
+  SettledAssistantMessage(message: AgentMessage)
+}
+
+/// Wraps an assistant message as settled. Fails on non-assistant messages
+/// and on the `Pending` streaming intermediate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(Nil) =
+///   stream.settle(message.UserMessage(content: [], timestamp: 0))
+/// ```
+///
+pub fn settle(message: AgentMessage) -> Result(SettledAssistantMessage, Nil) {
+  case message {
+    AssistantMessage(stop_reason: Pending, ..) -> Error(Nil)
+    AssistantMessage(..) -> Ok(SettledAssistantMessage(message:))
+    _ -> Error(Nil)
+  }
+}
+
+/// The settled assistant `AgentMessage` inside the wrapper.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stream.message(settled) // -> message.AssistantMessage(...)
+/// ```
+///
+pub fn message(settled: SettledAssistantMessage) -> AgentMessage {
+  settled.message
+}
+
+/// Why a provider request failed, in-band. Every variant carries redacted
+/// context only: status codes, provider error types, and human-readable
+/// messages — never request headers, request bodies, or secret values
+/// (spec §3.3 invariant 4).
+///
+/// Constructor invariants: `HttpError.api_error_type` is the provider's
+/// machine-readable error type (`"overloaded_error"`, `"rate_limit_error"`,
+/// …) or `""` when the body carried none; `retry_after_ms` is parsed from
+/// the `retry-after` header when present; `UnmappedStopReason.raw` is the
+/// provider's verbatim stop-reason string, per the total-mapping rule;
+/// `NoSecret.secret_name` is the *name* of the missing secret, never a
+/// value.
+pub type ProviderError {
+  /// The transport failed before or during the response.
+  TransportFailed(reason: String)
+  /// The provider returned a non-success HTTP status.
+  HttpError(
+    status: Int,
+    api_error_type: String,
+    message: String,
+    retry_after_ms: Option(Int),
+  )
+  /// The provider reported an error event inside the stream.
+  StreamError(api_error_type: String, message: String)
+  /// The stream ended before the response settled.
+  StreamDisconnected(context: String)
+  /// The stream carried data the adapter could not decode.
+  MalformedStream(report: CorruptionReport)
+  /// The provider used a stop reason the adapter does not know.
+  UnmappedStopReason(raw: String)
+  /// The requested role has no configured identity (dispatch-time
+  /// counterpart of `resolve`'s `MissingIdentity`).
+  NoIdentity(role: String)
+  /// A resolved identity names a provider the gateway does not know.
+  UnknownProvider(provider: String)
+  /// The provider's API-key secret is not available from the store.
+  NoSecret(provider: String, secret_name: String)
+}
+
+/// Renders an error as one human-readable line for in-band error results
+/// and logs. Redaction-safe by construction: it only prints what the
+/// error carries, and errors never carry secrets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert stream.describe_error(stream.TransportFailed("closed"))
+///   == "transport failed: closed"
+/// ```
+///
+pub fn describe_error(error: ProviderError) -> String {
+  case error {
+    TransportFailed(reason:) -> "transport failed: " <> reason
+    HttpError(status:, api_error_type:, message:, retry_after_ms: _) ->
+      "provider returned http "
+      <> int.to_string(status)
+      <> case api_error_type {
+        "" -> ""
+        _ -> " (" <> api_error_type <> ")"
+      }
+      <> ": "
+      <> message
+    StreamError(api_error_type:, message:) ->
+      "provider stream error (" <> api_error_type <> "): " <> message
+    StreamDisconnected(context:) -> "provider stream disconnected: " <> context
+    MalformedStream(report:) -> corruption.describe(report)
+    UnmappedStopReason(raw:) -> "provider used an unmapped stop reason: " <> raw
+    NoIdentity(role:) -> "no model identity configured for role " <> role
+    UnknownProvider(provider:) -> "no provider registered under " <> provider
+    NoSecret(provider:, secret_name:) ->
+      "secret "
+      <> secret_name
+      <> " for provider "
+      <> provider
+      <> " is not available"
+  }
+}
+
+// --- pure incremental SSE parser ----------------------------------------
+
+/// One parsed server-sent event, or a framing-level defect.
+///
+/// Constructor invariants: `SseMessage.event` is the `event:` field when
+/// one was sent; `data` is the `data:` lines joined with `\n` per the SSE
+/// specification; `SseMalformed` reports a line that was not valid UTF-8 —
+/// the only framing-level defect SSE admits — and consumers surface it as
+/// an in-band failure, never a crash.
+pub type SseEvent {
+  /// A dispatched event.
+  SseMessage(event: Option(String), data: String)
+  /// A line that could not be decoded.
+  SseMalformed(reason: String)
+}
+
+/// Incremental SSE parser state: pure data, so feeding is a fold. The
+/// carry buffer holds bytes of an incomplete line (chunks may split lines
+/// and even UTF-8 codepoints); the field buffers hold the in-progress
+/// event awaiting its blank-line dispatch.
+pub opaque type SseParser {
+  /// Invariants: `carry` contains no complete line except possibly a
+  /// trailing lone `\r` awaiting a potential `\n`; `data_lines` is in
+  /// reverse arrival order.
+  SseParser(
+    carry: BitArray,
+    event_name: Option(String),
+    data_lines: List(String),
+  )
+}
+
+/// A fresh SSE parser with empty carry state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(_parser, events) =
+///   stream.feed(stream.new_parser(), <<"data: hi\n\n":utf8>>)
+/// assert events == [stream.SseMessage(event: option.None, data: "hi")]
+/// ```
+///
+pub fn new_parser() -> SseParser {
+  SseParser(carry: <<>>, event_name: None, data_lines: [])
+}
+
+/// Feeds one chunk of bytes, returning the successor parser and the
+/// events completed by this chunk. Chunk boundaries are invisible:
+/// feeding a byte stream in any chunking yields the same events.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(parser, first) = stream.feed(stream.new_parser(), <<"data: h":utf8>>)
+/// let #(_parser, second) = stream.feed(parser, <<"i\n\n":utf8>>)
+/// assert first == []
+///   && second == [stream.SseMessage(event: option.None, data: "hi")]
+/// ```
+///
+pub fn feed(
+  parser: SseParser,
+  chunk: BitArray,
+) -> #(SseParser, List(SseEvent)) {
+  let buffer = bit_array.append(parser.carry, chunk)
+  let parser = SseParser(..parser, carry: <<>>)
+  feed_loop(parser, buffer, [])
+}
+
+fn feed_loop(
+  parser: SseParser,
+  buffer: BitArray,
+  events: List(SseEvent),
+) -> #(SseParser, List(SseEvent)) {
+  case take_line(buffer, 0) {
+    Ok(#(line, rest)) -> {
+      let #(parser, new_events) = handle_line(parser, line)
+      feed_loop(parser, rest, list.append(events, new_events))
+    }
+    Error(Nil) -> #(SseParser(..parser, carry: buffer), events)
+  }
+}
+
+// Finds the first line terminator (\n, \r\n, or lone \r) and splits the
+// buffer around it. A trailing \r with nothing after it stays in the
+// carry: the next chunk may begin with \n, and splitting early would make
+// the result depend on chunk boundaries.
+fn take_line(buffer: BitArray, at: Int) -> Result(#(BitArray, BitArray), Nil) {
+  case bit_array.slice(buffer, at, 1) {
+    Ok(<<0x0A>>) ->
+      Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 1)))
+    Ok(<<0x0D>>) ->
+      case bit_array.slice(buffer, at + 1, 1) {
+        Ok(<<0x0A>>) ->
+          Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 2)))
+        Ok(_) ->
+          Ok(#(slice_or_empty(buffer, 0, at), drop_bytes(buffer, at + 1)))
+        // A lone trailing \r: wait for the next chunk.
+        Error(Nil) -> Error(Nil)
+      }
+    Ok(_) -> take_line(buffer, at + 1)
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+fn slice_or_empty(buffer: BitArray, at: Int, take: Int) -> BitArray {
+  case bit_array.slice(buffer, at, take) {
+    Ok(bytes) -> bytes
+    Error(Nil) -> <<>>
+  }
+}
+
+fn drop_bytes(buffer: BitArray, count: Int) -> BitArray {
+  slice_or_empty(buffer, count, bit_array.byte_size(buffer) - count)
+}
+
+// Processes one complete line per the SSE grammar: blank dispatches,
+// `:` comments are dropped, `event:`/`data:` accumulate, and other
+// fields (`id`, `retry`, unknown names) are ignored.
+fn handle_line(
+  parser: SseParser,
+  line: BitArray,
+) -> #(SseParser, List(SseEvent)) {
+  case bit_array.to_string(line) {
+    Error(Nil) -> #(parser, [
+      SseMalformed(reason: "sse line was not valid utf-8"),
+    ])
+    Ok("") -> dispatch(parser)
+    Ok(":" <> _comment) -> #(parser, [])
+    Ok("data: " <> value) | Ok("data:" <> value) -> #(
+      SseParser(..parser, data_lines: [value, ..parser.data_lines]),
+      [],
+    )
+    Ok("data") -> #(
+      SseParser(..parser, data_lines: ["", ..parser.data_lines]),
+      [],
+    )
+    Ok("event: " <> value) | Ok("event:" <> value) -> #(
+      SseParser(..parser, event_name: Some(value)),
+      [],
+    )
+    Ok("event") -> #(SseParser(..parser, event_name: Some("")), [])
+    Ok(_other_field) -> #(parser, [])
+  }
+}
+
+// Blank line: dispatch the buffered event. Per the SSE specification an
+// event with an empty data buffer is discarded (its event name resets).
+fn dispatch(parser: SseParser) -> #(SseParser, List(SseEvent)) {
+  let reset = SseParser(..parser, event_name: None, data_lines: [])
+  case parser.data_lines {
+    [] -> #(reset, [])
+    lines -> #(reset, [
+      SseMessage(
+        event: parser.event_name,
+        data: string.join(list.reverse(lines), "\n"),
+      ),
+    ])
+  }
+}
+
+// --- the response machine and process pump ------------------------------
+
+/// An adapter's fold over the raw HTTP response: pure state transitions
+/// producing `StreamEvent`s. `run` drives one of these on a process.
+///
+/// Constructor invariants: callbacks are pure; the machine emits at most
+/// one terminal event (`Settled`/`Failed`) across a whole response —
+/// `run` enforces the at-most-once delivery regardless; `on_end` and
+/// `on_failure` return whatever events the response's end implies (for a
+/// stream that already settled, nothing).
+pub type ResponseMachine(state) {
+  ResponseMachine(
+    /// The state before any response bytes.
+    init: state,
+    /// Applied once when status and headers arrive.
+    on_status: fn(state, Int, List(#(String, String))) -> state,
+    /// Applied per body chunk.
+    on_chunk: fn(state, BitArray) -> #(state, List(StreamEvent)),
+    /// Applied when the body ends normally.
+    on_end: fn(state) -> List(StreamEvent),
+    /// Applied when the transport fails.
+    on_failure: fn(state, String) -> List(StreamEvent),
+  )
+}
+
+/// A live provider stream: the subject on which `StreamEvent`s arrive.
+/// See the module documentation for the consumption contract.
+///
+/// Constructor invariants: `events` is owned by the process that called
+/// `gateway.request`, so only that process may receive from it.
+pub type StreamHandle {
+  StreamHandle(events: Subject(StreamEvent))
+}
+
+/// Receives the next stream event, `Error(Nil)` on timeout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stream.next(handle, within: 30_000)
+/// // -> Ok(stream.Delta(stream.TextDelta(0, "Hello")))
+/// ```
+///
+pub fn next(
+  handle: StreamHandle,
+  within timeout: Int,
+) -> Result(StreamEvent, Nil) {
+  process.receive(handle.events, within: timeout)
+}
+
+/// Collects deltas until the terminal event, returning both. `Error(Nil)`
+/// if any single wait exceeds the timeout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stream.await_terminal(handle, within: 30_000)
+/// // -> Ok(#([...deltas], stream.Settled(message, usage)))
+/// ```
+///
+pub fn await_terminal(
+  handle: StreamHandle,
+  within timeout: Int,
+) -> Result(#(List(Delta), StreamEvent), Nil) {
+  await_terminal_loop(handle, timeout, [])
+}
+
+fn await_terminal_loop(
+  handle: StreamHandle,
+  timeout: Int,
+  deltas: List(Delta),
+) -> Result(#(List(Delta), StreamEvent), Nil) {
+  case next(handle, within: timeout) {
+    Ok(Delta(delta:)) -> await_terminal_loop(handle, timeout, [delta, ..deltas])
+    Ok(terminal) -> Ok(#(list.reverse(deltas), terminal))
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+/// Runs one request attempt to completion on the calling process: spawns
+/// the transport on its own process, folds the machine over the response
+/// events, delivers each `Delta` through `deliver` as it appears, and
+/// returns the attempt's single terminal event. Events after the first
+/// terminal are dropped, so a machine bug can never double-settle.
+///
+/// The gateway calls this from its pump process; tests can call it
+/// directly with a fixture transport.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let terminal =
+/// //   stream.run(transport, request, machine, deliver, within: 300_000)
+/// ```
+///
+pub fn run(
+  transport: Transport,
+  request: HttpRequest,
+  machine: ResponseMachine(state),
+  deliver: fn(Delta) -> Nil,
+  within timeout: Int,
+) -> StreamEvent {
+  let http_events = process.new_subject()
+  let _transport_pid =
+    process.spawn_unlinked(fn() {
+      let http.Transport(send_streaming:) = transport
+      send_streaming(request, http_events)
+    })
+  run_loop(http_events, machine, machine.init, deliver, timeout)
+}
+
+fn run_loop(
+  http_events: Subject(http.HttpEvent),
+  machine: ResponseMachine(state),
+  state: state,
+  deliver: fn(Delta) -> Nil,
+  timeout: Int,
+) -> StreamEvent {
+  case process.receive(http_events, within: timeout) {
+    Error(Nil) ->
+      Failed(TransportFailed(reason: "timed out waiting for the provider"))
+    Ok(http.ResponseStatus(status:, headers:)) ->
+      run_loop(
+        http_events,
+        machine,
+        machine.on_status(state, status, headers),
+        deliver,
+        timeout,
+      )
+    Ok(http.ResponseChunk(chunk:)) -> {
+      let #(state, events) = machine.on_chunk(state, chunk)
+      case forward(events, deliver) {
+        Some(terminal) -> terminal
+        None -> run_loop(http_events, machine, state, deliver, timeout)
+      }
+    }
+    Ok(http.ResponseEnd) ->
+      case forward(machine.on_end(state), deliver) {
+        Some(terminal) -> terminal
+        None ->
+          Failed(StreamDisconnected(context: "response ended without settling"))
+      }
+    Ok(http.RequestFailed(reason:)) ->
+      case forward(machine.on_failure(state, reason), deliver) {
+        Some(terminal) -> terminal
+        None -> Failed(TransportFailed(reason:))
+      }
+  }
+}
+
+// Delivers deltas in order and returns the first terminal event, dropping
+// anything a buggy machine might emit after it.
+fn forward(
+  events: List(StreamEvent),
+  deliver: fn(Delta) -> Nil,
+) -> Option(StreamEvent) {
+  case events {
+    [] -> None
+    [Delta(delta:), ..rest] -> {
+      deliver(delta)
+      forward(rest, deliver)
+    }
+    [terminal, ..] -> Some(terminal)
+  }
+}
