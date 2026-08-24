@@ -1,5 +1,7 @@
 //// The session-facing operations: open/recover, prompt, steer,
-//// follow-up, abort, close.
+//// follow-up, abort, close — plus the multi-strand surface (create a
+//// subagent strand, send between strands, await another strand's
+//// result), the `fact.*` blackboard, and durable escalation decisions.
 ////
 //// Every admission here is a durable commit through the StorageWriter
 //// plus an ephemeral doorbell (design §4.6): the payload travels in the
@@ -8,20 +10,32 @@
 //// doorbell-drop tests) rely on the strand's periodic checkpoint poll
 //// finding the work anyway; a lost nudge costs latency, never data.
 ////
+//// A `Runtime` addresses one strand at a time (`Runtime.strand`);
+//// `on_strand` rebinds the same tree to a sibling strand, so every
+//// operation here works for subagents too. Subagents are strands
+//// (design §4.2): same tree, own leaf register, own durable
+//// configuration; `create_strand` seeds those registers (fork-in-place
+//// at a chosen entry), starts the driver under the existing
+//// StrandSupervisor, and accepts a task-brief run. Inter-strand
+//// messaging is the queue machinery: `send_to_strand` durably enqueues a
+//// steer onto the target's open run — or accepts a fresh run when the
+//// target is idle — then rings its doorbell.
+////
 //// Abort is routed through the strand driver so the durable
 //// `cancel_requested` marker serializes with the strand's own
 //// transitions and live effects are cancelled by their owner; it is
-//// idempotent and fire-and-forget (poll `await_idle` for the aborted
+//// idempotent and fire-and-forget (poll `await_result` for the aborted
 //// terminal result).
 ////
 //// Close is a controlled crash (pi §4.7): kill the tree — commits are
 //// atomic in the storage actor, so durable state stops at a commit
 //// boundary — then close the storage handle, releasing the SQLite
 //// writer lease. No cancellation or terminal state is written; reopening
-//// the session recovers the open operation.
+//// the session recovers every open operation on every strand (the
+//// strand booter reads the strand set from the `strand.*` registers).
 
 import core/clock
-import core/ids.{type EntryId, type OpId}
+import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
@@ -32,7 +46,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
-import machine/acceptance.{type RejectReason, AcceptCtx, AcceptRun}
+import gleam/string
+import machine/acceptance.{type RejectReason, AcceptCtx, AcceptRun, StrandBusy}
 import machine/codec
 import machine/operation.{
   type LastResult, type NormalizedRetryPolicy, type Operation,
@@ -42,6 +57,7 @@ import machine/operation.{
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
 import runtime/effects.{type Effects}
+import runtime/escalation.{type Escalation}
 import runtime/strand_runtime
 import runtime/supervisor.{type SessionTree, type Tolerance, Tolerance}
 import runtime/writer
@@ -49,7 +65,8 @@ import session/session.{type Session}
 import storage/storage
 
 /// A live session runtime: the supervision tree plus what the operations
-/// need.
+/// need. `strand` is the strand this handle currently addresses
+/// (`on_strand` rebinds it).
 pub type Runtime {
   Runtime(
     tree: SessionTree,
@@ -62,11 +79,11 @@ pub type Runtime {
 
 /// Options for `open`.
 ///
-/// Constructor invariants: `configuration` seeds the strand on first
-/// open; `settings` is the run-settings snapshot captured into accepted
-/// runs; `after_commit` and `subscribers` instrument the writer (see
-/// `runtime/writer`); `poll_interval_ms` is the strand's checkpoint-poll
-/// period.
+/// Constructor invariants: `configuration` seeds the primary strand on
+/// first open; `settings` is the run-settings snapshot captured into
+/// accepted runs; `after_commit` and `subscribers` instrument the writer
+/// (see `runtime/writer`); `poll_interval_ms` is every strand's
+/// checkpoint-poll period.
 pub type Options {
   Options(
     strand: String,
@@ -126,11 +143,21 @@ pub type ApiError {
   CommitFailed(error: CommitError)
   /// The admission kept losing its seq race against the strand.
   RaceLost
+  /// A fact write named a key under a reserved prefix.
+  ReservedFactKey(key: String)
+  /// An escalation with this id is already recorded.
+  EscalationExists(id: String)
+  /// No escalation with this id is recorded.
+  EscalationNotFound(id: String)
+  /// The escalation's current status does not permit the transition.
+  EscalationWrongStatus(id: String, status: escalation.Status)
 }
 
-/// Opens (or recovers) a session runtime: seeds the strand's registers if
-/// this is a fresh session, then boots the supervision tree. A restored
-/// open operation resumes driving immediately — open and recover are the
+/// Opens (or recovers) a session runtime: seeds the primary strand's
+/// registers if this is a fresh session, then boots the supervision
+/// tree, whose strand booter starts a driver for *every* strand the
+/// store knows — main and subagents alike. Restored open operations
+/// resume driving immediately on all of them — open and recover are the
 /// same call.
 ///
 /// ## Examples
@@ -180,6 +207,20 @@ pub fn open(
   }
 }
 
+/// The same runtime handle addressing a sibling strand: every operation
+/// on the returned handle (prompt, steer, abort, await_result, ...)
+/// targets `strand`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.steer(api.on_strand(runtime, "sub:1"), message)
+/// ```
+///
+pub fn on_strand(runtime: Runtime, strand: String) -> Runtime {
+  Runtime(..runtime, strand:)
+}
+
 /// Accepts a prompt and rings the doorbell: the ordinary way to start a
 /// run.
 ///
@@ -218,7 +259,7 @@ pub fn accept_quietly(
     use #(strand_state_seq, strand_state) <- result.try(read_strand_state(
       runtime,
     ))
-    use leaf <- result.try(read_leaf(runtime))
+    use #(leaf_seq, leaf) <- result.try(read_leaf(runtime))
     use pending <- result.try(read_pending(runtime))
     let #(now, generator) = mint_context(runtime)
     let ctx =
@@ -229,6 +270,7 @@ pub fn accept_quietly(
         strand_state:,
         strand_state_seq:,
         leaf:,
+        leaf_seq:,
         settings: runtime.settings,
         pending:,
       )
@@ -334,7 +376,7 @@ fn enqueue(
   })
 }
 
-/// Rings the strand's doorbell.
+/// Rings the addressed strand's doorbell.
 ///
 /// ## Examples
 ///
@@ -343,12 +385,37 @@ fn enqueue(
 /// ```
 ///
 pub fn nudge(runtime: Runtime) -> Nil {
-  strand_runtime.nudge(process.named_subject(runtime.tree.strand))
+  case live_strand_subject(runtime) {
+    Ok(subject) -> strand_runtime.nudge(subject)
+    // No driver registered (mid-restart): loss is harmless — the
+    // checkpoint poll finds the durable work.
+    Error(Nil) -> Nil
+  }
 }
 
-/// Requests durable cancellation of the open operation and cancels live
-/// effects. Fire-and-forget and idempotent; poll `await_result` for the
-/// aborted terminal outcome.
+// The addressed strand's driver subject, only while a live process is
+// registered under its name: sending into an unregistered name would
+// crash the sender, and every message the api rings is loss-tolerant.
+fn live_strand_subject(
+  runtime: Runtime,
+) -> Result(Subject(strand_runtime.Message), Nil) {
+  case supervisor.strand_subject(runtime.tree, runtime.strand) {
+    Error(Nil) -> Error(Nil)
+    Ok(subject) ->
+      case process.subject_owner(subject) {
+        Ok(pid) ->
+          case process.is_alive(pid) {
+            True -> Ok(subject)
+            False -> Error(Nil)
+          }
+        Error(Nil) -> Error(Nil)
+      }
+  }
+}
+
+/// Requests durable cancellation of the addressed strand's open
+/// operation and cancels its live effects. Fire-and-forget and
+/// idempotent; poll `await_result` for the aborted terminal outcome.
 ///
 /// ## Examples
 ///
@@ -357,13 +424,19 @@ pub fn nudge(runtime: Runtime) -> Nil {
 /// ```
 ///
 pub fn abort(runtime: Runtime) -> Nil {
-  strand_runtime.request_abort(process.named_subject(runtime.tree.strand))
+  case live_strand_subject(runtime) {
+    Ok(subject) -> strand_runtime.request_abort(subject)
+    // No live driver (mid-restart): nothing can serialize the marker
+    // right now; as with a pre-commit crash, the caller re-requests
+    // (pi §4.6).
+    Error(Nil) -> Nil
+  }
 }
 
 /// Closes the runtime: kills the tree (a controlled crash — durable
 /// state stops at a commit boundary) and closes the storage handle,
 /// releasing the writer lease. The session can be reopened from its file
-/// and will recover any open operation.
+/// and will recover every strand's open operation.
 ///
 /// ## Examples
 ///
@@ -388,8 +461,8 @@ fn wait_for_death(pid: process.Pid, attempts: Int) -> Nil {
 }
 
 /// Polls (reading the session store directly, so it survives tree
-/// restarts) until the named operation's terminal result is recorded,
-/// returning it. `Error(Nil)` on timeout.
+/// restarts) until the named operation's terminal result is recorded on
+/// the addressed strand, returning it. `Error(Nil)` on timeout.
 ///
 /// ## Examples
 ///
@@ -431,6 +504,509 @@ fn result_operation(last: LastResult) -> OpId {
     operation.RunLastResult(operation:, ..) -> operation
     operation.CompactionLastResult(operation:, ..) -> operation
     operation.NavigationLastResult(operation:, ..) -> operation
+  }
+}
+
+// --- multi-strand operations ----------------------------------------------
+
+/// Why `create_strand` failed.
+pub type CreateStrandError {
+  /// A strand with this name already has registers in the store.
+  StrandExists(name: String)
+  /// The fork-point entry does not exist in the tree.
+  UnknownForkPoint(entry: EntryId)
+  /// Seeding the strand's registers failed.
+  SeedFailed(reason: String)
+  /// The strand driver could not be started.
+  StartFailed(reason: String)
+  /// The strand exists and its driver runs, but the task brief was not
+  /// accepted.
+  BriefRejected(error: ApiError)
+}
+
+/// Creates a named subagent strand: seeds its three registers durably —
+/// its own model identity in `strand.config`, its own leaf register
+/// seeded `at` the given entry (fork-in-place: same tree, own cursor;
+/// `None` starts at the root) — starts its driver under the existing
+/// StrandSupervisor, accepts `brief` as the strand's first prompt run,
+/// and rings its doorbell. Returns the brief run's operation id, which
+/// `await_strand_result` can wait on.
+///
+/// Because the registers are seeded before anything runs, recovery
+/// restores the strand on every subsequent (re)boot of the tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.create_strand(runtime, named: "sub:1", configuration: sub_config,
+/// //   at: Some(leaf), brief: [task_brief_message])
+/// ```
+///
+pub fn create_strand(
+  runtime: Runtime,
+  named name: String,
+  configuration configuration: StrandConfiguration,
+  at fork_point: Option(EntryId),
+  brief brief: List(AgentMessage),
+) -> Result(OpId, CreateStrandError) {
+  use Nil <- result.try(validate_fork_point(runtime, fork_point))
+  use Nil <- result.try(seed_strand(runtime, name, configuration, fork_point))
+  use Nil <- result.try(
+    supervisor.start_strand(runtime.tree, name)
+    |> result.map_error(fn(error) {
+      StartFailed(reason: describe_start_error(error))
+    }),
+  )
+  let subagent = on_strand(runtime, name)
+  case accept_quietly(subagent, brief) {
+    Error(error) -> Error(BriefRejected(error:))
+    Ok(operation) -> {
+      nudge(subagent)
+      Ok(operation)
+    }
+  }
+}
+
+fn validate_fork_point(
+  runtime: Runtime,
+  fork_point: Option(EntryId),
+) -> Result(Nil, CreateStrandError) {
+  case fork_point {
+    None -> Ok(Nil)
+    Some(entry) ->
+      case writer.get_entries(writer_subject(runtime), [entry]) {
+        Error(error) -> Error(SeedFailed(reason: describe_storage(error)))
+        Ok(found) ->
+          case dict.has_key(found, entry) {
+            True -> Ok(Nil)
+            False -> Error(UnknownForkPoint(entry:))
+          }
+      }
+  }
+}
+
+fn seed_strand(
+  runtime: Runtime,
+  name: String,
+  configuration: StrandConfiguration,
+  fork_point: Option(EntryId),
+) -> Result(Nil, CreateStrandError) {
+  let seed =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.StrandConfig,
+          key: name,
+          value: register.value(codec.encode_configuration(configuration)),
+        ),
+        tx.SetRegister(
+          ns: register.StrandLeaf,
+          key: name,
+          value: register.leaf_value(fork_point),
+        ),
+        tx.SetRegister(
+          ns: register.StrandState,
+          key: name,
+          value: register.value(
+            codec.encode_strand_state(
+              strand.StrandState(current_operation: None, pending_next_run: []),
+            ),
+          ),
+        ),
+      ],
+      expected: [
+        tx.Expect(ns: register.StrandConfig, key: name, seq: None),
+        tx.Expect(ns: register.StrandLeaf, key: name, seq: None),
+        tx.Expect(ns: register.StrandState, key: name, seq: None),
+      ],
+    )
+  case writer.commit(writer_subject(runtime), seed) {
+    Ok(_) -> Ok(Nil)
+    Error(tx.StaleExpectation(..)) -> Error(StrandExists(name:))
+    Error(tx.Corruption(report:)) -> Error(SeedFailed(reason: report.boundary))
+    Error(tx.Faulted(reason:)) -> Error(SeedFailed(reason:))
+  }
+}
+
+/// How a `send_to_strand` payload landed on the target.
+pub type Delivery {
+  /// The target had an open run: the message is a durable steer item on
+  /// its queue.
+  Steered(entry: EntryId)
+  /// The target was idle: the message was accepted as a fresh run.
+  Started(operation: OpId)
+}
+
+/// Sends a message to another strand, per the inter-agent doctrine
+/// (design §4.6): the payload travels as a durable queue admission on
+/// the target — a steer onto its open run, or a fresh accepted run when
+/// it is idle — and the doorbell is only an ephemeral nudge whose loss
+/// costs latency, never data. Peer-to-peer conversation is mutual
+/// `send_to_strand`; request/reply is `create_strand` + the child's
+/// terminal result via `await_strand_result`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_to_strand(runtime, to: "main", message: findings)
+/// ```
+///
+pub fn send_to_strand(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+) -> Result(Delivery, ApiError) {
+  send_attempts(on_strand(runtime, target), message, 4)
+}
+
+fn send_attempts(
+  target: Runtime,
+  message: AgentMessage,
+  attempts: Int,
+) -> Result(Delivery, ApiError) {
+  case attempts <= 0 {
+    True -> Error(RaceLost)
+    False ->
+      case steer_quietly(target, message) {
+        Ok(entry) -> {
+          nudge(target)
+          Ok(Steered(entry:))
+        }
+        Error(QueueRejected(reason: queue.NoActiveRun)) ->
+          case accept_quietly(target, [message]) {
+            Ok(operation) -> {
+              nudge(target)
+              Ok(Started(operation:))
+            }
+            // A run opened between the steer refusal and the accept:
+            // try the steer again.
+            Error(AcceptRejected(reason: StrandBusy)) ->
+              send_attempts(target, message, attempts - 1)
+            Error(error) -> Error(error)
+          }
+        Error(error) -> Error(error)
+      }
+  }
+}
+
+/// Awaits another strand's terminal result for `operation` — the parent
+/// half of the request/reply pattern (design §4.6): the child's terminal
+/// `strand.last_result` is durable, so this survives tree restarts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.await_strand_result(runtime, "sub:1", op, within_ms: 5000)
+/// ```
+///
+pub fn await_strand_result(
+  runtime: Runtime,
+  strand strand_name: String,
+  operation operation: OpId,
+  within_ms timeout_ms: Int,
+) -> Result(LastResult, Nil) {
+  await_result(on_strand(runtime, strand_name), operation, timeout_ms)
+}
+
+/// Every strand the store knows, sorted by name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.strands(runtime) == Ok(["main", "sub:1", "sub:2"])
+/// ```
+///
+pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
+  case
+    writer.list_registers(writer_subject(runtime), register.StrandConfig, None)
+  {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(cells) ->
+      cells
+      |> list.map(fn(pair) { pair.0 })
+      |> list.sort(string.compare)
+      |> Ok
+  }
+}
+
+// --- the blackboard (design §4.6) ------------------------------------------
+
+/// Writes one `fact.custom` cell — the shared, transactional multi-agent
+/// blackboard. Keys under the reserved `escalation/` prefix are refused.
+/// Registers are durable state, not a communication medium: pair a fact
+/// write with a `send_to_strand` (or rely on the reader's checkpoint)
+/// when the reader must act on it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_fact(runtime, "review/findings", json.String("auth.gleam:42"))
+/// ```
+///
+pub fn put_fact(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+) -> Result(Nil, ApiError) {
+  case string.starts_with(key, escalation.key_prefix) {
+    True -> Error(ReservedFactKey(key:))
+    False -> {
+      let plan_tx =
+        tx.Tx(
+          writes: [
+            tx.SetRegister(
+              ns: register.FactCustom,
+              key:,
+              value: register.value(value),
+            ),
+          ],
+          expected: [],
+        )
+      case writer.commit(writer_subject(runtime), plan_tx) {
+        Ok(_) -> Ok(Nil)
+        Error(error) -> Error(CommitFailed(error:))
+      }
+    }
+  }
+}
+
+/// Reads one `fact.custom` cell.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.fact(runtime, "review/findings")
+/// ```
+///
+pub fn fact(
+  runtime: Runtime,
+  key: String,
+) -> Result(Option(JsonValue), ApiError) {
+  case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(None) -> Ok(None)
+    Ok(Some(storage.Register(value:, ..))) -> Ok(Some(value.payload))
+  }
+}
+
+/// Lists `fact.custom` cells under an optional key prefix, excluding the
+/// reserved escalation records.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.facts(runtime, prefix: Some("review/"))
+/// ```
+///
+pub fn facts(
+  runtime: Runtime,
+  prefix prefix: Option(String),
+) -> Result(List(#(String, JsonValue)), ApiError) {
+  case
+    writer.list_registers(writer_subject(runtime), register.FactCustom, prefix)
+  {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(cells) ->
+      cells
+      |> list.filter_map(fn(pair) {
+        let #(key, storage.Register(value:, ..)) = pair
+        case string.starts_with(key, escalation.key_prefix) {
+          True -> Error(Nil)
+          False -> Ok(#(key, value.payload))
+        }
+      })
+      |> Ok
+  }
+}
+
+// --- durable escalations (design §5.3) --------------------------------------
+
+/// Records a raised escalation durably (status pending). The denial is
+/// the broker's structured denial as JSON — reason, source, and the
+/// wanted policy diff. The record must be durable before the denial is
+/// surfaced for decision; the gateway (WP-L) drives approve/deny.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.raise_escalation(runtime, "esc-1", denial_json)
+/// ```
+///
+pub fn raise_escalation(
+  runtime: Runtime,
+  id: String,
+  denial: JsonValue,
+) -> Result(Nil, ApiError) {
+  let key = escalation.register_key(id)
+  let plan_tx =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.FactCustom,
+          key:,
+          value: register.value(
+            escalation.encode(escalation.raised(id, denial)),
+          ),
+        ),
+      ],
+      expected: [tx.Expect(ns: register.FactCustom, key:, seq: None)],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(Nil)
+    Error(tx.StaleExpectation(..)) -> Error(EscalationExists(id:))
+    Error(error) -> Error(CommitFailed(error:))
+  }
+}
+
+/// Every durable escalation record, in key order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.escalations(runtime)
+/// ```
+///
+pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
+  case
+    writer.list_registers(
+      writer_subject(runtime),
+      register.FactCustom,
+      Some(escalation.key_prefix),
+    )
+  {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(cells) ->
+      cells
+      |> list.try_map(fn(pair) {
+        let #(_key, storage.Register(value:, ..)) = pair
+        case escalation.decode(value.payload) {
+          Ok(record) -> Ok(record)
+          Error(report) -> Error(ReadFailed(reason: report.boundary))
+        }
+      })
+  }
+}
+
+/// Approves a pending escalation with exactly these grants (a subset of
+/// the denial's wanted diff — validated by the broker layer that raised
+/// it). The next tool clearance on any strand consumes the approval and
+/// carries the grants into the re-execution (`ClearanceQuery.grants` →
+/// tool `Ctx.grants`) — one re-execution per approval, by CAS.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.approve_escalation(runtime, "esc-1", grants)
+/// ```
+///
+pub fn approve_escalation(
+  runtime: Runtime,
+  id: String,
+  grants: List(JsonValue),
+) -> Result(Nil, ApiError) {
+  decide_escalation(runtime, id, escalation.Approved, fn(record) {
+    escalation.approve(record, grants)
+  })
+}
+
+/// Rejects a pending escalation. No re-execution will run under its
+/// wanted grants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.deny_escalation(runtime, "esc-1")
+/// ```
+///
+pub fn deny_escalation(runtime: Runtime, id: String) -> Result(Nil, ApiError) {
+  decide_escalation(runtime, id, escalation.Rejected, escalation.reject)
+}
+
+/// Explicitly consumes an approved escalation, returning its grants —
+/// for callers that re-execute outside the strand's own clearance path.
+/// The ordinary path is implicit: the driver consumes approvals at the
+/// first passing tool clearance.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.consume_escalation(runtime, "esc-1")
+/// ```
+///
+pub fn consume_escalation(
+  runtime: Runtime,
+  id: String,
+) -> Result(List(JsonValue), ApiError) {
+  use record <- result.try(decide_escalation_value(
+    runtime,
+    id,
+    escalation.Consumed,
+    escalation.consume,
+  ))
+  Ok(record.grants)
+}
+
+fn decide_escalation(
+  runtime: Runtime,
+  id: String,
+  to: escalation.Status,
+  change: fn(Escalation) -> Escalation,
+) -> Result(Nil, ApiError) {
+  decide_escalation_value(runtime, id, to, change)
+  |> result.map(fn(_record) { Nil })
+}
+
+fn decide_escalation_value(
+  runtime: Runtime,
+  id: String,
+  to: escalation.Status,
+  change: fn(Escalation) -> Escalation,
+) -> Result(Escalation, ApiError) {
+  retry_admission(4, fn() {
+    use <- attempt
+    use #(seq, record) <- result.try(read_escalation(runtime, id))
+    case escalation.may_become(record.status, to) {
+      False ->
+        Ok(Done(Error(EscalationWrongStatus(id:, status: record.status))))
+      True -> {
+        let key = escalation.register_key(id)
+        let next = change(record)
+        let plan_tx =
+          tx.Tx(
+            writes: [
+              tx.SetRegister(
+                ns: register.FactCustom,
+                key:,
+                value: register.value(escalation.encode(next)),
+              ),
+            ],
+            expected: [
+              tx.Expect(ns: register.FactCustom, key:, seq: Some(seq)),
+            ],
+          )
+        case writer.commit(writer_subject(runtime), plan_tx) {
+          Ok(_) -> Ok(Done(Ok(next)))
+          Error(tx.StaleExpectation(..)) -> Ok(Retry)
+          Error(error) -> Ok(Done(Error(CommitFailed(error:))))
+        }
+      }
+    }
+  })
+}
+
+fn read_escalation(
+  runtime: Runtime,
+  id: String,
+) -> Result(#(Seq, Escalation), ApiError) {
+  let key = escalation.register_key(id)
+  case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(None) -> Error(EscalationNotFound(id:))
+    Ok(Some(storage.Register(value:, seq:))) ->
+      case escalation.decode(value.payload) {
+        Ok(record) -> Ok(#(seq, record))
+        Error(report) -> Error(ReadFailed(reason: report.boundary))
+      }
   }
 }
 
@@ -514,14 +1090,19 @@ fn require(
   }
 }
 
-fn read_leaf(runtime: Runtime) -> Result(Option(EntryId), ApiError) {
+// The strand's leaf with the seq it was read at: `#(None, None)` when
+// the register does not exist yet (an unseeded strand cannot accept, but
+// the acceptance CAS then expects absence, which is still correct).
+fn read_leaf(
+  runtime: Runtime,
+) -> Result(#(Option(Seq), Option(EntryId)), ApiError) {
   let w = writer_subject(runtime)
   case writer.get_register(w, register.StrandLeaf, runtime.strand) {
     Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(None) -> Ok(None)
-    Ok(Some(storage.Register(value:, ..))) ->
+    Ok(None) -> Ok(#(None, None))
+    Ok(Some(storage.Register(value:, seq:))) ->
       case register.read_leaf(value) {
-        Ok(leaf) -> Ok(leaf)
+        Ok(leaf) -> Ok(#(Some(seq), leaf))
         Error(report) -> Error(ReadFailed(reason: report.boundary))
       }
   }

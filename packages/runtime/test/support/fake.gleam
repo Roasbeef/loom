@@ -120,6 +120,9 @@ pub fn effects(
           _ -> False
         }
       },
+      // Scenario tools overlap freely unless a test injects its own
+      // surface with exclusive modes.
+      execution_mode: fn(_name) { effects.ConcurrentExecution },
     ),
     hooks: effects.default_hooks(),
   )

@@ -116,6 +116,13 @@ pub type ToolOutcome {
 
 /// Clearance for one planned call: the pre-effect half of the broker's
 /// `clear_call`, collapsed to what the machine needs.
+///
+/// Constructor invariants: `grants` are the payloads of the session's
+/// approved, unconsumed escalations (opaque grant JSON in the broker's
+/// escalation vocabulary — see `runtime/escalation`); the driver loads
+/// them from the durable store at clearance time and marks them consumed
+/// once the clearance passes, so an approval clears exactly one
+/// re-execution. Production wiring maps them onto the tool `Ctx.grants`.
 pub type ClearanceQuery {
   ClearanceQuery(
     operation: OpId,
@@ -123,6 +130,7 @@ pub type ClearanceQuery {
     source_index: Int,
     call: ToolCall,
     configuration: StrandConfiguration,
+    grants: List(JsonValue),
   )
 }
 
@@ -135,8 +143,20 @@ pub type Clearance {
   ClearanceRefused(reason: String)
 }
 
-/// The tool surface: clearance, execution, and the replay-still-safe
-/// check orphan recovery consults.
+/// A tool's batch-scheduling constraint, mirroring the tool registry's
+/// `execution_mode` without a `tools` dependency.
+pub type ExecutionMode {
+  /// Must run alone: under `Parallel` batch settings the driver defers
+  /// this tool's clearance until no other tool effect is live, and no
+  /// other tool starts while it runs.
+  ExclusiveExecution
+  /// May overlap other `ConcurrentExecution` calls.
+  ConcurrentExecution
+}
+
+/// The tool surface: clearance, execution, the replay-still-safe check
+/// orphan recovery consults, and the per-tool scheduling constraint
+/// parallel batches honor.
 pub type ToolSurface {
   ToolSurface(
     /// Clears (or refuses) one planned call.
@@ -148,6 +168,9 @@ pub type ToolSurface {
     /// safe replay (pi §4.5: both stored and current declarations must
     /// say safe for a re-execution).
     replay_still_safe: fn(String) -> Bool,
+    /// The named tool's current scheduling constraint. Unknown names
+    /// should report `ExclusiveExecution` — the safe direction.
+    execution_mode: fn(String) -> ExecutionMode,
   )
 }
 
@@ -266,6 +289,7 @@ pub fn default_hooks() -> Hooks {
         stream_options: query.stream_options,
         intended_output_limit: 1_000_000,
         context_window: 1_000_000,
+        api: "unknown",
       )
     },
     run_end: fn(_) { None },

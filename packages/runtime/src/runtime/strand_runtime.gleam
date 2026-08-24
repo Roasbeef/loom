@@ -57,6 +57,7 @@ import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
 import runtime/effects.{type Effects}
+import runtime/escalation
 import runtime/writer
 import session/session
 import storage/storage
@@ -317,39 +318,80 @@ fn provider_done(
   terminal: stream.StreamEvent,
 ) -> Outcome {
   case take_live(state, token) {
-    // Not live any more: a cancelled or superseded effect. Drop it.
+    // Not live any more: a superseded effect. Drop it.
     None -> Continue(state)
-    Some(#(live, state)) -> {
-      let #(now, state) = read_clock(state)
-      let observed = case token {
-        AssistantEffect(..) ->
-          settled_observation(live, terminal, now, fn(settled) {
-            planner.ObservedAssistantSettled(
-              settled:,
-              overflow_preparation: None,
-            )
-          })
-        PollEffect(..) ->
-          settled_observation(live, terminal, now, fn(settled) {
-            planner.ObservedDeferredSettled(settled:)
-          })
-        SummaryEffect(..) ->
-          case terminal {
-            stream.Settled(message: _, usage:) ->
-              Ok(planner.ObservedSummaryReturned(usage:))
-            stream.Failed(error: _) ->
-              Ok(planner.ObservedSummaryReturned(usage: effects.zero_usage()))
-            stream.Delta(..) ->
-              Error("provider stream delivered a delta as its terminal event")
-          }
-        ToolEffect(..) ->
-          Error("a tool effect delivered a provider terminal event")
-      }
-      case observed {
-        Ok(observation) -> drive(push_observation(state, observation))
+    Some(#(live, state)) ->
+      // A live entry whose operation is no longer the strand's current
+      // one belongs to an operation that reached its terminal
+      // transaction without needing this outcome (a cancelled
+      // structural or deferred-suspend finish). Feeding it forward
+      // would hand the *next* operation a mismatched observation.
+      case current_operation_owns(state, token) {
         Error(reason) -> Halt(reason)
+        Ok(False) -> Continue(state)
+        Ok(True) -> {
+          let #(now, state) = read_clock(state)
+          let observed = case token {
+            AssistantEffect(..) ->
+              settled_observation(live, terminal, now, fn(settled) {
+                planner.ObservedAssistantSettled(
+                  settled:,
+                  overflow_preparation: None,
+                )
+              })
+            PollEffect(..) ->
+              settled_observation(live, terminal, now, fn(settled) {
+                planner.ObservedDeferredSettled(settled:)
+              })
+            SummaryEffect(..) ->
+              case terminal {
+                stream.Settled(message: _, usage:) ->
+                  Ok(planner.ObservedSummaryReturned(usage:))
+                stream.Failed(error: _) ->
+                  Ok(
+                    planner.ObservedSummaryReturned(usage: effects.zero_usage()),
+                  )
+                stream.Delta(..) ->
+                  Error(
+                    "provider stream delivered a delta as its terminal event",
+                  )
+              }
+            ToolEffect(..) ->
+              Error("a tool effect delivered a provider terminal event")
+          }
+          case observed {
+            Ok(observation) -> drive(push_observation(state, observation))
+            Error(reason) -> Halt(reason)
+          }
+        }
       }
-    }
+  }
+}
+
+// Whether the strand's durable current operation is the one the token's
+// effect was dispatched for.
+fn current_operation_owns(
+  state: State,
+  token: EffectToken,
+) -> Result(Bool, String) {
+  let operation = case token {
+    AssistantEffect(operation:, ..)
+    | ToolEffect(operation:, ..)
+    | PollEffect(operation:, ..)
+    | SummaryEffect(operation:, ..) -> operation
+  }
+  case
+    read_decoded(
+      state,
+      register.StrandState,
+      state.strand,
+      codec.decode_strand_state,
+    )
+  {
+    Error(reason) -> Error(reason)
+    Ok(None) -> Ok(False)
+    Ok(Some(#(_seq, strand_state))) ->
+      Ok(strand_state.current_operation == Some(operation))
   }
 }
 
@@ -446,25 +488,53 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
 
 fn abort(state: State) -> Outcome {
   case abort_commit(state, 8) {
-    Error(reason) -> Halt(reason)
-    Ok(state) -> {
-      // Cancel live effects after the durable marker (pi §4.6 order):
-      // their process-local continuations die, so reconciliation treats
-      // them as orphans and settles synthetically under the reserved ids.
-      let state = cancel_live_effects(state)
+    AbortFailed(reason) -> Halt(reason)
+    // ORCH-L5: exhausting the stale-retry ladder must not drop the abort
+    // (the request is fire-and-forget, so nobody would learn it was
+    // lost) and must not halt the strand (a restart disrupts the running
+    // operation and spends supervisor tolerance for a transient race).
+    // The marker is not durable yet, so re-deliver the request to
+    // ourselves after a pacing delay and keep running: request_abort is
+    // idempotent, every retry re-reads the durable state, and the loop
+    // converges as soon as the concurrent committers quiet down.
+    AbortRaceLost -> {
+      let self = state.self
+      state.effects.timers.after(state.poll_interval_ms, fn() {
+        wake(self, RequestAbort)
+      })
+      Continue(state)
+    }
+    AbortDurable(state) -> {
+      // Interrupt live effects after the durable marker (pi §4.6 order),
+      // but keep them registered: an effect that already delivered a
+      // real settlement — still queued in this mailbox — settles under
+      // its reserved ids as aborted *retaining its reported usage*
+      // (ORCH-M3), while one that dies unreported settles through the
+      // monitor as a synthetic zero-usage abort.
+      let state = interrupt_live_effects(state)
       drive(state)
     }
   }
 }
 
+// What one abort request attempt concluded.
+type AbortAttempt {
+  /// The marker is durable (or there was nothing to abort).
+  AbortDurable(State)
+  /// The marker commit kept losing its seq race; nothing is durable yet.
+  AbortRaceLost
+  /// A read or commit failed hard.
+  AbortFailed(String)
+}
+
 // Commits the cancel_requested marker with a bounded stale-retry loop.
-fn abort_commit(state: State, attempts: Int) -> Result(State, String) {
+fn abort_commit(state: State, attempts: Int) -> AbortAttempt {
   case attempts <= 0 {
-    True -> Error("abort marker kept losing its seq race")
+    True -> AbortRaceLost
     False ->
       case load(state) {
-        Error(reason) -> Error(reason)
-        Ok(Idle) -> Ok(state)
+        Error(reason) -> AbortFailed(reason)
+        Ok(Idle) -> AbortDurable(state)
         Ok(Open(loaded)) -> {
           let #(now, state) = read_clock(state)
           case
@@ -475,15 +545,15 @@ fn abort_commit(state: State, attempts: Int) -> Result(State, String) {
               now,
             )
           {
-            queue.AbortAlreadyRequested(..) -> Ok(state)
+            queue.AbortAlreadyRequested(..) -> AbortDurable(state)
             queue.AbortPlanned(tx: plan_tx, ..) ->
               case writer.commit(state.writer, plan_tx) {
-                Ok(_) -> Ok(state)
+                Ok(_) -> AbortDurable(state)
                 Error(tx.StaleExpectation(..)) ->
                   abort_commit(state, attempts - 1)
                 Error(tx.Corruption(report:)) ->
-                  Error(corruption.describe(report))
-                Error(tx.Faulted(reason:)) -> Error(reason)
+                  AbortFailed(corruption.describe(report))
+                Error(tx.Faulted(reason:)) -> AbortFailed(reason)
               }
           }
         }
@@ -491,12 +561,16 @@ fn abort_commit(state: State, attempts: Int) -> Result(State, String) {
   }
 }
 
-fn cancel_live_effects(state: State) -> State {
-  list.each(state.live, fn(live) {
-    process.demonitor_process(monitor: live.monitor)
-    process.kill(live.pid)
-  })
-  State(..state, live: [])
+// Kills every live effect process without unregistering it. The kill and
+// any settlement the effect already sent are signals from the same pid,
+// so their order is preserved: a settlement delivered before death is
+// consumed as the real observation (with its real usage), and the
+// monitor's Down then finds the entry gone; an unreported death reaches
+// `effect_exit` and settles synthetically. Either way reconciliation
+// sees exactly one outcome per reserved id.
+fn interrupt_live_effects(state: State) -> State {
+  list.each(state.live, fn(live) { process.kill(live.pid) })
+  state
 }
 
 // --- the drive loop -------------------------------------------------------
@@ -688,27 +762,25 @@ fn resolve_key(
     planner.ToolClearanceKey(operation:, step_id:, source_index:) ->
       case source_call(loaded, source_index) {
         Error(reason) -> KeyHalt(reason)
+        // Per-tool scheduling (pi §3.8 at per-tool granularity): under
+        // parallel settings the planner asks to clear the next planned
+        // call while earlier effects run; an `Exclusive` tool must not
+        // start beside anything, and nothing starts beside a live
+        // `Exclusive` tool. Parking is safe: only a live tool effect
+        // causes it, and that effect's settlement re-plans.
         Ok(call) ->
-          case
-            state.effects.tools.clear(effects.ClearanceQuery(
-              operation:,
-              step_id:,
-              source_index:,
-              call:,
-              configuration: loaded.configuration,
-            ))
-          {
-            effects.Cleared(effective_arguments:, replay:) ->
-              KeyObservation(planner.ObservedToolCleared(
-                source_index:,
-                effective_arguments:,
-                replay:,
-              ))
-            effects.ClearanceRefused(reason:) ->
-              KeyObservation(planner.ObservedToolRefused(
-                source_index:,
-                result: synthetic_tool_error(call, reason, now),
-              ))
+          case tool_may_start(state, call.name) {
+            False -> KeyWait
+            True ->
+              clear_tool_call(
+                state,
+                loaded,
+                operation,
+                step_id,
+                source_index,
+                call,
+                now,
+              )
           }
       }
     planner.ToolKey(operation:, step_id:, source_index:, result_entry: _) ->
@@ -1244,6 +1316,147 @@ fn read_leaf(state: State) -> Result(Option(EntryId), String) {
         Error(report) -> Error(corruption.describe(report))
       }
   }
+}
+
+// Whether a call of the named tool may start now, given the live tool
+// effects: an `Exclusive` tool starts only alone, and nothing starts
+// beside a live `Exclusive` tool. With no live tool effects the answer
+// is always yes, so sequential batches are unaffected.
+fn tool_may_start(state: State, name: String) -> Bool {
+  let mode = state.effects.tools.execution_mode
+  let live_tools =
+    list.filter_map(state.live, fn(live) {
+      case live.token, live.call {
+        ToolEffect(..), Some(call) -> Ok(call.name)
+        _, _ -> Error(Nil)
+      }
+    })
+  case live_tools {
+    [] -> True
+    running ->
+      mode(name) == effects.ConcurrentExecution
+      && list.all(running, fn(other) {
+        mode(other) == effects.ConcurrentExecution
+      })
+  }
+}
+
+// Clearance for one planned call: load the approved escalation grants,
+// clear through the tool surface, and consume the approvals once the
+// clearance passes.
+fn clear_tool_call(
+  state: State,
+  loaded: Loaded,
+  operation: OpId,
+  step_id: String,
+  source_index: Int,
+  call: ToolCall,
+  now: Int,
+) -> KeyResolution {
+  case approved_escalations(state) {
+    Error(reason) -> KeyHalt(reason)
+    Ok(approved) ->
+      case
+        state.effects.tools.clear(effects.ClearanceQuery(
+          operation:,
+          step_id:,
+          source_index:,
+          call:,
+          configuration: loaded.configuration,
+          grants: list.flat_map(approved, fn(cell) {
+            let #(_seq, record) = cell
+            record.grants
+          }),
+        ))
+      {
+        effects.Cleared(effective_arguments:, replay:) ->
+          // Consume before acting (design §5.3: one re-execution per
+          // approval). A crash between this commit and the dispatch
+          // spends the grant without an execution — fail-safe, never a
+          // silent widening; the re-cleared call then runs (or refuses)
+          // under the base policy.
+          case consume_escalations(state, approved) {
+            Error(reason) -> KeyHalt(reason)
+            Ok(Nil) ->
+              KeyObservation(planner.ObservedToolCleared(
+                source_index:,
+                effective_arguments:,
+                replay:,
+              ))
+          }
+        effects.ClearanceRefused(reason:) ->
+          KeyObservation(planner.ObservedToolRefused(
+            source_index:,
+            result: synthetic_tool_error(call, reason, now),
+          ))
+      }
+  }
+}
+
+// The session's approved, unconsumed escalations with the seqs their
+// consumption commits must expect. Corrupt records fault the strand —
+// they are durable state, and partial trust is a bug class.
+fn approved_escalations(
+  state: State,
+) -> Result(List(#(Seq, escalation.Escalation)), String) {
+  case
+    writer.list_registers(
+      state.writer,
+      register.FactCustom,
+      Some(escalation.key_prefix),
+    )
+  {
+    Error(error) -> Error(describe_read_error(error))
+    Ok(cells) ->
+      cells
+      |> list.try_map(fn(pair) {
+        let #(_key, storage.Register(value:, seq:)) = pair
+        case escalation.decode(value.payload) {
+          Ok(record) -> Ok(#(seq, record))
+          Error(report) -> Error(corruption.describe(report))
+        }
+      })
+      |> result.map(
+        list.filter(_, fn(cell) {
+          let #(_seq, record) = cell
+          record.status == escalation.Approved
+        }),
+      )
+  }
+}
+
+// Marks each passed escalation consumed, CAS-guarded by the seq it was
+// read at. A stale expectation means a concurrent decision won — the
+// record is left as that decision made it; consumption never overwrites
+// blindly.
+fn consume_escalations(
+  state: State,
+  approved: List(#(Seq, escalation.Escalation)),
+) -> Result(Nil, String) {
+  list.try_each(approved, fn(cell) {
+    let #(seq, record) = cell
+    let key = escalation.register_key(record.id)
+    let consumed = escalation.consume(record)
+    let plan_tx =
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.FactCustom,
+            key:,
+            value: register.value(escalation.encode(consumed)),
+          ),
+        ],
+        expected: [
+          tx.Expect(ns: register.FactCustom, key:, seq: option.Some(seq)),
+        ],
+      )
+    case writer.commit(state.writer, plan_tx) {
+      Ok(_) -> Ok(Nil)
+      Error(tx.StaleExpectation(..)) -> Ok(Nil)
+      Error(tx.Corruption(report:)) -> Error(corruption.describe(report))
+      Error(tx.Faulted(reason:)) -> Error(reason)
+    }
+  })
 }
 
 fn read_tool_arguments(state: State, key: String) -> Result(JsonValue, String) {
