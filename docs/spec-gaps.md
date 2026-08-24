@@ -229,3 +229,36 @@ instead and are only referenced here.
    exponent twenty; overflow during a deferred poll drains as failure
    (pi's poll table has no compaction path); summary usage rows carry no
    entry id because they commit before the result entry exists.
+
+## From WP-E (`runtime`, `session`)
+
+1. **Crash semantics of the harness.** The interleave scheduler's kill
+   point is "commit durable, committer unobserved" (kill before the
+   writer's reply); an effect whose intent commit is the boundary never
+   started, so mid-flight interruption is exercised by dedicated
+   kill-the-tree tests (the crash-mid-tool reproduction and abort).
+2. **Boot seeding bypasses the writer** — strand seeding commits through
+   the session handle before the tree exists, CAS-guarded; every
+   post-boot commit flows through the writer.
+3. **Close is a controlled crash.** The otp static supervisor offers no
+   graceful external shutdown, so close kills the tree (commits are
+   atomic, so durable state stops at a commit boundary) and releases the
+   lease. Trees should root under an application supervisor when a
+   long-lived host exists.
+4. **Abort is strand-routed** so its marker commit serializes with the
+   strand's own transitions; a pre-commit crash loses the request exactly
+   as pi's no-live-task case does — callers re-request.
+5. **Effect-worker death settles in-band** (transport failure or
+   synthetic tool error) rather than faulting the strand, extending the
+   in-band failure doctrine to the runtime's own workers.
+6. **Entropy is injected, not FFI'd** — production wiring must supply an
+   entropy source whose seeds never repeat within a session lifetime, or
+   re-minted ids could collide with committed ones.
+7. **Compaction and branch summaries project as user messages** in the
+   minimal projection; the provider mapping is left open by pi §2.5, and
+   custom projectors are third-milestone work.
+8. **The chaos soak** (random kills under load for ten minutes) is
+   deferred to the conformance chaos runner; the deterministic interleave
+   harness covers the enumerable core.
+9. **Writer events are minimal** (committed ordinal, seqs, timestamp);
+   typed per-write events belong to the event bus work package.
