@@ -13,9 +13,11 @@ instead and are only referenced here.
    every mint. This *is* §0.2's "injected UUIDv7 generator"; the literal
    signature in the contract comment is looser than the implementation.
 2. **`BranchSummaryEntry.from_id` nullability.** pi allows `fromId: null`
-   (summary sourced at the root); our contract says `from_id: EntryId`.
-   Implemented per our contract, which makes a root-sourced branch summary
-   unrepresentable. Raised as `protocol-change/001`.
+   (summary sourced at the root); the original contract said
+   `from_id: EntryId`. Raised as `protocol-change/001`, since ACCEPTED
+   and implemented: the field is `Option(EntryId)` on the wire while
+   acceptance still rejects summarize-from-root, so `Some` remains the
+   only value the harness writes.
 3. **`details` payloads.** pi §2.1 carries optional `details` on compaction
    and branch-summary entries; Part 1.1 omits it. Followed Part 1.1. The
    format-4 import will need somewhere to put these — revisit with
