@@ -1,5 +1,71 @@
 # Lab notebook
 
+---
+
+## 2026-08-24 — M3 review-fix wave complete
+
+### State
+
+`main` green: `make check` all packages (core 95, storage 26, session
+45, machine 75, runtime 26, provider 86, broker 119, tools 157, events
+33, client 58, conformance 40) + both Go suites. A 200-seed soak over
+the *extended* simulation is clean. Tree clean, pushed.
+
+### What the review found and the wave fixed
+
+The pre-M4 adversarial review (five Opus reviewers over the M3 + DST
+surface; session and runtime each drew a duplicate that independently
+corroborated) earned its cost. Real, reproduced defects — none on a hot
+path today, all load-bearing for M4:
+
+- **Precise rewrite (2 CRITICAL)**: the erase-a-secret feature both
+  failed to erase (old WAL frames recovered into the swapped file — the
+  real cause was zombie `close_v2` connections, not the open-transaction
+  theory I relayed; the agent used the hint but found the truth) and
+  lost concurrent writes (lease sampled, never held). Fixed: truncate
+  the source WAL before copy; hold the lease through the rewrite; erase
+  every store a needle reaches; refuse-before-write on open.
+- **Escalation boundary (4 HIGH)**: approvals leaked grants across
+  strands and could clear two executions under one approval. Fixed with
+  call-scoped attribution + consume-before-clear; strand-restart effect
+  leak closed by a reaper; `await` keyed by operation not latest-wins.
+- **Events (1 HIGH + 3 MED)**: projection rewrite-invalidation guard,
+  sync-cursor-in-transaction, idempotent subscribe, supervised bridge.
+- **Gateway (2 MED)**: constant-time token compare, atomic 0600 token
+  file.
+
+### The lesson that keeps paying
+
+The standing rule — *a fix without a failing test that precedes it is
+not done* — held throughout: every fix reverted-and-reconfirmed. And
+the coverage gap that let the escalation bugs through is closed, not
+noted: the simulation now *requires* the parallel, escalation, and
+strand-restart paths, so a regression reintroduces a failing seed. Two
+cross-agent saves this wave: the events agent diagnosed the storage
+agent's WAL bug precisely (relayed, unblocked two packages), and the
+failing-first-test rule made a broken `rewrite_into` announce itself as
+a red events gate rather than a silent regression.
+
+### Deferred (in m3-triage.md), for M4-adjacent work
+
+Runtime grant-subset re-check at the boundary (M7); a corrupt
+`escalation/*` register is still a poison pill with no repair hatch;
+`await` timeout is a floor not a bound; FTS5 CJK/emoji tokenizer; the
+`'$busy'` totality break generic to `sqlight.query` under contention
+(open path now protected, binding-level fix later). The accepted
+non-fix: authenticated-operator DoS on their own session (threat model
+§5.1, matching the M2 ruling).
+
+### Next
+
+M4 — code mode: the `cap/*` capability prelude, the vetting lint
+(imports + `@external` closure), the hermetic sandboxed compile, and
+satellite nodes. The most security-critical milestone; the escalation
+and sandbox trust boundaries it leans on are now reviewed and fixed,
+which was the whole point of doing this wave first. Plan an adversarial
+vetting corpus from day one. Standing items unchanged (GitHub default
+branch, `make selftest` on a real kernel).
+
 Running log of project state, decisions, and open threads. Newest entry
 first. Each entry is written so that work can resume from it alone: what
 exists, what was decided, what is in flight, what to do next. Companion
