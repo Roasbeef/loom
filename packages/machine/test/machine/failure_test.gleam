@@ -248,7 +248,7 @@ pub fn abort_during_structural_deciding_finishes_aborted_test() {
   assert scenario.write_names(terminal_tx)
     == [
       "del:op.meta", "del:op.state", "del:op.preparation",
-      "set:strand.last_result", "set:strand.state",
+      "set:strand.last_result", "set:fact.custom", "set:strand.state",
     ]
   assert store.list_register_keys(world.store, register.OpPreparation, "") == []
 }

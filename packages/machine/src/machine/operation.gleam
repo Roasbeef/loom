@@ -526,6 +526,32 @@ pub type Navigation {
 
 // --- terminal results -----------------------------------------------------
 
+/// The reserved `fact.custom` key prefix under which every terminal
+/// transaction records its operation's result, keyed by operation id.
+///
+/// `strand.last_result` is one latest-wins register per strand, so a
+/// strand that starts another run overwrites it — a waiter still polling
+/// for the earlier operation's outcome would find it gone forever. The
+/// terminal transaction therefore also writes the same payload under
+/// `operation-result/{op}`, atomically with everything else, giving
+/// "await this operation's result" a durable answer no later run can
+/// clobber. Fact writes through the runtime api refuse this prefix, the
+/// same arrangement as the runtime's `escalation/` records.
+pub const result_fact_prefix = "operation-result/"
+
+/// The `fact.custom` key an operation's terminal result is recorded
+/// under.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // operation.result_fact_key(op_id) == "operation-result/" <> id_text
+/// ```
+///
+pub fn result_fact_key(operation: OpId) -> String {
+  result_fact_prefix <> ids.op_id_to_string(operation)
+}
+
 /// The `strand.last_result` register payload: the strand's latest terminal
 /// outcome (pi §3.13 `LaneLastResult`), written only by terminal
 /// transactions and overwritten by the next one on the same strand.

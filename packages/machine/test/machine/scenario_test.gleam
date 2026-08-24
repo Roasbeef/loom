@@ -176,6 +176,7 @@ pub fn slack_thread_scenario_test() {
       "del:op.meta",
       "del:op.state",
       "set:strand.last_result",
+      "set:fact.custom",
       "set:strand.state",
     ]
   // A finished strand holds exactly conversation, ledger, and strand
@@ -449,7 +450,7 @@ pub fn overflow_one_shot_scenario_test() {
   assert scenario.write_names(terminal_tx)
     == [
       "del:op.meta", "del:op.state", "del:op.preparation",
-      "set:strand.last_result", "set:strand.state",
+      "set:strand.last_result", "set:fact.custom", "set:strand.state",
     ]
 }
 

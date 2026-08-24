@@ -368,6 +368,32 @@ pub fn terminal_cleanup_leaves_no_operation_state_test() {
   })
 }
 
+pub fn terminal_result_is_recorded_operation_keyed_test() {
+  list.each(range(from: 1, to: 25), fn(seed_value) {
+    let #(world, _script) = run_script(seed_value)
+    // The terminal transaction wrote the result twice, atomically: the
+    // strand's latest-wins register, and the operation-keyed copy that a
+    // waiter can still observe after a later run overwrites the strand
+    // register. The two payloads must agree, and the operation-keyed
+    // key must derive from the operation the result itself names.
+    let assert Ok(#(_seq, register.RegisterValue(payload: latest))) =
+      store.get_register(world.store, register.StrandLastResult, "main")
+    let assert Ok(result) = codec.decode_last_result(latest)
+    let op = case result {
+      RunLastResult(operation:, ..) -> operation
+      operation.CompactionLastResult(operation:, ..) -> operation
+      operation.NavigationLastResult(operation:, ..) -> operation
+    }
+    let assert Ok(#(_seq, register.RegisterValue(payload: keyed))) =
+      store.get_register(
+        world.store,
+        register.FactCustom,
+        operation.result_fact_key(op),
+      )
+    assert keyed == latest
+  })
+}
+
 pub fn aborted_response_implies_aborted_run_test() {
   list.each(range(from: 1, to: 25), fn(seed_value) {
     let #(world, _script) = run_script(seed_value)

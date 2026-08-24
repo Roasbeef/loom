@@ -68,8 +68,12 @@ package is wrong.
     (write-once, key `{op}:{step}:{index}`), `op.preparation`
     (write-once, key `{op}:{task}`), `pending.entry` (keyed by the
     reserved `EntryId`), `strand.leaf`, `strand.state`,
-    `strand.last_result`, and `fact.label` (entry labels, keyed by entry
-    id — Loom has no dedicated label namespace);
+    `strand.last_result`, `fact.custom` under the reserved
+    `operation-result/{op}` prefix (the operation-keyed copy of the
+    terminal result, written atomically beside `strand.last_result` so a
+    waiter keyed on the operation survives a later run's overwrite —
+    `operation.result_fact_key`), and `fact.label` (entry labels, keyed
+    by entry id — Loom has no dedicated label namespace);
   - reads `strand.config`, `strand.state`, and `strand.leaf` seqs to build
     expectations (`build.expect_leaf` takes `Option(Seq)` — `None` when the
     leaf register does not exist yet).
@@ -84,7 +88,11 @@ package is wrong.
 
 - **The state is total.** Recovery reads `op.state` and nothing else to
   decide where to resume; no transition may depend on the previous state
-  having been observed. `strand.last_result` is never read by the driver.
+  having been observed. `strand.last_result` is never read by the driver;
+  it is latest-wins per strand, which is why the terminal transaction
+  also records the same result operation-keyed (`operation-result/{op}`
+  in `fact.custom`) for waiters that must observe a *specific*
+  operation's outcome after later runs.
 - **The effect sandwich.** Every external effect is preceded by a committed
   intent transaction and followed by a settlement transaction; `Dispatch`
   returns the intent `tx` *and* the next state, and the driver must commit

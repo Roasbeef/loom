@@ -122,6 +122,18 @@ pub fn set_last_result(strand_name: String, result: LastResult) -> Write {
   set(register.StrandLastResult, strand_name, codec.encode_last_result(result))
 }
 
+/// Sets `fact.custom/operation-result/{op}` — the operation-keyed copy of
+/// the terminal result, written atomically beside `strand.last_result` so
+/// a waiter keyed on the operation still observes the outcome after a
+/// later run has overwritten the strand's latest-wins register.
+pub fn set_op_result(op: OpId, result: LastResult) -> Write {
+  set(
+    register.FactCustom,
+    operation.result_fact_key(op),
+    codec.encode_last_result(result),
+  )
+}
+
 /// Deletes `op.meta/{op}` (terminal cleanup).
 pub fn delete_op_meta(operation: OpId) -> Write {
   tx.DeleteRegister(ns: register.OpMeta, key: op_key(operation))

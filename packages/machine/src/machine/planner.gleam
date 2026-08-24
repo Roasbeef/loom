@@ -3772,6 +3772,11 @@ fn finish(
       list.map(pending_ids, build.delete_pending),
       [
         build.set_last_result(op.strand, result),
+        // The operation-keyed copy, in the same atomic transaction: the
+        // strand register above is latest-wins (pi §3.13), so it alone
+        // cannot answer "what did *this* operation conclude" once a
+        // later run lands — `api.await_strand_result` keys on this row.
+        build.set_op_result(op.id, result),
         build.set_strand_state(
           op.strand,
           StrandState(

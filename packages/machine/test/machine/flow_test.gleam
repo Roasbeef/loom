@@ -497,7 +497,8 @@ pub fn standalone_compaction_generated_test() {
   assert scenario.write_names(terminal_tx)
     == [
       "insert:compaction", "set:strand.leaf", "del:op.meta", "del:op.state",
-      "del:op.preparation", "set:strand.last_result", "set:strand.state",
+      "del:op.preparation", "set:strand.last_result", "set:fact.custom",
+      "set:strand.state",
     ]
   assert store.list_register_keys(world.store, register.OpPreparation, "") == []
 }
@@ -568,7 +569,7 @@ pub fn unsummarized_navigation_completes_in_one_transaction_test() {
   assert scenario.write_names(terminal_tx)
     == [
       "set:strand.leaf", "set:fact.label", "del:op.meta", "del:op.state",
-      "set:strand.last_result", "set:strand.state",
+      "set:strand.last_result", "set:fact.custom", "set:strand.state",
     ]
   // The leaf moved to the target.
   let assert Ok(#(_seq, leaf_value)) =
@@ -631,7 +632,7 @@ pub fn summarized_navigation_publishes_summary_test() {
     == [
       "set:strand.leaf", "insert:branch_summary", "set:strand.leaf",
       "del:op.meta", "del:op.state", "del:op.preparation",
-      "set:strand.last_result", "set:strand.state",
+      "set:strand.last_result", "set:fact.custom", "set:strand.state",
     ]
   // The summary entry is parented on the target and is the new leaf.
   let assert Ok(entry.BranchSummaryEntry(parent: Some(parent), from_id:, ..)) =
