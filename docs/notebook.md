@@ -9,6 +9,97 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ---
 
+## 2026-08-24 (later) — review-fix wave landed; branch is now `main`
+
+### State of the world
+
+All 18 triaged review fixes are landed and pushed on **`main`** (the
+branch was renamed from the old agent-generated name; topic branches are
+now named for the work, per CLAUDE.md). Gate: `make check` — **595 Gleam
+tests** across the nine packages plus the Go sandbox suite, all green,
+format-clean, warning-free. Working tree clean.
+
+Test counts moved: core 88→95, storage 24→25, provider 79→86, broker
+104→119, tools 140→157, conformance 23→24. Every increase is a
+regression test for a specific finding.
+
+### What was fixed (all confirmed by tests that failed before)
+
+- **Critical**: anchored edit plans now carry a digest of the content
+  they were computed against. Per-line staleness could not distinguish
+  "unchanged line" from "identical sibling shifted into place", so a
+  replayed edit double-applied on duplicate or blank lines — corrupting
+  files through the very crash-recovery path the harness exists to make
+  safe. `fs_edit` stays `replay: Safe`, now with a sound argument.
+- **Security**: the pooled budget was inert (ledger discarded every
+  call, cap never fired); proxy network mode granted unrestricted egress
+  while reporting full enforcement — now fails closed at both broker and
+  helper; `skip:` enforcement entries now fail a full-enforcement demand
+  on their own; workspace symlinks no longer escape the root (real-path
+  resolution, since these tools run harness-side with no jail behind
+  them).
+- **Untrusted input**: SSE carry is bounded with a scan offset (was
+  unbounded + quadratic); usage counts clamp at the wire boundary (an
+  out-of-range count produced an undurable durable object); both codecs
+  bound nesting depth and reject duplicate keys (the two disagreed on
+  precedence, which desyncs against the Go helper's last-wins encoder).
+- **Durability**: negative scan limits settled (sqlite read them as
+  unbounded); branch-metadata test was vacuous and is rebuilt around a
+  compaction; query-plan assertion strengthened from a substring check.
+
+Beyond the review, agents found: a token left live when checkout failed,
+and an unmonitored relay that leaked its helper and call record forever
+on crash. Both fixed.
+
+### Where the reviews were wrong
+
+Worth remembering when weighing future review output. DUR-02 claimed the
+lease-fencing path untested; it was covered in a file outside the
+reviewer's scope, and the implementation proved correct. My own report of
+"provider broken mid-refactor" was a misread: the build error was in
+`core/json.gleam` (another agent's in-flight edit) surfaced while
+compiling provider's dependency tree, with the file header cut off by
+`tail`. Reviews and orchestrator alike need the same skepticism the code
+gets.
+
+### Deferred (reasons in `docs/review/triage.md`)
+
+ORCH-H1 (interleave harness never crash-tests deferred/compaction/
+structural/navigation recovery) → folded into the DST runner rather than
+patched with four hand-written scenarios. ORCH-M2/M3 and three LOW items
+→ M3. Live-kernel enforcement verification → CI requirement on a
+target-tier kernel (`make selftest`).
+
+### Decisions recorded
+
+`protocol-change/001` and `002` both ACCEPTED (each records the
+adversarial case that was considered and rejected). `ADR-004` adopts
+parrot for typed SQL, gated: pilot on WP-K's search database at M3, then
+retrofit storage's CRUD with the plan assertions arbitrating each step.
+Dependency verdicts for all seven candidates in `docs/deps-eval.md`.
+
+### Next
+
+1. **DST simulation runner** (WP-T extension) — the immediate next item.
+   Seeded randomized explorer over schedules, effect-outcome
+   permutations, and clock skew, with printed seeds and exact replay;
+   simulated time so timers fire logically; fault injection beyond kill
+   (torn frames, lease theft mid-run, slow effects). Subsumes ORCH-H1.
+   The expensive precondition — every effect, clock, and entropy source
+   already injected — is built.
+2. M3 kickoff: WP-C-full (forks, compaction projection, transform hook),
+   WP-K events + parrot pilot, WP-L client gateway + Go TUI, multi-strand
+   demo. macOS Seatbelt deferred: no macOS in this environment.
+
+### Operational notes
+
+`main` is primary. Two things need a human in the GitHub UI: set the
+repo default branch to `main`, and delete the stale
+`claude/gleam-style-guide-docs-9ulhiu` remote branch (the proxy refuses
+push-deletes with 403). `make help` lists the common commands.
+
+---
+
 ## 2026-08-24 — M0–M2 complete; review wave and dependency triage
 
 ### State of the world

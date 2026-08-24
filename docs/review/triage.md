@@ -66,3 +66,22 @@ escalation single-consume bounded by the wanted diff; 16 MiB frame caps
 with no over-allocation; absence of shell or argv injection on the fd-3
 and bwrap paths; and the seccomp filter's architecture, x32, and
 AF_UNIX handling with correct TSYNC and no-new-privs ordering.
+
+---
+
+## Outcome (2026-08-24)
+
+All 18 "fixed in the wave" items landed; `make check` green at 595 tests
+(from 547), every increase a regression test for a named finding. Two
+findings were partly wrong on inspection: DUR-02's missing lease-fencing
+test existed in a file outside the reviewer's scope and the
+implementation proved correct (coverage was still moved into the
+backend's own suite), while DUR-03's test existed but passed vacuously —
+its tree had no compaction, so the base-link invariant it claimed to
+check was never exercised.
+
+Two defects surfaced during the fixes that no reviewer found: a
+capability token was left live when helper checkout failed, and the
+relay process was spawned unmonitored, so a relay crash leaked its
+budget slot, its helper, and its call record permanently. Both fixed
+with the wave.
