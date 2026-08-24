@@ -390,6 +390,22 @@ kernel that cannot provide the jail layers gets its tool calls refused;
 `make selftest` tells you honestly which of the two postures your kernel
 can back.
 
+The server's full configuration surface, flags first:
+
+```
+--session <path>      the sqlite session file (required; created if absent)
+--bind host:port      listen address (default 127.0.0.1:0 — port printed)
+--token-file <path>   bearer token file (default <session>.token, mode 0600)
+--workspace <dir>     the jail's writable root (default: current directory)
+--helper <path>       loom-exec location (default: PATH, then ./bin)
+--best-effort         accept a degraded jail (dev kernels); default refuses
+```
+
+Environment: `ANTHROPIC_API_KEY` (optional, read at dispatch),
+`LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
+`LOOM_CONTEXT_WINDOW` (default 1000000), `LOOM_MAX_OUTPUT_TOKENS`
+(default 32000), `LOOM_SYSTEM_PROMPT`.
+
 ## Reading further
 
 - `docs/architecture/` — the system as built, one document per plane
