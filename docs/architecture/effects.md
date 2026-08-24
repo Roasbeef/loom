@@ -1,0 +1,492 @@
+# The effect plane
+
+Everything that touches the world outside the harness process — shell
+commands, file edits, searches, model requests — leaves through this
+plane. It is one door with a lock (the ToolBroker), one wire (a framed
+msgpack protocol), one jailer (a small Go helper that restricts itself
+and then execs the target), and a tool set whose correctness does not
+depend on the model behaving. What follows is the plane as built, in the
+`broker`, `sandbox`, `tools`, and `provider` packages, through to the
+end-to-end acceptance that runs a real helper against a real workspace.
+
+## The threat model, and Rule Zero
+
+Four things are defended against, in increasing difficulty: **accidents**
+(a delete in the wrong directory, a force-push, a `.env` swept into a
+commit); **prompt injection** (hostile repository, web, or tool content
+steering the model toward exfiltration or destruction); **malicious
+generated code** (a program the model wrote attempting escape or
+persistence); and **compromised third-party tools** (a malicious language
+server, or a Model Context Protocol server). Two are not: a hostile user
+on their own machine, and kernel zero-days — surface is reduced, but
+machine-grade isolation waits for the microVM tier.
+
+The defense rests on one rule, because BEAM processes are fault isolation
+and not security isolation. Any process in the virtual machine can call
+`os:cmd/1`, open any file the OS user can open, and dial the network;
+there is no intra-VM capability model to lean on.
+
+> **Rule Zero: model-influenced execution never runs in the harness VM.**
+> The BEAM node orchestrates. Untrusted work runs in OS-sandboxed
+> external processes under kernel-enforced policy. The actor model buys
+> supervision and recovery; the kernel buys isolation; the two are never
+> confused.
+
+## The one door
+
+Every effect goes through `broker.clear_call`. It composes a policy,
+refuses or narrows, reserves budget, mints a token, borrows a helper, and
+dispatches — and from that moment the caller is guaranteed exactly one
+settlement event, whatever happens downstream.
+
+```
+  clear_call
+    ├─ compose    base ⊕ requirements ⊕ grants  ->  policy + narrowings
+    ├─ validate   absolute paths, non-negative limits
+    ├─ reserve    one slot against the pooled cap and deadline
+    ├─ mint       32 random bytes bound to {op, step, policy, deadline}
+    ├─ checkout   a helper from the pool
+    └─ dispatch   exec_start over the framing channel
+                        │
+   caller  <──  relay  ─┴─  exec_out ...  exec_exit
+                        │
+                    settle: check the helper in, revoke the token
+```
+
+**Composition is most-restrictive-wins, and grants are the only widening.**
+`policy.compose` takes the meet of the session base and the tool's
+requirements: root coverage is prefix-aware (a base root `/work` covers a
+requested `/work/sub`, and the result is the *requested*, narrower root),
+the network lattice meets at `Off < Proxy < Full`, each limit takes the
+per-field minimum with `0` meaning unlimited, environment allowlists
+intersect as exact strings, protected paths union, and two different
+scratch choices collapse to a fresh tmpfs. Two proxy policies intersect
+their host allowlists and always keep the base's proxy address, since the
+harness owns the proxy and a tool must not redirect egress. Only then do
+approved grants apply, each explicitly widening one field.
+
+What composition takes away it also reports. Every requirement the final
+policy fails to satisfy becomes a `Narrowing`, and `wanted_grants` turns
+that list into exactly the grants that would satisfy it — which *is* the
+policy diff an escalation shows a human ("wants: network to
+registry.npmjs.org"). `RefuseNarrowed` turns any shortfall into a
+structured denial before anything runs; `ProceedNarrowed` runs under the
+narrowed policy and lets the sandbox denial speak for itself.
+
+**Tokens bind and are spent once.** A token is 32 bytes from an injected
+entropy source, carrying a `Binding` of `{op_id, step_id, policy,
+deadline_ms}`. It travels only over the channel it authorizes and is
+checked on every use, with `check_for` additionally requiring the token
+to name exactly this operation and step. Bytes are compared in constant
+time, and the vault scans every entry without an early exit, so timing
+reveals neither a match's position nor how close a guess came. Refusals
+are ordered — unknown, revoked, expired, wrong binding — and settlement
+revokes, so no token is ever good twice.
+
+**Budgets are pooled per execution, not per call.** One `Budget` carries
+a cap on outstanding effects and one aggregate wall deadline, and every
+effect under the token reserves against the same ledger. This closes the
+amplification hole: ten thousand polite parallel reads or fifty spawned
+test runs share one account and are refused past the cap, however
+reasonable each request looks alone. Settling with nothing outstanding is
+a no-op rather than an error, since settlement can race a crash-driven
+cleanup and double-settling must never underflow into free budget.
+
+Each dispatched call gets a **relay** process owning the execution's
+event subject: it forwards output, enforces the wall deadline, and
+reports settlement back to the broker. Past the deadline it cancels and
+drains for a five-second grace window, trusting the helper's own cancel
+ladder to produce a terminal event; if none arrives, the call settles as
+`CancelEscalated`. Dispatch failures take the same road, so "exactly one
+`CallSettled`" holds even when the helper refuses the work.
+
+**Abort revokes and kills.** `broker.abort(op_id)` revokes every token of
+that operation and cancels every execution under it, and cancellation
+reaches the OS as a signal to the process *group* — no orphaned
+`npm install` left behind.
+
+Approval escalation is a separate pure machine that consumes those
+denials. Approval accepts only grants drawn from the denial's wanted diff
+(a subset is fine; a wider grant is a new decision, not a rider), and
+`consume` yields those grants for exactly *one* re-execution and refuses
+a second. Each transition returns an `Event` for the runtime to record
+durably before acting on it, so the transcript shows denial, decision,
+and the single retry. Widening the session base is the caller applying
+approved grants explicitly — never a silent side effect.
+
+## The wire
+
+One framing protocol carries every data-plane channel: executors today,
+satellites and remote pools later.
+
+```
+frame    := u32_be length ++ msgpack(map)
+map keys := "v":1, "id":u64, "kind":str, "body":map
+kinds    :  hello, exec_start, exec_stdin, exec_out, exec_exit,
+            cap_call, cap_result, cancel, heartbeat, error
+```
+
+The `id` correlates: `exec_out` and `exec_exit` reuse their
+`exec_start`'s id. Both sides cap a payload at 16 MiB so a corrupt length
+prefix cannot make anyone allocate gigabytes. The helper sends its hello
+first — the broker learns the honest feature set before committing work —
+and refuses every other frame until the broker's hello answers it.
+
+**Malformed and unknown are different failures.** A frame that does not
+parse closes the channel, after an error frame so the effect can settle
+in-band; that is security invariant 6 taken literally. A frame that
+parses but names a kind the receiver does not implement gets an in-band
+error and the channel *stays open*, because the peer may be newer and
+able to downgrade. Both sides implement both halves.
+
+Msgpack was chosen per ADR-003, and chosen differently on each side. The
+Gleam side is a self-contained codec in `core/msgpack`: pure Gleam over
+bit arrays, covering exactly the subset the protocol uses, decoding
+totally (truncation, ext tags, invalid UTF-8, trailing bytes, and
+non-finite floats are all corruption reports, never crashes) and encoding
+canonically, smallest-form, so equal values always produce identical
+bytes. The Go side uses `vmihailenco/msgpack/v5`, mature and already
+inside trusted native code. Keeping them byte-compatible is not a hope:
+**golden fixtures under `protocol/msgpack-fixtures/` pin the canonical
+encoding of every value shape**, and both suites assert byte-exact
+encoding and successful decoding of the same files.
+
+The sandbox policy travels the same way, as `SandboxPolicyV1` — a
+versioned map of writable roots, readable roots, protected paths, a
+network mode, limits, an environment allowlist, and a scratch choice. The
+helper's decoder is unforgiving: a version other than 1, a missing key,
+an *unknown* key, a wrong type, a relative path, or trailing bytes after
+the map all fail the parse. Unknown keys are refused rather than ignored
+precisely because a field we do not understand could be a restriction we
+would silently fail to enforce.
+
+One wrinkle looks like a hack until you see the constraint. The helper's
+base policy must arrive on **file descriptor 3** at spawn, but Erlang
+ports cannot map arbitrary file descriptors. So the broker writes the
+policy to a mode-0600 file inside a mode-0700 directory and starts the
+helper through `/bin/sh -c 'exec 3<"$2" "$1"'` with the paths as
+positional parameters, sidestepping every quoting pitfall; the shell
+opens the file as fd 3 and execs the helper. The file is unlinked the
+moment the helper's hello proves it was read. Per-execution policy still
+travels inside `exec_start` and remains authoritative there; fd 3 only
+seeds the helper.
+
+## The jail
+
+`loom-exec` is one static Go binary with three roles: server mode (read
+fd 3, speak the protocol on stdio), stage 2 (restrict itself and exec the
+target), and `--self-test`. It runs **one execution at a time** — a
+second `exec_start` gets a `busy` error, and concurrency lives in the
+broker's pool, which runs more helpers, so "kill the pgroup" stays
+unambiguous. One execution takes this shape:
+
+```
+  helper ─spawn(setsid)─▶ bwrap ─▶ loom-exec --exec ─execve─▶ target
+    │                       │            │                      │
+    ├ pgroup: cancel/sweep  │            ├ rlimits: CPU, FSIZE  │ starts
+    ├ cgroup v2: memory.max │            ├ Landlock ruleset     │ already
+    │            pids.max   │            ├ no_new_privs         │ inside
+    └ output caps, wall     │            └ seccomp: network off │ the cage
+                            └ namespaces + the mount view ──────┘
+```
+
+**bwrap owns every namespace and mount.** This is load-bearing, not a
+preference: the Go runtime is multithreaded from the first instruction,
+and `unshare`/fork-based namespace assembly in a multithreaded process is
+the tar pit that gave runc its `nsexec.c`. The helper only composes a
+bubblewrap argument list — pure data, golden-tested — and stacks
+in-process restrictions on itself afterward. The argv order is itself
+load-bearing, since bwrap applies mounts in order: the host filesystem
+read-only, then fresh `/proc` and a minimal `/dev`, then explicit
+read-only binds, then writable binds, then protected-path masks (so a
+protected path *inside* a writable root is still masked), then scratch. A
+protected file is bind-mounted onto itself read-only — unwritable but
+still readable; a protected directory, or a path that does not exist yet,
+is shadowed by an empty read-only tmpfs, so it can be neither read nor
+created. Under network-off, bwrap also unshares the network namespace.
+
+**Stage 2 restricts itself and execs.** After changing directory it sets
+`RLIMIT_FSIZE` and `RLIMIT_CPU`, applies a Landlock ruleset derived
+purely from the policy, sets `no_new_privs` unconditionally, installs the
+seccomp filter when the network is off, writes an enforcement report on
+fd 4, and calls `execve`. That order works because Landlock domains,
+seccomp filters, rlimits, and `no_new_privs` all persist across `execve`
+and can only tighten: the target starts life inside the cage with none of
+our code left in its address space. Landlock is the second filesystem
+layer, and the only one in degraded mode; it has no deny rules, so a
+protected path nested inside a writable root cannot be carved out there.
+Masking those is bwrap's job, and the enforcement report tells the broker
+whether bwrap ran.
+
+The seccomp filter enforces network-off at the point seccomp can actually
+reach: **socket creation**. A filter cannot dereference the sockaddr
+passed to `connect`, but it can read the integer domain argument of
+`socket` and `socketpair`. A process that can never obtain an
+`AF_INET`/`AF_INET6`/`AF_PACKET` socket has nothing to connect, bind, or
+send with, and the helper builds the child's whole fd table, so no
+network descriptor can be smuggled in either. `AF_UNIX` stays allowed,
+confined by the filesystem layers. Three details earn their place: the
+program is built as pure data and unit-tested without a kernel; it kills
+the process on an unexpected audit architecture and, on amd64, on any
+x32-ABI syscall (both classic filter bypasses); and non-`AF_UNIX` socket
+creation fails with `EPERM` rather than a kill, so tools that probe for
+network and fall back keep working. Installation uses
+`SECCOMP_FILTER_FLAG_TSYNC` so the filter binds *every* thread of the Go
+runtime — without it another thread could simply make the blocked call —
+and a partial sync is an error rather than a success.
+
+Memory and process-count ceilings need cgroup v2, because `RLIMIT_AS` is
+per-process and escaped by forking and `RLIMIT_NPROC` is per-user. Each
+execution gets its own group with `memory.max` and `pids.max`, and
+descendants inherit membership, which is what makes the pids cap
+fork-bomb-proof. The group's own `pids.events` counter is the ground
+truth for whether the cap fired, rather than shell complaints about
+failed forks.
+
+Everything else is plumbing with teeth. The child's environment is
+**constructed, never inherited**: a variable absent from `env_allow` is
+dropped even when the broker sent it, so the policy alone documents what
+a jail could see. Output is capped per stream, and past the cap the
+helper keeps reading and discarding so the child never blocks on a full
+pipe. Cancellation escalates against the process *group* — `SIGTERM`,
+then `SIGKILL` two seconds later — inside a broker-side helper grace of
+three seconds and the relay's five, each layer outwaiting the one below.
+And `Wait` runs in a deliberate order: reap the direct child, sweep the
+group with `SIGKILL` (killing orphaned grandchildren that still hold the
+output pipes), then join the output pumps — which is why a backgrounded
+`sleep 30` does not hold the execution open.
+
+### Enforced versus reported
+
+A helper on a kernel that cannot provide a layer does not pretend. It
+reports what it has in `hello.features` and, per execution, in an
+`enforcement` list and a `degraded` flag: strings like `bwrap`,
+`landlock:abi=5`, `seccomp-net`, `rlimit-cpu`, `skip:landlock: ...`. The
+broker decides what to do about it. `FullEnforcement` refuses a degraded
+helper at dispatch on its hello features *and* fails any execution whose
+`exec_exit` reports degraded — the ground-truth check, because features
+are a promise and the exit report is a fact. `BestEffort` accepts what is
+available and still hands the report to the caller.
+
+`loom-exec --self-test` runs seven probes through the real jail path:
+write outside the writable roots, write to a protected path, create a
+socket under network-off, read a non-allowlisted environment variable,
+fork-bomb against the pids cap, flood output past the cap, and orphan a
+grandchild. A probe whose layer the environment cannot provide prints
+`SKIPPED` with the reason — never faking a pass, never failing the run —
+while a probe whose layer *is* available must enforce or the run exits
+nonzero. The summary lists enforced and skipped separately, so a green
+self-test in a neutered container cannot be mistaken for a verified
+sandbox.
+
+## Tools with correctness teeth
+
+A tool is a record: name, description, JSON schema, replay safety,
+execution mode, policy-shaped requirements as a function of the workspace
+root, and a `run` taking a context and the model's arguments. Tool
+failures are **data** — `run` always returns an outcome whose `is_error`
+marks in-band failure, so a bad argument, a policy refusal, a dead
+helper, or a stale anchor comes back as a result the model can read and
+react to, and an unknown name yields the same shape.
+
+**Replay safety is a claim about what re-execution does to the world.**
+`bash` declares `Never`: a shell command is an arbitrary external effect,
+so a crash mid-execution must yield a synthetic interrupted result under
+the pre-reserved id rather than run again. `fs_edit` declares `Safe`, and
+the reason is the interesting one — its anchors *consume themselves*.
+Applying a plan removes the lines it referenced, so re-executing the same
+call against the already-edited file is rejected as stale rather than
+applied twice: re-execution after a crash either repeats an edit that
+never landed or fails in-band, and cannot double-apply. `fs_write` is
+`Safe` because writing the same bytes to the same path is idempotent, and
+`fs_read` and `grep` are `Safe` because they are reads.
+
+**Hashline anchors make a stale edit impossible rather than unlikely.** A
+read renders every line as `line:anchor|text`, where the anchor is the
+first eight lowercase hex characters of a 64-bit FNV-1a hash of the
+line's UTF-8 bytes. An edit references lines as `{line, anchor}` pairs:
+the anchor proves the content, the line number disambiguates identical
+lines. `apply` verifies every reference against the current content
+*before* touching anything, so an edit planned against a file that has
+since changed is rejected before corruption — a time-of-check to
+time-of-use defense across the gap between read and write. The rejection
+carries fresh anchors with two lines of context around each stale region,
+so the caller replans without a second full read, and anchors depend only
+on line content, so an unrelated edit elsewhere never invalidates them.
+(The spec named `xxh3`; the implementation reads that as intent — a fast
+64-bit hash truncated to eight hex — since anchors never outlive one
+read-edit round trip and are versioned in-package. Recorded as a spec
+gap, and it settles the open question about anchor length and salt:
+eight hex, no salt.)
+
+Output that would swamp the transcript **overflows to a blob store**.
+Past 64 KiB the full bytes are written once under a content-addressed
+name (SHA-256), and the result carries `{ref, size, head_excerpt,
+tail_excerpt}` with excerpts of at most 2 KiB trimmed to a UTF-8
+boundary. Content addressing makes the write idempotent: replaying a
+`Safe` tool or re-running an identical command lands the same bytes at
+the same ref. `fs_read` is exempt, because windowed reads are already its
+bound and anchors buried inside an elided blob would defeat hashline
+editing; `bash` and `grep` output do overflow.
+
+The filesystem tools run **harness-side rather than through the broker**,
+so their path discipline is their own responsibility: `resolve_path`
+rejects empty paths and anything resolving outside the workspace root,
+whether by `..` or by an absolute path. Under Rule Zero this is defense
+in depth rather than the primary control — no model-chosen program runs
+here, only our own code on model-supplied arguments — and the tools still
+declare policy-shaped requirements so a policy audit covers every tool
+uniformly.
+
+`bash` shows the composition path end to end. It requires the workspace
+writable, `/` readable (interpreters live outside the workspace, and the
+session base decides whether to grant that), network off, tmpfs scratch,
+and the environment names actually being passed, so composition checks
+them against the session allowlist. It clears with `RefuseNarrowed`: a
+session base that does not cover the requirements produces an in-band
+structured refusal carrying the exact wanted grants, ready for the
+escalation flow. Its timeout is clamped tool-side — 120 seconds by
+default, 600 as the ceiling — and the wall limit mirrors it. `grep` runs
+`rg --json` read-only and, when the jail has no ripgrep, settles as a
+structured error suggesting `bash` instead.
+
+## Providers
+
+The gateway is a typed registry plus injected effects: an HTTP transport,
+a secret store, and a clock. `resolve(role)` returns the first target in
+the role's ordered fallback chain whose provider is registered — the
+identity durable state stores. `request` with a role resolves the chain
+at dispatch and walks it, moving to the next target only on a
+*retryably*-classified failure; a terminal error surfaces immediately, an
+exhausted chain delivers the last real error rather than a summary, and a
+settled response never falls back. `request` with an already-resolved
+identity dispatches to exactly that identity and never walks, which is
+what recovery needs: re-dispatching a committed intent must not silently
+reach a different model.
+
+Streaming follows the sans-io shape. The parser for server-sent events —
+the framing every provider streams over — is **pure**: bytes in, events
+out, carry state threaded, so feeding the same bytes in any chunking
+yields the same events, and the whole parser is property-tested without a
+single process. Adapters compose it with their own pure
+accumulator into a response machine, a fold over HTTP events; only `run`
+is impure, spawning the transport on its own process and forwarding
+deltas as they appear. The consumption contract is narrow enough to
+depend on: zero or more `Delta` events, then exactly one `Settled` or
+`Failed`, and nothing after. Deltas are ephemeral display data and prove
+nothing about settlement.
+
+**Stop reasons map totally.** Each adapter maps the vocabulary it knows
+and answers `Error(Nil)` for anything else, which the caller surfaces as
+`Failed(UnmappedStopReason(raw))` in-band. A provider that ships a new
+stop reason tomorrow degrades to a readable error, never a crash.
+
+**The adapter computes overflow, and the definition is now written
+down.** When reported input plus cache-read tokens exceed the resolved
+model's context window and the output is negligible, the response settles
+with stop reason `error` carrying the canonical overflow message, raw
+stop reason preserved. This matters because the machine's classification
+order checks overflow before retryable error: an oversized request must
+compact, not retry unchanged. "Negligible" was left open by the spec and
+is quantified in the code as at most 64 output tokens, so a real answer
+that merely tripped a counter is never discarded as overflow.
+
+Decoding posture here is deliberately asymmetric to the rest of the
+system. Stream payloads must parse as JSON — malformed data fails the
+stream in-band as a corruption report — but *fields* are read leniently:
+absent counters read as zero and unknown enum values are ignored, which
+is what provider versioning policies prescribe. The total-decoder
+doctrine governs boundaries we own; strict decoding of a foreign
+vocabulary breaks against real proxies and gains nothing.
+
+**Secrets live in exactly one place.** Provider configuration holds a
+secret *name*, never a value. The secret store is an injected lookup
+whose only call site is gateway dispatch, which copies the value straight
+into one outbound request header. Errors carry names and status codes and
+never headers, bodies, or values, so nothing the gateway returns or
+persists can embed a key; a grep-based leak test over a full session
+fixture is the check. The environment-variable backend ships now, and OS
+keychain backends slot into the same `fn(name) -> Result(String, Nil)`
+seam without touching a caller.
+
+## What the end-to-end actually proves
+
+The M2 acceptance runs the production wiring: the real provider gateway
+over a scripted SSE transport, the real ToolBroker over the **real Go
+`loom-exec` helper**, and the real tool registry. It is feature-detected —
+with no Go toolchain the tests print a skip reason and pass.
+
+The happy path drives four settlements from one prompt. `bash` writes
+`notes.txt` inside the jail; `fs_read` returns its hashline anchors;
+`fs_edit` applies an anchored replace scripted against those anchors; a
+text answer completes the run. The assertions are specific: the file on
+disk is byte-exact `alpha\nbeta improved\ngamma\n`; the projected
+transcript matches shape for shape; the `bash` result's details carry the
+helper's real exit code and signal alongside its honest `degraded` flag
+and `enforcement` list; the read result contains exactly the anchors the
+scripted edit used, which proves the two tools agree rather than the
+fixture agreeing with itself; the usage ledger equals the scripted total;
+and closing and reopening the session file yields a structurally
+identical transcript.
+
+The crash rider reproduces the crash-mid-tool scenario live. A `bash`
+call runs `: > started.marker && sleep 30`; the test waits for the marker
+so the kill lands with the tool intent durable and the external effect
+genuinely in flight, then kills the whole supervision tree. On reboot
+from the same file, recovery finds an effect-pending call with no live
+continuation, `replay: Never` forbids re-execution, and the synthetic
+interrupted result settles under the reserved id; the remaining script
+completes the run. The ledger total is unchanged — each settlement
+committed usage exactly once, crash included.
+
+Integration also found a bug no unit test could have. Budget deadlines
+are computed on the tool-side clock and checked against the broker-side
+clock, and nothing in the contracts required the injected clocks to share
+an era; misaligned eras made the broker refuse every call as already past
+its deadline. The fix is a convention the spec should state: one clock,
+or at least one era, injected across runtime, tools, and broker.
+
+Finally, the honest enforcement matrix. In the development container
+`loom-exec` reports `rlimits, pgroup, degraded, seccomp` — no bubblewrap
+binary, no Landlock in the kernel, no delegated cgroup v2 hierarchy — so
+four of the seven self-test probes enforce there and the three needing
+the missing layers skip. The suites therefore run with `BestEffort` and
+assert on the helper's honest report, while production sessions pass
+`FullEnforcement`, which refuses a degraded helper at dispatch and fails
+a degraded execution after the fact.
+
+## Where the code lives
+
+| Path | What it holds |
+|---|---|
+| `broker/broker.gleam` | `clear_call`, the relay, abort, settlement. |
+| `broker/policy.gleam` | `SandboxPolicyV1` as a typed value; composition, grants, narrowings; the canonical codec. |
+| `broker/token.gleam`, `broker/budget.gleam` | Capability tokens — minting, binding, constant-time check, revocation — and pooled per-execution ledgers. |
+| `broker/escalation.gleam` | The denial → approval → single-consume machine and its events. |
+| `broker/framing.gleam`, `broker/exec.gleam` | The protocol broker-side with its pure deframer; the helper actor, fd-3 spawn, cancel ladder, and pool. |
+| `sandbox/cmd/loom-exec/main.go` | The three roles: server, stage 2, self-test. |
+| `sandbox/internal/policy`, `.../framing`, `.../server` | The strict policy decoder, the protocol helper-side, and the frame loop. |
+| `sandbox/internal/jail` | bwrap argv, stage 2, env construction, output limiter, cancel escalation, supervision. |
+| `sandbox/internal/llock`, `.../seccompf`, `.../cgroup` | Landlock rules, the network-off cBPF program with its TSYNC install, and cgroup v2 groups. |
+| `sandbox/internal/selftest` | The seven regression probes and the enforced/skipped report. |
+| `tools/tool.gleam`, `tools/hashline.gleam` | The tool record, seams, registry, and in-band outcomes; anchors, windows, anchor-checked plans, stale rejections. |
+| `tools/fs.gleam`, `tools/bash.gleam`, `tools/grep.gleam` | The filesystem tools with their path discipline, and the two jailed ones. |
+| `tools/blob.gleam` | Content-addressed overflow past 64 KiB. |
+| `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
+| `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
+| `provider/adapter/anthropic.gleam`, `.../openai.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
+| `conformance/wiring.gleam`, `conformance/e2e_test.gleam` | The production-shaped effect record, and the M2 jailed acceptance that proves it. |
+| `protocol/msgpack-fixtures/` | Golden frames both languages are pinned against. |
+
+Each Gleam path is relative to its package's source root —
+`broker/token.gleam` is `packages/broker/src/broker/token.gleam` — and
+each Go path is relative to `packages/sandbox`. For the plane below this
+one see `docs/architecture/durability.md`, and for the state machine and
+runtime that drive these effects, `docs/architecture/orchestration.md`.
+For intent and contracts, `docs/loom-design.md` §5 covers the threat
+model and the two-channel doctrine, `docs/loom-implementation-spec.md`
+Part 1.4 holds the frozen wire protocol and §3.3 the security invariants,
+`docs/adr/003-msgpack.md` records the codec decision, and
+`docs/spec-gaps.md` records where implementation refined the spec —
+including the fd-3 delivery workaround, the anchor hash, and the shared
+clock era.
