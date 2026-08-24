@@ -71,3 +71,32 @@ instead and are only referenced here.
    (fail-closed); unknown frame kinds get an in-band error without
    closing (forward compatibility); malformed frames close the channel
    per §3.3 invariant 6.
+
+## From WP-F (`provider`)
+
+1. **`SettledAssistantMessage` home.** The frozen contract uses the type
+   in both §1.3 (machine) and §1.5 (provider), but core does not define
+   it. Provider defines it (opaque, non-pending wrapper over core's
+   assistant message). The machine package, which cannot depend on
+   provider, needs its own settled shape; the runtime bridges them.
+   Candidate for hoisting into core via a protocol-change if the
+   duplication grates.
+2. **Fallback semantics.** The chain walks only on retryably-classified
+   failures; terminal errors surface immediately; an exhausted chain
+   emits the last real error, preserving retryability; re-dispatch with a
+   resolved identity never falls back (recovery semantics).
+3. **"Negligible output"** in the adapter overflow rule is quantified as
+   ≤ 64 tokens (documented constant) — the spec leaves it open.
+4. **Overflow message matching** uses substring heuristics with
+   throttling exclusions; Gleam has no stdlib regex, so pi's regex
+   vocabulary is distilled rather than transcribed.
+5. **Wire leniency.** Provider frames must parse as JSON (else in-band
+   corruption failure) but fields are read leniently — absent counters
+   default, unknown enums are ignored — matching pi's adapters, since
+   strict total decoding of third-party wire breaks real proxies. The
+   total-decoder doctrine applies to *our* durability boundaries, not to
+   foreign wire vocabularies.
+6. **Costing.** Usage cost fields are zeroed; token extraction only.
+   Pricing tables belong to a ledger-side concern, not the adapters.
+7. **Keychain backends** are deferred behind the secret-store seam; the
+   environment backend ships now, per-OS keychain FFI later.
