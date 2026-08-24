@@ -42,12 +42,17 @@ Dependency DAG (→ = depends on):
 
 ```
 A → (nothing)
-B → A            C → A,B          D → A            T → A..(all, test-only)
-E → A,B,C,D      F → A            G → A,F(usage types)   H → G(protocol only)
-I → G            J → G,I          K → A,B,C        L → A,C,K        M → E,G,J
+B → A            C → A,B,D        D → A            T → A..(all, test-only)
+E → A,B,C,D,F    F → A            G → A            H → G(protocol only)
+I → G            J → G,I          K → A,B,C        L → A,C,E,K      M → E,G,J
 ```
 
-**Parallelization**: after WP-A freezes, {B, D, F, H} proceed fully in parallel; {C} after B's behaviour lands (can start against Memory); {E} after B+D; {G} after A+F types; {I, J} after G's protocol section (Part 1.4) — which is frozen *here*, so they can start immediately against mocks. T grows continuously.
+**Parallelization**: after WP-A freezes, {B, D, F, G, H} proceed fully in parallel; {C} after B's behaviour and D's register codecs land; {E} after B+C+D+F; {I, J} after G's protocol section (Part 1.4) — which is frozen *here*, so they can start immediately against mocks. T grows continuously.
+
+*(DAG as built, updated from the original sketch: C reads machine's
+register codecs for typed access; E consumes provider's stream and
+retry contracts for the effects seam; G's usage types turned out to
+live in core, decoupling it from F; L consumes runtime's api.)*
 
 ### 0.2 Conventions (all WPs)
 
