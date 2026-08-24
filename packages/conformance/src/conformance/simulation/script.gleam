@@ -428,32 +428,62 @@ fn tool_table(rng: Rng) -> #(List(#(String, ToolBehavior)), Rng) {
 
 fn interventions(rng: Rng) -> #(List(Intervention), Rng) {
   let #(count, rng) = random.weighted(rng, [#(4, 0), #(4, 1), #(2, 2)], 0)
-  random.list_of(rng, count, intervention)
+  let #(drawn, rng) = random.list_of(rng, count, intervention)
+  // Two identical interventions are one intervention: they fire under
+  // one claim, so a script that listed both would describe work it does
+  // not do.
+  #(list.unique(drawn), rng)
 }
 
 fn intervention(rng: Rng) -> #(Intervention, Rng) {
-  let #(trigger, rng) = trigger(rng)
   let #(kind, rng) = random.int_between(rng, 1, 100)
   case kind {
-    n if n <= 40 -> #(Steer(trigger:, text: "steered"), rng)
-    n if n <= 65 -> #(FollowUp(trigger:, text: "followed up"), rng)
-    _ -> #(Abort(trigger:), rng)
+    n if n <= 40 -> {
+      let #(trigger, rng) = live_trigger(rng)
+      #(Steer(trigger:, text: "steered"), rng)
+    }
+    n if n <= 65 -> {
+      let #(trigger, rng) = live_trigger(rng)
+      #(FollowUp(trigger:, text: "followed up"), rng)
+    }
+    _ -> {
+      let #(trigger, rng) = abort_trigger(rng)
+      #(Abort(trigger:), rng)
+    }
   }
 }
 
-fn trigger(rng: Rng) -> #(Trigger, Rng) {
+// Where a queue admission can land and mean something: while an effect
+// is in flight, so the settlement that follows has to lose its seq race
+// to it.
+//
+// `AtTerminalCommit` is deliberately not among these. That trigger fires
+// after the terminal transaction is already durable, so the operation it
+// would attach to no longer exists and admission can only be refused —
+// and because it fires asynchronously from the writer, a script with a
+// second operation could have it attach to *that* one instead, which is
+// a race with no property behind it. Cancellation is the one thing worth
+// racing a terminal commit with, and it keeps the trigger.
+fn live_trigger(rng: Rng) -> #(Trigger, Rng) {
   let #(turn, rng) = random.int_between(rng, 0, 2)
   let #(index, rng) = random.int_between(rng, 0, 1)
   let #(name, rng) = random.pick(rng, ["read", "write", "probe"], "read")
   let #(kind, rng) = random.int_between(rng, 1, 100)
-  case kind {
-    n if n <= 45 -> #(DuringTurn(turn:), rng)
-    n if n <= 72 -> #(
+  case kind <= 60 {
+    True -> #(DuringTurn(turn:), rng)
+    False -> #(
       DuringCall(
         call: "t" <> int.to_string(turn) <> int.to_string(index) <> name,
       ),
       rng,
     )
-    _ -> #(AtTerminalCommit, rng)
+  }
+}
+
+fn abort_trigger(rng: Rng) -> #(Trigger, Rng) {
+  let #(terminal, rng) = random.chance(rng, 35)
+  case terminal {
+    True -> #(AtTerminalCommit, rng)
+    False -> live_trigger(rng)
   }
 }

@@ -184,6 +184,44 @@ pub fn abort_at_the_terminal_commit_corpus_test() {
   expect_case(terminal, [fault.CrashAtCommit(ordinal: 2)])
 }
 
+pub fn crash_on_the_terminal_commit_corpus_test() {
+  // Found by a soak at seed 5377, and the reason the runner now waits
+  // for the writer's post-commit seam before taking a terminal result.
+  // A terminal-racing intervention holds that seam open; the commit it
+  // was armed on is already visible in the store, so the runner used to
+  // call the run finished while the crash was still queued behind the
+  // intervention, and reported a bomb that never went off.
+  //
+  // Kept as a case rather than as a seed because the generator no longer
+  // draws a steer at the terminal commit — a hand-built script still
+  // can, and the runner must still fire the crash under it.
+  let racing =
+    script.Script(
+      registry: [#("read", ReplaySafe)],
+      tools: [#("read", script.ToolOk(text: "out:read"))],
+      ops: [
+        script.RunOp(
+          prompt: "answer and finish",
+          settles: [script.Answer(text: "answered", tokens: 5)],
+          post: script.Answer(text: "after compaction", tokens: 2),
+        ),
+      ],
+      threshold_after: None,
+      structural: script.Generated(split: False),
+      interventions: [
+        script.Steer(trigger: script.AtTerminalCommit, text: "steered"),
+      ],
+      poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+    )
+  // The shape this case depends on: the terminal transaction is the last
+  // of six commits, so a crash armed there is armed on the seam that the
+  // intervention holds open. Asserted, so a change in the commit
+  // sequence retires the case loudly instead of quietly.
+  assert runner.execute(racing, fault.none()).commits == 6
+  expect_case(racing, [fault.CrashAtCommit(ordinal: 6)])
+  expect_case(racing, [fault.CrashAtCommit(ordinal: 5)])
+}
+
 fn expect_case(scripted: script.Script, faults: List(fault.Fault)) -> Nil {
   case runner.verify_case(scripted, fault.Schedule(faults:)) {
     Ok(Nil) -> Nil
