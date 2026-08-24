@@ -13,7 +13,7 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ### State of the world
 
-M3's acceptance holds and everything is on `main`: **724 Gleam tests
+M3's acceptance holds and everything is on `main`: **717 Gleam tests
 across eleven packages plus two Go suites**, gate ~40 s, tree clean.
 The acceptance flow — prompt, streamed deltas, a subagent strand created
 and reporting back durably, an escalation approved over the wire with
