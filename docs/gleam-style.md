@@ -546,7 +546,7 @@ won't use any at all") and in Loom's security model:
 These rules from the implementation spec (§0.2) are normative here and
 tighten the ecosystem defaults:
 
-1. **Toolchain**: Gleam ≥ 1.6, Erlang/OTP ≥ 27. `gleam format` enforced; no
+1. **Toolchain**: Gleam ≥ 1.11, Erlang/OTP ≥ 27. `gleam format` enforced; no
    warnings.
 2. **Total decoders**: every durability or wire boundary decodes with a
    `Decoder(t)` returning `Result(t, CorruptionReport)`. Partial decoding is

@@ -51,7 +51,7 @@ I → G            J → G,I          K → A,B,C        L → A,C,K        M �
 
 ### 0.2 Conventions (all WPs)
 
-- Gleam `>= 1.6`, Erlang/OTP `>= 27`. `gleam format` enforced; no warnings.
+- Gleam `>= 1.11`, Erlang/OTP `>= 27`. `gleam format` enforced; no warnings.
 - Every public function documented; every ADT constructor's invariants stated in its doc comment.
 - **Total decoders**: every durability/wire boundary uses `Decoder(t)` returning `Result(t, CorruptionReport)`. Partial decoding is a bug class, not a style choice.
 - **No `panic`/`let assert` outside tests** except for documented invariant violations that must fault the process (mirrors pi's "failed admitted commit faults the harness").
