@@ -4,8 +4,16 @@ gleam = ">= 1.11.0"
 
 [dependencies]
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 storage = { path = "../storage" }
+session = { path = "../session" }
+machine = { path = "../machine" }
+runtime = { path = "../runtime" }
+provider = { path = "../provider" }
+broker = { path = "../broker" }
+tools = { path = "../tools" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
