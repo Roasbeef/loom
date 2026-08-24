@@ -6,7 +6,7 @@ gleam = ">= 1.11.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 storage = { path = "../storage" }
-machine = { path = "../machine" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
