@@ -10,3 +10,5 @@ machine = { path = "../machine" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
+sqlight = ">= 1.0.0 and < 2.0.0"
