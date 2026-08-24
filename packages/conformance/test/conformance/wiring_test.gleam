@@ -20,6 +20,7 @@ import machine/strand.{ModelIdentity, StrandConfiguration}
 import provider/gateway
 import provider/http
 import provider/model
+import provider/retry
 import provider/secret
 import provider/stream
 import runtime/effects
@@ -163,10 +164,44 @@ fn user(text: String) -> message.AgentMessage {
 
 pub fn request_target_uses_gateway_facts_when_identity_matches_test() {
   // The captured identity agrees with the role's resolution, so the
-  // dispatch target carries the gateway's full model facts.
+  // dispatch target carries the gateway's model facts — except thinking,
+  // which is always the strand's per-turn level (here ThinkingMax →
+  // ThinkingHigh), never the route's static configuration.
   let target =
     wiring.request_target(wide_config(), configuration_for("acme", "loom-1"))
-  assert target == model.ForResolved(resolved: routed_model())
+  assert target
+    == model.ForResolved(
+      resolved: model.ResolvedModel(
+        ..routed_model(),
+        thinking: model.ThinkingHigh,
+      ),
+    )
+}
+
+pub fn request_target_carries_per_turn_thinking_level_test() {
+  // The route's static config says ThinkingOff; a turn that raises its
+  // level must reach the provider with that raised level, and a turn
+  // that switches thinking off must not inherit a route budget.
+  let configuration = configuration_for("acme", "loom-1")
+  let medium =
+    strand.StrandConfiguration(
+      ..configuration,
+      thinking_level: strand.ThinkingMedium,
+    )
+  let assert model.ForResolved(resolved:) =
+    wiring.request_target(wide_config(), medium)
+  assert resolved.thinking == model.ThinkingMedium
+  let off =
+    strand.StrandConfiguration(
+      ..configuration,
+      thinking_level: strand.ThinkingOff,
+    )
+  let assert model.ForResolved(resolved:) =
+    wiring.request_target(wide_config(), off)
+  assert resolved.thinking == model.ThinkingOff
+  // The other model facts still come from the gateway's resolution.
+  assert resolved.context_window == 200_000
+  assert resolved.max_output_tokens == 8192
 }
 
 pub fn request_target_identity_mismatch_keeps_captured_identity_test() {
@@ -212,7 +247,13 @@ pub fn provider_request_field_mapping_test() {
   assert request.messages == [user("hello")]
   assert request.system == Some("unit-test system prompt")
   assert request.max_output_tokens == None
-  assert request.target == model.ForResolved(resolved: routed_model())
+  assert request.target
+    == model.ForResolved(
+      resolved: model.ResolvedModel(
+        ..routed_model(),
+        thinking: model.ThinkingHigh,
+      ),
+    )
   // Active names are rendered from the registry; the unregistered
   // "ghost" is omitted.
   assert list.map(request.tools, fn(spec) { spec.name }) == ["bash", "fs_read"]
@@ -237,9 +278,13 @@ pub fn poll_requests_settle_in_band_as_unsupported_test() {
       configuration: configuration_for("acme", "loom-1"),
       stream_options: json.Object([]),
     ))
-  let assert Ok(#([], stream.Failed(stream.TransportFailed(reason:)))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 1000)
+  let assert stream.StreamError(api_error_type: _, message: reason) = error
   assert string.contains(reason, "deferred polls")
+  // Terminally classified: the machine must not burn its retry ladder
+  // on a surface that can never succeed.
+  assert retry.classify(error) == retry.Terminal
 }
 
 // --- clearance and replay -------------------------------------------------

@@ -19,7 +19,11 @@
 ////   gaps, so a stored identity keeps working after a routing change.
 //// - **Thinking levels.** The machine's seven-point scale collapses onto
 ////   the provider's four-point scale: off→off, minimal/low→low,
-////   medium→medium, high/xhigh/max→high.
+////   medium→medium, high/xhigh/max→high. The strand's per-turn level is
+////   carried onto the dispatch target on every path — including when the
+////   gateway's role resolution supplies the other model facts — so a
+////   route's static thinking configuration never overrides what the
+////   turn asked for.
 //// - **Context and options.** `GenerationRequest.context` is already the
 ////   projected conversation, oldest first, and maps verbatim onto
 ////   `ProviderRequest.messages`. `stream_options` is the runtime's opaque
@@ -33,8 +37,10 @@
 //// - **Polls and summaries.** `ProviderRequest` cannot express a
 ////   deferred continuation fetch, and structural summaries have no
 ////   provider surface yet, so `PollRequest`/`SummaryRequest` settle
-////   immediately as in-band transport failures rather than dispatching a
-////   nonsensical generation. Default hooks never reach either path
+////   immediately as in-band provider errors rather than dispatching a
+////   nonsensical generation; the failure is terminally classified so
+////   the retry ladder is not burned on a permanently-absent surface.
+////   Default hooks never reach either path
 ////   (resolution always succeeds but responses never settle `Deferred`,
 ////   and structural decisions are declined). Recorded as a spec gap for
 ////   M3.
@@ -185,11 +191,20 @@ fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
   }
 }
 
-// A handle whose single event is an in-band transport failure. The
-// machine's retry ladder treats it like any other failed attempt.
+// A handle whose single event is an in-band, terminally-classified
+// failure. `StreamError` with a non-transient error type is Terminal
+// under `retry.classify`, so the machine fails the operation at once
+// instead of burning its whole retry ladder against a surface that can
+// never succeed (a transport failure would read as retryable).
 fn unsupported(reason: String) -> StreamHandle {
   let events = process.new_subject()
-  process.send(events, stream.Failed(error: stream.TransportFailed(reason:)))
+  process.send(
+    events,
+    stream.Failed(error: stream.StreamError(
+      api_error_type: "unsupported_request",
+      message: reason,
+    )),
+  )
   stream.StreamHandle(events:)
 }
 
@@ -227,7 +242,10 @@ pub fn provider_request(
 /// `ForResolved` (recovery must re-dispatch exactly what was committed);
 /// the gateway's role resolution supplies the model facts when it agrees
 /// with the captured identity, and the config's fallback facts fill in
-/// otherwise.
+/// otherwise. On both paths the target's `thinking` is the strand's
+/// per-turn level, never the route's static configuration — a turn that
+/// raises or lowers its thinking budget must reach the provider with
+/// exactly that budget.
 ///
 /// ## Examples
 ///
@@ -241,11 +259,12 @@ pub fn request_target(
   configuration: StrandConfiguration,
 ) -> RequestTarget {
   let identity = configuration.model
+  let thinking = thinking_level(configuration.thinking_level)
   let fallback =
     ResolvedModel(
       provider: identity.provider,
       model_id: identity.model_id,
-      thinking: thinking_level(configuration.thinking_level),
+      thinking:,
       context_window: config.fallback_context_window,
       max_output_tokens: config.fallback_max_output_tokens,
     )
@@ -255,7 +274,7 @@ pub fn request_target(
         resolved.provider == identity.provider
         && resolved.model_id == identity.model_id
       {
-        True -> ForResolved(resolved:)
+        True -> ForResolved(resolved: ResolvedModel(..resolved, thinking:))
         False -> ForResolved(resolved: fallback)
       }
     Error(_missing) -> ForResolved(resolved: fallback)
