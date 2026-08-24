@@ -229,7 +229,18 @@ hundred wire seeds, and the pinned corpus — in about twenty seconds.
 `SOAK_FROM` (default 1), with shrinking. Budget roughly a second per
 seed. It is opt-in through the environment rather than a separate
 target's worth of machinery, so `LOOM_SOAK_SEEDS=500 gleam test` inside
-`packages/conformance` does the same thing.
+`packages/conformance` does the same thing — with one caveat that the
+target handles for you.
+
+The test framework imposes a per-test timeout of about a minute, and it
+reports a run that exceeds it as a timeout rather than as a result. Since
+per-seed cost varies, a single invocation asking for more than a few
+dozen seeds can trip it and look like a hang in whatever the runner
+happened to be doing. `make soak` therefore runs in chunks of
+`SOAK_CHUNK` seeds (default 50), advancing the starting seed and stopping
+at the first chunk that fails, which is why the seed range is echoed
+before each one. Driving the environment variables directly means
+choosing a count that fits inside the timeout yourself.
 
 A soak failure prints the same reproduction line as any other. Re-run
 that seed alone through the fast path first: if it reproduces, the

@@ -87,11 +87,25 @@ conformance: ## Run the shared suites (storage conformance + wiring + e2e)
 
 SOAK_SEEDS ?= 2000
 SOAK_FROM  ?= 1
+# Seeds per test-runner invocation. The test framework imposes a per-test
+# timeout (about a minute), and per-seed cost varies enough that a single
+# invocation of more than a few dozen seeds can trip it and report a
+# timeout rather than a result. The soak therefore runs in chunks; raise
+# this only if you have measured that your seeds are cheap.
+SOAK_CHUNK ?= 50
 
 .PHONY: soak
-soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n)
-	@cd packages/conformance && \
-		LOOM_SOAK_SEEDS=$(SOAK_SEEDS) LOOM_SOAK_FROM=$(SOAK_FROM) gleam test
+soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=n)
+	@from=$(SOAK_FROM); left=$(SOAK_SEEDS); \
+	while [ $$left -gt 0 ]; do \
+		n=$$( [ $$left -lt $(SOAK_CHUNK) ] && echo $$left || echo $(SOAK_CHUNK) ); \
+		echo "==> seeds $$from..$$(( from + n - 1 ))"; \
+		( cd packages/conformance && \
+			LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from gleam test ) || \
+			{ echo "soak FAILED in seeds $$from..$$(( from + n - 1 ))"; exit 1; }; \
+		from=$$(( from + n )); left=$$(( left - n )); \
+	done; \
+	echo "soak clean: $(SOAK_SEEDS) seeds from $(SOAK_FROM)"
 
 # ---------------------------------------------------------------- utilities
 
