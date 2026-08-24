@@ -54,6 +54,7 @@ pub fn effects(
   effects.Effects(
     clock:,
     entropy: fn() { 1_000_000 + recorder.bump(rec, "entropy") * 104_729 },
+    timers: effects.real_timers(),
     provider: effects.ProviderSurface(
       request: fn(spec) {
         let _count = recorder.bump(rec, "provider")

@@ -211,7 +211,9 @@ pub fn start(
       |> process.select_monitors(EffectExit)
     // Recovery is just the first drive: kick ourselves.
     process.send(subject, Nudge)
-    let _timer = process.send_after(subject, options.poll_interval_ms, PollTick)
+    options.effects.timers.after(options.poll_interval_ms, fn() {
+      wake(subject, PollTick)
+    })
     actor.initialised(State(
       self: subject,
       writer: process.named_subject(options.writer),
@@ -283,8 +285,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Nudge -> finish(drive(state))
     PollTick -> {
-      let _timer =
-        process.send_after(state.self, state.poll_interval_ms, PollTick)
+      let self = state.self
+      state.effects.timers.after(state.poll_interval_ms, fn() {
+        wake(self, PollTick)
+      })
       let out = drive(State(..state, poll_permit: True))
       case out {
         Continue(next) -> finish(Continue(State(..next, poll_permit: False)))
@@ -590,12 +594,31 @@ fn commit_then(
   }
 }
 
+// A message for a strand that may have died since it was arranged: a
+// timer whose deadline outlived its strand, or an effect reporting an
+// outcome to the incarnation that dispatched it. Losing either is
+// harmless — the durable state decides everything, and a restarted
+// strand re-plans from it — but raising at an unregistered name inside
+// someone else's process is not: it turns an ordinary reboot into a
+// crash report from a process the supervisor knows nothing about.
+fn wake(subject: Subject(Message), message: Message) -> Nil {
+  case process.subject_owner(subject) {
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        True -> process.send(subject, message)
+        False -> Nil
+      }
+    Error(Nil) -> Nil
+  }
+}
+
 fn park_retry(state: State, at: Int, now: Int) -> Outcome {
   case state.retry_wake {
     Some(wake) if wake == at -> Continue(state)
     _ -> {
       let delay = int_max(1, at - now)
-      let _timer = process.send_after(state.self, delay, RetryDue)
+      let self = state.self
+      state.effects.timers.after(delay, fn() { wake(self, RetryDue) })
       Continue(State(..state, retry_wake: Some(at)))
     }
   }
@@ -955,7 +978,7 @@ fn spawn_provider(
             reason: "timed out waiting for the provider stream to settle",
           ))
       }
-      process.send(parent, ProviderDone(token:, terminal:))
+      wake(parent, ProviderDone(token:, terminal:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
@@ -976,7 +999,7 @@ fn spawn_tool(
   let pid =
     process.spawn_unlinked(fn() {
       let outcome = runner(run)
-      process.send(parent, ToolDone(token:, outcome:))
+      wake(parent, ToolDone(token:, outcome:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [

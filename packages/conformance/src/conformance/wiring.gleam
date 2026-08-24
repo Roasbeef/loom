@@ -161,6 +161,7 @@ pub fn build_effects(config: Config) -> Effects {
   effects.Effects(
     clock: config.clock,
     entropy: config.entropy,
+    timers: effects.real_timers(),
     provider: effects.ProviderSurface(
       request: fn(spec) { dispatch(config, spec) },
       timeout_ms: config.provider_timeout_ms,

@@ -23,6 +23,7 @@ import core/message.{
   type AgentMessage, type DeferredHandle, type ToolCall, AssistantMessage,
   Errored,
 }
+import gleam/erlang/process
 import gleam/option.{type Option, None, Some}
 import machine/operation.{type ReplayPolicy, type StructuralPreparation}
 import machine/planner.{
@@ -194,16 +195,51 @@ pub type Hooks {
   )
 }
 
+/// The driver's own delayed wakeups, injected so a simulated session can
+/// run on logical rather than wall-clock time.
+///
+/// Constructor invariants: `after` arranges for `wake` to be called once,
+/// no earlier than `delay_ms` milliseconds on this session's time base,
+/// and must return promptly without blocking the caller. A dropped wake
+/// costs liveness only — every deadline the driver sets is also
+/// discoverable by re-planning — but a wake delivered twice is harmless
+/// too, since the driver re-reads its durable state on every pass.
+pub type Timers {
+  Timers(after: fn(Int, fn() -> Nil) -> Nil)
+}
+
+/// Wall-clock timers: each deadline waits on its own short-lived
+/// unlinked process. Production wiring passes this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // effects.Effects(.., timers: effects.real_timers())
+/// ```
+///
+pub fn real_timers() -> Timers {
+  Timers(after: fn(delay_ms, wake) {
+    let _pid =
+      process.spawn_unlinked(fn() {
+        process.sleep(delay_ms)
+        wake()
+      })
+    Nil
+  })
+}
+
 /// Everything the strand driver needs to touch the world.
 ///
 /// Constructor invariants: `clock` is the driver's time source (tests
 /// inject fixtures); `entropy` returns a fresh seed for every id
 /// generator — values must never repeat within a session's lifetime, or
-/// re-minted ids could collide with committed ones.
+/// re-minted ids could collide with committed ones; `timers` schedules
+/// the driver's own wakeups and shares `clock`'s time base.
 pub type Effects {
   Effects(
     clock: Clock,
     entropy: fn() -> Int,
+    timers: Timers,
     provider: ProviderSurface,
     tools: ToolSurface,
     hooks: Hooks,
