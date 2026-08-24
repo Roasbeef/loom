@@ -58,6 +58,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
 import storage/storage.{
@@ -129,11 +130,30 @@ pub type OpenError {
   /// Another writer holds an unexpired lease on this session file. Retry
   /// after it expires, or shut the other writer down.
   LeaseHeld(owner: String, expires_at_ms: Int)
-  /// The file exists but is not a version-1 Loom session, or its catalog
-  /// failed a total decode.
+  /// The file's catalog failed a total decode, or the file is not a Loom
+  /// session at all.
   CorruptSession(report: CorruptionReport)
+  /// The stored `storage_version` cannot be opened by this build:
+  /// `found > supported` means the file was written by a newer Loom
+  /// (refuse rather than misread it); `found < supported` means an older
+  /// file for which the caller's migration chain has no step (see
+  /// `open_with_migrations`).
+  UnsupportedVersion(found: Int, supported: Int)
   /// The database could not be opened or initialized.
   OpenFailed(reason: String)
+}
+
+/// One migrate-on-open step: `statements` upgrade a session file from
+/// `from_version` to `from_version + 1`.
+///
+/// Constructor invariants: `statements` is a semicolon-separated SQL batch
+/// executed inside one transaction together with the version bump; a step
+/// advances exactly one version. Steps run after the current schema's
+/// `CREATE ... IF NOT EXISTS` DDL has been applied, so they mostly alter
+/// or backfill. The chain owner (the session layer, WP-C) keeps steps
+/// ordered and contiguous.
+pub type Migration {
+  Migration(from_version: Int, statements: String)
 }
 
 /// A branch-index segment's metadata, for diagnostics and conformance
@@ -238,6 +258,29 @@ pub fn open(
   config: Config,
   clock: Clock,
 ) -> Result(Storage(Subject(Message)), OpenError) {
+  open_with_migrations(config, clock, [])
+}
+
+/// `open` with a migrate-on-open chain: a stored `storage_version` below
+/// this build's runs the matching `Migration` steps in ascending order —
+/// each step's statements and its version bump commit atomically — before
+/// the lease is acquired; a version above this build's is refused with
+/// `UnsupportedVersion` (never misread), as is an older version the chain
+/// has no step for. The chain itself is owned by the session layer
+/// (WP-C), which passes it here; today it is empty because version 1 is
+/// the only version that has ever existed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.open_with_migrations(config, clock, session.migration_chain())
+/// ```
+///
+pub fn open_with_migrations(
+  config: Config,
+  clock: Clock,
+  migrations: List(Migration),
+) -> Result(Storage(Subject(Message)), OpenError) {
   use conn <- result.try(
     sqlight.open(config.path)
     |> result.map_error(fn(error) {
@@ -245,7 +288,7 @@ pub fn open(
     }),
   )
   let #(now, clock) = clock.read(clock)
-  case initialize(conn, config, now) {
+  case initialize(conn, config, now, migrations) {
     Ok(fence) -> start_actor(conn, config, clock, fence)
     Error(open_error) -> {
       let _ = sqlight.close(conn)
@@ -258,12 +301,13 @@ fn initialize(
   conn: Connection,
   config: Config,
   now: Int,
+  migrations: List(Migration),
 ) -> Result(Int, OpenError) {
   use Nil <- result.try(
     pragmas(conn, config.busy_timeout_ms)
     |> result.map_error(open_failed),
   )
-  use Nil <- result.try(ensure_schema(conn, now))
+  use Nil <- result.try(ensure_schema(conn, now, migrations))
   acquire_lease(conn, config, now)
 }
 
@@ -289,7 +333,11 @@ fn pragmas(conn: Connection, busy_timeout_ms: Int) -> Result(Nil, Fail) {
   Nil
 }
 
-fn ensure_schema(conn: Connection, now: Int) -> Result(Nil, OpenError) {
+fn ensure_schema(
+  conn: Connection,
+  now: Int,
+  migrations: List(Migration),
+) -> Result(Nil, OpenError) {
   use Nil <- result.try(
     sqlight.exec(schema_sql, on: conn)
     |> result.map_error(fn(error) {
@@ -322,16 +370,68 @@ fn ensure_schema(conn: Connection, now: Int) -> Result(Nil, OpenError) {
       |> result.replace(Nil)
     }
     Ok([version]) if version == storage_version -> Ok(Nil)
-    Ok([version, ..]) ->
+    // A newer file is refused outright; an older one enters the chain,
+    // which refuses at the first missing step.
+    Ok([version]) if version > storage_version ->
+      Error(UnsupportedVersion(found: version, supported: storage_version))
+    Ok([version]) -> migrate(conn, version, migrations)
+    Ok([_, ..]) ->
       Error(
         CorruptSession(report: corruption.report(
           at: "storage/sqlite.open",
-          on: "session.storage_version",
-          expected: "version " <> int.to_string(storage_version),
-          context: int.to_string(version),
+          on: "session catalog",
+          expected: "exactly one session row",
+          context: "multiple rows",
         )),
       )
     Error(fail) -> Error(open_failed(fail))
+  }
+}
+
+// Runs the migrate-on-open chain from `from` up to `storage_version`. One
+// transaction per step: the step's statements and its version bump commit
+// together, so a crash mid-chain leaves a file that simply resumes the
+// chain on the next open.
+fn migrate(
+  conn: Connection,
+  from: Int,
+  migrations: List(Migration),
+) -> Result(Nil, OpenError) {
+  case from == storage_version {
+    True -> Ok(Nil)
+    False ->
+      case list.find(migrations, fn(step) { step.from_version == from }) {
+        Error(Nil) ->
+          Error(UnsupportedVersion(found: from, supported: storage_version))
+        Ok(Migration(statements:, ..)) -> {
+          let stepped = {
+            use Nil <- result.try(begin_immediate(conn))
+            let body = {
+              use Nil <- result.try(
+                sqlight.exec(statements, on: conn) |> result.map_error(FailSql),
+              )
+              use _ <- result.try(run(
+                conn,
+                "UPDATE session SET storage_version = ?1",
+                [sqlight.int(from + 1)],
+                decode.dynamic,
+              ))
+              commit_sql(conn)
+            }
+            case body {
+              Ok(Nil) -> Ok(Nil)
+              Error(fail) -> {
+                let _ = rollback(conn)
+                Error(fail)
+              }
+            }
+          }
+          case stepped {
+            Ok(Nil) -> migrate(conn, from + 1, migrations)
+            Error(fail) -> Error(open_failed(fail))
+          }
+        }
+      }
   }
 }
 
@@ -539,6 +639,407 @@ pub fn segments(
   handle: Subject(Message),
 ) -> Result(List(Segment), StorageError) {
   process.call_forever(handle, Segments)
+}
+
+// --- precise rewrite (pi §2.9, repo-level admin op) -----------------------
+
+/// The outcome of a precise rewrite: the file's new generation counter —
+/// external indexes (WP-K search) key their cursors on it and re-index on
+/// a mismatch — and how many entries the transform replaced.
+pub type Rewrite {
+  Rewrite(generation: Int, entries_rewritten: Int)
+}
+
+/// Why a precise rewrite refused or failed. In every failure case the
+/// original session file is untouched: the rewrite works on a copy and
+/// only an atomic rename replaces the original.
+pub type RewriteError {
+  /// A writer holds an unexpired lease on the session file. A rewrite is
+  /// an offline admin operation; close (or let expire) the writer first.
+  RewriteLeaseHeld(owner: String, expires_at_ms: Int)
+  /// A stored payload failed its total decode, the file is not a
+  /// current-version Loom session, or the transform broke an invariant
+  /// (changed an entry's id, parent, or kind, or reported corruption).
+  RewriteCorrupt(report: CorruptionReport)
+  /// The copy, update, vacuum, or swap failed at the SQL or file level.
+  RewriteFailed(reason: String)
+}
+
+/// Precisely rewrites a **closed** session file: copies it coherently with
+/// `VACUUM INTO`, applies `rewrite` to every entry payload in the copy
+/// (`Ok(None)` keeps the entry, `Ok(Some(new))` replaces its payload —
+/// id, parent, and kind must be preserved; retained-tail copies inside
+/// compaction entries are ordinary payload content and are rewritten with
+/// them), bumps the generation counter in the session metadata, vacuums
+/// the copy so the replaced bytes do not survive in free pages, and
+/// atomically swaps the copy over the original via rename.
+///
+/// This is the sole sanctioned exception to "entries are never modified"
+/// (pi §2.9): compliance-grade erasure. No harness surface calls it; it is
+/// repository tooling above the harness. The audit contract is that after
+/// erasing a string, that string appears nowhere in the new file's raw
+/// bytes.
+///
+/// The clock is used only to judge writer-lease expiry; an unexpired
+/// lease refuses the rewrite with `RewriteLeaseHeld`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.rewrite_into(path: "/tmp/s.db", clock:, rewrite: erase)
+/// // -> Ok(sqlite.Rewrite(generation: 1, entries_rewritten: 3))
+/// ```
+///
+pub fn rewrite_into(
+  path path: String,
+  clock clock: Clock,
+  rewrite rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+) -> Result(Rewrite, RewriteError) {
+  let temp = path <> ".rewrite"
+  // A leftover copy from a crashed rewrite is dead weight; remove it.
+  let _ = simplifile.delete(temp)
+  let #(now, _clock) = clock.read(clock)
+  use Nil <- result.try(require_session_file(path))
+  use Nil <- result.try(copy_source(path, temp, now))
+  case rewrite_copy(temp, rewrite) {
+    Ok(outcome) ->
+      case simplifile.rename(at: temp, to: path) {
+        Ok(Nil) -> {
+          // Stale WAL/SHM siblings of the replaced file would still carry
+          // the old bytes on disk; SQLite itself would discard them (salt
+          // mismatch), but the audit contract says the erased content must
+          // not survive anywhere.
+          let _ = simplifile.delete(path <> "-wal")
+          let _ = simplifile.delete(path <> "-shm")
+          Ok(outcome)
+        }
+        Error(error) -> {
+          let _ = simplifile.delete(temp)
+          Error(RewriteFailed(
+            reason: "swap: " <> simplifile.describe_error(error),
+          ))
+        }
+      }
+    Error(error) -> {
+      let _ = simplifile.delete(temp)
+      Error(error)
+    }
+  }
+}
+
+/// Reads the session file's precise-rewrite generation counter without
+/// acquiring the writer lease. Fresh files are generation 0; every
+/// precise rewrite bumps it by one, so an external index whose cursors
+/// are keyed on an older generation knows to re-index from scratch.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.generation(path: "/tmp/s.db") == Ok(0)
+/// ```
+///
+pub fn generation(path path: String) -> Result(Int, RewriteError) {
+  use Nil <- result.try(require_session_file(path))
+  case sqlight.open(path) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let outcome = {
+        use #(_fields, generation) <- result.map(read_generation(conn))
+        generation
+      }
+      let _ = sqlight.close(conn)
+      outcome
+    }
+  }
+}
+
+// `sqlight.open` creates a missing file, so path-level operations that
+// must not conjure empty databases check existence first.
+fn require_session_file(path: String) -> Result(Nil, RewriteError) {
+  case simplifile.is_file(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error(RewriteFailed(reason: "no session file at " <> path))
+    Error(error) ->
+      Error(RewriteFailed(reason: simplifile.describe_error(error)))
+  }
+}
+
+fn rewrite_fail(fail: Fail) -> RewriteError {
+  case fail {
+    FailSql(error) ->
+      RewriteFailed(reason: "sqlite: " <> describe_sqlight(error))
+    FailCorrupt(report) -> RewriteCorrupt(report:)
+    FailStale(_) | FailLease(_) | FailUnknownEntry(_) ->
+      RewriteFailed(reason: "unexpected failure during rewrite")
+  }
+}
+
+// Verifies the source is a current-version, unleased session file and
+// copies it coherently into `temp` with `VACUUM INTO` (which reads
+// through any WAL, so the copy is complete and compact).
+fn copy_source(
+  path: String,
+  temp: String,
+  now: Int,
+) -> Result(Nil, RewriteError) {
+  case sqlight.open(path) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let outcome = {
+        use versions <- result.try(
+          run(
+            conn,
+            "SELECT storage_version FROM session",
+            [],
+            decode.at([0], decode.int),
+          )
+          |> result.map_error(rewrite_fail),
+        )
+        use Nil <- result.try(case versions {
+          [version] ->
+            case version == storage_version {
+              True -> Ok(Nil)
+              False ->
+                Error(
+                  RewriteCorrupt(report: corruption.report(
+                    at: "storage/sqlite.rewrite_into",
+                    on: "session.storage_version",
+                    expected: "version "
+                      <> int.to_string(storage_version)
+                      <> " (open the file once to migrate it first)",
+                    context: int.to_string(version),
+                  )),
+                )
+            }
+          [] | [_, ..] ->
+            Error(
+              RewriteCorrupt(report: corruption.report(
+                at: "storage/sqlite.rewrite_into",
+                on: "session catalog",
+                expected: "exactly one session row",
+                context: int.to_string(list.length(versions)) <> " rows",
+              )),
+            )
+        })
+        let lease_decoder = {
+          use owner <- decode.field(0, decode.string)
+          use expires_at_ms <- decode.field(1, decode.int)
+          decode.success(#(owner, expires_at_ms))
+        }
+        use leases <- result.try(
+          run(
+            conn,
+            "SELECT owner_id, expires_at_ms FROM writer_lease",
+            [],
+            lease_decoder,
+          )
+          |> result.map_error(rewrite_fail),
+        )
+        use Nil <- result.try(case leases {
+          [] -> Ok(Nil)
+          [#(owner, expires_at_ms), ..] ->
+            case expires_at_ms > now {
+              True -> Error(RewriteLeaseHeld(owner:, expires_at_ms:))
+              False -> Ok(Nil)
+            }
+        })
+        run(conn, "VACUUM INTO " <> sql_quote(temp), [], decode.dynamic)
+        |> result.map_error(rewrite_fail)
+        |> result.replace(Nil)
+      }
+      let _ = sqlight.close(conn)
+      outcome
+    }
+  }
+}
+
+// Applies the transform to every entry payload of the copy inside one
+// transaction, bumps the generation, then vacuums so no replaced bytes
+// survive in free pages.
+fn rewrite_copy(
+  temp: String,
+  rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+) -> Result(Rewrite, RewriteError) {
+  case sqlight.open(temp) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let outcome = {
+        use Nil <- result.try(
+          begin_immediate(conn) |> result.map_error(rewrite_fail),
+        )
+        let row_decoder = {
+          use id_text <- decode.field(0, decode.string)
+          use payload <- decode.field(1, decode.bit_array)
+          decode.success(#(id_text, payload))
+        }
+        let body = {
+          use rows <- result.try(
+            run(conn, "SELECT id, payload FROM entries", [], row_decoder)
+            |> result.map_error(rewrite_fail),
+          )
+          use rewritten <- result.try(
+            list.try_fold(over: rows, from: 0, with: fn(count, row) {
+              rewrite_row(conn, row, rewrite, count)
+            }),
+          )
+          use generation <- result.try(bump_generation(conn))
+          use Nil <- result.map(
+            commit_sql(conn) |> result.map_error(rewrite_fail),
+          )
+          Rewrite(generation:, entries_rewritten: rewritten)
+        }
+        case body {
+          Ok(outcome) ->
+            run(conn, "VACUUM", [], decode.dynamic)
+            |> result.map_error(rewrite_fail)
+            |> result.replace(outcome)
+          Error(error) -> {
+            let _ = rollback(conn)
+            Error(error)
+          }
+        }
+      }
+      let _ = sqlight.close(conn)
+      outcome
+    }
+  }
+}
+
+fn rewrite_row(
+  conn: Connection,
+  row: #(String, BitArray),
+  rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+  count: Int,
+) -> Result(Int, RewriteError) {
+  let #(id_text, blob) = row
+  use entry <- result.try(
+    entry_of_blob(blob)
+    |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+  )
+  use replacement <- result.try(
+    rewrite(entry) |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+  )
+  case replacement {
+    None -> Ok(count)
+    Some(new) -> {
+      use Nil <- result.try(check_placement(entry, new))
+      // Re-stamp placement from the stored row so a transform cannot move
+      // an entry even accidentally.
+      let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)
+      use _ <- result.map(
+        run(
+          conn,
+          "UPDATE entries SET payload = ?1, custom_type = ?2 WHERE id = ?3",
+          [
+            blob_of_json(codec.encode_entry(stamped)),
+            sqlight.nullable(sqlight.text, custom_type_of(stamped)),
+            sqlight.text(id_text),
+          ],
+          decode.dynamic,
+        )
+        |> result.map_error(rewrite_fail),
+      )
+      count + 1
+    }
+  }
+}
+
+fn check_placement(old: Entry, new: Entry) -> Result(Nil, RewriteError) {
+  let preserved =
+    old.id == new.id
+    && old.parent == new.parent
+    && storage.kind_of(old) == storage.kind_of(new)
+  case preserved {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        RewriteCorrupt(report: corruption.report(
+          at: "storage/sqlite.rewrite_into",
+          on: ids.entry_id_to_string(old.id),
+          expected: "a rewrite preserving entry id, parent, and kind",
+          context: "transform changed entry placement",
+        )),
+      )
+  }
+}
+
+// Reads `(other metadata fields, current generation)`; an absent metadata
+// blob or absent field is generation 0.
+fn read_generation(
+  conn: Connection,
+) -> Result(#(List(#(String, JsonValue)), Int), RewriteError) {
+  use rows <- result.try(
+    run(
+      conn,
+      "SELECT metadata FROM session",
+      [],
+      decode.at([0], decode.optional(decode.bit_array)),
+    )
+    |> result.map_error(rewrite_fail),
+  )
+  case rows {
+    [None] -> Ok(#([], 0))
+    [Some(blob)] -> {
+      let parsed = {
+        use value <- result.try(json_of_blob(blob, "session.metadata"))
+        case value {
+          json.Object(fields) ->
+            case list.key_find(fields, "generation") {
+              Ok(json.Int(generation)) -> Ok(#(fields, generation))
+              Error(Nil) -> Ok(#(fields, 0))
+              Ok(other) ->
+                Error(corruption.report(
+                  at: "storage/sqlite.rewrite_into",
+                  on: "session.metadata generation",
+                  expected: "an integer",
+                  context: json.to_string(other),
+                ))
+            }
+          other ->
+            Error(corruption.report(
+              at: "storage/sqlite.rewrite_into",
+              on: "session.metadata",
+              expected: "a json object",
+              context: json.to_string(other),
+            ))
+        }
+      }
+      parsed |> result.map_error(fn(report) { RewriteCorrupt(report:) })
+    }
+    [] | [_, ..] ->
+      Error(
+        RewriteCorrupt(report: corruption.report(
+          at: "storage/sqlite.rewrite_into",
+          on: "session catalog",
+          expected: "exactly one session row",
+          context: int.to_string(list.length(rows)) <> " rows",
+        )),
+      )
+  }
+}
+
+fn bump_generation(conn: Connection) -> Result(Int, RewriteError) {
+  use #(fields, current) <- result.try(read_generation(conn))
+  let generation = current + 1
+  let metadata =
+    json.Object(list.key_set(fields, "generation", json.Int(generation)))
+  run(
+    conn,
+    "UPDATE session SET metadata = ?1",
+    [blob_of_json(metadata)],
+    decode.dynamic,
+  )
+  |> result.map_error(rewrite_fail)
+  |> result.replace(generation)
+}
+
+// Quotes a file path as a SQL string literal — `VACUUM INTO` takes an
+// expression, and binding parameters is not supported for it everywhere.
+fn sql_quote(text: String) -> String {
+  "'" <> string.replace(in: text, each: "'", with: "''") <> "'"
 }
 
 // --- the actor -----------------------------------------------------------
