@@ -1,0 +1,1 @@
+{"v":1,"event":"escalation","seq":11,"body":{"escalation_id":"esc-1","op":"op-1","strand":"main","status":"pending","denial":{"reason":"connect to registry.npmjs.org:443 blocked by policy","source":"policy","wanted":[{"type":"network","network":{"mode":"proxy","allow":["registry.npmjs.org"],"proxy":"127.0.0.1:3128"}}]}}}

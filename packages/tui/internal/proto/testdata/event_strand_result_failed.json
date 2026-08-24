@@ -1,0 +1,1 @@
+{"v":1,"event":"strand_result","seq":14,"body":{"strand":"main","op":"op-1","status":"failed","error":{"code":"provider_error","message":"stream disconnected after 3 attempts"}}}

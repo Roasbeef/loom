@@ -1,0 +1,1 @@
+{"v":1,"event":"entry","seq":8,"body":{"strand":"main","entry":{"id":"0198c0de-0000-7000-8000-000000000008","parentId":"0198c0de-0000-7000-8000-000000000007","seq":8,"timestamp":1756000020000,"type":"compaction","summary":"Added bounded retry to the fetcher; tests pass.","retainedTail":[],"tokensBefore":41000,"fromHook":false}}}

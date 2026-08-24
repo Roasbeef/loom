@@ -1,0 +1,1 @@
+{"v":1,"event":"usage","seq":10,"body":{"strand":"main","op":"op-1","usage":{"input":1200,"output":300,"cacheRead":900,"cacheWrite":0,"totalTokens":1500,"cost":{"input":0.0036,"output":0.0045,"cacheRead":0.00027,"cacheWrite":0.0,"total":0.00837}}}}
