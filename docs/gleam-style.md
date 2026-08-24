@@ -337,11 +337,37 @@ it under a `# Panics` heading. Module docs may be long-form tutorials —
 `gleam/otp/actor` and `gleam/dynamic/decode` both carry ~150+ line worked
 examples, and the otp repo compiles its module-doc example as a real test.
 
-### Plain comments
+### Plain comments: the literate register
 
-Comment liberally — the *why*, constraints the code can't show, algorithm
-explanations inside `case` arms, RFC citations. `//` comments go on the line
-before the item, never trailing.
+Comment liberally, in a literate register. The reader of a Loom module
+should be able to follow the *story* of the code from its comments alone:
+long modules open sections with a short banner comment saying what the
+section owns; non-obvious function bodies open with a sentence or two of
+prose stating the mechanism and why it is shaped that way; `case` arms in
+intricate logic carry the reasoning for the arm, not a restatement of it.
+The stdlib's merge-sort commentary and this repo's broker and hashline
+modules are the register to imitate.
+
+Density has a direction, not a cap: every place where a reader would
+otherwise reconstruct intent from the code deserves prose, and invariants
+that live in another module's doc comment deserve a cross-reference at the
+site that relies on them. The old discipline still holds underneath — a
+comment that restates the next line is noise, and a wrong comment is worse
+than none, so comments state what the author verified, never what they
+hoped. `//` comments go on the line before the item, never trailing.
+
+### What the formatter decides, and what you do
+
+`gleam format` gives a call or signature exactly two layouts: everything
+on one line when the whole form fits in 80 columns, otherwise one
+argument per line. There is no packed middle mode and no configuration,
+so the vertical cost of a wide call is the formatter's canon — do not
+fight it, and do not hand-pack arguments; the gate would reject it.
+The one honest lever is writing forms that fit: drop call-site labels
+that add width without disambiguating (stdlib practice), name
+intermediates so the call takes short references, and split a function
+whose signature cannot fit rather than living with a tall one. Never
+trade clarity for a saved line.
 
 ### Deprecation
 
@@ -546,6 +572,11 @@ won't use any at all") and in Loom's security model:
 These rules from the implementation spec (§0.2) are normative here and
 tighten the ecosystem defaults:
 
+0. **Go in this repo** (`sandbox`, `tui`): gofmt preserves the author's
+   line breaks, so unlike Gleam the packing is yours to choose — pack
+   arguments and struct literals up to roughly 80–100 columns rather
+   than one per line, and apply the same literate comment register as
+   the Gleam sources.
 1. **Toolchain**: Gleam ≥ 1.11, Erlang/OTP ≥ 27. `gleam format` enforced; no
    warnings.
 2. **Total decoders**: every durability or wire boundary decodes with a
