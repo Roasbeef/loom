@@ -170,6 +170,7 @@ pub fn build_effects(config: Config) -> Effects {
       clear: fn(query) { clear(config, query) },
       run: fn(run) { run_tool(config, run) },
       replay_still_safe: fn(name) { replay_still_safe(config, name) },
+      execution_mode: fn(name) { execution_mode(config, name) },
     ),
     hooks: effects.default_hooks(),
   )
@@ -447,6 +448,28 @@ pub fn replay_still_safe(config: Config, name: String) -> Bool {
         tool.Never -> False
       }
     Error(Nil) -> False
+  }
+}
+
+/// The named tool's current scheduling constraint, mapped from its
+/// registration. Unregistered names report exclusive — the safe
+/// direction, and the clearance that follows refuses them anyway.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.execution_mode(config, "fs_read")
+/// //   == effects.ConcurrentExecution
+/// ```
+///
+pub fn execution_mode(config: Config, name: String) -> effects.ExecutionMode {
+  case tool.lookup(config.registry, name) {
+    Ok(registered) ->
+      case registered.execution_mode {
+        tool.Exclusive -> effects.ExclusiveExecution
+        tool.Concurrent -> effects.ConcurrentExecution
+      }
+    Error(Nil) -> effects.ExclusiveExecution
   }
 }
 

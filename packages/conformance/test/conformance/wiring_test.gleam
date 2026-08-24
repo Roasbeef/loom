@@ -300,6 +300,7 @@ pub fn clearance_maps_replay_declarations_test() {
       source_index: 0,
       call: call("bash", arguments),
       configuration:,
+      grants: [],
     )
   // bash: replay Never, arguments pass through unchanged.
   assert wiring.clear(config, query)
@@ -326,6 +327,7 @@ pub fn clearance_refuses_unregistered_tool_test() {
       source_index: 0,
       call: call("ghost", json.Object([])),
       configuration: configuration_for("acme", "loom-1"),
+      grants: [],
     )
   let assert effects.ClearanceRefused(reason:) = wiring.clear(config, query)
   assert string.contains(reason, "ghost")
@@ -341,6 +343,7 @@ pub fn clearance_refuses_inactive_tool_test() {
       source_index: 0,
       call: call("fs_write", json.Object([])),
       configuration: configuration_for("acme", "loom-1"),
+      grants: [],
     )
   let assert effects.ClearanceRefused(reason:) = wiring.clear(config, query)
   assert string.contains(reason, "not active")

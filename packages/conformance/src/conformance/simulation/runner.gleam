@@ -56,6 +56,9 @@ import storage/storage
 /// The strand every simulated session runs on.
 pub const strand = "main"
 
+/// The subagent strand a script with a `subagent` brief creates.
+pub const sub_strand = "sub:1"
+
 /// What one run of a script converged to.
 pub type Report {
   Report(
@@ -484,10 +487,14 @@ pub fn converged(base: List(String), crashed: List(String)) -> Bool {
   }
 }
 
+// A subagent forked over shared history repeats the main transcript's
+// lines under the `sub|` prefix, so the allowance must recognize the
+// interrupted variant there too.
 fn interrupted_variant(base: String, crashed: String) -> Bool {
   case string.split(base, ":"), string.split(crashed, ":") {
-    ["tool", name_b, id_b, ..], ["tool", name_c, id_c, "err", ..] ->
-      name_b == name_c && id_b == id_c
+    ["tool", name_b, id_b, ..], ["tool", name_c, id_c, "err", ..]
+    | ["sub|tool", name_b, id_b, ..], ["sub|tool", name_c, id_c, "err", ..]
+    -> name_b == name_c && id_b == id_c
     _, _ -> False
   }
 }
@@ -559,13 +566,21 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   control.seam_done(ctl)
   let ctx = Context(ctl:, vc:, raw:, runtime:, script:, schedule:, events:)
   let #(outcomes, stalled) = drive_ops(ctx, script.ops, [], False)
+  // The multi-strand coda: spawn the scripted subagent (fork-in-place at
+  // the main leaf, task brief as its first run), drive it to a terminal
+  // result, then deliver a durable cross-strand message back to main and
+  // drive the run it starts.
+  let #(outcomes, stalled) = case script.subagent, stalled {
+    Some(brief), False -> drive_subagent(ctx, brief, outcomes)
+    _, _ -> #(outcomes, stalled)
+  }
   // Never read the run's story while the writer is still telling it: a
   // seam still running is a scheduled fault that has not had its turn.
   settle_seam(ctl, 200)
   let report =
     Report(
       outcomes: list.reverse(outcomes),
-      projection: fingerprints(raw),
+      projection: list.append(fingerprints(raw), sub_fingerprints(raw)),
       usage_total: ledger_total(raw),
       commits: control.commits(ctl),
       never_calls: never_calls(ctl, script),
@@ -575,7 +590,8 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       ),
       crashed: control.crashed(ctl),
       stalled:,
-      terminal_writes: control.read(ctl, "last_result:" <> strand),
+      terminal_writes: control.read(ctl, "last_result:" <> strand)
+        + control.read(ctl, "last_result:" <> sub_strand),
       coverage: control.marks(ctl),
       effects: control.read(ctl, "effect"),
     )
@@ -736,6 +752,183 @@ type Admission {
   Refused
 }
 
+// --- the subagent coda ----------------------------------------------------
+
+/// The configuration a scripted subagent strand runs under: its own
+/// model identity, so the surface answers it by identity rather than by
+/// the main script's turns.
+pub fn sub_configuration() -> StrandConfiguration {
+  StrandConfiguration(
+    model: ModelIdentity(
+      provider: surface.provider_name,
+      model_id: surface.sub_model_id,
+    ),
+    thinking_level: ThinkingOff,
+    active_tool_names: [],
+  )
+}
+
+// Spawns the scripted subagent, drives its brief run to a terminal
+// result, then delivers a durable cross-strand message back to the main
+// strand and drives the run it starts. Faults land here exactly as on
+// the main ops: a crash reboots the tree (the strand booter must restore
+// both strands), a refused commit retries after the durable state is
+// re-checked.
+fn drive_subagent(
+  ctx: Context,
+  brief: String,
+  outcomes: List(String),
+) -> #(List(String), Bool) {
+  control.mark(ctx.ctl, "subagent-spawn")
+  case spawn_child(ctx, brief, 6) {
+    Refused -> #(outcomes, True)
+    Completed(last) -> cross_message(ctx, [tag(last), ..outcomes])
+    Opened(op_id) ->
+      case pump_strand(ctx, sub_strand, op_id, budget) {
+        Error(Nil) -> #(outcomes, True)
+        Ok(last) -> cross_message(ctx, [tag(last), ..outcomes])
+      }
+  }
+}
+
+// Creating the child under faults mirrors `admit`: an attempt may lose
+// its commit reply while the commit landed, so every retry first asks
+// the durable state what actually happened.
+fn spawn_child(ctx: Context, brief: String, attempts: Int) -> Admission {
+  case session.strand_state(ctx.raw, sub_strand) {
+    // Seeded already (or partially created): the durable state decides.
+    Ok(Some(_)) ->
+      case
+        open_operation_on(ctx.raw, sub_strand),
+        latest_result_on(ctx.raw, sub_strand)
+      {
+        Some(open), _ -> Opened(open)
+        None, Some(last) -> Completed(last)
+        None, None -> accept_child_brief(ctx, brief, attempts)
+      }
+    _ ->
+      case attempts <= 0 {
+        True -> Refused
+        False -> {
+          let created =
+            control.attempt(fn() { create_child(ctx, brief) }, within_ms: 3000)
+          case created {
+            Some(Ok(op_id)) -> Opened(op_id)
+            Some(Error(_)) | None -> {
+              let _advanced = vclock.advance(ctx.vc)
+              spawn_child(ctx, brief, attempts - 1)
+            }
+          }
+        }
+      }
+  }
+}
+
+fn create_child(ctx: Context, brief: String) -> Result(OpId, Nil) {
+  let fork = case session.strand_leaf(ctx.raw, strand) {
+    Ok(Some(cell)) -> cell.value
+    _ -> None
+  }
+  case
+    api.create_strand(
+      ctx.runtime,
+      named: sub_strand,
+      configuration: sub_configuration(),
+      at: fork,
+      brief: [surface.user(brief)],
+    )
+  {
+    Ok(op_id) -> Ok(op_id)
+    Error(_) -> Error(Nil)
+  }
+}
+
+// The strand exists but its brief run never opened (the seed committed,
+// the acceptance was lost to a fault): accept it directly.
+fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
+  case attempts <= 0 {
+    True -> Refused
+    False -> {
+      let child = api.on_strand(ctx.runtime, sub_strand)
+      let accepted =
+        control.attempt(
+          fn() { api.accept_quietly(child, [surface.user(brief)]) },
+          within_ms: 3000,
+        )
+      case accepted {
+        Some(Ok(op_id)) -> {
+          control.detached(fn() { api.nudge(child) })
+          Opened(op_id)
+        }
+        Some(Error(_)) | None -> {
+          let _advanced = vclock.advance(ctx.vc)
+          spawn_child(ctx, brief, attempts - 1)
+        }
+      }
+    }
+  }
+}
+
+// The child's completion travels back as a durable message: the main
+// strand is idle after its scripted ops, so the send accepts a fresh
+// run there (design §4.6 request/reply, closed the durable way).
+fn cross_message(
+  ctx: Context,
+  outcomes: List(String),
+) -> #(List(String), Bool) {
+  control.mark(ctx.ctl, "cross-strand-message")
+  case deliver_cross(ctx, latest_result(ctx.raw), 6) {
+    Refused -> #(outcomes, True)
+    Completed(last) -> #([tag(last), ..outcomes], False)
+    Opened(op_id) ->
+      case pump_strand(ctx, strand, op_id, budget) {
+        Error(Nil) -> #(outcomes, True)
+        Ok(last) -> #([tag(last), ..outcomes], False)
+      }
+  }
+}
+
+fn deliver_cross(
+  ctx: Context,
+  before: Option(LastResult),
+  attempts: Int,
+) -> Admission {
+  case attempts <= 0 {
+    True -> Refused
+    False -> {
+      let sent =
+        control.attempt(
+          fn() {
+            api.send_to_strand(
+              ctx.runtime,
+              to: strand,
+              message: surface.user(surface.cross_report),
+            )
+          },
+          within_ms: 3000,
+        )
+      case sent {
+        Some(Ok(api.Started(operation:))) -> Opened(operation)
+        // The main strand is idle after its ops, so a steer means a
+        // racing run this runner did not open; treat like a lost reply.
+        Some(Ok(api.Steered(..))) | Some(Error(_)) | None ->
+          case open_operation(ctx.raw), latest_result(ctx.raw) {
+            Some(open), _ -> Opened(open)
+            None, after if after != before ->
+              case after {
+                Some(last) -> Completed(last)
+                None -> Refused
+              }
+            None, _ -> {
+              let _advanced = vclock.advance(ctx.vc)
+              deliver_cross(ctx, before, attempts - 1)
+            }
+          }
+      }
+    }
+  }
+}
+
 // Acceptance under faults: the commit may be refused as stale, or its
 // writer may die mid-call with the commit already durable. Retrying is
 // what the api's own admission path does — but a retry must first ask
@@ -771,7 +964,11 @@ fn admit(
 
 // The strand's most recent terminal result, whatever operation it names.
 fn latest_result(raw: Session) -> Option(LastResult) {
-  case session.last_result(raw, strand) {
+  latest_result_on(raw, strand)
+}
+
+fn latest_result_on(raw: Session, strand_name: String) -> Option(LastResult) {
+  case session.last_result(raw, strand_name) {
     Ok(Some(cell)) -> Some(cell.value)
     _ -> None
   }
@@ -779,7 +976,11 @@ fn latest_result(raw: Session) -> Option(LastResult) {
 
 // The operation the strand currently has open, if any.
 fn open_operation(raw: Session) -> Option(OpId) {
-  case session.strand_state(raw, strand) {
+  open_operation_on(raw, strand)
+}
+
+fn open_operation_on(raw: Session, strand_name: String) -> Option(OpId) {
+  case session.strand_state(raw, strand_name) {
     Ok(Some(cell)) -> cell.value.current_operation
     _ -> None
   }
@@ -862,6 +1063,10 @@ fn accept_directly(
             strand_state_seq: state_cell.seq,
             leaf: case leaf_cell {
               Some(cell) -> cell.value
+              None -> None
+            },
+            leaf_seq: case leaf_cell {
+              Some(cell) -> Some(cell.seq)
               None -> None
             },
             settings: ctx.runtime.settings,
@@ -954,10 +1159,19 @@ fn ring(ctx: Context) -> Nil {
 // moving advance logical time to the next deadline rather than sleeping
 // for it.
 fn pump(ctx: Context, op_id: OpId, remaining: Int) -> Result(LastResult, Nil) {
+  pump_strand(ctx, strand, op_id, remaining)
+}
+
+fn pump_strand(
+  ctx: Context,
+  strand_name: String,
+  op_id: OpId,
+  remaining: Int,
+) -> Result(LastResult, Nil) {
   case remaining <= 0 {
     True -> Error(Nil)
     False ->
-      case terminal(ctx.raw, op_id) {
+      case terminal_on(ctx.raw, strand_name, op_id) {
         // A terminal result is visible before the writer has run the
         // post-commit seam for the transaction that wrote it, so taking
         // it here would end the run while a fault aimed at that commit
@@ -967,29 +1181,34 @@ fn pump(ctx: Context, op_id: OpId, remaining: Int) -> Result(LastResult, Nil) {
             True -> Ok(last)
             False -> {
               process.sleep(1)
-              pump(ctx, op_id, remaining - 1)
+              pump_strand(ctx, strand_name, op_id, remaining - 1)
             }
           }
         None ->
           case process.receive(ctx.events, 1) {
             // A commit landed: the session is working, so leave time
             // alone and look again.
-            Ok(_committed) -> pump(ctx, op_id, remaining - 1)
+            Ok(_committed) ->
+              pump_strand(ctx, strand_name, op_id, remaining - 1)
             // Nothing committed: either the session is waiting for a
             // deadline, or it is inside an effect. Advancing logical
             // time releases the first and costs the second one wasted
             // planning pass.
             Error(Nil) -> {
               let _advanced = vclock.advance(ctx.vc)
-              pump(ctx, op_id, remaining - 1)
+              pump_strand(ctx, strand_name, op_id, remaining - 1)
             }
           }
       }
   }
 }
 
-fn terminal(raw: Session, op_id: OpId) -> Option(LastResult) {
-  case session.last_result(raw, strand) {
+fn terminal_on(
+  raw: Session,
+  strand_name: String,
+  op_id: OpId,
+) -> Option(LastResult) {
+  case session.last_result(raw, strand_name) {
     Ok(Some(cell)) ->
       case result_operation(cell.value) == op_id {
         True -> Some(cell.value)
@@ -1045,10 +1264,17 @@ fn terminal_violations(raw: Session, stalled: Bool) -> List(String) {
     // A stalled run has not reached a terminal boundary, so the terminal
     // invariants do not apply to it; `run/terminated` reports it.
     True -> []
-    False ->
+    False -> {
+      let sub_checks = case session.strand_state(raw, sub_strand) {
+        Ok(Some(_)) -> [
+          invariant.terminal_registers(raw.store, strand: sub_strand),
+        ]
+        _ -> []
+      }
       [
         invariant.terminal_registers(raw.store, strand:),
         invariant.calls_answered(raw.store),
+        ..sub_checks
       ]
       |> list.filter_map(fn(outcome) {
         case outcome {
@@ -1056,6 +1282,7 @@ fn terminal_violations(raw: Session, stalled: Bool) -> List(String) {
           Error(violation) -> Ok(invariant.describe(violation))
         }
       })
+    }
   }
 }
 
@@ -1098,6 +1325,21 @@ fn fingerprints(raw: Session) -> List(String) {
         Error(_) -> ["<unprojectable>"]
       }
     _ -> ["<no leaf>"]
+  }
+}
+
+// The subagent strand's final projection, prefixed so its lines never
+// collide with the main strand's; empty when the script had no
+// subagent (or it never got created).
+fn sub_fingerprints(raw: Session) -> List(String) {
+  case session.strand_leaf(raw, sub_strand) {
+    Ok(Some(cell)) ->
+      case session.project_context(raw, cell.value) {
+        Ok(messages) ->
+          list.map(messages, fn(message) { "sub|" <> fingerprint(message) })
+        Error(_) -> ["sub|<unprojectable>"]
+      }
+    _ -> []
   }
 }
 

@@ -40,12 +40,13 @@ import machine/operation.{
   CompactionSettings, FileOperations, ReplaySafe,
 }
 import machine/planner.{
-  Admitted, ModelResolved, Prepared, SummaryNeedsRequest, SummaryProduced,
-  ThresholdExceeded, ThresholdNotExceeded, VerdictGenerate, VerdictSupplied,
+  Prepared, SummaryNeedsRequest, SummaryProduced, ThresholdExceeded,
+  ThresholdNotExceeded, VerdictGenerate, VerdictSupplied,
 }
 import provider/stream
 import runtime/api
 import runtime/effects.{type Effects}
+import runtime/hooks
 import session/session.{type Session}
 
 /// The api name every simulated response carries; a deferred handle must
@@ -57,6 +58,20 @@ pub const provider_name = "acme"
 
 /// The model id simulated sessions run under.
 pub const model_id = "loom-1"
+
+/// The model id a simulated subagent strand is configured with. Its
+/// generation requests are answered by identity, not by the main
+/// script's turns, so a child's settlement is the same in both runs
+/// regardless of how much shared history it forked over.
+pub const sub_model_id = "loom-sub"
+
+/// The text of the durable cross-strand message the runner sends back to
+/// the main strand once the subagent finishes. A generation whose newest
+/// user input is this report is answered directly — never from the
+/// scripted turns, whose phase coordinates the run may have rewound past
+/// (a navigation moves the leaf back, and replaying turn 0 would re-mint
+/// scripted call ids that must name exactly one call in the tree).
+pub const cross_report = "subagent reports: verified"
 
 /// The summary text structural hooks produce. It carries the marker, so
 /// a projection can be asked whether it has been compacted.
@@ -109,6 +124,9 @@ pub fn build(
       replay_still_safe: fn(name) {
         list.key_find(script.registry, name) == Ok(ReplaySafe)
       },
+      // Scripted tools may always overlap; per-tool exclusivity has its
+      // own dedicated runtime test.
+      execution_mode: fn(_name) { effects.ConcurrentExecution },
     ),
     hooks: hooks(ctl, script, raw, strand),
   )
@@ -134,30 +152,12 @@ fn request(
       case settlement(script, spec) {
         Some(settle) -> {
           mark_settlement(ctl, settle)
-          note_summary_settled(ctl, spec, settle)
           send_settlement(events, settle)
           handle
         }
         None -> handle
       }
     }
-  }
-}
-
-// A nested summary request that actually settled. The structural hook
-// counts these rather than attempts, so a request lost to a fault leads
-// to another request rather than to a summary conjured out of nothing.
-fn note_summary_settled(
-  ctl: Control,
-  spec: effects.RequestSpec,
-  settle: Settle,
-) -> Nil {
-  case spec, settle {
-    effects.SummaryRequest(task_id:, ..), script.Answer(..) -> {
-      let _count = control.bump(ctl, "summary_settled:" <> task_id)
-      Nil
-    }
-    _, _ -> Nil
   }
 }
 
@@ -179,26 +179,51 @@ fn mark_settlement(ctl: Control, settle: Settle) -> Nil {
   }
 }
 
+// A subagent request never fires a `DuringTurn` intervention: those name
+// the main strand's turns, and a child forked over shared history would
+// otherwise claim them at an unrelated moment.
 fn trigger_of_request(spec: effects.RequestSpec) -> Option(Trigger) {
   case spec {
-    effects.GenerationRequest(context:, ..) ->
-      Some(script.DuringTurn(turn: turn_of(context)))
+    effects.GenerationRequest(context:, configuration:, ..) ->
+      case configuration.model.model_id == sub_model_id {
+        True -> None
+        False -> Some(script.DuringTurn(turn: turn_of(context)))
+      }
     effects.PollRequest(..) | effects.SummaryRequest(..) -> None
   }
 }
 
 fn settlement(script: Script, spec: effects.RequestSpec) -> Option(Settle) {
   case spec {
-    effects.GenerationRequest(context:, ..) ->
-      Some(script.settle_for(
-        run_op(script),
-        turn: turn_of(context),
-        summaries: summaries_of(context),
-      ))
+    effects.GenerationRequest(context:, configuration:, ..) ->
+      case
+        configuration.model.model_id == sub_model_id,
+        newest_user_text(context) == cross_report
+      {
+        True, _ -> Some(script.Answer(text: "subagent verified", tokens: 2))
+        False, True ->
+          Some(script.Answer(text: "acknowledged: verified", tokens: 1))
+        False, False ->
+          Some(script.settle_for(
+            run_op(script),
+            turn: turn_of(context),
+            summaries: summaries_of(context),
+          ))
+      }
     effects.PollRequest(..) -> Some(script.poll_answer)
     effects.SummaryRequest(..) ->
       Some(script.Answer(text: "nested summary output", tokens: 2))
   }
+}
+
+// The newest user message's text in a projected context, "" when none.
+fn newest_user_text(context: List(AgentMessage)) -> String {
+  list.fold(context, "", fn(found, message) {
+    case message {
+      UserMessage(..) -> text_of(message)
+      _ -> found
+    }
+  })
 }
 
 fn run_op(script: Script) -> script.Op {
@@ -655,69 +680,71 @@ pub fn user(text: String) -> AgentMessage {
 
 // --- hooks ----------------------------------------------------------------
 
+// The simulation hooks, built through the production hook registry
+// (`runtime/hooks`) so production wiring and the simulation share one
+// seam; only the script-driven slots are replaced.
 fn hooks(
   ctl: Control,
   script: Script,
   raw: Session,
   strand: String,
 ) -> effects.Hooks {
-  effects.Hooks(
-    run_start: fn(_) { [] },
-    admission: fn(query: effects.AdmissionQuery) {
-      Admitted(
-        stream_options: query.stream_options,
-        intended_output_limit: 1_000_000,
-        context_window: 1_000_000,
-      )
-    },
-    run_end: fn(_) { None },
-    threshold: fn(_query) {
-      case script.threshold_after {
-        None -> ThresholdNotExceeded
-        Some(after) -> {
-          let context = projection(raw, strand)
-          case
-            summaries_of(context) == 0
-            && turn_of(context) >= after
-            && context != []
-          {
-            False -> ThresholdNotExceeded
-            True -> {
-              control.mark(ctl, "threshold-compaction")
-              ThresholdExceeded(outcome: compaction(context))
-            }
+  hooks.new()
+  |> hooks.with_admission(hooks.admission(
+    api: api_name,
+    intended_output_limit: 1_000_000,
+    context_window: 1_000_000,
+  ))
+  |> hooks.with_threshold(fn(_query) {
+    case script.threshold_after {
+      None -> ThresholdNotExceeded
+      Some(after) -> {
+        let context = projection(raw, strand)
+        case
+          summaries_of(context) == 0
+          && turn_of(context) >= after
+          && context != []
+        {
+          False -> ThresholdNotExceeded
+          True -> {
+            control.mark(ctl, "threshold-compaction")
+            ThresholdExceeded(outcome: compaction(context))
           }
         }
       }
-    },
-    overflow_preparation: fn(_) {
-      let context = projection(raw, strand)
-      compaction(context)
-    },
-    structural_decision: fn(_op, _task) {
-      case script.structural {
-        script.Supplied -> {
-          control.mark(ctl, "structural-supplied")
-          VerdictSupplied(summary: summary_text, usage: None)
-        }
-        script.Generated(..) -> {
-          control.mark(ctl, "structural-generated")
-          VerdictGenerate
-        }
+    }
+  })
+  |> hooks.with_overflow_preparation(fn(_) {
+    let context = projection(raw, strand)
+    compaction(context)
+  })
+  |> hooks.with_structural_decision(fn(_op, _task) {
+    case script.structural {
+      script.Supplied -> {
+        control.mark(ctl, "structural-supplied")
+        VerdictSupplied(summary: summary_text, usage: None)
       }
-    },
-    summary_progress: fn(_op, task, _attempt) {
-      let wanted = case script.structural {
-        script.Generated(split: True) -> 2
-        _ -> 1
+      script.Generated(..) -> {
+        control.mark(ctl, "structural-generated")
+        VerdictGenerate
       }
-      case control.read(ctl, "summary_settled:" <> task) >= wanted {
-        True -> SummaryProduced(summary: summary_text, usage: None)
-        False -> SummaryNeedsRequest
-      }
-    },
-    resolution: fn(_) { ModelResolved },
-  )
+    }
+  })
+  |> hooks.with_summary_progress(fn(_op, task, _attempt) {
+    // Counted at the commit boundary (`simulation/store`), not at the
+    // surface: only a settlement the ledger durably paid for counts, so
+    // one delivered-but-lost with a halted strand's mailbox leads to
+    // another request rather than to a summary conjured out of nothing.
+    let wanted = case script.structural {
+      script.Generated(split: True) -> 2
+      _ -> 1
+    }
+    case control.read(ctl, "summary_settled:" <> task) >= wanted {
+      True -> SummaryProduced(summary: summary_text, usage: None)
+      False -> SummaryNeedsRequest
+    }
+  })
+  |> hooks.build
 }
 
 /// The strand's current projected context, read straight from the store.

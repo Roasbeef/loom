@@ -221,8 +221,18 @@ pub fn terminal_registers(
   }
 }
 
-/// `tree/calls-answered`: every tool call block in the tree has exactly
-/// one tool-result entry.
+/// `tree/calls-answered`: every tool call block in an *executable*
+/// assistant response has exactly one tool-result entry.
+///
+/// Aborted and errored responses are excluded from the demand side: a
+/// response that really settled while cancellation was durable commits
+/// normalized to `aborted` *retaining its content* (pi §4.6 — including
+/// any tool-call blocks), and an overflow commits normalized to `error`.
+/// Neither ever plans a batch, both are dropped from every projection,
+/// so their calls are never executable and never answered. Their call
+/// ids still may not collide with an executed call's — the exactly-once
+/// count below covers that, because a duplicated id would give the
+/// executed call two result entries.
 ///
 /// ## Examples
 ///
@@ -250,13 +260,17 @@ pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
       let called =
         list.flat_map(messages, fn(message) {
           case message {
-            core_message.AssistantMessage(content:, ..) ->
-              list.filter_map(content, fn(block) {
-                case block {
-                  core_message.AssistantToolCall(call:) -> Ok(call.id)
-                  _ -> Error(Nil)
-                }
-              })
+            core_message.AssistantMessage(stop_reason:, content:, ..) ->
+              case stop_reason {
+                core_message.Aborted | core_message.Errored -> []
+                _ ->
+                  list.filter_map(content, fn(block) {
+                    case block {
+                      core_message.AssistantToolCall(call:) -> Ok(call.id)
+                      _ -> Error(Nil)
+                    }
+                  })
+              }
             _ -> []
           }
         })

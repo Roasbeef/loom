@@ -125,6 +125,12 @@ pub type Script {
     interventions: List(Intervention),
     /// What a deferred poll settles with.
     poll_answer: Settle,
+    /// When present, a subagent strand is created after the scripted
+    /// operations finish: forked in place at the main strand's leaf,
+    /// briefed with this text, driven to its terminal result, and its
+    /// completion sent back to the main strand as a durable
+    /// cross-strand message that starts one more run there.
+    subagent: Option(String),
   )
 }
 
@@ -214,11 +220,17 @@ pub fn describe(script: Script) -> String {
     None -> "no threshold"
     Some(n) -> "threshold@" <> int.to_string(n)
   }
+  let subagent = case script.subagent {
+    None -> "no subagent"
+    Some(_brief) -> "subagent"
+  }
   ops
   <> " | "
   <> threshold
   <> " | "
   <> structural
+  <> " | "
+  <> subagent
   <> " | "
   <> string.join(list.map(script.interventions, describe_intervention), ",")
 }
@@ -334,6 +346,12 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
   let #(tools, rng) = tool_table(rng)
   let #(interventions, rng) = interventions(rng)
   let #(poll_answer, rng) = poll_settle(rng)
+  let #(subagent, rng) =
+    random.weighted(
+      rng,
+      [#(6, None), #(4, Some("subagent brief: verify the result"))],
+      None,
+    )
   #(
     Script(
       registry:,
@@ -350,6 +368,7 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
       structural:,
       interventions:,
       poll_answer:,
+      subagent:,
     ),
     rng,
   )

@@ -76,7 +76,8 @@ const required_paths = [
   "crash-during-effect", "stale-commit-refusal", "lease-theft",
   "transient-read-fault", "slow-effect", "effect-process-died",
   "effect-timed-out", "steer-during-effect", "follow-up-during-effect",
-  "abort-during-effect", "abort-at-terminal-commit",
+  "abort-during-effect", "abort-at-terminal-commit", "subagent-spawn",
+  "cross-strand-message",
 ]
 
 pub fn simulation_coverage_test() {
@@ -118,6 +119,7 @@ pub fn orphaned_deferred_poll_corpus_test() {
       structural: script.Supplied,
       interventions: [],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
     )
   expect_case(deferred, [fault.CrashDuringEffect(index: 2)])
   expect_case(deferred, [fault.CrashDuringEffect(index: 1)])
@@ -154,6 +156,7 @@ pub fn steer_racing_a_live_effect_corpus_test() {
         script.Steer(trigger: script.DuringTurn(turn: 0), text: "steered"),
       ],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
     )
   expect_case(raced, [])
   expect_case(raced, [fault.CrashDuringEffect(index: 2)])
@@ -179,6 +182,7 @@ pub fn abort_at_the_terminal_commit_corpus_test() {
       structural: script.Supplied,
       interventions: [script.Abort(trigger: script.AtTerminalCommit)],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
     )
   expect_case(terminal, [])
   expect_case(terminal, [fault.CrashAtCommit(ordinal: 2)])
@@ -212,6 +216,7 @@ pub fn crash_on_the_terminal_commit_corpus_test() {
         script.Steer(trigger: script.AtTerminalCommit, text: "steered"),
       ],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
     )
   // The shape this case depends on: the terminal transaction is the last
   // of six commits, so a crash armed there is armed on the seam that the

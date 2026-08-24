@@ -22,6 +22,8 @@ import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import machine/codec
+import machine/operation
 import session/session.{type Session, Session}
 import storage/storage.{type Storage, type StorageError}
 
@@ -165,6 +167,7 @@ fn commit(
         Ok(result) -> {
           let _ordinal = control.note_commit(ctl)
           note_terminal_writes(ctl, transaction)
+          note_summary_settlements(ctl, transaction)
           case invariant.placement(inner, strand:) {
             Ok(Nil) -> Nil
             Error(violation) ->
@@ -230,6 +233,66 @@ fn note_terminal_writes(ctl: Control, transaction: Tx) -> Nil {
       _ -> Nil
     }
   })
+}
+
+// A nested summary request that settled *durably*: its usage row (the
+// only rows without an entry id) committed together with the op.state
+// carrying the structural task. The split-summary progress hook counts
+// these, so a settlement that was delivered but lost with a halted
+// strand's mailbox leads to another request rather than to a summary the
+// ledger never paid for — and a zero-usage transport-failure settlement
+// (tokens 0) is not counted, so a lost request is re-asked too.
+fn note_summary_settlements(ctl: Control, transaction: Tx) -> Nil {
+  let settled =
+    list.filter(transaction.writes, fn(write) {
+      case write {
+        tx.InsertUsage(row:) ->
+          row.entry_id == None && row.usage.total_tokens > 0
+        _ -> False
+      }
+    })
+  case settled, structural_task(transaction) {
+    [_, ..], Some(task_id) ->
+      list.each(settled, fn(_row) {
+        let _count = control.bump(ctl, "summary_settled:" <> task_id)
+        Nil
+      })
+    _, _ -> Nil
+  }
+}
+
+// The structural task the transaction's op.state write belongs to, when
+// it names one mid-generation.
+fn structural_task(transaction: Tx) -> option.Option(String) {
+  transaction.writes
+  |> list.find_map(fn(write) {
+    case write {
+      tx.SetRegister(ns: register.OpState, key: _, value:) ->
+        case codec.decode_state(value.payload) {
+          Ok(operation.RunState(
+            phase: operation.Compacting(
+              structural: operation.Generating(task_id:, ..),
+              ..,
+            ),
+            ..,
+          )) -> Ok(task_id)
+          Ok(operation.CompactionState(
+            structural: operation.Generating(task_id:, ..),
+            ..,
+          )) -> Ok(task_id)
+          Ok(operation.NavigationState(
+            navigation: operation.SummarizedNavigation(
+              structural: operation.Generating(task_id:, ..),
+              ..,
+            ),
+            ..,
+          )) -> Ok(task_id)
+          _ -> Error(Nil)
+        }
+      _ -> Error(Nil)
+    }
+  })
+  |> option.from_result
 }
 
 fn renew(
