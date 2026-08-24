@@ -1,7 +1,9 @@
-//// The minimal session layer (a WP-C slice): opening a session over a
-//// chosen storage backend, boot bookkeeping for strands, typed access to
-//// the machine's register payloads through the machine codecs, and the
-//// context projection minimum the runtime driver needs.
+//// The session layer (WP-C): opening a session over a chosen storage
+//// backend with migrate-on-open, boot bookkeeping for strands, typed
+//// access to the machine's register payloads through the machine codecs,
+//// and the full context projection (pi §2.5) — stop-at-compaction,
+//// response filtering, registered custom-entry projectors, orphan-call
+//// healing, and the `transform_context` hook seam.
 ////
 //// A `Session` wraps one open `Storage` handle with its handle type
 //// erased, plus the lease-renewal capability the runtime's StorageWriter
@@ -9,19 +11,18 @@
 //// process should commit through a session; reads may come from anywhere
 //// (both shipped backends serialize through their own actor mailbox).
 ////
-//// Deliberately absent, deferred to WP-C-full (M3): forks, the
-//// compaction-projection beyond the stop-at-compaction rule implemented
-//// here, custom-entry projectors, the `transform_context` hook seam, and
-//// precise rewrite. The projection here implements pi §2.5 steps 1–3 and
-//// 5's provider mapping, with step 4 (custom projectors) as "no custom
-//// entry enters context".
+//// The repository-level admin operations over sessions — forks (pi §2.7)
+//// and the precise rewrite (pi §2.9) — live in `session/repo`.
 
 import core/clock.{type Clock}
 import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
-import core/message.{type AgentMessage, AssistantMessage, UserMessage, UserText}
+import core/message.{
+  type AgentMessage, AssistantMessage, AssistantToolCall, ToolResultMessage,
+  ToolResultText, UserMessage, UserText,
+}
 import core/register.{type RegisterNs}
 import core/tx.{Expect, SetRegister, Tx}
 import gleam/dict.{type Dict}
@@ -94,6 +95,11 @@ pub fn open_memory(clock: Clock) -> Result(Session, OpenError) {
 /// lease under `owner`. The returned session's `lease_interval_ms` is a
 /// third of the TTL — the runtime's writer renews on that timer.
 ///
+/// Migrate-on-open: a file whose stored `storage_version` is below this
+/// build's runs `migration_chain` under the open before the session is
+/// returned; a file from a newer build is refused with
+/// `SqliteOpenFailed(sqlite.UnsupportedVersion(..))` rather than misread.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -110,7 +116,7 @@ pub fn open_sqlite(
   let config =
     sqlite.config(path:, owner:)
     |> sqlite.lease_ttl(lease_ttl_ms)
-  case sqlite.open(config, clock) {
+  case sqlite.open_with_migrations(config, clock, migration_chain()) {
     Ok(store) -> {
       let handle = store.handle
       Ok(Session(
@@ -128,6 +134,26 @@ fn int_max(a: Int, b: Int) -> Int {
     True -> a
     False -> b
   }
+}
+
+/// The ordered migrate-on-open chain for SQLite session files — the seam
+/// every schema bump extends. Each step upgrades one version; `open_sqlite`
+/// runs the steps a lower-versioned file needs before returning the
+/// session, and refuses higher-versioned files outright.
+///
+/// The chain is empty today because storage version 1 is the only version
+/// that has ever existed. Adding a step means: bump
+/// `sqlite.storage_version`, append `sqlite.Migration(from_version:
+/// old, statements: ...)` here, and cover the step in the session tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session.migration_chain() == []
+/// ```
+///
+pub fn migration_chain() -> List(sqlite.Migration) {
+  []
 }
 
 /// Erases a storage handle's type so sessions over different backends
@@ -497,12 +523,116 @@ fn read_cell(
   }
 }
 
-// --- context projection (pi §2.5, minimum slice) --------------------------
+// --- context projection (pi §2.5, full) -----------------------------------
 
-/// Projects a strand's provider context from its leaf: scan the branch
-/// newest-first stopping inclusively at the first compaction, reverse to
-/// oldest-first, drop the responses the standard rule drops, and map to
-/// provider messages. A `None` leaf projects to the empty context.
+/// How custom entries and the final message list project into provider
+/// context. Build with `projection`, then `with_projector` /
+/// `with_transform`; pass to `project` or `project_entries`.
+///
+/// Invariants: projectors are pure per-entry computation registered by
+/// `custom_type`; an unregistered custom entry never enters context. The
+/// transform is pi's `transform_context` hook seam — request-local,
+/// applied last, never persisted; the harness trusts it to preserve
+/// conversation well-formedness (a violating transform is a defect in the
+/// application, not a storage validation case).
+pub opaque type Projection {
+  Projection(
+    projectors: Dict(String, fn(CustomView) -> Option(AgentMessage)),
+    transform: fn(List(AgentMessage)) -> List(AgentMessage),
+  )
+}
+
+/// What a custom-entry projector sees: the entry's identity, type tag,
+/// opaque payload, and commit time.
+///
+/// Constructor invariants: mirrors one `CustomEntry` row; `data` is the
+/// application payload exactly as stored.
+pub type CustomView {
+  CustomView(id: EntryId, custom_type: String, data: Option(JsonValue), ts: Int)
+}
+
+/// The default projection: no custom projectors (every custom entry is
+/// skipped), identity transform.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session.project_entries([], session.projection()) == []
+/// ```
+///
+pub fn projection() -> Projection {
+  Projection(projectors: dict.new(), transform: fn(messages) { messages })
+}
+
+/// Registers a projector for one `custom_type`. Registering the same type
+/// again replaces the earlier projector. The projector returns `Some` to
+/// put one message into context or `None` to keep the entry out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.projection()
+/// // |> session.with_projector("note", fn(view) { Some(to_message(view)) })
+/// ```
+///
+pub fn with_projector(
+  projection: Projection,
+  custom_type: String,
+  project: fn(CustomView) -> Option(AgentMessage),
+) -> Projection {
+  let projectors = dict.insert(projection.projectors, custom_type, project)
+  Projection(..projection, projectors:)
+}
+
+/// Sets the `transform_context` hook: a request-local transform applied
+/// to the complete projected message list after every other rule. Setting
+/// it again replaces the earlier hook.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.projection() |> session.with_transform(list.take(_, 100))
+/// ```
+///
+pub fn with_transform(
+  projection: Projection,
+  transform: fn(List(AgentMessage)) -> List(AgentMessage),
+) -> Projection {
+  Projection(..projection, transform:)
+}
+
+/// Projects a strand's provider context from its leaf under a projection:
+/// scan the branch newest-first stopping inclusively at the first
+/// compaction, then run the pure pipeline (`project_entries`). A `None`
+/// leaf projects to the empty context — the transform hook is not invoked
+/// for it, since there is no request to construct.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.project(session, Some(leaf), projection)
+/// ```
+///
+pub fn project(
+  session: Session,
+  leaf: Option(EntryId),
+  projection: Projection,
+) -> Result(List(AgentMessage), SessionError) {
+  case leaf {
+    None -> Ok([])
+    Some(start) -> {
+      let q =
+        storage.branch_scan(from: start)
+        |> storage.branch_stop_at_kind(storage.Compaction)
+      storage.scan_branch(session.store, q)
+      |> result.map_error(StoreFailure)
+      |> result.map(project_entries(_, projection))
+    }
+  }
+}
+
+/// Projects a strand's provider context under the default projection (no
+/// custom projectors, identity transform).
 ///
 /// ## Examples
 ///
@@ -514,35 +644,55 @@ pub fn project_context(
   session: Session,
   leaf: Option(EntryId),
 ) -> Result(List(AgentMessage), SessionError) {
-  case leaf {
-    None -> Ok([])
-    Some(start) -> {
-      let q =
-        storage.branch_scan(from: start)
-        |> storage.branch_stop_at_kind(storage.Compaction)
-      storage.scan_branch(session.store, q)
-      |> result.map_error(StoreFailure)
-      |> result.map(project_scan)
-    }
-  }
+  project(session, leaf, projection())
 }
 
-/// The pure projection over a newest-first branch scan that stopped at
-/// the first compaction (inclusive). Exposed separately so the runtime
-/// can project entries it fetched through its own storage path.
+/// The pure projection pipeline over a newest-first branch scan that
+/// stopped at the first compaction (inclusive). Exposed separately so the
+/// runtime can project entries it fetched through its own storage path.
 ///
-/// Rules implemented (pi §2.5):
+/// Rules implemented (pi §2.5, in order):
 ///
 /// 1. Reverse to oldest-first. If a compaction heads the result, the
 ///    context opens with its summary (as a user message — the summary is
 ///    injected context, not model output) followed by its retained tail;
 ///    nothing earlier is read (the scan already stopped).
 /// 2. Drop assistant responses whose stop reason is `error`, `aborted`,
-///    or `deferred`; retain genuine output-limit `length`.
-/// 3. Custom entries are skipped entirely — projectors are WP-C-full
-///    (M3); an unprojected custom entry never enters context.
-/// 4. Branch summaries project as user-message context, like compaction
+///    or `deferred`; retain genuine output-limit `length`. Branch
+///    summaries project as user-message context, like compaction
 ///    summaries.
+/// 3. Run custom entries through the projection's registered projectors;
+///    an unprojected custom entry never enters context.
+/// 4. Heal orphaned tool calls (pi §2.7: request construction heals): a
+///    retained tool call whose result exists nowhere later in the
+///    projected context — severed by a fork or navigation boundary —
+///    gets a synthetic error result directly after its assistant
+///    message, stating that the outcome is unknown on this branch. On a
+///    settled history this is a no-op, which is what keeps successive
+///    projections append-only.
+/// 5. Apply the `transform_context` hook. Provider mapping stays the
+///    caller's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session.project_entries([], session.projection()) == []
+/// ```
+///
+pub fn project_entries(
+  newest_first: List(Entry),
+  projection: Projection,
+) -> List(AgentMessage) {
+  let Projection(projectors:, transform:) = projection
+  newest_first
+  |> list.reverse
+  |> list.flat_map(project_entry(_, projectors))
+  |> heal_orphan_calls
+  |> transform
+}
+
+/// The pure projection under the default projection — kept for the
+/// runtime driver's request construction.
 ///
 /// ## Examples
 ///
@@ -551,12 +701,13 @@ pub fn project_context(
 /// ```
 ///
 pub fn project_scan(newest_first: List(Entry)) -> List(AgentMessage) {
-  newest_first
-  |> list.reverse
-  |> list.flat_map(project_entry)
+  project_entries(newest_first, projection())
 }
 
-fn project_entry(entry: Entry) -> List(AgentMessage) {
+fn project_entry(
+  entry: Entry,
+  projectors: Dict(String, fn(CustomView) -> Option(AgentMessage)),
+) -> List(AgentMessage) {
   case entry {
     entry.MessageEntry(message:, ..) ->
       case message {
@@ -578,6 +729,91 @@ fn project_entry(entry: Entry) -> List(AgentMessage) {
         timestamp: ts,
       ),
     ]
-    entry.CustomEntry(..) -> []
+    entry.CustomEntry(id:, custom_type:, data:, ts:, ..) ->
+      case dict.get(projectors, custom_type) {
+        Ok(project) ->
+          case project(CustomView(id:, custom_type:, data:, ts:)) {
+            Some(message) -> [message]
+            None -> []
+          }
+        Error(Nil) -> []
+      }
   }
+}
+
+// --- orphan-call healing (pi §2.7) ----------------------------------------
+
+fn heal_orphan_calls(messages: List(AgentMessage)) -> List(AgentMessage) {
+  heal_loop(messages, [])
+}
+
+fn heal_loop(
+  remaining: List(AgentMessage),
+  healed: List(AgentMessage),
+) -> List(AgentMessage) {
+  case remaining {
+    [] -> list.reverse(healed)
+    [message, ..rest] ->
+      case message {
+        AssistantMessage(content:, timestamp:, ..) -> {
+          // A call is orphaned when no later message in the projected
+          // context carries its result. The synthetic results go directly
+          // after the assistant message; results that do exist stay where
+          // they are (they are, by construction, not earlier than here).
+          let synthetics =
+            content
+            |> list.filter_map(fn(block) {
+              case block {
+                AssistantToolCall(call:) ->
+                  case has_result(rest, call.id) {
+                    True -> Error(Nil)
+                    False -> Ok(synthetic_result(call, timestamp))
+                  }
+                message.AssistantText(..) | message.AssistantThinking(..) ->
+                  Error(Nil)
+              }
+            })
+          heal_loop(
+            rest,
+            list.append(list.reverse(synthetics), [message, ..healed]),
+          )
+        }
+        UserMessage(..) | ToolResultMessage(..) | message.CustomMessage(..) ->
+          heal_loop(rest, [message, ..healed])
+      }
+  }
+}
+
+fn has_result(messages: List(AgentMessage), call_id: String) -> Bool {
+  list.any(messages, fn(message) {
+    case message {
+      ToolResultMessage(tool_call_id:, ..) -> tool_call_id == call_id
+      UserMessage(..) | AssistantMessage(..) | message.CustomMessage(..) ->
+        False
+    }
+  })
+}
+
+fn synthetic_result(call: message.ToolCall, timestamp: Int) -> AgentMessage {
+  ToolResultMessage(
+    tool_call_id: call.id,
+    tool_name: call.name,
+    content: [
+      ToolResultText(
+        text: "Tool call "
+          <> call.name
+          <> " ("
+          <> call.id
+          <> ") has no result on this branch: it was severed by a fork or "
+          <> "navigation boundary, so whether the tool ran and what it "
+          <> "produced is unknown.",
+        text_signature: None,
+      ),
+    ],
+    details: None,
+    usage: None,
+    added_tool_names: None,
+    is_error: True,
+    timestamp:,
+  )
 }
