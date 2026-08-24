@@ -29,7 +29,7 @@ loom/
 │   ├── ext/         WP-M  ExtensionZone, skill store, promotion
 │   └── conformance/ WP-T  shared test suites, chaos & interleave harness
 ├── protocol/             frozen wire schemas (this doc, Part 1) as source of truth
-└── tools/                dev scripts, CI, fixture repos for sandbox tests
+└── scripts/              dev scripts, CI, fixture repos for sandbox tests
 ```
 
 Package names are unprefixed: they are monorepo-internal and never
