@@ -4,14 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(core storage session machine runtime provider broker tools events client conformance sandbox)
+packages=(core storage session machine runtime provider broker tools events client conformance sandbox tui)
 targets=("${@:-${packages[@]}}")
 
 for pkg in "${targets[@]}"; do
-  if [ "$pkg" = "sandbox" ]; then
-    echo "==> sandbox (Go)"
-    (cd packages/sandbox && gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$')
-    (cd packages/sandbox && go vet ./... && go build ./... && go test ./...)
+  if [ "$pkg" = "sandbox" ] || [ "$pkg" = "tui" ]; then
+    echo "==> $pkg (Go)"
+    (cd "packages/$pkg" && gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$')
+    (cd "packages/$pkg" && go vet ./... && go build ./... && go test ./...)
     continue
   fi
   echo "==> $pkg"
