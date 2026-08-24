@@ -2,13 +2,16 @@
 
 ## Purpose
 
-The ClientGateway: the outward face of a live session. It owns the Part
-1.6 websocket protocol as total Gleam codecs, a per-session hub actor
-that speaks it to any number of attached connections, the `mist`
-websocket transport under that hub, the bridge that decodes stored
-escalation JSON back into typed broker grants, and the scripted
-end-to-end demo that drives the whole M3 flow through the protocol
-alone. WP-L.
+The ClientGateway and the session server: the outward face of a live
+session. It owns the Part 1.6 websocket protocol as total Gleam codecs,
+a per-session hub actor that speaks it to any number of attached
+connections, the `mist` websocket transport under that hub, the bridge
+that decodes stored escalation JSON back into typed broker grants, the
+scripted end-to-end demo that drives the whole M3 flow through the
+protocol alone — and, as the tree's host package, the production wiring
+adapter (`client/wiring`, promoted from conformance) plus the
+`loom-server` entry point (`client/serve`) that boots the whole stack
+over one session file. WP-L.
 
 ## Key Types
 
@@ -42,6 +45,16 @@ alone. WP-L.
   into `broker/policy.Grant`, and encoding it again. Pure and total.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
+- `client/wiring.{Config, build_effects}` — the production effect seam:
+  a `runtime/effects.Effects` over the real provider gateway, broker,
+  and tool registry (promoted from `conformance/wiring`; spec-gaps M2
+  item 7). The conformance wiring/e2e suites still prove it.
+- `client/serve.{Settings, boot, shutdown, main}` — the server entry
+  point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
+  shipment): flags/env in, session + helper pool + broker + runtime +
+  hub + websocket server up, one startup line out, `SIGTERM` closes the
+  runtime so the lease is released. `client.main` delegates here for
+  the shipment's entrypoint.
 
 ## Relationships
 
@@ -57,10 +70,16 @@ alone. WP-L.
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
   tap types against `provider/stream`, and grants are broker policy
-  values — and are worth knowing about rather than papering over.
-- **Depended on by**: nothing in-tree. `packages/tui` is its Go client,
-  coupled only through the protocol and the golden fixtures.
-- **FFI**: none.
+  values — and are worth knowing about rather than papering over. The
+  wiring promotion added `tools` (the registry and per-call `Ctx`);
+  `client/serve` added `argv` (flags).
+- **Depended on by**: `conformance`, whose wiring and e2e suites import
+  `client/wiring` (legal — T depends on all). `packages/tui` is its Go
+  client, coupled only through the protocol and the golden fixtures.
+- **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
+  wall clock, unique entropy, `PATH` lookup, the SIGTERM relay, and the
+  documented exit-code halt. Test-side, `client_test_ffi.erl` is a
+  minimal websocket probe for the boot smoke.
 
 ## Traffic
 

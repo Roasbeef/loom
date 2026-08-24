@@ -7,7 +7,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
-import conformance/wiring
+import client/wiring
 import core/clock
 import core/ids
 import core/json.{type JsonValue}

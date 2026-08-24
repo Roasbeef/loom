@@ -1,8 +1,12 @@
 //// The production-wiring adapter for the runtime's effect seam (the M2
 //// integration): builds a `runtime/effects.Effects` record over the real
 //// provider gateway, the real ToolBroker, and the real tool registry.
-//// The e2e conformance suite proves this wiring against a jailed helper;
-//// the same record is what a production host injects into `api.open`.
+//// The record is what a production host injects into `api.open` —
+//// `client/serve` is that host — and the e2e conformance suite proves
+//// the same wiring against a jailed helper. The module started life in
+//// `conformance/src` because only the test leaf could depend on every
+//// layer; with the client package serving sessions for real it was
+//// promoted here (spec-gaps, M2 integration item 7).
 ////
 //// ## Mapping decisions (each recorded here because the spec leaves the
 //// seam's production shape open)

@@ -22,7 +22,7 @@
 ////   synthetic interrupted result under its reserved id and the run
 ////   completes with the remaining script.
 
-import conformance/wiring
+import client/wiring
 import core/clock
 import core/json.{type JsonValue}
 import core/message

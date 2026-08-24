@@ -291,10 +291,12 @@ instead and are only referenced here.
    registry gate (unknown or inactive tool refuses in-band), with policy
    composition deferred to the broker inside the tool's own call, and
    arguments passed through unrewritten until a rewrite hook exists.
-7. **The wiring adapter lives in conformance source**, giving the
-   "test-only" package production-shaped dependencies, because only it
-   may depend on every layer. Bless this or promote the adapter into a
-   host package when one exists.
+7. **The wiring adapter lives in conformance source** — *resolved*: a
+   host package now exists, and the adapter was promoted to
+   `client/wiring` when `client/serve` (the server entry point) became
+   its production consumer. Conformance depends on `client` (legal — T
+   depends on all) and its wiring/e2e suites prove the promoted module
+   in place.
 8. **The system prompt has no home in the frozen contracts**; wiring
    treats it as session-level configuration.
 9. **Lease expiry runs on injected time** — a crashed process holds the

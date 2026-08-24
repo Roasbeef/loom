@@ -4,9 +4,9 @@
 
 The shared test infrastructure and the one package allowed to depend on
 every layer: the storage conformance suite that *defines* backend
-correctness, the production-shaped wiring adapter that assembles the
-runtime's effect seam over the real gateway, broker, and tool registry, and
-the deterministic simulation runner that turns a seed into a verdict.
+correctness, the wiring and jailed e2e suites that prove the production
+effect seam (`client/wiring`, which once lived here before its promotion),
+and the deterministic simulation runner that turns a seed into a verdict.
 WP-T. Modules live under `src` (not `test`) because backend packages import
 them from their own test mains.
 
@@ -15,9 +15,6 @@ them from their own test mains.
 - `conformance/storage_suite.{Backend, run}` — one suite parameterized over
   a backend constructor. A backend passes WP-B's exit criteria only when
   `run` is green.
-- `conformance/wiring.{Config, build_effects}` — the M2 integration: a
-  `runtime/effects.Effects` record over `provider/gateway.Gateway`,
-  `broker.Broker`, and `tools/tool.Registry`.
 - `conformance/simulation/runner.{run, check, examine, soak, Verdict,
   Report}` — seed in, verdict out.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
@@ -39,17 +36,19 @@ them from their own test mains.
 ## Relationships
 
 - **Depends on**: every Gleam package it tests — `core`, `storage`,
-  `session`, `machine`, `runtime`, `provider`, `broker`, `tools` — plus
-  `gleam_erlang` and `gleam_otp`. This is deliberate and unique.
+  `session`, `machine`, `runtime`, `provider`, `broker`, `tools`, and
+  `client` (whose promoted `client/wiring` the wiring and e2e suites
+  prove) — plus `gleam_erlang` and `gleam_otp`. This is deliberate and
+  unique.
 - **Depended on by**: nothing. It is the leaf, and stays one: `client/demo`
   copies the simulation's effect-surface shape rather than importing it,
   because this package's surface is test support, not a library.
 - **FFI**: `conformance/test/support/internal/ffi_time` and `ffi_shell` —
   test-side only, for the jailed e2e harness.
-- **Note**: the wiring adapter living here gives the "test-only" package
-  production-shaped dependencies. That is recorded as an open question
-  (spec-gaps, M2 integration item 7): bless it, or promote the adapter into
-  a host package when one exists.
+- **Note**: the wiring adapter used to live in this package's `src`
+  because only the test leaf could depend on every layer; when the client
+  package became a real host it was promoted to `client/wiring`
+  (spec-gaps, M2 integration item 7 — resolved).
 
 ## Traffic
 
@@ -135,7 +134,7 @@ them from their own test mains.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md) —
   "The conformance suite is the definition of correct".
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-B/T" and "From
-  the M2 integration (`conformance/wiring`)".
+  the M2 integration (`conformance/wiring`, since promoted)".
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
   `make conformance` runs the suites; `make e2e` the jailed acceptance;
   `make soak` the long simulation run.

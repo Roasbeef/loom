@@ -3,7 +3,7 @@
 //// the production wiring config assembled from a live jail.
 
 import broker/exec
-import conformance/wiring
+import client/wiring
 import core/clock
 import gleam/option.{Some}
 import machine/strand.{
