@@ -34,7 +34,8 @@ import gleam/option.{type Option}
 ///   `from_hook` is `True` for hook output, `False` for generated;
 ///   generated summaries carry their `usage`.
 /// - `BranchSummaryEntry`: `from_id` is the summarized branch's
-///   pre-navigation leaf. `from_hook`/`usage` as for compactions.
+///   pre-navigation leaf, or `None` for a summary sourced at the root
+///   (protocol-change/001). `from_hook`/`usage` as for compactions.
 /// - `CustomEntry`: `custom_type` is a structural field — branch queries
 ///   filter on it — and is meaningful only on this variant. `data` is an
 ///   opaque application payload and may be absent.
@@ -66,7 +67,7 @@ pub type Entry {
     parent: Option(EntryId),
     seq: Seq,
     ts: Int,
-    from_id: EntryId,
+    from_id: Option(EntryId),
     summary: String,
     from_hook: Bool,
     usage: Option(Usage),

@@ -682,7 +682,7 @@ pub fn encode_entry(entry: Entry) -> JsonValue {
         #("seq", Some(json.Int(seq))),
         #("timestamp", Some(json.Int(ts))),
         #("type", Some(json.String("branch_summary"))),
-        #("fromId", Some(encode_entry_id(from_id))),
+        #("fromId", Some(encode_parent(from_id))),
         #("summary", Some(json.String(summary))),
         #("fromHook", Some(json.Bool(from_hook))),
         #("usage", option.map(usage, encode_usage)),
@@ -751,7 +751,7 @@ pub fn decode_entry(value: JsonValue) -> Result(Entry, CorruptionReport) {
       ))
     }
     "branch_summary" -> {
-      use from_id <- result.try(require_entry_id(fields, "fromId", where))
+      use from_id <- result.try(decode_entry_id_or_none(fields, "fromId", where))
       use summary <- result.try(require_string(fields, "summary", where))
       use from_hook <- result.try(require_bool(fields, "fromHook", where))
       use usage <- result.try(decode_optional_usage(fields))
@@ -805,6 +805,26 @@ fn decode_parent(
         at: where,
         on: "parentId",
         expected: "null or an entry id string",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+// Absent and null both read as None (protocol-change/001: emit null,
+// accept a missing field for forward compatibility).
+fn decode_entry_id_or_none(
+  fields: Fields,
+  name: String,
+  where: String,
+) -> Result(Option(EntryId), CorruptionReport) {
+  case optional_json(fields, name) {
+    None | Some(json.Null) -> Ok(None)
+    Some(json.String(text)) -> result.map(ids.parse_entry_id(text), Some)
+    Some(other) ->
+      Error(corruption.report(
+        at: where,
+        on: name,
+        expected: "null, absent, or an entry id string",
         context: json.to_string(other),
       ))
   }

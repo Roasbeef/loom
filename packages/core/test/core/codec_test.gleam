@@ -280,11 +280,12 @@ pub fn decode_entry_rejects_bad_rows_test() {
         #("fromHook", json.Bool(False)),
       ]),
     ),
-    // branch summary with a null fromId
+    // branch summary with a wrong-typed fromId (null and absent are
+    // legal since protocol-change/001: they read as summarized-from-root)
     json.Object(
       list.append(base, [
         #("type", json.String("branch_summary")),
-        #("fromId", json.Null),
+        #("fromId", json.Int(42)),
         #("summary", json.String("s")),
         #("fromHook", json.Bool(False)),
       ]),

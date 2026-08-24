@@ -85,7 +85,8 @@ pub type Entry {
                   summary: String, retained_tail: List(AgentMessage),
                   tokens_before: Int, from_hook: Bool, usage: Option(Usage))
   BranchSummaryEntry(id: EntryId, parent: Option(EntryId), seq: Seq, ts: Int,
-                     from_id: EntryId, summary: String, from_hook: Bool,
+                     from_id: Option(EntryId),   // None = summarized from root
+                     summary: String, from_hook: Bool,   // (protocol-change/001)
                      usage: Option(Usage))
   CustomEntry(id: EntryId, parent: Option(EntryId), seq: Seq, ts: Int,
               custom_type: String, data: Option(Json))
@@ -151,8 +152,11 @@ WP-D ports pi Part 3 wholesale into ADTs. The full state space (RunPhase incl. c
 pub fn next_action(op: Operation, state: OperationState, in: PlannerInputs) -> Action
 pub fn classify(settled: SettledAssistantMessage, ctx: ClassifyCtx) -> Classification
 pub fn accept_prompt(...) -> Result(AcceptancePlan, RejectReason)
-// Action = Transition(next, expects) | Dispatch(intent, effect_plan)
-//        | AwaitEffect(key) | Wait(until) | Finish(result)
+// Action = Transition(next, tx) | Dispatch(intent, next, tx)
+//        | AwaitEffect(key) | Wait(until) | Finish(result, tx)
+//        | Fault(report)                       // (protocol-change/002)
+// tx carries the writes plus the CAS expectations that guard them; a pure
+// total planner surfaces corrupt input as Fault rather than crashing.
 ```
 
 Normative order of `classify` (first match wins): cancelled-control → overflow (adapter-reported | message-pattern | length-below-intended) → deferred-valid-handle → retryable-error → tool-use → stop/genuine-length. Overflow-classified responses commit normalized to `error` (context projection then drops them by the standard error rule). Aborted stop reason with running control is corruption.

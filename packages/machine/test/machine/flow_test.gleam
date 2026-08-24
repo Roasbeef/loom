@@ -497,7 +497,7 @@ pub fn summarized_navigation_publishes_summary_test() {
     store.get_entry(world.store, ids.entry_id_to_string(summary_id))
   assert parent == prompt_id
   let assert Some(source_leaf) = world.op.source_leaf
-  assert from_id == source_leaf
+  assert from_id == Some(source_leaf)
   let assert Ok(#(_seq, leaf_value)) =
     store.get_register(world.store, register.StrandLeaf, "main")
   assert register.read_leaf(leaf_value) == Ok(Some(summary_id))

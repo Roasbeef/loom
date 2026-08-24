@@ -551,7 +551,7 @@ pub fn entry(seed: Seed) -> #(entry.Entry, Seed) {
       )
     }
     2 -> {
-      let #(from_id, seed) = entry_id(seed)
+      let #(from_id, seed) = option_of(seed, entry_id)
       let #(summary, seed) = small_string(seed)
       let #(from_hook, seed) = bool(seed)
       let #(usage_value, seed) = option_of(seed, usage)

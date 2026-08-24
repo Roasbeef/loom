@@ -1,6 +1,7 @@
 # protocol-change/001 — make `BranchSummaryEntry.from_id` optional
 
-**Status**: proposed · **Affects**: Part 1.1 `Entry` · **Raised by**: WP-A
+**Status**: ACCEPTED 2026-08-24 · **Affects**: Part 1.1 `Entry` ·
+**Raised by**: WP-A · **Implemented**: core + machine + spec text
 
 ## Problem
 
@@ -28,5 +29,12 @@ payload BLOB.
 
 ## Decision
 
-Pending maintainer sign-off. Until accepted, core implements the frozen
-non-optional form.
+**Accepted.** The adversarial case for rejection — keep the field total
+and represent a root-sourced summary with a sentinel or the first entry's
+id — was considered and dismissed: a sentinel misstates provenance in a
+write-once store, pi's data model genuinely produces null here, and the
+format-4 import would otherwise reject real transcripts. Nothing in the
+codebase dereferences `from_id` today, so no invariant weakens; machine's
+acceptance continues to reject summarize-from-root until navigation work
+needs it, which keeps `Some` the only value the harness currently writes
+while the wire admits both.

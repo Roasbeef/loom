@@ -247,7 +247,7 @@ pub fn branch_summary_entry(
     parent:,
     seq: 0,
     ts: 0,
-    from_id:,
+    from_id: Some(from_id),
     summary:,
     from_hook:,
     usage:,
