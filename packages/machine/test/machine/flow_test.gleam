@@ -19,10 +19,10 @@ import machine/operation.{
 import machine/planner.{
   Admitted, AwaitEffect, Dispatch, EmptyPreparation, Finish, ModelResolved,
   NoObservation, ObservedAdmission, ObservedAssistantSettled,
-  ObservedDeferredSettled, ObservedResolution, ObservedRunEnd, ObservedRunStart,
-  ObservedStructuralDecision, ObservedSummaryProgress, ObservedSummaryReturned,
-  Prepared, SummaryProduced, ThresholdExceeded, VerdictDeclined, VerdictGenerate,
-  VerdictSupplied, Wait,
+  ObservedDeferredOrphaned, ObservedDeferredSettled, ObservedResolution,
+  ObservedRunEnd, ObservedRunStart, ObservedStructuralDecision,
+  ObservedSummaryProgress, ObservedSummaryReturned, Prepared, SummaryProduced,
+  ThresholdExceeded, VerdictDeclined, VerdictGenerate, VerdictSupplied, Wait,
 }
 import machine/queue
 import support/fixture
@@ -51,6 +51,51 @@ fn start_run(prompt: String) -> World {
     scenario.step_writes(world, NoObservation, opts())
   let assert Ok(#(world, _action)) = scenario.step(world, admitted(), opts())
   world
+}
+
+pub fn orphaned_poll_replaced_at_the_same_poll_number_test() {
+  let world = start_run("run this as a batch job")
+  let deferred = fixture.assistant_deferred(Some(fixture.handle("job-9")))
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(deferred),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let permit = StepOptions(..opts(), poll_permit: True)
+  let assert Ok(#(world, _action)) = scenario.step(world, NoObservation, permit)
+  let assert Ok(#(world, action)) =
+    scenario.step(world, ObservedResolution(resolution: ModelResolved), permit)
+  let assert Dispatch(intent: planner.DeferredFetch(poll: 1, ..), ..) = action
+  // The poll is now effect_pending. A crash loses its continuation, so
+  // the next pass reports an orphan: the machine must ask whether the
+  // captured identity still resolves, and then replace the poll under
+  // fresh ids at the *same* poll number — the resolution answer arrives
+  // as its own observation, and consuming it must not fault the strand.
+  let assert Ok(#(world, action)) =
+    scenario.step(world, ObservedDeferredOrphaned, permit)
+  let assert AwaitEffect(key: planner.PollAdmissionKey(poll: 1, ..)) = action
+  let assert Ok(#(world, action)) =
+    scenario.step(world, ObservedResolution(resolution: ModelResolved), permit)
+  let assert Dispatch(
+    intent: planner.DeferredFetch(poll: 1, ..),
+    next: _,
+    tx: replacement,
+  ) = action
+  assert scenario.write_names(replacement) == ["set:op.state"]
+  // And it still settles normally afterwards.
+  let ready = fixture.assistant(message.Stop, "batch finished", 30)
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedDeferredSettled(settled: fixture.settled(ready)),
+      permit,
+    )
+  let assert Ok(#(_world, action)) = scenario.step(world, NoObservation, opts())
+  let assert AwaitEffect(key: planner.RunEndKey(..)) = action
 }
 
 pub fn deferred_suspend_poll_resume_test() {

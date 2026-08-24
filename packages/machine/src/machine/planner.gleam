@@ -2242,7 +2242,14 @@ fn deferred_action(
             latest,
             settled,
           )
-        ObservedDeferredOrphaned ->
+        // Either the orphan report itself, or the resolution answer this
+        // handler asked for on the pass before (`OrphanPollUnknown`
+        // below). Both say the same thing — the pending poll's outcome
+        // is unknown — and both must reach the replacement path; the
+        // resolution arrives as its own observation, so matching only
+        // the orphan report would fault the strand on the very pass
+        // that answered its question.
+        ObservedDeferredOrphaned | ObservedResolution(..) ->
           case control {
             CancelRequested(..) ->
               settle_cancelled_poll(
