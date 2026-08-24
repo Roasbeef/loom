@@ -116,6 +116,10 @@ deps: ## Download dependencies for every package
 	done
 	@cd $(GO_PKG) && go mod download
 
+.PHONY: gen-sql
+gen-sql: ## Regenerate parrot-generated SQL modules (needs sqlite3; ADR-004)
+	@scripts/gen-sql.sh
+
 .PHONY: docs
 docs: ## Build HexDocs-style API documentation for every Gleam package
 	@set -e; for p in $(PACKAGES); do \
