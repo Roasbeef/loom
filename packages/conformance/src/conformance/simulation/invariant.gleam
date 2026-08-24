@@ -1,0 +1,310 @@
+//// The named checks a simulated session is held to.
+////
+//// Every check has a name, and a failure reports it, because "the
+//// simulation failed" is not a bug report. The checks split in two: the
+//// *boundary* checks run inside the commit path at every commit, so a
+//// violation is caught at the transaction that caused it rather than at
+//// the end of the run; the *terminal* checks run once the strand is
+//// idle again.
+////
+//// Nothing here compares two runs — that is the runner's job. These are
+//// the properties one run must have on its own.
+
+import core/entry.{type Entry}
+import core/ids.{type EntryId}
+import core/message as core_message
+import core/register
+import gleam/dict
+import gleam/list
+import gleam/option.{None, Some}
+import gleam/result
+import gleam/string
+import machine/codec
+import machine/operation.{
+  type Control, type OperationState, CancelRequested, CompactionState,
+  NavigationState, RunState, Running,
+}
+import storage/storage.{type Storage}
+
+/// A violated check: which one, and what was seen.
+pub type Violation {
+  Violation(check: String, detail: String)
+}
+
+/// Renders a violation for a failure message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // invariant.describe(Violation(check: "placement/queued-id", detail: ".."))
+/// ```
+///
+pub fn describe(violation: Violation) -> String {
+  violation.check <> ": " <> violation.detail
+}
+
+/// `placement/queued-id`, checked at every commit boundary: a queued
+/// entry id has its pending register, or its entry, or neither — never
+/// both. Holding both would mean a drained item could be placed twice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // invariant.placement(store, "main")
+/// ```
+///
+pub fn placement(
+  store: Storage(handle),
+  strand strand: String,
+) -> Result(Nil, Violation) {
+  use ids <- result.try(queued_ids(store, strand))
+  list.try_fold(ids, Nil, fn(_acc, id) {
+    let key = ids.entry_id_to_string(id)
+    let registered = case
+      storage.get_register(store, register.PendingEntry, key)
+    {
+      Ok(Some(_)) -> True
+      _ -> False
+    }
+    let placed = case storage.get_entries(store, [id]) {
+      Ok(entries) -> dict.has_key(entries, id)
+      Error(_) -> False
+    }
+    case registered && placed {
+      True ->
+        Error(Violation(
+          check: "placement/queued-id",
+          detail: "queued id "
+            <> key
+            <> " has both a pending register and a placed entry",
+        ))
+      False -> Ok(Nil)
+    }
+  })
+}
+
+fn queued_ids(
+  store: Storage(handle),
+  strand: String,
+) -> Result(List(EntryId), Violation) {
+  case storage.get_register(store, register.StrandState, strand) {
+    Ok(None) -> Ok([])
+    Error(error) ->
+      Error(Violation(
+        check: "placement/queued-id",
+        detail: "strand state unreadable: " <> describe_error(error),
+      ))
+    Ok(Some(cell)) ->
+      case codec.decode_strand_state(cell.value.payload) {
+        Error(report) ->
+          Error(Violation(
+            check: "placement/queued-id",
+            detail: "strand state corrupt at " <> report.boundary,
+          ))
+        Ok(state) ->
+          case state.current_operation {
+            None -> Ok(state.pending_next_run)
+            Some(op) ->
+              case
+                storage.get_register(
+                  store,
+                  register.OpState,
+                  ids.op_id_to_string(op),
+                )
+              {
+                Ok(Some(op_cell)) ->
+                  case codec.decode_state(op_cell.value.payload) {
+                    Ok(op_state) ->
+                      Ok(list.append(
+                        state.pending_next_run,
+                        inbox_ids(op_state),
+                      ))
+                    Error(report) ->
+                      Error(Violation(
+                        check: "placement/queued-id",
+                        detail: "op state corrupt at " <> report.boundary,
+                      ))
+                  }
+                // No op state yet (or already gone): the strand's own
+                // queue is all there is to check.
+                _ -> Ok(state.pending_next_run)
+              }
+          }
+      }
+  }
+}
+
+fn inbox_ids(state: OperationState) -> List(EntryId) {
+  case state {
+    RunState(inbox:, control:, ..) ->
+      list.flatten([
+        inbox.steer,
+        inbox.follow_up,
+        inbox.writes,
+        drained(control),
+      ])
+    CompactionState(control:, ..) | NavigationState(control:, ..) ->
+      drained(control)
+  }
+}
+
+fn drained(control: Control) -> List(EntryId) {
+  case control {
+    Running -> []
+    CancelRequested(drained_steer:, drained_follow_up:, ..) ->
+      list.append(drained_steer, drained_follow_up)
+  }
+}
+
+/// `terminal/registers`: no operation-owned or pending register survives
+/// a terminal transaction, and the strand is idle again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // invariant.terminal_registers(store, "main")
+/// ```
+///
+pub fn terminal_registers(
+  store: Storage(handle),
+  strand strand: String,
+) -> Result(Nil, Violation) {
+  let namespaces = [
+    register.OpMeta,
+    register.OpState,
+    register.OpToolArgs,
+    register.OpPreparation,
+    register.PendingEntry,
+  ]
+  use _ <- result.try(
+    list.try_fold(namespaces, Nil, fn(_acc, ns) {
+      case storage.list_registers(store, ns, None) {
+        Ok([]) -> Ok(Nil)
+        Ok(cells) ->
+          Error(Violation(
+            check: "terminal/registers",
+            detail: int_to_count(list.length(cells))
+              <> " register(s) survived the terminal transaction in "
+              <> ns_name(ns),
+          ))
+        Error(error) ->
+          Error(Violation(
+            check: "terminal/registers",
+            detail: "register listing failed: " <> describe_error(error),
+          ))
+      }
+    }),
+  )
+  case storage.get_register(store, register.StrandState, strand) {
+    Ok(Some(cell)) ->
+      case codec.decode_strand_state(cell.value.payload) {
+        Ok(state) ->
+          case state.current_operation {
+            None -> Ok(Nil)
+            Some(_) ->
+              Error(Violation(
+                check: "terminal/registers",
+                detail: "the strand still names an open operation",
+              ))
+          }
+        Error(report) ->
+          Error(Violation(
+            check: "terminal/registers",
+            detail: "strand state corrupt at " <> report.boundary,
+          ))
+      }
+    _ ->
+      Error(Violation(
+        check: "terminal/registers",
+        detail: "the strand state is missing",
+      ))
+  }
+}
+
+/// `tree/calls-answered`: every tool call block in the tree has exactly
+/// one tool-result entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // invariant.calls_answered(store)
+/// ```
+///
+pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
+  case storage.scan_entries(store, storage.entry_scan()) {
+    Error(error) ->
+      Error(Violation(
+        check: "tree/calls-answered",
+        detail: "entry scan failed: " <> describe_error(error),
+      ))
+    Ok(entries) -> {
+      let messages = list.filter_map(entries, message_of)
+      let answered =
+        list.filter_map(messages, fn(message) {
+          case message {
+            core_message.ToolResultMessage(tool_call_id:, ..) ->
+              Ok(tool_call_id)
+            _ -> Error(Nil)
+          }
+        })
+      let called =
+        list.flat_map(messages, fn(message) {
+          case message {
+            core_message.AssistantMessage(content:, ..) ->
+              list.filter_map(content, fn(block) {
+                case block {
+                  core_message.AssistantToolCall(call:) -> Ok(call.id)
+                  _ -> Error(Nil)
+                }
+              })
+            _ -> []
+          }
+        })
+      list.try_fold(called, Nil, fn(_acc, id) {
+        case list.count(answered, fn(other) { other == id }) {
+          1 -> Ok(Nil)
+          count ->
+            Error(Violation(
+              check: "tree/calls-answered",
+              detail: "tool call "
+                <> id
+                <> " has "
+                <> int_to_count(count)
+                <> " result entries",
+            ))
+        }
+      })
+    }
+  }
+}
+
+fn message_of(row: Entry) -> Result(core_message.AgentMessage, Nil) {
+  case row {
+    entry.MessageEntry(message:, ..) -> Ok(message)
+    _ -> Error(Nil)
+  }
+}
+
+fn ns_name(ns: register.RegisterNs) -> String {
+  case ns {
+    register.OpMeta -> "op.meta"
+    register.OpState -> "op.state"
+    register.OpToolArgs -> "op.tool_args"
+    register.OpPreparation -> "op.preparation"
+    register.PendingEntry -> "pending.entry"
+    _ -> "other"
+  }
+}
+
+fn describe_error(error: storage.StorageError) -> String {
+  case error {
+    storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary
+    storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
+    storage.BackendFault(reason:) -> reason
+    storage.HandleClosed -> "handle closed"
+  }
+}
+
+fn int_to_count(n: Int) -> String {
+  string.inspect(n)
+}

@@ -20,3 +20,8 @@ pub fn os_cmd(command: String) -> String
 /// fixture cannot provide that across tree restarts.
 @external(erlang, "conformance_test_ffi", "unique_integer")
 pub fn unique_integer() -> Int
+
+/// Reads an environment variable. Uses `os:getenv/1`; the soak suite is
+/// opt-in and an environment variable is how it is opted into.
+@external(erlang, "conformance_test_ffi", "get_env")
+pub fn get_env(name: String) -> Result(String, Nil)
