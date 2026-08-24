@@ -42,3 +42,30 @@ array16-0-to-15.bin: array [0..15] (array16, 16 elements) = 0xdc0010000102030405
 map-empty.bin: map {} (fixmap) = 0x80
 map-a-1.bin: map {"a": 1} (fixmap) = 0x81a16101
 nested.bin: map {"k": [nil, true, -1]} = 0x81a16b93c0c3ff
+
+Part 1.4 structure fixtures (WP-G). Values are canonical encodings from
+broker/policy and broker/framing; pinned by the golden_* tests in
+packages/broker/test/broker/{policy,framing}_test.gleam. The Go helper's
+policy suite (packages/sandbox/internal/policy) strictly decodes every
+sandbox_policy* file.
+
+sandbox_policy_1.bin: SandboxPolicyV1, network proxy mode.
+  { v:1, writable_roots:["/work","/work/.cache"],
+    readable_roots:["/work","/usr/lib"],
+    protected:["/work/.git","/work/.env"],
+    network:{mode:"proxy", allow:["registry.npmjs.org","*.github.com"],
+             proxy:"127.0.0.1:3128"},
+    limits:{cpu_s:60, wall_s:120, mem_bytes:536870912, pids:128,
+            fsize_bytes:1048576, output_bytes:65536},
+    env_allow:["PATH","HOME"], scratch:"/work/.scratch" }
+  Map keys sorted; limits keys sorted; network keys sorted.
+sandbox_policy_2_network_off.bin: SandboxPolicyV1, network off (the
+  broker/policy.workspace_default("/work") value: writable/readable
+  ["/work"], protected [], limits {cpu_s:300, wall_s:600,
+  mem_bytes:2147483648, pids:512, fsize_bytes:1073741824,
+  output_bytes:4194304}, env_allow ["PATH","HOME","LANG","TERM"],
+  scratch "tmpfs").
+frame_hello_1.bin: a Part 1.4 frame payload (msgpack map, no length
+  prefix): {v:1, id:1, kind:"hello",
+  body:{proto:1, peer:"broker", features:[]}}. Envelope keys in spec
+  order v, id, kind, body; hello body keys proto, peer, features.
