@@ -8,8 +8,10 @@ core = { path = "../core" }
 storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }
+provider = { path = "../provider" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
