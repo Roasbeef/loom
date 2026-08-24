@@ -131,6 +131,17 @@ pub type Script {
     /// completion sent back to the main strand as a durable
     /// cross-strand message that starts one more run there.
     subagent: Option(String),
+    /// Run tool batches under `tool_execution: Parallel`, so multi-call
+    /// batches overlap their effects and the per-call clearance frontier
+    /// is exercised (a parallel script always carries at least one
+    /// two-call batch).
+    parallel: Bool,
+    /// Drive the durable escalation machinery: the first tool clearance
+    /// raises an escalation scoped to exactly that call, approves it,
+    /// and restarts the strand driver so the same durable coordinates
+    /// re-clear with the grant — raise, approve, and consume all happen
+    /// under whatever fault schedule is running.
+    escalate: Bool,
   )
 }
 
@@ -224,6 +235,14 @@ pub fn describe(script: Script) -> String {
     None -> "no subagent"
     Some(_brief) -> "subagent"
   }
+  let scheduling = case script.parallel {
+    True -> "parallel"
+    False -> "sequential"
+  }
+  let escalation = case script.escalate {
+    True -> "escalate"
+    False -> "no escalation"
+  }
   ops
   <> " | "
   <> threshold
@@ -231,6 +250,10 @@ pub fn describe(script: Script) -> String {
   <> structural
   <> " | "
   <> subagent
+  <> " | "
+  <> scheduling
+  <> " | "
+  <> escalation
   <> " | "
   <> string.join(list.map(script.interventions, describe_intervention), ",")
 }
@@ -308,15 +331,34 @@ pub const registry = [
 /// ```
 ///
 pub fn generate(rng: Rng) -> #(Script, Rng) {
+  // Parallel scheduling and the escalation dance both need a tool batch
+  // to mean anything, so they are drawn first and the turn shape is
+  // nudged to guarantee one: at least one continuing turn, not wholly
+  // spent on the deferred suspend, and (under parallel) a two-call
+  // batch so the per-call frontier actually overlaps.
+  let #(parallel, rng) = random.chance(rng, 35)
+  let #(escalate, rng) = random.chance(rng, 40)
   // A run continues only while its turns keep asking for more, so the
   // shape is: some number of continuing turns, then one that ends it.
-  let #(continuing_count, rng) =
-    random.weighted(rng, [#(3, 0), #(4, 1), #(2, 2)], 0)
+  let #(drawn_count, rng) = random.weighted(rng, [#(3, 0), #(4, 1), #(2, 2)], 0)
+  let continuing_count = case { parallel || escalate } && drawn_count == 0 {
+    True -> 1
+    False -> drawn_count
+  }
   // At most one deferred turn per script: the poll settlement is one
   // scripted value, so two polls would reuse its call ids and a call id
   // must name exactly one call in the tree.
-  let #(defer_at, rng) = random.int_between(rng, 0, continuing_count)
-  let #(continuing, rng) = fold_turns(rng, 0, continuing_count, defer_at, [])
+  let #(drawn_defer, rng) = random.int_between(rng, 0, continuing_count)
+  let defer_at = case
+    { parallel || escalate } && continuing_count == 1 && drawn_defer == 0
+  {
+    // The one turn must be a tool batch, so the deferred suspend is
+    // pushed out of range rather than allowed to consume it.
+    True -> 1
+    False -> drawn_defer
+  }
+  let #(continuing, rng) =
+    fold_turns(rng, 0, continuing_count, defer_at, parallel, [])
   let #(final, rng) = terminal_settle(rng)
   let #(post_tokens, rng) = random.int_between(rng, 1, 9)
   let #(extra_ops, rng) =
@@ -369,6 +411,8 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
       interventions:,
       poll_answer:,
       subagent:,
+      parallel:,
+      escalate:,
     ),
     rng,
   )
@@ -376,29 +420,41 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
 
 // The continuing turns, in order: the one at `defer_at` (if any) is the
 // deferred turn, the rest are tool batches. Call ids carry their turn, so
-// no two calls in a script share an id.
+// no two calls in a script share an id. Under parallel scheduling every
+// batch carries two calls, so the overlapping frontier is real.
 fn fold_turns(
   rng: Rng,
   turn: Int,
   count: Int,
   defer_at: Int,
+  parallel: Bool,
   acc: List(Settle),
 ) -> #(List(Settle), Rng) {
   case turn >= count {
     True -> #(list.reverse(acc), rng)
     False ->
       case turn == defer_at {
-        True -> fold_turns(rng, turn + 1, count, defer_at, [Defer, ..acc])
+        True ->
+          fold_turns(rng, turn + 1, count, defer_at, parallel, [Defer, ..acc])
         False -> {
-          let #(settle, rng) = calls(rng, "t" <> int.to_string(turn))
-          fold_turns(rng, turn + 1, count, defer_at, [settle, ..acc])
+          let #(settle, rng) =
+            batch(rng, "t" <> int.to_string(turn), pair: parallel)
+          fold_turns(rng, turn + 1, count, defer_at, parallel, [settle, ..acc])
         }
       }
   }
 }
 
 fn calls(rng: Rng, prefix: String) -> #(Settle, Rng) {
-  let #(count, rng) = random.int_between(rng, 1, 2)
+  batch(rng, prefix, pair: False)
+}
+
+fn batch(rng: Rng, prefix: String, pair pair: Bool) -> #(Settle, Rng) {
+  let #(drawn, rng) = random.int_between(rng, 1, 2)
+  let count = case pair {
+    True -> 2
+    False -> drawn
+  }
   let #(names, rng) =
     random.list_of(rng, count, fn(rng) {
       random.pick(rng, ["read", "write", "probe"], "read")

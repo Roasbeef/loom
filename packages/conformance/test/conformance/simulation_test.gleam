@@ -78,6 +78,13 @@ const required_paths = [
   "effect-timed-out", "steer-during-effect", "follow-up-during-effect",
   "abort-during-effect", "abort-at-terminal-commit", "subagent-spawn",
   "cross-strand-message",
+  // The M3 escalation-boundary wave (SIM-6): parallel batch frontiers,
+  // the raise → approve → consume escalation dance, and the partial
+  // crash that restarts one strand driver mid-effect. A sweep that
+  // never reached these could not regress on RT-esc-attribution,
+  // RT-esc-double, or RT-restart-leak.
+  "parallel-tools", "escalation-raised", "escalation-consumed",
+  "strand-restart-during-effect",
 ]
 
 pub fn simulation_coverage_test() {
@@ -120,6 +127,8 @@ pub fn orphaned_deferred_poll_corpus_test() {
       interventions: [],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
       subagent: None,
+      parallel: False,
+      escalate: False,
     )
   expect_case(deferred, [fault.CrashDuringEffect(index: 2)])
   expect_case(deferred, [fault.CrashDuringEffect(index: 1)])
@@ -157,6 +166,8 @@ pub fn steer_racing_a_live_effect_corpus_test() {
       ],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
       subagent: None,
+      parallel: False,
+      escalate: False,
     )
   expect_case(raced, [])
   expect_case(raced, [fault.CrashDuringEffect(index: 2)])
@@ -183,6 +194,8 @@ pub fn abort_at_the_terminal_commit_corpus_test() {
       interventions: [script.Abort(trigger: script.AtTerminalCommit)],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
       subagent: None,
+      parallel: False,
+      escalate: False,
     )
   expect_case(terminal, [])
   expect_case(terminal, [fault.CrashAtCommit(ordinal: 2)])
@@ -217,6 +230,8 @@ pub fn crash_on_the_terminal_commit_corpus_test() {
       ],
       poll_answer: script.Answer(text: "deferred answer", tokens: 4),
       subagent: None,
+      parallel: False,
+      escalate: False,
     )
   // The shape this case depends on: the terminal transaction is the last
   // of six commits, so a crash armed there is armed on the seam that the
@@ -225,6 +240,102 @@ pub fn crash_on_the_terminal_commit_corpus_test() {
   assert runner.execute(racing, fault.none()).commits == 6
   expect_case(racing, [fault.CrashAtCommit(ordinal: 6)])
   expect_case(racing, [fault.CrashAtCommit(ordinal: 5)])
+}
+
+pub fn strand_restart_mid_parallel_batch_corpus_test() {
+  // RT-restart-leak: a strand-actor restart (the tree survives) used to
+  // leak the dying incarnation's live effects, so recovery re-executed a
+  // tool concurrently with its still-running first execution. Pinned
+  // with a parallel two-call batch whose second call is `replay: Never`:
+  // the restart lands while both tool effects are live, the reaper must
+  // take both down, and recovery replays the safe call while the never
+  // call comes back as the synthetic interruption.
+  let batch =
+    script.Script(
+      registry: [#("read", ReplaySafe), #("write", ReplayNever)],
+      tools: [
+        #("read", script.ToolOk(text: "out:read")),
+        #("write", script.ToolOk(text: "out:write")),
+      ],
+      ops: [
+        script.RunOp(
+          prompt: "fan out",
+          settles: [
+            script.Calls(
+              calls: [
+                script.Call(id: "t00read", tool: "read"),
+                script.Call(id: "t01write", tool: "write"),
+              ],
+              tokens: 4,
+            ),
+            script.Answer(text: "answered", tokens: 5),
+          ],
+          post: script.Answer(text: "after compaction", tokens: 2),
+        ),
+      ],
+      threshold_after: None,
+      structural: script.Supplied,
+      interventions: [],
+      poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
+      parallel: True,
+      escalate: False,
+    )
+  // The shape the indices depend on: one generation, two overlapped
+  // tools, one closing generation. Asserted so a dispatch-order change
+  // retires the case loudly.
+  assert runner.execute(batch, fault.none()).effects == 4
+  expect_case(batch, [fault.RestartStrand(index: 2)])
+  expect_case(batch, [fault.RestartStrand(index: 3)])
+  expect_case(batch, [
+    fault.RestartStrand(index: 2),
+    fault.DropDoorbell(index: 1),
+  ])
+}
+
+pub fn escalation_dance_under_crashes_corpus_test() {
+  // RT-esc-attribution / RT-esc-double: the scripted escalation dance —
+  // raise scoped to the exact call, approve, driver restart, re-clear,
+  // consume-before-clear — must converge under crashes aimed at the
+  // commits the dance itself makes. A crash that costs the approval is
+  // allowed to cost exactly that (the re-cleared call runs under base
+  // policy); it must never change the transcript or double-run the tool.
+  let danced =
+    script.Script(
+      registry: [#("read", ReplaySafe), #("write", ReplayNever)],
+      tools: [
+        #("read", script.ToolOk(text: "out:read")),
+        #("write", script.ToolOk(text: "out:write")),
+      ],
+      ops: [
+        script.RunOp(
+          prompt: "ask for more",
+          settles: [
+            script.Calls(
+              calls: [script.Call(id: "t00write", tool: "write")],
+              tokens: 3,
+            ),
+            script.Answer(text: "answered", tokens: 5),
+          ],
+          post: script.Answer(text: "after compaction", tokens: 2),
+        ),
+      ],
+      threshold_after: None,
+      structural: script.Supplied,
+      interventions: [],
+      poll_answer: script.Answer(text: "deferred answer", tokens: 4),
+      subagent: None,
+      parallel: False,
+      escalate: True,
+    )
+  // Enough commits that the crash ordinals below land inside the run —
+  // the raise, the approval, and the consumption are all in there.
+  assert runner.execute(danced, fault.none()).commits >= 8
+  expect_case(danced, [])
+  expect_case(danced, [fault.CrashAtCommit(ordinal: 4)])
+  expect_case(danced, [fault.CrashAtCommit(ordinal: 6)])
+  expect_case(danced, [fault.CrashAtCommit(ordinal: 8)])
+  expect_case(danced, [fault.RestartStrand(index: 2)])
 }
 
 fn expect_case(scripted: script.Script, faults: List(fault.Fault)) -> Nil {

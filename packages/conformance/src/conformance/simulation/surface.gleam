@@ -46,7 +46,9 @@ import machine/planner.{
 import provider/stream
 import runtime/api
 import runtime/effects.{type Effects}
+import runtime/escalation
 import runtime/hooks
+import runtime/supervisor
 import session/session.{type Session}
 
 /// The api name every simulated response carries; a deferred handle must
@@ -64,6 +66,12 @@ pub const model_id = "loom-1"
 /// script's turns, so a child's settlement is the same in both runs
 /// regardless of how much shared history it forked over.
 pub const sub_model_id = "loom-sub"
+
+/// The subagent strand's name (the runner re-exports it). The surface
+/// needs it so a strand-restart fault kills the driver actually serving
+/// the faulted effect — a subagent's generation must restart the
+/// subagent, not main.
+pub const sub_strand = "sub:1"
 
 /// The text of the durable cross-strand message the runner sends back to
 /// the main strand once the subagent finishes. A generation whose newest
@@ -106,21 +114,14 @@ pub fn build(
     entropy: fn() { 1_000_000 + control.bump(ctl, "entropy") * 104_729 },
     timers: vclock.timers(vc),
     provider: effects.ProviderSurface(
-      request: fn(spec) { request(ctl, vc, script, schedule, spec) },
+      request: fn(spec) { request(ctl, vc, script, schedule, strand, spec) },
       timeout_ms: provider_timeout_ms,
     ),
     tools: effects.ToolSurface(
       clear: fn(query: effects.ClearanceQuery) {
-        case list.key_find(script.registry, query.call.name) {
-          Ok(replay) ->
-            effects.Cleared(effective_arguments: query.call.arguments, replay:)
-          Error(Nil) ->
-            effects.ClearanceRefused(
-              reason: "unknown tool: " <> query.call.name,
-            )
-        }
+        clearance(ctl, script, strand, query)
       },
-      run: fn(run) { execute(ctl, vc, script, schedule, run) },
+      run: fn(run) { execute(ctl, vc, script, schedule, strand, run) },
       replay_still_safe: fn(name) {
         list.key_find(script.registry, name) == Ok(ReplaySafe)
       },
@@ -139,12 +140,23 @@ fn request(
   vc: Clockwork,
   script: Script,
   schedule: Schedule,
+  strand: String,
   spec: effects.RequestSpec,
 ) -> stream.StreamHandle {
   let index = control.bump(ctl, "effect")
   let events = process.new_subject()
   let handle = stream.StreamHandle(events:)
-  case effect_fault(ctl, vc, schedule, index, loss_allowed: retryable(spec)) {
+  let on_strand = strand_of_spec(spec, strand)
+  case
+    effect_fault(
+      ctl,
+      vc,
+      schedule,
+      index,
+      strand: on_strand,
+      loss_allowed: retryable(spec),
+    )
+  {
     Killed | Starved -> handle
     Ran -> {
       mark_request(ctl, spec)
@@ -439,17 +451,127 @@ pub fn usage(tokens: Int) -> message.Usage {
 
 // --- tools ----------------------------------------------------------------
 
+// Clearance for one planned call. Ordinary scripts clear by registry
+// lookup alone; an `escalate` script additionally drives the durable
+// escalation machinery through its first clearance (see
+// `escalation_dance`), and a `parallel` script marks the per-call
+// frontier when it clears a later call of a batch — under sequential
+// scheduling that clearance only happens after the earlier call settled,
+// so reaching it under parallel settings is the overlapping-frontier
+// path itself.
+fn clearance(
+  ctl: Control,
+  script: Script,
+  strand: String,
+  query: effects.ClearanceQuery,
+) -> effects.Clearance {
+  case list.key_find(script.registry, query.call.name) {
+    Error(Nil) ->
+      effects.ClearanceRefused(reason: "unknown tool: " <> query.call.name)
+    Ok(replay) -> {
+      case script.parallel && query.source_index >= 1 {
+        True -> control.mark(ctl, "parallel-tools")
+        False -> Nil
+      }
+      case script.escalate {
+        True -> escalation_dance(ctl, strand, query, replay)
+        False ->
+          effects.Cleared(effective_arguments: query.call.arguments, replay:)
+      }
+    }
+  }
+}
+
+// The escalation dance, fired exactly once per session (the claim
+// outlives every restart): at the first clearance the script performs,
+// raise an escalation scoped to exactly that call, approve it, and kill
+// the strand driver — this hook runs inside the driver's own process —
+// so the replan re-clears the *same durable coordinates* with the
+// approval in place. The re-clearance then consumes the grant before
+// this hook sees it (consume-before-clear), which the `escalation-
+// consumed` mark records. The raise and approve run on a disposable
+// process (`control.attempt`) so a schedule that kills the writer
+// mid-commit costs the approval, not the run: a re-clearance that finds
+// no grant clears under the base policy, which converges to the same
+// transcript because the scripted tools ignore grants entirely.
+fn escalation_dance(
+  ctl: Control,
+  strand: String,
+  query: effects.ClearanceQuery,
+  replay: ReplayPolicy,
+) -> effects.Clearance {
+  case control.claim(ctl, "escalation-dance") {
+    True -> {
+      control.mark(ctl, "escalation-raised")
+      let _approved =
+        control.attempt(
+          fn() { raise_and_approve(ctl, strand, query) },
+          within_ms: 3000,
+        )
+      // Restart the driver (not the tree): recovery replans from the
+      // durable Tools phase and resolves this clearance again.
+      process.kill(process.self())
+      effects.ClearanceRefused(reason: "unreachable: the driver was killed")
+    }
+    False -> {
+      case query.grants {
+        [] -> Nil
+        _ -> control.mark(ctl, "escalation-consumed")
+      }
+      effects.Cleared(effective_arguments: query.call.arguments, replay:)
+    }
+  }
+}
+
+fn raise_and_approve(
+  ctl: Control,
+  strand: String,
+  query: effects.ClearanceQuery,
+) -> Result(Nil, Nil) {
+  case control.runtime(ctl) {
+    None -> Error(Nil)
+    Some(runtime) -> {
+      let scope =
+        escalation.CallScope(
+          operation: query.operation,
+          strand:,
+          step_id: query.step_id,
+          source_index: query.source_index,
+          call_id: query.call.id,
+        )
+      let denial =
+        json.Object([
+          #("reason", json.String("scripted denial")),
+          #("wanted", json.Array([scripted_grant()])),
+        ])
+      case api.raise_escalation_for(runtime, "esc-sim", denial, scope: scope) {
+        Error(_) -> Error(Nil)
+        Ok(Nil) ->
+          case api.approve_escalation(runtime, "esc-sim", [scripted_grant()]) {
+            Ok(Nil) -> Ok(Nil)
+            Error(_) -> Error(Nil)
+          }
+      }
+    }
+  }
+}
+
+fn scripted_grant() -> json.JsonValue {
+  json.Object([#("grant", json.String("scripted"))])
+}
+
 fn execute(
   ctl: Control,
   vc: Clockwork,
   script: Script,
   schedule: Schedule,
+  strand: String,
   run: effects.ToolRun,
 ) -> effects.ToolOutcome {
   let index = control.bump(ctl, "effect")
   let _invocations =
     control.bump(ctl, "tool:" <> run.call.name <> ":" <> run.call.id)
-  case effect_fault(ctl, vc, schedule, index, loss_allowed: False) {
+  case effect_fault(ctl, vc, schedule, index, strand:, loss_allowed: False) {
     Killed | Starved ->
       effects.ToolFailed(reason: "the tree was killed mid-execution")
     Ran -> {
@@ -499,11 +621,27 @@ fn retryable(spec: effects.RequestSpec) -> Bool {
   }
 }
 
+// Which strand's driver is serving a request spec: the subagent answers
+// by its own durable model identity, everything else runs on the main
+// strand the surface was built for.
+fn strand_of_spec(spec: effects.RequestSpec, main: String) -> String {
+  case spec {
+    effects.GenerationRequest(configuration:, ..)
+    | effects.PollRequest(configuration:, ..)
+    | effects.SummaryRequest(configuration:, ..) ->
+      case configuration.model.model_id == sub_model_id {
+        True -> sub_strand
+        False -> main
+      }
+  }
+}
+
 fn effect_fault(
   ctl: Control,
   vc: Clockwork,
   schedule: Schedule,
   index: Int,
+  strand strand: String,
   loss_allowed loss_allowed: Bool,
 ) -> EffectFate {
   list.fold(schedule.faults, Ran, fn(fate, item) {
@@ -515,6 +653,20 @@ fn effect_fault(
             control.note_crash(ctl)
             control.mark(ctl, "crash-during-effect")
             kill_tree(ctl)
+            Killed
+          }
+        }
+      Ran, fault.RestartStrand(index: at) if at == index ->
+        case control.claim(ctl, "strandkill@e" <> int.to_string(index)) {
+          False -> Ran
+          True -> {
+            control.mark(ctl, "strand-restart-during-effect")
+            // Kill only this effect's own driver: the partial crash.
+            // The dying incarnation's reaper takes this very effect
+            // process down with it, so nothing is settled from here —
+            // and anything sent regardless is dropped by the wake
+            // guard, because the incarnation it addresses is gone.
+            kill_strand(ctl, strand)
             Killed
           }
         }
@@ -567,6 +719,26 @@ fn kill_tree(ctl: Control) -> Nil {
       case process.subject_owner(process.named_subject(runtime.tree.writer)) {
         Ok(pid) -> process.kill(pid)
         Error(Nil) -> Nil
+      }
+  }
+}
+
+// Kill one strand's driver and nothing else: the factory restarts it
+// alone, while the writer keeps serving every other strand's commits.
+// This is the interruption neither a commit-boundary crash nor a tree
+// kill can produce — the tree survives, so the restarted incarnation's
+// recovery races whatever the dead incarnation left behind.
+fn kill_strand(ctl: Control, strand: String) -> Nil {
+  case control.runtime(ctl) {
+    None -> Nil
+    Some(runtime) ->
+      case supervisor.strand_subject(runtime.tree, strand) {
+        Error(Nil) -> Nil
+        Ok(subject) ->
+          case process.subject_owner(subject) {
+            Ok(pid) -> process.kill(pid)
+            Error(Nil) -> Nil
+          }
       }
   }
 }

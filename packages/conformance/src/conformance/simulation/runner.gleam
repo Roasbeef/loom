@@ -36,6 +36,7 @@ import core/message.{
   AssistantToolCall, CustomMessage, ToolResultImage, ToolResultMessage,
   ToolResultText, UserImage, UserMessage, UserText,
 }
+import core/register
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
@@ -43,6 +44,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import machine/acceptance
+import machine/codec
 import machine/operation.{type LastResult, ReplayNever}
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration, ThinkingOff,
@@ -56,8 +58,9 @@ import storage/storage
 /// The strand every simulated session runs on.
 pub const strand = "main"
 
-/// The subagent strand a script with a `subagent` brief creates.
-pub const sub_strand = "sub:1"
+/// The subagent strand a script with a `subagent` brief creates (the
+/// surface owns the name so it can aim strand-restart faults).
+pub const sub_strand = surface.sub_strand
 
 /// What one run of a script converged to.
 pub type Report {
@@ -534,10 +537,19 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let surfaces = surface.build(ctl, vc, script, schedule, raw, strand:)
   let events: process.Subject(writer.Event) = process.new_subject()
   let base = api.default_options(configuration())
+  // A parallel script runs its tool batches under Parallel settings, so
+  // multi-call batches genuinely overlap their effects and the per-call
+  // clearance frontier is driven under the fault schedule.
+  let settings = case script.parallel {
+    True ->
+      operation.RunSettings(..base.settings, tool_execution: operation.Parallel)
+    False -> base.settings
+  }
   let options =
     api.Options(
       ..base,
       strand:,
+      settings:,
       // A generous ladder on purpose: an injected fault costs an
       // attempt, and a schedule must not be able to exhaust the ladder
       // and turn a completed run into a failed one by arithmetic.
@@ -1178,7 +1190,26 @@ fn pump_strand(
         // was still queued. Wait for the seam to close.
         Some(last) ->
           case control.seam_quiet(ctx.ctl) {
-            True -> Ok(last)
+            True -> {
+              // The terminal transaction writes the result twice,
+              // atomically: the strand's latest-wins register and the
+              // operation-keyed record awaiting keys on. A terminal
+              // reachable only through the strand register means the
+              // operation-keyed half is missing — the ABA hole where a
+              // child's second run makes the first result unobservable.
+              case op_result_on(ctx.raw, op_id) {
+                Some(_) -> Nil
+                None ->
+                  control.note(
+                    ctx.ctl,
+                    "terminal/op-result: "
+                      <> strand_name
+                      <> " finished an operation without its "
+                      <> "operation-keyed result record",
+                  )
+              }
+              Ok(last)
+            }
             False -> {
               process.sleep(1)
               pump_strand(ctx, strand_name, op_id, remaining - 1)
@@ -1203,16 +1234,44 @@ fn pump_strand(
   }
 }
 
+// The operation's terminal result, preferring the operation-keyed
+// record (the register `api.await_strand_result` keys on, immune to a
+// later run's overwrite) and falling back to the strand's latest-wins
+// register.
 fn terminal_on(
   raw: Session,
   strand_name: String,
   op_id: OpId,
 ) -> Option(LastResult) {
-  case session.last_result(raw, strand_name) {
+  case op_result_on(raw, op_id) {
+    Some(last) -> Some(last)
+    None ->
+      case session.last_result(raw, strand_name) {
+        Ok(Some(cell)) ->
+          case result_operation(cell.value) == op_id {
+            True -> Some(cell.value)
+            False -> None
+          }
+        _ -> None
+      }
+  }
+}
+
+// The durable `operation-result/{op}` record, read straight from the
+// store. Unreadable or undecodable reads as absent: the pump keeps
+// polling, and the terminal check above reports the record's absence.
+fn op_result_on(raw: Session, op_id: OpId) -> Option(LastResult) {
+  case
+    storage.get_register(
+      raw.store,
+      register.FactCustom,
+      operation.result_fact_key(op_id),
+    )
+  {
     Ok(Some(cell)) ->
-      case result_operation(cell.value) == op_id {
-        True -> Some(cell.value)
-        False -> None
+      case codec.decode_last_result(cell.value.payload) {
+        Ok(last) -> Some(last)
+        Error(_report) -> None
       }
     _ -> None
   }

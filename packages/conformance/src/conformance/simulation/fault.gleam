@@ -33,6 +33,12 @@ pub type Fault {
   /// running, which is the one interruption a commit-boundary crash can
   /// never produce.
   CrashDuringEffect(index: Int)
+  /// Kill only the strand driver serving dispatched effect `index`,
+  /// while the effect is running: the partial crash. The writer, the
+  /// registry, and every other strand keep going; the factory restarts
+  /// just this driver, whose reaper must take the orphaned effect down
+  /// with the old incarnation before recovery re-dispatches.
+  RestartStrand(index: Int)
   /// Refuse the `ordinal`-th commit as a stale expectation without
   /// applying it, as a concurrent admission would.
   RefuseCommitStale(ordinal: Int)
@@ -92,6 +98,7 @@ fn describe_fault(fault: Fault) -> String {
   case fault {
     CrashAtCommit(ordinal:) -> "crash@c" <> int.to_string(ordinal)
     CrashDuringEffect(index:) -> "crash@e" <> int.to_string(index)
+    RestartStrand(index:) -> "strandkill@e" <> int.to_string(index)
     RefuseCommitStale(ordinal:) -> "stale@c" <> int.to_string(ordinal)
     ReadFault(ordinal:) -> "readfault@c" <> int.to_string(ordinal)
     StealLease(ordinal:) -> "leasetheft@c" <> int.to_string(ordinal)
@@ -136,11 +143,12 @@ fn draw(rng: Rng, bound: Int, effects: Int) -> #(Fault, Rng) {
   let #(delay, rng) = random.pick(rng, [10, 250, 2000], 250)
   let #(kind, rng) = random.int_between(rng, 1, 100)
   let fault = case kind {
-    n if n <= 26 -> CrashAtCommit(ordinal:)
-    n if n <= 44 -> CrashDuringEffect(index:)
-    n if n <= 56 -> RefuseCommitStale(ordinal:)
-    n if n <= 63 -> ReadFault(ordinal:)
-    n if n <= 70 -> StealLease(ordinal:)
+    n if n <= 24 -> CrashAtCommit(ordinal:)
+    n if n <= 40 -> CrashDuringEffect(index:)
+    n if n <= 48 -> RestartStrand(index:)
+    n if n <= 58 -> RefuseCommitStale(ordinal:)
+    n if n <= 65 -> ReadFault(ordinal:)
+    n if n <= 71 -> StealLease(ordinal:)
     n if n <= 78 -> DropDoorbell(index:)
     n if n <= 84 -> DelayDoorbell(index:, delay_ms: delay)
     n if n <= 91 -> SlowEffect(index:, delay_ms: delay)
@@ -171,7 +179,7 @@ fn dedupe(faults: List(Fault)) -> List(Fault) {
 
 fn is_crash(fault: Fault) -> Bool {
   case fault {
-    CrashAtCommit(..) | CrashDuringEffect(..) -> True
+    CrashAtCommit(..) | CrashDuringEffect(..) | RestartStrand(..) -> True
     _ -> False
   }
 }
@@ -216,6 +224,7 @@ fn earlier(fault: Fault) -> Fault {
   case fault {
     CrashAtCommit(ordinal:) -> CrashAtCommit(ordinal: halve(ordinal))
     CrashDuringEffect(index:) -> CrashDuringEffect(index: halve(index))
+    RestartStrand(index:) -> RestartStrand(index: halve(index))
     RefuseCommitStale(ordinal:) -> RefuseCommitStale(ordinal: halve(ordinal))
     ReadFault(ordinal:) -> ReadFault(ordinal: halve(ordinal))
     StealLease(ordinal:) -> StealLease(ordinal: halve(ordinal))

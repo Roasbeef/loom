@@ -20,7 +20,13 @@ them from their own test mains.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
   semantic half: what the session is *asked* to do. `Script.subagent` is
   the multi-strand coda: an optional brief that spawns a subagent strand
-  and sends its findings back to main.
+  and sends its findings back to main. `Script.parallel` runs tool
+  batches under `tool_execution: Parallel` (a parallel script always
+  carries a two-call batch, so the overlapping frontier is real);
+  `Script.escalate` drives the durable escalation machinery — the first
+  clearance raises an escalation scoped to exactly that call, approves
+  it, and restarts the strand driver so the same durable coordinates
+  re-clear with the grant, all under the fault schedule.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -73,7 +79,13 @@ them from their own test mains.
   run to a terminal result, then `api.send_to_strand` delivering its
   findings back to main as a durable steer-or-start admission. Coverage
   now *requires* both the spawn and the cross-strand message, so crashes
-  during a child's effects exercise the boot-all-strands recovery path.
+  during a child's effects exercise the boot-all-strands recovery path —
+  and, since the M3 escalation-boundary wave, also the parallel frontier
+  (`parallel-tools`), the escalation dance
+  (`escalation-raised`/`escalation-consumed`), and the partial crash
+  (`strand-restart-during-effect`). Terminal detection prefers the
+  operation-keyed `operation-result/{op}` record and reports a violation
+  when a terminal is reachable only through `strand.last_result`.
 - **Wire**: `simulation/wire` generates byte streams straight into
   `broker/framing`'s deframer — no helper involved; the jailed e2e drives
   the real `loom-exec` through the broker.
@@ -81,12 +93,14 @@ them from their own test mains.
 ## Invariants
 
 - **Faults are transparent by definition.** A schedule may crash the tree
-  at a commit boundary, kill it mid-effect, refuse a commit as stale, fault
-  a read, steal the lease, drop or delay a doorbell, starve an effect, or
-  lose an effect process — and none of it may change what the session ends
-  up having done. Anything that legitimately changes the outcome (a
-  provider that refuses, a user who aborts) is scripted into *both* runs so
-  it cannot be mistaken for damage.
+  at a commit boundary, kill it mid-effect, restart a single strand
+  driver mid-effect (`RestartStrand` — the partial crash the reaper must
+  survive), refuse a commit as stale, fault a read, steal the lease, drop
+  or delay a doorbell, starve an effect, or lose an effect process — and
+  none of it may change what the session ends up having done. Anything
+  that legitimately changes the outcome (a provider that refuses, a user
+  who aborts) is scripted into *both* runs so it cannot be mistaken for
+  damage.
 - **Nothing is keyed by a counter.** A generation request is answered by
   the *phase* of its projected context — how many assistant messages are in
   it, plus a hundred once a summary is — and a tool execution by its
