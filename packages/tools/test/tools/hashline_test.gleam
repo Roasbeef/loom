@@ -4,7 +4,7 @@ import gleam/string
 import support/generate
 import tools/hashline.{
   type Ref, AnchoredLine, Delete, InsertAfter, InsertAtStart, MalformedPlan,
-  OverlappingHunks, Plan, Ref, Replace, Split, StaleAnchors,
+  OverlappingHunks, Plan, Ref, Replace, Split, StaleAnchors, StaleContent,
 }
 
 // --- golden anchor vectors ----------------------------------------------
@@ -134,46 +134,55 @@ fn ref_to(content: String, line: Int) -> Ref {
   Ref(line:, anchor: anchored.anchor)
 }
 
+// A plan bound to the content it is built against, as `fs_edit` builds
+// one from a read.
+fn plan(content: String, hunks: List(hashline.Hunk)) -> hashline.Plan {
+  Plan(digest: hashline.digest(content), hunks:)
+}
+
 pub fn apply_single_replace_test() {
   let content = "one\ntwo\nthree\n"
   let plan =
-    Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["TWO", "extra"])])
+    plan(content, [
+      Replace(ref_to(content, 2), ref_to(content, 2), ["TWO", "extra"]),
+    ])
   assert hashline.apply(content, plan) == Ok("one\nTWO\nextra\nthree\n")
 }
 
 pub fn apply_range_replace_test() {
   let content = "a\nb\nc\nd"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 3), ["X"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 3), ["X"])])
   assert hashline.apply(content, plan) == Ok("a\nX\nd")
 }
 
 pub fn apply_delete_test() {
   let content = "a\nb\nc\n"
-  let plan = Plan([Delete(ref_to(content, 2), ref_to(content, 2))])
+  let plan = plan(content, [Delete(ref_to(content, 2), ref_to(content, 2))])
   assert hashline.apply(content, plan) == Ok("a\nc\n")
 }
 
 pub fn apply_insert_after_test() {
   let content = "a\nc\n"
-  let plan = Plan([InsertAfter(ref_to(content, 1), ["b"])])
+  let plan = plan(content, [InsertAfter(ref_to(content, 1), ["b"])])
   assert hashline.apply(content, plan) == Ok("a\nb\nc\n")
 }
 
 pub fn apply_insert_at_start_test() {
   let content = "b\n"
-  let plan = Plan([InsertAtStart(["a"])])
+  let plan = plan(content, [InsertAtStart(["a"])])
   assert hashline.apply(content, plan) == Ok("a\nb\n")
 }
 
 pub fn apply_insert_into_empty_file_test() {
-  let plan = Plan([InsertAtStart(["only"])])
+  let plan = plan("", [InsertAtStart(["only"])])
   assert hashline.apply("", plan) == Ok("only\n")
 }
 
 pub fn apply_multi_hunk_test() {
   let content = "one\ntwo\nthree\nfour\nfive\n"
   let plan =
-    Plan([
+    plan(content, [
       Delete(ref_to(content, 4), ref_to(content, 4)),
       Replace(ref_to(content, 1), ref_to(content, 1), ["ONE"]),
       InsertAfter(ref_to(content, 2), ["two-and-a-half"]),
@@ -184,20 +193,23 @@ pub fn apply_multi_hunk_test() {
 
 pub fn apply_preserves_no_trailing_newline_test() {
   let content = "a\nb"
-  let plan = Plan([Replace(ref_to(content, 1), ref_to(content, 1), ["A"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 1), ref_to(content, 1), ["A"])])
   assert hashline.apply(content, plan) == Ok("A\nb")
 }
 
 pub fn apply_preserves_crlf_bytes_test() {
   // Only line 2 is touched; line 1 keeps its \r byte exactly.
   let content = "a\r\nb\r\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["B\r"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 2), ["B\r"])])
   assert hashline.apply(content, plan) == Ok("a\r\nB\r\n")
 }
 
 pub fn apply_unicode_lines_test() {
   let content = "日本語\n🦀\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["🦞"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 2), ["🦞"])])
   assert hashline.apply(content, plan) == Ok("日本語\n🦞\n")
 }
 
@@ -205,7 +217,8 @@ pub fn apply_unicode_lines_test() {
 
 pub fn apply_stale_anchor_rejected_test() {
   let content = "one\ntwo\nthree\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["TWO"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 2), ["TWO"])])
   // The file changed between read and edit.
   let modified = "one\ntwo changed\nthree\n"
   let assert Error(StaleAnchors(stale: [stale])) =
@@ -216,7 +229,8 @@ pub fn apply_stale_anchor_rejected_test() {
 
 pub fn apply_stale_carries_fresh_anchors_test() {
   let content = "one\ntwo\nthree\nfour\nfive\n"
-  let plan = Plan([Replace(ref_to(content, 3), ref_to(content, 3), ["THREE"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 3), ref_to(content, 3), ["THREE"])])
   let modified = "one\ntwo\nTHREE!\nfour\nfive\n"
   let assert Error(StaleAnchors(stale: [stale])) =
     hashline.apply(modified, plan)
@@ -231,7 +245,7 @@ pub fn apply_stale_carries_fresh_anchors_test() {
 pub fn apply_reference_past_end_is_stale_test() {
   let content = "a\nb\n"
   let plan =
-    Plan([
+    plan(content, [
       Delete(Ref(line: 9, anchor: "00000000"), Ref(line: 9, anchor: "00000000")),
     ])
   let assert Error(StaleAnchors(stale: [stale])) = hashline.apply(content, plan)
@@ -248,7 +262,7 @@ pub fn apply_any_stale_rejects_whole_plan_test() {
       "TWO",
     ])
   let assert Error(StaleAnchors(stale: [_])) =
-    hashline.apply(content, Plan([good, bad]))
+    hashline.apply(content, plan(content, [good, bad]))
   // And nothing was applied: content is untouched by a rejection (apply
   // is pure, but the invariant worth stating is that no partial result
   // is ever returned).
@@ -257,7 +271,7 @@ pub fn apply_any_stale_rejects_whole_plan_test() {
 pub fn apply_overlapping_ranges_rejected_test() {
   let content = "a\nb\nc\nd\n"
   let plan =
-    Plan([
+    plan(content, [
       Replace(ref_to(content, 1), ref_to(content, 3), ["x"]),
       Delete(ref_to(content, 3), ref_to(content, 4)),
     ])
@@ -267,7 +281,7 @@ pub fn apply_overlapping_ranges_rejected_test() {
 pub fn apply_insert_inside_replaced_range_rejected_test() {
   let content = "a\nb\nc\n"
   let plan =
-    Plan([
+    plan(content, [
       Replace(ref_to(content, 1), ref_to(content, 2), ["x"]),
       InsertAfter(ref_to(content, 2), ["y"]),
     ])
@@ -277,7 +291,7 @@ pub fn apply_insert_inside_replaced_range_rejected_test() {
 pub fn apply_duplicate_insert_point_rejected_test() {
   let content = "a\nb\n"
   let plan =
-    Plan([
+    plan(content, [
       InsertAfter(ref_to(content, 1), ["x"]),
       InsertAfter(ref_to(content, 1), ["y"]),
     ])
@@ -287,7 +301,7 @@ pub fn apply_duplicate_insert_point_rejected_test() {
 pub fn apply_adjacent_hunks_are_legal_test() {
   let content = "a\nb\nc\nd\n"
   let plan =
-    Plan([
+    plan(content, [
       Replace(ref_to(content, 1), ref_to(content, 2), ["AB"]),
       Replace(ref_to(content, 3), ref_to(content, 4), ["CD"]),
     ])
@@ -296,13 +310,14 @@ pub fn apply_adjacent_hunks_are_legal_test() {
 
 pub fn apply_inverted_range_malformed_test() {
   let content = "a\nb\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 1), ["x"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 1), ["x"])])
   let assert Error(MalformedPlan(reason: _)) = hashline.apply(content, plan)
 }
 
 pub fn apply_line_zero_malformed_test() {
   let plan =
-    Plan([
+    plan("a\n", [
       Delete(Ref(line: 0, anchor: "cbf29ce4"), Ref(line: 0, anchor: "cbf29ce4")),
     ])
   let assert Error(MalformedPlan(reason: _)) = hashline.apply("a\n", plan)
@@ -310,12 +325,13 @@ pub fn apply_line_zero_malformed_test() {
 
 pub fn apply_newline_in_replacement_malformed_test() {
   let content = "a\n"
-  let plan = Plan([Replace(ref_to(content, 1), ref_to(content, 1), ["x\ny"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 1), ref_to(content, 1), ["x\ny"])])
   let assert Error(MalformedPlan(reason: _)) = hashline.apply(content, plan)
 }
 
 pub fn apply_empty_plan_is_identity_test() {
-  assert hashline.apply("a\nb", Plan([])) == Ok("a\nb")
+  assert hashline.apply("a\nb", plan("a\nb", [])) == Ok("a\nb")
 }
 
 // --- apply: properties ---------------------------------------------------
@@ -330,7 +346,7 @@ pub fn apply_deterministic_property_test() {
       True -> {
         let #(replacement, _seed) = generate.line(seed)
         let plan =
-          Plan([
+          plan(content, [
             Replace(ref_to(content, 2), ref_to(content, 2), [replacement]),
             Delete(ref_to(content, 4), ref_to(content, 4)),
           ])
@@ -353,7 +369,9 @@ pub fn apply_concurrent_modification_property_test() {
       False -> Nil
       True -> {
         let plan =
-          Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["edited"])])
+          plan(content, [
+            Replace(ref_to(content, 2), ref_to(content, 2), ["edited"]),
+          ])
         // Mutate exactly the referenced line.
         let modified_lines =
           list.index_map(split.lines, fn(line, index) {
@@ -382,7 +400,9 @@ pub fn anchors_stable_under_unrelated_edits_property_test() {
       False -> Nil
       True -> {
         let plan =
-          Plan([Replace(ref_to(content, 1), ref_to(content, 1), ["changed"])])
+          plan(content, [
+            Replace(ref_to(content, 1), ref_to(content, 1), ["changed"]),
+          ])
         let assert Ok(edited) = hashline.apply(content, plan)
         let before = hashline.annotate(content)
         let after = hashline.annotate(edited)
@@ -412,7 +432,7 @@ pub fn apply_byte_exact_property_test() {
         let #(index, seed) = generate.int_between(seed, 1, total)
         let #(replacement, _seed) = generate.line(seed)
         let plan =
-          Plan([
+          plan(content, [
             Replace(ref_to(content, index), ref_to(content, index), [
               replacement,
             ]),
@@ -437,7 +457,8 @@ pub fn reapply_after_success_is_rejected_test() {
   // plan applied once cannot apply again, because it consumed the
   // content its anchors named.
   let content = "one\ntwo\nthree\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["TWO"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 2), ["TWO"])])
   let assert Ok(edited) = hashline.apply(content, plan)
   let assert Error(StaleAnchors(stale: _)) = hashline.apply(edited, plan)
 }
@@ -445,7 +466,8 @@ pub fn reapply_after_success_is_rejected_test() {
 pub fn identical_lines_disambiguated_by_line_number_test() {
   // Two identical lines share an anchor; the line number picks one.
   let content = "same\nsame\n"
-  let plan = Plan([Replace(ref_to(content, 2), ref_to(content, 2), ["other"])])
+  let plan =
+    plan(content, [Replace(ref_to(content, 2), ref_to(content, 2), ["other"])])
   assert hashline.apply(content, plan) == Ok("same\nother\n")
 }
 
@@ -454,7 +476,7 @@ pub fn fresh_context_constant_is_reported_width_test() {
     generate.list_of(generate.seed(3), 9, generate.line).0
     |> string.join(with: "\n")
   let plan =
-    Plan([
+    plan(content, [
       Replace(
         Ref(line: 5, anchor: "ffffffff"),
         Ref(line: 5, anchor: "ffffffff"),
@@ -475,6 +497,120 @@ fn generate_range(from: Int, to: Int) -> List(Int) {
     True -> []
     False -> [from, ..generate_range(from + 1, to)]
   }
+}
+
+// --- apply: at-most-once (the digest binding, C1/M1) ---------------------
+
+pub fn digest_golden_empty_test() {
+  assert hashline.digest("") == "cbf29ce484222325-0"
+}
+
+pub fn digest_separates_equal_hash_inputs_by_length_test() {
+  // The digest carries the byte length, so shrinking edits (every
+  // delete) always change it.
+  assert hashline.digest("x\nx\n") != hashline.digest("x\n")
+  assert hashline.digest("a") != hashline.digest("a\n")
+}
+
+pub fn reapply_delete_of_duplicate_line_rejected_test() {
+  // C1 reproduction: deleting line 1 of "x\nx\n" shifts the identical
+  // sibling into line 1 with a matching anchor, so per-line checks
+  // alone would double-apply on replay. The digest binding rejects.
+  let content = "x\nx\n"
+  let ref = Ref(line: 1, anchor: hashline.anchor("x"))
+  let plan = plan(content, [Delete(ref, ref)])
+  let assert Ok(once) = hashline.apply(content, plan)
+  assert once == "x\n"
+  let assert Error(StaleContent(digest:, fresh: _)) = hashline.apply(once, plan)
+  assert digest == hashline.digest("x\n")
+}
+
+pub fn replayed_blank_line_delete_rejected_every_time_test() {
+  // C1 blank-line variant: a blank-line delete replayed three times
+  // must apply exactly once — replays leave the content untouched.
+  let content = "a\n\n\n\nb\n"
+  let blank = Ref(line: 2, anchor: hashline.anchor(""))
+  let plan = plan(content, [Delete(blank, blank)])
+  let assert Ok(once) = hashline.apply(content, plan)
+  assert once == "a\n\n\nb\n"
+  let assert Error(StaleContent(digest: _, fresh: _)) =
+    hashline.apply(once, plan)
+  let assert Error(StaleContent(digest: _, fresh: _)) =
+    hashline.apply(once, plan)
+}
+
+pub fn duplicate_shift_defeats_anchors_alone_test() {
+  // Witness for why the digest is load-bearing: after the first apply
+  // the identical sibling has shifted into the referenced position, so
+  // the per-line anchor check is satisfied — a plan re-bound to the new
+  // digest applies again. Only the digest distinguishes a replay.
+  let content = "x\nx\n"
+  let ref = Ref(line: 1, anchor: hashline.anchor("x"))
+  let assert Ok(once) =
+    hashline.apply(content, plan(content, [Delete(ref, ref)]))
+  assert hashline.apply(once, plan(once, [Delete(ref, ref)])) == Ok("\n")
+}
+
+pub fn mid_range_concurrent_modification_rejected_test() {
+  // M1: a range hunk carries anchors only for its endpoints; a
+  // concurrent edit strictly inside the range must still reject, and
+  // the rejection's fresh anchors must cover the modified interior.
+  let content = "a\nb\nc\nd\ne\n"
+  let plan = plan(content, [Delete(ref_to(content, 2), ref_to(content, 4))])
+  let modified = "a\nb\nC!\nd\ne\n"
+  let assert Error(StaleContent(digest:, fresh:)) =
+    hashline.apply(modified, plan)
+  assert digest == hashline.digest(modified)
+  assert list.any(fresh, fn(anchored) { anchored.text == "C!" })
+}
+
+pub fn mid_range_replace_concurrent_modification_rejected_test() {
+  let content = "a\nb\nc\nd\ne\n"
+  let plan =
+    plan(content, [Replace(ref_to(content, 1), ref_to(content, 5), ["only"])])
+  let modified = "a\nb\nc changed\nd\ne\n"
+  let assert Error(StaleContent(digest: _, fresh: _)) =
+    hashline.apply(modified, plan)
+}
+
+// For random contents — plain and duplicate/blank-heavy — and random
+// content-changing plans, a plan never applies twice: the second apply
+// against the first apply's output is always an error.
+pub fn at_most_once_property_test() {
+  list.each(generate.list_of(generate.seed(67), 60, generate.next).0, fn(n) {
+    let seed = generate.seed(n)
+    let #(heavy, seed) = generate.bool(seed)
+    let #(content, seed) = case heavy {
+      True -> generate.duplicate_heavy_content(seed, 8)
+      False -> generate.content(seed, 8)
+    }
+    let total = list.length(hashline.split_lines(content).lines)
+    case total >= 2 {
+      False -> Nil
+      True -> {
+        let #(index, seed) = generate.int_between(seed, 1, total)
+        let #(delete, _seed) = generate.bool(seed)
+        let hunk = case delete {
+          True -> Delete(ref_to(content, index), ref_to(content, index))
+          False -> {
+            // A replacement that always differs from the original line.
+            let assert Ok(anchored) =
+              list.find(hashline.annotate(content), fn(anchored) {
+                anchored.line == index
+              })
+            Replace(ref_to(content, index), ref_to(content, index), [
+              anchored.text <> "!",
+            ])
+          }
+        }
+        let plan = plan(content, [hunk])
+        let assert Ok(once) = hashline.apply(content, plan)
+        assert once != content
+        let assert Error(_) = hashline.apply(once, plan)
+        Nil
+      }
+    }
+  })
 }
 
 pub fn anchor_version_is_one_test() {

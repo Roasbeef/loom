@@ -29,8 +29,43 @@
 //// checked). Two identical lines share an anchor; the line number
 //// disambiguates.
 ////
+//// ## Whole-file binding: why a plan carries a digest
+////
+//// Per-line anchors alone cannot make "apply at most once" true. After
+//// a `Delete`/`Replace` removes a line, an *identical* sibling line
+//// (a blank line, a `}`, an `end`) can shift into the removed line's
+//// number; its anchor still matches, so re-applying the same plan
+//// would succeed and eat another line. No per-line scheme can
+//// distinguish "identical sibling shifted into place" from "unchanged
+//// line" — the two states are indistinguishable at every referenced
+//// position. The only sound guarantee is a whole-file one: a `Plan`
+//// carries the `digest` of the exact content it was computed against,
+//// and `apply` rejects any content whose digest differs (after the
+//// more precise per-line anchor check has had its say). This makes the
+//// at-most-once guarantee total rather than heuristic: a plan applies
+//// only to the one content it was planned against, so a replayed plan
+//// — and a concurrent edit *anywhere* in the file, including strictly
+//// inside a range hunk whose endpoints still match — is rejected
+//// in-band with fresh anchors for replanning. The trade-off is
+//// deliberate: a concurrent edit far from every hunk also rejects,
+//// which costs one replan round trip and buys the impossibility of
+//// silent double-application.
+////
+//// The digest is the full 16-hex FNV-1a 64 hash of the content bytes
+//// plus the byte length (`hash-length`). Like anchors it is a
+//// same-round-trip token, never stored durably, and versioned by
+//// `anchor_version`. FNV is not collision resistant against an
+//// adversary, but forging a digest collision here yields no authority:
+//// the caller supplying the plan already holds unrestricted write
+//// access to the same file, so the digest defends against *accidental*
+//// double-apply (crash replay), where the appended length makes a
+//// pre-image/post-image collision require equal FNV-64 *and* equal
+//// byte length — and every deletion or size-changing edit differs in
+//// length by construction.
+////
 //// Everything in this module is pure and total.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/string
@@ -83,10 +118,14 @@ pub type Hunk {
   InsertAtStart(lines: List(String))
 }
 
-/// A multi-hunk edit plan. Hunks may be given in any order; `apply`
-/// sorts them and rejects overlaps.
+/// A multi-hunk edit plan bound to one exact file content.
+///
+/// Constructor invariants: `digest` is the `digest` of the content the
+/// hunks were planned against — `apply` rejects any other content, so
+/// a plan can apply at most once (see the module doc). Hunks may be
+/// given in any order; `apply` sorts them and rejects overlaps.
 pub type Plan {
-  Plan(hunks: List(Hunk))
+  Plan(digest: String, hunks: List(Hunk))
 }
 
 /// One stale reference in a rejection: where the plan pointed, what it
@@ -111,6 +150,14 @@ pub type ApplyError {
   /// the end of the file). Every stale reference is listed, each with
   /// fresh anchors for its region.
   StaleAnchors(stale: List(Stale))
+  /// Every referenced anchor matches, but the whole-file digest does
+  /// not: the content is not the exact content the plan was computed
+  /// against. This is what a replayed plan looks like (an identical
+  /// sibling line shifted into a referenced position), and what a
+  /// concurrent edit strictly inside a range hunk looks like. Carries
+  /// the current content's digest and fresh anchors for every region
+  /// the plan touches, so a caller can replan without another read.
+  StaleContent(digest: String, fresh: List(AnchoredLine))
 }
 
 /// The anchor of one line's content.
@@ -127,6 +174,29 @@ pub fn anchor(line: String) -> String {
   |> string.lowercase
   |> string.pad_start(to: 16, with: "0")
   |> string.slice(at_index: 0, length: 8)
+}
+
+/// The whole-file digest a `Plan` is bound to: the full 16-hex FNV-1a
+/// 64 hash of the content's UTF-8 bytes, a `-`, and the byte length in
+/// decimal. A same-round-trip token like anchors — opaque to callers,
+/// never stored durably, versioned by `anchor_version`. The appended
+/// length means a collision requires equal hash *and* equal byte
+/// length (see the module doc for why this suffices).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hashline.digest("") == "cbf29ce484222325-0"
+/// ```
+///
+pub fn digest(content: String) -> String {
+  let bytes = <<content:utf8>>
+  let hex =
+    hash_loop(bytes, fnv_offset_basis)
+    |> int.to_base16
+    |> string.lowercase
+    |> string.pad_start(to: 16, with: "0")
+  hex <> "-" <> int.to_string(bit_array.byte_size(bytes))
 }
 
 // FNV-1a over the UTF-8 bytes of the line.
@@ -289,22 +359,31 @@ type Placed {
 }
 
 /// Applies a plan to content. Verification comes first and is total:
-/// every referenced anchor is checked against the current content, and
-/// *any* stale reference rejects the whole edit with fresh anchors for
-/// each stale region — partial application never happens. On success
-/// the result is byte-exact: untouched lines, line endings, and the
-/// trailing-newline state are preserved.
+/// every referenced anchor is checked against the current content, then
+/// the whole-file digest is checked against the plan's `digest` — *any*
+/// stale reference (or a digest mismatch) rejects the whole edit with
+/// fresh anchors for replanning; partial application never happens. On
+/// success the result is byte-exact: untouched lines, line endings, and
+/// the trailing-newline state are preserved.
 ///
 /// Applying is deterministic: equal content and plan always produce the
-/// same result. Re-applying a plan to its own output rejects (the
-/// replaced lines' anchors are gone), which is what makes `fs_edit`
-/// safe to replay after a crash: a re-execution cannot double-apply.
+/// same result. And the digest binding makes application *at most
+/// once*: a plan applies only to the exact content it was planned
+/// against, so re-applying a plan to its own output rejects — even
+/// when the edited lines have identical siblings that shifted into the
+/// referenced positions — which is what makes `fs_edit` safe to replay
+/// after a crash. (A hunk whose replacement equals the removed lines
+/// re-applies, but such an application is the identity and cannot
+/// corrupt.) The digest also verifies range interiors: a concurrent
+/// edit strictly inside a `Replace`/`Delete` range, invisible to the
+/// endpoint anchors, still rejects.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let ref = hashline.Ref(line: 1, anchor: hashline.anchor("old"))
-/// let plan = hashline.Plan([hashline.Replace(ref, ref, ["new"])])
+/// let plan =
+///   hashline.Plan(hashline.digest("old\n"), [hashline.Replace(ref, ref, ["new"])])
 /// assert hashline.apply("old\n", plan) == Ok("new\n")
 /// ```
 ///
@@ -317,16 +396,46 @@ pub fn apply(content: String, plan: Plan) -> Result(String, ApplyError) {
       let annotated = annotate(content)
       case stale_references(plan, annotated, total_lines) {
         [_, ..] as stale -> Error(StaleAnchors(stale:))
-        [] -> {
-          let placed = list.map(plan.hunks, place)
-          case overlap(placed) {
-            Ok(line) -> Error(OverlappingHunks(line:))
-            Error(Nil) -> Ok(apply_placed(split, placed))
+        [] ->
+          case digest(content) == plan.digest {
+            False ->
+              Error(StaleContent(
+                digest: digest(content),
+                fresh: touched_regions(plan, annotated, total_lines),
+              ))
+            True -> {
+              let placed = list.map(plan.hunks, place)
+              case overlap(placed) {
+                Ok(line) -> Error(OverlappingHunks(line:))
+                Error(Nil) -> Ok(apply_placed(split, placed))
+              }
+            }
           }
-        }
       }
     }
   }
+}
+
+// The current content's anchored lines for every region a plan
+// touches (each hunk's full range plus context), in line order.
+fn touched_regions(
+  plan: Plan,
+  annotated: List(AnchoredLine),
+  total_lines: Int,
+) -> List(AnchoredLine) {
+  let ranges =
+    list.map(plan.hunks, fn(hunk) {
+      let placed = place(hunk)
+      #(
+        int.max(placed.start - fresh_context_lines, 1),
+        int.min(placed.end + fresh_context_lines, total_lines),
+      )
+    })
+  list.filter(annotated, fn(anchored) {
+    list.any(ranges, fn(range) {
+      anchored.line >= range.0 && anchored.line <= range.1
+    })
+  })
 }
 
 // Structural problems, checked before any content comparison.
@@ -395,6 +504,9 @@ fn stale_references(
   })
 }
 
+// The references a hunk carries. Range hunks reference their
+// endpoints only — interior lines have no caller-supplied anchors and
+// are verified by the whole-file digest check instead.
 fn refs(hunk: Hunk) -> List(Ref) {
   case hunk {
     Replace(from:, to:, lines: _) | Delete(from:, to:) ->

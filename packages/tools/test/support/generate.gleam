@@ -103,6 +103,35 @@ pub fn line(seed: Seed) -> #(String, Seed) {
 pub fn content(seed: Seed, line_count: Int) -> #(String, Seed) {
   let #(lines, seed) = list_of(seed, line_count, line)
   let #(trailing, seed) = bool(seed)
+  join_content(lines, trailing, seed)
+}
+
+/// Draws whole-file content biased toward duplicate and blank lines:
+/// every line comes from a pool of just two drawn lines plus the empty
+/// line, so identical siblings and blank runs are the norm — the
+/// shapes that defeat per-line anchor checks.
+pub fn duplicate_heavy_content(seed: Seed, line_count: Int) -> #(String, Seed) {
+  let #(first, seed) = line(seed)
+  let #(second, seed) = line(seed)
+  let pool = ["", first, second]
+  let #(lines, seed) =
+    list_of(seed, line_count, fn(seed) {
+      let #(index, seed) = int_between(seed, 0, 2)
+      let chosen = case list.drop(pool, index) {
+        [line, ..] -> line
+        [] -> ""
+      }
+      #(chosen, seed)
+    })
+  let #(trailing, seed) = bool(seed)
+  join_content(lines, trailing, seed)
+}
+
+fn join_content(
+  lines: List(String),
+  trailing: Bool,
+  seed: Seed,
+) -> #(String, Seed) {
   let joined = string.join(lines, with: "\n")
   case trailing && joined != "" {
     True -> #(joined <> "\n", seed)
