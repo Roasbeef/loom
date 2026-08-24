@@ -100,3 +100,24 @@ instead and are only referenced here.
    Pricing tables belong to a ledger-side concern, not the adapters.
 7. **Keychain backends** are deferred behind the secret-store seam; the
    environment backend ships now, per-OS keychain FFI later.
+
+## From WP-B/T (`storage`, `conformance`)
+
+1. **Two indexes beyond the spec's schema block**, both from the pi
+   source it abridges: `ix_be_entry ON branch_entries(entry_id)` (without
+   it, covering-segment resolution is a table scan) and
+   `ix_usage_seq ON usage_ledger(seq)` (without it, ledger scans
+   temp-sort). Treat the spec's "the exact indexes" as a floor, not a
+   ceiling; the query-plan assertions are the real contract.
+2. **Both backends are actors** — one writer, one mailbox — designed for
+   a single owning StorageWriter; reads use a distinct `StorageError`
+   while commits keep the frozen `CommitError`.
+3. **Close is idempotent** (pi §1.5): a sealed handle answers
+   handle-closed on reads and faulted on commits rather than crashing.
+4. **CAS-only commits are legal** (empty writes with expectations);
+   register deletes consume a sequence number like any write; failed
+   commits consume nothing.
+5. **Parent-must-exist** is enforced at commit; in-transaction parents
+   work because writes apply in order.
+6. **The JSONL/format-4 import shim** named in WP-B's scope is deferred
+   to follow-up track 6; nothing before M7 depends on it.
