@@ -2,6 +2,7 @@ import broker/exec
 import broker/framing
 import broker/support/fake_helper
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None}
 
 fn request(demand: exec.EnforcementDemand) -> exec.ExecRequest {
@@ -127,6 +128,58 @@ pub fn degraded_exit_ground_truth_checked_test() {
     process.receive(events, 1000)
   assert result.degraded == True
   exec.shutdown(helper)
+}
+
+pub fn skip_entry_fails_full_enforcement_test() {
+  // The exec_exit keeps `degraded: False` but the enforcement list
+  // carries a `skip:` entry — the structured list is the ground truth
+  // and FullEnforcement must refuse on it, not trust the bool.
+  let helper = fake_helper.start_helper(fake_helper.SkippedLayer)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.FullEnforcement), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
+  assert result.degraded == False
+  assert list.contains(
+    result.enforcement,
+    "skip:landlock: unavailable in this test",
+  )
+  exec.shutdown(helper)
+}
+
+pub fn skip_entry_accepted_on_best_effort_test() {
+  // BestEffort still accepts the run; the honest report reaches the
+  // caller for its own inspection.
+  let helper = fake_helper.start_helper(fake_helper.SkippedLayer)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert result.degraded == False
+  exec.shutdown(helper)
+}
+
+pub fn watch_cleanup_runs_on_brutal_kill_test() {
+  // The janitor fires however the watched process dies — here a
+  // brutal kill that skips every graceful path.
+  let cleaned = process.new_subject()
+  let victim = process.spawn_unlinked(fn() { process.sleep(10_000) })
+  exec.watch_cleanup(victim, fn() { process.send(cleaned, Nil) })
+  process.kill(victim)
+  let assert Ok(Nil) = process.receive(cleaned, 1000)
+}
+
+pub fn watch_cleanup_runs_when_already_dead_test() {
+  // Watching a process that died before the monitor was set still
+  // fires the cleanup (the DOWN arrives with reason noproc).
+  let cleaned = process.new_subject()
+  let victim = process.spawn_unlinked(fn() { Nil })
+  process.sleep(50)
+  exec.watch_cleanup(victim, fn() { process.send(cleaned, Nil) })
+  let assert Ok(Nil) = process.receive(cleaned, 1000)
 }
 
 pub fn cancel_escalates_when_ignored_test() {

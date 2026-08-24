@@ -32,6 +32,24 @@ const (
 // ScratchMount is where a "tmpfs" scratch policy mounts inside the jail.
 const ScratchMount = "/tmp"
 
+// BlocksDirectNetwork reports whether a network mode requires the jail
+// to deny direct socket access. NetworkOff blocks by definition.
+// NetworkProxy blocks too: the egress sidecar that would carry
+// allowlisted traffic is not implemented in phase 1, so proxy mode
+// fails closed to no direct network rather than silently widening to
+// unrestricted egress — the one failure mode the design forbids. Only
+// NetworkFull leaves the host network reachable.
+func BlocksDirectNetwork(m policy.NetworkMode) bool {
+	return m == policy.NetworkOff || m == policy.NetworkProxy
+}
+
+// ProxyUnenforcedSkip is the enforcement-report entry stage 2 emits for
+// a proxy-mode policy: the allowlist was NOT enforced (there is no
+// sidecar to enforce it); direct network was disabled instead. Surfaced
+// to the broker as "skip:" + this string, which fails a
+// full-enforcement demand.
+const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in phase 1; direct network disabled, allowlist not enforced"
+
 // BwrapArgs computes the bubblewrap argument list (excluding the bwrap
 // executable itself and the command to run) for a policy.
 //
@@ -60,10 +78,12 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 	}
-	if p.Network.Mode == policy.NetworkOff {
+	if BlocksDirectNetwork(p.Network.Mode) {
 		// A fresh, interface-less network namespace. The seccomp filter
 		// (stage 2) independently denies non-AF_UNIX socket creation;
-		// two layers, either alone sufficient for egress denial.
+		// two layers, either alone sufficient for egress denial. Proxy
+		// mode lands here too: with no egress sidecar in phase 1 it
+		// fails closed to no direct network (see BlocksDirectNetwork).
 		args = append(args, "--unshare-net")
 	}
 

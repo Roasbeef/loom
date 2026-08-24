@@ -8,6 +8,7 @@
 
 import broker/exec
 import broker/framing
+import broker/policy.{type SandboxPolicy}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -33,6 +34,15 @@ pub type Script {
   /// Hello looks healthy but exec_exit reports degraded — the
   /// ground-truth check must catch it.
   LyingDegraded
+  /// Hello looks healthy and exec_exit keeps `degraded: False`, but the
+  /// enforcement list carries a `skip:` entry — the broker must trust
+  /// the list, not the bool.
+  SkippedLayer
+  /// Echoes the exec_start policy's network mode to stdout
+  /// ("off"/"proxy"/"full", or "base" with no per-exec policy) and
+  /// exits cleanly — lets tests assert what jail an execution would
+  /// actually get.
+  EchoNetwork
   /// Emits a truncated output chunk and a truncated exit report.
   Truncating
   /// Sends garbage bytes instead of a frame after exec_start.
@@ -195,8 +205,8 @@ fn react(state: FakeState, frame: framing.Frame) -> FakeState {
         DeafHeartbeat -> state
         _ -> reply(state, framing.Frame(id: frame.id, body: framing.Heartbeat))
       }
-    framing.ExecStart(argv:, token:, ..) ->
-      exec_start(state, frame.id, argv, token)
+    framing.ExecStart(argv:, token:, policy: exec_policy, ..) ->
+      exec_start(state, frame.id, argv, token, exec_policy)
     framing.ExecStdin(data:, eof:) -> stdin(state, data, eof)
     framing.Cancel -> cancelled(state)
     _ -> state
@@ -208,6 +218,7 @@ fn exec_start(
   id: Int,
   argv: List(String),
   token: BitArray,
+  exec_policy: Option(SandboxPolicy),
 ) -> FakeState {
   case bit_array.byte_size(token) == 32 {
     // The real helper presence-checks the token; the fake checks the
@@ -272,9 +283,48 @@ fn exec_start(
             ),
           )
         }
+        EchoNetwork -> {
+          let mode = case exec_policy {
+            None -> "base"
+            Some(exec_policy) ->
+              case exec_policy.network {
+                policy.NetworkOff -> "off"
+                policy.NetworkProxy(..) -> "proxy"
+                policy.NetworkFull -> "full"
+              }
+          }
+          let data = bit_array.from_string(mode <> "\n")
+          let size = bit_array.byte_size(data)
+          let state =
+            reply(
+              state,
+              framing.Frame(
+                id:,
+                body: framing.ExecOut(
+                  stream: framing.Stdout,
+                  data:,
+                  bytes: size,
+                  truncated: False,
+                ),
+              ),
+            )
+          reply(
+            state,
+            framing.Frame(
+              id:,
+              body: exit_body(
+                state.script,
+                stdout_bytes: size,
+                stdout_truncated: False,
+                signal: 0,
+              ),
+            ),
+          )
+        }
         EchoArgv
         | Degraded
         | LyingDegraded
+        | SkippedLayer
         | DeafHeartbeat
         | NoHello
         | WrongProto -> {
@@ -385,9 +435,14 @@ fn exit_body(
     Degraded | LyingDegraded -> True
     _ -> False
   }
-  let enforcement = case degraded {
-    True -> ["rlimits", "pgroup", "skip:bwrap: not found"]
-    False -> ["bwrap", "landlock:abi=5", "seccomp-net", "rlimits", "pgroup"]
+  let enforcement = case script {
+    Degraded | LyingDegraded -> ["rlimits", "pgroup", "skip:bwrap: not found"]
+    // The lying case for the list: healthy bool, skipped layer.
+    SkippedLayer -> [
+      "bwrap", "seccomp-net", "rlimits", "pgroup",
+      "skip:landlock: unavailable in this test",
+    ]
+    _ -> ["bwrap", "landlock:abi=5", "seccomp-net", "rlimits", "pgroup"]
   }
   framing.ExecExit(
     code: 0,

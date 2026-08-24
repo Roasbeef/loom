@@ -30,8 +30,14 @@ const (
 	// namespace and a seccomp filter denies non-AF_UNIX socket creation.
 	NetworkOff NetworkMode = "off"
 	// NetworkProxy allows egress only through a harness-owned proxy.
-	// Phase 1 records the proxy address and allowlist but the enforcing
-	// sidecar is a later work item; the helper reports this honestly.
+	// The enforcing sidecar is not implemented in phase 1 (spec WP-H
+	// "Egress proxy sidecar"; hardening in follow-up track 10), so the
+	// helper fails closed: proxy mode is jailed exactly like NetworkOff
+	// (bwrap unshares the net namespace, seccomp denies non-AF_UNIX
+	// sockets) and the enforcement report carries a skipped
+	// "network-proxy" entry saying the allowlist was not enforced. The
+	// one forbidden outcome — unrestricted egress reported as confined —
+	// cannot happen.
 	NetworkProxy NetworkMode = "proxy"
 	// NetworkFull applies no network restriction.
 	NetworkFull NetworkMode = "full"

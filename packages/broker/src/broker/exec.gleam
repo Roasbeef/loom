@@ -23,6 +23,20 @@
 //// per-exec `exec_start.policy` override remains the authoritative
 //// policy for each execution; the fd-3 file only seeds the helper.
 ////
+//// Unlinking is guaranteed on every reachable path: in-actor (hello,
+//// channel death, `Shutdown`, which covers pool retirement),
+//// `spawn_helper`'s own failure branches (unopenable port, actor start
+//// failure, handshake failure), and — for deaths the actor never sees,
+//// like a supervisor's brutal kill — a janitor process spawned by
+//// `spawn_helper` that monitors the helper actor and deletes the file
+//// when it goes down, however it went down (`watch_cleanup`; deletion
+//// is idempotent, so overlapping with the in-actor unlink is
+//// harmless). The one genuinely uncoverable path is the whole VM dying
+//// uncleanly (SIGKILL, kernel panic): no process survives to unlink,
+//// and the file leaks until the OS or the operator clears `tmp_dir` —
+//// a disk-space leak only, never a disclosure, since the file sits in
+//// a mode-0700 directory.
+////
 //// ## Transports
 ////
 //// The channel is a seam: `PortTransport` is the real OS helper;
@@ -44,12 +58,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/string
 
 /// How strictly the caller demands kernel enforcement for an execution.
 pub type EnforcementDemand {
   /// Refuse degraded helpers before dispatch and refuse results whose
-  /// `exec_exit` reports `degraded` — the ground-truth check the
-  /// contract requires beyond hello features.
+  /// `exec_exit` reports degraded enforcement — the ground-truth check
+  /// the contract requires beyond hello features. Ground truth is the
+  /// structured `enforcement` list, not just the `degraded` bool (which
+  /// tracks only the bwrap layer): any `skip:` entry means a layer the
+  /// policy called for was not applied, and the result is refused even
+  /// when the bool stayed false.
   FullEnforcement
   /// Accept whatever the helper could enforce (development containers,
   /// self-tests). The enforcement report still reaches the caller.
@@ -121,8 +140,10 @@ pub type ExecFailure {
   /// demanded `FullEnforcement`.
   DegradedHelper(features: List(String))
   /// The execution ran but its `exec_exit` reports degraded enforcement
-  /// against a `FullEnforcement` demand. The result is attached but
-  /// must not be trusted as jailed.
+  /// against a `FullEnforcement` demand — the `degraded` bool was set,
+  /// or the `enforcement` list carries a `skip:` entry for a layer that
+  /// was not applied. The result is attached but must not be trusted as
+  /// jailed.
   DegradedExecution(result: ExecResult)
   /// The helper answered the dispatch with a protocol error frame
   /// (busy, bad_policy, spawn_failed, malformed...).
@@ -610,6 +631,15 @@ fn degraded_features(features: List(String)) -> Bool {
   list.contains(features, "degraded")
 }
 
+// Whether an exec_exit's enforcement report shows degradation: the
+// helper set the degraded bool (bwrap absent), or any `skip:` entry
+// says a layer the policy called for was not applied. The list, not
+// the bool, is the ground truth a FullEnforcement demand trusts.
+fn degraded_report(enforcement: List(String), degraded: Bool) -> Bool {
+  degraded
+  || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
+}
+
 fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
   let framing.Pushed(deframer:, inbound:, fault:) =
     framing.push(state.deframer, data)
@@ -720,8 +750,11 @@ fn handle_frame(state: State, frame: Frame) -> State {
           cancel_pending_timer(exec)
           // The enforcement report is ground truth: a degraded run
           // against a FullEnforcement demand settles as a failure even
-          // though the helper looked healthy at hello.
-          let event = case exec.demand, degraded {
+          // though the helper looked healthy at hello. `skip:` entries
+          // count as degradation whatever the bool says — the bool only
+          // tracks the bwrap layer, while a skip marks any layer the
+          // policy called for that was not applied.
+          let event = case exec.demand, degraded_report(enforcement, degraded) {
             FullEnforcement, True -> Failed(failure: DegradedExecution(result:))
             FullEnforcement, False | BestEffort, _ -> Exited(result:)
           }
@@ -991,7 +1024,11 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
       cleanup()
       Error(ActorFailed(error:))
     }
-    Ok(helper) ->
+    Ok(helper) -> {
+      // The actor unlinks the file itself on every death it can see;
+      // the janitor covers the deaths it cannot (brutal kill before or
+      // after hello). Deletion is idempotent, so both firing is fine.
+      watch_cleanup(pid(helper), cleanup)
       case await_ready(helper, waiting: config.handshake_timeout_ms + 1000) {
         Ok(_features) -> Ok(helper)
         Error(failure) -> {
@@ -999,7 +1036,26 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
           Error(HandshakeFailed(failure:))
         }
       }
+    }
   }
+}
+
+/// Spawns a janitor process that runs `cleanup` when `pid` dies, for
+/// whatever reason — including a brutal kill that skips every in-actor
+/// path. `cleanup` must be idempotent: the watched process usually also
+/// cleans up itself on its graceful paths. A whole-VM SIGKILL still
+/// skips this (nothing survives to run it); see the module doc.
+@internal
+pub fn watch_cleanup(pid: Pid, cleanup: fn() -> Nil) -> Nil {
+  process.spawn_unlinked(fn() {
+    let monitor = process.monitor(pid)
+    let _down =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(down) { down })
+      |> process.selector_receive_forever
+    cleanup()
+  })
+  Nil
 }
 
 // --- the pool -----------------------------------------------------------

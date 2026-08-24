@@ -61,6 +61,43 @@ func TestBwrapArgsNetworkFullKeepsNet(t *testing.T) {
 	}
 }
 
+// Proxy mode has no enforcing sidecar in phase 1, so the jail must
+// fail closed: network unshared exactly as under off, never silent
+// unrestricted egress.
+func TestBwrapArgsNetworkProxyUnsharesNet(t *testing.T) {
+	p := basePol()
+	p.Network = policy.Network{
+		Mode:  policy.NetworkProxy,
+		Allow: []string{"*.npmjs.org"},
+		Proxy: "127.0.0.1:3128",
+	}
+	found := false
+	for _, a := range BwrapArgs(p, nil) {
+		if a == "--unshare-net" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("--unshare-net missing under network proxy (must fail closed)")
+	}
+}
+
+func TestBlocksDirectNetwork(t *testing.T) {
+	cases := []struct {
+		mode policy.NetworkMode
+		want bool
+	}{
+		{policy.NetworkOff, true},
+		{policy.NetworkProxy, true},
+		{policy.NetworkFull, false},
+	}
+	for _, c := range cases {
+		if got := BlocksDirectNetwork(c.mode); got != c.want {
+			t.Fatalf("BlocksDirectNetwork(%q) = %v, want %v", c.mode, got, c.want)
+		}
+	}
+}
+
 func TestBwrapArgsNetworkOffUnsharesNet(t *testing.T) {
 	found := false
 	for _, a := range BwrapArgs(basePol(), nil) {

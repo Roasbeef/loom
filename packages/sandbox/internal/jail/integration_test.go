@@ -320,6 +320,54 @@ func TestNetworkOffSocketDenied(t *testing.T) {
 	}
 }
 
+// Phase 1 has no egress sidecar, so proxy mode must deny direct
+// sockets exactly like off — never unrestricted egress.
+func TestNetworkProxySocketDenied(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if !feat.Seccomp {
+		t.Skip("kernel lacks seccomp filter support")
+	}
+	pol := testPolicy(t)
+	pol.Network = policy.Network{
+		Mode:  policy.NetworkProxy,
+		Allow: []string{"registry.npmjs.org"},
+		Proxy: "127.0.0.1:3128",
+	}
+	c := newCollector()
+	ex := start(t, pol, []string{testbin.Helper(t), "--probe-socket"}, c.sink)
+	_ = ex.WriteStdin(nil, true)
+	res := ex.Wait()
+	if !strings.Contains(c.out(), "socket-denied") {
+		t.Fatalf("expected socket-denied under proxy mode, got %q (exit %d)", c.out(), res.Code)
+	}
+}
+
+// A proxy-mode execution must say in its enforcement report that the
+// allowlist was not enforced; the skip entry is what lets the broker
+// refuse the result under a full-enforcement demand.
+func TestNetworkProxyReportsSkip(t *testing.T) {
+	pol := testPolicy(t)
+	pol.Network = policy.Network{
+		Mode:  policy.NetworkProxy,
+		Allow: []string{"registry.npmjs.org"},
+		Proxy: "127.0.0.1:3128",
+	}
+	c := newCollector()
+	ex := start(t, pol, []string{"/bin/sh", "-c", "true"}, c.sink)
+	_ = ex.WriteStdin(nil, true)
+	res := ex.Wait()
+	want := "skip:" + jail.ProxyUnenforcedSkip
+	found := false
+	for _, e := range res.Enforcement {
+		if e == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("enforcement %v missing %q", res.Enforcement, want)
+	}
+}
+
 func TestForkBombCapped(t *testing.T) {
 	feat := jail.DetectFeatures()
 	if feat.CgroupDir == "" {

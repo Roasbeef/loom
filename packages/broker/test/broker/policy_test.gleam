@@ -264,6 +264,30 @@ pub fn validate_rejects_negative_limit_test() {
     == Error(policy.NegativeLimit(field: policy.Pids, value: -1))
 }
 
+// --- phase-1 unenforceable narrowing ------------------------------------
+
+pub fn narrow_unenforceable_downgrades_proxy_test() {
+  // No egress sidecar exists in phase 1: proxy mode fails closed to
+  // off, and the downgrade is reported as an ordinary narrowing
+  // carrying the wanted proxy policy.
+  let wanted =
+    policy.NetworkProxy(allow: ["registry.npmjs.org"], proxy: "127.0.0.1:3128")
+  let asking = policy.SandboxPolicy(..base(), network: wanted)
+  let #(narrowed, narrowings) = policy.narrow_unenforceable(asking)
+  assert narrowed == policy.SandboxPolicy(..base(), network: policy.NetworkOff)
+  assert narrowings
+    == [policy.NarrowedNetwork(wanted:, granted: policy.NetworkOff)]
+}
+
+pub fn narrow_unenforceable_leaves_off_alone_test() {
+  assert policy.narrow_unenforceable(base()) == #(base(), [])
+}
+
+pub fn narrow_unenforceable_leaves_full_alone_test() {
+  let full = policy.SandboxPolicy(..base(), network: policy.NetworkFull)
+  assert policy.narrow_unenforceable(full) == #(full, [])
+}
+
 // --- composition tables -------------------------------------------------
 
 pub fn compose_identical_no_narrowing_test() {

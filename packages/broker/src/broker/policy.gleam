@@ -17,6 +17,20 @@
 //// ⊕ tool requirements ⊕ escalation grants, most-restrictive-wins except
 //// explicit grants.
 ////
+//// ## Network `proxy` mode is not implemented in phase 1
+////
+//// `NetworkProxy` is part of the frozen wire vocabulary, but the egress
+//// proxy sidecar that would enforce its allowlist (spec WP-H "Egress
+//// proxy sidecar", hardened in follow-up track 10, "Egress proxy
+//// hardening") is a later work item. Until it exists a proxy-mode
+//// policy cannot be enforced as requested, and the one thing the design
+//// forbids is widening silently — so `narrow_unenforceable` fails
+//// closed: it downgrades `NetworkProxy` to `NetworkOff` and reports the
+//// downgrade as an ordinary `Narrowing`. The broker applies it to every
+//// composed policy before dispatch, so a proxy request either becomes a
+//// structured refusal (carrying the wanted grant) or runs with no
+//// network at all — never with silent unrestricted egress.
+////
 //// Everything here is pure.
 
 import core/corruption.{type CorruptionReport}
@@ -267,6 +281,35 @@ pub fn wanted_grants(narrowings: List(Narrowing)) -> List(Grant) {
       NarrowedScratch(wanted:) -> GrantScratch(scratch: wanted)
     }
   })
+}
+
+/// Downgrades any part of a policy whose enforcement is not implemented
+/// in phase 1 to its nearest enforceable, more restrictive form,
+/// reporting each downgrade as a `Narrowing` (see the module doc).
+///
+/// Today this is exactly one rule: `NetworkProxy` becomes `NetworkOff`,
+/// because the egress proxy sidecar does not exist yet and a proxy-mode
+/// jail would otherwise run with unrestricted direct egress. The
+/// returned narrowing carries the wanted proxy policy, so a refusal
+/// built from it surfaces the exact unenforceable grant.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.narrow_unenforceable(policy.workspace_default("/w"))
+///   == #(policy.workspace_default("/w"), [])
+/// ```
+///
+pub fn narrow_unenforceable(
+  policy: SandboxPolicy,
+) -> #(SandboxPolicy, List(Narrowing)) {
+  case policy.network {
+    NetworkOff | NetworkFull -> #(policy, [])
+    NetworkProxy(allow: _, proxy: _) as wanted -> #(
+      SandboxPolicy(..policy, network: NetworkOff),
+      [NarrowedNetwork(wanted:, granted: NetworkOff)],
+    )
+  }
 }
 
 // The most-restrictive combination of two policies.

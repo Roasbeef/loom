@@ -116,8 +116,12 @@ func RunStage2(cfg Stage2Config) error {
 	}
 	rep.Applied = append(rep.Applied, "no-new-privs")
 
-	// seccomp network filter, only under network mode "off".
-	if pol.Network.Mode == policy.NetworkOff {
+	// seccomp network filter whenever the policy denies direct sockets:
+	// mode "off", and mode "proxy" — which in phase 1 fails closed to
+	// no direct network (no sidecar exists to enforce the allowlist)
+	// and must say so in the report rather than pretend the proxy
+	// confinement was applied.
+	if BlocksDirectNetwork(pol.Network.Mode) {
 		if seccompf.Supported() {
 			if err := seccompf.Install(); err != nil {
 				return fmt.Errorf("stage2: seccomp: %w", err)
@@ -126,6 +130,9 @@ func RunStage2(cfg Stage2Config) error {
 		} else {
 			rep.Skipped = append(rep.Skipped, "seccomp: kernel lacks seccomp filter support")
 		}
+	}
+	if pol.Network.Mode == policy.NetworkProxy {
+		rep.Skipped = append(rep.Skipped, ProxyUnenforcedSkip)
 	}
 
 	// Report, then sever the plumbing: fds 3 and 4 must not leak into
