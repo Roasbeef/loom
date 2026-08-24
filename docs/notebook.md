@@ -9,6 +9,70 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ---
 
+## 2026-08-24 (end of day) — soak hardening; the runner found its own bug
+
+### State
+
+`main` green: `make check` — **610 tests**, ~38 s. Tree clean. Soak
+verified clean over 1500+ seeds after the fixes below.
+
+### Two defects in the soak path, both mine to own
+
+**1. `make soak` could never run its own default.** EUnit imposes a
+per-test timeout of about a minute and reports an overrun as a Timeout
+with a stack trace pointing at wherever the runner happened to be — 60
+seeds passed, 100 failed at 66 s, so the documented default of 2000
+would always have died looking exactly like a hang in admission. The
+target now chunks (`SOAK_CHUNK`, default 50), echoes each seed range,
+and stops at the first failing chunk.
+
+Process note: the first soak's completion arrived as **exit 0** and I
+nearly took it at face value. `make` had returned Error 1; the `tail` at
+the end of my own pipeline supplied the zero. Check the log, not the
+pipeline's exit code.
+
+**2. The runner could swallow its own scheduled crash** (found by the
+soak at seed 5377, `run/crash-fired`). A commit is durable, and its
+terminal result readable, *before* the writer runs its post-commit seam
+— so the pump could take the result and gather the report while the
+crash was still pending. My diagnosis (nondeterministic commit count
+from terminal-racing steers) was **wrong on mechanism**: the count is
+deterministically 6 in every run and the crash was armed on the last
+commit. What widened the window from microseconds to two seconds was a
+self-deadlock — a terminal intervention applied through a call that
+waits, fired from inside the writer, whose admission then queued behind
+the seam waiting for it.
+
+Fix: the seam is observable, and no terminal result is accepted while
+one is open (a crash counts as the seam closing, since the writer died
+inside it). General — it holds whatever holds the seam open. Terminal
+interventions are now detached; effect-process ones still wait, because
+there the ordering is the whole point. `run/crash-fired` untouched: I
+told the agent explicitly not to weaken it, and verified by diff that
+the pre-existing carve-out was not newly added.
+
+### Judgement worth keeping
+
+Twice today a green-looking signal hid a real one (the e2e "failure"
+that was the digest fix working; the exit-0 soak) and once a red one was
+the runner catching itself. A check that refuses to count a vacuous run
+is worth more than a check that passes — the temptation to relax
+`run/crash-fired` was the wrong fix and was ruled out up front.
+
+Also: the agent corrected my diagnosis with instrumentation rather than
+accepting it. Subagent reports deserve the same skepticism as code, in
+both directions.
+
+### Next
+
+M3 kickoff: WP-C-full (forks, compaction projection, transform hook),
+WP-K events + parrot pilot (ADR-004), WP-L client gateway + Go TUI,
+multi-strand demo. Standing items: `make selftest` on a target-tier
+kernel; periodic `make soak`; GitHub default-branch flip and stale
+branch delete (proxy refuses push-deletes).
+
+---
+
 ## 2026-08-24 (later still) — DST simulation runner landed; it found a bug
 
 ### State of the world
