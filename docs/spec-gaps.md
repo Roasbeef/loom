@@ -145,6 +145,37 @@ instead and are only referenced here.
 7. **Keychain backends** are deferred behind the secret-store seam; the
    environment backend ships now, per-OS keychain FFI later.
 
+## From WP-I (`tools`)
+
+1. **Anchor hash.** Shipped a 64-bit FNV-1a truncated to 8 hex chars,
+   versioned and package-internal, reading the spec's "xxh3" as intent
+   (fast 64-bit) rather than a wire contract: anchors never outlive one
+   read-edit round trip. This also answers the Part-7 open question — 8
+   hex, no line-number salt; line numbers travel beside anchors in refs.
+   Collision-sensitive blob addressing uses SHA-256 through the package's
+   single FFI.
+2. **`execution_mode`** is undefined by the spec; interpreted as a
+   scheduling constraint (`Exclusive` for bash/write/edit, `Concurrent`
+   for read/grep), mirroring pi's batch modes per tool.
+3. **Requirements are workspace-relative** — a function from workspace
+   root to policy, since roots are unknowable statically. Bash requests a
+   readable root of `/` (interpreters live outside the workspace); the
+   session base decides whether to grant it.
+4. **`fs_read` is exempt from the §3.2 blob overflow** — windowed reads
+   are its bounding mechanism, and anchors inside an elided blob would
+   defeat hashline editing. Bash and grep output do overflow to the
+   content-addressed store.
+5. **Filesystem tools run harness-side**, not through the broker; their
+   lexical path discipline is defense in depth under Rule Zero, and their
+   declared requirements exist for uniform policy audit.
+6. **Blob refs "readable via fs_read"** requires the runtime to place the
+   blob root under a readable workspace path; tools only record the ref.
+7. **Timeout ceiling** is clamped tool-side (600 s max, 120 s default);
+   if "policy ceiling" was meant to be session-policy-driven, revisit
+   when wiring the runtime.
+8. **Ripgrep-missing detection** keys on the helper's spawn-failed error
+   plus exit 127; the framing spec does not enumerate helper error codes.
+
 ## From WP-B/T (`storage`, `conformance`)
 
 1. **Two indexes beyond the spec's schema block**, both from the pi
