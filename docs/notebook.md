@@ -9,6 +9,76 @@ references: `docs/spec-gaps.md` (interpretation log), `protocol-change/`
 
 ---
 
+## 2026-08-24 — M3 complete: multi-strand, events, gateway, TUI
+
+### State of the world
+
+M3's acceptance holds and everything is on `main`: **724 Gleam tests
+across eleven packages plus two Go suites**, gate ~40 s, tree clean.
+The acceptance flow — prompt, streamed deltas, a subagent strand created
+and reporting back durably, an escalation approved over the wire with
+typed grants, fork, navigate, compact, catch-up replay from seq 1 —
+runs purely through the public protocol as a test in `make check-client`,
+and `gleam run -m client/demo` performs it live (the crash reports at
+its tail are the documented close-is-a-controlled-crash teardown, exit
+0). The parent-plus-two-subagents kill/reboot variant lives at runtime
+level in `multi_strand_test`.
+
+### What landed, per package
+
+- **session**: forks (branch/tree, zeroed ledger, pi's fact rules),
+  full projection with orphan healing at request construction, precise
+  rewrite passing a raw-bytes erase audit, migrate-on-open.
+- **events**: pg bus (hints), projection driver with the frontier rule
+  (its own lost-event test found the two-scan high-water bug before it
+  shipped), FTS5 search with parrot-generated SQL — the ADR-004 pilot
+  verdict is positive, with an upstream byte-offset bug documented.
+- **machine/runtime**: all five deferred triage items implemented;
+  multi-strand recovery converges on "list the store, start what's
+  missing"; escalations are consumed-before-dispatch registers.
+- **client**: gateway hub whose event seqs ARE storage seqs (durable
+  across restarts by construction; catch-up and paging fall out free),
+  mist server, byte-identical conformance with the TUI's 32 fixtures.
+- **tui**: Go bubbletea client with reconnect-exactly-once hammer tests
+  and a --demo mode; its protocol.md is the normative body spec.
+
+### Judgement notes
+
+Two agent runs died to connection errors (provider earlier, gateway
+this wave); both resumed from their own transcripts rather than
+restarting, and both finished clean. On the first resume I asserted a
+broken state that was actually another package's error surfacing
+through the dependency tree — on the second I told the agent to assess
+its own state instead. The second way is right.
+
+The TUI-defines/gateway-implements order worked well: the client wrote
+the normative body spec and fixtures first, the server then had a
+conformance corpus and eight concrete questions to answer instead of a
+blank page.
+
+### Open threads for the next session
+
+1. **M3 residue** (spec-gaps WP-L): escalation records need op/strand
+   attribution; api.compact/api.navigate would deduplicate acceptance-
+   plan building; optional-brief create_strand; queued-vs-placed acks.
+2. **Adversarial review + soak over the M3 surface** — the M2 pattern
+   (review wave → triage → fix wave) earned its keep; the new gateway
+   and multi-strand code deserve the same treatment before M4.
+3. **M4 — code mode**: cap/* prelude, vetting lint, hermetic compile
+   service, satellite nodes, cells. The README already promises the
+   programming model; M4 makes it true. Most security-sensitive work
+   remaining; plan an adversarial vetting corpus from day one.
+4. Standing: GitHub default-branch flip + stale branch delete (proxy
+   refuses); `make selftest` on a target-tier kernel; periodic
+   `make soak`.
+
+### How to resume from nothing
+
+Read `CLAUDE.md`, this entry, `docs/spec-gaps.md`. Gate: `make check`.
+The doc graph (`packages/*/CLAUDE.md`) was refreshed after this wave.
+
+---
+
 ## 2026-08-24 (end of day) — soak hardening; the runner found its own bug
 
 ### State
