@@ -41,11 +41,17 @@ build: ## Warning-free build of every Gleam package
 
 # --------------------------------------------------------------- formatting
 
+# Gleam sources that live outside a package: the code-mode migration
+# sample is a documentation artifact and a test fixture at once, so no
+# package's `gleam format` reaches it.
+LOOSE_GLEAM := $(wildcard docs/examples/*.gleam)
+
 .PHONY: fmt
 fmt: ## Format all Gleam and Go sources in place
 	@set -e; for p in $(PACKAGES); do \
 		(cd packages/$$p && gleam format src test); \
 	done
+	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
 	@cd $(GO_PKG) && gofmt -w .
 	@echo "formatted"
 
@@ -54,6 +60,7 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 	@set -e; for p in $(PACKAGES); do \
 		(cd packages/$$p && gleam format --check src test); \
 	done
+	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
 	@test -z "$$(cd $(GO_PKG) && gofmt -l .)" || { \
 		echo "unformatted Go files:"; (cd $(GO_PKG) && gofmt -l .); exit 1; }
 	@echo "formatting clean"
