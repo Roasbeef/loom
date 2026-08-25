@@ -109,6 +109,17 @@ smuggle in a capability its imports do not admit:
    vendored standard library and the pinned prelude — no other package,
    at no other version.
 
+   Rule 3 is a bound on *packages*, not on modules, and the difference
+   matters. The prelude has dependencies of its own — `gleam_erlang`,
+   `gleam_otp`, and the harness `core` — so their public modules sit in
+   the program's build graph and would compile if a submitted program
+   imported one. Rule 2 is what refuses them: they are not on the
+   allowlist, and `gleam/erlang*` and `gleam/otp/*` carry an explicit
+   denylist entry besides. The manifest does not independently close that
+   door, and reading rule 3 as though it did credits the wrong layer.
+   Narrowing the build graph to the prelude's public surface is Builder
+   work still ahead.
+
 Three adversaries motivate the three rules, and each is a real entry in
 the vetting corpus that WP-J must reject before the package ships:
 
@@ -116,10 +127,10 @@ the vetting corpus that WP-J must reject before the package ships:
   top-level imports pulls in a helper package that itself declares
   `@external` and re-exports it as an innocent-looking function. Rule 1
   catches `@external` in the submitted source; rule 3 shuts the nested
-  path, because a dependency that is not the pinned prelude never enters
-  the build. The theorem is stated over the *transitive* closure for
-  exactly this reason: vetting reasons about everything the program
-  reaches, not only the file it was handed.
+  path, because a *third-party* package never enters the build, and rule 2
+  refuses any module the allowlist does not carry. The theorem is stated
+  over the *transitive* closure for exactly this reason: vetting reasons
+  about everything the program reaches, not only the file it was handed.
 
 - **Unicode-lookalike imports.** An import spelled with a homoglyph —
   a Cyrillic letter standing in for a Latin one — reads as `cap/fs` to a
@@ -192,12 +203,28 @@ agent programs real concurrency, but it is a jailed one:
   with it.
 
 A hostile `.beam` that slipped past vetting lands here, in a jail whose
-only reachable effects are token-checked broker calls. It can burn its
-CPU budget and hit its deadline; it cannot read a file the policy forbids,
+only reachable effect is the one broker channel. It can burn its CPU
+budget and hit its deadline; it cannot read a file the policy forbids,
 reach the network, or touch another session. The exit criterion for WP-J
 states this as a tabletop exercise: a hand-written malicious `.beam`,
-loaded directly to bypass vetting entirely, must reach *nothing* but
-token-checked RPCs and must die at its deadline.
+loaded directly to bypass vetting entirely, must reach *nothing* but that
+channel and must die at its deadline.
+
+Be exact about which layer holds that line, because it is easy to credit
+the wrong one. **The capability token does not confine this adversary.**
+The token file is bind-mounted readable into the jail — the boot runtime
+has to read it — and its path is an ordinary environment variable, so a
+`.beam` that carries its own `@external` reads the file and presents the
+genuine token. The check then passes, as it should. Two other things do
+the confining: the **kernel jail**, which leaves the channel as the only
+thing the node can reach at all, and the **broker's per-call policy
+check**, which composes and checks policy on every `cap_call` whatever
+token came with it. What the token adds is authentication and binding:
+it refuses a peer that never read the file, it ties the channel to one
+`{operation_id, step_id, deadline}` so a captured token cannot be
+replayed elsewhere or later, and revoking it shuts the channel at
+teardown. It is not a bearer capability, and no call gets more because it
+carried a valid one.
 
 Compilation is itself sandboxed. The compile service runs `gleam build`
 hermetically inside an executor jail with no network, against the vendored
@@ -216,14 +243,16 @@ Follow one `fs.read` from source to settlement. The program calls
 deadline_ms}` and writes it to the channel as a `cap_call` frame. The
 **capability token** is a 32-byte random value the broker minted for this
 execution, binding it to one `{operation_id, step_id, policy, deadline}`;
-it travels only over the channel it authorizes and is checked on every
+it travels only over the channel it authenticates and is checked on every
 call. The broker validates the token against its revocation list, checks
-the requested effect against the execution's policy, runs the read through
-the same machinery every other tool uses, and returns `{ok, value}` or
-`{err, error}` as a `cap_result`. The stub decodes it and the program
-resumes with an ordinary Gleam value. The broker, its tokens, and the
-framed protocol are described in full in `docs/architecture/effects.md`;
-code mode is one more caller at that one door.
+the requested effect against the execution's policy — separately, and on
+every call, so a valid token buys nothing beyond a live channel — runs the
+read through the same machinery every other tool uses, and returns
+`{ok, value}` or `{err, error}` as a `cap_result`. The stub decodes it and
+the program resumes with an ordinary Gleam value. The broker, its tokens,
+and the framed protocol are described in full in
+`docs/architecture/effects.md`; code mode is one more caller at that one
+door.
 
 The type checker validated the arguments at compile time, so a `cap_call`
 that reaches the broker is already well-formed. What the broker adds is
@@ -392,6 +421,18 @@ indexer in one call and query it across the next several — which nothing
 MCP-shaped can express. That state is ephemeral by design, though:
 anything worth keeping leaves through a `report` artifact or the `cap/kv`
 scratch store, and a program must tolerate finding its actor gone.
+
+Keeping a satellite alive moves one obligation onto the executor. The
+capability channel lives in a node-global slot, and each execution
+installs its own, so a process that outlived execution *N* would read
+execution *N+1*'s channel on its next capability call and act under
+*N+1*'s token and policy. The invariant that rules this out is external
+to the prelude: **the executor reaps every process a program spawned
+before the next execution installs its channel.** The boot runtime keeps
+that obligation from being merely assumed: it refuses to install over a
+channel whose actor is still alive, so an unreaped predecessor fails the
+next boot outright instead of silently lending it authority. A fresh node
+per execution, the default, never reaches the case at all.
 
 ## Where the code lives
 
