@@ -76,14 +76,60 @@ that is a coordination point, not a protocol change. J3 should build its
 policy with `policy.new(<exact shipped cap names from J2>)` rather than
 trusting the built-in `default`.
 
+### J3 architecture (decided at dispatch; two Opus agents in flight)
+
+Reading the code before spec'ing J3 surfaced the load-bearing fact: the
+broker `exec` actor and the Go helper both treat `cap_call`/`cap_result`
+as protocol violations that KILL the exec-control channel (they are
+marked "satellite-facing" but no satellite plumbing was ever built). So
+the satellite's capability channel is a **distinct channel role**, not a
+reuse of the exec channel. J3 builds it. Decisions:
+
+- **Boot runtime lives in `cap`, not `codemode`.** The boot module must
+  call `cap/internal/channel` + `dispatch`, which the compiler forbids
+  any other package to import. So J3a adds public `cap/runtime` to the
+  cap package. This corrects J2's handoff note, which imagined the read
+  loop in codemode.
+- **The inbound `cap_result` read loop runs in the satellite and must
+  NOT link `broker`.** It reimplements deframing over `core/msgpack` +
+  the extractors already in `cap/internal/wire`. Only the trusted host
+  (codemode, in the harness VM) uses `broker/framing`. Two impls of one
+  frozen wire, one per trust side — same pattern as Go-helper vs
+  broker/framing.
+- **Two token layers.** (1) A host-minted 32-byte *cap-channel token*,
+  delivered to the satellite via a private 0600 file (`LOOM_CAP_TOKEN_FILE`)
+  and checked by the host on every `cap_call` — the defense-in-depth that
+  denies a hostile `.beam` that slipped vetting. (2) The broker's own
+  per-clearance exec tokens, minted/revoked inside `clear_call`, never
+  seen by the satellite. Not conflated.
+- **Each `cap_call` is one `broker.clear_call` sharing one
+  `{op_id, step_id}`.** The broker already pools budget across repeated
+  clearances on that key (its ledger invariant), so fan-out buys
+  parallelism, not extra resources — exactly the pooled-budget story.
+- **Compile service pins the program's module name** (e.g.
+  `loom_program`), closing the self-naming/prelude-shadow attack the
+  lint structurally cannot see (a module's own name is not in its
+  source — J1 finding 1).
+
+Split: **J3a** = `cap/runtime` boot runtime (cap pkg, transport injected
+for in-process tests, no broker dep). **J3b** = codemode compile service
++ satellite host + orchestrator (uses broker/framing, clear_call, tools;
+tests via broker `ChannelTransport`, no live jail; escaped-satellite
+tabletop tests the token-denial + deadline-kill halves in-process, the
+kernel "reaches nothing" half deferred to `make e2e`). **J3c** (Go
+sandbox satellite-launch mode) is held until J3b pins the concrete
+launch contract (argv/env/socket/policy), then spec'd from it. cap and
+codemode are build-independent, so the two agents' cross-checks don't
+race.
+
 ### Next
 
-Verify + commit J2 (cap prelude) when it lands, checking its shipped
-module set is exactly the nine and `cap/net` is deny-by-default. Then
-write J3's detailed spec (compile service takes `Vetted`, pins the
-module name per finding 1; satellite runtime + escaped-satellite
-tabletop) and dispatch it (Opus). Adversarial review of the whole M4
-surface before it is trusted, per the standing pattern.
+Verify + commit J3a and J3b as each lands (green gate, contracts honored).
+Then spec + dispatch J3c (Go) from J3b's launch contract, wire the
+integration compile+boot test, and run the adversarial review of the
+whole M4 surface before it is trusted, per the standing pattern. Standing
+items unchanged (GitHub default branch to `main` + stale remote branch
+delete; `make selftest` / `make e2e` on a target-tier kernel).
 
 ---
 
