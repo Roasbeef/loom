@@ -30,6 +30,65 @@
 //// hooks are replayable and carry no effect intent; provider requests,
 //// tool executions, deferred fetches, and summary requests go through the
 //// intent/settle sandwich as `Dispatch`.
+////
+//// ## Reading this module
+////
+//// One public function over a typed vocabulary, then a section per phase
+//// of the spec. The vocabulary comes first and in full: all sixteen
+//// types are declared before the first function body, so nothing below
+//// introduces a name the reader has not already met. After that, each
+//// section decides one question, and the list below says which — enough
+//// to find the section you want without reading the ones you don't.
+////
+//// - **planner inputs** — the vocabulary the *runtime* speaks:
+////   `PlannerInputs` and the answer types it carries (`ThresholdStatus`,
+////   `RequestAdmission`, `ModelResolution`, `StructuralVerdict`,
+////   `SummaryProgress`, `Observation`). Decides nothing; it fixes what
+////   the machine is permitted to know.
+//// - **actions** — the vocabulary the *machine* speaks: `EffectKey`
+////   (what it is waiting for), `EffectIntent` (what it wants performed),
+////   `WaitUntil`, and `Action` itself.
+//// - **internal vocabulary** — the four private types the handlers below
+////   speak in among themselves.
+//// - **the frozen entry point** — `next_action`. Decides which of the
+////   three operation kinds owns the pass (run, standalone compaction,
+////   navigation) and whether its control is running or cancelled; a
+////   state whose kind contradicts the intent is corruption.
+//// - **running runs** — decides which run phase handler owns the pass,
+////   and consumes the run-start hook's injections into the first
+////   checkpoint.
+//// - **the checkpoint procedure (§3.12)** — the run's junction. Decides
+////   which of pi's seven ordered steps is the next undone one: deferred
+////   writes, steer, threshold compaction, generation, follow-up, the
+////   run-end hook, finish.
+//// - **assistant generation (§3.7)** — decides what one generation
+////   attempt becomes: dispatched, retried after a wait, drained as a
+////   failure, diverted into overflow compaction, suspended on a deferred
+////   handle, opened as a tool batch, or landed at a may-finish
+////   checkpoint.
+//// - **tools (§3.8)** — decides which call in the batch is worked next
+////   (scheduling mode), whether it clears, executes, replays, or gets a
+////   machine-built synthetic, and when the contiguous outcome-ready run
+////   at the frontier materializes into the tree.
+//// - **deferred responses (§3.2)** — decides whether a suspended
+////   operation may spend a poll permit on a fetch, and what a settled or
+////   orphaned fetch becomes.
+//// - **failure drain (§3.12)** — decides whether recovering input clears
+////   the failure back into a generation, or the run finishes failed.
+//// - **cancellation reconciliation (§4.6)** — decides which phases still
+////   settle their outstanding work before aborting and which discard it,
+////   and drains accepted writes before the aborted terminal transaction.
+//// - **structural work (§3.9)** — the decide → generate → publish
+////   lifecycle shared by all three of its hosts (an in-run compaction
+////   phase, a standalone compaction operation, a summarized navigation);
+////   `StructuralHost` is what keeps the three from being three copies.
+//// - **navigation (§3.10)** — decides whether a move is a bare leaf move
+////   or one that summarizes the abandoned branch first.
+//// - **terminal transactions (§3.13)** — builds the single transaction
+////   that ends an operation: publication writes, register deletion, the
+////   strand and operation-keyed results, and the strand-state clear.
+//// - **shared helpers** — entry placement, batch planning, the synthetic
+////   messages recovery commits, stop-reason normalization, backoff.
 
 import core/corruption.{type CorruptionReport}
 import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
@@ -40,6 +99,7 @@ import core/message.{
   Length, ToolResultMessage, ToolResultText,
 }
 import core/tx.{type Tx, type Write, Tx}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -58,8 +118,8 @@ import machine/operation.{
   type Navigation, type NormalizedRetryPolicy, type Operation,
   type OperationError, type OperationState, type PendingEntry, type RunPhase,
   type RunSettings, type StructuralDecision, type StructuralPreparation,
-  type SummaryContext, type SummaryGeneration, type ToolBatch,
-  type ToolCallState, Assistant, AwaitingDeferred, BranchSummary,
+  type SummaryContext, type SummaryGeneration, type SummaryRequest,
+  type ToolBatch, type ToolCallState, Assistant, AwaitingDeferred, BranchSummary,
   BranchSummaryPreparation, CallCompleted, CallEffectPending, CallOutcomeReady,
   CallPlanned, CancelRequested, Checkpoint, CheckpointPhase, Compacting,
   CompactionIntent, CompactionLastResult, CompactionPreparation, CompactionState,
@@ -415,6 +475,60 @@ pub type Action {
   Fault(report: CorruptionReport)
 }
 
+// --- internal vocabulary --------------------------------------------------
+//
+// The four types that are not part of anyone's contract: each is a small
+// private alphabet one section's handlers use to say something to each
+// other. They sit here, with the public vocabulary rather than beside
+// their users, so that the rule holds without exception — every type this
+// module has is declared before the first function body, and no handler
+// thousands of lines down introduces one cold.
+
+/// Which checkpoint queue a drain consumes (checkpoint procedure).
+type DrainedQueue {
+  SteerQueue
+  FollowUpQueue
+}
+
+/// The resolution answer available for an orphaned poll (deferred
+/// responses). The orphan report itself carries no resolution, so
+/// `OrphanPollUnknown` is the state of having asked and not yet been
+/// answered.
+type OrphanPollResolution {
+  OrphanPollResolved
+  OrphanPollUnresolved(OperationError)
+  OrphanPollUnknown
+}
+
+/// Who hosts the structural machinery: an in-run compaction phase, a
+/// standalone compaction operation, or a summarized navigation. Every
+/// handler in the structural section is written once against this type
+/// and differs between the three only where the spec does — which state
+/// to rebuild, and what a decline, a failure, or a publication means.
+type StructuralHost {
+  InRunHost(
+    reason: CompactionReason,
+    settings: RunSettings,
+    inbox: Inbox,
+    latest: Option(EntryId),
+    resume: CheckpointPhase,
+  )
+  StandaloneHost(custom_instructions: Option(String))
+  NavigationHost(
+    target: EntryId,
+    label: Option(String),
+    custom_instructions: Option(String),
+  )
+}
+
+/// The result of placing a batch of pending ids as entries (shared
+/// helpers). `projecting` is true when at least one placed entry feeds
+/// the model, which is what makes a placement demand another assistant
+/// turn rather than preserving the current continuation.
+type Placement {
+  Placement(writes: List(Write), newest: Option(EntryId), projecting: Bool)
+}
+
 // --- the frozen entry point ----------------------------------------------
 
 /// Computes the next action for one operation. Pure and total: corrupt
@@ -530,52 +644,45 @@ fn begin_run(
     ObservedRunStart(messages:) -> {
       let #(entry_writes, newest, _generator) =
         append_messages(in.generator, in.leaf, messages)
-      let trigger = case newest {
-        Some(id) -> Ok(id)
-        None ->
-          case in.leaf {
-            Some(id) -> Ok(id)
-            None ->
-              Error(corruption.report(
-                at: "machine/planner.begin_run",
-                on: build.op_key(op.id),
-                expected: "a strand leaf after run acceptance",
-                context: "null leaf with no injected messages",
-              ))
-          }
+      // The boundary triggers on the newest injected message, or on the
+      // existing leaf when the hook injected nothing. Neither existing
+      // is impossible after acceptance, so it is corruption.
+      use trigger <- or_fault(option.to_result(
+        option.or(newest, in.leaf),
+        corruption.report(
+          at: "machine/planner.begin_run",
+          on: build.op_key(op.id),
+          expected: "a strand leaf after run acceptance",
+          context: "null leaf with no injected messages",
+        ),
+      ))
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Checkpoint(checkpoint: CheckpointPhase(
+            continuation: NeedAssistant(overflow_recovery_used: False),
+            trigger:,
+            threshold_checked: None,
+            skip_inbox_once: False,
+          )),
+          inbox:,
+          latest_assistant: latest,
+        )
+      let leaf_writes = case newest {
+        Some(id) -> [build.set_leaf(op.strand, Some(id))]
+        None -> []
       }
-      case trigger {
-        Error(report) -> Fault(report:)
-        Ok(trigger) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Checkpoint(checkpoint: CheckpointPhase(
-                continuation: NeedAssistant(overflow_recovery_used: False),
-                trigger:,
-                threshold_checked: None,
-                skip_inbox_once: False,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          let leaf_writes = case newest {
-            Some(id) -> [build.set_leaf(op.strand, Some(id))]
-            None -> []
-          }
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              leaf_writes,
-              [build.set_op_state(op.id, next)],
-            ]),
-          )
-        }
-      }
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          leaf_writes,
+          [build.set_op_state(op.id, next)],
+        ]),
+      )
     }
     NoObservation -> AwaitEffect(key: RunStartKey(operation: op.id))
     other -> unexpected_observation(op, "starting", other)
@@ -702,12 +809,6 @@ fn after_inbox(
   }
 }
 
-/// Which checkpoint queue a drain consumes.
-type DrainedQueue {
-  SteerQueue
-  FollowUpQueue
-}
-
 /// Steps 1: atomically apply every accepted deferred write.
 fn apply_writes(
   op: Operation,
@@ -718,48 +819,42 @@ fn apply_writes(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
-  case place_pending(in, in.leaf, inbox.writes) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting:)) -> {
-      let remaining = Inbox(..inbox, writes: [])
-      let next_checkpoint = case projecting, newest {
-        // Projecting input: need another assistant turn, trigger on the
-        // newest appended entry, and skip the inbox once.
-        True, Some(newest) ->
-          CheckpointPhase(
-            continuation: NeedAssistant(overflow_recovery_used: False),
-            trigger: newest,
-            threshold_checked: checkpoint.threshold_checked,
-            skip_inbox_once: True,
-          )
-        // Unprojected custom writes preserve the checkpoint, including
-        // trigger and overflow flag.
-        _, _ -> checkpoint
-      }
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: next_checkpoint),
-          inbox: remaining,
-          latest_assistant: latest,
-        )
-      let leaf_writes = case newest {
-        Some(id) -> [build.set_leaf(op.strand, Some(id))]
-        None -> []
-      }
-      transition(
-        op,
-        in,
-        next,
-        list.flatten([
-          entry_writes,
-          leaf_writes,
-          [build.set_op_state(op.id, next)],
-        ]),
+  use Placement(writes: entry_writes, newest:, projecting:) <- or_fault(
+    place_pending(in, in.leaf, inbox.writes),
+  )
+  let remaining = Inbox(..inbox, writes: [])
+  let next_checkpoint = case projecting, newest {
+    // Projecting input: need another assistant turn, trigger on the
+    // newest appended entry, and skip the inbox once.
+    True, Some(newest) ->
+      CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: checkpoint.threshold_checked,
+        skip_inbox_once: True,
       )
-    }
+    // Unprojected custom writes preserve the checkpoint, including
+    // trigger and overflow flag.
+    _, _ -> checkpoint
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: next_checkpoint),
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  let leaf_writes = case newest {
+    Some(id) -> [build.set_leaf(op.strand, Some(id))]
+    None -> []
+  }
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([entry_writes, leaf_writes, [build.set_op_state(op.id, next)]]),
+  )
 }
 
 /// Steps 2 and 5: consume eligible steer or follow-up input per its mode.
@@ -785,50 +880,46 @@ fn consume_queue(
         [] -> #([], [])
       }
   }
-  case place_pending(in, in.leaf, consumed) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting: _)) ->
-      case newest {
-        None ->
-          Fault(report: corruption.report(
-            at: "machine/planner.consume_queue",
-            on: build.op_key(op.id),
-            expected: "a non-empty eligible queue",
-            context: "queue drain with nothing to place",
-          ))
-        Some(newest) -> {
-          let remaining = case queue {
-            SteerQueue -> Inbox(..inbox, steer: left)
-            FollowUpQueue -> Inbox(..inbox, follow_up: left)
-          }
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Checkpoint(checkpoint: CheckpointPhase(
-                continuation: NeedAssistant(overflow_recovery_used: False),
-                trigger: newest,
-                threshold_checked: checkpoint.threshold_checked,
-                skip_inbox_once: True,
-              )),
-              inbox: remaining,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              [
-                build.set_leaf(op.strand, Some(newest)),
-                build.set_op_state(op.id, next),
-              ],
-            ]),
-          )
-        }
-      }
+  use Placement(writes: entry_writes, newest:, projecting: _) <- or_fault(
+    place_pending(in, in.leaf, consumed),
+  )
+  // A drain is only reached with an eligible queue, so placing nothing
+  // means the queue and the mode disagreed — durable state, corrupt.
+  use newest <- or_fault(option.to_result(
+    newest,
+    corruption.report(
+      at: "machine/planner.consume_queue",
+      on: build.op_key(op.id),
+      expected: "a non-empty eligible queue",
+      context: "queue drain with nothing to place",
+    ),
+  ))
+  let remaining = case queue {
+    SteerQueue -> Inbox(..inbox, steer: left)
+    FollowUpQueue -> Inbox(..inbox, follow_up: left)
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: checkpoint.threshold_checked,
+        skip_inbox_once: True,
+      )),
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([
+      entry_writes,
+      [build.set_leaf(op.strand, Some(newest)), build.set_op_state(op.id, next)],
+    ]),
+  )
 }
 
 /// Step 3, taken: enter threshold compaction, copying the checkpoint into
@@ -969,6 +1060,9 @@ fn finish_boundary(
 
 // --- assistant generation (pi §3.7) ---------------------------------------
 
+/// The three states of a generation step: waiting to be admitted, in
+/// flight, or sleeping off a retry backoff. Each is one step of the
+/// intent/settle sandwich, and this function only says which.
 fn assistant_action(
   op: Operation,
   in: PlannerInputs,
@@ -980,67 +1074,16 @@ fn assistant_action(
 ) -> Action {
   case generation {
     GenerationReady(context:, next_attempt:) ->
-      case in.observation {
-        ObservedAdmission(admission: AdmissionUnavailable(error:)) -> {
-          // No response or usage ids are reserved; nothing is fabricated.
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: FailureDrain(error:, provenance: ConfigurationProvenance),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(op, in, next, [build.set_op_state(op.id, next)])
-        }
-        ObservedAdmission(admission: Admitted(
-          stream_options:,
-          intended_output_limit:,
-          context_window:,
-          api: request_api,
-        )) -> {
-          let #(response_entry, generator) = ids.mint_entry(in.generator)
-          let #(usage, _generator) = ids.mint_usage(generator)
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Assistant(generation: GenerationEffectPending(
-                context:,
-                attempt: next_attempt,
-                response_entry:,
-                usage:,
-                intended_output_limit:,
-                context_window:,
-                request_api:,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          Dispatch(
-            intent: ProviderRequest(
-              operation: op.id,
-              step_id: context.step_id,
-              attempt: next_attempt,
-              context:,
-              stream_options:,
-              response_entry:,
-              usage:,
-              intended_output_limit:,
-              context_window:,
-            ),
-            next:,
-            tx: op_tx(op, in, [build.set_op_state(op.id, next)]),
-          )
-        }
-        NoObservation ->
-          AwaitEffect(key: AdmissionKey(
-            operation: op.id,
-            step_id: context.step_id,
-            attempt: next_attempt,
-          ))
-        other -> unexpected_observation(op, "assistant ready", other)
-      }
+      admit_generation(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        next_attempt,
+        inbox,
+        latest,
+      )
     GenerationEffectPending(
       context:,
       attempt:,
@@ -1050,64 +1093,170 @@ fn assistant_action(
       context_window: _,
       request_api:,
     ) ->
-      case in.observation {
-        ObservedAssistantSettled(settled:, overflow_preparation:) ->
-          settle_assistant(
-            op,
-            in,
-            control,
-            settings,
-            context,
-            attempt,
-            response_entry,
-            usage,
-            intended_output_limit,
-            request_api,
-            inbox,
-            latest,
-            settled,
-            overflow_preparation,
-          )
-        ObservedAssistantOrphaned(partial:) ->
-          settle_orphaned_assistant(
-            op,
-            in,
-            control,
-            settings,
-            context,
-            attempt,
-            response_entry,
-            usage,
-            inbox,
-            latest,
-            partial,
-          )
-        NoObservation ->
-          AwaitEffect(key: AssistantKey(
-            operation: op.id,
-            step_id: context.step_id,
+      await_generation(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        attempt,
+        response_entry,
+        usage,
+        intended_output_limit,
+        request_api,
+        inbox,
+        latest,
+      )
+    GenerationRetryWait(context:, next_attempt:, not_before:, error_message: _) -> {
+      use <- bool.guard(
+        when: in.now < not_before,
+        return: Wait(until: RetryNotBefore(at: not_before)),
+      )
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Assistant(generation: GenerationReady(context:, next_attempt:)),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(op, in, next, [build.set_op_state(op.id, next)])
+    }
+  }
+}
+
+/// `ready`: the pre-request hook and identity resolution decide whether
+/// this attempt is made at all. Admission is the last point before ids
+/// are reserved — a refusal costs nothing durable, while an admission
+/// mints the response and usage ids the settlement (real or synthetic)
+/// is obliged to write under.
+fn admit_generation(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  next_attempt: Int,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  case in.observation {
+    ObservedAdmission(admission: AdmissionUnavailable(error:)) ->
+      enter_configuration_failure_drain(
+        op,
+        in,
+        control,
+        settings,
+        error,
+        inbox,
+        latest,
+      )
+    ObservedAdmission(admission: Admitted(
+      stream_options:,
+      intended_output_limit:,
+      context_window:,
+      api: request_api,
+    )) -> {
+      let #(response_entry, generator) = ids.mint_entry(in.generator)
+      let #(usage, _generator) = ids.mint_usage(generator)
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Assistant(generation: GenerationEffectPending(
+            context:,
+            attempt: next_attempt,
             response_entry:,
-          ))
-        other -> unexpected_observation(op, "assistant effect_pending", other)
-      }
-    GenerationRetryWait(context:, next_attempt:, not_before:, error_message: _) ->
-      case in.now >= not_before {
-        True -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Assistant(generation: GenerationReady(
-                context:,
-                next_attempt:,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(op, in, next, [build.set_op_state(op.id, next)])
-        }
-        False -> Wait(until: RetryNotBefore(at: not_before))
-      }
+            usage:,
+            intended_output_limit:,
+            context_window:,
+            request_api:,
+          )),
+          inbox:,
+          latest_assistant: latest,
+        )
+      Dispatch(
+        intent: ProviderRequest(
+          operation: op.id,
+          step_id: context.step_id,
+          attempt: next_attempt,
+          context:,
+          stream_options:,
+          response_entry:,
+          usage:,
+          intended_output_limit:,
+          context_window:,
+        ),
+        next:,
+        tx: op_tx(op, in, [build.set_op_state(op.id, next)]),
+      )
+    }
+    NoObservation ->
+      AwaitEffect(key: AdmissionKey(
+        operation: op.id,
+        step_id: context.step_id,
+        attempt: next_attempt,
+      ))
+    other -> unexpected_observation(op, "assistant ready", other)
+  }
+}
+
+/// `effect_pending`: the request is in flight and exactly one of three
+/// things can happen to it — it settles, it is reported orphaned, or it
+/// is still running and the pass parks on it.
+fn await_generation(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  attempt: Int,
+  response_entry: EntryId,
+  usage: UsageId,
+  intended_output_limit: Int,
+  request_api: String,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  case in.observation {
+    ObservedAssistantSettled(settled:, overflow_preparation:) ->
+      settle_assistant(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        attempt,
+        response_entry,
+        usage,
+        intended_output_limit,
+        request_api,
+        inbox,
+        latest,
+        settled,
+        overflow_preparation,
+      )
+    ObservedAssistantOrphaned(partial:) ->
+      settle_orphaned_assistant(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        attempt,
+        response_entry,
+        usage,
+        inbox,
+        latest,
+        partial,
+      )
+    NoObservation ->
+      AwaitEffect(key: AssistantKey(
+        operation: op.id,
+        step_id: context.step_id,
+        response_entry:,
+      ))
+    other -> unexpected_observation(op, "assistant effect_pending", other)
   }
 }
 
@@ -1139,144 +1288,49 @@ fn settle_assistant(
       expected_api: request_api,
       error_retryable: settled_retryable(message),
     )
+  // One destination per classification; the arms below are dispatch
+  // only, so the normative order of `classification.classify` stays
+  // readable in one screen.
   case classification.classify(settled, classify_ctx) {
     CorruptClassification(report:) -> Fault(report:)
-    CancelledClassification -> {
-      let aborted = normalize_stop(message, Aborted, None)
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: CheckpointPhase(
-            continuation: MayFinish(include_final_assistant: True),
-            trigger: response_entry,
-            threshold_checked: None,
-            skip_inbox_once: False,
-          )),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
+    CancelledClassification ->
+      settle_at_may_finish(
         op,
         in,
-        next,
-        settle_writes(op, response_entry, aborted, usage_id, in.leaf, next),
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        normalize_stop(message, Aborted, None),
+        inbox,
       )
-    }
-    OverflowClassification -> {
-      let normalized =
-        normalize_stop(message, Errored, Some(overflow_error_message(message)))
-      case context.overflow_recovery_used {
-        // Second overflow: the one-shot recovery is spent.
-        True ->
-          settle_failure_drain(
-            op,
-            in,
-            control,
-            settings,
-            response_entry,
-            usage_id,
-            normalized,
-            inbox,
-            latest,
-            overflow_operation_error(message),
-          )
-        False ->
-          case overflow_preparation {
-            None ->
-              AwaitEffect(key: OverflowPreparationKey(
-                operation: op.id,
-                response_entry:,
-              ))
-            Some(EmptyPreparation) ->
-              settle_failure_drain(
-                op,
-                in,
-                control,
-                settings,
-                response_entry,
-                usage_id,
-                normalized,
-                inbox,
-                latest,
-                overflow_operation_error(message),
-              )
-            Some(Prepared(preparation:)) -> {
-              let #(task_entry, _generator) = ids.mint_entry(in.generator)
-              let task_id = ids.entry_id_to_string(task_entry)
-              let next =
-                RunState(
-                  control:,
-                  settings:,
-                  phase: Compacting(
-                    reason: OverflowReason,
-                    structural: Deciding(task_id:),
-                    resume_after: CheckpointPhase(
-                      continuation: NeedAssistant(overflow_recovery_used: True),
-                      trigger: context.trigger,
-                      threshold_checked: None,
-                      skip_inbox_once: False,
-                    ),
-                  ),
-                  inbox:,
-                  latest_assistant: Some(response_entry),
-                )
-              transition(
-                op,
-                in,
-                next,
-                list.flatten([
-                  [
-                    build.message_entry(
-                      response_entry,
-                      in.leaf,
-                      normalized,
-                      False,
-                    ),
-                    build.set_leaf(op.strand, Some(response_entry)),
-                    build.usage_row(
-                      usage_id,
-                      Some(response_entry),
-                      message_usage(message),
-                    ),
-                    build.set_preparation(op.id, task_id, preparation),
-                    build.set_op_state(op.id, next),
-                  ],
-                ]),
-              )
-            }
-          }
-      }
-    }
-    DeferredValidClassification(handle: _) -> {
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: AwaitingDeferred(deferred: DeferredSuspended(
-            step_id: context.step_id,
-            source_entry: response_entry,
-            poll: 0,
-            configuration: context.configuration,
-            stream_options: context.stream_options,
-          )),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
+    OverflowClassification ->
+      settle_overflow(
         op,
         in,
-        next,
-        settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+        control,
+        settings,
+        context,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+        latest,
+        overflow_preparation,
       )
-    }
-    DeferredInvalidClassification -> {
-      let normalized =
-        normalize_stop(
-          message,
-          Errored,
-          Some("invalid deferred handle: the response carried no usable handle"),
-        )
+    DeferredValidClassification(handle: _) ->
+      suspend_on_deferred_handle(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+      )
+    DeferredInvalidClassification ->
       settle_failure_drain(
         op,
         in,
@@ -1284,7 +1338,11 @@ fn settle_assistant(
         settings,
         response_entry,
         usage_id,
-        normalized,
+        normalize_stop(
+          message,
+          Errored,
+          Some("invalid deferred handle: the response carried no usable handle"),
+        ),
         inbox,
         latest,
         OperationError(
@@ -1293,78 +1351,222 @@ fn settle_assistant(
           details: None,
         ),
       )
-    }
     ErrorClassification(retryable:, error_message:) ->
-      case retryable && attempt < context.retry.max_attempts {
-        True -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Assistant(generation: GenerationRetryWait(
-                context:,
-                next_attempt: attempt + 1,
-                not_before: in.now + backoff(context.retry, attempt),
-                error_message:,
-              )),
-              inbox:,
-              latest_assistant: Some(response_entry),
-            )
-          transition(
-            op,
-            in,
-            next,
-            settle_writes(op, response_entry, message, usage_id, in.leaf, next),
-          )
-        }
-        False ->
-          settle_failure_drain(
-            op,
-            in,
-            control,
-            settings,
-            response_entry,
-            usage_id,
-            message,
-            inbox,
-            latest,
-            OperationError(
-              code: "provider_error",
-              message: error_message,
-              details: None,
-            ),
-          )
-      }
+      settle_provider_error(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        attempt,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+        latest,
+        retryable,
+        error_message,
+      )
     ToolUseClassification(truncated: _) ->
-      case plan_batch(in, message, context, response_entry) {
-        Error(report) -> Fault(report:)
-        Ok(batch) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch:),
-              inbox:,
-              latest_assistant: Some(response_entry),
-            )
-          transition(
-            op,
-            in,
-            next,
-            settle_writes(op, response_entry, message, usage_id, in.leaf, next),
-          )
-        }
-      }
-    FinishedClassification -> {
+      settle_to_tool_batch(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+      )
+    FinishedClassification ->
+      settle_at_may_finish(
+        op,
+        in,
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+      )
+  }
+}
+
+/// An overflow gets exactly one recovery per generation step. The first
+/// one diverts into a compaction task and resumes with the one-shot
+/// marked spent; a second overflow, or a first with nothing left to
+/// compact, drains as a failure. Either way the response itself commits
+/// normalized to `error` — pi §3.7 records an overflow that way at
+/// commit, deliberately.
+fn settle_overflow(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  message: AgentMessage,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  overflow_preparation: Option(PreparationOutcome),
+) -> Action {
+  let normalized =
+    normalize_stop(message, Errored, Some(overflow_error_message(message)))
+  let drain_as_failure = fn() {
+    settle_failure_drain(
+      op,
+      in,
+      control,
+      settings,
+      response_entry,
+      usage_id,
+      normalized,
+      inbox,
+      latest,
+      overflow_operation_error(message),
+    )
+  }
+  // A spent recovery drains whatever the preparation would have said,
+  // so its arm matches on the first subject alone and never asks for
+  // one.
+  case context.overflow_recovery_used, overflow_preparation {
+    True, _ -> drain_as_failure()
+    False, None ->
+      AwaitEffect(key: OverflowPreparationKey(operation: op.id, response_entry:))
+    False, Some(EmptyPreparation) -> drain_as_failure()
+    False, Some(Prepared(preparation:)) ->
+      enter_overflow_compaction(
+        op,
+        in,
+        control,
+        settings,
+        context,
+        response_entry,
+        usage_id,
+        normalized,
+        message,
+        inbox,
+        preparation,
+      )
+  }
+}
+
+/// The first overflow's recovery. The response entry, its leaf move, its
+/// usage row, the preparation and the new state are one transaction, so
+/// the compaction task can never exist without the response that caused
+/// it. `resume_after` restores the same trigger with the one-shot
+/// recovery spent, so the retried request cannot loop on overflow.
+fn enter_overflow_compaction(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  normalized: AgentMessage,
+  message: AgentMessage,
+  inbox: Inbox,
+  preparation: StructuralPreparation,
+) -> Action {
+  let #(task_entry, _generator) = ids.mint_entry(in.generator)
+  let task_id = ids.entry_id_to_string(task_entry)
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Compacting(
+        reason: OverflowReason,
+        structural: Deciding(task_id:),
+        resume_after: CheckpointPhase(
+          continuation: NeedAssistant(overflow_recovery_used: True),
+          trigger: context.trigger,
+          threshold_checked: None,
+          skip_inbox_once: False,
+        ),
+      ),
+      inbox:,
+      latest_assistant: Some(response_entry),
+    )
+  transition(op, in, next, [
+    build.message_entry(response_entry, in.leaf, normalized, False),
+    build.set_leaf(op.strand, Some(response_entry)),
+    build.usage_row(usage_id, Some(response_entry), message_usage(message)),
+    build.set_preparation(op.id, task_id, preparation),
+    build.set_op_state(op.id, next),
+  ])
+}
+
+/// A valid deferred handle suspends the operation on its own response:
+/// the committed entry becomes the source the first fetch polls against,
+/// and nothing further happens until the caller grants a poll permit.
+/// The step's captured configuration and stream options ride into the
+/// deferred state so every fetch uses what the request was made with.
+fn suspend_on_deferred_handle(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  message: AgentMessage,
+  inbox: Inbox,
+) -> Action {
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: AwaitingDeferred(deferred: DeferredSuspended(
+        step_id: context.step_id,
+        source_entry: response_entry,
+        poll: 0,
+        configuration: context.configuration,
+        stream_options: context.stream_options,
+      )),
+      inbox:,
+      latest_assistant: Some(response_entry),
+    )
+  transition(
+    op,
+    in,
+    next,
+    settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+  )
+}
+
+/// A retryable error waits and tries again while the *captured* policy
+/// has attempts left; every other error drains the run. The failed
+/// response commits on both paths — the error is part of the tree, and
+/// the retry's backoff is measured from the attempt that just finished.
+fn settle_provider_error(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  attempt: Int,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  message: AgentMessage,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  retryable: Bool,
+  error_message: String,
+) -> Action {
+  case retryable && attempt < context.retry.max_attempts {
+    True -> {
       let next =
         RunState(
           control:,
           settings:,
-          phase: Checkpoint(checkpoint: CheckpointPhase(
-            continuation: MayFinish(include_final_assistant: True),
-            trigger: response_entry,
-            threshold_checked: None,
-            skip_inbox_once: False,
+          phase: Assistant(generation: GenerationRetryWait(
+            context:,
+            next_attempt: attempt + 1,
+            not_before: in.now + backoff(context.retry, attempt),
+            error_message:,
           )),
           inbox:,
           latest_assistant: Some(response_entry),
@@ -1376,6 +1578,23 @@ fn settle_assistant(
         settle_writes(op, response_entry, message, usage_id, in.leaf, next),
       )
     }
+    False ->
+      settle_failure_drain(
+        op,
+        in,
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+        latest,
+        OperationError(
+          code: "provider_error",
+          message: error_message,
+          details: None,
+        ),
+      )
   }
 }
 
@@ -1395,6 +1614,102 @@ fn settle_writes(
     build.usage_row(usage_id, Some(response_entry), message_usage(message)),
     build.set_op_state(op.id, next),
   ]
+}
+
+/// The settlement every turn-ending response shares: the response
+/// commits, becomes the leaf and the latest assistant, and the run lands
+/// at a may-finish checkpoint triggered on it. Four settlements arrive
+/// here — a finished response, a cancelled one (normalized to aborted),
+/// and the synthetic stand-ins recovery commits for each — because pi
+/// gives all four the same destination.
+fn settle_at_may_finish(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  message: AgentMessage,
+  inbox: Inbox,
+) -> Action {
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: CheckpointPhase(
+        continuation: MayFinish(include_final_assistant: True),
+        trigger: response_entry,
+        threshold_checked: None,
+        skip_inbox_once: False,
+      )),
+      inbox:,
+      latest_assistant: Some(response_entry),
+    )
+  transition(
+    op,
+    in,
+    next,
+    settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+  )
+}
+
+/// A tool-use response opens a batch: the planned calls and the response
+/// entry commit in one transaction, so a crash can never leave a
+/// committed response whose calls were never planned. `context` supplies
+/// the configuration and step id the batch is stamped with — the real
+/// generation context for an assistant turn, a poll's reconstruction of
+/// one for a deferred settlement.
+fn settle_to_tool_batch(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  context: GenerationContext,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  message: AgentMessage,
+  inbox: Inbox,
+) -> Action {
+  use batch <- or_fault(plan_batch(in, message, context, response_entry))
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Tools(batch:),
+      inbox:,
+      latest_assistant: Some(response_entry),
+    )
+  transition(
+    op,
+    in,
+    next,
+    settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+  )
+}
+
+/// An identity or tool implementation that will not resolve drains the
+/// run as a configuration failure. Nothing is fabricated on this path:
+/// no response or usage id was ever reserved, so the drain is a bare
+/// state change with no entry behind it — which is also why it keeps the
+/// existing `latest_assistant` rather than naming a response.
+fn enter_configuration_failure_drain(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  error: OperationError,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: FailureDrain(error:, provenance: ConfigurationProvenance),
+      inbox:,
+      latest_assistant: latest,
+    )
+  transition(op, in, next, [build.set_op_state(op.id, next)])
 }
 
 fn settle_failure_drain(
@@ -1464,27 +1779,19 @@ fn settle_orphaned_assistant(
       )
   }
   case control {
-    CancelRequested(..) -> {
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: CheckpointPhase(
-            continuation: MayFinish(include_final_assistant: True),
-            trigger: response_entry,
-            threshold_checked: None,
-            skip_inbox_once: False,
-          )),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
+    // Cancelled: the synthetic is the operation's last word, so it goes
+    // straight to a may-finish checkpoint rather than being retried.
+    CancelRequested(..) ->
+      settle_at_may_finish(
         op,
         in,
-        next,
-        settle_writes(op, response_entry, synthetic, usage_id, in.leaf, next),
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        synthetic,
+        inbox,
       )
-    }
     Running ->
       case attempt < context.retry.max_attempts {
         True -> {
@@ -1547,57 +1854,37 @@ fn tools_action(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
-  case in.batch_source {
-    None ->
-      Fault(report: corruption.report(
-        at: "machine/planner.tools_action",
-        on: ids.entry_id_to_string(batch.assistant_entry),
-        expected: "the batch source assistant message in the inputs",
-        context: "batch_source absent",
-      ))
-    Some(source) -> {
-      // Materialize a contiguous outcome-ready run at the frontier first.
-      let completed_prefix =
-        list.take_while(batch.calls, fn(call) {
-          case call {
-            CallCompleted(..) -> True
-            _ -> False
-          }
-        })
-      let frontier = list.drop(batch.calls, list.length(completed_prefix))
-      let ready_run =
-        list.take_while(frontier, fn(call) {
-          case call {
-            CallOutcomeReady(..) -> True
-            _ -> False
-          }
-        })
-      case ready_run {
-        [_, ..] ->
-          materialize(
-            op,
-            in,
-            control,
-            settings,
-            batch,
-            inbox,
-            latest,
-            ready_run,
-          )
-        [] ->
-          advance_batch(
-            op,
-            in,
-            control,
-            settings,
-            batch,
-            inbox,
-            latest,
-            source,
-            frontier,
-          )
-      }
-    }
+  use source <- or_fault(option.to_result(
+    in.batch_source,
+    corruption.report(
+      at: "machine/planner.tools_action",
+      on: ids.entry_id_to_string(batch.assistant_entry),
+      expected: "the batch source assistant message in the inputs",
+      context: "batch_source absent",
+    ),
+  ))
+  // The batch reads as three zones in source order: a completed prefix
+  // already in the tree, then the frontier — whose leading outcome-ready
+  // run is what materializes next, and whose head is otherwise the call
+  // to work.
+  let completed_prefix = list.take_while(batch.calls, call_is_completed)
+  let frontier = list.drop(batch.calls, list.length(completed_prefix))
+  let ready_run = list.take_while(frontier, call_is_outcome_ready)
+  case ready_run {
+    [_, ..] ->
+      materialize(op, in, control, settings, batch, inbox, latest, ready_run)
+    [] ->
+      advance_batch(
+        op,
+        in,
+        control,
+        settings,
+        batch,
+        inbox,
+        latest,
+        source,
+        frontier,
+      )
   }
 }
 
@@ -1783,6 +2070,23 @@ fn request_batch_work(
   }
 }
 
+/// Whether a call's result is already an entry in the tree.
+fn call_is_completed(call: ToolCallState) -> Bool {
+  case call {
+    CallCompleted(..) -> True
+    _ -> False
+  }
+}
+
+/// Whether a call has a finalized result staged in `pending.entry`,
+/// waiting only for its source-ordered turn to enter the tree.
+fn call_is_outcome_ready(call: ToolCallState) -> Bool {
+  case call {
+    CallOutcomeReady(..) -> True
+    _ -> False
+  }
+}
+
 /// The source index of the first still-planned call at the frontier, if
 /// any — parallel mode's next unit of work.
 fn first_planned(frontier: List(ToolCallState)) -> Option(Int) {
@@ -1862,9 +2166,12 @@ fn dispatch_tool(
   effective_arguments: JsonValue,
   replay: operation.ReplayPolicy,
 ) -> Action {
-  case find_call(batch, source_index), source_call(source, source_index) {
-    Error(report), _ | _, Error(report) -> Fault(report:)
-    Ok(CallPlanned(source_index: _, result_entry:)), Ok(call) -> {
+  use found <- or_fault(find_call(batch, source_index))
+  use call <- or_fault(source_call(source, source_index))
+  // Only a planned call can be cleared; anything else means the batch
+  // and the observation disagree about where this call had got to.
+  case found {
+    CallPlanned(source_index: _, result_entry:) -> {
       let calls =
         replace_call(
           batch.calls,
@@ -1901,7 +2208,7 @@ fn dispatch_tool(
         ]),
       )
     }
-    Ok(_), Ok(_) ->
+    CallEffectPending(..) | CallOutcomeReady(..) | CallCompleted(..) ->
       Fault(report: corruption.report(
         at: "machine/planner.dispatch_tool",
         on: build.op_key(op.id),
@@ -1928,64 +2235,61 @@ fn recover_tool(
   replay_still_safe: Bool,
   checkpoint: Option(AgentMessage),
 ) -> Action {
-  case find_call(batch, source_index), source_call(source, source_index) {
-    Error(report), _ | _, Error(report) -> Fault(report:)
-    Ok(CallEffectPending(source_index: _, result_entry:, replay:)), Ok(call) -> {
-      let replayable = case control, replay {
-        Running, ReplaySafe -> replay_still_safe
-        _, _ -> False
-      }
-      case replayable {
-        True ->
-          Dispatch(
-            intent: ToolReplay(
-              operation: op.id,
-              step_id: batch.turn_id,
-              source_index:,
-              call:,
-              arguments_key: build.tool_args_key(
-                op.id,
-                batch.turn_id,
-                source_index,
-              ),
-              result_entry:,
-            ),
-            next: RunState(
-              control:,
-              settings:,
-              phase: Tools(batch:),
-              inbox:,
-              latest_assistant: latest,
-            ),
-            tx: op_tx(op, in, []),
-          )
-        False ->
-          case interrupted_tool_result(call, checkpoint, in.now) {
-            Error(report) -> Fault(report:)
-            Ok(result) ->
-              stage_result(
-                op,
-                in,
-                control,
-                settings,
-                batch,
-                inbox,
-                latest,
-                source_index,
-                result,
-                False,
-              )
-          }
-      }
-    }
-    Ok(_), Ok(_) ->
-      Fault(report: corruption.report(
+  use found <- or_fault(find_call(batch, source_index))
+  use call <- or_fault(source_call(source, source_index))
+  // Only an effect-pending call can be orphaned; anything else means the
+  // batch and the observation disagree about where this call had got to.
+  use #(result_entry, replay) <- or_fault(case found {
+    CallEffectPending(source_index: _, result_entry:, replay:) ->
+      Ok(#(result_entry, replay))
+    CallPlanned(..) | CallOutcomeReady(..) | CallCompleted(..) ->
+      Error(corruption.report(
         at: "machine/planner.recover_tool",
         on: build.op_key(op.id),
         expected: "an effect-pending call at the orphaned index",
         context: "orphan observed for a non-pending call",
       ))
+  })
+  // Only a still-safe replay of a still-running call re-executes; every
+  // other orphan is settled with a synthetic interrupted result.
+  let replayable = case control, replay {
+    Running, ReplaySafe -> replay_still_safe
+    _, _ -> False
   }
+  use <- bool.guard(
+    when: replayable,
+    return: Dispatch(
+      intent: ToolReplay(
+        operation: op.id,
+        step_id: batch.turn_id,
+        source_index:,
+        call:,
+        arguments_key: build.tool_args_key(op.id, batch.turn_id, source_index),
+        result_entry:,
+      ),
+      next: RunState(
+        control:,
+        settings:,
+        phase: Tools(batch:),
+        inbox:,
+        latest_assistant: latest,
+      ),
+      tx: op_tx(op, in, []),
+    ),
+  )
+  use result <- or_fault(interrupted_tool_result(call, checkpoint, in.now))
+  stage_result(
+    op,
+    in,
+    control,
+    settings,
+    batch,
+    inbox,
+    latest,
+    source_index,
+    result,
+    False,
+  )
 }
 
 /// Stages one finalized result: the complete message enters
@@ -2003,46 +2307,55 @@ fn stage_result(
   result: AgentMessage,
   terminate: Bool,
 ) -> Action {
-  case result {
-    ToolResultMessage(..) ->
-      case find_call(batch, source_index) {
-        Error(report) -> Fault(report:)
-        Ok(CallCompleted(..)) | Ok(CallOutcomeReady(..)) ->
-          Fault(report: corruption.report(
-            at: "machine/planner.stage_result",
-            on: build.op_key(op.id),
-            expected: "a planned or effect-pending call to stage",
-            context: "result observed for an already staged call",
-          ))
-        Ok(CallPlanned(source_index: _, result_entry:))
-        | Ok(CallEffectPending(source_index: _, result_entry:, replay: _)) -> {
-          let calls =
-            replace_call(
-              batch.calls,
-              source_index,
-              CallOutcomeReady(source_index:, result_entry:, terminate:),
-            )
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch: ToolBatch(..batch, calls:)),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(op, in, next, [
-            build.set_pending(result_entry, PendingMessage(message: result)),
-            build.set_op_state(op.id, next),
-          ])
-        }
-      }
-    _ ->
-      Fault(report: corruption.report(
+  use <- or_fault_unless(
+    result_is_tool_result(result),
+    corruption.report(
+      at: "machine/planner.stage_result",
+      on: build.op_key(op.id),
+      expected: "a tool-result message",
+      context: "a non-tool-result observation payload",
+    ),
+  )
+  use found <- or_fault(find_call(batch, source_index))
+  // A call may be staged once. Reaching here twice means an observation
+  // was delivered for work the batch has already accounted for.
+  use result_entry <- or_fault(case found {
+    CallPlanned(source_index: _, result_entry:)
+    | CallEffectPending(source_index: _, result_entry:, replay: _) ->
+      Ok(result_entry)
+    CallCompleted(..) | CallOutcomeReady(..) ->
+      Error(corruption.report(
         at: "machine/planner.stage_result",
         on: build.op_key(op.id),
-        expected: "a tool-result message",
-        context: "a non-tool-result observation payload",
+        expected: "a planned or effect-pending call to stage",
+        context: "result observed for an already staged call",
       ))
+  })
+  let calls =
+    replace_call(
+      batch.calls,
+      source_index,
+      CallOutcomeReady(source_index:, result_entry:, terminate:),
+    )
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Tools(batch: ToolBatch(..batch, calls:)),
+      inbox:,
+      latest_assistant: latest,
+    )
+  transition(op, in, next, [
+    build.set_pending(result_entry, PendingMessage(message: result)),
+    build.set_op_state(op.id, next),
+  ])
+}
+
+/// Whether a settled payload is the tool-result message it must be.
+fn result_is_tool_result(message: AgentMessage) -> Bool {
+  case message {
+    ToolResultMessage(..) -> True
+    _ -> False
   }
 }
 
@@ -2060,158 +2373,205 @@ fn materialize(
   latest: Option(EntryId),
   ready_run: List(ToolCallState),
 ) -> Action {
+  use #(entry_writes, newest) <- or_fault(place_ready_run(op, in, ready_run))
+  // Unreachable: `ready_run` is non-empty at every call site, so
+  // something was placed and is the new leaf.
+  let newest = option.unwrap(newest, batch.assistant_entry)
+  let calls = complete_ready_calls(batch.calls, ready_run)
+  case list.all(calls, call_is_completed) {
+    // More calls left to work: the batch stays in the tools phase with
+    // the materialized results already in the tree.
+    False -> {
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Tools(batch: ToolBatch(..batch, calls:)),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          [
+            build.set_leaf(op.strand, Some(newest)),
+            build.set_op_state(op.id, next),
+          ],
+        ]),
+      )
+    }
+    True ->
+      close_batch(
+        op,
+        in,
+        control,
+        settings,
+        inbox,
+        latest,
+        calls,
+        entry_writes,
+        newest,
+      )
+  }
+}
+
+/// Turns the contiguous outcome-ready run into tree writes: each staged
+/// result becomes an entry parented on the one before it, its
+/// `pending.entry` register dies in the same transaction, and any
+/// tool-reported usage gets a ledger row under a freshly minted id.
+/// Returns the writes and the newest entry placed, which becomes the
+/// leaf.
+fn place_ready_run(
+  op: Operation,
+  in: PlannerInputs,
+  ready_run: List(ToolCallState),
+) -> Result(#(List(Write), Option(EntryId)), CorruptionReport) {
   let placed =
     list.try_fold(ready_run, #([], in.leaf, in.generator), fn(acc, call) {
       let #(writes, parent, generator) = acc
-      case call {
+      use #(result_entry, terminate) <- result.try(case call {
         CallOutcomeReady(source_index: _, result_entry:, terminate:) ->
-          case deref_pending(in, result_entry) {
-            Error(report) -> Error(report)
-            Ok(PendingMessage(message:)) -> {
-              let entry_writes = [
-                build.message_entry(result_entry, parent, message, terminate),
-                build.delete_pending(result_entry),
-              ]
-              let #(usage_writes, generator) = case message {
-                ToolResultMessage(usage: Some(usage), ..) -> {
-                  let #(usage_id, generator) = ids.mint_usage(generator)
-                  #(
-                    [build.usage_row(usage_id, Some(result_entry), usage)],
-                    generator,
-                  )
-                }
-                _ -> #([], generator)
-              }
-              Ok(#(
-                list.flatten([writes, entry_writes, usage_writes]),
-                Some(result_entry),
-                generator,
-              ))
-            }
-            Ok(PendingCustom(..)) ->
-              Error(corruption.report(
-                at: "machine/planner.materialize",
-                on: ids.entry_id_to_string(result_entry),
-                expected: "a staged tool-result message",
-                context: "a custom pending payload under a result id",
-              ))
-          }
-        _ ->
+          Ok(#(result_entry, terminate))
+        CallPlanned(..) | CallEffectPending(..) | CallCompleted(..) ->
           Error(corruption.report(
             at: "machine/planner.materialize",
             on: build.op_key(op.id),
             expected: "an outcome-ready call in the ready run",
             context: "a non-ready call",
           ))
+      })
+      use pending <- result.try(deref_pending(in, result_entry))
+      use message <- result.try(case pending {
+        PendingMessage(message:) -> Ok(message)
+        PendingCustom(..) ->
+          Error(corruption.report(
+            at: "machine/planner.materialize",
+            on: ids.entry_id_to_string(result_entry),
+            expected: "a staged tool-result message",
+            context: "a custom pending payload under a result id",
+          ))
+      })
+      let entry_writes = [
+        build.message_entry(result_entry, parent, message, terminate),
+        build.delete_pending(result_entry),
+      ]
+      // Tool-reported usage becomes a ledger row of its own, under an id
+      // minted here rather than reserved in the intent — the tool did
+      // not have to report any.
+      let #(usage_writes, generator) = case message {
+        ToolResultMessage(usage: Some(usage), ..) -> {
+          let #(usage_id, generator) = ids.mint_usage(generator)
+          #([build.usage_row(usage_id, Some(result_entry), usage)], generator)
+        }
+        _ -> #([], generator)
+      }
+      Ok(#(
+        list.flatten([writes, entry_writes, usage_writes]),
+        Some(result_entry),
+        generator,
+      ))
+    })
+  use #(writes, newest, _generator) <- result.map(placed)
+  #(writes, newest)
+}
+
+/// Marks every call that was just materialized completed, leaving the
+/// rest of the batch untouched.
+fn complete_ready_calls(
+  calls: List(ToolCallState),
+  ready_run: List(ToolCallState),
+) -> List(ToolCallState) {
+  list.map(calls, fn(call) {
+    case call {
+      CallOutcomeReady(source_index:, result_entry:, terminate:) ->
+        case
+          list.any(ready_run, fn(ready) {
+            case ready {
+              CallOutcomeReady(source_index: ready_index, ..) ->
+                ready_index == source_index
+              _ -> False
+            }
+          })
+        {
+          True -> CallCompleted(source_index:, result_entry:, terminate:)
+          False -> call
+        }
+      _ -> call
+    }
+  })
+}
+
+/// The last materialization of a batch: every call is completed, so the
+/// tools phase ends at a checkpoint and the batch's persisted tool
+/// arguments are deleted.
+///
+/// The continuation turns on whether *every* call terminated the run. If
+/// so the batch itself is the run's conclusion and no final assistant
+/// message is included; otherwise another assistant turn is owed —
+/// carrying, faithfully to pi, `skip_inbox_once`, so the results reach
+/// the model before newly queued input does.
+fn close_batch(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  calls: List(ToolCallState),
+  entry_writes: List(Write),
+  newest: EntryId,
+) -> Action {
+  let every_terminates =
+    list.all(calls, fn(call) {
+      case call {
+        CallCompleted(terminate:, ..) -> terminate
+        _ -> False
       }
     })
-  case placed {
-    Error(report) -> Fault(report:)
-    Ok(#(entry_writes, newest, _generator)) -> {
-      let newest = case newest {
-        Some(id) -> id
-        // Unreachable: `ready_run` is non-empty at every call site.
-        None -> batch.assistant_entry
-      }
-      let calls =
-        list.map(batch.calls, fn(call) {
-          case call {
-            CallOutcomeReady(source_index:, result_entry:, terminate:) ->
-              case
-                list.any(ready_run, fn(ready) {
-                  case ready {
-                    CallOutcomeReady(source_index: ready_index, ..) ->
-                      ready_index == source_index
-                    _ -> False
-                  }
-                })
-              {
-                True -> CallCompleted(source_index:, result_entry:, terminate:)
-                False -> call
-              }
-            _ -> call
-          }
-        })
-      let all_completed =
-        list.all(calls, fn(call) {
-          case call {
-            CallCompleted(..) -> True
-            _ -> False
-          }
-        })
-      case all_completed {
-        False -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch: ToolBatch(..batch, calls:)),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              [
-                build.set_leaf(op.strand, Some(newest)),
-                build.set_op_state(op.id, next),
-              ],
-            ]),
-          )
-        }
-        True -> {
-          let every_terminates =
-            list.all(calls, fn(call) {
-              case call {
-                CallCompleted(terminate:, ..) -> terminate
-                _ -> False
-              }
-            })
-          let continuation = case every_terminates {
-            True -> MayFinish(include_final_assistant: False)
-            False -> NeedAssistant(overflow_recovery_used: False)
-          }
-          let skip_inbox_once = case every_terminates {
-            True -> False
-            False -> True
-          }
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Checkpoint(checkpoint: CheckpointPhase(
-                continuation:,
-                trigger: newest,
-                threshold_checked: None,
-                skip_inbox_once:,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          let args_deletes =
-            list.map(in.tool_args_keys, build.delete_tool_args_key)
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              [build.set_leaf(op.strand, Some(newest))],
-              args_deletes,
-              [build.set_op_state(op.id, next)],
-            ]),
-          )
-        }
-      }
-    }
+  let continuation = case every_terminates {
+    True -> MayFinish(include_final_assistant: False)
+    False -> NeedAssistant(overflow_recovery_used: False)
   }
+  let skip_inbox_once = case every_terminates {
+    True -> False
+    False -> True
+  }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: CheckpointPhase(
+        continuation:,
+        trigger: newest,
+        threshold_checked: None,
+        skip_inbox_once:,
+      )),
+      inbox:,
+      latest_assistant: latest,
+    )
+  let args_deletes = list.map(in.tool_args_keys, build.delete_tool_args_key)
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([
+      entry_writes,
+      [build.set_leaf(op.strand, Some(newest))],
+      args_deletes,
+      [build.set_op_state(op.id, next)],
+    ]),
+  )
 }
 
 // --- deferred responses (pi §3.2 deferred table) --------------------------
 
+/// A deferred operation is either suspended between polls or waiting on
+/// one in flight. Both halves are gated the same way — a poll costs a
+/// caller-granted permit and a resolved identity — which is why the two
+/// handlers below look so alike.
 fn deferred_action(
   op: Operation,
   in: PlannerInputs,
@@ -2243,69 +2603,19 @@ fn deferred_action(
             latest,
           )
         Running ->
-          case in.poll_permit {
-            False -> Wait(until: DeferredPollDue(source_entry:))
-            True ->
-              case in.observation {
-                ObservedResolution(resolution: ModelUnresolved(error:)) -> {
-                  let next =
-                    RunState(
-                      control:,
-                      settings:,
-                      phase: FailureDrain(
-                        error:,
-                        provenance: ConfigurationProvenance,
-                      ),
-                      inbox:,
-                      latest_assistant: latest,
-                    )
-                  transition(op, in, next, [build.set_op_state(op.id, next)])
-                }
-                ObservedResolution(resolution: ModelResolved) -> {
-                  let #(response_entry, generator) =
-                    ids.mint_entry(in.generator)
-                  let #(usage, _generator) = ids.mint_usage(generator)
-                  let next_poll = poll + 1
-                  let next =
-                    RunState(
-                      control:,
-                      settings:,
-                      phase: AwaitingDeferred(deferred: DeferredEffectPending(
-                        step_id:,
-                        source_entry:,
-                        poll: next_poll,
-                        response_entry:,
-                        usage:,
-                        configuration:,
-                        stream_options:,
-                      )),
-                      inbox:,
-                      latest_assistant: latest,
-                    )
-                  Dispatch(
-                    intent: DeferredFetch(
-                      operation: op.id,
-                      step_id:,
-                      poll: next_poll,
-                      source_entry:,
-                      response_entry:,
-                      usage:,
-                      configuration:,
-                      stream_options:,
-                    ),
-                    next:,
-                    tx: op_tx(op, in, [build.set_op_state(op.id, next)]),
-                  )
-                }
-                NoObservation ->
-                  AwaitEffect(key: PollAdmissionKey(
-                    operation: op.id,
-                    step_id:,
-                    poll: poll + 1,
-                  ))
-                other -> unexpected_observation(op, "deferred suspended", other)
-              }
-          }
+          start_poll(
+            op,
+            in,
+            control,
+            settings,
+            step_id,
+            source_entry,
+            poll,
+            configuration,
+            stream_options,
+            inbox,
+            latest,
+          )
       }
     DeferredEffectPending(
       step_id:,
@@ -2316,9 +2626,138 @@ fn deferred_action(
       configuration:,
       stream_options:,
     ) ->
-      case in.observation {
-        ObservedDeferredSettled(settled:) ->
-          settle_poll(
+      await_poll(
+        op,
+        in,
+        control,
+        settings,
+        step_id,
+        source_entry,
+        poll,
+        response_entry,
+        usage,
+        configuration,
+        stream_options,
+        inbox,
+        latest,
+      )
+  }
+}
+
+/// `suspended`: a fetch costs a permit the caller grants, and then
+/// identity resolution decides whether it is made at all. An
+/// unresolvable identity drains the run rather than burning further
+/// permits against a model that is gone.
+fn start_poll(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  step_id: String,
+  source_entry: EntryId,
+  poll: Int,
+  configuration: StrandConfiguration,
+  stream_options: JsonValue,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  use <- bool.guard(
+    when: !in.poll_permit,
+    return: Wait(until: DeferredPollDue(source_entry:)),
+  )
+  case in.observation {
+    ObservedResolution(resolution: ModelUnresolved(error:)) ->
+      enter_configuration_failure_drain(
+        op,
+        in,
+        control,
+        settings,
+        error,
+        inbox,
+        latest,
+      )
+    ObservedResolution(resolution: ModelResolved) ->
+      dispatch_poll(
+        op,
+        in,
+        control,
+        settings,
+        step_id,
+        source_entry,
+        poll + 1,
+        configuration,
+        stream_options,
+        inbox,
+        latest,
+      )
+    NoObservation ->
+      AwaitEffect(key: PollAdmissionKey(
+        operation: op.id,
+        step_id:,
+        poll: poll + 1,
+      ))
+    other -> unexpected_observation(op, "deferred suspended", other)
+  }
+}
+
+/// `effect_pending`: the fetch settles, is reported orphaned, or is
+/// still running.
+///
+/// The orphan arm also matches a bare `ObservedResolution`, because the
+/// orphan report itself carries no resolution: this handler asks for one
+/// (`OrphanPollUnknown` below) and the answer arrives on a later pass as
+/// its own observation. Matching only the orphan report would fault the
+/// strand on the very pass that answered its question.
+fn await_poll(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  step_id: String,
+  source_entry: EntryId,
+  poll: Int,
+  response_entry: EntryId,
+  usage: UsageId,
+  configuration: StrandConfiguration,
+  stream_options: JsonValue,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  case in.observation {
+    ObservedDeferredSettled(settled:) ->
+      settle_poll(
+        op,
+        in,
+        control,
+        settings,
+        step_id,
+        source_entry,
+        poll,
+        response_entry,
+        usage,
+        configuration,
+        stream_options,
+        inbox,
+        latest,
+        settled,
+      )
+    ObservedDeferredOrphaned | ObservedResolution(..) ->
+      case control {
+        CancelRequested(..) ->
+          settle_cancelled_poll(
+            op,
+            in,
+            control,
+            settings,
+            response_entry,
+            usage,
+            configuration,
+            [],
+            inbox,
+            latest,
+          )
+        Running ->
+          replace_orphaned_poll(
             op,
             in,
             control,
@@ -2326,121 +2765,125 @@ fn deferred_action(
             step_id,
             source_entry,
             poll,
-            response_entry,
-            usage,
             configuration,
             stream_options,
             inbox,
             latest,
-            settled,
           )
-        // Either the orphan report itself, or the resolution answer this
-        // handler asked for on the pass before (`OrphanPollUnknown`
-        // below). Both say the same thing — the pending poll's outcome
-        // is unknown — and both must reach the replacement path; the
-        // resolution arrives as its own observation, so matching only
-        // the orphan report would fault the strand on the very pass
-        // that answered its question.
-        ObservedDeferredOrphaned | ObservedResolution(..) ->
-          case control {
-            CancelRequested(..) ->
-              settle_cancelled_poll(
-                op,
-                in,
-                control,
-                settings,
-                response_entry,
-                usage,
-                configuration,
-                [],
-                inbox,
-                latest,
-              )
-            Running ->
-              case in.poll_permit {
-                False -> Wait(until: DeferredPollDue(source_entry:))
-                True ->
-                  case orphan_poll_resolution(in) {
-                    OrphanPollUnresolved(error) -> {
-                      let next =
-                        RunState(
-                          control:,
-                          settings:,
-                          phase: FailureDrain(
-                            error:,
-                            provenance: ConfigurationProvenance,
-                          ),
-                          inbox:,
-                          latest_assistant: latest,
-                        )
-                      transition(op, in, next, [build.set_op_state(op.id, next)])
-                    }
-                    OrphanPollResolved -> {
-                      // Replace the unknown poll under fresh ids at the
-                      // same poll number; the old reserved strings are
-                      // abandoned, never materialized.
-                      let #(fresh_entry, generator) =
-                        ids.mint_entry(in.generator)
-                      let #(fresh_usage, _generator) = ids.mint_usage(generator)
-                      let next =
-                        RunState(
-                          control:,
-                          settings:,
-                          phase: AwaitingDeferred(
-                            deferred: DeferredEffectPending(
-                              step_id:,
-                              source_entry:,
-                              poll:,
-                              response_entry: fresh_entry,
-                              usage: fresh_usage,
-                              configuration:,
-                              stream_options:,
-                            ),
-                          ),
-                          inbox:,
-                          latest_assistant: latest,
-                        )
-                      Dispatch(
-                        intent: DeferredFetch(
-                          operation: op.id,
-                          step_id:,
-                          poll:,
-                          source_entry:,
-                          response_entry: fresh_entry,
-                          usage: fresh_usage,
-                          configuration:,
-                          stream_options:,
-                        ),
-                        next:,
-                        tx: op_tx(op, in, [build.set_op_state(op.id, next)]),
-                      )
-                    }
-                    OrphanPollUnknown ->
-                      AwaitEffect(key: PollAdmissionKey(
-                        operation: op.id,
-                        step_id:,
-                        poll:,
-                      ))
-                  }
-              }
-          }
-        NoObservation ->
-          AwaitEffect(key: PollKey(
-            operation: op.id,
-            step_id:,
-            poll:,
-            response_entry:,
-          ))
-        other -> unexpected_observation(op, "deferred effect_pending", other)
       }
+    NoObservation ->
+      AwaitEffect(key: PollKey(
+        operation: op.id,
+        step_id:,
+        poll:,
+        response_entry:,
+      ))
+    other -> unexpected_observation(op, "deferred effect_pending", other)
   }
 }
 
-/// The resolution answer available for an orphaned poll.
-type OrphanPollResolution {
-  OrphanPollResolved
-  OrphanPollUnresolved(OperationError)
-  OrphanPollUnknown
+/// Orphan recovery for a poll (pi §4.5): the fetch's outcome is unknown,
+/// so it is simply made again under *fresh* ids at the **same** poll
+/// number — the poll count measures permits spent against the source
+/// handle, and a replacement is not a new poll. The abandoned reserved
+/// ids are never materialized. The replacement still costs a permit,
+/// which is why the same guard as `start_poll` opens this function.
+fn replace_orphaned_poll(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  step_id: String,
+  source_entry: EntryId,
+  poll: Int,
+  configuration: StrandConfiguration,
+  stream_options: JsonValue,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  use <- bool.guard(
+    when: !in.poll_permit,
+    return: Wait(until: DeferredPollDue(source_entry:)),
+  )
+  case orphan_poll_resolution(in) {
+    OrphanPollUnresolved(error) ->
+      enter_configuration_failure_drain(
+        op,
+        in,
+        control,
+        settings,
+        error,
+        inbox,
+        latest,
+      )
+    OrphanPollResolved ->
+      dispatch_poll(
+        op,
+        in,
+        control,
+        settings,
+        step_id,
+        source_entry,
+        poll,
+        configuration,
+        stream_options,
+        inbox,
+        latest,
+      )
+    OrphanPollUnknown ->
+      AwaitEffect(key: PollAdmissionKey(operation: op.id, step_id:, poll:))
+  }
+}
+
+/// Reserves the ids for one deferred fetch and dispatches it as `poll`.
+/// The first fetch after a suspension passes `poll + 1`; the replacement
+/// of an orphaned fetch passes the same `poll` it had. Nothing else
+/// distinguishes the two.
+fn dispatch_poll(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  step_id: String,
+  source_entry: EntryId,
+  poll: Int,
+  configuration: StrandConfiguration,
+  stream_options: JsonValue,
+  inbox: Inbox,
+  latest: Option(EntryId),
+) -> Action {
+  let #(response_entry, generator) = ids.mint_entry(in.generator)
+  let #(usage, _generator) = ids.mint_usage(generator)
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: AwaitingDeferred(deferred: DeferredEffectPending(
+        step_id:,
+        source_entry:,
+        poll:,
+        response_entry:,
+        usage:,
+        configuration:,
+        stream_options:,
+      )),
+      inbox:,
+      latest_assistant: latest,
+    )
+  Dispatch(
+    intent: DeferredFetch(
+      operation: op.id,
+      step_id:,
+      poll:,
+      source_entry:,
+      response_entry:,
+      usage:,
+      configuration:,
+      stream_options:,
+    ),
+    next:,
+    tx: op_tx(op, in, [build.set_op_state(op.id, next)]),
+  )
 }
 
 fn orphan_poll_resolution(in: PlannerInputs) -> OrphanPollResolution {
@@ -2479,87 +2922,56 @@ fn settle_poll(
       // disabled.
       intended_output_limit: 0,
       expected_model: configuration.model,
+      // Not a captured api, unlike `settle_assistant`'s: neither the
+      // deferred state nor the `DeferredFetch` intent persists one, so
+      // this compares the response against its own claim and can never
+      // fail. ORCH-L4 is upheld one step later instead —
+      // `resuspend_on_poll_handle` requires the returned handle to be
+      // *completely* equal to the source handle, api included, and the
+      // first source handle was validated against the real captured api
+      // in `settle_assistant`. By induction every accepted poll handle
+      // carries that api. `classification.handle_valid` names this split
+      // too: poll-source equality is the planner's, stricter, check.
       expected_api: message_api(message),
       error_retryable: settled_retryable(message),
     )
+  // The same classification order as a generation settlement, but with
+  // three of its destinations closed off: a poll has no retry wait, no
+  // overflow compaction, and no admission to fall back on, so every
+  // error lands in the same response-provenance failure drain (pi §3.2).
   case classification.classify(settled, classify_ctx) {
     CorruptClassification(report:) -> Fault(report:)
     // A really-settled poll under cancelled control commits normalized to
     // aborted, retaining its content and reported usage (pi §4.6 —
     // review finding ORCH-M3): only an *unknown-outcome* orphan gets the
     // zero-usage synthetic below.
-    CancelledClassification -> {
-      let aborted = normalize_stop(message, Aborted, None)
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: CheckpointPhase(
-            continuation: MayFinish(include_final_assistant: True),
-            trigger: response_entry,
-            threshold_checked: None,
-            skip_inbox_once: False,
-          )),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
+    CancelledClassification ->
+      settle_at_may_finish(
         op,
         in,
-        next,
-        settle_writes(op, response_entry, aborted, usage_id, in.leaf, next),
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        normalize_stop(message, Aborted, None),
+        inbox,
       )
-    }
     DeferredValidClassification(handle:) ->
-      // A pending response must carry a handle completely equal to its
-      // source handle; it becomes the next source. A mismatch is
-      // normalized to a durable error (pi §3.2).
-      case in.deferred_source == Some(handle) {
-        True -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: AwaitingDeferred(deferred: DeferredSuspended(
-                step_id:,
-                source_entry: response_entry,
-                poll:,
-                configuration:,
-                stream_options:,
-              )),
-              inbox:,
-              latest_assistant: Some(response_entry),
-            )
-          transition(
-            op,
-            in,
-            next,
-            settle_writes(op, response_entry, message, usage_id, in.leaf, next),
-          )
-        }
-        False ->
-          settle_poll_failure(
-            op,
-            in,
-            control,
-            settings,
-            response_entry,
-            usage_id,
-            normalize_stop(
-              message,
-              Errored,
-              Some(
-                "deferred handle mismatch: the pending handle does not equal its source",
-              ),
-            ),
-            inbox,
-            OperationError(
-              code: "deferred_handle_mismatch",
-              message: "the pending handle does not equal its source",
-              details: None,
-            ),
-          )
-      }
+      resuspend_on_poll_handle(
+        op,
+        in,
+        control,
+        settings,
+        step_id,
+        poll,
+        response_entry,
+        usage_id,
+        configuration,
+        stream_options,
+        message,
+        handle,
+        inbox,
+      )
     DeferredInvalidClassification ->
       settle_poll_failure(
         op,
@@ -2582,8 +2994,16 @@ fn settle_poll(
           details: None,
         ),
       )
-    ToolUseClassification(truncated: _) -> {
-      let generation_like =
+    ToolUseClassification(truncated: _) ->
+      // A poll never had a generation context of its own, so the batch
+      // is stamped with the one the original request would have carried:
+      // the poll's step and captured configuration, triggered on the
+      // source entry it was fetched against.
+      settle_to_tool_batch(
+        op,
+        in,
+        control,
+        settings,
         GenerationContext(
           step_id:,
           trigger: source_entry,
@@ -2591,50 +3011,23 @@ fn settle_poll(
           stream_options:,
           retry: in.retry_policy,
           overflow_recovery_used: False,
-        )
-      case plan_batch(in, message, generation_like, response_entry) {
-        Error(report) -> Fault(report:)
-        Ok(batch) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch:),
-              inbox:,
-              latest_assistant: Some(response_entry),
-            )
-          transition(
-            op,
-            in,
-            next,
-            settle_writes(op, response_entry, message, usage_id, in.leaf, next),
-          )
-        }
-      }
-    }
-    FinishedClassification -> {
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: CheckpointPhase(
-            continuation: MayFinish(include_final_assistant: True),
-            trigger: response_entry,
-            threshold_checked: None,
-            skip_inbox_once: False,
-          )),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
+        ),
+        response_entry,
+        usage_id,
+        message,
+        inbox,
+      )
+    FinishedClassification ->
+      settle_at_may_finish(
         op,
         in,
-        next,
-        settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        message,
+        inbox,
       )
-    }
-    // Polls have no retry or compaction path: every error settles as
-    // response-provenance failure drain (pi §3.2).
     OverflowClassification ->
       settle_poll_failure(
         op,
@@ -2660,6 +3053,76 @@ fn settle_poll(
         OperationError(
           code: "provider_error",
           message: error_message,
+          details: None,
+        ),
+      )
+  }
+}
+
+/// A poll that comes back still pending suspends again on its own
+/// response, which becomes the source the next fetch is made against.
+/// The handle must be *completely* equal to the source handle it was
+/// fetched with; anything else is a durable error rather than a retry,
+/// because a changed handle means the machine no longer knows what it is
+/// polling (pi §3.2). The poll number does not advance — it counts
+/// permits spent, and this response cost the one already counted.
+fn resuspend_on_poll_handle(
+  op: Operation,
+  in: PlannerInputs,
+  control: Control,
+  settings: RunSettings,
+  step_id: String,
+  poll: Int,
+  response_entry: EntryId,
+  usage_id: UsageId,
+  configuration: StrandConfiguration,
+  stream_options: JsonValue,
+  message: AgentMessage,
+  handle: DeferredHandle,
+  inbox: Inbox,
+) -> Action {
+  case in.deferred_source == Some(handle) {
+    True -> {
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: AwaitingDeferred(deferred: DeferredSuspended(
+            step_id:,
+            source_entry: response_entry,
+            poll:,
+            configuration:,
+            stream_options:,
+          )),
+          inbox:,
+          latest_assistant: Some(response_entry),
+        )
+      transition(
+        op,
+        in,
+        next,
+        settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+      )
+    }
+    False ->
+      settle_poll_failure(
+        op,
+        in,
+        control,
+        settings,
+        response_entry,
+        usage_id,
+        normalize_stop(
+          message,
+          Errored,
+          Some(
+            "deferred handle mismatch: the pending handle does not equal its source",
+          ),
+        ),
+        inbox,
+        OperationError(
+          code: "deferred_handle_mismatch",
+          message: "the pending handle does not equal its source",
           details: None,
         ),
       )
@@ -2730,24 +3193,15 @@ fn settle_cancelled_poll(
       end_turn: None,
       timestamp: in.now,
     )
-  let next =
-    RunState(
-      control:,
-      settings:,
-      phase: Checkpoint(checkpoint: CheckpointPhase(
-        continuation: MayFinish(include_final_assistant: True),
-        trigger: response_entry,
-        threshold_checked: None,
-        skip_inbox_once: False,
-      )),
-      inbox:,
-      latest_assistant: Some(response_entry),
-    )
-  transition(
+  settle_at_may_finish(
     op,
     in,
-    next,
-    settle_writes(op, response_entry, synthetic, usage_id, in.leaf, next),
+    control,
+    settings,
+    response_entry,
+    usage_id,
+    synthetic,
+    inbox,
   )
 }
 
@@ -2843,44 +3297,38 @@ fn drain_failure_input(
   consumed: List(EntryId),
   remove: fn(Inbox) -> Inbox,
 ) -> Action {
-  case place_pending(in, in.leaf, consumed) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting:)) -> {
-      let remaining = remove(inbox)
-      let next_phase = case projecting, newest {
-        True, Some(newest) ->
-          Checkpoint(checkpoint: CheckpointPhase(
-            continuation: NeedAssistant(overflow_recovery_used: False),
-            trigger: newest,
-            threshold_checked: None,
-            skip_inbox_once: True,
-          ))
-        _, _ -> phase
-      }
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: next_phase,
-          inbox: remaining,
-          latest_assistant: latest,
-        )
-      let leaf_writes = case newest {
-        Some(id) -> [build.set_leaf(op.strand, Some(id))]
-        None -> []
-      }
-      transition(
-        op,
-        in,
-        next,
-        list.flatten([
-          entry_writes,
-          leaf_writes,
-          [build.set_op_state(op.id, next)],
-        ]),
-      )
-    }
+  use Placement(writes: entry_writes, newest:, projecting:) <- or_fault(
+    place_pending(in, in.leaf, consumed),
+  )
+  let remaining = remove(inbox)
+  let next_phase = case projecting, newest {
+    True, Some(newest) ->
+      Checkpoint(checkpoint: CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: None,
+        skip_inbox_once: True,
+      ))
+    _, _ -> phase
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: next_phase,
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  let leaf_writes = case newest {
+    Some(id) -> [build.set_leaf(op.strand, Some(id))]
+    None -> []
+  }
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([entry_writes, leaf_writes, [build.set_op_state(op.id, next)]]),
+  )
 }
 
 // --- cancellation reconciliation (pi §4.6) --------------------------------
@@ -2990,34 +3438,33 @@ fn drain_writes_then_finish_aborted(
   latest: Option(EntryId),
 ) -> Action {
   case inbox.writes {
-    [_, ..] ->
-      case place_pending(in, in.leaf, inbox.writes) {
-        Error(report) -> Fault(report:)
-        Ok(Placement(writes: entry_writes, newest:, projecting: _)) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase:,
-              inbox: Inbox(..inbox, writes: []),
-              latest_assistant: latest,
-            )
-          let leaf_writes = case newest {
-            Some(id) -> [build.set_leaf(op.strand, Some(id))]
-            None -> []
-          }
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              leaf_writes,
-              [build.set_op_state(op.id, next)],
-            ]),
-          )
-        }
+    [_, ..] -> {
+      use Placement(writes: entry_writes, newest:, projecting: _) <- or_fault(
+        place_pending(in, in.leaf, inbox.writes),
+      )
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase:,
+          inbox: Inbox(..inbox, writes: []),
+          latest_assistant: latest,
+        )
+      let leaf_writes = case newest {
+        Some(id) -> [build.set_leaf(op.strand, Some(id))]
+        None -> []
       }
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          leaf_writes,
+          [build.set_op_state(op.id, next)],
+        ]),
+      )
+    }
     [] -> {
       let staged = case phase {
         Tools(batch:) -> staged_result_ids(batch)
@@ -3036,24 +3483,6 @@ fn drain_writes_then_finish_aborted(
 }
 
 // --- structural work (pi §3.9) --------------------------------------------
-
-/// Who hosts the structural machinery: an in-run compaction phase, a
-/// standalone compaction operation, or a summarized navigation.
-type StructuralHost {
-  InRunHost(
-    reason: CompactionReason,
-    settings: RunSettings,
-    inbox: Inbox,
-    latest: Option(EntryId),
-    resume: CheckpointPhase,
-  )
-  StandaloneHost(custom_instructions: Option(String))
-  NavigationHost(
-    target: EntryId,
-    label: Option(String),
-    custom_instructions: Option(String),
-  )
-}
 
 fn structural_action(
   op: Operation,
@@ -3223,6 +3652,13 @@ fn decide_structural(
   }
 }
 
+/// One structural generation attempt, which unlike an assistant
+/// generation may take *several* nested provider requests: the attempt
+/// alternates between dispatching a request and asking the runtime what
+/// that request bought (`SummaryProgress`) until a summary is produced.
+/// `request` names the one request in flight; `usage_ids` is the ledger
+/// of every request this attempt has already paid for, and its length is
+/// the next request's index.
 fn generate_structural(
   op: Operation,
   in: PlannerInputs,
@@ -3231,26 +3667,24 @@ fn generate_structural(
   host: StructuralHost,
 ) -> Action {
   case generation {
+    // Resolution before the attempt commits to anything.
     SummaryReady(context:, next_attempt:) ->
       case in.observation {
         ObservedResolution(resolution: ModelUnresolved(error:)) ->
           structural_failure(op, in, task_id, host, error)
-        ObservedResolution(resolution: ModelResolved) -> {
-          let next_generation =
+        ObservedResolution(resolution: ModelResolved) ->
+          transition_generation(
+            op,
+            in,
+            task_id,
+            host,
             SummaryEffectPending(
               context:,
               attempt: next_attempt,
               request: None,
               usage_ids: [],
-            )
-          let next =
-            host_state(
-              op,
-              host,
-              Generating(task_id:, generation: next_generation),
-            )
-          transition(op, in, next, [build.set_op_state(op.id, next)])
-        }
+            ),
+          )
         NoObservation ->
           AwaitEffect(key: SummaryKey(
             operation: op.id,
@@ -3259,29 +3693,139 @@ fn generate_structural(
           ))
         other -> unexpected_observation(op, "summary ready", other)
       }
+    // A nested request is in flight.
     SummaryEffectPending(context:, attempt:, request: Some(request), usage_ids:) ->
+      settle_summary_request(
+        op,
+        in,
+        task_id,
+        context,
+        attempt,
+        request,
+        usage_ids,
+        host,
+      )
+    // Between requests: decide whether the attempt needs another one.
+    SummaryEffectPending(context:, attempt:, request: None, usage_ids:) ->
+      advance_summary_attempt(
+        op,
+        in,
+        task_id,
+        context,
+        attempt,
+        usage_ids,
+        host,
+      )
+    SummaryRetryWait(context:, next_attempt:, not_before:, error_message: _) ->
+      case in.now >= not_before {
+        True ->
+          transition_generation(
+            op,
+            in,
+            task_id,
+            host,
+            SummaryReady(context:, next_attempt:),
+          )
+        False -> Wait(until: RetryNotBefore(at: not_before))
+      }
+  }
+}
+
+/// The in-flight nested request either returns with its usage or is
+/// reported orphaned. A returned request settles its ledger row and
+/// clears the `request` field in one commit, so the next pass is
+/// unambiguously "between requests" and asks for progress.
+fn settle_summary_request(
+  op: Operation,
+  in: PlannerInputs,
+  task_id: String,
+  context: SummaryContext,
+  attempt: Int,
+  request: SummaryRequest,
+  usage_ids: List(UsageId),
+  host: StructuralHost,
+) -> Action {
+  case in.observation {
+    ObservedSummaryReturned(usage:) -> {
+      let next_generation =
+        SummaryEffectPending(
+          context:,
+          attempt:,
+          request: None,
+          usage_ids: list.append(usage_ids, [request.usage]),
+        )
+      let next =
+        host_state(op, host, Generating(task_id:, generation: next_generation))
+      transition(op, in, next, [
+        build.usage_row(request.usage, None, usage),
+        build.set_op_state(op.id, next),
+      ])
+    }
+    ObservedSummaryOrphaned ->
+      advance_orphaned_summary(
+        op,
+        in,
+        task_id,
+        context,
+        attempt,
+        usage_ids,
+        host,
+      )
+    NoObservation ->
+      AwaitEffect(key: SummaryKey(operation: op.id, task_id:, attempt:))
+    other -> unexpected_observation(op, "summary request pending", other)
+  }
+}
+
+/// Between nested requests. With no requests paid for yet the first one
+/// is unconditional — there is nothing to report progress on — so no
+/// observation is consulted. After that the runtime's progress verdict
+/// decides: another request, the finished summary, a retry wait, or
+/// failure.
+fn advance_summary_attempt(
+  op: Operation,
+  in: PlannerInputs,
+  task_id: String,
+  context: SummaryContext,
+  attempt: Int,
+  usage_ids: List(UsageId),
+  host: StructuralHost,
+) -> Action {
+  case usage_ids {
+    [] -> dispatch_summary_request(op, in, task_id, context, attempt, [], host)
+    [_, ..] ->
       case in.observation {
-        ObservedSummaryReturned(usage:) -> {
-          // Usage settles and the request field clears atomically; the
-          // next pass asks for progress.
-          let next_generation =
-            SummaryEffectPending(
-              context:,
-              attempt:,
-              request: None,
-              usage_ids: list.append(usage_ids, [request.usage]),
-            )
-          let next =
-            host_state(
-              op,
-              host,
-              Generating(task_id:, generation: next_generation),
-            )
-          transition(op, in, next, [
-            build.usage_row(request.usage, None, usage),
-            build.set_op_state(op.id, next),
-          ])
-        }
+        ObservedSummaryProgress(progress: SummaryNeedsRequest) ->
+          dispatch_summary_request(
+            op,
+            in,
+            task_id,
+            context,
+            attempt,
+            usage_ids,
+            host,
+          )
+        ObservedSummaryProgress(progress: SummaryProduced(summary:, usage:)) ->
+          publish_structural(op, in, task_id, host, summary, usage, False)
+        ObservedSummaryProgress(progress: SummaryFailed(error:, retryable:)) ->
+          case retryable && attempt < context.retry.max_attempts {
+            // A later attempt starts over from `ready`: nothing this
+            // attempt bought is reused, only its usage rows survive.
+            True ->
+              transition_generation(
+                op,
+                in,
+                task_id,
+                host,
+                SummaryRetryWait(
+                  context:,
+                  next_attempt: attempt + 1,
+                  not_before: in.now + backoff(context.retry, attempt),
+                  error_message: error.message,
+                ),
+              )
+            False -> structural_failure(op, in, task_id, host, error)
+          }
         ObservedSummaryOrphaned ->
           advance_orphaned_summary(
             op,
@@ -3293,83 +3837,27 @@ fn generate_structural(
             host,
           )
         NoObservation ->
-          AwaitEffect(key: SummaryKey(operation: op.id, task_id:, attempt:))
-        other -> unexpected_observation(op, "summary request pending", other)
-      }
-    SummaryEffectPending(context:, attempt:, request: None, usage_ids:) ->
-      case usage_ids {
-        // No request has been made yet this attempt: the first nested
-        // request is always required.
-        [] ->
-          dispatch_summary_request(op, in, task_id, context, attempt, [], host)
-        [_, ..] ->
-          case in.observation {
-            ObservedSummaryProgress(progress: SummaryNeedsRequest) ->
-              dispatch_summary_request(
-                op,
-                in,
-                task_id,
-                context,
-                attempt,
-                usage_ids,
-                host,
-              )
-            ObservedSummaryProgress(progress: SummaryProduced(summary:, usage:)) ->
-              publish_structural(op, in, task_id, host, summary, usage, False)
-            ObservedSummaryProgress(progress: SummaryFailed(error:, retryable:)) ->
-              case retryable && attempt < context.retry.max_attempts {
-                True -> {
-                  let next_generation =
-                    SummaryRetryWait(
-                      context:,
-                      next_attempt: attempt + 1,
-                      not_before: in.now + backoff(context.retry, attempt),
-                      error_message: error.message,
-                    )
-                  let next =
-                    host_state(
-                      op,
-                      host,
-                      Generating(task_id:, generation: next_generation),
-                    )
-                  transition(op, in, next, [build.set_op_state(op.id, next)])
-                }
-                False -> structural_failure(op, in, task_id, host, error)
-              }
-            ObservedSummaryOrphaned ->
-              advance_orphaned_summary(
-                op,
-                in,
-                task_id,
-                context,
-                attempt,
-                usage_ids,
-                host,
-              )
-            NoObservation ->
-              AwaitEffect(key: SummaryProgressKey(
-                operation: op.id,
-                task_id:,
-                attempt:,
-              ))
-            other -> unexpected_observation(op, "summary progress", other)
-          }
-      }
-    SummaryRetryWait(context:, next_attempt:, not_before:, error_message: _) ->
-      case in.now >= not_before {
-        True -> {
-          let next_generation = SummaryReady(context:, next_attempt:)
-          let next =
-            host_state(
-              op,
-              host,
-              Generating(task_id:, generation: next_generation),
-            )
-          transition(op, in, next, [build.set_op_state(op.id, next)])
-        }
-        False -> Wait(until: RetryNotBefore(at: not_before))
+          AwaitEffect(key: SummaryProgressKey(
+            operation: op.id,
+            task_id:,
+            attempt:,
+          ))
+        other -> unexpected_observation(op, "summary progress", other)
       }
   }
+}
+
+/// The structural section's default transition: rebuild the host's whole
+/// operation state around a new generation step and commit just that.
+fn transition_generation(
+  op: Operation,
+  in: PlannerInputs,
+  task_id: String,
+  host: StructuralHost,
+  generation: SummaryGeneration,
+) -> Action {
+  let next = host_state(op, host, Generating(task_id:, generation:))
+  transition(op, in, next, [build.set_op_state(op.id, next)])
 }
 
 /// An orphaned structural attempt is wholly uncertain: advance to a later
@@ -3384,12 +3872,14 @@ fn advance_orphaned_summary(
   host: StructuralHost,
 ) -> Action {
   case attempt < context.retry.max_attempts {
-    True -> {
-      let next_generation = SummaryReady(context:, next_attempt: attempt + 1)
-      let next =
-        host_state(op, host, Generating(task_id:, generation: next_generation))
-      transition(op, in, next, [build.set_op_state(op.id, next)])
-    }
+    True ->
+      transition_generation(
+        op,
+        in,
+        task_id,
+        host,
+        SummaryReady(context:, next_attempt: attempt + 1),
+      )
     False ->
       structural_failure(
         op,
@@ -3537,96 +4027,103 @@ fn publish_structural(
   from_hook: Bool,
 ) -> Action {
   case host {
-    InRunHost(settings:, inbox:, latest:, resume:, ..) ->
-      case compaction_publication(op, in, summary, usage, from_hook) {
-        Error(report) -> Fault(report:)
-        Ok(#(writes, _entry_id)) -> {
-          let next =
-            RunState(
-              control: Running,
-              settings:,
-              phase: Checkpoint(checkpoint: resume),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.append(writes, [build.set_op_state(op.id, next)]),
-          )
-        }
-      }
-    StandaloneHost(..) ->
-      case compaction_publication(op, in, summary, usage, from_hook) {
-        Error(report) -> Fault(report:)
-        Ok(#(writes, entry_id)) ->
-          finish(
-            op,
-            in,
-            [],
-            CompactionLastResult(
-              operation: op.id,
-              leaf: Some(entry_id),
-              outcome: StructuralCompleted,
-            ),
-            writes,
-          )
-      }
+    InRunHost(settings:, inbox:, latest:, resume:, ..) -> {
+      use #(writes, _entry_id) <- or_fault(compaction_publication(
+        op,
+        in,
+        summary,
+        usage,
+        from_hook,
+      ))
+      let next =
+        RunState(
+          control: Running,
+          settings:,
+          phase: Checkpoint(checkpoint: resume),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(
+        op,
+        in,
+        next,
+        list.append(writes, [build.set_op_state(op.id, next)]),
+      )
+    }
+    StandaloneHost(..) -> {
+      use #(writes, entry_id) <- or_fault(compaction_publication(
+        op,
+        in,
+        summary,
+        usage,
+        from_hook,
+      ))
+      finish(
+        op,
+        in,
+        [],
+        CompactionLastResult(
+          operation: op.id,
+          leaf: Some(entry_id),
+          outcome: StructuralCompleted,
+        ),
+        writes,
+      )
+    }
     NavigationHost(target:, label:, custom_instructions: _) -> {
       let #(summary_entry, generator) = ids.mint_entry(in.generator)
-      case op.source_leaf {
-        None ->
-          Fault(report: corruption.report(
-            at: "machine/planner.publish_structural",
-            on: build.op_key(op.id),
-            expected: "a non-null source leaf for a summarized navigation",
-            context: "null source leaf",
-          ))
-        Some(source_leaf) -> {
-          let hook_usage_writes = case from_hook, usage {
-            True, Some(usage) -> {
-              let #(usage_id, _generator) = ids.mint_usage(generator)
-              [build.usage_row(usage_id, Some(summary_entry), usage)]
-            }
-            _, _ -> []
-          }
-          let label_writes = case label {
-            Some(label) -> [build.set_entry_label(target, label)]
-            None -> []
-          }
-          let writes =
-            list.flatten([
-              hook_usage_writes,
-              [
-                build.set_leaf(op.strand, Some(target)),
-                build.branch_summary_entry(
-                  summary_entry,
-                  Some(target),
-                  source_leaf,
-                  summary,
-                  from_hook,
-                  usage,
-                ),
-                build.set_leaf(op.strand, Some(summary_entry)),
-              ],
-              label_writes,
-            ])
-          finish(
-            op,
-            in,
-            [],
-            NavigationLastResult(
-              operation: op.id,
-              leaf: Some(summary_entry),
-              old_leaf: op.source_leaf,
-              outcome: StructuralCompleted,
-              summary: Some(summary_entry),
-            ),
-            writes,
-          )
+      // The branch summary is parented on the abandoned leaf, so a
+      // navigation that never had one has nothing to summarize.
+      use source_leaf <- or_fault(option.to_result(
+        op.source_leaf,
+        corruption.report(
+          at: "machine/planner.publish_structural",
+          on: build.op_key(op.id),
+          expected: "a non-null source leaf for a summarized navigation",
+          context: "null source leaf",
+        ),
+      ))
+      let hook_usage_writes = case from_hook, usage {
+        True, Some(usage) -> {
+          let #(usage_id, _generator) = ids.mint_usage(generator)
+          [build.usage_row(usage_id, Some(summary_entry), usage)]
         }
+        _, _ -> []
       }
+      let label_writes = case label {
+        Some(label) -> [build.set_entry_label(target, label)]
+        None -> []
+      }
+      let writes =
+        list.flatten([
+          hook_usage_writes,
+          [
+            build.set_leaf(op.strand, Some(target)),
+            build.branch_summary_entry(
+              summary_entry,
+              Some(target),
+              source_leaf,
+              summary,
+              from_hook,
+              usage,
+            ),
+            build.set_leaf(op.strand, Some(summary_entry)),
+          ],
+          label_writes,
+        ])
+      finish(
+        op,
+        in,
+        [],
+        NavigationLastResult(
+          operation: op.id,
+          leaf: Some(summary_entry),
+          old_leaf: op.source_leaf,
+          outcome: StructuralCompleted,
+          summary: Some(summary_entry),
+        ),
+        writes,
+      )
     }
   }
 }
@@ -3828,6 +4325,55 @@ fn staged_result_ids(batch: ToolBatch) -> List(EntryId) {
 
 // --- shared helpers -------------------------------------------------------
 
+/// Binds a fallible read of the inputs or the durable state, faulting on
+/// corruption. This is the planner's `use` form for
+/// `Result(a, CorruptionReport)`: `result.try` cannot serve, because the
+/// continuation returns an `Action` and not another `Result`.
+///
+/// It exists because the alternative is the same two-armed `case` at a
+/// dozen sites, whose error arm is always exactly `Fault(report:)` and
+/// whose success arm swallows the rest of the function into another
+/// level of indentation. Gleam has no early return; this is how the
+/// planner gets one for the corruption path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use batch <- or_fault(plan_batch(in, message, context, entry))
+/// ```
+///
+fn or_fault(
+  result: Result(a, CorruptionReport),
+  then: fn(a) -> Action,
+) -> Action {
+  case result {
+    Error(report) -> Fault(report:)
+    Ok(value) -> then(value)
+  }
+}
+
+/// The guard form of `or_fault`: proceed when the condition holds,
+/// otherwise fault with the given report. `bool.guard` cannot serve,
+/// because its `return` is an `Action` and the report has to become
+/// one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use <- or_fault_unless(is_tool_result(result), report)
+/// ```
+///
+fn or_fault_unless(
+  condition: Bool,
+  report: CorruptionReport,
+  then: fn() -> Action,
+) -> Action {
+  case condition {
+    True -> then()
+    False -> Fault(report:)
+  }
+}
+
 /// The default transition action: writes guarded by the op-state seq.
 fn transition(
   op: Operation,
@@ -3853,11 +4399,6 @@ fn unexpected_observation(
     expected: "an observation matching the " <> at_phase <> " phase",
     context: "a mismatched observation",
   ))
-}
-
-/// The result of placing a batch of pending ids as entries.
-type Placement {
-  Placement(writes: List(Write), newest: Option(EntryId), projecting: Bool)
 }
 
 /// Builds entry inserts (with their `pending.entry` deletes) for queued

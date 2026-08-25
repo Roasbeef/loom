@@ -30,6 +30,17 @@ package is wrong.
   `Fault(report)`.
 - `machine/planner.{PlannerInputs, Observation, EffectKey, EffectIntent}` —
   what the driver gathers, what comes back, and what the machine asks for.
+- `machine/planner` is a big module on purpose: one public function over
+  a closed vocabulary, then a section per phase of pi's spec. Read its
+  module doc first — it enumerates the sections and what each *decides*,
+  which is the map. Two conventions hold throughout: every type the
+  module has is declared before the first function body (the private ones
+  included), and a phase's entry function is a dispatch table whose arms
+  name the decision rather than making it. The corruption path has its
+  own `use` forms — `or_fault` and `or_fault_unless` — because Gleam has
+  no early return and `result.try` cannot serve where the continuation
+  returns an `Action`; reach for them rather than nesting a `case` whose
+  error arm is `Fault(report:)`.
 - `machine/acceptance.accept_prompt` — the single acceptance transaction
   for a run, standalone compaction, or navigation.
 - `machine/classification.{settle, classify}` — the normative
