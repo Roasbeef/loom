@@ -1,10 +1,14 @@
 # Design note: compaction and memory
 
-Status: **proposed, nothing here is built.** Loom's compaction machinery
-is implemented from the durable entry type up through the state machine,
-and none of it runs in production: `client/serve` installs hooks whose
-threshold never fires, whose structural decisions always decline, and
-whose summary requests settle as terminal "not wired" errors. Loom has no
+Status: **Stage C0 is built; everything from Stage C1 on is proposed.**
+Part 0 below describes the position this note was written from, which
+C0 has since changed: compaction now runs in production, answered by
+`client/wiring`'s hooks against a real provider. Read Part 0 as history
+and Part 5 as the plan. Loom's compaction machinery was already
+implemented from the durable entry type up through the state machine,
+and none of it ran: `client/serve` installed hooks whose threshold never
+fired, whose structural decisions always declined, and whose summary
+requests settled as terminal "not wired" errors. Loom has no
 memory story at all — nothing carries knowledge from one session into the
 next. This note designs both, after reading how the two reference
 implementations actually do it. Everything claimed about Loom, pi, and
@@ -77,7 +81,7 @@ the rest of the note can say "wire X" and mean something checkable.
 ## Inert in production — the three unplugged seams
 
 `client/serve.gleam:652` builds effects through `wiring.build_effects`,
-which installs `effects.default_hooks()` (`client/wiring.gleam:188`),
+which installed `effects.default_hooks()` (`client/wiring.gleam:87`),
 wrapped only by `agency.reaping_hooks` for child-reaping. The defaults
 (`runtime/effects.gleam:288`):
 

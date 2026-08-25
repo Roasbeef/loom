@@ -447,7 +447,7 @@ demonstrated.
 | M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms | done |
 | M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly | partial |
 | M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live | partial |
-| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial |
+| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the TUI leg still drives a fake) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | not started |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
@@ -497,12 +497,14 @@ green under `make check` on one Linux development container.
 - **M3** — the multi-strand demo, fork, navigate, catch-up and the
   escalation round trip all run through the public protocol in
   `make check-client`, and the parent-plus-two-subagents kill/reboot
-  variant runs at runtime level. Three criteria are weaker than the row
-  reads. *Compaction is not live in production*: `client/serve` installs
-  `runtime/effects.default_hooks()`, whose threshold never fires and
-  whose structural summaries settle as an in-band "not wired to a
-  provider surface" error, so the demo's compaction is the demo's own
-  hooks answering (spec-gaps M2 integration 3). *The TUI drives a fake*:
+  variant runs at runtime level. *Compaction is live* as of Stage C0
+  (`docs/design-notes/compaction-and-memory.md`): `client/serve` builds
+  its hooks through `runtime/hooks`, a `SummaryRequest` becomes a real
+  gateway request under the summarization pack, and the demo installs
+  those same hooks — it has no compaction hooks of its own, so the
+  `CompactionEntry` it asserts on carries text the provider produced.
+  Two criteria remain weaker than the row reads. *The TUI drives a
+  fake*:
   the two ends are pinned to one fixture corpus and the TUI's own
   end-to-end runs against a Go fake gateway. `make dev` attaches the real
   TUI to the real server, but a human drives it; no test does.
@@ -572,11 +574,15 @@ named here so no row above implies otherwise:
   spec's own "passes in CI on Linux and macOS" cannot be met until it
   does.
 - **The egress proxy sidecar.** Track 10 above.
-- **A production hook registry.** `client/serve` runs
-  `runtime/effects.default_hooks()`: the threshold hook never fires, the
-  structural-decision hook declines, and the summary hook returns an
-  empty string. Compaction, §3.2's token budgeting, and branch summaries
-  are therefore mechanisms without a production caller.
+- **The rest of the hook registry.** Stage C0 wired the compaction
+  slots: `client/wiring.compaction_hooks` builds real admission from the
+  gateway's model facts, the usage-aware threshold and the overflow
+  preparation over the strand's durable projection, generation as the
+  structural verdict, and the summary-progress hook. What is still
+  inert: `run_start` and `run_end` inject nothing (`client/agency`
+  composes a reap onto `run_end` and nothing else), branch summaries
+  have the seams but no production caller through the navigation host,
+  and `FileOperations` on a preparation is always empty — Stage C1.
 - **The chaos runner.** WP-T's chaos tier and WP-E's ten-minute soak
   (spec-gaps WP-E 8), which M1 was accepted without.
 

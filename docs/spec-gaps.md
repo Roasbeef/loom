@@ -26,7 +26,7 @@ Items are cited as section plus the number as written in the list
 |---|---|---|
 | WP-A 3 | somewhere to put pi's optional `details` payloads | Part 5 track 6 |
 | WP-B/T 6 | the JSONL/format-4 import shim | Part 5 track 6 |
-| M2 integration 3 | a provider surface for deferred polls and structural summaries | M5 — but the summaries half was M3's, and M3 passed without it (Part 4) |
+| M2 integration 3 | a provider surface for deferred polls | M5 — the structural-summaries half shipped in Stage C0 (`client/wiring.summary_provider_request`); polls remain unwired |
 | M3 runtime wave 11 | commit the role, or have recovery consult the chain in force at commit time, so the fallback chain is actually walked | M5, whose acceptance names the chain |
 | M3 runtime wave 12 | dispatch on the `subagent`/`plan`/`summarize`/`vision` roles, not `main` alone | M5 |
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
