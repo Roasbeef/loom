@@ -32,6 +32,11 @@
 //// compact-and-retry cycle — no worse than the failure it could inject
 //// directly.
 ////
+//// Requests carry prompt-cache breakpoints. Placement is deterministic
+//// and needs no per-request configuration; the reasoning, the price
+//// arithmetic, and what a history rewrite costs are written out under
+//// "prompt caching" below.
+////
 //// The API key is accepted as an argument and written into one request
 //// header; it is never stored in the accumulator, any event, or any
 //// error (spec §3.3 invariant 4).
@@ -82,6 +87,13 @@ const negligible_output_tokens = 64
 /// and consecutive same-role turns (tool results in particular) merge
 /// into one wire message as the API requires.
 ///
+/// Four prompt-cache breakpoints ride along on every request: two
+/// one-hour ones on the session-stable head (the tool array and the
+/// system prompt) and two five-minute ones rolling along the tail (the
+/// last block of each of the final two user turns). See the "prompt
+/// caching" section below for why those four positions and those two
+/// lifetimes.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -116,7 +128,7 @@ pub fn build_request(
           #("stream", json.Bool(True)),
         ],
         case request.system {
-          Some(system) -> [#("system", json.String(system))]
+          Some(system) -> [#("system", encode_system(system))]
           None -> []
         },
         case thinking {
@@ -133,7 +145,7 @@ pub fn build_request(
         },
         case request.tools {
           [] -> []
-          tools -> [#("tools", json.Array(list.map(tools, encode_tool)))]
+          tools -> [#("tools", encode_tools(tools))]
         },
         [#("messages", json.Array(encode_messages(request.messages)))],
       ]),
@@ -167,6 +179,7 @@ fn encode_messages(messages: List(AgentMessage)) -> List(JsonValue) {
   messages
   |> list.filter_map(to_turn)
   |> merge_turns([])
+  |> mark_tail_user_turns
   |> list.map(fn(turn) {
     let #(role, blocks) = turn
     json.Object([
@@ -301,6 +314,154 @@ fn encode_tool_result_block(block: message.ToolResultBlock) -> JsonValue {
     ToolResultText(text:, text_signature: _) ->
       json.Object([#("type", json.String("text")), #("text", json.String(text))])
     ToolResultImage(data:, mime_type:) -> encode_image(data, mime_type)
+  }
+}
+
+// --- prompt caching -----------------------------------------------------
+//
+// The Messages API caches by exact byte prefix over the render order
+// `tools` -> `system` -> `messages`. A `cache_control` marker names a
+// position; a later request whose bytes match up to that position reads
+// the prefix at a tenth of the input price instead of paying for it
+// again. The bytes *are* the key, so nothing here can serve a stale
+// prefix and there is no invalidation to perform — placement is purely a
+// cost decision, and the four positions below are the ones this
+// harness's traffic shape argues for. Four is also the API's ceiling on
+// breakpoints per request, so all four are spent, deterministically, on
+// every request.
+//
+// **The head is the stable half.** Tool definitions and the system
+// prompt render ahead of every message and change at most once a
+// session, so they are the natural constant, and they take the one-hour
+// lifetime: a write there costs 2x base input rather than 1.25x, but it
+// is read on every turn for the rest of the session, and an hour of
+// shelf life survives the minutes a human spends reading a diff — the
+// gap that would otherwise expire a five-minute entry and re-charge the
+// whole head at full price. Two breakpoints rather than one, because
+// tools render first: a system prompt that does move still leaves the
+// tool array cached behind its own earlier breakpoint.
+//
+// **The tail is the moving half**, and it takes the five-minute
+// lifetime for the mirror-image reason. An entry written at the end of
+// one turn is read by the next and then superseded, so it needs to
+// survive one hop, not an hour, and for a single read 1.25x + 0.1x beats
+// 2x + 0.1x. The two tail breakpoints sit on the last block of each of
+// the final two *user* turns, which is a deliberate choice on both
+// counts:
+//
+// - *User* turns, because every block kind a user turn can hold (text,
+//   image, tool result) is documented as cacheable, while a `thinking`
+//   block — which can end an assistant turn — is not. Requests always
+//   end with a user turn (a prompt, or the results of the tool calls the
+//   model just made), so the last turn is covered either way.
+// - The final *two*, because merged turns strictly alternate roles: a
+//   request whose last user turn is U gains an assistant turn and a new
+//   user turn before the next request, whose two marked user turns are
+//   then the new one and U. The breakpoint at U therefore lands on the
+//   same bytes in both requests, which is an exact-position read rather
+//   than a search. That matters because the API walks back at most 20
+//   content blocks from a breakpoint hunting for an entry, and a single
+//   agentic turn — parallel tool calls and their results — can exceed
+//   20 blocks on its own.
+//
+// Ordering is load-bearing: the API requires every one-hour breakpoint
+// to precede every five-minute one, which the head-then-tail layout
+// satisfies by construction.
+//
+// What rewriting history costs: a precise rewrite or a compaction changes
+// bytes at some position P, so breakpoints at or after P miss and are
+// written afresh while everything before P still reads. That is the whole
+// of the interaction — one turn priced as though the tail were new, after
+// which the rolling pair has re-established itself. A prefix shorter than
+// the model's minimum (512 tokens on the newest models, 4096 on some
+// older ones) is silently not cached and not charged, so short requests
+// need no special case here.
+
+// The session-stable head's cache control. One hour, per the arithmetic
+// in the section banner above.
+fn cache_1h() -> JsonValue {
+  json.Object([
+    #("type", json.String("ephemeral")),
+    #("ttl", json.String("1h")),
+  ])
+}
+
+// The rolling tail's cache control. Omitting `ttl` is the API's
+// five-minute default; sending it explicitly would change the bytes for
+// no gain.
+fn cache_5m() -> JsonValue {
+  json.Object([#("type", json.String("ephemeral"))])
+}
+
+// Hangs a breakpoint on one content block. Every block this adapter
+// builds is an object, so the fallback arm is unreachable in practice;
+// it is written out rather than asserted because a caller-supplied tool
+// schema is the one value here this module did not construct itself.
+fn with_cache_control(block: JsonValue, control: JsonValue) -> JsonValue {
+  case block {
+    json.Object(fields:) ->
+      json.Object(list.append(fields, [#("cache_control", control)]))
+    other -> other
+  }
+}
+
+// A breakpoint names a position, and the position for a tool array or a
+// turn is its final block.
+fn mark_last(blocks: List(JsonValue), control: JsonValue) -> List(JsonValue) {
+  case list.reverse(blocks) {
+    [] -> []
+    [last, ..rest] -> list.reverse([with_cache_control(last, control), ..rest])
+  }
+}
+
+// The tool array, with the head's breakpoint on its last definition.
+fn encode_tools(tools: List(ToolSpec)) -> JsonValue {
+  json.Array(mark_last(list.map(tools, encode_tool), cache_1h()))
+}
+
+// The system prompt travels as a one-element block array rather than a
+// bare string: the string form renders identically but has nowhere to
+// hang a breakpoint.
+fn encode_system(system: String) -> JsonValue {
+  json.Array([
+    with_cache_control(
+      json.Object([
+        #("type", json.String("text")),
+        #("text", json.String(system)),
+      ]),
+      cache_1h(),
+    ),
+  ])
+}
+
+// Marks the last block of each of the final two user turns. Assistant
+// turns pass through untouched, and a conversation with fewer than two
+// user turns simply gets fewer breakpoints.
+fn mark_tail_user_turns(
+  turns: List(#(String, List(JsonValue))),
+) -> List(#(String, List(JsonValue))) {
+  mark_user_turns(list.reverse(turns), 2, [])
+}
+
+// Walks the turn list newest-first, spending `remaining` breakpoints on
+// the user turns it meets, and rebuilds the list oldest-first as it goes.
+fn mark_user_turns(
+  newest_first: List(#(String, List(JsonValue))),
+  remaining: Int,
+  marked: List(#(String, List(JsonValue))),
+) -> List(#(String, List(JsonValue))) {
+  case newest_first, remaining {
+    [], _ -> marked
+    // Budget spent: the rest of the conversation is already in
+    // newest-first order, so one reverse restores it ahead of the marked
+    // tail.
+    rest, 0 -> list.append(list.reverse(rest), marked)
+    [#("user", blocks), ..rest], _ ->
+      mark_user_turns(rest, remaining - 1, [
+        #("user", mark_last(blocks, cache_5m())),
+        ..marked
+      ])
+    [turn, ..rest], _ -> mark_user_turns(rest, remaining, [turn, ..marked])
   }
 }
 
@@ -813,6 +974,18 @@ fn handle_message_delta(
           "cache_creation_input_tokens",
           or: acc.cache_write,
         ),
+        // The per-TTL breakdown rides on either usage-bearing event; now
+        // that the head is written with a one-hour lifetime it is a real
+        // number rather than a always-absent field, so it is read here as
+        // well as at `message_start`.
+        cache_write_1h: case wire.field(usage, "cache_creation") {
+          Ok(creation) ->
+            option.or(
+              wire.optional_count_field(creation, "ephemeral_1h_input_tokens"),
+              acc.cache_write_1h,
+            )
+          Error(Nil) -> acc.cache_write_1h
+        },
         reasoning: case wire.field(usage, "output_tokens_details") {
           Ok(details) ->
             option.or(
@@ -865,7 +1038,15 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
           // fit and nothing substantive came back, so the response
           // settles as `error` with the canonical overflow message. The
           // raw stop reason is preserved for diagnostics.
-          let input_tokens = acc.input + acc.cache_read
+          // Spec §1.5 words this as input plus cache-read, from before
+          // this adapter declared cache breakpoints. The quantity it
+          // names is the whole prompt — the Messages API reports it as
+          // `input_tokens + cache_read_input_tokens +
+          // cache_creation_input_tokens` — so the write half belongs in
+          // the sum. Leaving it out would shrink the apparent prompt by
+          // exactly the tokens caching just wrote, and an oversized
+          // request would retry unchanged instead of compacting.
+          let input_tokens = acc.input + acc.cache_read + acc.cache_write
           let overflowed =
             input_tokens > acc.resolved.context_window
             && acc.output <= negligible_output_tokens
