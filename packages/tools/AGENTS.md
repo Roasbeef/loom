@@ -17,6 +17,18 @@ declared here and filled by whoever can see a live runtime
 rule, the caps, the deadline, the lineage ledger — lives on the far side
 of that seam.
 
+And `code_mode`, through which a model submits a *program* instead of a
+call. It has the same shape as the agent family and the same reason for
+it: `codemode` already depends on this package — its capability router
+renders a `tool.Collected` — so the edge cannot run the other way. The
+whole
+pipeline — vet, hermetic compile, jailed satellite — sits behind a
+**CodeMode** record of closures declared here and filled by
+`client/codemode`. What this side owns is the model's half of the
+contract: the schema, the clamped budget, and the rendering that turns a
+vetting rejection, a compile error, a dead satellite or a program's own
+reported failure into something a model can repair from.
+
 ## Key Types
 
 - `tools/tool.Tool` — the record every tool is: `name`, `description`,
@@ -41,6 +53,18 @@ of that seam.
 - `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
   parse back from `{strand}#{operation}`.
+- `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
+  published `allowed_imports`, `serviced_caps`, `default_within_ms` and
+  `max_within_ms` the tool's description and schema state, so the
+  sentence the model is charged for on every request cannot drift from
+  the policy the program is judged against.
+- `tools/codemode.{Request, Execution, ExecResult, Outcome, Rejection,
+  Rule, Location, CompileFailure, RunFailure, Enforcement}` — the
+  vocabulary crossing that seam, mirroring `codemode/vet`,
+  `codemode/compile`, `codemode/satellite` and `cap/report` rather than
+  importing them. `RunFailure` is the one deliberate narrowing: eight
+  `satellite.RunError` variants become the four that read differently to
+  a model, with the pipeline's reason text carried verbatim.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -55,9 +79,13 @@ of that seam.
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
   `gleam_erlang` (subjects for streamed call events).
-- **Depended on by**: `client` (`client/wiring` builds the per-call `Ctx`
+- **Depended on by**: `codemode` (the capability router renders a
+  `tool.Collected` into a `cap_result`, which is why `tools` cannot
+  import it back and `tools/codemode` mirrors its vocabulary instead),
+  `client` (`client/wiring` builds the per-call `Ctx`
   and dispatches through the registry; `client/agency` fills the
-  `agent.Agency` record and `client/serve` registers the family),
+  `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
+  and `client/serve` registers both families),
   `conformance` (the wiring/e2e suites drive the same adapter).
 - **FFI**: `tools/internal/ffi_hash` — SHA-256 for blob content addressing.
   `tools/internal/ffi_path` — `read_link`, the lstat-level primitive
@@ -77,7 +105,11 @@ of that seam.
   into `Match` values.
 - **Policy**: each tool declares `requirements(workspace)`. `bash` asks
   workspace write, system paths readable, network **off**; `grep` asks
-  workspace readable, nothing writable, network off. `RefuseNarrowed` means
+  workspace readable, nothing writable, network off; `code_mode` asks
+  workspace write and the whole filesystem readable (the Gleam and Erlang
+  toolchains live outside it), and declaratively only — it clears nothing
+  through `Ctx.clear_call`, because the build and the node are cleared
+  inside the pipeline against their own far narrower requirements. `RefuseNarrowed` means
   an uncovered requirement settles in-band as a structured policy refusal
   carrying the exact wanted grants, ready for the escalation flow.
 
@@ -148,6 +180,26 @@ of that seam.
   are the empty policy: no writable roots, no readable roots, no env,
   network off. They touch no filesystem and spawn no process, so they
   compose with any session base.
+- **`code_mode` is `ReplayNever` and `Exclusive`, and both are
+  load-bearing.** A program's capability calls are arbitrary external
+  effects with neither a minted identifier to reconcile onto (as
+  `agent_spawn` has) nor a digest-bound pre-image (as `fs_edit` has), so
+  a crash mid-execution must synthesize an interrupted result rather
+  than run the program again. `Exclusive` is not only about workspace
+  mutation: the broker pools budget per `{op_id, step_id}`, so a
+  concurrent call in the same step would open that ledger with *its*
+  budget — and a satellite needs two outstanding effects to exist at
+  all.
+- **A code-mode result never implies a jail that was not applied.** The
+  seam hands back one enforcement report per stage that produced one,
+  and the rendering names a degraded stage as degraded and an absent
+  report as absent. A vetting rejection carries no sandbox field at all,
+  because nothing ran.
+- **A refusal is a repair brief.** Every violation vetting found is
+  listed in one pass with its rule, its offending construct, its byte
+  span where one exists, and the allowlist it was judged against;
+  compiler diagnostics cross verbatim. One round trip per rule is
+  exactly what in-band repair exists to avoid.
 - **`agent_send` is `ReplayNever`; the rest are `ReplaySafe`.** A send
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay
@@ -155,6 +207,10 @@ of that seam.
 
 ## Deep Docs
 
+- [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md) —
+  the pipeline behind `code_mode`, and what each of its layers confines.
+- [packages/codemode/CLAUDE.md](../codemode/CLAUDE.md) — the far side of
+  the code-mode seam.
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —
   "Tools with correctness teeth", and the plane this package sits in.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-I (`tools`)": the
