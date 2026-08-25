@@ -9,7 +9,8 @@ connections, the `mist` websocket transport under that hub, the bridge
 that decodes stored escalation JSON back into typed broker grants, the
 scripted end-to-end demo that drives the whole M3 flow through the
 protocol alone — and, as the tree's host package, the production wiring
-adapter (`client/wiring`, promoted from conformance) plus the
+adapter (`client/wiring`, promoted from conformance), the system
+prompt's assembly and its durable pin (`client/system_prompt`), plus the
 `loom-server` entry point (`client/serve`) that boots the whole stack
 over one session file. WP-L.
 
@@ -71,18 +72,37 @@ over one session file. WP-L.
   fan-out caps, the multi-handle wait loop, the lineage ledger's four
   reconciliation branches, the lazy deadline reap, and the framing that
   marks another agent's text as data.
+- `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
+  render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
+  half of the pure `prompt` package. `Host` is every `pack.Environment`
+  field gathered from a real source; `pack_source` picks the shipped pack
+  or the one `LOOM_PROMPT_PACK` names; `render_pack` renders it or
+  refuses; `assemble` chooses between the `LOOM_SYSTEM_PROMPT` override,
+  the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
+  two ends of the reserved `prompt/` cell. Nothing here is called per
+  turn — the whole module runs once, at boot.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
 - `client/serve.registry(Option(Agency))` — the tool registry: five core
   tools, plus the six `agent_*` tools only when a messaging plane exists.
+- `client/serve.Booted` — what `shutdown` takes apart, plus
+  `prompt: system_prompt.Assembled`: the exact bytes this boot handed the
+  wiring, so a test can prove the pinned prompt is the one on the wire
+  and the startup line can name its digest.
 - `client/serve.{Settings, boot, shutdown, main}` — the server entry
   point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
-  shipment): flags/env in, session + helper pool + broker + runtime +
-  hub + websocket server up, one startup line out, `SIGTERM` closes the
-  runtime so the lease is released. `client.main` delegates here for
-  the shipment's entrypoint.
+  shipment): flags/env in, session + helper pool + broker + system
+  prompt + runtime + hub + websocket server up, one startup line out,
+  `SIGTERM` closes the runtime so the lease is released. `client.main`
+  delegates here for the shipment's entrypoint.
+- `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
+  the host facts the system prompt and the jail must agree on: the shell
+  jailed commands run under, the session's composed base policy, and the
+  one question the prompt has no other source for — whether a helper's
+  hello advertises `degraded`, asked once at open by borrowing from the
+  pool the session will use anyway.
 
 ## Relationships
 
@@ -92,8 +112,9 @@ over one session file. WP-L.
   `machine` (`acceptance`, `queue`, `codec` — the commands with no api
   entry point build their own plans), `broker` (`policy.Grant`,
   `escalation` vocabulary), `provider` (`stream.Delta` for the tap),
+  `prompt` (the pack, its decoder and its renderer),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
-  token file).
+  token file, the pack file, and the workspace's `CLAUDE.md`).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
@@ -101,12 +122,14 @@ over one session file. WP-L.
   values — and are worth knowing about rather than papering over. The
   wiring promotion added `tools` (the registry and per-call `Ctx`);
   `client/serve` added `argv` (flags); `client/catalog` added `tom`
-  (the pure-Gleam TOML parser behind `--config`).
+  (the pure-Gleam TOML parser behind `--config`); `client/system_prompt`
+  added `prompt`, whose purity is why the I/O had to live on this side.
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
   `client/wiring` (legal — T depends on all). `packages/tui` is its Go
   client, coupled only through the protocol and the golden fixtures.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
-  wall clock, unique entropy, `PATH` lookup, the SIGTERM relay, and the
+  wall clock, unique entropy, `PATH` lookup, `os:type`/machine
+  architecture for the prompt's platform line, the SIGTERM relay, and the
   documented exit-code halt. Test-side, `client_test_ffi.erl` is a
   minimal websocket probe for the boot smoke.
 
@@ -128,7 +151,10 @@ over one session file. WP-L.
 - **Registers**: reads `strand.*` (configuration, leaf, state, last
   result) and `op.meta`/`op.state` through the session's typed accessors
   to build snapshots and detect terminals; reads the runtime's escalation
-  records under `fact.custom`'s reserved `escalation/` prefix. Strand
+  records under `fact.custom`'s reserved `escalation/` prefix, and the
+  assembled system prompt under the reserved `prompt/` prefix — read off
+  the session store directly before `api.open`, written back through
+  `api.put_reserved_fact` after it. Strand
   seeding for protocol `fork` and `create_strand` writes `strand.config`
   / `strand.leaf` / `strand.state` (the api's creation path always takes
   a task brief, so the gateway seeds idle strands itself).
@@ -189,6 +215,33 @@ over one session file. WP-L.
   Neither moves the authorization line: `wiring.clear` admits a call by
   `list.contains` on this same list, and set membership is blind to
   order and multiplicity.
+- **The system prompt is assembled once, at a session's first open, and
+  pinned.** Every later boot sends the pinned bytes rather than deriving
+  them again — the agent may have edited `CLAUDE.md`, the kernel may have
+  changed under a restart, a flag may differ, and a prompt re-derived
+  from moved inputs is a full one-hour cache write on the first turn
+  after every restart. The pin lives in the reserved `prompt/` cell, so
+  no model-reachable `put_fact` can rewrite the operator's channel.
+- **The pin is read before `api.open` and written after it.**
+  `wiring.Config.system` must hold the string before the open, and the
+  open is what stands the writer up — so the cell is read straight off
+  the session store while nothing owns it, and written back through
+  `api.put_reserved_fact` once there is a writer to journal it. Same knot
+  as the Agency's, solved by ordering rather than by a name because the
+  value is data, not a process.
+- **Nothing volatile may enter `system_prompt.Host`.** No clock, date,
+  elapsed time, token count, cost, git state, id, strand name or random
+  value — and no numeric field at all, which is the shape all of those
+  arrive in. The list fields are sorted and de-duplicated by
+  `pack.environment` before they can reach the bytes, for the same reason
+  the tool array is sorted: both sit inside the cached prefix.
+- **A prompt pack refuses loudly or serves; it never disappears.** A pack
+  file that cannot be read, does not decode, or renders to nothing stops
+  the boot with a worded message naming the file and the fault — a
+  silently-empty system prompt is the failure this seam exists to end. A
+  pack that merely trips `pack.problems` (a dropped section, a misspelled
+  placeholder) warns on stderr and serves: `decode` accepts more than
+  `problems` approves by design, and a thin prompt beats a dead server.
 - **The Agency is reached through a name, never through a captured
   runtime.** `api.open` takes the `Effects` record and returns the
   `Runtime`, and `Runtime` *contains* `effects` — so a closure reachable
@@ -244,5 +297,13 @@ over one session file. WP-L.
   points, brief-less strand creation, protocol fork forking in place,
   fixture-versus-codec drift, queued-versus-placed acks, and the provider
   delta tap.
+- [docs/design-notes/agent-comms-and-system-prompt.md](../../docs/design-notes/agent-comms-and-system-prompt.md)
+  — Part B: the pack, the six sections, the stability contract, and why
+  the prompt is pinned rather than re-derived.
+- [docs/review/m5-agent-comms-judgment.md](../../docs/review/m5-agent-comms-judgment.md)
+  — change items 5 and 6, which the sandbox wording and the
+  pin-around-the-lease ordering follow.
+- [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
+  the pack format, the renderer, and what `Environment` may never grow.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
