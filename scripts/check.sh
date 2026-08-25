@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(core storage session machine runtime provider broker tools events client conformance sandbox tui)
+packages=(core storage session machine runtime provider broker tools cap codemode events client conformance sandbox tui)
 targets=("${@:-${packages[@]}}")
 
 for pkg in "${targets[@]}"; do
