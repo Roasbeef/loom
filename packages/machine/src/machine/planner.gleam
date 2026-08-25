@@ -37,8 +37,8 @@
 //// of the spec. The vocabulary comes first and in full: all sixteen
 //// types are declared before the first function body, so nothing below
 //// introduces a name the reader has not already met. After that, each
-//// section answers exactly one question, and the section you are in is
-//// the only one you need.
+//// section decides one question, and the list below says which — enough
+//// to find the section you want without reading the ones you don't.
 ////
 //// - **planner inputs** — the vocabulary the *runtime* speaks:
 ////   `PlannerInputs` and the answer types it carries (`ThresholdStatus`,
