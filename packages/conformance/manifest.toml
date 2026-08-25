@@ -58,6 +58,7 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 machine = { path = "../machine" }
+prompt = { path = "../prompt" }
 provider = { path = "../provider" }
 runtime = { path = "../runtime" }
 session = { path = "../session" }
