@@ -85,10 +85,10 @@ is held against it.
 - **Depends on**: `core` (`core/corruption.CorruptionReport`, the one
   error type every total decoder returns) and `gleam_stdlib`. Nothing
   else, ever — see Invariants.
-- **Depended on by**: nothing yet. `client` is the intended consumer:
-  it reads the pack file, builds the `Environment` from the workspace,
-  the helper's hello and the composed sandbox policy, renders once at
-  session open, and pins the result.
+- **Depended on by**: `client`, through `client/system_prompt`: it
+  reads the pack file, builds the `Environment` from the workspace, the
+  helper's hello and the composed sandbox policy, renders once at
+  session open, and pins the result into the reserved `prompt/` cell.
 - **FFI**: none, and there must not be any. There is no
   `internal/ffi_*` module here.
 

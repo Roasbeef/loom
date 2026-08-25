@@ -350,7 +350,7 @@ over one session file. WP-L.
   fixture-versus-codec drift, queued-versus-placed acks, and the provider
   delta tap.
 - [docs/design-notes/agent-comms-and-system-prompt.md](../../docs/design-notes/agent-comms-and-system-prompt.md)
-  — Part B: the pack, the six sections, the stability contract, and why
+  — Part B: the pack's sections, the stability contract, and why
   the prompt is pinned rather than re-derived.
 - [docs/review/m5-agent-comms-judgment.md](../../docs/review/m5-agent-comms-judgment.md)
   — change items 5 and 6, which the sandbox wording and the

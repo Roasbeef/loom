@@ -1,10 +1,14 @@
 # Design note: agent communication tools and the system prompt
 
-Status: **note, not a work package.** Nothing here is built. It settles the
-two open designs that `docs/design-notes/agent-context-and-affordances.md`
-identified and left as questions: the tools through which a model reaches
-the messaging plane, and what goes in the empty `system` slot. Promote to
-numbered work packages when M4 closes.
+Status: **built.** This note settled two open designs that
+`docs/design-notes/agent-context-and-affordances.md` identified and left
+as questions — the tools through which a model reaches the messaging
+plane, and what goes in the empty `system` slot — and both have since
+landed. It is kept as the reasoning behind them, not as a description of
+what shipped: for that, read `packages/prompt/CLAUDE.md` and
+`packages/tools/CLAUDE.md`, and `docs/code-tour.md` §12 and §14 for how
+the pieces meet. Where this note and the code disagree, the code is
+right; the one place they knowingly do is marked below.
 
 The two are one subject. A subagent whose system prompt does not tell it
 what it is, where it is, or what will refuse it is a subagent that wastes
@@ -688,7 +692,7 @@ binary, and `LOOM_PROMPT_PACK` points at another one — which is the whole
 GEPA loop: mutate the pack, run the evaluation, keep the winner, and never
 touch Gleam.
 
-## The six sections
+## The sections
 
 The cut is the one the earlier note named: **what belongs here is what
 changes the agent's behaviour, not what is merely true.**
@@ -705,17 +709,26 @@ changes the agent's behaviour, not what is merely true.**
    corrupting a file; large outputs become blob references; and **tool
    failures are data**, so a structured error is something to read and act
    on, never something to retry blindly.
-3. **Conduct.** Terseness, when to ask, when to just do it. This is the
+3. **Delegation.** *Added during the build; this note designed six
+   sections and the shipped pack carries seven.* The policy around the
+   `agent_*` tools, which Part A leaves stated nowhere the model can read
+   it: that a wait blocks the operation it is inside and holds it open, so
+   a batch is spawned and then waited on as a batch; that addressing is
+   descendant-only, which is what keeps the wait graph acyclic; and that a
+   finished child's result is its last assistant message rather than a
+   structured report, so the brief must ask for a final answer that stands
+   on its own.
+4. **Conduct.** Terseness, when to ask, when to just do it. This is the
    section GEPA will actually move, and it is separate so it can be swapped
    and scored on its own.
-4. **Environment.** Workspace root, platform, shell. Nothing else. Not the
+5. **Environment.** Workspace root, platform, shell. Nothing else. Not the
    date, not the git branch, not the current time — see the stability
    contract.
-5. **Sandbox.** Below.
-6. **Repository guidance.** Below.
+6. **Sandbox.** Below.
+7. **Repository guidance.** Below.
 
-Sections 1–3 come from the pack alone and are identical for every session
-on a given build; 4–6 vary by host and workspace. They are ordered for the
+Sections 1–4 come from the pack alone and are identical for every session
+on a given build; 5–7 vary by host and workspace. They are ordered for the
 model rather than for the cache, and §"Where the breakpoint sits" explains
 why that costs nothing.
 
