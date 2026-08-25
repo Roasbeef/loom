@@ -33,7 +33,7 @@ func run() error {
 	var (
 		addr    = flag.String("addr", "", "gateway websocket URL (e.g. ws://127.0.0.1:7777/v1/ws)")
 		session = flag.String("session", "", "session id to attach to")
-		token   = flag.String("token", "", "bearer token (omit for a local gateway)")
+		token   = flag.String("token", "", "bearer token, required; the server prints its token file path")
 		demo    = flag.Bool("demo", false, "run against an in-process fake gateway with a canned session")
 	)
 	flag.Parse()

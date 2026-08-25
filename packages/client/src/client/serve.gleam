@@ -60,6 +60,19 @@
 //// the documented halt in `client/internal/ffi_os`. Shutdown is
 //// `SIGTERM` → close the runtime (release the lease) → stop the
 //// listener, broker, and helper pool → exit 0.
+////
+//// Nothing outside the runtime is supervised either. The runtime owns
+//// a supervision tree; the gateway hub, its commit forwarder, the
+//// broker, and the helper pool are each started from `boot` with a
+//// plain linked `actor.start`, on the process that then blocks in
+//// `wait_for_sigterm` — and that process does not trap exits. A crash
+//// in any of the four kills it, and the Gleam-generated runner linked
+//// above it, which does trap, prints the exit reason and halts the
+//// node with exit 1. So a hub crash ends the server rather than
+//// leaving a listener accepting sockets no hub will answer. It also
+//// skips the `SIGTERM` path, so the session lease is left to expire
+//// on its TTL instead of being released, and restarting is the job of
+//// whatever runs `loom-server`.
 
 import argv
 import broker/broker.{type Broker}

@@ -62,10 +62,13 @@
 //// - `strand_result` is emitted for every operation kind — runs,
 ////   compactions, navigations — because all three publish
 ////   `strand.last_result`.
-//// - Escalation `op`/`strand` attribution is best-effort (the durable
-////   escalation record does not store them — spec gap): the hub names
-////   the strand whose live operation was open when the record surfaced,
-////   or leaves both empty.
+//// - Escalation `op`/`strand` attribution is best-effort. The durable
+////   record does carry a `CallScope` — the operation, strand, step,
+////   source index, and call id the denial was raised for — but the hub
+////   does not read it. It names instead the strand whose live
+////   operation was open when the record surfaced, so an escalation
+////   surfacing while no strand has an operation open — or while
+////   several do — reaches the client with both fields empty.
 ////
 //// ## Stream deltas
 ////
@@ -756,8 +759,10 @@ fn escalation_event(
   )
 }
 
-// Best-effort: the durable escalation record does not store its
-// operation or strand (spec gap; see the module doc).
+// Best-effort attribution from the live map. The record's own
+// `CallScope` names the operation and strand exactly; this does not
+// consult it (see the module doc), so zero live operations, or
+// several, yield two empty strings.
 fn escalation_attribution(state: State) -> #(String, String) {
   case dict.to_list(state.live) {
     [#(strand, op)] -> #(op, strand)
