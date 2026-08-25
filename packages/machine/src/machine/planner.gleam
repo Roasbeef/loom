@@ -30,6 +30,65 @@
 //// hooks are replayable and carry no effect intent; provider requests,
 //// tool executions, deferred fetches, and summary requests go through the
 //// intent/settle sandwich as `Dispatch`.
+////
+//// ## Reading this module
+////
+//// One public function over a typed vocabulary, then a section per phase
+//// of the spec. The vocabulary comes first and in full: all sixteen
+//// types are declared before the first function body, so nothing below
+//// introduces a name the reader has not already met. After that, each
+//// section answers exactly one question, and the section you are in is
+//// the only one you need.
+////
+//// - **planner inputs** — the vocabulary the *runtime* speaks:
+////   `PlannerInputs` and the answer types it carries (`ThresholdStatus`,
+////   `RequestAdmission`, `ModelResolution`, `StructuralVerdict`,
+////   `SummaryProgress`, `Observation`). Decides nothing; it fixes what
+////   the machine is permitted to know.
+//// - **actions** — the vocabulary the *machine* speaks: `EffectKey`
+////   (what it is waiting for), `EffectIntent` (what it wants performed),
+////   `WaitUntil`, and `Action` itself.
+//// - **internal vocabulary** — the four private types the handlers below
+////   speak in among themselves.
+//// - **the frozen entry point** — `next_action`. Decides which of the
+////   three operation kinds owns the pass (run, standalone compaction,
+////   navigation) and whether its control is running or cancelled; a
+////   state whose kind contradicts the intent is corruption.
+//// - **running runs** — decides which run phase handler owns the pass,
+////   and consumes the run-start hook's injections into the first
+////   checkpoint.
+//// - **the checkpoint procedure (§3.12)** — the run's junction. Decides
+////   which of pi's seven ordered steps is the next undone one: deferred
+////   writes, steer, threshold compaction, generation, follow-up, the
+////   run-end hook, finish.
+//// - **assistant generation (§3.7)** — decides what one generation
+////   attempt becomes: dispatched, retried after a wait, drained as a
+////   failure, diverted into overflow compaction, suspended on a deferred
+////   handle, opened as a tool batch, or landed at a may-finish
+////   checkpoint.
+//// - **tools (§3.8)** — decides which call in the batch is worked next
+////   (scheduling mode), whether it clears, executes, replays, or gets a
+////   machine-built synthetic, and when the contiguous outcome-ready run
+////   at the frontier materializes into the tree.
+//// - **deferred responses (§3.2)** — decides whether a suspended
+////   operation may spend a poll permit on a fetch, and what a settled or
+////   orphaned fetch becomes.
+//// - **failure drain (§3.12)** — decides whether recovering input clears
+////   the failure back into a generation, or the run finishes failed.
+//// - **cancellation reconciliation (§4.6)** — decides which phases still
+////   settle their outstanding work before aborting and which discard it,
+////   and drains accepted writes before the aborted terminal transaction.
+//// - **structural work (§3.9)** — the decide → generate → publish
+////   lifecycle shared by all three of its hosts (an in-run compaction
+////   phase, a standalone compaction operation, a summarized navigation);
+////   `StructuralHost` is what keeps the three from being three copies.
+//// - **navigation (§3.10)** — decides whether a move is a bare leaf move
+////   or one that summarizes the abandoned branch first.
+//// - **terminal transactions (§3.13)** — builds the single transaction
+////   that ends an operation: publication writes, register deletion, the
+////   strand and operation-keyed results, and the strand-state clear.
+//// - **shared helpers** — entry placement, batch planning, the synthetic
+////   messages recovery commits, stop-reason normalization, backoff.
 
 import core/corruption.{type CorruptionReport}
 import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
@@ -415,6 +474,60 @@ pub type Action {
   Fault(report: CorruptionReport)
 }
 
+// --- internal vocabulary --------------------------------------------------
+//
+// The four types that are not part of anyone's contract: each is a small
+// private alphabet one section's handlers use to say something to each
+// other. They sit here, with the public vocabulary rather than beside
+// their users, so that the rule holds without exception — every type this
+// module has is declared before the first function body, and no handler
+// thousands of lines down introduces one cold.
+
+/// Which checkpoint queue a drain consumes (checkpoint procedure).
+type DrainedQueue {
+  SteerQueue
+  FollowUpQueue
+}
+
+/// The resolution answer available for an orphaned poll (deferred
+/// responses). The orphan report itself carries no resolution, so
+/// `OrphanPollUnknown` is the state of having asked and not yet been
+/// answered.
+type OrphanPollResolution {
+  OrphanPollResolved
+  OrphanPollUnresolved(OperationError)
+  OrphanPollUnknown
+}
+
+/// Who hosts the structural machinery: an in-run compaction phase, a
+/// standalone compaction operation, or a summarized navigation. Every
+/// handler in the structural section is written once against this type
+/// and differs between the three only where the spec does — which state
+/// to rebuild, and what a decline, a failure, or a publication means.
+type StructuralHost {
+  InRunHost(
+    reason: CompactionReason,
+    settings: RunSettings,
+    inbox: Inbox,
+    latest: Option(EntryId),
+    resume: CheckpointPhase,
+  )
+  StandaloneHost(custom_instructions: Option(String))
+  NavigationHost(
+    target: EntryId,
+    label: Option(String),
+    custom_instructions: Option(String),
+  )
+}
+
+/// The result of placing a batch of pending ids as entries (shared
+/// helpers). `projecting` is true when at least one placed entry feeds
+/// the model, which is what makes a placement demand another assistant
+/// turn rather than preserving the current continuation.
+type Placement {
+  Placement(writes: List(Write), newest: Option(EntryId), projecting: Bool)
+}
+
 // --- the frozen entry point ----------------------------------------------
 
 /// Computes the next action for one operation. Pure and total: corrupt
@@ -700,12 +813,6 @@ fn after_inbox(
           }
       }
   }
-}
-
-/// Which checkpoint queue a drain consumes.
-type DrainedQueue {
-  SteerQueue
-  FollowUpQueue
 }
 
 /// Steps 1: atomically apply every accepted deferred write.
@@ -2436,13 +2543,6 @@ fn deferred_action(
   }
 }
 
-/// The resolution answer available for an orphaned poll.
-type OrphanPollResolution {
-  OrphanPollResolved
-  OrphanPollUnresolved(OperationError)
-  OrphanPollUnknown
-}
-
 fn orphan_poll_resolution(in: PlannerInputs) -> OrphanPollResolution {
   // The orphan observation itself carries no resolution; a second pass
   // with `ObservedResolution` answers it. This helper only exists to keep
@@ -3036,24 +3136,6 @@ fn drain_writes_then_finish_aborted(
 }
 
 // --- structural work (pi §3.9) --------------------------------------------
-
-/// Who hosts the structural machinery: an in-run compaction phase, a
-/// standalone compaction operation, or a summarized navigation.
-type StructuralHost {
-  InRunHost(
-    reason: CompactionReason,
-    settings: RunSettings,
-    inbox: Inbox,
-    latest: Option(EntryId),
-    resume: CheckpointPhase,
-  )
-  StandaloneHost(custom_instructions: Option(String))
-  NavigationHost(
-    target: EntryId,
-    label: Option(String),
-    custom_instructions: Option(String),
-  )
-}
 
 fn structural_action(
   op: Operation,
@@ -3853,11 +3935,6 @@ fn unexpected_observation(
     expected: "an observation matching the " <> at_phase <> " phase",
     context: "a mismatched observation",
   ))
-}
-
-/// The result of placing a batch of pending ids as entries.
-type Placement {
-  Placement(writes: List(Write), newest: Option(EntryId), projecting: Bool)
 }
 
 /// Builds entry inserts (with their `pending.entry` deletes) for queued
