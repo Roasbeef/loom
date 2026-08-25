@@ -37,7 +37,7 @@ pub fn compile_writes_program_under_pinned_name_test() {
   let config =
     compile.CompileConfig(
       build_root: root,
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
   let assert Ok(artifact) = compile.compile(vetted(source), config)
@@ -57,7 +57,7 @@ pub fn generated_entry_boots_the_pinned_program_test() {
   let config =
     compile.CompileConfig(
       build_root: root,
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
   let assert Ok(_artifact) = compile.compile(vetted(source), config)
@@ -77,7 +77,7 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
   let config =
     compile.CompileConfig(
       build_root: root,
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
   let assert Ok(_artifact) =
@@ -85,10 +85,39 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
   let assert Ok(toml) = simplifile.read(root <> "/gleam.toml")
   // Exactly the standard library and the vendored prelude are pinned —
   // nothing else can enter the offline build (design rule 3).
-  assert string.contains(toml, "gleam_stdlib =")
-  assert string.contains(toml, "cap = { path = \"../cap\" }")
+  assert string.contains(
+    toml,
+    "cap = { path = \"" <> compile.prelude_path <> "\" }",
+  )
   assert !string.contains(toml, "glance")
   assert !string.contains(toml, "shellout")
+  // One exact version, never a range. An offline build cannot resolve a
+  // range, so a range here would not be merely loose: it would not build
+  // (M4 triage CH-F2).
+  assert string.contains(
+    toml,
+    "gleam_stdlib = \"" <> compile.stdlib_version <> "\"",
+  )
+  // The whole dependency table, byte for byte: nothing else is in it, and
+  // no entry carries a range.
+  assert string.contains(
+    toml,
+    "[dependencies]\ngleam_stdlib = \""
+      <> compile.stdlib_version
+      <> "\"\ncap = { path = \""
+      <> compile.prelude_path
+      <> "\" }\n",
+  )
+}
+
+pub fn the_prelude_is_vendored_at_a_relative_path_test() {
+  // Load-bearing, and easy to "tidy" into a bug: Gleam records a local
+  // dependency's path in manifest.toml relative to the project root and
+  // re-resolves — over the network — when it does not match. A build root
+  // is created at whatever depth the session's scratch area lives, so only
+  // a path *inside* the root is stable.
+  assert !string.starts_with(compile.prelude_path, "/")
+  assert !string.starts_with(compile.prelude_path, "..")
 }
 
 pub fn build_rejection_is_in_band_test() {
@@ -99,7 +128,7 @@ pub fn build_rejection_is_in_band_test() {
   let config =
     compile.CompileConfig(
       build_root: root,
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build: failing,
     )
   let result = compile.compile(vetted("pub fn main() { 1 }\n"), config)
@@ -113,7 +142,7 @@ pub fn workspace_setup_failure_is_reported_test() {
   let config =
     compile.CompileConfig(
       build_root: "/proc/nonexistent/deny/build-root",
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
   let result = compile.compile(vetted("pub fn main() { 1 }\n"), config)

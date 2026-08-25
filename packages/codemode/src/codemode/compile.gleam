@@ -28,33 +28,37 @@
 ////    jail, so no *third-party* package at any version can enter the build
 ////    even if the source named one.
 ////
-////    Be precise about what that does not cover. The manifest does **not**
-////    independently close the build against the modules vetting rejects.
-////    `cap` itself depends on `gleam_erlang`, `gleam_otp`, and `core`, so
-////    their public modules — `gleam/erlang/process`, `gleam/otp/*`,
-////    `core/*` — are in the program's build graph and would compile if the
-////    submitted source imported one. What rejects them is vetting: rule 2
-////    admits only the allowlist, and `gleam/erlang*` and `gleam/otp/*` are
-////    additionally on an explicit denylist (`vet/policy.is_denied`). So
-////    this defence is redundant against *unknown packages*, not against the
-////    dependency closure of the prelude. Stripping the build graph down to
-////    `cap`'s public surface is Builder work in J3c (M4 triage CH-F1).
+////    Be precise about the reach of this. `cap` itself depends on
+////    `gleam_erlang`, `gleam_otp`, and `core`, so their compiled modules
+////    are unavoidably present — `cap` needs them at runtime. What the
+////    generated project does is make them **not direct dependencies**, and
+////    the production builder compiles with `--warnings-as-errors`, which
+////    turns Gleam's "transitive dependency imported" warning into a hard
+////    compile error. So `import gleam/erlang/process`, `import
+////    gleam/otp/actor`, and `import core/msgpack` are now refused by the
+////    *compiler*, not only by vetting (M4 triage CH-F1, closed to the
+////    extent a compile-time gate can close it). Two honest limits: the
+////    modules remain loadable at run time by a hand-written `.beam`, which
+////    is the jail's problem and not the build's; and `gleam_stdlib` is a
+////    direct dependency, so `gleam/io` and friends still compile and
+////    vetting's allowlist remains their only gate.
 ////
 //// # The generated satellite entry
 ////
 //// The service also generates a tiny entry module (`entry_module`, e.g.
 //// `loom_satellite`) that imports the pinned prelude's boot runtime and the
-//// program, and hands the program's `main` to `cap/runtime.boot`. The exact
-//// `runtime.boot` shape is a `cap/runtime` contract owned by the parallel
-//// `packages/cap` agent; until it lands, this generates to the documented
-//// shape and the integration build is gated (see the package `CLAUDE.md`).
+//// program and hands the program's `main` to `cap/runtime.run`. That shape
+//// is a `cap/runtime` contract ("Generated entry contract (pin this)"), to
+//// be emitted verbatim; a test pins this generator against it.
 ////
 //// # The build seam
 ////
 //// Running `gleam build` is an *effect*, so it is injected as a `Builder`.
-//// Production wires it to a network-off `broker.clear_call` that runs the
-//// build inside the jail; deterministic tests inject a fake that returns
-//// canned products; an e2e on a real kernel wires a genuine offline build.
+//// Production wires it to `codemode/build`, a network-off
+//// `broker.clear_call` that runs the build inside the jail against a
+//// pre-seeded package cache; deterministic tests inject a fake that
+//// returns canned products; `make e2e-codemode` runs the genuine offline
+//// build on a real helper.
 //// A build or type error is a structured `CompileError` returned in-band —
 //// the type checker doubles as the tool-argument validator, so a
 //// mistyped capability call is rejected here, cheaply, before any
@@ -72,6 +76,24 @@ pub const program_module = "loom_program"
 
 /// The generated satellite entry module's name.
 pub const entry_module = "loom_satellite"
+
+/// The generated project's package name. Fixed, so a builder can find and
+/// discard a seed's placeholder artifacts for it before the real build.
+pub const package_name = "loom_codemode_program"
+
+/// Where the prelude is vendored inside a build root. Relative on purpose:
+/// Gleam records local dependency paths in `manifest.toml` relative to the
+/// project root and re-resolves (which needs the network) when they do not
+/// match, so a build root that can be prepared at any depth must carry its
+/// prelude at a fixed *relative* location rather than point at one
+/// elsewhere on the host.
+pub const prelude_path = "vendor/cap"
+
+/// The exact standard-library version every code-mode program is built
+/// against. A single version, never a range: an offline build cannot
+/// resolve a range, and "deterministic" is the whole point of pinning
+/// (M4 triage CH-F2).
+pub const stdlib_version = "1.0.5"
 
 /// A compiled code-mode program ready to run in a satellite node.
 pub type Artifact {
@@ -142,12 +164,15 @@ pub type CompileConfig {
   )
 }
 
-/// The production dependency set: the standard library plus the vendored
-/// capability prelude at `prelude_path` (usually `packages/cap`), and
-/// nothing else.
-pub fn default_dependencies(prelude_path: String) -> List(Dependency) {
+/// The production dependency set: exactly one standard-library version
+/// and the prelude vendored inside the build root, and nothing else.
+///
+/// Both are pinned rather than ranged. A range would need version
+/// resolution, resolution needs Hex, and the build runs with the network
+/// off — so a range is not merely loose here, it does not build at all.
+pub fn default_dependencies() -> List(Dependency) {
   [
-    HexDependency(name: "gleam_stdlib", requirement: ">= 0.34.0 and < 2.0.0"),
+    HexDependency(name: "gleam_stdlib", requirement: stdlib_version),
     PathDependency(name: "cap", path: prelude_path),
   ]
 }
@@ -179,7 +204,7 @@ pub fn compile(
   // Defence 2: the manifest pins exactly the prelude and stdlib.
   use _ <- result.try(write_source(
     root <> "/gleam.toml",
-    gleam_toml(config.dependencies),
+    project_toml(config.dependencies),
   ))
   use products <- result.try(config.build(root))
   Ok(Artifact(
@@ -215,10 +240,15 @@ pub fn entry_source() -> String {
   <> "}\n"
 }
 
-// Renders a `gleam.toml` that pins exactly `dependencies` and nothing
-// else. The narrow dependency table plus the offline build is the
-// pinning mechanism (design rule 3).
-fn gleam_toml(dependencies: List(Dependency)) -> String {
+/// Renders the `gleam.toml` that pins exactly `dependencies` and nothing
+/// else. The narrow dependency table plus the offline build is the
+/// pinning mechanism (design rule 3).
+///
+/// Public because the package cache a hermetic build runs against has to
+/// be prepared from the *same* project file: a seed whose dependency table
+/// differs by one byte resolves differently, and the builder compares the
+/// two before it will run offline.
+pub fn project_toml(dependencies: List(Dependency)) -> String {
   let lines =
     list.map(dependencies, fn(dependency) {
       case dependency {
@@ -228,7 +258,9 @@ fn gleam_toml(dependencies: List(Dependency)) -> String {
           name <> " = { path = \"" <> path <> "\" }"
       }
     })
-  "name = \"loom_codemode_program\"\n"
+  "name = \""
+  <> package_name
+  <> "\"\n"
   <> "version = \"0.0.0\"\n"
   <> "gleam = \">= 1.11.0\"\n\n"
   <> "[dependencies]\n"
