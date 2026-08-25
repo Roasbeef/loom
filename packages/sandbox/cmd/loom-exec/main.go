@@ -4,6 +4,10 @@
 //
 //	(none)          server mode: read the base SandboxPolicyV1 from fd 3,
 //	                then speak the Part 1.4 framing protocol on stdio.
+//	--allow-unenforced
+//	                server mode on a platform Loom has no jail for. Without
+//	                it, such a build refuses to serve rather than run
+//	                model-influenced code with nothing enforcing the policy.
 //	--exec          stage 2 (restrict-and-exec): read the policy from
 //	                fd 3, apply Landlock/seccomp/rlimits to self, report
 //	                on fd 4, execve the target. Spawned by server mode,
@@ -32,7 +36,9 @@ func main() {
 	args := os.Args[1:]
 	switch {
 	case len(args) == 0:
-		runServer()
+		runServer(false)
+	case args[0] == jail.AllowUnenforcedFlag:
+		runServer(true)
 	case args[0] == "--exec":
 		runStage2(args[1:])
 	case args[0] == "--self-test":
@@ -55,12 +61,28 @@ func main() {
 	}
 }
 
-const usage = `usage: loom-exec [--self-test]
+const usage = `usage: loom-exec [--self-test] [--allow-unenforced]
 Server mode (no arguments) expects a SandboxPolicyV1 on fd 3 and the
 framing protocol on stdin/stdout. --exec and --probe-socket are internal.
+--allow-unenforced serves anyway on a platform with no jail (macOS,
+Windows); without it such a build refuses to serve at all.
 `
 
-func runServer() {
+// runServer starts the frame loop, unless this build has no jail for its
+// platform and the caller did not explicitly ask for one without.
+//
+// The refusal is deliberate and is not the same decision as running
+// degraded. A Linux host missing bwrap or Landlock still enforces
+// something and could enforce the rest; a build with no jail enforces
+// nothing, and `network: off` in a policy would be a sentence with no
+// verb. The broker refuses degraded results only when the caller demanded
+// full enforcement, so a BestEffort caller — code mode is one — would
+// otherwise run model-written programs unconfined and call it a success.
+func runServer(allowUnenforced bool) {
+	if refusal := jail.Platform().Refusal(allowUnenforced); refusal != "" {
+		fmt.Fprintf(os.Stderr, "loom-exec: %s\n", refusal)
+		os.Exit(1)
+	}
 	basePol, err := server.ReadBasePolicy()
 	if err != nil {
 		// The spec's first duty: a strict parse of fd 3. Failure is a

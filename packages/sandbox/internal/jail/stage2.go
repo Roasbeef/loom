@@ -108,13 +108,18 @@ func RunStage2(cfg Stage2Config) error {
 		rep.Skipped = append(rep.Skipped, "landlock: "+reason)
 	}
 
-	// no_new_privs unconditionally: nothing exec'd from a jail may ever
-	// acquire privilege via setuid/fscaps, whether or not seccomp below
-	// also demands it. Cheap, irreversible, inherited.
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+	// no_new_privs wherever the platform has it: nothing exec'd from a
+	// jail may ever acquire privilege via setuid/fscaps, whether or not
+	// seccomp below also demands it. Cheap, irreversible, inherited.
+	// Where the prctl does not exist the layer is *skipped*, by name.
+	switch reason, err := noNewPrivs(); {
+	case err != nil:
 		return fmt.Errorf("stage2: set no_new_privs: %w", err)
+	case reason != "":
+		rep.Skipped = append(rep.Skipped, reason)
+	default:
+		rep.Applied = append(rep.Applied, "no-new-privs")
 	}
-	rep.Applied = append(rep.Applied, "no-new-privs")
 
 	// seccomp network filter whenever the policy denies direct sockets:
 	// mode "off", and mode "proxy" — which in phase 1 fails closed to

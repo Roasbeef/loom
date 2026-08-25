@@ -26,6 +26,10 @@ type Features struct {
 	// empty with a reason when unavailable.
 	CgroupDir    string
 	CgroupReason string
+	// Platform is not a probe of the running kernel but a fact about
+	// this build: whether Loom has a jail for the OS at all. See
+	// platform.go for why the two kinds of gap are kept apart.
+	Platform PlatformSupport
 }
 
 // DetectFeatures probes the runtime environment.
@@ -37,12 +41,16 @@ func DetectFeatures() Features {
 	f.LandlockABI, f.LandlockReason = llock.ABIVersion()
 	f.Seccomp = seccompf.Supported()
 	f.CgroupDir, f.CgroupReason = cgroup.Detect()
+	f.Platform = Platform()
 	return f
 }
 
 // List renders the feature set for the hello frame. rlimits and pgroup
 // management need no kernel support beyond POSIX, so they are always
-// present; "degraded" flags the absence of the bwrap layer.
+// present; "degraded" flags the absence of the bwrap layer, and
+// "platform-unsupported" flags a build with no jail for its OS at all —
+// a strictly worse thing than a degraded one, and named separately so
+// the broker can tell them apart.
 func (f Features) List() []string {
 	out := []string{"rlimits", "pgroup"}
 	if f.BwrapPath != "" {
@@ -59,8 +67,15 @@ func (f Features) List() []string {
 	if f.CgroupDir != "" {
 		out = append(out, "cgroup-v2")
 	}
+	if !f.Platform.Implemented {
+		out = append(out, PlatformUnsupportedFeature)
+	}
 	return out
 }
 
-// Degraded reports whether the mount/namespace layer is missing.
-func (f Features) Degraded() bool { return f.BwrapPath == "" }
+// Degraded reports whether the strongest confinement this helper knows
+// how to build was not built: the mount/namespace layer is missing, or
+// there is no jail for the platform in the first place.
+func (f Features) Degraded() bool {
+	return f.BwrapPath == "" || !f.Platform.Implemented
+}

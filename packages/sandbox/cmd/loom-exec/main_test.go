@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/roasbeef/loom/sandbox/internal/framing"
+	"github.com/roasbeef/loom/sandbox/internal/jail"
 	"github.com/roasbeef/loom/sandbox/internal/policy"
 	"github.com/roasbeef/loom/sandbox/internal/testbin"
 )
@@ -28,7 +29,7 @@ func smokePolicy() policy.Policy {
 
 // startServer launches the real binary in server mode with pol on fd 3
 // and returns the broker-side conn plus the exec.Cmd.
-func startServer(t *testing.T, polBytes []byte) (*framing.Conn, *exec.Cmd) {
+func startServer(t *testing.T, polBytes []byte, args ...string) (*framing.Conn, *exec.Cmd) {
 	t.Helper()
 	bin := testbin.Helper(t)
 
@@ -49,7 +50,7 @@ func startServer(t *testing.T, polBytes []byte) (*framing.Conn, *exec.Cmd) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin)
+	cmd := exec.Command(bin, args...)
 	cmd.Stdin = inR
 	cmd.Stdout = outW
 	cmd.Stderr = os.Stderr
@@ -195,5 +196,49 @@ func TestWrongVersionFd3IsFatal(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("binary did not exit on a v=2 policy")
+	}
+}
+
+// --allow-unenforced is the opt-out for a build with no jail for its
+// platform. On Linux there is nothing to opt out of, so the flag must be
+// accepted and change nothing — a flag that only works where it cannot be
+// tested is a flag nobody can trust.
+//
+// The refusal itself is exercised in internal/jail's platform tests, which
+// is as far as a Linux host can take it: whether a macOS build refuses at
+// startup is answered by running it on a Mac, and none ever has.
+func TestAllowUnenforcedIsAcceptedAndChangesNothingOnLinux(t *testing.T) {
+	raw, err := policy.Encode(smokePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _ := startServer(t, raw, jail.AllowUnenforcedFlag)
+
+	f, err := conn.Read()
+	if err != nil {
+		t.Fatalf("read hello: %v", err)
+	}
+	var hello framing.Hello
+	if f.Kind != framing.KindHello || framing.DecodeBody(f.Body, &hello) != nil {
+		t.Fatalf("first frame: %+v", f)
+	}
+	for _, feature := range hello.Features {
+		if feature == jail.PlatformUnsupportedFeature {
+			t.Fatalf("linux must not advertise %q: %v",
+				jail.PlatformUnsupportedFeature, hello.Features)
+		}
+	}
+}
+
+// An unknown argument is still a usage error, so the new flag did not
+// turn the argument parser permissive.
+func TestUnknownArgumentStillFails(t *testing.T) {
+	cmd := exec.Command(testbin.Helper(t), "--allow-everything")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a nonzero exit, got: %s", out)
+	}
+	if !strings.Contains(string(out), "unknown argument") {
+		t.Fatalf("expected a usage error, got: %s", out)
 	}
 }

@@ -344,16 +344,7 @@ func (e *Exec) Wait() Result {
 		TimedOut:        timedOut,
 	}
 
-	if e.feat.BwrapPath != "" {
-		res.Enforcement = append(res.Enforcement, "bwrap")
-	}
-	if e.cgDir != "" {
-		res.Enforcement = append(res.Enforcement, "cgroup-v2")
-	}
-	res.Enforcement = append(res.Enforcement, rep.Applied...)
-	for _, s := range rep.Skipped {
-		res.Enforcement = append(res.Enforcement, "skip:"+s)
-	}
+	res.Enforcement = enforcementEntries(e.feat, e.cgDir != "", rep)
 
 	if err == nil {
 		res.Code = 0
@@ -370,6 +361,34 @@ func (e *Exec) Wait() Result {
 		res.Code = 127
 	}
 	return res
+}
+
+// enforcementEntries assembles the per-exec enforcement summary the
+// exec_exit frame carries: what the supervising helper applied around the
+// execution, then what stage 2 applied inside it, then everything either
+// of them skipped, each prefixed `skip:`.
+//
+// An unsupported platform is stated first and as a skip, because it is the
+// entry that governs how to read every other one: on a build with no jail
+// the rlimit and pgroup entries are true and are also the whole of the
+// confinement, and a reader who missed that would take the list for a
+// sandbox report.
+func enforcementEntries(feat Features, cgrouped bool, rep Report) []string {
+	var out []string
+	if !feat.Platform.Implemented {
+		out = append(out, "skip:"+feat.Platform.Reason)
+	}
+	if feat.BwrapPath != "" {
+		out = append(out, "bwrap")
+	}
+	if cgrouped {
+		out = append(out, "cgroup-v2")
+	}
+	out = append(out, rep.Applied...)
+	for _, s := range rep.Skipped {
+		out = append(out, "skip:"+s)
+	}
+	return out
 }
 
 // Pgid exposes the process group id (tests only).

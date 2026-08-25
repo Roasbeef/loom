@@ -6,8 +6,11 @@
 spawns to run untrusted commands inside a real jail. It speaks the frozen
 effect-plane framing protocol on stdio, builds the jail from a strict
 `SandboxPolicyV1` decode, and reports honestly what the running kernel
-actually enforced. WP-H, Linux phase 1. One of the tree's two Go modules,
-alongside `tui`.
+actually enforced. WP-H, Linux phase 1 — and Linux is the only jail that
+exists: macOS Seatbelt (phase 2) and the Windows sandbox (phase 3) are
+specified and unbuilt, and this binary refuses to serve on either rather
+than run with nothing enforcing the policy. One of the tree's two Go
+modules, alongside `tui`.
 
 ## Key Types
 
@@ -16,7 +19,9 @@ alongside `tui`.
   then frames on stdio); `--exec` is **stage 2** (read the policy from
   fd 3, apply Landlock/seccomp/rlimits to self, report on fd 4, execve the
   target); `--self-test` runs the regression probes against the live
-  kernel. `--probe-socket` is the internal network-off witness.
+  kernel. `--probe-socket` is the internal network-off witness, and
+  `--allow-unenforced` is server mode's explicit opt-out of the
+  unsupported-platform refusal.
 - `internal/policy.Policy` — `SandboxPolicyV1` decoded strictly and
   totally.
 - `internal/framing` — the helper side of the wire: `u32_be length ++
@@ -27,8 +32,16 @@ alongside `tui`.
   execution's description, what the kernel actually offers, the
   enforcement summary stage 2 sends back on fd 4, and the per-stream
   output cap.
+- `internal/jail.PlatformSupport` (`Platform`, `PlatformFor`, `Refusal`) —
+  not a probe of the kernel but a fact about the *build*: whether Loom has
+  a jail for the OS it was compiled for. `PlatformFor` is pure and takes
+  the OS as an argument, which is the only way the macOS and Windows
+  answers can be tested at all.
 - `internal/llock`, `internal/seccompf`, `internal/cgroup` — the three
-  in-process restriction layers.
+  in-process restriction layers. `seccompf` and `jail`'s `no_new_privs`
+  are split by build tag (`*_linux.go` / `*_other.go`) so the module
+  compiles and vets for `GOOS=darwin`; the non-Linux halves are stubs that
+  report the layer unavailable and never pretend to install one.
 - `internal/selftest` — the probes and the ENFORCED/SKIPPED report.
 
 ## Relationships
@@ -120,6 +133,19 @@ alongside `tui`.
   prints SKIPPED with a reason and never fakes a pass; a probe whose layer
   *is* available must enforce or the run exits nonzero. A green self-test
   in a neutered container cannot be mistaken for a verified sandbox.
+- **A missing platform is not a missing kernel feature, and is never
+  reported as one.** Everything else here probes the running kernel and
+  calls a gap environmental. A build with no jail for its OS has a gap in
+  *Loom*, so it takes a different path everywhere: `hello.features` gains
+  `platform-unsupported` and `Degraded()` is true; every per-exec
+  `enforcement` list leads with `skip:jail: …` naming what was not applied;
+  `--self-test` prints `RESULT: UNSUPPORTED PLATFORM` and exits nonzero
+  rather than repeating "skips are environmental, not passes"; and server
+  mode refuses to start without `--allow-unenforced`, because a BestEffort
+  caller would otherwise run model-influenced code with `network: off` in
+  the policy and nothing enforcing it. **None of the non-Linux path has
+  ever executed.** Its acceptance is `make selftest` on a real macOS host;
+  the unit tests only pin the wording and the branching.
 
 ## Deep Docs
 

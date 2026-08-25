@@ -8,6 +8,13 @@
 // or the run exits nonzero. The summary at the end states exactly what
 // was enforced versus skipped, so a green self-test in a neutered
 // container cannot be mistaken for a verified sandbox.
+//
+// One case is not a skip at all. On a platform Loom has no jail for, the
+// probes cannot fail *or* be excused: nothing was attempted. The run says
+// so and exits nonzero, because "skips are environmental, not passes" is a
+// claim about a kernel that could have provided the layer, and repeating
+// it where the layer was never built would be the exact substitution this
+// package exists to prevent.
 package selftest
 
 import (
@@ -45,7 +52,10 @@ func Run(w io.Writer, selfExe string) bool {
 	feat := jail.DetectFeatures()
 
 	fmt.Fprintf(w, "loom-exec self-test\n")
-	fmt.Fprintf(w, "  features: %s\n\n", strings.Join(feat.List(), ", "))
+	fmt.Fprintf(w, "  features: %s\n", strings.Join(feat.List(), ", "))
+	if !platformGate(w, feat.Platform) {
+		return false
+	}
 
 	probes := []struct {
 		name string
@@ -93,6 +103,33 @@ func Run(w io.Writer, selfExe string) bool {
 		fmt.Fprintf(w, "\nRESULT: OK (skips are environmental, not passes)\n")
 	}
 	return ok
+}
+
+// platformGate decides whether the probes run at all, writing the
+// unsupported-platform report in their place when they do not. Split out
+// and taking the support value as an argument so the branch no Linux host
+// can reach is still exercised by a Linux test.
+func platformGate(w io.Writer, p jail.PlatformSupport) bool {
+	if p.Implemented {
+		fmt.Fprintln(w)
+		return true
+	}
+	fmt.Fprintf(w, "\n%s\n", unsupportedPlatformReport(p))
+	return false
+}
+
+// unsupportedPlatformReport is what the self-test prints instead of
+// probes on a build with no jail.
+func unsupportedPlatformReport(p jail.PlatformSupport) string {
+	return fmt.Sprintf(
+		"  NOT RUN   every probe (%s)\n\n"+
+			"==== enforcement summary ====\n"+
+			"enforced (0):\n"+
+			"nothing was attempted: loom-exec has no jail for %s\n\n"+
+			"RESULT: UNSUPPORTED PLATFORM (not a pass; no confinement "+
+			"was applied or probed)",
+		p.Reason, p.GOOS,
+	)
 }
 
 // basePolicy builds a network-off policy writable only in dir.
