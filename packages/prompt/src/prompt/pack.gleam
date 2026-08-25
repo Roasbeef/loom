@@ -302,12 +302,12 @@ fn normalize(values: List(String)) -> List(String) {
 
 // --- names the pack and the renderer agree on ----------------------------
 
-/// The six sections a complete pack carries, in the order the design
-/// settled on. `render` uses the pack's own order, not this one; this is
-/// the list `problems` checks a pack against.
+/// The sections a complete pack carries, in the order the design settled
+/// on. `render` uses the pack's own order, not this one; this is the
+/// list `problems` checks a pack against.
 pub const canonical_sections = [
-  "identity", "tool_discipline", "conduct", "environment", "sandbox",
-  "repository_guidance",
+  "identity", "tool_discipline", "delegation", "conduct", "environment",
+  "sandbox", "repository_guidance",
 ]
 
 /// The fragments the bindings can select. A pack missing one of these
@@ -340,10 +340,101 @@ pub type Problem {
   UnknownPlaceholder(section: String, name: String)
 }
 
+/// Whether a problem reads as a mistake or as a choice.
+///
+/// The axis is here for the optimizer this whole format exists to serve.
+/// A variant that scored badly because `{platfrom}` silently rendered
+/// empty and a variant that scored badly because it deliberately dropped
+/// `conduct` are indistinguishable in one flat list, so the fitness
+/// signal carries corruption the optimizer cannot see. Split, the first
+/// is discardable and the second is a measurement.
+pub type Severity {
+  /// The pack names something it does not carry: a placeholder no
+  /// binding provides, or a fragment a binding selects. Nothing is said
+  /// where something was meant to be, and the shortfall is invisible in
+  /// the rendered bytes. Read it as a mistake; a caller may reasonably
+  /// refuse a pack carrying one.
+  Corrupting
+  /// The pack is smaller than the canonical shape: a section is absent.
+  /// That may be exactly what a mutation intended — a pack that drops a
+  /// section is still a valid pack — so it is a difference to report,
+  /// not a fault to refuse on.
+  Shaping
+}
+
+/// Classifies one problem, as a pure function of the problem alone.
+///
+/// A missing *fragment* is corrupting: a fragment exists only to be
+/// selected by a binding, so its absence makes a section that is present
+/// say nothing on some host. A missing *canonical section* is shaping:
+/// the pack is simply smaller, and that is allowed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert pack.severity(pack.MissingSection("conduct")) == pack.Shaping
+/// ```
+///
+/// ```gleam
+/// assert pack.severity(pack.MissingSection("_network_open"))
+///   == pack.Corrupting
+/// ```
+///
+/// ```gleam
+/// assert pack.severity(pack.UnknownPlaceholder("environment", "platfrom"))
+///   == pack.Corrupting
+/// ```
+///
+pub fn severity(problem: Problem) -> Severity {
+  case problem {
+    UnknownPlaceholder(..) -> Corrupting
+    MissingSection(name:) ->
+      case is_fragment(name) {
+        True -> Corrupting
+        False -> Shaping
+      }
+  }
+}
+
+/// A pack's problems already split by `severity`, in the order
+/// `problems` reported them.
+///
+/// The split is what a caller keys on. `corrupting == []` is the
+/// optimizer's question — is this variant scorable at all — as one
+/// expression, and `shaping` is what an operator is told about a pack
+/// that runs anyway. Between them they hold exactly what `problems`
+/// returns and nothing more.
+pub type Assessment {
+  Assessment(corrupting: List(Problem), shaping: List(Problem))
+}
+
+/// Reports a pack's problems already split along the severity axis.
+/// Equivalent to partitioning `problems` by `severity`, and offered as
+/// one call because refusing on corruption is a whole-pack decision.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(decoded) =
+///   pack.decode("%% loom-prompt-pack 1\n%% version t\n%% section identity\nhi")
+/// assert pack.assess(decoded).corrupting != []
+/// ```
+///
+pub fn assess(pack: Pack) -> Assessment {
+  let #(corrupting, shaping) =
+    list.partition(problems(pack), fn(problem) {
+      severity(problem) == Corrupting
+    })
+  Assessment(corrupting:, shaping:)
+}
+
 /// Reports what is missing or misspelled in a decoded pack. Empty means
 /// the pack is complete. This is deliberately *not* part of `decode`: a
 /// mutated pack that drops a section is still a valid pack, and the
 /// harness decides whether to run with it or refuse.
+///
+/// The list is flat and unranked. A caller deciding what to do about a
+/// problem wants `severity`, or `assess` for the whole pack at once.
 ///
 /// ## Examples
 ///

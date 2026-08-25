@@ -233,6 +233,85 @@ pub fn problems_reports_an_unknown_placeholder_test() {
   )
 }
 
+// --- severity ------------------------------------------------------------
+//
+// The axis a prompt optimizer scores against: a variant that lost
+// because a placeholder was misspelled is not evidence about wording,
+// and a variant that lost having deliberately dropped a section is.
+
+pub fn severity_calls_a_missing_canonical_section_shaping_test() {
+  // The package invariant: a mutated pack that drops a section is still
+  // a valid pack. Nothing may make that a refusal.
+  assert pack.severity(pack.MissingSection("conduct")) == pack.Shaping
+  assert pack.severity(pack.MissingSection("delegation")) == pack.Shaping
+}
+
+pub fn severity_calls_a_missing_fragment_corrupting_test() {
+  // A fragment exists only to be selected by a binding, so an absent one
+  // means a section that *is* present says nothing on some host.
+  assert pack.severity(pack.MissingSection("_network_proxied"))
+    == pack.Corrupting
+  assert pack.severity(pack.MissingSection("_enforcement_degraded"))
+    == pack.Corrupting
+}
+
+pub fn severity_calls_an_unknown_placeholder_corrupting_test() {
+  // `{platfrom}` renders empty and says so nowhere. This is the typo the
+  // optimizer must be able to tell from its own deletion.
+  assert pack.severity(pack.UnknownPlaceholder("environment", "platfrom"))
+    == pack.Corrupting
+}
+
+pub fn assess_splits_a_typo_from_a_deletion_test() {
+  // One pack carrying both kinds at once: `identity` present but
+  // misspelling a binding, every other canonical section dropped.
+  let assert Ok(decoded) =
+    pack.decode(source("%% section identity\nrunning on {platfrom}"))
+  let assessed = pack.assess(decoded)
+  assert list.contains(
+    assessed.corrupting,
+    pack.UnknownPlaceholder(section: "identity", name: "platfrom"),
+  )
+  assert list.contains(assessed.shaping, pack.MissingSection("conduct"))
+  assert !list.contains(assessed.shaping, pack.MissingSection("_network_open"))
+  assert list.contains(
+    assessed.corrupting,
+    pack.MissingSection("_network_open"),
+  )
+}
+
+pub fn assess_holds_exactly_the_problems_test() {
+  // The split is a partition of `problems`, not a second opinion about
+  // what a problem is: nothing invented, nothing dropped.
+  let assert Ok(decoded) =
+    pack.decode(source("%% section identity\nhi {nonesuch}"))
+  let assessed = pack.assess(decoded)
+  let reported = pack.problems(decoded)
+  assert list.length(assessed.corrupting) + list.length(assessed.shaping)
+    == list.length(reported)
+  list.each(reported, fn(problem) {
+    assert list.contains(assessed.corrupting, problem)
+      || list.contains(assessed.shaping, problem)
+  })
+  list.each(list.append(assessed.corrupting, assessed.shaping), fn(problem) {
+    assert list.contains(reported, problem)
+  })
+}
+
+pub fn assess_finds_nothing_wrong_with_the_shipped_pack_test() {
+  let assert Ok(decoded) = pack.decode(default.source)
+  assert pack.assess(decoded) == pack.Assessment(corrupting: [], shaping: [])
+}
+
+pub fn decode_still_accepts_what_assess_calls_corrupting_test() {
+  // The standing invariant: syntax is the decoder's business,
+  // completeness is the harness's decision. Severity refines the report
+  // and must never reach back into the parser.
+  let assert Ok(decoded) =
+    pack.decode(source("%% section identity\nrunning on {platfrom}"))
+  assert pack.assess(decoded).corrupting != []
+}
+
 // --- fingerprinting ------------------------------------------------------
 
 pub fn fingerprint_is_the_fnv_1a_basis_for_the_empty_string_test() {
