@@ -153,6 +153,17 @@ package is wrong.
 - **Adapter retryability travels by convention**, not by a field: the
   planner reads `raw_stop_reason == "retryable"`, and the runtime bridges
   `provider/retry.classify` into it (spec-gaps WP-D item 3).
+- **A failed in-run compaction is judged by its `CompactionReason`**, the
+  same way a declined one already was (issue #34). A *threshold*
+  compaction is the harness's own clamp: failing it against an
+  unavailable summarizer restores the resume checkpoint and the run
+  carries on, with `enabled` cleared in the run's captured
+  `CompactionSettings` so the threshold cannot re-fire into the same dead
+  route at every later boundary — settings are per-operation, so the next
+  run tries again. An *overflow* compaction still drains, and so does a
+  threshold one whose error is about the context rather than the
+  summarizer (`fatal_to_the_context`). Corruption never reaches this
+  decision; it is a `Fault` at its own site.
 - **Faithful-but-surprising transcriptions are kept deliberately** — a
   completed tool batch sets skip-inbox-once; the threshold check also runs
   at may-finish checkpoints; backoff saturates at exponent twenty;

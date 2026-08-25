@@ -122,17 +122,18 @@ import machine/operation.{
   type ToolBatch, type ToolCallState, Assistant, AwaitingDeferred, BranchSummary,
   BranchSummaryPreparation, CallCompleted, CallEffectPending, CallOutcomeReady,
   CallPlanned, CancelRequested, Checkpoint, CheckpointPhase, Compacting,
-  CompactionIntent, CompactionLastResult, CompactionPreparation, CompactionState,
-  CompactionSummary, CompletedByAssistant, CompletedByTerminatedTools,
-  ConfigurationProvenance, ConsumeAll, Deciding, DeferredEffectPending,
-  DeferredSuspended, FailureDrain, Generating, GenerationContext,
-  GenerationEffectPending, GenerationReady, GenerationRetryWait, Inbox,
-  ManualSummary, MayFinish, NavigationIntent, NavigationLastResult,
-  NavigationState, NeedAssistant, OneAtATime, OperationError, OverflowReason,
-  OverflowSummary, PendingCustom, PendingMessage, ReplaySafe, ResponseProvenance,
-  RunAborted, RunCompleted, RunFailed, RunIntent, RunLastResult, RunState,
-  Running, Starting, StructuralAborted, StructuralCompleted, StructuralDeclined,
-  StructuralFailed, StructuralProvenance, SummarizedNavigation, SummaryContext,
+  CompactionIntent, CompactionLastResult, CompactionPreparation,
+  CompactionSettings, CompactionState, CompactionSummary, CompletedByAssistant,
+  CompletedByTerminatedTools, ConfigurationProvenance, ConsumeAll, Deciding,
+  DeferredEffectPending, DeferredSuspended, FailureDrain, Generating,
+  GenerationContext, GenerationEffectPending, GenerationReady,
+  GenerationRetryWait, Inbox, ManualSummary, MayFinish, NavigationIntent,
+  NavigationLastResult, NavigationState, NeedAssistant, OneAtATime,
+  OperationError, OverflowReason, OverflowSummary, PendingCustom, PendingMessage,
+  ReplaySafe, ResponseProvenance, RunAborted, RunCompleted, RunFailed, RunIntent,
+  RunLastResult, RunSettings, RunState, Running, Starting, StructuralAborted,
+  StructuralCompleted, StructuralDeclined, StructuralFailed,
+  StructuralProvenance, SummarizedNavigation, SummaryContext,
   SummaryEffectPending, SummaryReady, SummaryRequest, SummaryRetryWait,
   ThresholdReason, ThresholdSummary, ToolBatch, Tools, UnsummarizedNavigation,
 }
@@ -3960,7 +3961,140 @@ fn host_state(
   }
 }
 
+/// Whether a failed structural attempt is a statement about the *context*
+/// rather than about the summarizer that was asked to shrink it.
+///
+/// The subject of the error decides, not its severity. Every way a
+/// summarize attempt ordinarily ends badly — an unresolvable route, a
+/// provider that would not answer, a summarizer that replied with a tool
+/// call instead of a summary, a settlement lost with its process, an
+/// attempt orphaned at the cap — describes the *summarizer*. The
+/// conversation it was handed is untouched by all of them: still in the
+/// tree, still projecting to the same messages, still the size it was
+/// when the last generation request fitted the window. Losing the clamp
+/// is not the same as losing the context.
+///
+/// So this is a denylist and not an allowlist, deliberately. A code this
+/// function has never heard of — from a host's own hooks, or from a
+/// wiring written after this line — is far likelier to be one more way
+/// for a summarizer to be unavailable than a claim that the conversation
+/// cannot be continued, and the two mistakes cost wildly different
+/// amounts. Continuing when the run should have drained costs one more
+/// generation request, and the overflow path catches it with a
+/// preparation of its own. Draining when the run should have continued
+/// costs the whole session, which is the failure this distinction exists
+/// to prevent.
+///
+/// Corruption never arrives here. An undecodable register or an
+/// observation that cannot belong to the current phase is a `Fault`
+/// raised at its own site, not an `OperationError`, so nothing this
+/// function returns can turn an impossible state into a survivable one.
+fn fatal_to_the_context(error: OperationError) -> Bool {
+  case error.code {
+    "context_overflow" -> True
+    _ -> False
+  }
+}
+
+/// A threshold compaction the run could not perform, abandoned.
+///
+/// The run restores the checkpoint the compaction copied aside — the
+/// same restore a *declined* threshold compaction does — and goes on
+/// without the summary it wanted. That checkpoint is already marked
+/// threshold-checked, so this boundary is not rechecked.
+///
+/// **And threshold compaction is switched off for the rest of this run.**
+/// That is the deliberate answer to "what does the run do next", and it
+/// is worth stating plainly because the alternative is quiet and
+/// expensive. Restoring the checkpoint alone would leave the gate open:
+/// the next appended entry is a new trigger, the boundary is unchecked
+/// again, the threshold is still exceeded — the context did not shrink —
+/// and the run would spend a whole retry ladder against the same dead
+/// route on every turn for the rest of its life. Clearing `enabled`
+/// records the abandoned attempt in the one place the check already
+/// reads (`after_inbox`, step 3) and in state that is already durable,
+/// so a crash-restore does not re-open the gate.
+///
+/// The backoff interval is the operation. `RunSettings` is captured per
+/// operation at acceptance, so the next run on this strand takes a fresh
+/// snapshot with compaction enabled and asks the summarizer again: this
+/// suppresses the retry loop within one run without disabling compaction
+/// for the session.
+///
+/// The run then continues unclamped, and that is survivable because the
+/// clamp was never the only guard. Overflow recovery does not consult
+/// these settings at all — a request that does not fit still diverts
+/// into a compaction task — so the provider's own limit remains the
+/// backstop. If the summarizer is still down when it fires, that
+/// compaction drains the run, and by then draining is the honest
+/// outcome: the context genuinely will not fit.
+fn abandon_threshold_compaction(
+  op: Operation,
+  in: PlannerInputs,
+  settings: RunSettings,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  resume: CheckpointPhase,
+) -> Action {
+  let next =
+    RunState(
+      control: Running,
+      settings: RunSettings(
+        ..settings,
+        compaction: CompactionSettings(..settings.compaction, enabled: False),
+      ),
+      phase: Checkpoint(checkpoint: resume),
+      inbox:,
+      latest_assistant: latest,
+    )
+  transition(op, in, next, [build.set_op_state(op.id, next)])
+}
+
+/// A structural failure the run cannot survive: the whole run drains.
+///
+/// The provenance is the failure's *subject*, and the distinction is
+/// older than this one. A captured identity that no longer resolves is a
+/// configuration failure — nothing was dispatched, no response or usage
+/// was fabricated, and the same code reaches the drain from an assistant
+/// step. Anything else is a property of this summary task, and its
+/// `task_id` locates the preparation register the failure happened over.
+fn drain_failed_structural(
+  op: Operation,
+  in: PlannerInputs,
+  task_id: String,
+  settings: RunSettings,
+  inbox: Inbox,
+  latest: Option(EntryId),
+  error: OperationError,
+) -> Action {
+  let provenance = case error.code {
+    "model_unavailable" | "configured_tools_unavailable" ->
+      ConfigurationProvenance
+    _ -> StructuralProvenance(task_id:)
+  }
+  let next =
+    RunState(
+      control: Running,
+      settings:,
+      phase: FailureDrain(error:, provenance:),
+      inbox:,
+      latest_assistant: latest,
+    )
+  transition(op, in, next, [build.set_op_state(op.id, next)])
+}
+
 /// Terminal or in-run failure for structural work.
+///
+/// For an in-run host the `CompactionReason` decides whether the run
+/// survives, exactly as it does on the decline path just above. A
+/// **threshold** compaction is Loom's own clamp: failing to apply it
+/// costs the clamp, not the conversation, so a recoverable failure
+/// abandons the compaction and the run carries on. An **overflow**
+/// compaction is the provider's verdict that the context does not fit,
+/// and a run that cannot shrink a context the provider has already
+/// refused has nowhere left to go, so it drains whatever the error says.
+/// A standalone or navigation host has no run to keep alive and finishes
+/// failed either way.
 fn structural_failure(
   op: Operation,
   in: PlannerInputs,
@@ -3969,22 +4103,21 @@ fn structural_failure(
   error: OperationError,
 ) -> Action {
   case host {
-    InRunHost(settings:, inbox:, latest:, ..) -> {
-      let provenance = case error.code {
-        "model_unavailable" | "configured_tools_unavailable" ->
-          ConfigurationProvenance
-        _ -> StructuralProvenance(task_id:)
+    InRunHost(reason:, settings:, inbox:, latest:, resume:) ->
+      case reason, fatal_to_the_context(error) {
+        ThresholdReason, False ->
+          abandon_threshold_compaction(op, in, settings, inbox, latest, resume)
+        ThresholdReason, True | OverflowReason, _ ->
+          drain_failed_structural(
+            op,
+            in,
+            task_id,
+            settings,
+            inbox,
+            latest,
+            error,
+          )
       }
-      let next =
-        RunState(
-          control: Running,
-          settings:,
-          phase: FailureDrain(error:, provenance:),
-          inbox:,
-          latest_assistant: latest,
-        )
-      transition(op, in, next, [build.set_op_state(op.id, next)])
-    }
     StandaloneHost(..) ->
       finish(
         op,
