@@ -5,6 +5,64 @@ spec or revealed a gap. Each entry says what was decided and where. Items
 that would change a frozen Part 1 interface go through `protocol-change/`
 instead and are only referenced here.
 
+## Triage — where each item stands
+
+Every item in this log is one of three things: a **settled
+interpretation** (a decision recorded, nothing outstanding), **deferred
+work with a home** (real work a milestone or a Part 5 follow-up track
+already owns), or **deferred work with no home** (real work scheduled
+nowhere). The two tables below name the second and third classes. The
+rule for reading them: *an item named in neither table is settled* —
+which is 86 of the 114 items. A recorded option nobody must exercise (a
+"candidate for hoisting if the duplication grates") stays settled; only
+work someone must do to meet a stated criterion is listed here.
+
+Items are cited as section plus the number as written in the list
+(`WP-J 14`, `M3 runtime wave 11`).
+
+### Deferred work with a home (8)
+
+| Item | The work | Scheduled at |
+|---|---|---|
+| WP-A 3 | somewhere to put pi's optional `details` payloads | Part 5 track 6 |
+| WP-B/T 6 | the JSONL/format-4 import shim | Part 5 track 6 |
+| M2 integration 3 | a provider surface for deferred polls and structural summaries | M5 — but the summaries half was M3's, and M3 passed without it (Part 4) |
+| M3 runtime wave 11 | commit the role, or have recovery consult the chain in force at commit time, so the fallback chain is actually walked | M5, whose acceptance names the chain |
+| M3 runtime wave 12 | dispatch on the `subagent`/`plan`/`summarize`/`vision` roles, not `main` alone | M5 |
+| M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
+| WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
+| WP-J 14 | carry the satellite's enforcement report in the outcome (or report on the abort path) so a green run proves the jail engaged | M4.5 / WP-N, which sequences it before the seam |
+
+### Deferred work with no home (20)
+
+Twenty items, nineteen rows: the canonical session id is recorded
+twice. Nothing in the right-hand column is scheduled — it is where the
+work would sit if someone scheduled it, recorded so the choice is made
+rather than drifted into. Part 5.1 of the spec says the same thing from
+the other side.
+
+| Item | The work | Proposed home |
+|---|---|---|
+| WP-L 1 | a production denial-raiser: nothing under `client/serve` raises an escalation at all, and the gateway raises through the unscoped legacy path whose approvals no clearance loads | M3 residue — reopen under M3's row |
+| WP-J 15 | let an approved escalation widen a code-mode execution; every clearance the pipeline makes passes no grants, so approving one changes nothing | M4.5 / WP-N, with WP-L 1 |
+| WP-J 16 | one threaded `ExecIdentity`, so one-ledger-per-execution is a property of the types rather than a convention the caller must honor | M4.5 / WP-N |
+| WP-E 8 | the chaos tier of WP-E's own exit criteria — random kills under load, ten-minute soak. `make soak` is the deterministic-simulation seed soak, not a chaos runner | WP-T, and M1 recorded partial until it runs |
+| WP-E 3 | root the session tree under an application supervisor: close is a controlled crash, and `client/serve` is now the long-lived host the entry said to wait for | a `serve` fix; no milestone |
+| WP-G 9 | the MCP adapter — in WP-G's scope, deferred post-M2, integrated by no row since | a Part 5 track |
+| WP-F 7 | the per-OS keychain backends WP-F's scope names; only the environment backend ships | a Part 5 track |
+| WP-F 6 | pricing tables somewhere ledger-side, since the adapters zero every cost field and §3.4 calls the ledger the billing source of truth | the token-budget work `design-notes/orchestration-comparison.md` sequences after WP-N |
+| WP-K 4, WP-C-full 3 | a canonical session id in `core`: the bus, the search service, and the schema's unwritten `parent_session_id` column all wait on one | §1.1 via a protocol-change; M5 |
+| M2 integration 2 | a wire mapping for `stream_options`, or its removal — the runtime carries a bag the provider request cannot express and the wire drops | §1.5 via a protocol-change |
+| WP-L 8 | per-identity model facts in the wiring seam, so a strand switched off its role's resolution stops doing overflow arithmetic against fallback numbers | M5 |
+| M3 runtime wave 13 | decide a catalogue entry's `thinking`: the default a strand overrides, or refused like `headers` — today it is validated and discarded | M5 |
+| WP-I 7 | decide whether the tool timeout ceiling is the tool-side clamp or session policy; the entry deferred it to runtime wiring, which has since landed | a §3 line; no milestone |
+| M2 integration 1 | state in §0.2 that one clock — or one era — is injected across runtime, tools, and broker | amend §0.2 |
+| WP-K 1 | promote the catch-up frontier rule from an entry here to a convention in §0.2 | amend §0.2 |
+| WP-A 7 | restate WP-A's "≥95% branch coverage on decoders" in terms something can check; no Gleam coverage tooling exists | amend WP-A's exit criteria |
+| WP-L 2 | `api.compact` and `api.navigate`, so the gateway and the conformance runner stop keeping two copies of acceptance-plan building | no milestone |
+| WP-L 3 | an optional-brief `create_strand`, so protocol fork and create-strand stop seeding registers in the gateway | no milestone |
+| WP-L 6 | address queued-versus-placed acks in the protocol document's reply table | `protocol/`; no milestone |
+
 ## From WP-A (`core`)
 
 1. **Id minting signature.** Part 1.1's comment reads `mint(Clock)`, but

@@ -45,6 +45,7 @@ A → (nothing)
 B → A            C → A,B,D        D → A            T → A..(all, test-only)
 E → A,B,C,D,F    F → A            G → A            H → G(protocol only)
 I → G            J → G,I          K → A,B          L → A..K(thin over all)  M → E,G,J
+N → E,I,J,L
 ```
 
 **Parallelization**: after WP-A freezes, {B, D, F, G, H} proceed fully in parallel; {C} after B's behaviour and D's register codecs land; {E} after B+C+D+F; {I, J} after G's protocol section (Part 1.4) — which is frozen *here*, so they can start immediately against mocks. T grows continuously.
@@ -333,6 +334,74 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 **Scope**: L1 skill store (named code-mode programs as entries; invoke-by-name re-vets + re-compiles from source); L2 candidate pipeline (extension prelude allowlist; test-in-jail runner attaching results durably); L3: extension behaviours (`ExtTool`, `ExtHook`, `ExtProjection`), harness-side compile, `code:load_binary` under `ext_{name}_{vsn}` names, supervised time-boxed invocation wrappers, unload/rollback, durable load/unload events, org policy for auto-approval of signed sources.
 **Exit**: promotion-ladder integration test (agent-authored fixture tool goes L0→L3 and serves a live tool call; rollback restores prior version mid-session); a hostile L2 candidate (attempts FFI, oversleeps, leaks) is rejected/killed at each defense layer; TCB freeze test — extension API cannot reach StorageWriter/broker internals (compile-time visibility + runtime name checks).
 
+### WP-N `cap/strand` — the orchestration seam *(after J; independent of I's lsp/dap and of M)*
+
+**Scope**: a **second** code-mode seam, so that a program can orchestrate
+subagents. A submission is vetted against one of two allowlists — the
+existing *workspace* seam (`cap/{fs, proc, net, git, lsp, report, task,
+actor, kv}`) or the new *orchestration* seam (`cap/strand` + `cap/report`,
+nothing else). One pipeline, two allowlists: `codemode`'s vetting policy
+is already parameterized per submission, so this is a configuration of
+machinery that exists. Content and ordering come from
+`docs/design-notes/orchestration-comparison.md`, which argues the verdict
+and deliberately does not put the interesting part first.
+- **Structured results, first.** An optional `result_schema` on the spawn
+  request, carried into the child's brief and its terminal validation; a
+  typed result beside `Waited.Ready`'s prose `report`. `tools/agent` and
+  `client/agency` are the only modules that change, and the `agent_*`
+  tools gain it too. Deterministic orchestration over a `String` result
+  is a script that regexes prose, so nothing downstream is worth building
+  first.
+- **Honest enforcement reporting, second** (spec-gaps WP-J 14). The
+  satellite reports enforcement only on `CallExited`, which the abort
+  that settles the outcome usually beats, so a green run does not prove
+  the jail engaged. An orchestration seam is the first thing anyone runs
+  unattended; "we could not confirm the jail applied" is not an
+  acceptable answer for that case.
+- **The seam, third.** `cap/strand`: `spawn`, `wait` (a list of handles
+  against one deadline), `send`, `note`/`notes`, `roster` — RPC stubs
+  over `cap_call`, serviced by the same `client/agency` closures the
+  `agent_*` tools call and judged against the same `Caller`. The
+  authorization model is reused, not invented: `NotADescendant`,
+  `DepthCapReached`, `FanOutCapReached`, `UnknownTool`, `ParentRunEnded`
+  are already total.
+- **Its own caps.** A hard ceiling on spawn admissions per execution —
+  `agent_spawn` is throttled by turn cost and a loop pays nothing — plus
+  the existing rule that a program may address only the lineage its own
+  strand roots.
+
+**Must not**: put `cap/fs`, `cap/proc`, `cap/net` or `cap/git` on the
+orchestration seam (which capabilities travel together is the whole
+point: an orchestrator that can also write files is a materially worse
+thing to hand a model than one that cannot); run any part of the
+orchestrator in the harness VM (Rule Zero closes the trusted-interpreter
+route, which is why the seam exists at all); raise `depth_cap`,
+`fan_out`, or `session_strands`; build a model-readable token budget or
+verification-pattern primitives — the design note sequences both *after*
+this milestone, and a verification pattern built before the loop that
+runs it is a pattern the model must remember to follow.
+
+**Exit**: an orchestration sample — a documented program submitted
+verbatim by its test, as WP-J's migration sample is — fans out over the
+fixture repo, joins on one deadline, and returns one structured result;
+a child whose terminal result does not match its `result_schema` fails
+naming the schema, and a matching one comes back as typed JSON, not
+prose; **seam confinement**: an orchestration-seam program importing
+`cap/fs` or `cap/proc` is rejected by vetting, and a workspace-seam
+program importing `cap/strand` is rejected, both as the structured
+rejection the model reads; a program looping past the spawn-admission
+ceiling is refused in band *at* the ceiling and the refusal names it;
+spawning or messaging outside the program's own lineage is refused under
+the existing refusal names; and every code-mode outcome — happy path
+included — carries the satellite's enforcement report, asserted by
+`make e2e-codemode`.
+
+**Proposed, not in scope**: spec-gaps WP-J 15 and 16 — an approved
+escalation that widens nothing in code mode, and identity plus budget
+specified in three places — are the plumbing this seam leans on hardest.
+The `spec-gaps.md` triage proposes them here; they are in scope only if
+the owner puts them there.
+
 ### WP-T `conformance` — the shared suites *(continuous)*
 
 Storage suite · machine scenario DSL + suites · **interleaving harness** (instrumented StorageWriter decorator: enumerate commit boundaries, script kills, assert convergence — pi Part 9's order-assertion decorator, upgraded into a crash scheduler) · chaos runner · sandbox regression suite · protocol fuzzers · fixture repos (a small polyglot repo with tests, for tool/code-mode/e2e suites) · golden end-to-end transcripts.
@@ -366,29 +435,150 @@ Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step
 
 ## Part 4 — Milestone acceptance (cut points for integration)
 
-| Milestone | Integrates | Acceptance |
+Status is read against the acceptance column and nothing else. **Done**
+means every criterion in the row has been demonstrated by a test or a
+live run; **partial** means at least one has not, and the note below
+says which. A criterion demonstrated only under test-supplied hooks, or
+only on a host that could not enforce what it claims, is not
+demonstrated.
+
+| Milestone | Integrates | Acceptance | Status |
+|---|---|---|---|
+| M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms | done |
+| M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly | partial |
+| M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live | partial |
+| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial |
+| M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
+| M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | not started |
+| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
+| M6 | +M | promotion-ladder integration test; rollback live | not started |
+| M7 | follow-ups below | per-feature | not started |
+
+**Why M4.5 and not M8.** The orchestration seam depends on M4 and on the
+`agent_*` tools (delivered, below), and on nothing in M5 or M6, so it
+belongs between M4 and M5. Those three are cited by number elsewhere —
+WP-I's own scope line, `spec-gaps.md`, `loom-design.md` §11,
+`deps-eval.md`, the notebook — so renumbering them to open a slot would
+silently invalidate every one; and M7 is a terminal catch-all, so an M8
+would read as *after the follow-ups*, which is wrong.
+
+**Where the design doc disagrees.** `loom-design.md` §11's build order
+puts the ClientGateway and the TUI in M5 and macOS Seatbelt in M3.
+Where the two conflict this document wins on mechanics (front matter),
+and the table above is what happened: the gateway and TUI landed with
+M3, and Seatbelt is not being built at all.
+
+**One caveat over every row.** §0.3 says a WP is done when its exit
+criteria pass in CI on Linux and macOS. There is no CI configuration in
+the tree, and no suite has ever run on macOS. Every status above means
+green under `make check` on one Linux development container.
+
+### What the rows still owe
+
+- **M0** — done, with one soft edge: the p50 target is *printed* by the
+  SQLite perf smoke test, not asserted (2.6 ms in the development
+  container against a 5 ms target), so a regression would not fail the
+  gate.
+- **M1** — the interleave harness and the 30-turn cold open are green.
+  WP-E's chaos tier (random process kills under load, ten-minute soak) is
+  unbuilt: `make soak` is the deterministic-simulation seed soak, and
+  WP-T's chaos runner does not exist (spec-gaps WP-E 8).
+- **M2** — the jailed end-to-end and the crash rider run against the real
+  `loom-exec`, but under `BestEffort`: no machine the suite has run on
+  has had bubblewrap, Landlock, or a delegated cgroup v2 hierarchy, so
+  `make selftest` reports three of its seven probes SKIPPED
+  (write-outside-roots, protected-path write, pids cap) and *nothing has
+  yet proved a kernel confined anything*. Two probes WP-H's exit list
+  names have no implementation at all: a non-allowlisted host under
+  `Proxy` — the egress sidecar is unbuilt, and proxy mode fails closed as
+  network-off — and setsid escape. Escalation is specified in §5.3 and
+  exercised in tests, but no production path raises one (spec-gaps WP-L
+  1, WP-J 15).
+- **M3** — the multi-strand demo, fork, navigate, catch-up and the
+  escalation round trip all run through the public protocol in
+  `make check-client`, and the parent-plus-two-subagents kill/reboot
+  variant runs at runtime level. Three criteria are weaker than the row
+  reads. *Compaction is not live in production*: `client/serve` installs
+  `runtime/effects.default_hooks()`, whose threshold never fires and
+  whose structural summaries settle as an in-band "not wired to a
+  provider surface" error, so the demo's compaction is the demo's own
+  hooks answering (spec-gaps M2 integration 3). *The TUI drives a fake*:
+  the two ends are pinned to one fixture corpus and the TUI's own
+  end-to-end runs against a Go fake gateway. `make dev` attaches the real
+  TUI to the real server, but a human drives it; no test does.
+  *`H(macOS)` was resolved, not delivered*: Seatbelt is deliberately
+  unimplemented, because a generated profile can only be tested against
+  the string it was told to emit, which cannot distinguish
+  deny-by-default from permissive-through-a-typo — the failure mode this
+  helper exists to prevent. The build now compiles for darwin, the
+  platform reports itself *unsupported* rather than degraded, and the
+  server refuses to start there without `--allow-unenforced`. A macOS
+  jail is unscheduled work (§5.1), not a delivered milestone item.
+- **M4** — the migration sample is real:
+  `docs/examples/stale_symbol_sweep.gleam` is submitted verbatim by its
+  test through real vetting, a real offline `gleam build`, and a real
+  jailed satellite, and the test asserts the
+  race's loser is killed rather than left running. The concurrency suite
+  and the in-process tabletop are green. Outstanding: the tabletop's
+  kernel half (a hostile `.beam` loaded directly reaches nothing) needs a
+  target-tier kernel; the satellite's enforcement report is usually lost
+  to the abort that races it, so a green run does not prove the jail
+  engaged (spec-gaps WP-J 14); and of the nine cap modules vetting
+  admits, the shipped router services exactly one, `proc.run` — the rest
+  vet, compile, and refuse in band.
+
+### Delivered outside the table
+
+Work that shipped, is tested, and no row claims. Listed here rather than
+folded into the rows above, because the rows are historical cut points
+and rewriting their acceptance would erase what was actually accepted.
+
+| Delivered | Where | Relation to the table |
 |---|---|---|
-| M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms |
-| M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly |
-| M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live |
-| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live |
-| M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes |
-| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm |
-| M6 | +M | promotion-ladder integration test; rollback live |
-| M7 | follow-ups below | per-feature |
+| Six `agent_*` tools — spawn, wait over a list against one deadline, send, note/notes, roster — over a seam `tools` names without depending on `runtime` | `tools/agent`, `client/agency` | the model-facing half of M3's durable messaging; M3's row predates it |
+| The durable lineage ledger: one cell per child naming its parent, minting operation, and an *absolute* deadline, under a reserved prefix with its own read door | `runtime/api`, `runtime/lineage` | what makes the descendant-only rule enforceable across restarts |
+| A system-prompt pack — named sections, total decoder, rendered against an environment, no clock in its dependency graph — assembled at boot and pinned durably, the pin winning on resume | `packages/prompt`, `client/serve` | no row named a system prompt; spec-gaps M2 integration 8 recorded that it had no home in the frozen contracts |
+| Anthropic prompt caching at four breakpoints, and cache writes counted toward the overflow comparison | `provider/adapter/anthropic` | no row; spec-gaps WP-F 8, 9 |
+| The `code_mode` tool and its wiring behind a discovered build seed — a host without one registers no tool rather than one that always refuses | `tools/codemode`, `client/codemode` | M4 integrated WP-J but no row required a door to it |
+| The macOS build split and the unsupported-platform refusal | `packages/sandbox` | the resolution of M3's `H(macOS)`, above |
 
 ## Part 5 — Follow-up tracks (post-M6, each spec'd on entry)
 
 1. **Remote executor pools** — the framing protocol over SSH tunnel/mTLS; pool registration, health, affinity (route by workspace); policy translation for remote roots. *(Design §5.6; mostly WP-G/H work.)*
 2. **Windows sandbox** — WP-H phase 3: restricted tokens, ACLs, firewall, job objects; port the regression suite.
 3. **MicroVM tier** — Firecracker driver for ExecPool; same policy language; snapshot-boot for warm pools.
-4. **Control-plane clustering** — libcluster + `inet_tls_dist`; session routing by id; `pg` event fan-out across nodes; lease semantics unchanged (one node owns a session file).
+4. **Control-plane clustering** — libcluster + `inet_tls_dist`; session routing by id; `pg` event fan-out across nodes; lease semantics unchanged (one node owns a session file). *(Absorbs spec-gaps M3 messaging 2: cross-node broadcast fan-out. The bus is read-side only today — no strand-facing broadcast-send exists.)*
 5. **Record/replay evals** — instrumented gateway/broker record settlements keyed by intent; replay mode simulates providers/tools from a recorded session; drift report. Unlocks regression evals for prompts, models, and machine changes.
-6. **pi format-4 import** — full Appendix-B-style normalization (id re-minting, aggregate usage adjustment row, unconfigured-main seeding).
+6. **pi format-4 import** — full Appendix-B-style normalization (id re-minting, aggregate usage adjustment row, unconfigured-main seeding). *(Absorbs spec-gaps WP-A 3 — somewhere to put pi's optional `details` payloads — and WP-B/T 6, the JSONL import shim WP-B's scope names.)*
 7. **`disk_log` backend** — alternate BEAM-native storage for embedded targets; must pass the same conformance suite.
 8. **Hindsight memory v2 / TTSR** — stream-scanner processes, rule store, relevance surfacing; promotion path memory→L1 skill.
 9. **Mobile/web thin clients** — Gleam-JS shared wire types; read-only first, then approvals and steering.
-10. **Egress proxy hardening** — TLS SNI pinning, per-domain byte quotas, request logging surfaced in transcript.
+10. **Egress proxy hardening** — TLS SNI pinning, per-domain byte quotas, request logging surfaced in transcript. *(This track hardens a sidecar that does not exist: WP-H phase 1 shipped none, so `Proxy(allowlist)` fails closed — jailed exactly as network-off, with a skipped `network-proxy` entry in the enforcement report saying the allowlist was not enforced. Building it comes first, and is unscheduled — §5.1.)*
+
+### 5.1 Recorded work with no home
+
+`docs/spec-gaps.md` now classifies all 114 of its items. Eighty-six are
+settled interpretations; eight name a milestone or a track above; **twenty
+name work scheduled nowhere at all**, and its triage table lists each with
+a proposed home. A proposal there is not a schedule: nothing is committed
+until it appears in Part 2 or Part 4.
+
+Four bodies of unscheduled work are larger than any single item, and are
+named here so no row above implies otherwise:
+
+- **A macOS jail.** WP-H phase 2 is specified and deliberately unbuilt
+  (Part 4, M3). The platform refuses rather than degrades, so nothing
+  silently runs unconfined — but Loom has no jail on macOS, and the
+  spec's own "passes in CI on Linux and macOS" cannot be met until it
+  does.
+- **The egress proxy sidecar.** Track 10 above.
+- **A production hook registry.** `client/serve` runs
+  `runtime/effects.default_hooks()`: the threshold hook never fires, the
+  structural-decision hook declines, and the summary hook returns an
+  empty string. Compaction, §3.2's token budgeting, and branch summaries
+  are therefore mechanisms without a production caller.
+- **The chaos runner.** WP-T's chaos tier and WP-E's ten-minute soak
+  (spec-gaps WP-E 8), which M1 was accepted without.
 
 ## Part 6 — Bootstrap order (do these before spawning parallel agents)
 
@@ -401,9 +591,9 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 
 ## Part 7 — Open implementation questions (owners decide, document in ADRs)
 
-- **ADR-001 (bootstrap-blocking)**: `AgentMessage` fidelity to pi shapes — see Part 6 item 2.
-- **ADR-002 (bootstrap-blocking)**: `sqlight` vs custom NIF for SQLite (need: BLOB params, `EXPLAIN` access, busy-handler control).
-- **ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring for the framing protocol on both Gleam and Go sides.
+- ~~**ADR-001 (bootstrap-blocking)**: `AgentMessage` fidelity to pi shapes~~ — accepted, `docs/adr/001-agent-message-fidelity.md`: mirror pi's shapes, diverge only in representation.
+- ~~**ADR-002 (bootstrap-blocking)**: `sqlight` vs custom NIF for SQLite~~ — accepted with a verification gate, `docs/adr/002-sqlite-binding.md`: `sqlight`.
+- ~~**ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring~~ — accepted, `docs/adr/003-msgpack.md`: our own codec in `core/msgpack` on the Gleam side, a pinned library on the Go side, both held to the golden frames in `protocol/msgpack-fixtures/`.
 - Satellite boot time target: measure `erl -noshell` cold start with preloaded prelude; decide pool-warm default.
-- Hashline anchor length (8 hex vs 12) vs collision odds on pathological files; whether anchors include line number salt.
+- ~~Hashline anchor length; whether anchors include line-number salt~~ — settled by WP-I as built (spec-gaps WP-I 1): 8 hex of a package-internal 64-bit hash, no salt, line numbers travelling beside anchors in refs, because an anchor never outlives one read-edit round trip.
 - ~~TUI implementation substrate~~ — settled: Go sidecar (bubbletea) over the client protocol; the protocol keeps this swappable if a BEAM-native TUI ever becomes viable.
