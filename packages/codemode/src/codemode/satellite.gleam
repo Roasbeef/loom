@@ -55,16 +55,34 @@
 ////   program as an `Unreachable` capability error before the node dies
 ////   (J3a EOF semantics), a clean way to unblock it.
 ////
-//// # The cap-channel token (defence in depth)
+//// # The cap-channel token: what it defends, and what it does not
 ////
 //// The host mints a 32-byte cap-channel token (via `broker/token`, reusing
 //// its constant-time check and injected entropy — no new FFI), writes it
 //// to the private token file, and checks it on *every* inbound `cap_call`
-//// before routing. This is the defence that denies a hostile `.beam` which
-//// slipped vetting: even inside the jail it reaches only this one
-//// token-checked door. This token is entirely separate from the broker's
-//// own per-clearance exec tokens, which `clear_call` mints and revokes
+//// before routing. This token is entirely separate from the broker's own
+//// per-clearance exec tokens, which `clear_call` mints and revokes
 //// internally and the satellite never sees.
+////
+//// What the check buys is **channel authentication and execution
+//// binding**. A peer that never read the token file — another execution's
+//// satellite, anything that found the socket — is refused, and the token
+//// is bound to one `{op_id, step_id, deadline}`, so a captured token
+//// cannot be replayed into another execution or after the deadline.
+//// Revoking it (`broker.abort` on teardown) shuts the channel.
+////
+//// What the check does **not** buy is confinement of a hostile `.beam`
+//// that slipped vetting. The token file is bind-mounted readable into the
+//// jail — `cap/runtime` has to read it — and its path is in an ordinary
+//// environment variable. A hand-written `.beam` carries its own
+//// `@external`, so it reads the file and presents the genuine token, and
+//// the check passes. That adversary is confined by two other things: the
+//// **kernel jail**, which leaves the cap socket as its only reachable
+//// effect, and the **broker's per-call policy check**, which composes and
+//// checks policy on every `cap_call` whatever token came with it. Write it
+//// that way round; the token is not a bearer capability, and calling it
+//// the defence against the escaped `.beam` overstates it (M4 triage
+//// CH-F4).
 ////
 //// # Pooled budget
 ////
@@ -103,7 +121,7 @@ import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -124,6 +142,9 @@ const result_margin_ms = 5000
 
 // How long a per-cap-call clearance (the synchronous `clear_call`) may take.
 const clear_timeout_ms = 5000
+
+// How long to wait for the host to acknowledge the launched connection.
+const hand_over_timeout_ms = 5000
 
 /// The structured result a code-mode program returns, decoded from the
 /// terminal `outcome` frame's body (mirrors `cap/report`'s wire shape,
@@ -289,7 +310,12 @@ pub type SatelliteConfig {
 ///
 /// Mints and delivers the cap-channel token, launches the node, owns the
 /// broker end of the cap channel, enforces the wall deadline, and destroys
-/// the node and unlinks the token file on every exit path.
+/// the node and unlinks the token file on every exit path the host itself
+/// takes — including a launch that outran the deadline, whose connection is
+/// destroyed by `hand_over` when the host has already stopped. What is not
+/// covered is a host actor killed from outside: cleanup runs inside that
+/// actor, so a monitor-based janitor mirroring the broker's fd-3 safety net
+/// is still owed (M4 triage CH-F3(b)).
 pub fn run(
   artifact: Artifact,
   exec_id: ExecId,
@@ -373,10 +399,7 @@ fn run_launched(
           Error(LaunchRejected(reason))
         }
         Ok(connection) -> {
-          process.send(
-            host.commands,
-            Connected(send: connection.send, destroy: connection.destroy),
-          )
+          hand_over(host, connection)
           let wait =
             int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
           case process.receive(result_subject, wait) {
@@ -392,19 +415,57 @@ fn run_launched(
   }
 }
 
+// Whether the host took ownership of the connection before it stopped.
+type HandOver {
+  HostTook
+  HostGone
+}
+
+// Hands the launched node's connection to the host, and destroys it here if
+// the host stopped before it could take it.
+//
+// `Connected` carries the node's `destroy`, the host's only handle on the
+// launched node and its socket. A message to a stopped actor is dropped, so
+// a bare send would leak the node whenever the host settled during the
+// launch. Monitoring the host closes the race: the acknowledgement and the
+// host's death are ordered signals from the same process, so exactly one of
+// them arrives first, and a death that beats the acknowledgement means the
+// host never took the connection (CH-F3).
+fn hand_over(host: Host, connection: CapConnection) -> Nil {
+  let ack = process.new_subject()
+  let monitor = process.monitor(host.pid)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(ack, fn(_nil) { HostTook })
+    |> process.select_specific_monitor(monitor, fn(_down) { HostGone })
+  process.send(
+    host.commands,
+    Connected(send: connection.send, destroy: connection.destroy, ack:),
+  )
+  case process.selector_receive(outcome, hand_over_timeout_ms) {
+    Ok(HostGone) -> connection.destroy()
+    // Taken, or the host is alive but wedged; either way it owns `destroy`
+    // and destroying here as well would reap the node twice.
+    Ok(HostTook) | Error(Nil) -> Nil
+  }
+  process.demonitor_process(monitor)
+}
+
 // --- the host actor -------------------------------------------------------
 
-// The started host's two subjects: `commands` for internal messages,
-// `wire` for the launcher's inbound bytes.
+// The started host: `commands` for internal messages, `wire` for the
+// launcher's inbound bytes, and the actor's pid, which `run_launched`
+// monitors so a host that stopped before taking the connection does not
+// leave the node unreaped.
 type Host {
-  Host(commands: Subject(Msg), wire: Subject(WireIn))
+  Host(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
 }
 
 /// The host actor's message set. Opaque: only this module constructs it,
 /// so nothing outside can inject a forged capability settlement.
 pub opaque type Msg {
   FromWire(event: WireIn)
-  Connected(send: fn(BitArray) -> Nil, destroy: fn() -> Nil)
+  Connected(send: fn(BitArray) -> Nil, destroy: fn() -> Nil, ack: Subject(Nil))
   CapStarted(id: Int, handle: broker.CallHandle)
   CapDone(id: Int, outcome: CapOutcome)
   Deadline
@@ -456,16 +517,17 @@ fn start_host(
   token_path: String,
   result_subject: Subject(Result(Outcome, RunError)),
 ) -> Result(Host, actor.StartError) {
-  let #(now, clock) = clock.read(config.clock)
+  let #(_now, clock) = clock.read(config.clock)
   actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
     let wire = process.new_subject()
     let selector =
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(wire, FromWire)
-    // The wall deadline: after it, the node dies as a unit (`broker.abort`).
-    let delay = int.max(config.budget.deadline_ms - now, 0)
-    let _ = process.send_after(commands, delay, Deadline)
+    // The wall deadline is armed on `Connected`, not here: a launch that
+    // outlasted a deadline armed up front stopped the host before the
+    // connection arrived, and the `destroy` it carried — the host's only
+    // handle on the node and its socket — was dropped (CH-F3).
     let state =
       State(
         broker:,
@@ -492,22 +554,34 @@ fn start_host(
       )
     actor.initialised(state)
     |> actor.selecting(selector)
-    |> actor.returning(Host(commands:, wire:))
+    |> actor.returning(#(commands, wire))
     |> Ok
   })
   |> actor.on_message(handle)
   |> actor.start
-  |> result.map(fn(started) { started.data })
+  |> result.map(fn(started) {
+    let #(commands, wire) = started.data
+    Host(pid: started.pid, commands:, wire:)
+  })
 }
 
 fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   case msg {
-    Connected(send:, destroy:) -> {
+    Connected(send:, destroy:, ack:) -> {
       // Flush anything buffered before the launcher connected.
       list.each(list.reverse(state.pending_out), send)
+      // The node exists from here, so the wall deadline starts here: after
+      // it, the node dies as a unit (`broker.abort` plus `destroy`).
+      let #(now, clock) = clock.read(state.clock)
+      let delay = int.max(state.budget.deadline_ms - now, 0)
+      let _ = process.send_after(state.commands, delay, Deadline)
+      // The host now owns `destroy`. Telling `run_launched` so is what lets
+      // it distinguish this from a host that stopped first (CH-F3).
+      process.send(ack, Nil)
       actor.continue(
         State(
           ..state,
+          clock:,
           send: Some(send),
           destroy: Some(destroy),
           pending_out: [],
@@ -592,26 +666,22 @@ fn handle_payloads(
   }
 }
 
+// Classifies one payload. `broker/framing` decodes every payload exactly
+// once, so the host applies the same strict envelope rules — version, `id`,
+// the exact key set — to the terminal `outcome` frame as to every broker
+// frame (CH-F5), and the two decoders cannot disagree about what is
+// well-formed (CH-F7). `framing` knows no `outcome` kind, so it validates
+// that envelope and then reports the kind as unknown; only then does the
+// host read the body out itself.
 fn handle_payload(state: State, payload: BitArray) -> FrameStep {
-  case decode_envelope(payload) {
-    // A payload that does not parse as an envelope closes the channel.
-    Error(reason) -> FrameDone(state, Error(ChannelFaulted(reason)))
-    Ok(#(kind, body)) ->
-      case kind == outcome_kind {
-        // The terminal outcome frame: decode its body ourselves, since
-        // `broker/framing` does not know the kind.
-        True -> finish_from_body(state, body)
-        // Every other kind is a `broker/framing` frame; let it decode.
-        False ->
-          case framing.decode_payload(payload) {
-            Ok(frame) -> handle_frame(state, frame)
-            // Any other unknown kind is ignored (forward compatibility);
-            // a genuinely malformed frame closes the channel.
-            Error(framing.UnknownKind(..)) -> FrameContinue(state)
-            Error(_) ->
-              FrameDone(state, Error(ChannelFaulted("malformed cap frame")))
-          }
-      }
+  case framing.decode_payload(payload) {
+    Ok(frame) -> handle_frame(state, frame)
+    Error(framing.UnknownKind(id: _, kind:)) if kind == outcome_kind ->
+      finish_from_payload(state, payload)
+    // Any other unknown kind is ignored (forward compatibility); a
+    // genuinely malformed frame closes the channel.
+    Error(framing.UnknownKind(..)) -> FrameContinue(state)
+    Error(_) -> FrameDone(state, Error(ChannelFaulted("malformed cap frame")))
   }
 }
 
@@ -641,8 +711,9 @@ fn handle_cap_call(
 ) -> FrameStep {
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
-  // (a) Constant-time token check — the defence that denies a hostile
-  // `.beam` which slipped vetting. `check_for` scans without early exit.
+  // (a) Constant-time token check — channel authentication and the
+  // `{op_id, step_id, deadline}` binding, not confinement of an escaped
+  // `.beam` (see the module doc). `check_for` scans without early exit.
   case
     token.check_for(state.vault, presented, state.op_id, state.step_id, now)
   {
@@ -656,11 +727,16 @@ fn handle_cap_call(
   }
 }
 
-// The terminal outcome frame's body: decode it into an `Outcome`.
-fn finish_from_body(state: State, body: MsgPackValue) -> FrameStep {
-  case decode_outcome(body) {
-    Ok(outcome) -> FrameDone(state, Ok(outcome))
-    Error(reason) -> FrameDone(state, Error(OutcomeMalformed(reason)))
+// The terminal outcome frame: its envelope is already validated, so read
+// the body out and decode it into an `Outcome`.
+fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
+  case outcome_body(payload) {
+    Error(reason) -> FrameDone(state, Error(ChannelFaulted(reason)))
+    Ok(body) ->
+      case decode_outcome(body) {
+        Ok(outcome) -> FrameDone(state, Ok(outcome))
+        Error(reason) -> FrameDone(state, Error(OutcomeMalformed(reason)))
+      }
   }
 }
 
@@ -691,22 +767,41 @@ fn route_cap_call(
         id,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) -> {
-      let inflight =
-        dict.insert(
-          state.inflight,
-          id,
-          InFlight(handle: None, cancelled: False),
-        )
-      spawn_collector(
-        state.commands,
-        state.broker,
-        plan,
-        id,
-        state.call_timeout_ms,
-      )
-      State(..state, inflight:)
-    }
+    Ok(plan) ->
+      // The pooled outstanding-effect cap is checked here, in the actor,
+      // before a collector exists. The broker enforces the same cap, but
+      // only from inside the spawned collector, so a satellite that floods
+      // the channel used to buy one harness-VM process per `cap_call` up to
+      // the wall deadline (CH-F6). A refused call now costs no process.
+      case dict.size(state.inflight) >= state.budget.max_outstanding {
+        True ->
+          emit(
+            state,
+            id,
+            framing.CapErr(
+              code: "budget",
+              message: "the pooled outstanding-effect cap "
+                <> int.to_string(state.budget.max_outstanding)
+                <> " is reached; the call was refused before dispatch",
+            ),
+          )
+        False -> {
+          let inflight =
+            dict.insert(
+              state.inflight,
+              id,
+              InFlight(handle: None, cancelled: False),
+            )
+          spawn_collector(
+            state.commands,
+            state.broker,
+            plan,
+            id,
+            state.call_timeout_ms,
+          )
+          State(..state, inflight:)
+        }
+      }
   }
 }
 
@@ -823,8 +918,15 @@ fn emit(state: State, id: Int, outcome: CapOutcome) -> State {
 // --- the host's own length-prefix deframer -------------------------------
 
 // The host owns frame boundaries on the cap socket so it can reach the
-// `outcome` frame's body (which `broker/framing` discards as unknown). This
-// splits raw length-prefixed payloads; each is then classified by kind.
+// `outcome` frame's body. `framing.push` splits and decodes in one step and
+// hands back an `Inbound` that, for a kind it does not know, carries only
+// the id and the kind — the body is gone, and `outcome` is exactly such a
+// kind. `broker/framing` is frozen (spec Part 1.4), so the host splits the
+// stream itself and hands each payload to `framing.decode_payload`, which
+// remains the only decoder. The duplication is therefore confined to the
+// u32 length read and the shared `framing.max_frame_bytes` guard; removing
+// it needs a `broker/framing` variant that carries the raw body, which is a
+// protocol-change proposal rather than a fix (M4 triage CH-F7).
 type Deframed {
   Deframed(payloads: List(BitArray), buffer: BitArray, fault: Option(String))
 }
@@ -878,18 +980,13 @@ fn take_payload(
   }
 }
 
-// Decodes a frame envelope's kind and body, totally. A malformed envelope
-// is a `String` fault the caller turns into a channel close.
-fn decode_envelope(
-  payload: BitArray,
-) -> Result(#(String, MsgPackValue), String) {
+// Reads the `body` out of an already-validated envelope, totally. The one
+// place the host decodes a payload itself, and only for the single terminal
+// `outcome` frame per execution, whose body `broker/framing` discards.
+fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
   case msgpack.decode(payload) {
     Error(_) -> Error("a cap frame payload did not parse")
-    Ok(value) -> {
-      use kind <- result.try(map_string(value, "kind"))
-      use body <- result.try(map_field(value, "body"))
-      Ok(#(kind, body))
-    }
+    Ok(value) -> map_field(value, "body")
   }
 }
 

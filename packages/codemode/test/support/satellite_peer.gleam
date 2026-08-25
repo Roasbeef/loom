@@ -84,11 +84,23 @@ pub fn send_proc_run(
         msgpack.ArrayValue(list.map(argv, msgpack.StringValue)),
       ),
     ])
+  send_cap_call(ctx, token, id, "proc.run", args)
+}
+
+/// Frames and sends a `cap_call` for an arbitrary capability name, so a
+/// test can drive a router of its own.
+pub fn send_cap_call(
+  ctx: PeerCtx,
+  token: BitArray,
+  id: Int,
+  cap: String,
+  args: MsgPackValue,
+) -> Nil {
   send_frame(
     ctx,
     framing.Frame(
       id:,
-      body: framing.CapCall(token:, cap: "proc.run", args:, deadline_ms: 5000),
+      body: framing.CapCall(token:, cap:, args:, deadline_ms: 5000),
     ),
   )
 }
@@ -103,21 +115,33 @@ pub fn send_cancel(ctx: PeerCtx, id: Int) -> Nil {
 /// with the peer's own encoder since `broker/framing` does not know the
 /// kind.
 pub fn send_outcome(ctx: PeerCtx, value: MsgPackValue) -> Nil {
-  let body =
-    msgpack.MapValue([
-      #(msgpack.StringValue("ok"), msgpack.BoolValue(True)),
-      #(msgpack.StringValue("value"), value),
-    ])
+  send_envelope(ctx, [
+    #("v", msgpack.IntValue(1)),
+    #("id", msgpack.IntValue(0)),
+    #("kind", msgpack.StringValue(satellite.outcome_kind)),
+    #("body", completed_body(value)),
+  ])
+}
+
+/// The `{ok: true, value}` body of a `Completed` outcome.
+pub fn completed_body(value: MsgPackValue) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("ok"), msgpack.BoolValue(True)),
+    #(msgpack.StringValue("value"), value),
+  ])
+}
+
+/// Frames and sends an arbitrary envelope map, so a test can present the
+/// frame a satellite speaking a different protocol version — or omitting a
+/// required envelope key — would write.
+pub fn send_envelope(
+  ctx: PeerCtx,
+  entries: List(#(String, MsgPackValue)),
+) -> Nil {
   let envelope =
-    msgpack.MapValue([
-      #(msgpack.StringValue("v"), msgpack.IntValue(1)),
-      #(msgpack.StringValue("id"), msgpack.IntValue(0)),
-      #(
-        msgpack.StringValue("kind"),
-        msgpack.StringValue(satellite.outcome_kind),
-      ),
-      #(msgpack.StringValue("body"), body),
-    ])
+    msgpack.MapValue(
+      list.map(entries, fn(entry) { #(msgpack.StringValue(entry.0), entry.1) }),
+    )
   let assert Ok(payload) = msgpack.encode(envelope)
   let size = bit_array.byte_size(payload)
   process.send(

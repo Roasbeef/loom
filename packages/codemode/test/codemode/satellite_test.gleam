@@ -3,11 +3,14 @@
 //// speaks the cap channel. No live jail, no live socket.
 ////
 //// They prove the host's half of the WP-J behaviour: the happy path, the
-//// escaped-satellite tabletop (token denial + deadline kill), input-order
-//// preservation under out-of-order completion, real per-clearance
-//// cancellation, and the pooled budget under fan-out. Each peer computes
-//// its verdict and returns it through the program `Outcome`, which the
-//// blocking `satellite.run` hands straight back.
+//// escaped-satellite tabletop (an unauthenticated `cap_call` denied, the
+//// genuine token buying no policy, and the deadline kill), the node being
+//// destroyed on the two races that used to drop it, envelope validation of
+//// the terminal frame, input-order preservation under out-of-order
+//// completion, real per-clearance cancellation, and the pooled budget under
+//// fan-out. Each peer computes its verdict and returns it through the
+//// program `Outcome`, which the blocking `satellite.run` hands straight
+//// back.
 
 import broker/broker
 import broker/budget
@@ -174,6 +177,226 @@ pub fn satellite_that_never_returns_is_killed_at_the_deadline_test() {
     )
   assert outcome == Error(satellite.DeadlineExceeded)
   broker.stop(broker)
+}
+
+// --- the launched node is destroyed on every exit path (CH-F3) ----------
+//
+// `CapConnection.destroy` is the host's only handle on the launched node
+// and its socket. Two races used to drop it: a launch that outlasts the
+// wall deadline, and a channel that closes while the connection is still
+// in flight. Either one leaks a live jailed node past its deadline.
+
+pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
+  let dir = fresh_dir("late-launch")
+  let broker = start_broker(echoing())
+  // The wall deadline is 100ms; the jail spawn takes four times that.
+  let cfg = config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 100))
+  let destroyed = process.new_subject()
+  let outcome =
+    satellite.run(artifact(), exec_id(), broker, cfg, fn(_spec) {
+      process.sleep(400)
+      Ok(recording_connection(destroyed))
+    })
+  assert outcome == Error(satellite.DeadlineExceeded)
+  assert process.receive(destroyed, 2000) == Ok(Nil)
+  broker.stop(broker)
+}
+
+pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
+  let dir = fresh_dir("late-connect")
+  let broker = start_broker(echoing())
+  let cfg =
+    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let destroyed = process.new_subject()
+  // The cap channel closes before the launcher hands its connection back,
+  // so the host settles and stops with the connection still in flight.
+  let outcome =
+    satellite.run(artifact(), exec_id(), broker, cfg, fn(spec) {
+      process.send(spec.wire, satellite.WireClosed(reason: "socket closed"))
+      process.sleep(100)
+      Ok(recording_connection(destroyed))
+    })
+  assert outcome == Error(satellite.SatelliteGone("socket closed"))
+  assert process.receive(destroyed, 2000) == Ok(Nil)
+  broker.stop(broker)
+}
+
+fn recording_connection(destroyed: Subject(Nil)) -> satellite.CapConnection {
+  satellite.CapConnection(send: fn(_bytes) { Nil }, destroy: fn() {
+    process.send(destroyed, Nil)
+  })
+}
+
+// --- the real token buys no policy (CH-F4) -------------------------------
+//
+// The token file is bind-mounted readable into the jail, so a hostile
+// `.beam` can read it and present the genuine token. This case takes that
+// adversary at its word: it presents the *real* token, and the call is
+// still refused — by policy, at the broker, on this one call. The token
+// authenticates the channel; it is not a bearer capability that widens what
+// the channel may ask for.
+
+pub fn the_real_token_does_not_widen_policy_test() {
+  let dir = fresh_dir("policy")
+  let broker = start_broker(echoing())
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      router: network_router,
+    )
+  let outcome =
+    satellite.run(
+      artifact(),
+      exec_id(),
+      broker,
+      cfg,
+      satellite_peer.launcher(real_token_peer),
+    )
+  let assert Ok(satellite.Completed(value)) = outcome
+  // The token was accepted (no `unauthorized`) and the call was refused
+  // anyway, by the broker's per-call policy check.
+  assert bool_field(value, "authenticated") == True
+  assert bool_field(value, "policy_refused") == True
+  broker.stop(broker)
+}
+
+// A router whose `net.fetch` asks for full network — more than the session
+// base grants — and refuses rather than proceeding narrowed.
+fn network_router(
+  request: satellite.CapRequest,
+) -> Result(satellite.CapPlan, satellite.CapDenial) {
+  case request.cap {
+    "net.fetch" ->
+      Ok(satellite.CapPlan(
+        spec: broker.CallSpec(
+          op_id: request.op_id,
+          step_id: request.step_id,
+          base_policy: request.base_policy,
+          requirements: policy.SandboxPolicy(
+            ..request.base_policy,
+            network: policy.NetworkFull,
+          ),
+          grants: [],
+          response: broker.RefuseNarrowed,
+          demand: request.demand,
+          argv: ["fetch"],
+          env: request.env,
+          cwd: request.cwd,
+          budget: request.budget,
+        ),
+        render: satellite.proc_render,
+      ))
+    _other -> satellite.default_router(request)
+  }
+}
+
+fn real_token_peer(ctx: PeerCtx) -> Nil {
+  satellite_peer.send_cap_call(
+    ctx,
+    ctx.token,
+    0,
+    "net.fetch",
+    msgpack.MapValue([]),
+  )
+  let results = satellite_peer.collect_results(ctx, 1, 3000)
+  let authenticated =
+    !list.any(results, fn(r) { is_unauthorized(r.1) }) && results != []
+  let policy_refused = list.any(results, fn(r) { is_code(r.1, "policy") })
+  satellite_peer.send_outcome(
+    ctx,
+    msgpack.MapValue([
+      #(msgpack.StringValue("authenticated"), msgpack.BoolValue(authenticated)),
+      #(
+        msgpack.StringValue("policy_refused"),
+        msgpack.BoolValue(policy_refused),
+      ),
+    ]),
+  )
+}
+
+// --- the outcome frame gets the same envelope checks (CH-F5) -------------
+
+pub fn an_outcome_frame_of_another_version_is_rejected_test() {
+  let dir = fresh_dir("outcome-version")
+  let broker = start_broker(echoing())
+  let cfg =
+    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let outcome =
+    satellite.run(
+      artifact(),
+      exec_id(),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_envelope(ctx, [
+          #("v", msgpack.IntValue(2)),
+          #("id", msgpack.IntValue(0)),
+          #("kind", msgpack.StringValue(satellite.outcome_kind)),
+          #("body", satellite_peer.completed_body(msgpack.StringValue("x"))),
+        ])
+        satellite_peer.wait_for_close(ctx)
+      }),
+    )
+  assert is_channel_faulted(outcome)
+  broker.stop(broker)
+}
+
+pub fn an_outcome_frame_missing_its_id_is_rejected_test() {
+  let dir = fresh_dir("outcome-id")
+  let broker = start_broker(echoing())
+  let cfg =
+    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let outcome =
+    satellite.run(
+      artifact(),
+      exec_id(),
+      broker,
+      cfg,
+      satellite_peer.launcher(fn(ctx) {
+        satellite_peer.send_envelope(ctx, [
+          #("v", msgpack.IntValue(1)),
+          #("kind", msgpack.StringValue(satellite.outcome_kind)),
+          #("body", satellite_peer.completed_body(msgpack.StringValue("x"))),
+        ])
+        satellite_peer.wait_for_close(ctx)
+      }),
+    )
+  assert is_channel_faulted(outcome)
+  broker.stop(broker)
+}
+
+fn is_channel_faulted(
+  outcome: Result(satellite.Outcome, satellite.RunError),
+) -> Bool {
+  case outcome {
+    Error(satellite.ChannelFaulted(_)) -> True
+    _ -> False
+  }
+}
+
+// --- the outstanding gate precedes the collector (CH-F6) -----------------
+
+pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
+  let dir = fresh_dir("gate")
+  let broker = start_broker(echoing())
+  // A zero pooled outstanding cap admits no effect at all, and the broker
+  // is stopped before the run. A refusal can therefore only come from the
+  // host's own gate: a collector spawned to ask this broker would never
+  // answer at all.
+  broker.stop(broker)
+  process.sleep(50)
+  let cfg =
+    config(dir, budget.Budget(max_outstanding: 0, deadline_ms: t + 5000))
+  let outcome =
+    satellite.run(
+      artifact(),
+      exec_id(),
+      broker,
+      cfg,
+      satellite_peer.launcher(budget_peer(3)),
+    )
+  let assert Ok(satellite.Completed(msgpack.IntValue(refused))) = outcome
+  assert refused == 3
 }
 
 // --- order preservation --------------------------------------------------

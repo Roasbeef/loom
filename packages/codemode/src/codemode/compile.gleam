@@ -25,8 +25,20 @@
 //// 2. **The generated build pins exactly the vendored prelude and stdlib and
 ////    nothing else** (design rule 3). The `gleam.toml` this service writes
 ////    lists only those dependencies, and the build runs offline in the
-////    jail, so no other package at any version can enter the build even if
-////    the source named one.
+////    jail, so no *third-party* package at any version can enter the build
+////    even if the source named one.
+////
+////    Be precise about what that does not cover. The manifest does **not**
+////    independently close the build against the modules vetting rejects.
+////    `cap` itself depends on `gleam_erlang`, `gleam_otp`, and `core`, so
+////    their public modules — `gleam/erlang/process`, `gleam/otp/*`,
+////    `core/*` — are in the program's build graph and would compile if the
+////    submitted source imported one. What rejects them is vetting: rule 2
+////    admits only the allowlist, and `gleam/erlang*` and `gleam/otp/*` are
+////    additionally on an explicit denylist (`vet/policy.is_denied`). So
+////    this defence is redundant against *unknown packages*, not against the
+////    dependency closure of the prelude. Stripping the build graph down to
+////    `cap`'s public surface is Builder work in J3c (M4 triage CH-F1).
 ////
 //// # The generated satellite entry
 ////
