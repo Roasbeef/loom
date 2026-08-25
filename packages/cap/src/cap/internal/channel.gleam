@@ -47,6 +47,7 @@ import core/msgpack.{type MsgPackValue}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 
@@ -111,6 +112,13 @@ pub opaque type Msg {
   )
   Deliver(id: Int, outcome: CapOutcome)
   CallerDown(down: process.Down)
+  /// The inbound reader hit a channel-fatal condition (a malformed frame,
+  /// an unsupported version, a closed transport). Every in-flight caller
+  /// is answered `Unreachable(reason)` at once instead of being left to
+  /// block until its deadline, and the channel latches `failed` so later
+  /// calls fail fast the same way — the controlled-shutdown half of the
+  /// two-channel doctrine, driven by the J3 boot reader.
+  Fail(reason: String)
   Stop
 }
 
@@ -128,6 +136,10 @@ type State {
     send: fn(BitArray) -> Nil,
     next_id: Int,
     inflight: Dict(Int, InFlight),
+    // `Some(reason)` once the reader has reported the channel dead: no
+    // further `cap_result` can arrive, so new calls are refused in-band
+    // rather than waiting out their deadline.
+    failed: Option(String),
   )
 }
 
@@ -145,7 +157,8 @@ pub fn start(
   send: fn(BitArray) -> Nil,
 ) -> Result(Handle, actor.StartError) {
   actor.new_with_initialiser(init_timeout_ms, fn(subject) {
-    let state = State(token:, send:, next_id: 0, inflight: dict.new())
+    let state =
+      State(token:, send:, next_id: 0, inflight: dict.new(), failed: None)
     // Select the actor's own subject and, crucially, every monitor DOWN
     // this process sets up — the caller monitors that drive cancellation.
     let selector =
@@ -176,6 +189,15 @@ pub fn to_channel(handle: Handle) -> Channel {
 /// read loop for each such frame, and by tests to simulate the broker.
 pub fn deliver(handle: Handle, id: Int, outcome: CapOutcome) -> Nil {
   process.send(handle.subject, Deliver(id:, outcome:))
+}
+
+/// Fails the channel: answers every in-flight call `Unreachable(reason)`
+/// and latches the channel dead so later calls fail the same way. Called
+/// by the J3 boot reader when a frame is malformed or the transport
+/// closes — a program blocked awaiting a `cap_result` unblocks at once
+/// instead of hanging until its deadline. Fire-and-forget.
+pub fn fail(handle: Handle, reason: String) -> Nil {
+  process.send(handle.subject, Fail(reason:))
 }
 
 /// Stops the channel actor. Fire-and-forget; killing the satellite reaps
@@ -209,22 +231,35 @@ fn perform(
 
 fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   case msg {
-    Perform(cap:, args:, deadline_ms:, caller:, reply:) -> {
-      let id = state.next_id
-      case wire.encode_cap_call(id, state.token, cap, args, deadline_ms) {
-        Error(_) -> {
-          process.send(reply, Error(Unreachable("cap_call did not encode")))
-          actor.continue(State(..state, next_id: id + 1))
+    Perform(cap:, args:, deadline_ms:, caller:, reply:) ->
+      case state.failed {
+        // The reader already declared the channel dead: no result can
+        // ever come back, so refuse now rather than after the deadline.
+        Some(reason) -> {
+          process.send(reply, Error(Unreachable(reason)))
+          actor.continue(state)
         }
-        Ok(bytes) -> {
-          state.send(bytes)
-          let monitor = process.monitor(caller)
-          let inflight =
-            dict.insert(state.inflight, id, InFlight(reply:, monitor:, caller:))
-          actor.continue(State(..state, next_id: id + 1, inflight:))
+        None -> {
+          let id = state.next_id
+          case wire.encode_cap_call(id, state.token, cap, args, deadline_ms) {
+            Error(_) -> {
+              process.send(reply, Error(Unreachable("cap_call did not encode")))
+              actor.continue(State(..state, next_id: id + 1))
+            }
+            Ok(bytes) -> {
+              state.send(bytes)
+              let monitor = process.monitor(caller)
+              let inflight =
+                dict.insert(
+                  state.inflight,
+                  id,
+                  InFlight(reply:, monitor:, caller:),
+                )
+              actor.continue(State(..state, next_id: id + 1, inflight:))
+            }
+          }
         }
       }
-    }
 
     Deliver(id:, outcome:) ->
       case dict.get(state.inflight, id) {
@@ -245,6 +280,17 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
         process.ProcessDown(pid:, ..) -> cancel_for_caller(state, pid)
         process.PortDown(..) -> actor.continue(state)
       }
+
+    Fail(reason:) -> {
+      // Unblock every caller waiting on a result that will never arrive,
+      // drop their monitors, and latch the failure for subsequent calls.
+      list.each(dict.to_list(state.inflight), fn(entry) {
+        let in_flight = entry.1
+        process.demonitor_process(in_flight.monitor)
+        process.send(in_flight.reply, Error(Unreachable(reason)))
+      })
+      actor.continue(State(..state, inflight: dict.new(), failed: Some(reason)))
+    }
 
     Stop -> actor.stop()
   }
