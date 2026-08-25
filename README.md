@@ -421,10 +421,17 @@ with `:models` and switches the active strand's model by name.
 
 ## Reading further
 
-- `docs/architecture/` — the system as built, one document per plane
-  (`durability.md`, `orchestration.md`, `effects.md`) plus `simulation.md`
-  for the crash-exploration runner. Start here to understand the code that
-  exists.
+- `docs/architecture/` — the system as built, one document at a time.
+  The three planes first: `durability.md` for the stores, the commit,
+  and the two backends; `orchestration.md` for operations, admission,
+  and resuming after a kill; `effects.md` for the broker, the wire, and
+  the jail. Then `messaging.md` for how two strands talk without a lost
+  mailbox, `events.md` for projections and search over the log,
+  `client.md` for the hub, the websocket, and the frozen JSON protocol,
+  `models.md` for the model catalogue an operator writes in TOML,
+  `code-mode.md` for writing a program instead of one tool call per
+  round trip, and `simulation.md` for the crash-exploration runner.
+  Start here to understand the code that exists.
 - `docs/loom-design.md` — the intent: why the BEAM, the three planes, Rule
   Zero, the two-channel doctrine, code mode, and the staged trust pipeline.
 - `docs/loom-implementation-spec.md` — the work packages, the frozen

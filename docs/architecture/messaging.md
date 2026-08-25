@@ -211,15 +211,18 @@ keyed per session and topic.
 bus.publish(bus, session: session_id, event: bus.StrandResult(strand: "sub:3"))
 ```
 
-Bus events are hints and carry no content: `StrandResult(strand)` names
-the strand that settled, never its result. A subscriber that was down,
-slow to join, or on another node simply misses the event, which is legal
-by design — anything that must be correct pulls from the store on the
-next hint, sync, or restart. So broadcast is for prompt awareness, not
-delivery: a strand that needs a sibling to *act* writes a durable fact or
-sends to it directly and lets the bus, if it likes, hurry a reader along.
-(Cross-node fan-out over a clustered `pg` scope is follow-up work; today
-the bus is a single node's.)
+Bus events are thin: `StrandResult(strand)` names the strand that
+settled, never its result. Two events do carry a string — the `phase`
+on `OpTransition`, the `description` on `Escalation` — but it is a
+label for a display to show, never a machine input; the `op.state`
+register and the durable escalation record stay the truth. A subscriber
+that was down, slow to join, or on another node simply misses the
+event, which is legal by design — anything that must be correct pulls
+from the store on the next hint, sync, or restart. So broadcast is for
+prompt awareness, not delivery: a strand that needs a sibling to *act*
+writes a durable fact or sends to it directly and lets the bus, if it
+likes, hurry a reader along. (Cross-node fan-out over a clustered `pg`
+scope is follow-up work; today the bus is a single node's.)
 
 ## Guarantees the message layer rests on
 
@@ -278,7 +281,7 @@ a delayed display, never a payload.
 | `machine/queue.gleam` | Steer and follow-up admission — the durable enqueue every message rides. |
 | `machine/acceptance.gleam` | `accept_prompt` — the fresh-run admission a `send_to_strand` to an idle strand uses. |
 | `runtime/escalation.gleam` | The durable escalation record, its `CallScope`, and its status transitions. |
-| `events/bus.gleam` | The EventBus: typed per-session topics of content-free hints. |
+| `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
 
 Each path is relative to its package's source root:
