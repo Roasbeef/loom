@@ -320,17 +320,34 @@ the run still completes with the steer in context.
 ## The supervision tree
 
 ```
-  SessionSupervisor            rest-for-one
-    ├── StorageWriter          every commit, and every read the driver makes
-    └── StrandSupervisor       one-for-one
-          └── strand "main"    the drive loop
+  SessionSupervisor              rest-for-one
+    ├── 1. StrandRegistry        strand name ↔ process name
+    ├── 2. StorageWriter         every commit, and every driver read
+    ├── 3. strand factory        simple-one-for-one; ordinary strands
+    ├── 4. subagent factory      simple-one-for-one; own tolerance
+    └── 5. strand booter         lists strand.*, starts what is missing
 ```
 
-Rest-for-one is the whole recovery policy. A writer crash restarts the
-writer *and* every strand after it, because a strand holding a subject to
-a dead writer has nothing to say; a strand crash restarts only that
-strand. Both children register under process names rather than pids, so
-restarts keep them addressable.
+Rest-for-one over those five is the whole recovery policy, and the order
+*is* the blast radius, as `runtime/supervisor.gleam` builds it. A writer
+crash restarts the writer and every child after it, because a strand
+holding a subject to a dead writer has nothing to say — and the booter,
+sitting last, repopulates the factories the restart just emptied. A crash
+in one
+strand restarts only that strand, because each factory supervises its own
+children simple-one-for-one. Every child registers under a process name
+rather than a pid, so restarts keep them addressable; the registry sits
+first precisely so those names outlive everything that uses them.
+
+The two factories are one restart budget each, and the split is what buys
+the separation. `supervisor.start_strand` asks `Config.subagent` which
+factory owns a name — afresh every time, so the answer survives a restart
+with no state of its own — and the default says nobody is a subagent, the
+runtime having no way to tell a model-spawned strand from an
+operator-spawned one. Lineage is a layer up. Because the subagent factory
+sits *after* the primary one, a model-spawned strand in a crash loop
+restarts only itself and the booter: it cannot reboot the strand a human
+is talking to, nor spend the restart budget that protects it.
 
 The writer is the single committer the durability plane's one-writer rule
 assumes, and the driver's reads route through it too. After each
@@ -341,8 +358,13 @@ on a timer, and a lost renewal stops it abnormally so the tree reboots
 through the open path, which re-acquires the lease or fails loudly.
 
 A restarted strand nudges itself immediately, so recovery needs no
-external input: **recovery is cold start is the first drive pass.** What
-that pass does before planning is validate. Every register decodes
+external input: **recovery is cold start is the first drive pass.** The
+booter is what makes that pass cover *every* strand rather than `main`
+alone — it lists the `strand.*` registers and starts a driver for each
+one it finds, routing each to its factory, so a cold open, a writer
+crash, and a booter crash all converge on "list the store, start what is
+missing" (`supervisor.boot_strands`). What that pass does before planning
+is validate. Every register decodes
 through a total decoder — a function returning either a fully constructed
 value or a structured corruption report, never crashing and never
 half-succeeding — and the bounded checks that follow are decoders in the

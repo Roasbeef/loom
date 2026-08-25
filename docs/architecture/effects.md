@@ -485,7 +485,8 @@ a degraded execution after the fact.
 | `broker/token.gleam`, `broker/budget.gleam` | Capability tokens — minting, binding, constant-time check, revocation — and pooled per-execution ledgers. |
 | `broker/escalation.gleam` | The denial → approval → single-consume machine and its events. |
 | `broker/framing.gleam`, `broker/exec.gleam` | The protocol broker-side with its pure deframer; the helper actor, fd-3 spawn, cancel ladder, and pool. |
-| `sandbox/cmd/loom-exec/main.go` | The three roles: server, stage 2, self-test. |
+| `sandbox/cmd/loom-exec/main.go` | Role selection by first argument: server mode, `--exec` (stage 2), `--self-test`, `--probe-socket`, and `--allow-unenforced`, which serves on a platform Loom has no jail for. |
+| `sandbox/internal/jail/platform.go` | Whether this *build* has a jail for its OS at all — a different question from what the running kernel provides, and kept apart from it everywhere it surfaces. |
 | `sandbox/internal/policy`, `.../framing`, `.../server` | The strict policy decoder, the protocol helper-side, and the frame loop. |
 | `sandbox/internal/jail` | bwrap argv, stage 2, env construction, output limiter, cancel escalation, supervision. |
 | `sandbox/internal/llock`, `.../seccompf`, `.../cgroup` | Landlock rules, the network-off cBPF program with its TSYNC install, and cgroup v2 groups. |
@@ -496,7 +497,8 @@ a degraded execution after the fact.
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
-| `conformance/wiring.gleam`, `conformance/e2e_test.gleam` | The production-shaped effect record, and the M2 jailed acceptance that proves it. |
+| `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one. Its module doc is the list of mapping decisions. |
+| `conformance` test suites `wiring_test.gleam`, `e2e_test.gleam` | The adapter's mappings against fakes, and the M2 jailed acceptance that proves the record end to end. Both live under `packages/conformance/test/conformance/`. |
 | `protocol/msgpack-fixtures/` | Golden frames both languages are pinned against. |
 
 Each Gleam path is relative to its package's source root —

@@ -114,10 +114,19 @@ machinery the single-strand runtime already had.
 A parent spawns a subagent and later collects its result.
 `create_strand` seeds the child's three registers durably — its own model
 identity, its own leaf (a cursor into the shared tree; `None` starts at
-the root), and its own strand state — starts the child's driver under the
-existing StrandSupervisor, accepts the task brief as the child's first
-run, and rings the child's doorbell. Because the registers are durable
-before anything runs, every later reboot of the tree restores the child.
+the root), and its own strand state — starts the child's driver, accepts
+the task brief as the child's first run, and rings the child's doorbell.
+Because the registers are durable before anything runs, every later
+reboot of the tree restores the child.
+
+Starting the driver goes through `supervisor.start_strand`, which asks
+`Config.subagent` which of the tree's two strand factories owns the name
+and starts it there. The question is asked afresh every time rather than
+remembered, so the answer survives a restart with no state of its own,
+and the default predicate says nobody is a subagent — the runtime cannot
+tell a model-spawned strand from an operator-spawned one, so the host
+injects the predicate. `docs/architecture/orchestration.md` covers why
+the two factories sit in that order.
 
 ```gleam
 let assert Ok(op) =
@@ -196,10 +205,28 @@ A fact write is a commit and nothing else — registers carry no
 watch-or-notify, so a `put_fact` rings no doorbell. When a reader must
 *act* on a fact rather than merely read it at its own next decision
 point, pair the write with a `send_to_strand`, or let the reader's
-checkpoint poll pick it up. Two corners of the namespace are reserved and
-refused to `put_fact`: `escalation/` and `operation-result/`, so no
-blackboard write can forge an approval record or shadow a terminal
-result.
+checkpoint poll pick it up.
+
+Four corners of the namespace are reserved (`api.reserved_fact_key`), and
+each names something a forged blackboard write would let a model do:
+`escalation/` — manufacture an approval and widen a denied call;
+`operation-result/` — shadow an operation's terminal result and lie to
+every waiter; `lineage/` — rewrite a parent edge, which is the single
+assumption the wait graph's acyclicity rests on; `prompt/` — rewrite the
+operator's channel.
+
+Reserving a prefix does two things, not one. `put_fact` refuses it, and
+`facts` *hides* it — a reserved cell is not merely unwritable through the
+blackboard door, it is invisible through it. That second half is why the
+harness needs a door of its own: `api.put_reserved_fact` and
+`api.reserved_facts` read and write exactly the namespace `facts` and
+`put_fact` will not touch, and refuse everything outside it. The two
+doors are deliberately disjoint rather than one door with a flag, so
+neither can be pressed into service as the other — `put_fact` is
+reachable from a model-supplied key and must never
+name a reserved cell, and `put_reserved_fact` is reachable only from
+harness code that builds the key itself. (The singular `fact` read never
+consulted the reservation and still does not.)
 
 ### Broadcast
 

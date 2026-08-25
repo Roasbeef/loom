@@ -359,14 +359,23 @@ dead provider — in band, never a crash.
 ### Escalations, and the one check that matters
 
 When the broker refuses a tool call under the session's policy, the
-runtime records a durable escalation with the denial's **wanted diff**:
-the exact set of grants that would satisfy it. The hub surfaces pending
-escalations in the full snapshot and as `escalation` events, decoding
-the runtime's opaque stored JSON into typed `broker/policy.Grant` values
-and re-encoding them in the protocol's `type`-discriminated vocabulary.
-The terminal shows that diff verbatim — "wants: network to
-registry.npmjs.org" — because a policy widening a human cannot read is a
-policy a human cannot judge.
+refusal comes back as an ordinary in-band tool result:
+`tool.refusal_outcome` renders a `PolicyRefused` as an `is_error` outcome
+whose `details` carry the denial's **wanted grants** — the exact set that
+would satisfy it. Nothing consumes them. **No production path
+raises an escalation from that result**, or from anywhere else:
+`api.raise_escalation` and `api.raise_escalation_for` have callers only
+in `client/demo.gleam` and the simulation surface under `conformance`.
+The wanted grants are preserved and go no further, and
+`docs/spec-gaps.md` under "From WP-L" is where the gap is recorded.
+
+Everything below the missing raiser is built and exercised. Given a
+durable escalation record, the hub surfaces pending escalations in the
+full snapshot and as `escalation` events, decoding the runtime's opaque
+stored JSON into typed `broker/policy.Grant` values and re-encoding them
+in the protocol's `type`-discriminated vocabulary. The terminal shows the
+wanted diff verbatim — "wants: network to registry.npmjs.org" — because a
+policy widening a human cannot read is a policy a human cannot judge.
 
 The approval path is the highest-stakes surface the client plane has,
 and the whole of its defense is one comparison. `approve` may carry a
