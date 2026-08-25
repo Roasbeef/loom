@@ -21,7 +21,9 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import machine/operation
 import machine/strand as machine_strand
+import provider/adapter/anthropic
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -85,6 +87,12 @@ fn settings_under(root: String) -> serve.Settings {
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,
     max_output_tokens: 4096,
+    api: anthropic.api_name,
+    compaction: operation.CompactionSettings(
+      enabled: True,
+      reserve_tokens: 16_384,
+      keep_recent_tokens: 20_000,
+    ),
     // No seed here: the boot smoke must not go looking for a toolchain,
     // and a host without one registers no `code_mode` tool.
     codemode_seed: root <> "/no-such-seed",

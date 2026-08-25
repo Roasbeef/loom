@@ -64,6 +64,7 @@ import gleam/result
 import gleam/string
 import prompt/default
 import prompt/pack
+import prompt/summary
 import runtime/api.{type Runtime}
 import session/session.{type Session}
 import simplifile
@@ -83,6 +84,13 @@ pub const pack_key = "prompt/pack"
 /// The environment variable naming a pack file to use instead of the
 /// shipped default.
 pub const pack_path_variable = "LOOM_PROMPT_PACK"
+
+/// The environment variable naming a summarization pack file to use
+/// instead of the shipped one. Separate from `pack_path_variable`
+/// because the two packs are paid for on entirely different schedules:
+/// the system prompt on every request of every strand, the
+/// summarization prompts once per compaction.
+pub const summary_pack_variable = "LOOM_SUMMARY_PACK"
 
 /// The environment variable holding a literal system prompt that
 /// bypasses the pack entirely.
@@ -642,4 +650,57 @@ pub fn guidance(workspace: String) -> #(Option(String), List(String)) {
           }
       }
   }
+}
+
+// --- the summarization pack ------------------------------------------------
+
+/// The summarization pack this boot summarizes with: the file
+/// `LOOM_SUMMARY_PACK` names, or the shipped one. Returns the decoded
+/// pack and whatever `summary.problems` complains about, as warnings.
+///
+/// Refuses like the system pack refuses — an unreadable file or a
+/// corrupt pack stops the boot with a worded message naming it — but
+/// warns rather than refuses on a pack that merely decoded to something
+/// thinner than expected, because a compaction with a thin prompt still
+/// beats a server that will not start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.summary_pack(option.None)
+/// // -> Ok(#(decoded, []))
+/// ```
+///
+pub fn summary_pack(
+  path: Option(String),
+) -> Result(#(pack.Pack, List(String)), String) {
+  use #(named_as, source) <- result.try(case path {
+    None -> Ok(#("shipped with Loom", default.summary_source))
+    Some(path) ->
+      case simplifile.read(path) {
+        Ok(text) -> Ok(#("at " <> path, text))
+        Error(error) ->
+          Error(
+            summary_pack_variable
+            <> " names a summarization pack that could not be read: "
+            <> path
+            <> ": "
+            <> string.inspect(error),
+          )
+      }
+  })
+  use decoded <- result.try(
+    pack.decode(source)
+    |> result.map_error(fn(report) {
+      "the summarization pack "
+      <> named_as
+      <> " is corrupt: "
+      <> corruption.describe(report)
+    }),
+  )
+  let warnings =
+    list.map(summary.problems(decoded), fn(problem) {
+      "the summarization pack " <> named_as <> ": " <> describe_problem(problem)
+    })
+  Ok(#(decoded, warnings))
 }

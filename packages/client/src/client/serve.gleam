@@ -119,6 +119,7 @@ import client/codemode as codemode_wiring
 import client/gateway as hub
 import client/internal/ffi_os
 import client/server
+import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock
@@ -129,7 +130,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import machine/operation
 import machine/strand as machine_strand
+import provider/adapter/anthropic
+import provider/adapter/openai
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -190,6 +194,12 @@ pub type Settings {
     context_window: Int,
     /// Fallback output ceiling for the wiring config.
     max_output_tokens: Int,
+    /// The adapter api the main route's endpoint speaks, from its
+    /// catalogue dialect. Captured durably into every generation intent
+    /// (`client/wiring.Config.api`).
+    api: String,
+    /// Compaction settings for this session's runs and hooks.
+    compaction: operation.CompactionSettings,
     /// Where the prepared code-mode build seed lives. A host without one
     /// registers no `code_mode` tool.
     codemode_seed: String,
@@ -385,11 +395,55 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     ),
     context_window: main_entry.context_window,
     max_output_tokens: main_entry.max_output_tokens,
+    api: adapter_api(main_entry.dialect),
+    compaction: compaction_settings(main_entry.context_window),
     codemode_seed: option.unwrap(
       flags.codemode_seed,
       workspace <> "/" <> default_seed_directory,
     ),
   ))
+}
+
+/// pi's compaction defaults, and the only place they are stated.
+/// `reserve_tokens` is the headroom a turn's output and the next user
+/// message need below the window; `keep_recent_tokens` is how much of
+/// the newest conversation survives a compaction verbatim.
+pub const default_reserve_tokens = 16_384
+
+/// See `default_reserve_tokens`.
+pub const default_keep_recent_tokens = 20_000
+
+// Compaction settings from the environment, clamped against the window
+// they will be compared to. Settings that cannot describe a working
+// compaction — a non-positive keep-recent, or a reserve that leaves no
+// room above the tail — disable compaction rather than firing a
+// threshold on every checkpoint and preparing nothing; spec §3.2 wants
+// these validated at set time, and this is the only set point there is
+// today.
+fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
+  let reserve = env_int_or("LOOM_COMPACTION_RESERVE", default_reserve_tokens)
+  let keep_recent =
+    env_int_or("LOOM_COMPACTION_KEEP_RECENT", default_keep_recent_tokens)
+  let enabled =
+    env_text_or("LOOM_COMPACTION", "on") != "off"
+    && reserve > 0
+    && keep_recent > 0
+    && keep_recent + reserve < context_window
+  operation.CompactionSettings(
+    enabled:,
+    reserve_tokens: reserve,
+    keep_recent_tokens: keep_recent,
+  )
+}
+
+// Which adapter a catalogue dialect dispatches through. The api name is
+// captured durably into every generation intent, so it must be the
+// adapter's own constant rather than a word chosen here.
+fn adapter_api(dialect: catalog.Dialect) -> String {
+  case dialect {
+    catalog.Anthropic -> anthropic.api_name
+    catalog.OpenAiCompatible -> openai.api_name
+  }
 }
 
 // The catalogue ladder: an explicit file must load and validate or the
@@ -639,6 +693,24 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   list.each(assembled.warnings, fn(warning) {
     io.println_error("loom-server: " <> warning)
   })
+  // The summarization pack, before the open for the same reason the
+  // system prompt is: `wiring.Config` needs the decoded value. Nothing
+  // about it is pinned — it is read once per compaction, never cached,
+  // and swapping it costs no cache write.
+  use #(summary_pack, summary_warnings) <- result.try(
+    system_prompt.summary_pack(
+      option.from_result(env_text(system_prompt.summary_pack_variable)),
+    ),
+  )
+  list.each(summary_warnings, fn(warning) {
+    io.println_error("loom-server: " <> warning)
+  })
+  use summary_sink <- result.try(
+    summaries.start()
+    |> result.map_error(fn(error) {
+      "the summary sink did not start: " <> string.inspect(error)
+    }),
+  )
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
@@ -653,9 +725,15 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       gateway: settings.gateway,
       role: model.Main,
       system: Some(assembled.text),
+      api: settings.api,
       fallback_context_window: settings.context_window,
       fallback_max_output_tokens: settings.max_output_tokens,
       provider_timeout_ms: 300_000,
+      summary_role: model.Summarize,
+      summary_pack:,
+      summaries: summary_sink,
+      session: opened,
+      compaction: settings.compaction,
       broker: broker_actor,
       broker_timeout_ms: 30_000,
       registry: tool_registry,
@@ -684,6 +762,13 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       effects_record,
       api.Options(
         ..options,
+        // The run-settings snapshot every accepted run captures. This is
+        // what gates step 3 of a checkpoint; the hooks carry their own
+        // copy for the arithmetic.
+        settings: operation.RunSettings(
+          ..options.settings,
+          compaction: settings.compaction,
+        ),
         subscribers: [forwarder.data],
         // Model-spawned strands run under the tree's second strand
         // factory, so a subagent crash loop cannot spend the restart

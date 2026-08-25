@@ -98,6 +98,34 @@ over one session file. WP-L.
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
+- `client/wiring.{compaction_hooks, recording_summaries}` — the two
+  halves of live compaction, separable so a host with its own provider
+  surface can run the real ones. `compaction_hooks` builds the whole
+  `effects.Hooks` record through `runtime/hooks`: real admission from
+  the gateway's resolved model facts, threshold and overflow over the
+  strand's durable projection, `VerdictGenerate` for every structural
+  decision, and the progress hook. `recording_summaries` wraps a
+  provider surface so a settled summary is filed in the sink on its way
+  past — the same composition shape as `gateway.tap_provider`.
+- `client/wiring.{summary_provider_request, settlement_of,
+  summary_progress, resolution}` — the summary path in pieces: the
+  request a structural summary is made as, how a settled response reads,
+  what the sink's record means to the machine, and whether a captured
+  identity still routes.
+- `client/summaries.{Summaries, Settlement, Record, start, key, record,
+  read}` — the summary sink: a small bounded actor keyed by
+  `(operation, task, attempt)`, the rendezvous between the effect
+  process that receives a summary and the driver process that reports on
+  it. Nothing here is durable, on purpose; see Invariants.
+- `client/system_prompt.{summary_pack, summary_pack_variable}` — the
+  summarization pack this boot summarizes with: the shipped one, or the
+  file `LOOM_SUMMARY_PACK` names.
+- `client/serve.{default_reserve_tokens, default_keep_recent_tokens}` —
+  pi's compaction defaults, and the only place they are stated.
+  `LOOM_COMPACTION`, `LOOM_COMPACTION_RESERVE` and
+  `LOOM_COMPACTION_KEEP_RECENT` override them; settings that cannot
+  describe a working compaction disable it rather than firing a
+  threshold that prepares nothing.
 - `client/serve.registry(Option(Agency), Option(CodeMode))` — the tool
   registry: five core tools, plus the six `agent_*` tools only when a
   messaging plane exists, plus `code_mode` only when this host wired a
@@ -127,7 +155,8 @@ over one session file. WP-L.
   `machine` (`acceptance`, `queue`, `codec` — the commands with no api
   entry point build their own plans), `broker` (`policy.Grant`,
   `escalation` vocabulary), `provider` (`stream.Delta` for the tap),
-  `prompt` (the pack, its decoder and its renderer),
+  `prompt` (both packs, the decoder, the renderer, and the
+  summarization assembly in `prompt/summary`),
   `codemode` (the vetting policy, the hermetic compile service, the
   production builder and launcher, and the satellite host — the pipeline
   `client/codemode` fills the `tools/codemode` seam with),
@@ -337,6 +366,48 @@ over one session file. WP-L.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.
+- **Compaction is answered by these seams, and by nothing that supplies
+  its own summary.** `compaction_hooks` returns `VerdictGenerate` for
+  every structural decision: `VerdictSupplied` exists for a host that
+  brings its own summarizer, and a harness that used it here would be
+  answering its own compaction. The M3 demo installs *these* hooks over
+  its scripted provider — it has no `demo_hooks` of its own — so the
+  `CompactionEntry` it asserts on carries text that came off the wire.
+- **A summary request carries no system prompt and no tool array**, and
+  its whole content is one assembled user message. Both one-hour cache
+  breakpoints hang on the two positions it omits, so a prompt read
+  exactly once writes no long-lived cache entry and cannot disturb the
+  session's own pinned head (pi's `cacheRetention: "none"`, expressed as
+  a request shape). The residual cost is the adapter's rolling
+  five-minute mark on that single user turn; removing it needs a
+  request-level cache flag in `provider`, which this stage did not open.
+- **Summaries route through the `Summarize` role when one is
+  configured**, resolved to a concrete identity at dispatch, and fall
+  back to the strand's own captured identity when it is not. Unlike a
+  generation there is no durable identity contract to honour: the
+  summary is published as text, not as a response attributed to a model.
+- **A summary the sink does not hold is a retryable failure, never an
+  empty summary.** `SummaryProduced(summary: "")` would publish a
+  `CompactionEntry` that silently replaced a conversation with a blank;
+  asking the provider again costs one request. That is also why the
+  record is filed *before* the terminal event is forwarded to the effect
+  process: by the time the driver asks for progress, the text is already
+  there. A crash, a reaped effect, or an evicted record all read as
+  `Absent` and retry, which is exactly what the machine does for an
+  orphaned summary request.
+- **A summary response that reached for a tool is a failed attempt.**
+  The summarizer was sent no tool array, so a call in its answer means
+  it did something other than summarize, and publishing its prose would
+  be guessing. So is an answer with no text.
+- **The operator's `compact` instructions reach the provider from the
+  operation's durable state**, not from the preparation:
+  `StructuralPreparation` has no field for them, because the preparation
+  is the *input* the decision hook froze and the instructions are a
+  property of the operation that asked.
+- **A manual `compact` cuts where an automatic one cuts.** The hub's
+  preparation goes through `runtime/hooks.preparation` — the same
+  builder the threshold and overflow hooks use — against the run's own
+  settings snapshot.
 
 ## Deep Docs
 
@@ -359,7 +430,11 @@ over one session file. WP-L.
   the pipeline `client/codemode` wires, and what each layer confines.
 - [packages/codemode/CLAUDE.md](../codemode/CLAUDE.md) — the pipeline's
   own package.
+- [docs/design-notes/compaction-and-memory.md](../../docs/design-notes/compaction-and-memory.md)
+  — Stage C0: which seams were inert, what each hook now decides from,
+  and the cache arithmetic the summary request's shape follows.
 - [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
-  the pack format, the renderer, and what `Environment` may never grow.
+  the pack format, the renderer, the summarization pack, and what
+  `Environment` may never grow.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

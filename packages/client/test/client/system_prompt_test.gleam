@@ -19,6 +19,7 @@ import broker/framing
 import broker/policy
 import broker/token
 import client/serve
+import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock
@@ -31,6 +32,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
+import machine/operation
 import machine/strand as machine_strand
 import prompt/default
 import prompt/pack
@@ -467,9 +469,19 @@ fn wiring_config(system: Option(String)) -> wiring.Config {
     gateway: dead_gateway(),
     role: model.Main,
     system:,
+    api: "test-api",
     fallback_context_window: 100_000,
     fallback_max_output_tokens: 4096,
     provider_timeout_ms: 1000,
+    summary_role: model.Summarize,
+    summary_pack: summary_pack(),
+    summaries: summary_sink(),
+    session: memory_session(),
+    compaction: operation.CompactionSettings(
+      enabled: False,
+      reserve_tokens: 0,
+      keep_recent_tokens: 0,
+    ),
     broker: dead_broker(),
     broker_timeout_ms: 1000,
     registry: tool.registry([]),
@@ -482,6 +494,23 @@ fn wiring_config(system: Option(String)) -> wiring.Config {
     clock: clock.fixed(at: 0),
     entropy: fn() { 1 },
   )
+}
+
+fn summary_pack() -> pack.Pack {
+  let assert Ok(#(decoded, [])) = system_prompt.summary_pack(None)
+    as "the shipped summarization pack must load cleanly"
+  decoded
+}
+
+fn summary_sink() -> summaries.Summaries {
+  let assert Ok(sink) = summaries.start() as "the summary sink must start"
+  sink
+}
+
+fn memory_session() -> session.Session {
+  let assert Ok(opened) = session.open_memory(clock.fixed(at: 0))
+    as "the memory session must open"
+  opened
 }
 
 fn dead_gateway() -> provider_gateway.Gateway {

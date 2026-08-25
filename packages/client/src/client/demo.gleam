@@ -23,10 +23,17 @@
 //// admission — and everything the client sees of it arrives through
 //// the protocol's event stream.
 
+import broker/broker
+import broker/exec
+import broker/token
 import client/gateway
 import client/grants
 import client/protocol
+import client/serve
 import client/server
+import client/summaries
+import client/system_prompt
+import client/wiring
 import core/clock
 import core/entry
 import core/ids
@@ -41,12 +48,14 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
-import machine/planner
 import machine/strand as machine_strand
+import provider/gateway as provider_gateway
+import provider/http
+import provider/model
+import provider/secret
 import provider/stream
 import runtime/api
 import runtime/effects
-import runtime/hooks
 import session/session
 import storage/storage
 
@@ -58,6 +67,12 @@ pub const session_id = "demo-session"
 
 /// The durable cross-strand report the subagent sends its parent.
 pub const report_text = "research reports: verified the fetch layer"
+
+/// What the scripted provider answers a summary request with. The demo
+/// asserts the committed `CompactionEntry` carries exactly this, which
+/// is how it proves the summary came from a provider rather than from a
+/// hook the demo installed.
+pub const summary_text = "nested summary output"
 
 /// One line of the demo's narrative.
 pub type Narrative =
@@ -100,14 +115,27 @@ pub fn run() -> Result(Narrative, String) {
     gateway.commit_forwarder(to: name)
     |> result.map_error(fn(_) { "the commit forwarder did not start" }),
   )
+  // Compaction runs on the *production* seams. The demo scripts the
+  // provider's answers and the tools' results, and nothing else: the
+  // hooks that decide whether to compact, what to compact, and what the
+  // provider's answer meant are `client/wiring`'s own, over a real
+  // session and a real routing table. A demo that supplied its own
+  // summary would prove nothing about whether compaction runs.
+  use wiring_config <- result.try(compaction_wiring(session))
   let effects =
     effects.Effects(
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
       entropy:,
       timers: effects.real_timers(),
-      provider: gateway.tap_provider(scripted_provider(), to: name),
+      provider: gateway.tap_provider(
+        wiring.recording_summaries(
+          scripted_provider(),
+          into: wiring_config.summaries,
+        ),
+        to: name,
+      ),
       tools: scripted_tools(),
-      hooks: demo_hooks(),
+      hooks: wiring.compaction_hooks(wiring_config),
     )
   let configuration =
     machine_strand.StrandConfiguration(
@@ -538,12 +566,17 @@ fn report_entry_on_main(envelope: protocol.EventEnvelope) -> Bool {
   }
 }
 
+// A compaction entry whose summary is the *scripted provider's* answer.
+// The demo supplies no summary of its own any more: the hooks are
+// `client/wiring`'s, so a compaction that lands here was decided,
+// prepared, dispatched and read back by production code, and its text
+// came off the wire.
 fn compaction_entry(envelope: protocol.EventEnvelope, strand: String) -> Bool {
   case envelope.event {
     protocol.EntryEvent(record: protocol.EntryRecord(
       strand: on,
-      entry: entry.CompactionEntry(..),
-    )) -> on == strand
+      entry: entry.CompactionEntry(summary:, from_hook: False, ..),
+    )) -> on == strand && summary == summary_text
     _ -> False
   }
 }
@@ -725,8 +758,7 @@ fn scripted_provider() -> effects.ProviderSurface {
     let events = process.new_subject()
     case spec {
       effects.PollRequest(..) -> settle(events, answer("polled", 1), [])
-      effects.SummaryRequest(..) ->
-        settle(events, answer("nested summary output", 2), [])
+      effects.SummaryRequest(..) -> settle(events, answer(summary_text, 2), [])
       effects.GenerationRequest(context:, ..) -> {
         let newest = newest_user_text(context)
         case newest == report_text, newest == "verify the fetch layer" {
@@ -919,18 +951,96 @@ fn scripted_tools() -> effects.ToolSurface {
   )
 }
 
-fn demo_hooks() -> effects.Hooks {
-  hooks.new()
-  |> hooks.with_admission(hooks.admission(
-    api: "demo",
-    intended_output_limit: 1_000_000,
-    context_window: 1_000_000,
-  ))
-  |> hooks.with_structural_decision(fn(_op, _task) {
-    planner.VerdictSupplied(
-      summary: "[summary] bounded retry added to the fetcher; tests pass",
-      usage: None,
+// The production wiring config the demo's compaction hooks are built
+// from. Its provider gateway is routed for real — the summary role
+// resolves, admission reports the route's window — but its transport is
+// never reached: the effects record's provider surface is the scripted
+// one above, so every request the demo makes is answered by the script
+// and every *decision* about compaction is made by production code.
+fn compaction_wiring(
+  session: session.Session,
+) -> Result(wiring.Config, String) {
+  use summary_sink <- result.try(
+    summaries.start()
+    |> result.map_error(fn(_) { "the summary sink did not start" }),
+  )
+  use pack <- result.try(
+    system_prompt.summary_pack(None)
+    |> result.map(fn(loaded) { loaded.0 }),
+  )
+  use broker_actor <- result.try(
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 0),
+        checkout: fn() { Error(exec.AllBusy(size: 0)) },
+        checkin: fn(_helper) { Nil },
+      ),
     )
-  })
-  |> hooks.build
+    |> result.map_error(fn(_) { "the demo broker did not start" }),
+  )
+  let workspace = "/nonexistent/loom-demo"
+  Ok(
+    wiring.Config(
+      gateway: demo_gateway(),
+      role: model.Main,
+      system: None,
+      api: "demo",
+      fallback_context_window: demo_context_window,
+      fallback_max_output_tokens: 1_000_000,
+      provider_timeout_ms: 4000,
+      summary_role: model.Summarize,
+      summary_pack: pack,
+      summaries: summary_sink,
+      session:,
+      compaction: operation.CompactionSettings(
+        enabled: True,
+        reserve_tokens: 1,
+        keep_recent_tokens: 1,
+      ),
+      broker: broker_actor,
+      broker_timeout_ms: 1000,
+      registry: serve.registry(None, None),
+      workspace:,
+      blob_root: workspace <> "/.blobs",
+      base_policy: policy.workspace_default(workspace),
+      grants: [],
+      demand: exec.BestEffort,
+      env: [],
+      clock: clock.fixed(at: 0),
+      entropy: fn() { 7 },
+    ),
+  )
+}
+
+// Wide enough that the demo's scripted turns never cross the threshold:
+// this flow compacts because the operator asked it to, over the
+// protocol, which is the M3 acceptance criterion.
+const demo_context_window = 1_000_000
+
+// A routed gateway over a transport nothing dispatches through. The
+// routing is what the hooks read — admission's window, the summary
+// role's resolution — and the demo's provider surface is scripted, so
+// the transport is never reached.
+fn demo_gateway() -> provider_gateway.Gateway {
+  let identity =
+    model.ResolvedModel(
+      provider: "acme",
+      model_id: "loom-1",
+      thinking: model.ThinkingOff,
+      context_window: demo_context_window,
+      max_output_tokens: 1_000_000,
+    )
+  provider_gateway.new(
+    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    secrets: secret.from_list([]),
+    clock: clock.fixed(at: 0),
+  )
+  |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
+    name: "acme",
+    base_url: "https://acme.invalid",
+    api_key_secret: "ACME_KEY",
+  ))
+  |> provider_gateway.route(model.Main, [identity])
+  |> provider_gateway.route(model.Summarize, [identity])
 }

@@ -105,12 +105,14 @@ import gleam/string
 import machine/acceptance
 import machine/codec as machine_codec
 import machine/operation
+import machine/planner
 import machine/queue
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/escalation as runtime_escalation
+import runtime/hooks
 import runtime/supervisor
 import runtime/writer
 import session/session
@@ -2168,39 +2170,28 @@ fn compact(
   }
 }
 
-// The compaction preparation for a strand's current projected context —
-// the standard projection rules, tokens counted approximately (the
-// summary provider sees the messages; the count is display metadata).
+// The compaction preparation a manual `compact` command summarizes
+// from: the strand's durable projection through the *same* builder the
+// threshold and overflow hooks use (`runtime/hooks.preparation`), so an
+// operator-requested compaction cuts where an automatic one cuts, keeps
+// what an automatic one keeps, and carries a previous summary forward
+// the same way. The run's own settings snapshot supplies the budget.
 fn compaction_preparation(
   state: State,
   strand: String,
 ) -> Option(operation.StructuralPreparation) {
-  let store = state.runtime.session
-  let context = case session.strand_leaf(store, strand) {
-    Ok(Some(session.Cell(value:, ..))) ->
-      case session.project_context(store, value) {
-        Ok(messages) -> messages
-        Error(_) -> []
-      }
-    _ -> []
-  }
-  case context {
-    [] -> None
-    messages ->
-      Some(operation.CompactionPreparation(
-        messages_to_summarize: messages,
-        turn_prefix_messages: [],
-        retained_tail: [],
-        is_split_turn: False,
-        tokens_before: list.length(messages) * 100,
-        previous_summary: None,
-        file_ops: operation.FileOperations(read: [], written: [], edited: []),
-        settings: operation.CompactionSettings(
-          enabled: True,
-          reserve_tokens: 0,
-          keep_recent_tokens: 0,
-        ),
-      ))
+  let projected = hooks.project(state.runtime.session, strand)
+  let settings = state.runtime.settings.compaction
+  case
+    hooks.preparation(
+      projected,
+      operation.CompactionSettings(..settings, enabled: True),
+      hooks.estimate_message,
+      tokens_before: hooks.context_tokens(projected, hooks.estimate_message),
+    )
+  {
+    planner.Prepared(preparation:) -> Some(preparation)
+    planner.EmptyPreparation -> None
   }
 }
 
