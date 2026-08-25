@@ -139,6 +139,14 @@ e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
 	@cd packages/conformance && gleam test
 
+.PHONY: codemode-seed
+codemode-seed: ## Prepare the offline package cache code-mode builds clone
+	@scripts/codemode_seed.sh
+
+.PHONY: e2e-codemode
+e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
+	@cd packages/codemode && gleam test
+
 # ------------------------------------------------------------ the simulator
 
 SOAK_SEEDS ?= 2000
