@@ -146,6 +146,26 @@ pub fn supervised(
   supervision.worker(fn() { start(options, name) })
 }
 
+// Publishes one event to one subscriber, skipping a subscriber that is
+// not there to hear it. Events are hints and pulls are truth (design
+// §3.6), so a hint with nowhere to go is a non-event — but a subscriber
+// held as a *named* subject is an unregistered name while its owner
+// restarts, and sending into an unregistered name crashes the sender.
+// Without this guard the writer would be the process that dies for a
+// hint, taking the whole rest-for-one tree below it; with it, a
+// subscriber may be supervised and restartable (`client/gateway`'s
+// commit forwarder is) without putting the commit path at risk.
+fn publish(subscriber: Subject(Event), event: Event) -> Nil {
+  case process.subject_owner(subscriber) {
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        True -> process.send(subscriber, event)
+        False -> Nil
+      }
+    Error(Nil) -> Nil
+  }
+}
+
 fn schedule_renew(session: Session, subject: Subject(Message)) -> Nil {
   case session.lease_interval_ms {
     Some(interval) -> {
@@ -162,12 +182,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case storage.commit(state.session.store, tx) {
         Ok(result) -> {
           let ordinal = state.ordinal + 1
-          list.each(state.subscribers, fn(subscriber) {
-            process.send(
-              subscriber,
-              Committed(ordinal:, seqs: result.seqs, ts: result.ts),
-            )
-          })
+          let event = Committed(ordinal:, seqs: result.seqs, ts: result.ts)
+          list.each(state.subscribers, publish(_, event))
           // The crash-scheduler seam: may not return (see module doc).
           state.after_commit(ordinal)
           process.send(reply, Ok(result))
