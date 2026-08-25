@@ -18,7 +18,8 @@
     kill_os_process/1,
     write_private_file/3,
     delete_file/1,
-    port_event/1
+    port_event/1,
+    os_name/0
 ]).
 
 %% crypto:strong_rand_bytes/1 — a cryptographically strong entropy
@@ -116,6 +117,14 @@ write_private_file(Dir, Name, Bytes) ->
 delete_file(Path) ->
     _ = file:delete(unicode:characters_to_list(Path)),
     nil.
+
+%% os:type/0's name half, as a binary ("linux", "darwin", "nt"). An
+%% ambient fact of the running system with no pure answer, fixed for the
+%% life of the node. No normalization happens here: deciding what a name
+%% means for the jail is a decision, and decisions belong in Gleam.
+os_name() ->
+    {_Family, Name} = os:type(),
+    atom_to_binary(Name, utf8).
 
 %% Normalizes a raw port message (received via a record selector on the
 %% port) into the broker/internal/ffi_port.PortEvent shape. Pure term

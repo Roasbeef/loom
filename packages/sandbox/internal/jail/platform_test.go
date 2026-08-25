@@ -103,7 +103,7 @@ func TestFeaturesListSaysNothingExtraOnLinux(t *testing.T) {
 func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
 	feat := Features{Platform: PlatformFor("darwin")}
 	rep := Report{Applied: []string{"rlimit-cpu"}, Skipped: []string{"landlock: nope"}}
-	got := enforcementEntries(feat, false, rep)
+	got := enforcementEntries(feat, cgroupOutcome{}, rep)
 	if len(got) == 0 || !strings.HasPrefix(got[0], "skip:jail: ") {
 		t.Fatalf("the platform skip must lead the summary: %v", got)
 	}
@@ -121,7 +121,7 @@ func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
 func TestEnforcementEntriesUnchangedOnASupportedPlatform(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap"}
 	rep := Report{Applied: []string{"rlimit-cpu", "seccomp-net"}, Skipped: []string{"landlock: nope"}}
-	got := enforcementEntries(feat, true, rep)
+	got := enforcementEntries(feat, cgroupOutcome{wanted: true, attached: true}, rep)
 	want := []string{"bwrap", "cgroup-v2", "rlimit-cpu", "seccomp-net", "skip:landlock: nope"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("supported-platform summary changed:\ngot  %v\nwant %v", got, want)

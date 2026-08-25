@@ -9,6 +9,7 @@ import broker/exec.{type Pool}
 import broker/policy.{type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 import support/internal/ffi_shell
@@ -29,8 +30,16 @@ pub type Jail {
 }
 
 /// Builds the `loom-exec` helper with the Go toolchain (cached by Go,
-/// so cheap per run), or reports the reason to skip.
+/// so cheap per run), or reports the reason to skip — including the one
+/// reason no toolchain can fix, a platform Loom has no jail for.
 pub fn build_helper() -> Result(String, String) {
+  case exec.unjailed_skip_reason(exec.host_platform()) {
+    Some(reason) -> Error(reason)
+    None -> build_helper_here()
+  }
+}
+
+fn build_helper_here() -> Result(String, String) {
   case ffi_shell.find_executable("go") {
     Error(Nil) -> Error("go toolchain not on PATH")
     Ok(_go) -> {
@@ -79,6 +88,7 @@ pub fn start(
       helper_path:,
       shell_path: "/bin/sh",
       base_policy:,
+      helper_args: [],
       tmp_dir: tmp,
       handshake_timeout_ms: 5000,
       cancel_grace_ms: 3000,

@@ -384,3 +384,54 @@ func TestForkBombCapped(t *testing.T) {
 		t.Fatal("no pids.max denials recorded for a 16-way fork burst under pids=8")
 	}
 }
+
+// A policy asking for ceilings only cgroups can hold must come back
+// saying whether it got them. Either outcome is honest; silence is not,
+// and silence is what a full-enforcement demand reads as success.
+//
+// The assertion holds on both kinds of machine, which is the point: a
+// developer container with no v2 delegation reports the skip, a host
+// with a delegated base reports the layer, and neither reports nothing.
+func TestCgroupCeilingsAreEitherAppliedOrReportedSkipped(t *testing.T) {
+	pol := testPolicy(t)
+	pol.Limits.Pids = 32
+	pol.Limits.MemBytes = 256 << 20
+	c := newCollector()
+	ex := start(t, pol, []string{"/bin/sh", "-c", "true"}, c.sink)
+	_ = ex.WriteStdin(nil, true)
+	res := ex.Wait()
+
+	applied, skipped := false, false
+	for _, e := range res.Enforcement {
+		switch {
+		case e == jail.CgroupSkipPrefix:
+			applied = true
+		case strings.HasPrefix(e, "skip:"+jail.CgroupSkipPrefix):
+			skipped = true
+		}
+	}
+	if applied == skipped {
+		t.Fatalf("mem/pids ceilings were demanded; enforcement %v says neither "+
+			"that a cgroup held them nor that none did", res.Enforcement)
+	}
+	if skipped && jail.DetectFeatures().CgroupDir != "" {
+		t.Fatalf("a delegated cgroup base exists but the ceilings were skipped: %v",
+			res.Enforcement)
+	}
+}
+
+// The converse: an execution that asked for no cgroup-held ceiling has
+// no cgroup gap to report, and inventing one would devalue every real
+// skip entry the broker refuses on.
+func TestNoCgroupSkipWhenNoCeilingWasDemanded(t *testing.T) {
+	pol := testPolicy(t) // Limits.Pids and MemBytes both zero
+	c := newCollector()
+	ex := start(t, pol, []string{"/bin/sh", "-c", "true"}, c.sink)
+	_ = ex.WriteStdin(nil, true)
+	res := ex.Wait()
+	for _, e := range res.Enforcement {
+		if strings.HasPrefix(e, "skip:"+jail.CgroupSkipPrefix) {
+			t.Fatalf("nothing cgroup-held was demanded: %v", res.Enforcement)
+		}
+	}
+}

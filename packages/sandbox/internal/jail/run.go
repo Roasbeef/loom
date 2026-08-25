@@ -71,6 +71,37 @@ type Exec struct {
 	pumps sync.WaitGroup
 	feat  Features
 	cgDir string
+	cg    cgroupOutcome
+}
+
+// cgroupOutcome records what became of the per-exec cgroup for one
+// execution: whether the policy asked for a ceiling only cgroups can
+// hold, whether one was actually attached, and — when it was wanted and
+// missing — why. All three are needed to report honestly, because
+// "no cgroup" means nothing without "and one was asked for".
+type cgroupOutcome struct {
+	wanted   bool
+	attached bool
+	reason   string
+}
+
+// CgroupSkipPrefix opens every cgroup skip entry, so a reader (and the
+// self-test, and CI) can recognise the layer without matching a reason
+// that varies by machine.
+const CgroupSkipPrefix = "cgroup-v2"
+
+// CgroupSkip is the enforcement-report entry the helper emits when a
+// policy asked for a memory or process ceiling and no cgroup was
+// attached to hold it. Surfaced to the broker as "skip:" + this string,
+// which fails a full-enforcement demand — the alternative, saying
+// nothing, lets a policy that demanded both ceilings pass strict
+// enforcement with neither in place.
+func CgroupSkip(reason string) string {
+	if reason == "" {
+		reason = "no per-exec cgroup was attached"
+	}
+	return CgroupSkipPrefix + ": " + reason +
+		"; memory.max/pids.max were NOT applied"
 }
 
 // Start launches req under the strongest jail the environment offers.
@@ -200,16 +231,25 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// principle fork in the gap before Enter; phase 1 accepts that race
 	// (the broker learns from Enforcement whether cgroups applied at
 	// all, which is the decision that matters).
-	if feat.CgroupDir != "" && (req.Policy.Limits.MemBytes > 0 || req.Policy.Limits.Pids > 0) {
+	e.cg.wanted = req.Policy.Limits.MemBytes > 0 || req.Policy.Limits.Pids > 0
+	if e.cg.wanted {
+		e.cg.reason = feat.CgroupReason
+	}
+	if feat.CgroupDir != "" && e.cg.wanted {
 		name := "exec-" + strconv.FormatUint(req.ID, 10) + "-" + strconv.Itoa(cmd.Process.Pid)
 		dir, err := cgroup.Setup(feat.CgroupDir, name, cgroup.LimitsView{
 			MemBytes: req.Policy.Limits.MemBytes,
 			Pids:     req.Policy.Limits.Pids,
 		})
-		if err == nil {
+		switch {
+		case err != nil:
+			e.cg.reason = err.Error()
+		default:
 			if err := cgroup.Enter(dir, cmd.Process.Pid); err == nil {
 				e.cgDir = dir
+				e.cg.attached = true
 			} else {
+				e.cg.reason = err.Error()
 				_ = cgroup.Cleanup(dir)
 			}
 		}
@@ -344,7 +384,7 @@ func (e *Exec) Wait() Result {
 		TimedOut:        timedOut,
 	}
 
-	res.Enforcement = enforcementEntries(e.feat, e.cgDir != "", rep)
+	res.Enforcement = enforcementEntries(e.feat, e.cg, rep)
 
 	if err == nil {
 		res.Code = 0
@@ -373,7 +413,13 @@ func (e *Exec) Wait() Result {
 // the rlimit and pgroup entries are true and are also the whole of the
 // confinement, and a reader who missed that would take the list for a
 // sandbox report.
-func enforcementEntries(feat Features, cgrouped bool, rep Report) []string {
+//
+// The cgroup layer is the one the helper itself owns, and it reports on
+// the same terms as every other: applied, or skipped with a reason. A
+// policy that asked for `mem_bytes` or `pids` and got no cgroup has an
+// unenforced ceiling, and saying nothing about it would let exactly that
+// result satisfy a full-enforcement demand.
+func enforcementEntries(feat Features, cg cgroupOutcome, rep Report) []string {
 	var out []string
 	if !feat.Platform.Implemented {
 		out = append(out, "skip:"+feat.Platform.Reason)
@@ -381,10 +427,13 @@ func enforcementEntries(feat Features, cgrouped bool, rep Report) []string {
 	if feat.BwrapPath != "" {
 		out = append(out, "bwrap")
 	}
-	if cgrouped {
+	if cg.attached {
 		out = append(out, "cgroup-v2")
 	}
 	out = append(out, rep.Applied...)
+	if cg.wanted && !cg.attached {
+		out = append(out, "skip:"+CgroupSkip(cg.reason))
+	}
 	for _, s := range rep.Skipped {
 		out = append(out, "skip:"+s)
 	}

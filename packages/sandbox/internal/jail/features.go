@@ -32,15 +32,22 @@ type Features struct {
 	Platform PlatformSupport
 }
 
-// DetectFeatures probes the runtime environment.
-func DetectFeatures() Features {
+// DetectFeatures probes the runtime environment, taking the delegated
+// cgroup base from LOOM_CGROUP_BASE.
+func DetectFeatures() Features { return DetectFeaturesWith(cgroup.BaseFromEnv()) }
+
+// DetectFeaturesWith is DetectFeatures with the delegated cgroup v2 base
+// supplied explicitly — what `--cgroup-base` reaches. An empty string
+// falls back to the helper's own cgroup, which only serves in the root
+// cgroup; see internal/cgroup for why.
+func DetectFeaturesWith(cgroupBase string) Features {
 	var f Features
 	if p, err := exec.LookPath("bwrap"); err == nil {
 		f.BwrapPath = p
 	}
 	f.LandlockABI, f.LandlockReason = llock.ABIVersion()
 	f.Seccomp = seccompf.Supported()
-	f.CgroupDir, f.CgroupReason = cgroup.Detect()
+	f.CgroupDir, f.CgroupReason = cgroup.DetectBase(cgroupBase)
 	f.Platform = Platform()
 	return f
 }

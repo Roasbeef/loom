@@ -47,6 +47,7 @@
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
 import broker/internal/ffi_crypto
+import broker/internal/ffi_os
 import broker/internal/ffi_port
 import broker/policy.{type SandboxPolicy}
 import core/msgpack
@@ -946,6 +947,81 @@ fn notify_death(state: State, failure: ExecFailure) -> State {
   State(..state, exec: None, ready_waiters: [], pending_heartbeats: [])
 }
 
+// --- what this host's helper can be asked to do --------------------------
+
+/// Whether `loom-exec` has a jail for the operating system it will run
+/// on. Not a probe of the kernel: the question is whether Loom has a
+/// confinement implementation for this OS at all, which is a fact about
+/// the helper build and mirrors its own `jail.PlatformFor`.
+pub type HostPlatform {
+  /// Loom has a jail here. The helper serves with no extra argument,
+  /// and a missing kernel layer is reported as a skip, not a refusal.
+  JailedHost
+  /// Loom has no jail here (macOS Seatbelt is WP-H phase 2, the Windows
+  /// sandbox phase 3; neither is built). `loom-exec` refuses to serve
+  /// without `--allow-unenforced`, and with it confines nothing at all.
+  UnjailedHost(os_name: String)
+}
+
+/// The platform this VM — and therefore the helper it spawns — runs on.
+pub fn host_platform() -> HostPlatform {
+  host_platform_for(ffi_os.os_name())
+}
+
+/// The pure decision, taking `os:type/0`'s name so the answers no Linux
+/// host can reach are still testable from Linux. Kept deliberately in
+/// step with the helper's own `PlatformFor`: Linux is phase 1 and is the
+/// only jail that exists.
+pub fn host_platform_for(os_name: String) -> HostPlatform {
+  case os_name {
+    "linux" -> JailedHost
+    other -> UnjailedHost(os_name: other)
+  }
+}
+
+/// The extra helper arguments that let `loom-exec` serve on a platform
+/// with no jail — and `[]` everywhere else.
+///
+/// This is the only place `--allow-unenforced` should come from. The
+/// flag is not a degraded-mode switch: on a host where Loom *has* a
+/// jail, a missing bwrap or Landlock is reported honestly and the
+/// broker's own `FullEnforcement` demand decides what to do about it.
+/// Passing the flag there would silence a report instead of a refusal.
+pub fn unenforced_helper_args(platform: HostPlatform) -> List(String) {
+  case platform {
+    JailedHost -> []
+    UnjailedHost(..) -> ["--allow-unenforced"]
+  }
+}
+
+/// The marker every declared platform skip carries. `.github/declared-skips`
+/// matches on it, so a suite that stops needing to skip stops matching
+/// and fails the census — which is the point.
+pub const unjailed_skip_marker = "no loom-exec jail for this platform"
+
+/// Why a suite that spawns a real helper must skip rather than run, or
+/// `None` when it may run.
+///
+/// Running under `--allow-unenforced` is the other option and is not
+/// what these suites should do: they exercise the sandbox, and a run
+/// with nothing enforced would report success for a jail that was never
+/// built. Skipping with a reason a machine can check is the honest half
+/// of that trade.
+pub fn unjailed_skip_reason(platform: HostPlatform) -> Option(String) {
+  case platform {
+    JailedHost -> None
+    UnjailedHost(os_name:) ->
+      Some(
+        unjailed_skip_marker
+        <> " ("
+        <> os_name
+        <> "): loom-exec refuses to serve without --allow-unenforced, and "
+        <> "running unenforced would prove nothing about a jail that does "
+        <> "not exist",
+      )
+  }
+}
+
 // --- spawning the real helper -------------------------------------------
 
 /// Configuration for spawning a real `loom-exec` helper process.
@@ -958,6 +1034,22 @@ pub type SpawnConfig {
     shell_path: String,
     /// The base policy delivered on fd 3.
     base_policy: SandboxPolicy,
+    /// Extra arguments appended to the helper's own command line, after
+    /// the fd-3 redirection is in place. Almost always `[]`.
+    ///
+    /// Two things need it and neither can go through the environment: a
+    /// delegated cgroup base (`--cgroup-base DIR`), and, on a platform
+    /// `loom-exec` has no jail for, the `--allow-unenforced` opt-out
+    /// without which the helper refuses to serve at all. Erlang ports
+    /// cannot set a child's environment, so the command line is the only
+    /// channel the broker has.
+    ///
+    /// `--allow-unenforced` belongs here only on an *unsupported*
+    /// platform, never on a merely degraded one: a Linux host missing
+    /// bwrap still enforces something and could enforce the rest, while
+    /// a build with no jail enforces nothing. `unenforced_helper_args`
+    /// draws that line; do not hand-roll it.
+    helper_args: List(String),
     /// Directory for the transient mode-0600 policy file (created
     /// mode 0700).
     tmp_dir: String,
@@ -1002,15 +1094,22 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
     |> result.replace_error(PolicyFileFailed),
   )
   let cleanup = fn() { ffi_port.delete_file(policy_path) }
-  // $0 is a display name; $1 the helper binary; $2 the policy file.
-  // Positional parameters avoid every quoting pitfall in the paths.
-  let args = [
-    "-c",
-    "exec 3<\"$2\" \"$1\"",
-    "loom-exec",
-    config.helper_path,
-    policy_path,
-  ]
+  // $0 is a display name; $1 the helper binary; $2 the policy file;
+  // everything after that is the helper's own arguments. Positional
+  // parameters avoid every quoting pitfall in the paths, and `shift 2`
+  // leaves "$@" holding exactly the extra arguments — empty when there
+  // are none, which expands to nothing rather than to an empty word.
+  let args =
+    list.append(
+      [
+        "-c",
+        "helper=$1; policy=$2; shift 2; exec 3<\"$policy\" \"$helper\" \"$@\"",
+        "loom-exec",
+        config.helper_path,
+        policy_path,
+      ],
+      config.helper_args,
+    )
   let transport = PortTransport(executable: config.shell_path, args:, cleanup:)
   let helper_config =
     HelperConfig(

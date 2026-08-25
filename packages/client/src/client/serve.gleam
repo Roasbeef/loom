@@ -613,6 +613,10 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       helper_path: settings.helper_path,
       shell_path:,
       base_policy: base_policy(settings.workspace),
+      // The server never opts out of enforcement on the caller's behalf:
+      // on a platform with no jail the helper refuses to serve, which is
+      // the refusal `--allow-unenforced` exists to make deliberate.
+      helper_args: [],
       tmp_dir:,
       handshake_timeout_ms: 5000,
       cancel_grace_ms: 3000,

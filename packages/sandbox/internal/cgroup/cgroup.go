@@ -7,6 +7,21 @@
 // construction half is pure — policy in, {path, contents} pairs out — so
 // the exact writes are unit-tested even inside containers that give us
 // no v2 delegation (like this one, which mounts v1 controllers).
+//
+// # Where the base comes from
+//
+// cgroup v2's no-internal-process rule forbids a cgroup from having both
+// member processes and controllers enabled for its children, so the
+// helper's *own* cgroup — which always contains at least the helper — can
+// never distribute memory and pids to per-exec children. That is not a
+// property of cgroup v2 but of that choice of base: any delegated cgroup
+// containing no processes distributes controllers to its children, which
+// is precisely what delegation is for. The operator hands one over
+// (systemd `Delegate=yes`, and on v254+ `DelegateSubgroup=`, which parks
+// the service's own processes in a subgroup and leaves the delegated root
+// empty), naming it in LOOM_CGROUP_BASE or `--cgroup-base`. Absent that,
+// Detect falls back to the own-cgroup base, which works only in the true
+// root cgroup, and says so rather than pretending.
 package cgroup
 
 import (
@@ -49,50 +64,196 @@ func FileWrites(dir string, l LimitsView) []FileWrite {
 	return out
 }
 
+// BaseEnvVar names the delegated cgroup v2 base in the helper's
+// environment. `--cgroup-base` on the command line overrides it; both
+// exist because systemd units set environment and the broker sets
+// arguments, and neither should have to translate for the other.
+const BaseEnvVar = "LOOM_CGROUP_BASE"
+
+// BaseFromEnv reads the operator-supplied base, empty when unset.
+func BaseFromEnv() string { return strings.TrimSpace(os.Getenv(BaseEnvVar)) }
+
 // Detect reports whether a writable, delegated cgroup v2 hierarchy with
 // the memory and pids controllers is available, returning the directory
 // under which per-exec cgroups can be created, or a human-readable
-// reason why not.
-func Detect() (dir string, reason string) {
-	const root = "/sys/fs/cgroup"
-	controllers, err := os.ReadFile(filepath.Join(root, "cgroup.controllers"))
-	if err != nil {
-		return "", fmt.Sprintf("no cgroup v2 unified hierarchy at %s: %v", root, err)
+// reason why not. The base comes from the environment; see DetectBase.
+func Detect() (dir string, reason string) { return DetectBase(BaseFromEnv()) }
+
+// DetectBase is Detect with the configured base passed in, so both the
+// delegated and the fallback path are reachable from a test.
+//
+// A non-empty configured base is the supported production shape and is
+// checked strictly: it must be a cgroup v2 directory, it must have the
+// memory and pids controllers available to it, and it must contain no
+// processes — the last because cgroup v2 refuses to enable controllers
+// for the children of a cgroup that has members, which is the whole
+// reason the helper's own cgroup cannot serve. When those hold, the
+// controllers are enabled in its `cgroup.subtree_control` (idempotently)
+// so the per-exec children actually get `memory.max` and `pids.max`.
+//
+// With no configured base the helper falls back to its own cgroup, which
+// satisfies the rule above only in the true root cgroup. Every failure
+// returns a reason naming the fix rather than a bare "unavailable".
+func DetectBase(configured string) (dir string, reason string) {
+	if configured != "" {
+		return delegatedBase(configured)
 	}
-	have := map[string]bool{}
-	for _, c := range strings.Fields(string(controllers)) {
-		have[c] = true
+	if reason := ownCgroupBase(); reason != "" {
+		return "", reason + "; " + delegationHint
 	}
-	if !have["memory"] || !have["pids"] {
-		return "", fmt.Sprintf("cgroup v2 present but missing controllers (have %q)", strings.TrimSpace(string(controllers)))
-	}
-	// Our own cgroup must be writable for delegation to mean anything.
-	self, err := os.ReadFile("/proc/self/cgroup")
-	if err != nil {
-		return "", fmt.Sprintf("cannot read /proc/self/cgroup: %v", err)
-	}
-	own := ownV2Path(string(self))
-	if own == "" {
-		return "", "process is not in a cgroup v2 hierarchy"
-	}
-	base := filepath.Join(root, own)
-	probe := filepath.Join(base, "loom-exec-probe")
-	if err := os.Mkdir(probe, 0o755); err != nil {
-		return "", fmt.Sprintf("cgroup %s not delegated (mkdir failed: %v)", base, err)
-	}
-	_ = os.Remove(probe)
+	base, _ := ownCgroupPath()
 	return base, ""
 }
 
-// ownV2Path extracts the v2 path ("0::/foo/bar") from /proc/self/cgroup
-// contents; empty when absent.
-func ownV2Path(procSelfCgroup string) string {
-	for _, line := range strings.Split(procSelfCgroup, "\n") {
-		if rest, ok := strings.CutPrefix(line, "0::"); ok {
-			return strings.TrimPrefix(strings.TrimSpace(rest), "/")
+// ownCgroupPath resolves the helper's own cgroup directory, or ok=false
+// when it is not in a unified hierarchy at all.
+func ownCgroupPath() (string, bool) {
+	self, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", false
+	}
+	own, ok := ownV2Path(string(self))
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(unifiedRoot, own), true
+}
+
+// ownCgroupBase reports why the fallback base is unusable, or "" when
+// it is. Split out so DetectBase can append the same delegation hint to
+// every one of its failures: the operator needs the reason and the
+// remedy in the same sentence.
+func ownCgroupBase() string {
+	controllers, err := os.ReadFile(filepath.Join(unifiedRoot, "cgroup.controllers"))
+	if err != nil {
+		return fmt.Sprintf("no cgroup v2 unified hierarchy at %s: %v", unifiedRoot, err)
+	}
+	if missing := missingControllers(string(controllers)); missing != "" {
+		return fmt.Sprintf("cgroup v2 present but missing controllers "+
+			"(have %q, need %s)", strings.TrimSpace(string(controllers)), missing)
+	}
+	base, ok := ownCgroupPath()
+	if !ok {
+		return "process is not in a cgroup v2 hierarchy"
+	}
+	return usable(base)
+}
+
+// delegationHint is appended to every fallback failure: the reason a
+// base is unusable is only half the message, and the other half is the
+// same every time.
+const delegationHint = "hand the helper a delegated, process-empty " +
+	"cgroup v2 base in " + BaseEnvVar + " or --cgroup-base (systemd: " +
+	"Delegate=yes, plus DelegateSubgroup= on v254+ so the delegated root " +
+	"stays empty)"
+
+// delegatedBase validates an operator-supplied base and enables the
+// controllers its children need.
+func delegatedBase(base string) (dir string, reason string) {
+	if reason := usable(base); reason != "" {
+		return "", reason
+	}
+	return base, ""
+}
+
+// usable reports why base cannot host per-exec cgroups, or "" when it
+// can — enabling the memory and pids controllers for its children as a
+// side effect when they are available but not yet distributed.
+func usable(base string) string {
+	controllers, err := os.ReadFile(filepath.Join(base, "cgroup.controllers"))
+	if err != nil {
+		return fmt.Sprintf("%s is not a cgroup v2 directory: %v", base, err)
+	}
+	if missing := missingControllers(string(controllers)); missing != "" {
+		return fmt.Sprintf("cgroup %s was not delegated the %s controller(s) "+
+			"(has %q)", base, missing, strings.TrimSpace(string(controllers)))
+	}
+	// The no-internal-process rule: a cgroup with member processes cannot
+	// enable controllers for its children. A delegated base is expected to
+	// be empty; the helper's own cgroup never is, outside the root cgroup.
+	procs, err := os.ReadFile(filepath.Join(base, "cgroup.procs"))
+	if err != nil {
+		return fmt.Sprintf("cannot read %s/cgroup.procs: %v", base, err)
+	}
+	if n := len(strings.Fields(string(procs))); n > 0 && base != unifiedRoot {
+		return fmt.Sprintf("cgroup %s holds %d process(es), so cgroup v2's "+
+			"no-internal-process rule forbids enabling controllers for its "+
+			"children", base, n)
+	}
+	if reason := enableSubtree(base); reason != "" {
+		return reason
+	}
+	probe := filepath.Join(base, "loom-exec-probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		return fmt.Sprintf("cgroup %s not delegated (mkdir failed: %v)", base, err)
+	}
+	_ = os.Remove(probe)
+	return ""
+}
+
+// unifiedRoot is the one cgroup exempt from the no-internal-process
+// rule, and therefore the one place the fallback base works.
+const unifiedRoot = "/sys/fs/cgroup"
+
+// enableSubtree makes sure base distributes memory and pids to its
+// children, writing `cgroup.subtree_control` only when something is
+// missing (the write is rejected outright on a populated cgroup, and
+// writing nothing is one fewer way to fail).
+func enableSubtree(base string) string {
+	path := filepath.Join(base, "cgroup.subtree_control")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("cannot read %s: %v", path, err)
+	}
+	if missing := missingControllers(string(current)); missing != "" {
+		if err := os.WriteFile(path, []byte("+memory +pids"), 0o644); err != nil {
+			return fmt.Sprintf("cgroup %s does not distribute %s to its "+
+				"children and they could not be enabled (write %s: %v)",
+				base, missing, path, err)
+		}
+		again, err := os.ReadFile(path)
+		if err != nil || missingControllers(string(again)) != "" {
+			return fmt.Sprintf("cgroup %s still does not distribute memory "+
+				"and pids to its children after enabling them", base)
 		}
 	}
 	return ""
+}
+
+// missingControllers names which of memory and pids a controller list
+// lacks, or "" when it has both. Used for both `cgroup.controllers`
+// (what is available here) and `cgroup.subtree_control` (what reaches
+// the children), which is why it takes the raw file contents.
+func missingControllers(list string) string {
+	have := map[string]bool{}
+	for _, c := range strings.Fields(list) {
+		// A real cgroupfs reads back plain names; the "+name" form is
+		// only ever what we wrote, and tolerating it keeps the
+		// verifying re-read below honest against a filesystem fake.
+		have[strings.TrimPrefix(c, "+")] = true
+	}
+	switch {
+	case !have["memory"] && !have["pids"]:
+		return "memory and pids"
+	case !have["memory"]:
+		return "memory"
+	case !have["pids"]:
+		return "pids"
+	}
+	return ""
+}
+
+// ownV2Path extracts the v2 path from /proc/self/cgroup contents
+// ("0::/foo/bar" yields "foo/bar"). The root cgroup's own line is
+// "0::/", which yields "" *and* ok — a distinction the caller needs,
+// since the root cgroup is the one place the fallback base works.
+func ownV2Path(procSelfCgroup string) (string, bool) {
+	for _, line := range strings.Split(procSelfCgroup, "\n") {
+		if rest, ok := strings.CutPrefix(line, "0::"); ok {
+			return strings.TrimPrefix(strings.TrimSpace(rest), "/"), true
+		}
+	}
+	return "", false
 }
 
 // Setup creates a per-exec cgroup under base, applies the limit writes,

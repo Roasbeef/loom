@@ -242,3 +242,84 @@ func TestUnknownArgumentStillFails(t *testing.T) {
 		t.Fatalf("expected a usage error, got: %s", out)
 	}
 }
+
+// The delegated cgroup base reaches the helper as an argument, so the
+// broker (which cannot set a port's environment) can hand one over. A
+// base that is not a delegated cgroup is not a reason to refuse service
+// — it is a reason to say the layer is unavailable, which the hello's
+// feature list does by omitting cgroup-v2.
+func TestCgroupBaseFlagIsAcceptedAndReportedHonestly(t *testing.T) {
+	raw, err := policy.Encode(smokePolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, _ := startServer(t, raw, "--cgroup-base", t.TempDir())
+
+	f, err := conn.Read()
+	if err != nil {
+		t.Fatalf("read hello: %v", err)
+	}
+	var hello framing.Hello
+	if f.Kind != framing.KindHello || framing.DecodeBody(f.Body, &hello) != nil {
+		t.Fatalf("first frame: %+v", f)
+	}
+	for _, feature := range hello.Features {
+		if feature == "cgroup-v2" {
+			t.Fatalf("an ordinary directory is not a delegated cgroup base, "+
+				"yet the helper advertised the layer: %v", hello.Features)
+		}
+	}
+}
+
+// A --cgroup-base with no value must not be read as "no base": the
+// operator asked for ceilings and would otherwise get none, silently.
+func TestCgroupBaseWithoutAValueIsAUsageError(t *testing.T) {
+	cmd := exec.Command(testbin.Helper(t), "--cgroup-base")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a nonzero exit, got: %s", out)
+	}
+	if !strings.Contains(string(out), "requires a directory") {
+		t.Fatalf("expected a usage error naming the missing value: %s", out)
+	}
+}
+
+// A misspelled server flag is an error even when a valid one precedes
+// it, so a typo cannot quietly drop the confinement it was meant to ask
+// for.
+func TestUnknownServerFlagAfterAValidOneStillFails(t *testing.T) {
+	cmd := exec.Command(testbin.Helper(t), jail.AllowUnenforcedFlag, "--cgroup-bass", "/x")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected a nonzero exit, got: %s", out)
+	}
+	if !strings.Contains(string(out), "unknown server argument") {
+		t.Fatalf("expected a usage error, got: %s", out)
+	}
+}
+
+// The setsid probe target must actually leave its session, or the
+// self-test probe built on it proves nothing. Run bare (not in a jail),
+// from a child process so this test's own session is untouched.
+func TestProbeSetsidLeavesItsSession(t *testing.T) {
+	cmd := exec.Command(testbin.Helper(t), "--probe-setsid")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	buf := make([]byte, 64)
+	n, err := stdout.Read(buf)
+	if err != nil {
+		t.Fatalf("read probe output: %v", err)
+	}
+	if got := strings.TrimSpace(string(buf[:n])); got != "setsid-ok" {
+		t.Fatalf("probe did not escape its session: %q", got)
+	}
+}

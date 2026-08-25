@@ -17,6 +17,7 @@ import codemode/launch
 import codemode/seed
 import core/clock.{type Clock}
 import filepath
+import gleam/option
 import gleam/string
 import simplifile
 import support/internal/ffi_peer
@@ -47,8 +48,12 @@ pub type Rig {
 }
 
 /// Locates the toolchain, builds the helper, and checks the seed — or
-/// reports the reason to skip.
+/// reports the reason to skip. The first reason no toolchain can fix is
+/// a platform Loom has no jail for: the helper refuses to serve there,
+/// and running it unenforced would report success for a sandbox that
+/// does not exist.
 pub fn prerequisites() -> Result(Prerequisites, String) {
+  use Nil <- try(jailed_platform())
   use gleam_path <- try(executable("gleam"))
   use erl_path <- try(executable("erl"))
   use _go <- try(executable("go"))
@@ -104,6 +109,7 @@ pub fn start(
         helper_path: prerequisites.helper_path,
         shell_path: "/bin/sh",
         base_policy:,
+        helper_args: [],
         tmp_dir: helper_tmp,
         handshake_timeout_ms: 5000,
         cancel_grace_ms: 3000,
@@ -161,6 +167,16 @@ pub fn base_policy(root: String) -> SandboxPolicy {
 pub fn stop(rig: Rig) -> Nil {
   broker.stop(rig.broker)
   exec.stop_pool(rig.pool)
+}
+
+// The platform gate, shared with the other three real-helper suites
+// through `broker/exec` so all four skip with the same declared reason
+// (see .github/declared-skips).
+fn jailed_platform() -> Result(Nil, String) {
+  case exec.unjailed_skip_reason(exec.host_platform()) {
+    option.Some(reason) -> Error(reason)
+    option.None -> Ok(Nil)
+  }
 }
 
 fn executable(name: String) -> Result(String, String) {

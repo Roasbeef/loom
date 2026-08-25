@@ -85,6 +85,7 @@ fn run_live(ready: Ready) -> Nil {
         helper_path: ready.helper_path,
         shell_path: "/bin/sh",
         base_policy:,
+        helper_args: [],
         tmp_dir: workspace <> "/tmp",
         handshake_timeout_ms: 5000,
         cancel_grace_ms: 3000,

@@ -43,18 +43,30 @@ required|direct socket denied under network off
 
 # --- cgroup v2.
 #
-# `internal/cgroup.Detect` returns the helper's *own* cgroup as the base,
-# and `Setup` then creates the per-exec cgroup inside it and writes
-# `memory.max`/`pids.max` there. Those files only exist if the base cgroup
-# lists the controllers in `cgroup.subtree_control`, and cgroup v2's
-# no-internal-process rule forbids a non-root cgroup from having both
-# member processes and enabled controllers for its children. A helper
-# therefore has a delegated hierarchy it can use only when it runs in the
-# true root cgroup, which is exempt from that rule — not the shape a
-# GitHub-hosted runner (or any systemd host) puts a workflow step in.
+# Memory and process ceilings are the one layer the helper cannot get
+# from the kernel alone: cgroup v2 forbids a cgroup from having both
+# member processes and controllers enabled for its children, and the
+# helper's own cgroup always contains the helper. That is a fact about
+# *that choice of base*, not about cgroup v2 — any delegated cgroup with
+# no processes in it distributes controllers to its children, which is
+# what delegation is for. So the base is configuration
+# (`LOOM_CGROUP_BASE` / `--cgroup-base`), the jail job delegates one with
+# three lines of shell before the self-test runs, and this probe is
+# required of that shape.
 #
-# The jail job records this rather than papering over it: it runs the
-# self-test in the production shape, where this probe is expected to skip,
-# and then runs a clearly-labelled supplementary probe from the root
-# cgroup whose result is printed but never allowed to satisfy this file.
-known-gap|fork bomb capped by pids limit|the runner's workflow step lives in a systemd service cgroup, and per-exec cgroups can only be created from the root cgroup (cgroup v2 no-internal-process rule); the supplementary root-cgroup run in the jail job reports what this kernel would give
+# This entry was a `known-gap` for one release, on the reasoning that the
+# limits could only be reached from the true root cgroup. The gap is over
+# and the probe is `required`: if the delegation step stops working, this
+# line fails the job, which is the whole point of writing it down.
+required|fork bomb capped by pids limit
+
+# --- The pgroup contract's escape hatch.
+#
+# Cancellation and cleanup signal the child's *process group*, so a
+# process that calls setsid(2) is out of reach of that signal. bwrap's
+# PID namespace covers it anyway — the namespace dies with its init and
+# takes every process in it. The jail job installs bubblewrap, so the
+# layer exists here and must hold. Without bwrap this probe skips, which
+# is honest: the pgroup sweep alone genuinely does not reach a new
+# session.
+required|setsid escape contained by pid namespace

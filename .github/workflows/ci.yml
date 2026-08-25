@@ -128,18 +128,21 @@ jobs:
   #   `loom-exec` has no jail for darwin — Seatbelt is WP-H phase 2 and
   #   deliberately unbuilt — so on macOS the helper refuses to serve in
   #   server mode unless it is passed `--allow-unenforced`
-  #   (packages/sandbox/internal/jail/platform.go). Nothing on the Gleam
-  #   side can pass it: `broker/exec.SpawnConfig` has no field for extra
-  #   arguments. Four suites spawn the real helper — broker's and tools'
-  #   integration tests panic outright on a spawn failure, and
-  #   conformance's and code-mode's end-to-end rigs assert their way to
-  #   the same place — so `make check` fails on macOS in four packages.
+  #   (packages/sandbox/internal/jail/platform.go).
   #
-  # The Go packages should fare better: every Linux-only test in
-  # packages/sandbox carries `//go:build linux`, leaving darwin with pure
-  # unit tests, and packages/tui is portable. The point of running this
-  # job is to find out rather than to assume, and to keep the gap in
-  # everyone's face until it is either closed or consciously accepted.
+  # Both halves of that now have an answer. `broker/exec.SpawnConfig` has
+  # a `helper_args` field, so a host *can* pass the flag; and the four
+  # suites that spawn a real helper choose not to, skipping instead with
+  # the declared reason in `.github/declared-skips` — because a suite that
+  # exists to prove the sandbox proves nothing by running unconfined. The
+  # skip census honours the declaration and fails the job the day macOS
+  # stops needing it.
+  #
+  # The Go packages fare better: every Linux-only test in packages/sandbox
+  # carries `//go:build linux`, leaving darwin with pure unit tests, and
+  # packages/tui is portable. Nothing in this tree has ever executed on
+  # macOS, so the point of running this job is still to find out rather
+  # than to assume.
   gate-macos:
     name: gate (macos)
     runs-on: macos-15
@@ -251,18 +254,94 @@ jobs:
             echo "no AppArmor userns restriction on this kernel"
           fi
 
+      # A delegated, process-empty cgroup v2 base — the shape production
+      # runs in, and the one shape in which memory.max/pids.max exist at
+      # all. cgroup v2 forbids a cgroup from having both member processes
+      # and controllers enabled for its children, so the helper's own
+      # cgroup (which always contains the helper) can never serve; a base
+      # handed over by the operator can. systemd does this natively with
+      # Delegate=yes and DelegateSubgroup=; this step reproduces that
+      # shape by hand, and .github/scripts/join_delegated_cgroup.sh puts
+      # each helper-running step's shell into the supervisor subgroup the
+      # way systemd would. The step fails loudly rather than continuing,
+      # because the fork-bomb probe below is `required` and a silent
+      # failure here would look like a broken sandbox instead of a
+      # missing grant.
+      - name: Delegate a cgroup v2 base to the helper
+        run: |
+          set -euo pipefail
+          base=/sys/fs/cgroup/loom.slice
+          sudo mkdir -p "$base"
+          # The root cgroup is exempt from the no-internal-process rule,
+          # so it can distribute controllers even while populated. systemd
+          # has usually done this already; enabling twice is a no-op, and
+          # the proof that it took is the probe further down, not this
+          # write's exit code.
+          sudo sh -c 'echo "+memory +pids" > /sys/fs/cgroup/cgroup.subtree_control' ||
+            echo "root subtree_control unchanged (already set, or refused)"
+          sudo sh -c "echo '+memory +pids' > $base/cgroup.subtree_control"
+          # Delegation proper: the workflow user owns the directory and
+          # the three interface files a delegated cgroup needs.
+          sudo chown -R "$(id -u):$(id -g)" "$base"
+          echo "controllers:    $(cat "$base"/cgroup.controllers)"
+          echo "subtree:        $(cat "$base"/cgroup.subtree_control)"
+          echo "member procs:   $(wc -l < "$base"/cgroup.procs)"
+          # Prove the grant before anything depends on it, in both the
+          # ways it can be hollow.
+          #
+          # First: a child of the base must really have the two limit
+          # files to write.
+          mkdir -p "$base/ci-probe" "$base/supervisor"
+          test -w "$base/ci-probe/memory.max"
+          test -w "$base/ci-probe/pids.max"
+          #
+          # Second, and much easier to get wrong: cgroup v2's delegation
+          # containment rule permits an unprivileged migration only when
+          # the writer can write both the destination's `cgroup.procs`
+          # and the `cgroup.procs` of the common ancestor of source and
+          # destination. A helper left in the runner's own service cgroup
+          # shares only the *root* cgroup with this base, and nobody
+          # unprivileged writes root — so every per-exec cgroup would be
+          # created, configured, and left empty. The shape that works is
+          # systemd's `DelegateSubgroup=`: the supervisor sits in a
+          # subgroup of the base, which makes the base the common
+          # ancestor. Prove that with a real unprivileged move.
+          sh -c 'exec sleep 60' &
+          probe_pid=$!
+          # Only this first move needs root, because it crosses out of
+          # the runner's service cgroup — exactly what systemd does for a
+          # delegated service at start.
+          sudo sh -c "echo $probe_pid > '$base/supervisor/cgroup.procs'"
+          # And this one is the real test: unprivileged, within the
+          # delegated subtree.
+          if ! echo "$probe_pid" > "$base/ci-probe/cgroup.procs"; then
+            echo "delegation is hollow: an unprivileged migration into a"
+            echo "child of $base was refused. The helper would create"
+            echo "per-exec cgroups it cannot put anything into, and the"
+            echo "memory and pid ceilings would bind nothing."
+            kill "$probe_pid" 2>/dev/null || true
+            exit 1
+          fi
+          grep -qx "$probe_pid" "$base/ci-probe/cgroup.procs"
+          kill "$probe_pid" 2>/dev/null || true
+          wait "$probe_pid" 2>/dev/null || true
+          rmdir "$base/ci-probe"
+          echo "LOOM_CGROUP_BASE=$base" >> "$GITHUB_ENV"
+
       - name: Kernel census (after)
         run: .github/scripts/kernel_census.sh
 
       # The production shape: the helper running as the ordinary workflow
-      # user, exactly as the broker would spawn it. The exit code is not
-      # the verdict here — the next step is, because it knows which of the
-      # skips this machine was entitled to. Failing on the spot would keep
-      # the enforcement matrix out of the summary in exactly the case
-      # where it is most worth reading.
+      # user with an operator-delegated cgroup base (LOOM_CGROUP_BASE, set
+      # by the delegation step above), exactly as the broker would spawn
+      # it. The exit code is not the verdict here — the next step is,
+      # because it knows which of the skips this machine was entitled to.
+      # Failing on the spot would keep the enforcement matrix out of the
+      # summary in exactly the case where it is most worth reading.
       - name: Sandbox self-test
         run: |
           set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
           make sandbox
           ./packages/sandbox/loom-exec --self-test > selftest.log 2>&1 || true
           cat selftest.log
@@ -272,46 +351,13 @@ jobs:
           .github/scripts/enforcement_report.sh \
             selftest.log .github/enforcement-expectations "jail (linux, workflow user)"
 
-      # Supplementary, and deliberately fenced off. `internal/cgroup`
-      # creates each execution's cgroup inside the helper's *own* cgroup,
-      # which only has memory.max/pids.max to write when that cgroup lists
-      # the controllers in cgroup.subtree_control — and cgroup v2 forbids a
-      # non-root cgroup from having both member processes and enabled
-      # controllers. The root cgroup is exempt, so this run says what the
-      # kernel would give a helper that lived there. Its result is printed
-      # and never allowed to satisfy an expectation: a layer enforced in a
-      # shape production does not use is not an enforced layer.
-      - name: Supplementary — cgroup delegation from the root cgroup
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          report=selftest-rootcgroup.log
-          # The redirect belongs to this shell, not to root, which is what
-          # we want: root moves itself into the root cgroup and execs the
-          # helper, and the report lands in a file the workflow owns.
-          # shellcheck disable=SC2024
-          sudo sh -c 'echo $$ > /sys/fs/cgroup/cgroup.procs
-                      exec ./packages/sandbox/loom-exec --self-test' \
-            >"$report" 2>&1 || true
-          {
-            echo "### Supplementary self-test — root cgroup"
-            echo
-            echo "Not the production shape: the broker spawns \`loom-exec\` as"
-            echo "the session user, not as root in the root cgroup. This run"
-            echo "says what the kernel *would* give a helper placed there; it"
-            echo "satisfies no expectation in .github/enforcement-expectations."
-            echo
-            echo '```'
-            cat "$report"
-            echo '```'
-          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
-
       # `go test` reports a t.Skip only under -v, and the jail integration
       # tests skip themselves whenever the kernel lacks a layer. With the
       # layers now installed, a skip here means the install did not take.
       - name: Go jail integration tests, verbosely
         run: |
           set -o pipefail
+          . .github/scripts/join_delegated_cgroup.sh
           cd packages/sandbox && go test -v -count=1 ./internal/jail/... ./internal/selftest/... \
             2>&1 | tee ../../go-jail.log
 
@@ -326,10 +372,16 @@ jobs:
       # in their tool details is the real thing rather than the degraded
       # fallback the gate job exercises.
       - name: make e2e
-        run: set -o pipefail; make e2e 2>&1 | tee e2e.log
+        run: |
+          set -o pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          make e2e 2>&1 | tee e2e.log
 
       - name: make e2e-codemode
-        run: set -o pipefail; make e2e-codemode 2>&1 | tee e2e-codemode.log
+        run: |
+          set -o pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          make e2e-codemode 2>&1 | tee e2e-codemode.log
 
       - name: Skip census (end to end)
         run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
@@ -341,7 +393,6 @@ jobs:
           name: jail-linux-logs
           path: |
             selftest.log
-            selftest-rootcgroup.log
             go-jail.log
             e2e.log
             e2e-codemode.log

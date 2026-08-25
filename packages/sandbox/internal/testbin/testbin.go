@@ -49,7 +49,20 @@ func build() {
 		err = mkErr
 		return
 	}
-	out := filepath.Join(os.TempDir(), fmt.Sprintf("loom-exec-test-%d", os.Getpid()))
+	// Not the system temp directory. A "tmpfs" scratch policy mounts a
+	// fresh tmpfs over jail.ScratchMount ("/tmp"), so a helper built
+	// there is invisible from inside every jail the tests then start —
+	// including to the jail runner itself, which re-invokes this very
+	// binary as its restrict-and-exec stage. The failure looks like a
+	// broken sandbox rather than a misplaced file, which is how it went
+	// unnoticed on hosts without bubblewrap installed. The module's own
+	// build directory is git-ignored and never a mount target.
+	outDir := filepath.Join(dir, "build")
+	if mkErr := os.MkdirAll(outDir, 0o755); mkErr != nil {
+		err = mkErr
+		return
+	}
+	out := filepath.Join(outDir, fmt.Sprintf("loom-exec-test-%d", os.Getpid()))
 	cmd := exec.Command(goTool, "build", "-o", out, "./cmd/loom-exec")
 	cmd.Dir = dir
 	if outBytes, buildErr := cmd.CombinedOutput(); buildErr != nil {

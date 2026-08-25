@@ -17,6 +17,7 @@ import core/json
 import core/message
 import gleam/erlang/process
 import gleam/io
+import gleam/option
 import gleam/string
 import simplifile
 import support/shell
@@ -27,6 +28,13 @@ import tools/tool
 // Builds the helper (cached by Go, so cheap per run) and returns a
 // ready SpawnConfig, or the reason to skip.
 fn helper_config() -> Result(#(exec.SpawnConfig, String), String) {
+  case exec.unjailed_skip_reason(exec.host_platform()) {
+    option.Some(reason) -> Error(reason)
+    option.None -> helper_config_here()
+  }
+}
+
+fn helper_config_here() -> Result(#(exec.SpawnConfig, String), String) {
   case shell.find_executable("go") {
     Error(Nil) -> Error("go toolchain not on PATH")
     Ok(_go) -> {
@@ -50,6 +58,7 @@ fn helper_config() -> Result(#(exec.SpawnConfig, String), String) {
               helper_path:,
               shell_path: "/bin/sh",
               base_policy: base_policy(workspace),
+              helper_args: [],
               tmp_dir: work_dir <> "/tmp",
               handshake_timeout_ms: 5000,
               cancel_grace_ms: 3000,

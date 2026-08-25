@@ -68,6 +68,7 @@ func Run(w io.Writer, selfExe string) bool {
 		{"fork bomb capped by pids limit", probeForkBomb},
 		{"output flood truncated at cap", probeOutputFlood},
 		{"orphaned grandchild reaped via pgroup", probeOrphanReap},
+		{"setsid escape contained by pid namespace", probeSetsidEscape},
 	}
 
 	ok := true
@@ -132,6 +133,41 @@ func unsupportedPlatformReport(p jail.PlatformSupport) string {
 	)
 }
 
+// probeDir creates a scratch directory for one probe, outside the
+// jail's scratch mount.
+//
+// This is load-bearing, not hygiene. A "tmpfs" scratch policy mounts a
+// fresh tmpfs at jail.ScratchMount ("/tmp") *after* the writable binds,
+// so a writable root underneath it is shadowed by the jail's own
+// scratch and every write to it fails. os.MkdirTemp("") lands exactly
+// there on a host with no TMPDIR set, which is most CI runners — and
+// the probe would then report "jail broken, not tight" for a jail that
+// is neither. The confinement is fail-closed either way (the root
+// becomes unwritable, never wider), so this is the probe's bug to fix
+// and not the jail's.
+func probeDir() (string, error) {
+	base := os.TempDir()
+	if underScratchMount(base) {
+		// /var/tmp is POSIX and is never the tmpfs scratch target.
+		if fi, err := os.Stat(alternateTempRoot); err == nil && fi.IsDir() {
+			base = alternateTempRoot
+		}
+	}
+	return os.MkdirTemp(base, "loom-selftest-*")
+}
+
+// alternateTempRoot is where probes go when the default temp directory
+// is the one the scratch tmpfs will cover.
+const alternateTempRoot = "/var/tmp"
+
+// underScratchMount reports whether dir would be hidden by a tmpfs
+// scratch mount at jail.ScratchMount.
+func underScratchMount(dir string) bool {
+	clean := filepath.Clean(dir)
+	return clean == jail.ScratchMount ||
+		strings.HasPrefix(clean, jail.ScratchMount+string(filepath.Separator))
+}
+
 // basePolicy builds a network-off policy writable only in dir.
 func basePolicy(dir string) policy.Policy {
 	return policy.Policy{
@@ -177,7 +213,7 @@ func probeWriteOutside(feat jail.Features, selfExe string) probeResult {
 		return probeResult{outcome: skipped,
 			detail: "needs bwrap or Landlock; neither available: " + feat.LandlockReason}
 	}
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -216,7 +252,7 @@ func probeProtected(feat jail.Features, selfExe string) probeResult {
 		return probeResult{outcome: skipped,
 			detail: "protected-path masking needs bwrap (Landlock has no deny rules)"}
 	}
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -247,7 +283,7 @@ func probeSocketOff(feat jail.Features, selfExe string) probeResult {
 	if !feat.Seccomp {
 		return probeResult{outcome: skipped, detail: "kernel lacks seccomp filter support"}
 	}
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -286,7 +322,7 @@ func probeSocketOff(feat jail.Features, selfExe string) probeResult {
 }
 
 func probeEnvAllowlist(feat jail.Features, selfExe string) probeResult {
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -326,7 +362,7 @@ func probeForkBomb(feat jail.Features, selfExe string) probeResult {
 	if feat.CgroupDir == "" {
 		return probeResult{outcome: skipped, detail: "no delegated cgroup v2: " + feat.CgroupReason}
 	}
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -347,6 +383,16 @@ echo attempted`
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
 	}
+	// Detect proved it could create a child of the base; it cannot prove
+	// a process may be *moved* into one, which cgroup v2's delegation
+	// containment rule governs separately (the base must be the common
+	// ancestor of the helper and the per-exec cgroup, so the helper has
+	// to live inside the delegated subtree). When that fails the ceiling
+	// bound nothing, and the run says so — reporting it as a failed probe
+	// would blame the jail for a grant it was never given.
+	if skip := cgroupSkipEntry(res.Enforcement); skip != "" {
+		return probeResult{outcome: skipped, detail: skip}
+	}
 	if res.PidsMaxEvents == 0 {
 		return probeResult{outcome: failed,
 			detail: "32-way fork burst produced no pids.max denials under pids=8"}
@@ -354,8 +400,82 @@ echo attempted`
 	return probeResult{outcome: enforced}
 }
 
+// cgroupSkipEntry returns the reason from a cgroup skip entry in an
+// enforcement report, or "" when the ceilings were applied.
+func cgroupSkipEntry(enforcement []string) string {
+	prefix := "skip:" + jail.CgroupSkipPrefix
+	for _, e := range enforcement {
+		if strings.HasPrefix(e, prefix) {
+			return strings.TrimPrefix(e, "skip:")
+		}
+	}
+	return ""
+}
+
+// setsidPatience is how long the runner waits before calling a session
+// escape uncontained. The escapee sleeps far longer (see
+// cmd/loom-exec's --probe-setsid), so the two cases are not close
+// together: a contained escape returns in well under a second.
+const setsidPatience = 10 * time.Second
+
+// probeSetsidEscape checks the one hole in the pgroup contract. The
+// helper reaps by signalling the child's *process group*, and a process
+// that calls setsid(2) is no longer in it — under bwrap that does not
+// matter, because the PID namespace dies with its init and takes every
+// process in it, escapee included. This probe makes the escape and then
+// uses the same ground truth as the orphan probe: the escapee holds the
+// jail's stdout open, so Wait can only return promptly if it is dead.
+//
+// Degraded mode is a skip, not a failure. Without bwrap there is no PID
+// namespace and the pgroup sweep genuinely does not reach a new session
+// — that is a missing layer, honestly reported, and pretending to test
+// it here would be the substitution this package exists to prevent.
+func probeSetsidEscape(feat jail.Features, selfExe string) probeResult {
+	if feat.BwrapPath == "" {
+		return probeResult{outcome: skipped,
+			detail: "containing a setsid escape needs bwrap's PID namespace; " +
+				"the pgroup sweep alone cannot reach a new session"}
+	}
+	dir, err := probeDir()
+	if err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	defer os.RemoveAll(dir)
+
+	pol := basePolicy(dir)
+	// The launcher waits a beat before exiting, only so the escapee has
+	// time to report that it really did leave the session — under bwrap
+	// the namespace dies the instant the launcher does, which is the
+	// containment being measured and would otherwise race the evidence
+	// of the escape. After that the escapee, in its own session, is
+	// alone holding the output pipe.
+	script := "'" + selfExe + "' --probe-setsid & sleep 1; echo launcher-done"
+	start := time.Now()
+	_, out, err := runShell(feat, selfExe, pol, script)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	elapsed := time.Since(start)
+	switch {
+	case strings.Contains(out, "setsid-denied"):
+		return probeResult{outcome: skipped,
+			detail: "the escapee could not call setsid (already a group " +
+				"leader), so no escape was attempted and none was tested"}
+	case !strings.Contains(out, "setsid-ok"):
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("probe inconclusive: no escape reported (out %q)", out)}
+	case strings.Contains(out, "setsid-survived"):
+		return probeResult{outcome: failed,
+			detail: "the escapee outlived the jail it left"}
+	case elapsed > setsidPatience:
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("Wait took %s; the setsid escapee held the jail open", elapsed)}
+	}
+	return probeResult{outcome: enforced}
+}
+
 func probeOutputFlood(feat jail.Features, selfExe string) probeResult {
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -379,7 +499,7 @@ func probeOutputFlood(feat jail.Features, selfExe string) probeResult {
 }
 
 func probeOrphanReap(feat jail.Features, selfExe string) probeResult {
-	dir, err := os.MkdirTemp("", "loom-selftest-*")
+	dir, err := probeDir()
 	if err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
@@ -402,4 +522,16 @@ func probeOrphanReap(feat jail.Features, selfExe string) probeResult {
 	}
 	_ = res
 	return probeResult{outcome: enforced}
+}
+
+// ProbeDirForTest exposes probeDir so the invariant it exists to keep —
+// probe directories outside the scratch mount — is testable from the
+// package's external test, which is where the rest of the self-test's
+// own tests live.
+func ProbeDirForTest() (string, error) { return probeDir() }
+
+// CgroupSkipEntryForTest exposes cgroupSkipEntry to the package's
+// external test, where the rest of the self-test's tests live.
+func CgroupSkipEntryForTest(enforcement []string) string {
+	return cgroupSkipEntry(enforcement)
 }

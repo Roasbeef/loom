@@ -27,6 +27,15 @@ protocol (spec Part 1.4). WP-G.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
+- `broker/exec.{SpawnConfig, HostPlatform}` — how a real helper is
+  started, and whether this host has a jail for it to build.
+  `SpawnConfig.helper_args` carries the two things the helper can only
+  learn from its command line (a delegated cgroup base, and
+  `--allow-unenforced` on a platform with no jail), because an Erlang port
+  cannot set its child's environment. `host_platform_for` is the pure
+  decision and mirrors the helper's own `jail.PlatformFor`;
+  `unenforced_helper_args` and `unjailed_skip_reason` are the only
+  sanctioned answers to an unjailed host.
 - `broker/framing.{Frame, Body, Deframer, Fault}` — the wire protocol with
   its pure incremental deframer.
 - `broker/escalation.{Escalation, Denial, Event}` — denial → approval →
@@ -134,7 +143,18 @@ protocol (spec Part 1.4). WP-G.
   a crash of the caller.
 - **`FullEnforcement` checks ground truth, not just advertisement.** It
   refuses degraded helpers at dispatch from `hello.features` *and* fails
-  executions whose `exec_exit` reports `degraded`.
+  executions whose `exec_exit` reports `degraded` — where "degraded" means
+  the bool *or* any `skip:` entry in the structured `enforcement` list,
+  since the bool tracks only the bwrap layer. That check is only as good
+  as the helper's willingness to emit the entry: a layer the policy asked
+  for and the helper silently omitted passes it. `skip:cgroup-v2` is the
+  entry that used to be missing (see `packages/sandbox/CLAUDE.md`).
+- **`--allow-unenforced` is for an unsupported platform, never a degraded
+  one.** A Linux host missing bwrap or Landlock still enforces something
+  and reports what it could not; that report is what `FullEnforcement`
+  exists to act on, and passing the flag there would replace a decision
+  with a silence. A build with no jail at all is a different thing, and
+  `unenforced_helper_args` is the only place that difference is decided.
 
 ## Deep Docs
 

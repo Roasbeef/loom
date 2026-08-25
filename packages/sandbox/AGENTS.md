@@ -19,9 +19,13 @@ modules, alongside `tui`.
   then frames on stdio); `--exec` is **stage 2** (read the policy from
   fd 3, apply Landlock/seccomp/rlimits to self, report on fd 4, execve the
   target); `--self-test` runs the regression probes against the live
-  kernel. `--probe-socket` is the internal network-off witness, and
-  `--allow-unenforced` is server mode's explicit opt-out of the
-  unsupported-platform refusal.
+  kernel. `--probe-socket` and `--probe-setsid` are the internal
+  network-off and session-escape witnesses. Server mode also takes
+  `--allow-unenforced` (the explicit opt-out of the unsupported-platform
+  refusal) and `--cgroup-base DIR` (the delegated cgroup v2 base, which
+  `LOOM_CGROUP_BASE` also supplies); an unknown server flag is a usage
+  error, never a shrug, because a misspelled `--cgroup-base` would
+  silently drop the ceilings it was meant to grant.
 - `internal/policy.Policy` — `SandboxPolicyV1` decoded strictly and
   totally.
 - `internal/framing` — the helper side of the wire: `u32_be length ++
@@ -37,6 +41,14 @@ modules, alongside `tui`.
   a jail for the OS it was compiled for. `PlatformFor` is pure and takes
   the OS as an argument, which is the only way the macOS and Windows
   answers can be tested at all.
+- `internal/cgroup.{Detect, DetectBase, BaseEnvVar}` — the memory and pid
+  ceilings. `DetectBase` takes the base as an argument: a delegated,
+  process-empty cgroup v2 directory from the operator, or "" to fall back
+  to the helper's own cgroup (which works only in the true root cgroup).
+  It verifies the base is empty, distributes `memory` and `pids` to its
+  children, and reports a reason naming the delegation when it cannot.
+- `internal/jail.{CgroupSkip, CgroupSkipPrefix}` — the enforcement entry
+  emitted when a policy asked for a ceiling and no cgroup held it.
 - `internal/llock`, `internal/seccompf`, `internal/cgroup` — the three
   in-process restriction layers. `seccompf` and `jail`'s `no_new_privs`
   are split by build tag (`*_linux.go` / `*_other.go`) so the module
@@ -67,6 +79,11 @@ modules, alongside `tui`.
   helper, sent just before execve: `Applied` entries are terse layer tags
   (`landlock:abi=5`, `seccomp-net`, `rlimit-cpu`), `Skipped` entries carry
   reasons.
+- **Environment** — `LOOM_CGROUP_BASE` names the delegated cgroup v2 base
+  when the operator supplies one that way; `--cgroup-base` overrides it.
+  Erlang ports cannot set a child's environment, so the broker uses the
+  argument (`broker/exec.SpawnConfig.helper_args`) and a systemd unit uses
+  the variable.
 - **Process signals** — cancel is SIGTERM to the child's pgroup, SIGKILL
   after `KillGrace` (2 s), matching the broker's own patience window
   exactly.
@@ -112,6 +129,22 @@ modules, alongside `tui`.
   (useless when the jail shares a uid, ignored for root). The construction
   half is pure — policy in, `{path, contents}` pairs out — so the exact
   writes are unit-tested even where no v2 delegation exists.
+- **The cgroup base is configuration, and its absence is reported, not
+  swallowed.** cgroup v2 forbids a cgroup from having both member
+  processes and controllers enabled for its children, so the helper's own
+  cgroup — which always contains the helper — can only serve as a base in
+  the true root cgroup. That is a fact about that choice of base, not
+  about cgroup v2: any delegated, process-empty cgroup distributes
+  controllers to its children, which is what `Delegate=yes` (and
+  `DelegateSubgroup=` on systemd v254+) produces. The operator names one
+  in `LOOM_CGROUP_BASE` or `--cgroup-base`; `Detect` verifies it and
+  enables `memory` and `pids` in its `cgroup.subtree_control`. When there
+  is no usable base **and the policy asked for `mem_bytes` or `pids`**,
+  the per-exec `enforcement` list carries `skip:cgroup-v2: …`, which fails
+  a `FullEnforcement` demand. Emitting nothing — which is what the helper
+  used to do — let a policy that demanded both ceilings pass strict
+  enforcement with neither in place, on every host that could not
+  delegate. A policy that asked for no such ceiling gets no such skip.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
@@ -133,6 +166,17 @@ modules, alongside `tui`.
   prints SKIPPED with a reason and never fakes a pass; a probe whose layer
   *is* available must enforce or the run exits nonzero. A green self-test
   in a neutered container cannot be mistaken for a verified sandbox.
+- **A probe's own scratch directory must live outside the scratch mount.**
+  A `tmpfs` scratch policy mounts a fresh tmpfs over `jail.ScratchMount`
+  (`/tmp`) *after* the writable binds, so a writable root underneath it is
+  shadowed and every write to it fails. `os.MkdirTemp("")` lands exactly
+  there on a host with no `TMPDIR`, which is most CI runners, and so does
+  a helper binary built by `internal/testbin` — with the result that the
+  probes report a broken jail and the jailed Go tests fail for a reason
+  that has nothing to do with confinement. Both now build outside it. The
+  confinement itself is fail-closed either way (the root becomes
+  unwritable, never wider), which is why this went unseen on every host
+  without bubblewrap installed.
 - **A missing platform is not a missing kernel feature, and is never
   reported as one.** Everything else here probes the running kernel and
   calls a gap environmental. A build with no jail for its OS has a gap in

@@ -3,7 +3,8 @@ import broker/framing
 import broker/support/fake_helper
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
+import gleam/string
 
 fn request(demand: exec.EnforcementDemand) -> exec.ExecRequest {
   exec.ExecRequest(
@@ -374,4 +375,46 @@ pub fn missed_heartbeat_declares_helper_dead_test() {
   let assert exec.StatusDead(exec.HeartbeatMissed) =
     exec.status(helper, waiting: 1000)
   exec.shutdown(helper)
+}
+
+// The platform decision mirrors the helper's own `jail.PlatformFor`:
+// Linux is WP-H phase 1 and the only jail that exists. Taking the OS
+// name as an argument is the only way the macOS and Windows answers can
+// be checked at all, since no such host has ever run this tree.
+pub fn host_platform_for_names_the_unjailed_ones_test() {
+  assert exec.host_platform_for("linux") == exec.JailedHost
+  assert exec.host_platform_for("darwin") == exec.UnjailedHost("darwin")
+  assert exec.host_platform_for("nt") == exec.UnjailedHost("nt")
+  assert exec.host_platform_for("plan9") == exec.UnjailedHost("plan9")
+}
+
+// `--allow-unenforced` is for a platform with no jail, never for one
+// whose kernel merely could not supply a layer. A jailed host that
+// reported degraded enforcement must still reach the broker's own
+// demand check rather than be waved through by a flag.
+pub fn unenforced_args_only_on_an_unjailed_platform_test() {
+  assert exec.unenforced_helper_args(exec.JailedHost) == []
+  assert exec.unenforced_helper_args(exec.UnjailedHost("darwin"))
+    == ["--allow-unenforced"]
+}
+
+// The skip reason a suite prints must carry the marker
+// `.github/declared-skips` matches on, and must name the platform, so
+// the census can tell a declared skip from an undeclared one and a
+// reader can tell which host produced it.
+pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
+  assert exec.unjailed_skip_reason(exec.JailedHost) == None
+  let assert Some(reason) =
+    exec.unjailed_skip_reason(exec.UnjailedHost("darwin"))
+  assert string.contains(reason, exec.unjailed_skip_marker)
+  assert string.contains(reason, "darwin")
+  // The census greps `SKIP <name>: <reason>`; a colon before the first
+  // one would split the line in the wrong place.
+  assert !string.contains(exec.unjailed_skip_marker, ":")
+}
+
+// This host runs the suite, so its own answer must be the jailed one —
+// otherwise every real-helper test below silently stopped running.
+pub fn host_platform_here_is_jailed_test() {
+  assert exec.host_platform() == exec.JailedHost
 }
