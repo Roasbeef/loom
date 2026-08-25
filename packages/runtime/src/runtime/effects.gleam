@@ -91,12 +91,16 @@ pub type ProviderSurface {
 ///
 /// Constructor invariants: `arguments` are the persisted effective
 /// arguments (post-clearance); `replay` is the policy persisted in the
-/// intent — a runner must not consult the live registry for it.
+/// intent — a runner must not consult the live registry for it; `strand`
+/// is the dispatching driver's own durable strand name, never anything
+/// the model supplied, which is what lets a tool be judged against its own
+/// lineage rather than against a name it claims.
 pub type ToolRun {
   ToolRun(
     operation: OpId,
     step_id: String,
     source_index: Int,
+    strand: String,
     call: ToolCall,
     arguments: JsonValue,
     replay: ReplayPolicy,

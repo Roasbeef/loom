@@ -58,6 +58,7 @@ import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
 import runtime/effects.{type Effects}
 import runtime/escalation.{type Escalation}
+import runtime/lineage
 import runtime/strand_runtime
 import runtime/supervisor.{type SessionTree, type Tolerance, Tolerance}
 import runtime/writer
@@ -83,7 +84,11 @@ pub type Runtime {
 /// first open; `settings` is the run-settings snapshot captured into
 /// accepted runs; `after_commit` and `subscribers` instrument the writer
 /// (see `runtime/writer`); `poll_interval_ms` is every strand's
-/// checkpoint-poll period.
+/// checkpoint-poll period; `subagent` names, by strand name alone, the
+/// strands that belong under the tree's second strand factory, so a
+/// model-spawned strand in a crash loop cannot reboot the strand a human
+/// is talking to (`runtime/supervisor`), and `subagent_tolerance` is that
+/// factory's own restart budget.
 pub type Options {
   Options(
     strand: String,
@@ -93,6 +98,8 @@ pub type Options {
     stream_options: JsonValue,
     poll_interval_ms: Int,
     tolerance: Tolerance,
+    subagent: fn(String) -> Bool,
+    subagent_tolerance: Tolerance,
     after_commit: fn(Int) -> Nil,
     subscribers: List(Subject(writer.Event)),
   )
@@ -126,6 +133,11 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
     stream_options: json.Object([]),
     poll_interval_ms: 200,
     tolerance: Tolerance(intensity: 5, period: 5),
+    // No strand is a subagent unless a host says so: the runtime cannot
+    // tell a model-spawned strand from an operator-spawned one, and the
+    // ledger that can is one layer up.
+    subagent: fn(_) { False },
+    subagent_tolerance: Tolerance(intensity: 5, period: 5),
     after_commit: fn(_) { Nil },
     subscribers: [],
   )
@@ -145,6 +157,10 @@ pub type ApiError {
   RaceLost
   /// A fact write named a key under a reserved prefix.
   ReservedFactKey(key: String)
+  /// A privileged fact operation named a key outside every reserved
+  /// prefix. The two write paths are disjoint on purpose: an ordinary
+  /// fact belongs to `put_fact`.
+  UnreservedFactKey(key: String)
   /// An escalation with this id is already recorded.
   EscalationExists(id: String)
   /// No escalation with this id is recorded.
@@ -191,6 +207,8 @@ pub fn open(
             poll_interval_ms: options.poll_interval_ms,
           ),
           tolerance: options.tolerance,
+          subagent: options.subagent,
+          subagent_tolerance: options.subagent_tolerance,
         )
       case supervisor.start(config) {
         Ok(tree) ->
@@ -529,14 +547,6 @@ fn await_result_wait(
   }
 }
 
-fn result_operation(last: LastResult) -> OpId {
-  case last {
-    operation.RunLastResult(operation:, ..) -> operation
-    operation.CompactionLastResult(operation:, ..) -> operation
-    operation.NavigationLastResult(operation:, ..) -> operation
-  }
-}
-
 // --- multi-strand operations ----------------------------------------------
 
 /// Why `create_strand` failed.
@@ -581,6 +591,34 @@ pub fn create_strand(
 ) -> Result(OpId, CreateStrandError) {
   use Nil <- result.try(validate_fork_point(runtime, fork_point))
   use Nil <- result.try(seed_strand(runtime, name, configuration, fork_point))
+  adopt_strand(runtime, named: name, brief:)
+}
+
+/// Starts the driver for an **already-seeded** strand and accepts `brief`
+/// as a run on it — the second half of `create_strand`, on its own.
+///
+/// It exists because `create_strand` is two commits, not one: the seed
+/// claims the three registers, and the brief is a separate accepted run.
+/// A crash in between leaves a strand whose name is permanently claimed,
+/// whose `strand.state.current_operation` is `None`, which has no
+/// `last_result`, and which the booter faithfully restarts on every
+/// reboot — forever, doing nothing. Nothing in `create_strand` can
+/// recover that state, because re-seeding is refused as `StrandExists`.
+/// This is the arm that finishes the job: `accept_quietly` brings its own
+/// CAS retry ladder, so it is safe against a driver that may be
+/// mid-anything, and starting a driver that is already alive is a no-op.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.adopt_strand(runtime, named: "sub:1", brief: [task_brief])
+/// ```
+///
+pub fn adopt_strand(
+  runtime: Runtime,
+  named name: String,
+  brief brief: List(AgentMessage),
+) -> Result(OpId, CreateStrandError) {
   use Nil <- result.try(
     supervisor.start_strand(runtime.tree, name)
     |> result.map_error(fn(error) {
@@ -594,6 +632,22 @@ pub fn create_strand(
       nudge(subagent)
       Ok(operation)
     }
+  }
+}
+
+/// The operation a terminal result belongs to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.result_operation(last) == operation
+/// ```
+///
+pub fn result_operation(last: LastResult) -> OpId {
+  case last {
+    operation.RunLastResult(operation:, ..) -> operation
+    operation.CompactionLastResult(operation:, ..) -> operation
+    operation.NavigationLastResult(operation:, ..) -> operation
   }
 }
 
@@ -762,9 +816,10 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
 // --- the blackboard (design §4.6) ------------------------------------------
 
 /// Writes one `fact.custom` cell — the shared, transactional multi-agent
-/// blackboard. Keys under the reserved prefixes — `escalation/` (durable
-/// escalation records) and `operation-result/` (operation-keyed terminal
-/// results) — are refused, so no fact can forge either kind of record.
+/// blackboard. Keys under the reserved prefixes — see
+/// `reserved_fact_key` — are refused, so no fact can forge an approval
+/// record, shadow a terminal result, rewrite a parent edge in the lineage
+/// ledger, or overwrite the pinned system prompt.
 /// Registers are durable state, not a communication medium: pair a fact
 /// write with a `send_to_strand` (or rely on the reader's checkpoint)
 /// when the reader must act on it.
@@ -782,23 +837,32 @@ pub fn put_fact(
 ) -> Result(Nil, ApiError) {
   case reserved_fact_key(key) {
     True -> Error(ReservedFactKey(key:))
-    False -> {
-      let plan_tx =
-        tx.Tx(
-          writes: [
-            tx.SetRegister(
-              ns: register.FactCustom,
-              key:,
-              value: register.value(value),
-            ),
-          ],
-          expected: [],
-        )
-      case writer.commit(writer_subject(runtime), plan_tx) {
-        Ok(_) -> Ok(Nil)
-        Error(error) -> Error(CommitFailed(error:))
-      }
-    }
+    False -> commit_fact(runtime, key, value)
+  }
+}
+
+// The blind last-write-wins fact commit both write paths share; the
+// reservation check is the caller's, and it is the only thing that
+// differs between them.
+fn commit_fact(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+) -> Result(Nil, ApiError) {
+  let plan_tx =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.FactCustom,
+          key:,
+          value: register.value(value),
+        ),
+      ],
+      expected: [],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(Nil)
+    Error(error) -> Error(CommitFailed(error:))
   }
 }
 
@@ -821,8 +885,9 @@ pub fn fact(
   }
 }
 
-/// Lists `fact.custom` cells under an optional key prefix, excluding the
-/// reserved escalation and operation-result records.
+/// Lists `fact.custom` cells under an optional key prefix, excluding
+/// every reserved record (`reserved_fact_key`). Harness code that owns a
+/// reserved namespace reads it with `reserved_facts` instead.
 ///
 /// ## Examples
 ///
@@ -851,12 +916,130 @@ pub fn facts(
   }
 }
 
-// The reserved corners of the `fact.custom` namespace: escalation
-// records and operation-keyed terminal results. Both are runtime-owned
-// state that a blackboard write must not be able to forge or shadow.
-fn reserved_fact_key(key: String) -> Bool {
+/// The reserved `fact.custom` key prefix the assembled system prompt is
+/// pinned under. Nothing in this package writes it — the prompt pack is
+/// another package's work — but it is reserved here, and reserved now,
+/// because the blackboard tool that could otherwise rewrite the
+/// operator's channel ships in the same wave. A reservation that lands
+/// after the tool that needs it is not a reservation.
+pub const prompt_fact_prefix = "prompt/"
+
+/// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
+/// of the namespace. Reserved keys are refused to `put_fact` and hidden
+/// from `facts`; harness code reaches them through `put_reserved_fact`
+/// and `reserved_facts`.
+///
+/// The four corners, and what each would let a forged write do:
+/// `escalation/` — manufacture an approval and widen a denied call;
+/// `operation-result/` — shadow an operation's terminal result and lie to
+/// every waiter; `lineage/` — rewrite a parent edge, which is the single
+/// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
+/// the operator's channel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert api.reserved_fact_key("lineage/sub:1")
+/// ```
+///
+/// ```gleam
+/// assert !api.reserved_fact_key("agent/main/finding")
+/// ```
+///
+pub fn reserved_fact_key(key: String) -> Bool {
   string.starts_with(key, escalation.key_prefix)
   || string.starts_with(key, operation.result_fact_prefix)
+  || string.starts_with(key, lineage.key_prefix)
+  || string.starts_with(key, prompt_fact_prefix)
+}
+
+/// Writes one cell under a reserved prefix — the harness-only companion
+/// to `put_fact`, which refuses exactly these keys.
+///
+/// The two paths are deliberately disjoint rather than one path with a
+/// flag: `put_fact` is reachable from a model-supplied key and must never
+/// name a reserved cell, while this one is reachable only from harness
+/// code that constructs the key itself, and refuses anything *outside*
+/// the reserved namespace so it can never be pressed into service as a
+/// general write. A caller that wants an ordinary fact wants `put_fact`.
+///
+/// Like `put_fact` this is a blind last-write-wins overwrite; a caller
+/// that needs a compare-and-set (a status transition, a counter) must use
+/// the writer directly, as the escalation records do.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_reserved_fact(runtime, lineage.register_key(child), payload)
+/// ```
+///
+pub fn put_reserved_fact(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+) -> Result(Nil, ApiError) {
+  case reserved_fact_key(key) {
+    False -> Error(UnreservedFactKey(key:))
+    True -> commit_fact(runtime, key, value)
+  }
+}
+
+/// Lists `fact.custom` cells under one reserved prefix — the harness-only
+/// read path for a namespace `facts` filters out.
+///
+/// Reserving a prefix hides it from `facts` as well as refusing it to
+/// `put_fact`, so the ledger a reservation protects would otherwise be
+/// unreadable by the very code that owns it. The singular `fact` read
+/// never consulted the reservation and still does not; this is its
+/// listing counterpart. `prefix` must itself be reserved, so no caller
+/// can list the whole namespace through this door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.reserved_facts(runtime, prefix: lineage.key_prefix)
+/// ```
+///
+pub fn reserved_facts(
+  runtime: Runtime,
+  prefix prefix: String,
+) -> Result(List(#(String, JsonValue)), ApiError) {
+  case reserved_fact_key(prefix) {
+    False -> Error(UnreservedFactKey(key: prefix))
+    True ->
+      case
+        writer.list_registers(
+          writer_subject(runtime),
+          register.FactCustom,
+          Some(prefix),
+        )
+      {
+        Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+        Ok(cells) ->
+          cells
+          |> list.map(fn(pair) {
+            let #(key, storage.Register(value:, ..)) = pair
+            #(key, value.payload)
+          })
+          |> Ok
+      }
+  }
+}
+
+/// The addressed strand's current leaf entry, or `None` when it sits at
+/// the root of the tree. The fork point `create_strand` needs when a
+/// child is to start from the caller's own conversation rather than
+/// fresh.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.leaf(runtime) == Ok(option.Some(entry))
+/// ```
+///
+pub fn leaf(runtime: Runtime) -> Result(Option(EntryId), ApiError) {
+  read_leaf(runtime)
+  |> result.map(fn(cell) { cell.1 })
 }
 
 // --- durable escalations (design §5.3) --------------------------------------
