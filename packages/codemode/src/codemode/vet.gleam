@@ -145,6 +145,7 @@ pub fn vet(source: String, policy: VetPolicy) -> VetResult {
           attribute_rejections(module),
           dangling_attribute_backstop(source, module),
           import_rejections(module, policy),
+          unseen_import_backstop(source, module),
         ])
       case rejections {
         [] -> Passed(Vetted(source:, module:))
@@ -338,6 +339,95 @@ fn remove_first(names: List(String), name: String) -> List(String) {
         True -> rest
         False -> [first, ..remove_first(rest, name)]
       }
+  }
+}
+
+/// A fail-closed backstop against a *parser* divergence over imports.
+///
+/// Vetting decides what a program may reach by reading `glance`'s AST; the
+/// harness then compiles the same source with `gleam`. `@external` already has
+/// a parser-independent backstop (`dangling_attribute_backstop`); imports did
+/// not, and an import `glance` did not surface is an import the allowlist was
+/// never applied to (M4 triage V-F3). No divergence has been exhibited — this
+/// exists so that if one ever appears it fails closed rather than silently
+/// admitting a module.
+///
+/// Same shape as the attribute backstop: sweep the token stream for import
+/// paths, subtract the ones the AST accounted for, and reject whatever is
+/// left. Being a token sweep, it is immune to the false positive a raw-source
+/// scan would produce — the text `import cap/fs` inside a string constant or a
+/// comment lexes to a single token that is never an `Import` keyword.
+fn unseen_import_backstop(source: String, module: Module) -> List(Rejection) {
+  let unseen =
+    subtract_first_occurrences(
+      token_imports(source),
+      list.map(module.imports, fn(definition) { definition.definition.module }),
+    )
+  list.map(unseen, fn(name) {
+    Rejection(
+      ImportNotAllowed,
+      "the import `"
+        <> name
+        <> "` appears in the submitted source but was not surfaced by the "
+        <> "parser vetting reads, so the allowlist was never applied to it; "
+        <> "vetting fails closed on a parser disagreement",
+      Unlocated,
+    )
+  })
+}
+
+/// The module paths the token stream imports, in source order.
+///
+/// Public so the backstop's scanner can be tested and audited directly: it is
+/// the half of the parser cross-check that does not come from `glance`, and a
+/// scanner that quietly saw nothing would make the whole check vacuous.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let source = "import cap/fs\nimport gleam/list as l\n"
+/// assert vet.token_imports(source) == ["cap/fs", "gleam/list"]
+/// ```
+///
+/// ```gleam
+/// // Not an import: a single string token never lexes to the keyword.
+/// assert vet.token_imports("const c = \"import cap/fs\"\n") == []
+/// ```
+///
+pub fn token_imports(source: String) -> List(String) {
+  glexer.new(source)
+  |> glexer.discard_whitespace
+  |> glexer.discard_comments
+  |> glexer.lex
+  |> scan_imports([])
+}
+
+fn scan_imports(
+  tokens: List(#(token.Token, glexer.Position)),
+  found: List(String),
+) -> List(String) {
+  case tokens {
+    [#(token.Import, _), ..rest] -> {
+      let #(segments, rest) = scan_path(rest, [])
+      scan_imports(rest, [string.join(list.reverse(segments), "/"), ..found])
+    }
+    [_, ..rest] -> scan_imports(rest, found)
+    [] -> list.reverse(found)
+  }
+}
+
+// A module path is lowercase name segments joined by `/`; the first token that
+// is neither ends it (`.` before an unqualified list, `as` before an alias, or
+// the next statement).
+fn scan_path(
+  tokens: List(#(token.Token, glexer.Position)),
+  segments: List(String),
+) -> #(List(String), List(#(token.Token, glexer.Position))) {
+  case tokens, segments {
+    [#(token.Name(segment), _), ..rest], [] -> scan_path(rest, [segment])
+    [#(token.Slash, _), #(token.Name(segment), _), ..rest], [_, ..] ->
+      scan_path(rest, [segment, ..segments])
+    _, _ -> #(segments, tokens)
   }
 }
 

@@ -502,3 +502,65 @@ pub fn corpus_size_test() {
   // combined with those, clears 50 with margin.
   assert list.length(hostile) >= 37
 }
+
+// --- the import backstop (M4 triage V-F3) ---------------------------------
+//
+// Vetting reads `glance`'s AST; the harness compiles with `gleam`. An import
+// `glance` did not surface would be one the allowlist was never applied to,
+// so a token-stream sweep cross-checks it. These test the sweep itself —
+// a scanner that quietly saw nothing would make the check vacuous — and the
+// false positive a raw-source scan would have.
+
+pub fn token_imports_sees_every_import_form_test() {
+  let source =
+    "import cap/fs\n"
+    <> "import gleam/list as l\n"
+    <> "import gleam/string.{trim}\n"
+    <> "import cap/report\n"
+    <> "pub fn main() { l.length([]) }\n"
+  assert vet.token_imports(source)
+    == ["cap/fs", "gleam/list", "gleam/string", "cap/report"]
+}
+
+pub fn token_imports_counts_a_repeated_import_twice_test() {
+  // A multiset, not a set: the cross-check subtracts occurrences, so a
+  // doubled import must be seen twice or the subtraction goes wrong.
+  assert vet.token_imports("import cap/fs\nimport cap/fs\n")
+    == ["cap/fs", "cap/fs"]
+}
+
+pub fn token_imports_ignores_the_word_in_a_string_test() {
+  // The V-F1 lesson applied to imports: a raw-source scan would fire on
+  // this, rejecting an effect-free program. A string is one token.
+  assert vet.token_imports("pub const c = \"import cap/proc\"\n") == []
+}
+
+pub fn token_imports_ignores_the_word_in_a_comment_test() {
+  assert vet.token_imports("// import cap/proc\npub fn main() { 1 }\n") == []
+}
+
+pub fn a_program_naming_an_import_in_a_string_still_passes_test() {
+  // The whole point of the false-positive care above: this program reaches
+  // nothing, and vetting must not invent a rejection for it.
+  let source =
+    "import cap/report\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  report.text(\"grep for: import cap/proc\")\n"
+    <> "}\n"
+  let assert Passed(_vetted) = vet.vet(source, policy.default())
+}
+
+pub fn the_backstop_stays_silent_on_ordinary_programs_test() {
+  // Non-vacuity in the other direction: the sweep and the AST agree on a
+  // realistic program, so the cross-check adds no rejections of its own.
+  let source =
+    "import cap/proc\n"
+    <> "import cap/report\n"
+    <> "import gleam/int\n"
+    <> "import gleam/string as text\n"
+    <> "pub fn main() -> report.Outcome {\n"
+    <> "  let _ = proc.command([\"/bin/echo\"])\n"
+    <> "  report.text(text.trim(int.to_string(1)))\n"
+    <> "}\n"
+  let assert Passed(_vetted) = vet.vet(source, policy.default())
+}
