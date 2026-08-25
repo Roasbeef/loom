@@ -62,10 +62,21 @@ over one session file. WP-L.
   `LOOM_*` environment.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
+- `client/agency.{Config, Message, seam, start, reaping_hooks,
+  child_name, is_subagent, frame_message, frame_brief}` — the Agency:
+  `tools/agent`'s messaging seam implemented over a live runtime. `seam`
+  closes over a process *name* so it can be built before `api.open`;
+  `start` puts the returned runtime behind that name. Everything with
+  teeth lives here — the descendant-only addressing rule, the depth and
+  fan-out caps, the multi-handle wait loop, the lineage ledger's four
+  reconciliation branches, the lazy deadline reap, and the framing that
+  marks another agent's text as data.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
+- `client/serve.registry(Option(Agency))` — the tool registry: five core
+  tools, plus the six `agent_*` tools only when a messaging plane exists.
 - `client/serve.{Settings, boot, shutdown, main}` — the server entry
   point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
   shipment): flags/env in, session + helper pool + broker + runtime +
@@ -178,6 +189,46 @@ over one session file. WP-L.
   Neither moves the authorization line: `wiring.clear` admits a call by
   `list.contains` on this same list, and set membership is blind to
   order and multiplicity.
+- **The Agency is reached through a name, never through a captured
+  runtime.** `api.open` takes the `Effects` record and returns the
+  `Runtime`, and `Runtime` *contains* `effects` — so a closure reachable
+  from `Effects` that captures the `Runtime` is a value cycle, not an
+  ordering problem. `agency.seam` closes over a minted process name (the
+  same indirection `gateway.commit_forwarder` uses) and `agency.start`
+  stands a holder up under it after the open. The holder answers exactly
+  one message and answers it with the runtime *value*: the tools do the
+  work on their own effect process, because a holder that did the work
+  would serialize every agent call in the session behind whichever one
+  was inside a wait.
+- **A strand may wait only on a descendant and address only its parent or
+  a descendant** — decided from the durable lineage ledger, never from
+  anything a model says. A strand with no lineage cell is a root and is
+  nobody's descendant: "no lineage fact" fails closed. That is what makes
+  the wait graph acyclic and a blocking `agent_wait` safe.
+- **A reap does one thing on the driver process: `spawn_unlinked`.**
+  `Hooks.run_end` fires inside `drive_loop`, on the driver, before any
+  `actor.continue` — so a hook that read a register would be a
+  `call_forever` from the driver and a hook that waited would stop it
+  serving `Nudge`, `RequestAbort` and `PollTick`, which is exactly the
+  property that makes a blocking tool safe. Every read, abort and commit
+  a reap performs happens on the spawned process. The hook carries no
+  strand and does not need one: a lineage cell records the *operation*
+  that minted it, so "reap what this run spawned" is a ledger predicate.
+- **A reap's intent is durable and its abort is re-issued.** `api.abort`
+  is a no-op when no driver is registered, so a reap that landed
+  mid-restart would otherwise evaporate and the child would run until the
+  session closed. The mark is written once and every later observation
+  re-issues the abort.
+- **The blackboard is clamped on both sides.** `agent_note` writes under
+  `agent/{caller}/`; `agent_notes` with no prefix reads `agent/` and not
+  the whole non-reserved fact namespace, which is what
+  `api.facts(prefix: None)` would hand back.
+- **A report into a *finished* parent is refused.** `api.send_to_strand`
+  accepts a fresh run when the target is idle, which would wake a
+  finished parent with no human present — the exact property auto-
+  enqueued child results were rejected over. The refusal is upward only:
+  a parent giving an idle child more work is a live agent's explicit
+  decision inside its own run.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.

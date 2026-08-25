@@ -19,13 +19,28 @@ extended by the M3 runtime wave.
   tree to a sibling, so every operation works for subagents too.
 - `runtime/api.{CreateStrandError, Delivery}` — subagent creation, and
   whether a cross-strand message landed as a `Steered(entry)` on an open
-  run or `Started(operation)` on an idle strand.
-- `runtime/supervisor.SessionTree` — a rest-for-one supervisor over four
+  run or `Started(operation)` on an idle strand. `create_strand` is
+  `validate` + `seed_strand` + `adopt_strand`; `adopt_strand` is exposed
+  on its own because a crash between the seed commit and the brief commit
+  leaves a strand nothing else can finish.
+- `runtime/api.{put_reserved_fact, reserved_facts, reserved_fact_key}` —
+  the harness-only door to the reserved corners of `fact.custom`, and the
+  predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
+  which refuse and hide the same keys.
+- `runtime/supervisor.SessionTree` — a rest-for-one supervisor over five
   children in order: the strand **registry**, the **StorageWriter**, the
   **StrandSupervisor** (a `factory_supervisor` of strand drivers, one per
-  strand, restarted individually), and the **strand booter** (a worker
-  whose start lists the `strand.*` registers and starts a driver for every
-  strand found).
+  strand, restarted individually), the **subagent StrandSupervisor** (a
+  second factory with its own tolerance, for strands a host's `subagent`
+  predicate names), and the **strand booter** (a worker whose start lists
+  the `strand.*` registers and starts a driver for every strand found,
+  routing each to its factory).
+- `runtime/lineage.{Lineage, CallSite}` — the durable ledger of who
+  spawned whom, one `fact.custom` cell per spawned strand under the
+  reserved `lineage/` prefix: parent edge, depth, the minting call site,
+  the brief operation, the child's tools, an **absolute** deadline, the
+  detach flag, and the durable reap mark. `is_descendant` is the walk the
+  addressing rule is decided by, and it fails closed.
 - `runtime/registry.Message` — the strand-name registry actor: strand name
   ↔ the process name its driver registers under.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
@@ -37,6 +52,9 @@ extended by the M3 runtime wave.
 - `runtime/effects.{RequestSpec, ToolRun, ToolOutcome, Clearance,
   ExecutionMode}` — the shapes the seam is written in; `conformance/wiring`
   and `client/demo` fill them with the real gateway, broker, and registry.
+  `ToolRun.strand` carries the dispatching driver's own durable name, so a
+  tool can be judged against its lineage rather than against a name a
+  model claims.
 - `runtime/hooks.Registry` — the one seam production wiring, tests, and the
   simulation runner all build their `effects.Hooks` through: safe defaults,
   a pipeable setter per slot, `build` at the end.
@@ -93,9 +111,10 @@ extended by the M3 runtime wave.
   `api.create_strand` seeds a new strand's `strand.config` / `strand.leaf`
   / `strand.state` before starting its driver. The blackboard and
   escalations are `fact.*`: `api.put_fact` / `fact` / `facts` over
-  `fact.custom`, and `runtime/escalation` stores its records in
-  `fact.custom` under the reserved `escalation/` key prefix, guarded by the
-  register's own seq.
+  `fact.custom`, and `runtime/escalation` and `runtime/lineage` store
+  their records in `fact.custom` under the reserved `escalation/` and
+  `lineage/` key prefixes — escalations guarded by the register's own
+  seq, lineage cells last-write-wins.
 - **Wire**: consumes `provider/stream.StreamEvent` — zero or more `Delta`
   then exactly one `Settled` or `Failed` — from a `StreamHandle`, and
   `effects.ToolOutcome` from the tool surface.
@@ -169,6 +188,26 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
+- **Four corners of `fact.custom` are reserved, and reserving hides as
+  well as refuses.** `escalation/`, `operation-result/`, `lineage/` and
+  `prompt/` are refused to `put_fact` and filtered out of `facts`, so no
+  blackboard write can forge an approval, shadow a terminal result,
+  rewrite a parent edge, or overwrite the pinned system prompt. Because
+  the reservation also hides a namespace from its own owner, harness code
+  reads and writes it through `reserved_facts` / `put_reserved_fact`,
+  which refuse everything *outside* the reserved set — the two doors are
+  disjoint so neither can be pressed into service as the other. The
+  ledger prefix is `lineage/` rather than anything near the
+  model-writable `agent/`: an integrity-critical namespace two letters
+  from a model-writable one is one typo away from lineage forgery.
+- **A model-spawned strand's crash loop cannot reboot `main`.** The tree
+  carries two strand factories and `Config.subagent` decides, by name
+  alone, which one starts a strand. The subagent factory sits *after* the
+  primary one in the rest-for-one order, so its death restarts only
+  itself and the booter. The runtime cannot tell a model-spawned strand
+  from an operator-spawned one — lineage is a layer up — so the host
+  injects the predicate, and the default says nobody is a subagent,
+  which is exactly the single-factory behaviour that came before.
 - **Escalations are registers, not entries.** An escalation is current
   mutable state (pending → approved → consumed) needing a bounded point
   lookup on the clearance path, and it must never move a strand's leaf or

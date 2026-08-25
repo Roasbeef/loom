@@ -8,16 +8,39 @@ The core tool set and the behaviour every tool implements: `bash` and
 discipline, plus content-addressed blob overflow for large output. WP-I.
 Tool failures are data, never crashes.
 
+Also the `agent_*` family — `agent_spawn`, `agent_wait`, `agent_send`,
+`agent_note`, `agent_notes`, `agent_roster` — the six shells through
+which a model reaches the messaging plane. They are shells only: each is
+a thin wrapper over one call on the **Agency**, a record of closures
+declared here and filled by whoever can see a live runtime
+(`client/agency` in production). Everything with teeth — the addressing
+rule, the caps, the deadline, the lineage ledger — lives on the far side
+of that seam.
+
 ## Key Types
 
 - `tools/tool.Tool` — the record every tool is: `name`, `description`,
   `schema`, `replay` (`ReplaySafety`), `execution_mode`, `requirements`
   (a function from workspace root to `SandboxPolicy`), and
   `run: fn(Ctx, JsonValue) -> ToolOutcome`.
-- `tools/tool.Ctx` — every seam a tool may touch: workspace root, op and
-  step ids, base policy and grants, enforcement demand, the constructed
-  env, the clock, a `FileSystem` record of functions, `blob_root`, and
-  `clear_call` — the broker seam every jailed execution flows through.
+- `tools/tool.Ctx` — every seam a tool may touch: workspace root, the
+  driver's own coordinates (`strand`, `op_id`, `step_id`,
+  `source_index`), base policy and grants, enforcement demand, the
+  constructed env, the clock, a `FileSystem` record of functions,
+  `blob_root`, and `clear_call` — the broker seam every jailed execution
+  flows through.
+- `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
+  `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
+  tool's schema states. Every closure takes a `Caller` first and is
+  judged against it.
+- `tools/agent.{Caller, Handle, SpawnRequest, Provenance, Spawned,
+  Waited, Outcome, Peer, Relation, Delivery, Refusal}` — the vocabulary
+  crossing that seam. `Delivery` mirrors `runtime/api.Delivery` (which
+  `tools` cannot import) the way `effects.ToolOutcome` mirrors the
+  broker's `CallOutcome`.
+- `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
+  handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
+  parse back from `{strand}#{operation}`.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -32,8 +55,10 @@ Tool failures are data, never crashes.
   vocabulary, `clear_call`, `exec` failure shapes, framing output streams —
   the spec DAG's `I → G`), `simplifile` (the production `FileSystem`),
   `gleam_erlang` (subjects for streamed call events).
-- **Depended on by**: `conformance` (the wiring adapter builds the registry
-  and dispatches through it).
+- **Depended on by**: `client` (`client/wiring` builds the per-call `Ctx`
+  and dispatches through the registry; `client/agency` fills the
+  `agent.Agency` record and `client/serve` registers the family),
+  `conformance` (the wiring/e2e suites drive the same adapter).
 - **FFI**: `tools/internal/ffi_hash` — SHA-256 for blob content addressing.
   `tools/internal/ffi_path` — `read_link`, the lstat-level primitive
   workspace containment is built on. Both backed by `tools_ffi.erl`.
@@ -105,6 +130,28 @@ Tool failures are data, never crashes.
   policy's `env_allow` even if the broker sent it.
 - **Timeouts are clamped tool-side** — `default_timeout_ms` 120 s,
   `max_timeout_ms` 600 s for bash; 60 s for grep.
+- **A model never supplies its own identity, a strand name, or a
+  blackboard prefix.** `agent.caller` is built from `Ctx` alone, so a
+  model that names another strand in its arguments does not become it;
+  `agent_spawn` takes a *purpose* and the Agency mints
+  `sub:{parent}/{slug}-{step}-{index}` from the call's own durable
+  coordinates; `agent_note` writes under `agent/{caller}/` and
+  `agent_notes` reads under `agent/`. Each closes a class rather than a
+  case: identity forgery, name squatting, and namespace escape.
+- **The unit of waiting is the call, not the handle.** `agent_wait` takes
+  an array and the Agency waits it against one deadline. Declaring the
+  tool `Concurrent` is honest — it only reads — but `Exclusive` /
+  `Concurrent` is consulted only under `tool_execution: Parallel`, which
+  is not the shipped default, so nothing about a fan-out story may rest
+  on it.
+- **The agent tools ask the broker for nothing.** Their `requirements`
+  are the empty policy: no writable roots, no readable roots, no env,
+  network off. They touch no filesystem and spawn no process, so they
+  compose with any session base.
+- **`agent_send` is `ReplayNever`; the rest are `ReplaySafe`.** A send
+  mints a fresh entry id per admission, so a replay would deliver twice;
+  a spawn's name derives from persisted coordinates, so a replay
+  reconciles onto the same child.
 
 ## Deep Docs
 
