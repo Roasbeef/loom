@@ -383,6 +383,25 @@ instead and are only referenced here.
 6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
    pooled budget remains the concurrency ceiling underneath.
 
+## From M3 messaging (design §4.6 reconciliation)
+
+1. **Request/reply is explicit-poll, not auto-enqueue.** §4.6 says a
+   subagent's terminal result "is an entry the parent's checkpoint
+   consumes," implying it flows into the parent's run automatically. The
+   runtime does not do this: the parent calls `await_strand_result`,
+   which reads the child's terminal result from durable state
+   (`operation-result/{op}`, falling back to `strand.last_result`); the
+   result never auto-enqueues, and the parent's checkpoint plays no part.
+   To pull a child's result into the parent's own conversation, the
+   parent `send_to_strand`s it. The code is the intended shape; §4.6's
+   phrasing was aspirational.
+2. **Broadcast is read-side only.** §4.6 lists the EventBus as a
+   strand-to-strand pattern. As built, the bus is the durability plane's
+   read side: content-free hints over `pg` for UIs, projections, and the
+   gateway. No strand-facing broadcast-send exists and strands do not
+   subscribe; a strand wanting a sibling to act writes a durable fact or
+   sends directly. Cross-node fan-out is follow-up.
+
 ## From WP-L (`client`)
 
 1. **Escalation records now carry call attribution** (the M3 fix wave):
