@@ -24,6 +24,7 @@ packages = [
 [requirements]
 broker = { path = "../broker" }
 core = { path = "../core" }
+filepath = { version = ">= 1.0.0 and < 2.0.0" }
 glance = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
