@@ -58,6 +58,7 @@ import gleam/otp/actor
 import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
+import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
 import runtime/writer
@@ -180,10 +181,10 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   case tree {
     Ok(started) -> {
       // The starter owns the tree through this record, not through the
-      // start link: unlinking lets `api.close` (and the interleave
-      // harness) kill the tree without taking the owner down with it.
-      // A serving layer roots trees under an application supervisor
-      // instead.
+      // start link: unlinking lets `shutdown` (and the interleave
+      // harness's kills) take the tree down without taking the owner
+      // with it. A serving layer that wants to hear about the tree's
+      // death monitors `SessionTree.supervisor` — `client/host` does.
       process.unlink(started.pid)
       Ok(SessionTree(
         supervisor: started.pid,
@@ -195,6 +196,58 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
       ))
     }
     Error(error) -> Error(error)
+  }
+}
+
+/// Stops the tree the way OTP stops a supervision tree: children are
+/// terminated in reverse start order — booter, subagent factory, strand
+/// factory, writer, registry — each given the ordinary `shutdown` exit
+/// and its child spec's grace period, and the supervisor then exits with
+/// reason `shutdown` rather than `kill`. Every strand driver is
+/// therefore gone before the writer it commits through, so nothing can
+/// be mid-commit when the writer goes, and no supervisor report is
+/// logged for a shutdown that was asked for.
+///
+/// Blocks until the supervisor pid is gone, or `grace_ms` elapses. A
+/// supervisor that will not answer, or will not finish inside the
+/// grace, is killed: the caller's next act is usually to release the
+/// writer lease, and a tree that refuses to stop must not hold that up.
+/// Idempotent — a tree that is already dead returns at once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // supervisor.shutdown(tree, grace_ms: 5000)
+/// ```
+///
+pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
+  case process.is_alive(tree.supervisor) {
+    False -> Nil
+    True -> {
+      case ffi_sup.terminate_supervisor(tree.supervisor, grace_ms) {
+        Ok(Nil) -> Nil
+        Error(Nil) -> process.kill(tree.supervisor)
+      }
+      await_death(tree.supervisor, grace_ms)
+    }
+  }
+}
+
+// Waits out a terminating supervisor in 5 ms slices, killing it if the
+// grace is spent. Polling rather than monitoring keeps this callable
+// from any process, including one that is already selecting on its own
+// mailbox.
+fn await_death(supervisor: Pid, remaining_ms: Int) -> Nil {
+  case process.is_alive(supervisor) {
+    False -> Nil
+    True ->
+      case remaining_ms <= 0 {
+        True -> process.kill(supervisor)
+        False -> {
+          process.sleep(5)
+          await_death(supervisor, remaining_ms - 5)
+        }
+      }
   }
 }
 

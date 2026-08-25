@@ -35,6 +35,11 @@ extended by the M3 runtime wave.
   predicate names), and the **strand booter** (a worker whose start lists
   the `strand.*` registers and starts a driver for every strand found,
   routing each to its factory).
+- `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
+  `api.close` is built on: children terminated in reverse start order
+  with reason `shutdown`, killed only if the grace is spent. The tree
+  unlinks from its starter, so a host that wants to hear about its death
+  monitors `SessionTree.supervisor` (`client/host` does).
 - `runtime/lineage.{Lineage, CallSite}` — the durable ledger of who
   spawned whom, one `fact.custom` cell per spawned strand under the
   reserved `lineage/` prefix: parent edge, depth, the minting call site,
@@ -92,9 +97,13 @@ extended by the M3 runtime wave.
 - **Depended on by**: `client` (the gateway dispatches protocol commands
   onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
-- **FFI**: none. Time, entropy, and timers arrive through `Effects`;
-  everything effectful is injected, which is why the whole plane runs under
-  a logical clock in simulation.
+- **FFI**: one declaration, in `runtime/internal/ffi_sup` over
+  `runtime_ffi.erl` — `sys:terminate/3`, the only graceful stop an OTP
+  supervisor offers a process that is not its parent, and the one thing
+  `gleam/otp/static_supervisor` does not wrap. Nothing else: time,
+  entropy, and timers arrive through `Effects`, and everything effectful
+  is injected, which is why the whole plane runs under a logical clock in
+  simulation.
 
 ## Traffic
 
@@ -295,11 +304,24 @@ extended by the M3 runtime wave.
   summarizer as transcript; its retained tail *is* re-summarized,
   because those messages survived one compaction and the next would
   otherwise drop them silently.
-- **Close is a controlled crash** (pi §4.7). The static supervisor offers
-  no graceful external shutdown, so close kills the tree — commits are
-  atomic in the storage actor, so durable state stops at a commit boundary
-  — then closes the handle, releasing the SQLite writer lease. Nothing is
-  written; reopening recovers the open operation.
+- **Close is an orderly shutdown, and the lease release does not depend
+  on it.** `close` terminates the tree the way OTP terminates one —
+  reverse start order, reason `shutdown` — so every strand driver is
+  gone before the writer it commits through, and a close that was asked
+  for is distinguishable in the logs from a fault. Durable state stops
+  at a commit boundary either way, because commits are atomic in the
+  storage actor. A tree that will not stop inside the grace is killed
+  and the handle is closed regardless: a session locked out for a whole
+  lease TTL is the worse failure. Nothing terminal is written; reopening
+  recovers the open operation.
+- **A hint with nowhere to go is a non-event, and never the writer's
+  death.** Post-commit publication skips a subscriber whose owner is
+  gone. Sending into an *unregistered name* crashes the sender, so
+  without the guard a supervised, restartable subscriber held by name
+  would make the writer — and the whole rest-for-one tree beneath it —
+  hostage to that subscriber's restart window. Events are hints and
+  pulls are truth (design §3.6), so dropping one costs latency and
+  nothing else.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
   an idle timer at a third of the TTL.

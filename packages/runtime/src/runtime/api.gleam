@@ -451,10 +451,19 @@ pub fn abort(runtime: Runtime) -> Nil {
   }
 }
 
-/// Closes the runtime: kills the tree (a controlled crash — durable
-/// state stops at a commit boundary) and closes the storage handle,
-/// releasing the writer lease. The session can be reopened from its file
-/// and will recover every strand's open operation.
+/// Closes the runtime: shuts the tree down the way OTP shuts a
+/// supervision tree down — strand drivers first, the writer they commit
+/// through after them, everything with reason `shutdown` rather than
+/// `kill` — and then closes the storage handle, releasing the writer
+/// lease. Durable state stops at a commit boundary either way, because
+/// commits are atomic in the storage actor; what the orderly stop adds
+/// is that no strand is still running when its writer goes, and that a
+/// close asked for logs no crash report.
+///
+/// The lease release does not depend on the shutdown succeeding: a tree
+/// that will not stop inside `close_grace_ms` is killed and the handle
+/// is closed regardless, because a session locked out for a whole lease
+/// TTL is the worse failure. Callable from any process, and idempotent.
 ///
 /// ## Examples
 ///
@@ -463,20 +472,15 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// ```
 ///
 pub fn close(runtime: Runtime) -> Result(Nil, storage.StorageError) {
-  process.kill(runtime.tree.supervisor)
-  wait_for_death(runtime.tree.supervisor, 100)
+  supervisor.shutdown(runtime.tree, grace_ms: close_grace_ms)
   session.close(runtime.session)
 }
 
-fn wait_for_death(pid: process.Pid, attempts: Int) -> Nil {
-  case attempts <= 0 || !process.is_alive(pid) {
-    True -> Nil
-    False -> {
-      process.sleep(5)
-      wait_for_death(pid, attempts - 1)
-    }
-  }
-}
+/// How long `close` lets the session tree stop before killing it. Five
+/// seconds is the OTP worker default, and every child in the tree is a
+/// plain actor that dies on the shutdown signal at once — the grace is
+/// headroom for a busy scheduler, not an expected wait.
+pub const close_grace_ms = 5000
 
 /// Polls (reading the session store directly, so it survives tree
 /// restarts) until the named operation's terminal result is recorded,
