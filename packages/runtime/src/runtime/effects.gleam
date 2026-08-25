@@ -195,6 +195,15 @@ pub type ThresholdQuery {
   ThresholdQuery(operation: OpId, strand: String)
 }
 
+/// The overflow-preparation query, asked once when a settled response
+/// classifies as the run's first context overflow. It names the strand
+/// for the same reason `ThresholdQuery` does: a preparation is built
+/// from a *strand's* durable projection, and one `Effects` record serves
+/// every strand of a session.
+pub type OverflowQuery {
+  OverflowQuery(operation: OpId, strand: String)
+}
+
 /// The hook surface the driver consults for hook-shaped effect keys.
 /// Hooks are replayable and carry no effect intent (a crash before the
 /// consuming commit may rerun them), so they are plain synchronous
@@ -210,7 +219,7 @@ pub type Hooks {
     /// The threshold-compaction signal for the current checkpoint.
     threshold: fn(ThresholdQuery) -> ThresholdStatus,
     /// Builds the compaction preparation an overflow settlement needs.
-    overflow_preparation: fn(OpId) -> PreparationOutcome,
+    overflow_preparation: fn(OverflowQuery) -> PreparationOutcome,
     /// The structural decision hook for a deciding task.
     structural_decision: fn(OpId, String) -> StructuralVerdict,
     /// The structural attempt's progress after its latest request
@@ -298,7 +307,7 @@ pub fn default_hooks() -> Hooks {
     },
     run_end: fn(_) { None },
     threshold: fn(_) { ThresholdNotExceeded },
-    overflow_preparation: fn(_) { EmptyPreparation },
+    overflow_preparation: fn(_query: OverflowQuery) { EmptyPreparation },
     structural_decision: fn(_, _) { VerdictDeclined },
     summary_progress: fn(_, _, _) { SummaryProduced(summary: "", usage: None) },
     resolution: fn(_) { ModelResolved },

@@ -58,6 +58,22 @@ extended by the M3 runtime wave.
 - `runtime/hooks.Registry` — the one seam production wiring, tests, and the
   simulation runner all build their `effects.Hooks` through: safe defaults,
   a pipeable setter per slot, `build` at the end.
+- `runtime/hooks.Projected` — what a compaction decision is taken from:
+  a strand's projected `messages`, how many leading ones a compaction at
+  the head of the branch `carried` over (its summary plus its
+  retained-tail copy), and that compaction's `previous_summary`.
+  `hooks.project` reads one from a session; `hooks.uncompacted` wraps a
+  plain message list.
+- `runtime/hooks.{estimate_message, context_tokens, preparation,
+  threshold, overflow}` — the compaction arithmetic: characters over
+  four for a not-yet-priced message, pi's newest-durable-usage fold for
+  a whole context, the one preparation builder, and the two signals
+  built over them.
+- `runtime/effects.OverflowQuery` — `{operation, strand}`, asked once
+  when a settlement classifies as a run's first context overflow. It
+  names the strand for the same reason `ThresholdQuery` does: a
+  preparation is built from a *strand's* durable projection, and one
+  `Effects` record serves every strand of a session.
 - `runtime/escalation.{Escalation, CallScope, Status}` — the durable
   record of a broker denial awaiting a decision, its decision, and its
   single consumed re-execution. `CallScope` is the exact call identity
@@ -66,7 +82,9 @@ extended by the M3 runtime wave.
 
 ## Relationships
 
-- **Depends on**: `core`, `storage`, `session`, `machine` (drives
+- **Depends on**: `core`, `storage`, `session` (`runtime/hooks.project`
+  reads a strand's durable projection straight from the session store),
+  `machine` (drives
   `next_action` and reuses its codecs and queue helpers), `provider`
   (`stream.StreamHandle` and `retry.classify` — the spec DAG §0.1 writes
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
@@ -228,10 +246,55 @@ extended by the M3 runtime wave.
   as JSON in the broker's escalation vocabulary and returned uninterpreted,
   which is what keeps the spec's `E → A,B,C,D` direction intact — there is
   no broker import here. `client/grants` does the decoding.
-- **Hooks decide from durable state.** The `hooks.threshold` constructor
-  derives its signal from the strand's *durable* projection, so a decision
-  taken before a crash is taken again after it — the same rule the
-  simulation hooks follow.
+- **Hooks decide from durable state.** The `hooks.threshold` and
+  `hooks.overflow` constructors derive their signals from the strand's
+  *durable* projection (`hooks.project`, read straight from the session
+  store rather than through the writer, which is what makes it callable
+  from a hook), so a decision taken before a crash is taken again after
+  it — the same rule the simulation hooks follow. A read that fails
+  projects as empty, which reads downstream as "nothing to compact": a
+  strand must not be halted because a token count could not be taken.
+- **The threshold is computed on every pass, and that is a cost.**
+  `PlannerInputs.threshold` is a value rather than a thunk (frozen, spec
+  Part 1), so an open operation pays one branch scan and one projection
+  per driver message. An idle strand never reaches `build_inputs`, and
+  `hooks.threshold` checks `settings.enabled` before calling a
+  projection at all, so compaction-off costs nothing; the scan stops at
+  the newest compaction, so its size is bounded by the very thing it
+  triggers. A memo keyed on the strand leaf's register seq is the
+  available fix if it ever shows in a profile.
+- **A context is counted the way the provider counts it.**
+  `context_tokens` takes the newest settled assistant message's
+  *provider-reported* usage and estimates only what came after it (pi's
+  `estimateContextTokens`). An estimate-only fold drifts low against the
+  provider — cache reads, thinking tokens, serialization overhead — and
+  low is the dangerous direction: a run that believes it has room
+  overflows instead of compacting.
+- **Carried usage is never read.** A `CompactionEntry` carries a *copy*
+  of its retained tail, so the assistant messages at the head of a
+  post-compaction projection report the size of the context the
+  compaction replaced. `Projected.carried` names them and the fold
+  starts after them. Without the guard the threshold re-fires on the
+  turn after every compaction, forever — pi guards the same way, by
+  rejecting usage older than the latest compaction.
+- **A retained tail never opens on a tool result.** `preparation` walks
+  newest-first until the keep-recent budget is spent, then moves the
+  boundary *later* until it lands on a user, assistant or custom
+  message. A result severed from its call would open the tail as an
+  answer to a question the model can no longer see; moving later — not
+  earlier — keeps call and results together on the summarized side, so
+  no orphan is created in either direction. A consequence worth naming:
+  the cut always lands on a turn boundary, so this builder never
+  produces pi's split-turn case and `is_split_turn` is always `False`.
+- **One preparation builder serves all three triggers.** The threshold
+  hook, the overflow hook, and a manual `Compact` command
+  (`client/gateway`) all call `hooks.preparation`, so all three cut
+  where the others cut and a change to the rule cannot apply to only
+  some of them. A carried summary travels as `previous_summary` — input
+  to the iterative-update prompt — rather than being handed back to the
+  summarizer as transcript; its retained tail *is* re-summarized,
+  because those messages survived one compaction and the next would
+  otherwise drop them silently.
 - **Close is a controlled crash** (pi §4.7). The static supervisor offers
   no graceful external shutdown, so close kills the tree — commits are
   atomic in the storage actor, so durable state stops at a commit boundary

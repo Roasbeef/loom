@@ -763,7 +763,12 @@ fn resolve_key(
         planner.ObservedAssistantSettled(settled:, overflow_preparation: _) ->
           KeyObservation(planner.ObservedAssistantSettled(
             settled:,
-            overflow_preparation: Some(hooks.overflow_preparation(operation)),
+            overflow_preparation: Some(
+              hooks.overflow_preparation(effects.OverflowQuery(
+                operation:,
+                strand: state.strand,
+              )),
+            ),
           ))
         _ ->
           KeyHalt(
