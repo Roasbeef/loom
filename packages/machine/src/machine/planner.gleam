@@ -99,6 +99,7 @@ import core/message.{
   Length, ToolResultMessage, ToolResultText,
 }
 import core/tx.{type Tx, type Write, Tx}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -643,52 +644,45 @@ fn begin_run(
     ObservedRunStart(messages:) -> {
       let #(entry_writes, newest, _generator) =
         append_messages(in.generator, in.leaf, messages)
-      let trigger = case newest {
-        Some(id) -> Ok(id)
-        None ->
-          case in.leaf {
-            Some(id) -> Ok(id)
-            None ->
-              Error(corruption.report(
-                at: "machine/planner.begin_run",
-                on: build.op_key(op.id),
-                expected: "a strand leaf after run acceptance",
-                context: "null leaf with no injected messages",
-              ))
-          }
+      // The boundary triggers on the newest injected message, or on the
+      // existing leaf when the hook injected nothing. Neither existing
+      // is impossible after acceptance, so it is corruption.
+      use trigger <- or_fault(option.to_result(
+        option.or(newest, in.leaf),
+        corruption.report(
+          at: "machine/planner.begin_run",
+          on: build.op_key(op.id),
+          expected: "a strand leaf after run acceptance",
+          context: "null leaf with no injected messages",
+        ),
+      ))
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Checkpoint(checkpoint: CheckpointPhase(
+            continuation: NeedAssistant(overflow_recovery_used: False),
+            trigger:,
+            threshold_checked: None,
+            skip_inbox_once: False,
+          )),
+          inbox:,
+          latest_assistant: latest,
+        )
+      let leaf_writes = case newest {
+        Some(id) -> [build.set_leaf(op.strand, Some(id))]
+        None -> []
       }
-      case trigger {
-        Error(report) -> Fault(report:)
-        Ok(trigger) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Checkpoint(checkpoint: CheckpointPhase(
-                continuation: NeedAssistant(overflow_recovery_used: False),
-                trigger:,
-                threshold_checked: None,
-                skip_inbox_once: False,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          let leaf_writes = case newest {
-            Some(id) -> [build.set_leaf(op.strand, Some(id))]
-            None -> []
-          }
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              leaf_writes,
-              [build.set_op_state(op.id, next)],
-            ]),
-          )
-        }
-      }
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          leaf_writes,
+          [build.set_op_state(op.id, next)],
+        ]),
+      )
     }
     NoObservation -> AwaitEffect(key: RunStartKey(operation: op.id))
     other -> unexpected_observation(op, "starting", other)
@@ -825,48 +819,42 @@ fn apply_writes(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
-  case place_pending(in, in.leaf, inbox.writes) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting:)) -> {
-      let remaining = Inbox(..inbox, writes: [])
-      let next_checkpoint = case projecting, newest {
-        // Projecting input: need another assistant turn, trigger on the
-        // newest appended entry, and skip the inbox once.
-        True, Some(newest) ->
-          CheckpointPhase(
-            continuation: NeedAssistant(overflow_recovery_used: False),
-            trigger: newest,
-            threshold_checked: checkpoint.threshold_checked,
-            skip_inbox_once: True,
-          )
-        // Unprojected custom writes preserve the checkpoint, including
-        // trigger and overflow flag.
-        _, _ -> checkpoint
-      }
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Checkpoint(checkpoint: next_checkpoint),
-          inbox: remaining,
-          latest_assistant: latest,
-        )
-      let leaf_writes = case newest {
-        Some(id) -> [build.set_leaf(op.strand, Some(id))]
-        None -> []
-      }
-      transition(
-        op,
-        in,
-        next,
-        list.flatten([
-          entry_writes,
-          leaf_writes,
-          [build.set_op_state(op.id, next)],
-        ]),
+  use Placement(writes: entry_writes, newest:, projecting:) <- or_fault(
+    place_pending(in, in.leaf, inbox.writes),
+  )
+  let remaining = Inbox(..inbox, writes: [])
+  let next_checkpoint = case projecting, newest {
+    // Projecting input: need another assistant turn, trigger on the
+    // newest appended entry, and skip the inbox once.
+    True, Some(newest) ->
+      CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: checkpoint.threshold_checked,
+        skip_inbox_once: True,
       )
-    }
+    // Unprojected custom writes preserve the checkpoint, including
+    // trigger and overflow flag.
+    _, _ -> checkpoint
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: next_checkpoint),
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  let leaf_writes = case newest {
+    Some(id) -> [build.set_leaf(op.strand, Some(id))]
+    None -> []
+  }
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([entry_writes, leaf_writes, [build.set_op_state(op.id, next)]]),
+  )
 }
 
 /// Steps 2 and 5: consume eligible steer or follow-up input per its mode.
@@ -892,50 +880,46 @@ fn consume_queue(
         [] -> #([], [])
       }
   }
-  case place_pending(in, in.leaf, consumed) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting: _)) ->
-      case newest {
-        None ->
-          Fault(report: corruption.report(
-            at: "machine/planner.consume_queue",
-            on: build.op_key(op.id),
-            expected: "a non-empty eligible queue",
-            context: "queue drain with nothing to place",
-          ))
-        Some(newest) -> {
-          let remaining = case queue {
-            SteerQueue -> Inbox(..inbox, steer: left)
-            FollowUpQueue -> Inbox(..inbox, follow_up: left)
-          }
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Checkpoint(checkpoint: CheckpointPhase(
-                continuation: NeedAssistant(overflow_recovery_used: False),
-                trigger: newest,
-                threshold_checked: checkpoint.threshold_checked,
-                skip_inbox_once: True,
-              )),
-              inbox: remaining,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              [
-                build.set_leaf(op.strand, Some(newest)),
-                build.set_op_state(op.id, next),
-              ],
-            ]),
-          )
-        }
-      }
+  use Placement(writes: entry_writes, newest:, projecting: _) <- or_fault(
+    place_pending(in, in.leaf, consumed),
+  )
+  // A drain is only reached with an eligible queue, so placing nothing
+  // means the queue and the mode disagreed — durable state, corrupt.
+  use newest <- or_fault(option.to_result(
+    newest,
+    corruption.report(
+      at: "machine/planner.consume_queue",
+      on: build.op_key(op.id),
+      expected: "a non-empty eligible queue",
+      context: "queue drain with nothing to place",
+    ),
+  ))
+  let remaining = case queue {
+    SteerQueue -> Inbox(..inbox, steer: left)
+    FollowUpQueue -> Inbox(..inbox, follow_up: left)
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Checkpoint(checkpoint: CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: checkpoint.threshold_checked,
+        skip_inbox_once: True,
+      )),
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([
+      entry_writes,
+      [build.set_leaf(op.strand, Some(newest)), build.set_op_state(op.id, next)],
+    ]),
+  )
 }
 
 /// Step 3, taken: enter threshold compaction, copying the checkpoint into
@@ -1123,24 +1107,21 @@ fn assistant_action(
         inbox,
         latest,
       )
-    GenerationRetryWait(context:, next_attempt:, not_before:, error_message: _) ->
-      case in.now >= not_before {
-        True -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Assistant(generation: GenerationReady(
-                context:,
-                next_attempt:,
-              )),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(op, in, next, [build.set_op_state(op.id, next)])
-        }
-        False -> Wait(until: RetryNotBefore(at: not_before))
-      }
+    GenerationRetryWait(context:, next_attempt:, not_before:, error_message: _) -> {
+      use <- bool.guard(
+        when: in.now < not_before,
+        return: Wait(until: RetryNotBefore(at: not_before)),
+      )
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Assistant(generation: GenerationReady(context:, next_attempt:)),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(op, in, next, [build.set_op_state(op.id, next)])
+    }
   }
 }
 
@@ -1689,25 +1670,21 @@ fn settle_to_tool_batch(
   message: AgentMessage,
   inbox: Inbox,
 ) -> Action {
-  case plan_batch(in, message, context, response_entry) {
-    Error(report) -> Fault(report:)
-    Ok(batch) -> {
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: Tools(batch:),
-          inbox:,
-          latest_assistant: Some(response_entry),
-        )
-      transition(
-        op,
-        in,
-        next,
-        settle_writes(op, response_entry, message, usage_id, in.leaf, next),
-      )
-    }
-  }
+  use batch <- or_fault(plan_batch(in, message, context, response_entry))
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Tools(batch:),
+      inbox:,
+      latest_assistant: Some(response_entry),
+    )
+  transition(
+    op,
+    in,
+    next,
+    settle_writes(op, response_entry, message, usage_id, in.leaf, next),
+  )
 }
 
 /// An identity or tool implementation that will not resolve drains the
@@ -1877,48 +1854,37 @@ fn tools_action(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
-  case in.batch_source {
-    None ->
-      Fault(report: corruption.report(
-        at: "machine/planner.tools_action",
-        on: ids.entry_id_to_string(batch.assistant_entry),
-        expected: "the batch source assistant message in the inputs",
-        context: "batch_source absent",
-      ))
-    Some(source) -> {
-      // The batch reads as three zones in source order: a completed
-      // prefix already in the tree, then the frontier — whose leading
-      // outcome-ready run is what materializes next, and whose head is
-      // otherwise the call to work.
-      let completed_prefix = list.take_while(batch.calls, call_is_completed)
-      let frontier = list.drop(batch.calls, list.length(completed_prefix))
-      let ready_run = list.take_while(frontier, call_is_outcome_ready)
-      case ready_run {
-        [_, ..] ->
-          materialize(
-            op,
-            in,
-            control,
-            settings,
-            batch,
-            inbox,
-            latest,
-            ready_run,
-          )
-        [] ->
-          advance_batch(
-            op,
-            in,
-            control,
-            settings,
-            batch,
-            inbox,
-            latest,
-            source,
-            frontier,
-          )
-      }
-    }
+  use source <- or_fault(option.to_result(
+    in.batch_source,
+    corruption.report(
+      at: "machine/planner.tools_action",
+      on: ids.entry_id_to_string(batch.assistant_entry),
+      expected: "the batch source assistant message in the inputs",
+      context: "batch_source absent",
+    ),
+  ))
+  // The batch reads as three zones in source order: a completed prefix
+  // already in the tree, then the frontier — whose leading outcome-ready
+  // run is what materializes next, and whose head is otherwise the call
+  // to work.
+  let completed_prefix = list.take_while(batch.calls, call_is_completed)
+  let frontier = list.drop(batch.calls, list.length(completed_prefix))
+  let ready_run = list.take_while(frontier, call_is_outcome_ready)
+  case ready_run {
+    [_, ..] ->
+      materialize(op, in, control, settings, batch, inbox, latest, ready_run)
+    [] ->
+      advance_batch(
+        op,
+        in,
+        control,
+        settings,
+        batch,
+        inbox,
+        latest,
+        source,
+        frontier,
+      )
   }
 }
 
@@ -2200,9 +2166,12 @@ fn dispatch_tool(
   effective_arguments: JsonValue,
   replay: operation.ReplayPolicy,
 ) -> Action {
-  case find_call(batch, source_index), source_call(source, source_index) {
-    Error(report), _ | _, Error(report) -> Fault(report:)
-    Ok(CallPlanned(source_index: _, result_entry:)), Ok(call) -> {
+  use found <- or_fault(find_call(batch, source_index))
+  use call <- or_fault(source_call(source, source_index))
+  // Only a planned call can be cleared; anything else means the batch
+  // and the observation disagree about where this call had got to.
+  case found {
+    CallPlanned(source_index: _, result_entry:) -> {
       let calls =
         replace_call(
           batch.calls,
@@ -2239,7 +2208,7 @@ fn dispatch_tool(
         ]),
       )
     }
-    Ok(_), Ok(_) ->
+    CallEffectPending(..) | CallOutcomeReady(..) | CallCompleted(..) ->
       Fault(report: corruption.report(
         at: "machine/planner.dispatch_tool",
         on: build.op_key(op.id),
@@ -2266,64 +2235,61 @@ fn recover_tool(
   replay_still_safe: Bool,
   checkpoint: Option(AgentMessage),
 ) -> Action {
-  case find_call(batch, source_index), source_call(source, source_index) {
-    Error(report), _ | _, Error(report) -> Fault(report:)
-    Ok(CallEffectPending(source_index: _, result_entry:, replay:)), Ok(call) -> {
-      let replayable = case control, replay {
-        Running, ReplaySafe -> replay_still_safe
-        _, _ -> False
-      }
-      case replayable {
-        True ->
-          Dispatch(
-            intent: ToolReplay(
-              operation: op.id,
-              step_id: batch.turn_id,
-              source_index:,
-              call:,
-              arguments_key: build.tool_args_key(
-                op.id,
-                batch.turn_id,
-                source_index,
-              ),
-              result_entry:,
-            ),
-            next: RunState(
-              control:,
-              settings:,
-              phase: Tools(batch:),
-              inbox:,
-              latest_assistant: latest,
-            ),
-            tx: op_tx(op, in, []),
-          )
-        False ->
-          case interrupted_tool_result(call, checkpoint, in.now) {
-            Error(report) -> Fault(report:)
-            Ok(result) ->
-              stage_result(
-                op,
-                in,
-                control,
-                settings,
-                batch,
-                inbox,
-                latest,
-                source_index,
-                result,
-                False,
-              )
-          }
-      }
-    }
-    Ok(_), Ok(_) ->
-      Fault(report: corruption.report(
+  use found <- or_fault(find_call(batch, source_index))
+  use call <- or_fault(source_call(source, source_index))
+  // Only an effect-pending call can be orphaned; anything else means the
+  // batch and the observation disagree about where this call had got to.
+  use #(result_entry, replay) <- or_fault(case found {
+    CallEffectPending(source_index: _, result_entry:, replay:) ->
+      Ok(#(result_entry, replay))
+    CallPlanned(..) | CallOutcomeReady(..) | CallCompleted(..) ->
+      Error(corruption.report(
         at: "machine/planner.recover_tool",
         on: build.op_key(op.id),
         expected: "an effect-pending call at the orphaned index",
         context: "orphan observed for a non-pending call",
       ))
+  })
+  // Only a still-safe replay of a still-running call re-executes; every
+  // other orphan is settled with a synthetic interrupted result.
+  let replayable = case control, replay {
+    Running, ReplaySafe -> replay_still_safe
+    _, _ -> False
   }
+  use <- bool.guard(
+    when: replayable,
+    return: Dispatch(
+      intent: ToolReplay(
+        operation: op.id,
+        step_id: batch.turn_id,
+        source_index:,
+        call:,
+        arguments_key: build.tool_args_key(op.id, batch.turn_id, source_index),
+        result_entry:,
+      ),
+      next: RunState(
+        control:,
+        settings:,
+        phase: Tools(batch:),
+        inbox:,
+        latest_assistant: latest,
+      ),
+      tx: op_tx(op, in, []),
+    ),
+  )
+  use result <- or_fault(interrupted_tool_result(call, checkpoint, in.now))
+  stage_result(
+    op,
+    in,
+    control,
+    settings,
+    batch,
+    inbox,
+    latest,
+    source_index,
+    result,
+    False,
+  )
 }
 
 /// Stages one finalized result: the complete message enters
@@ -2341,46 +2307,55 @@ fn stage_result(
   result: AgentMessage,
   terminate: Bool,
 ) -> Action {
-  case result {
-    ToolResultMessage(..) ->
-      case find_call(batch, source_index) {
-        Error(report) -> Fault(report:)
-        Ok(CallCompleted(..)) | Ok(CallOutcomeReady(..)) ->
-          Fault(report: corruption.report(
-            at: "machine/planner.stage_result",
-            on: build.op_key(op.id),
-            expected: "a planned or effect-pending call to stage",
-            context: "result observed for an already staged call",
-          ))
-        Ok(CallPlanned(source_index: _, result_entry:))
-        | Ok(CallEffectPending(source_index: _, result_entry:, replay: _)) -> {
-          let calls =
-            replace_call(
-              batch.calls,
-              source_index,
-              CallOutcomeReady(source_index:, result_entry:, terminate:),
-            )
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch: ToolBatch(..batch, calls:)),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(op, in, next, [
-            build.set_pending(result_entry, PendingMessage(message: result)),
-            build.set_op_state(op.id, next),
-          ])
-        }
-      }
-    _ ->
-      Fault(report: corruption.report(
+  use <- or_fault_unless(
+    result_is_tool_result(result),
+    corruption.report(
+      at: "machine/planner.stage_result",
+      on: build.op_key(op.id),
+      expected: "a tool-result message",
+      context: "a non-tool-result observation payload",
+    ),
+  )
+  use found <- or_fault(find_call(batch, source_index))
+  // A call may be staged once. Reaching here twice means an observation
+  // was delivered for work the batch has already accounted for.
+  use result_entry <- or_fault(case found {
+    CallPlanned(source_index: _, result_entry:)
+    | CallEffectPending(source_index: _, result_entry:, replay: _) ->
+      Ok(result_entry)
+    CallCompleted(..) | CallOutcomeReady(..) ->
+      Error(corruption.report(
         at: "machine/planner.stage_result",
         on: build.op_key(op.id),
-        expected: "a tool-result message",
-        context: "a non-tool-result observation payload",
+        expected: "a planned or effect-pending call to stage",
+        context: "result observed for an already staged call",
       ))
+  })
+  let calls =
+    replace_call(
+      batch.calls,
+      source_index,
+      CallOutcomeReady(source_index:, result_entry:, terminate:),
+    )
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: Tools(batch: ToolBatch(..batch, calls:)),
+      inbox:,
+      latest_assistant: latest,
+    )
+  transition(op, in, next, [
+    build.set_pending(result_entry, PendingMessage(message: result)),
+    build.set_op_state(op.id, next),
+  ])
+}
+
+/// Whether a settled payload is the tool-result message it must be.
+fn result_is_tool_result(message: AgentMessage) -> Bool {
+  case message {
+    ToolResultMessage(..) -> True
+    _ -> False
   }
 }
 
@@ -2398,54 +2373,48 @@ fn materialize(
   latest: Option(EntryId),
   ready_run: List(ToolCallState),
 ) -> Action {
-  case place_ready_run(op, in, ready_run) {
-    Error(report) -> Fault(report:)
-    Ok(#(entry_writes, newest)) -> {
-      let newest = case newest {
-        Some(id) -> id
-        // Unreachable: `ready_run` is non-empty at every call site.
-        None -> batch.assistant_entry
-      }
-      let calls = complete_ready_calls(batch.calls, ready_run)
-      case list.all(calls, call_is_completed) {
-        // More calls to work: the batch stays in the tools phase with
-        // the materialized results already in the tree.
-        False -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase: Tools(batch: ToolBatch(..batch, calls:)),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              [
-                build.set_leaf(op.strand, Some(newest)),
-                build.set_op_state(op.id, next),
-              ],
-            ]),
-          )
-        }
-        True ->
-          close_batch(
-            op,
-            in,
-            control,
-            settings,
-            inbox,
-            latest,
-            calls,
-            entry_writes,
-            newest,
-          )
-      }
+  use #(entry_writes, newest) <- or_fault(place_ready_run(op, in, ready_run))
+  // Unreachable: `ready_run` is non-empty at every call site, so
+  // something was placed and is the new leaf.
+  let newest = option.unwrap(newest, batch.assistant_entry)
+  let calls = complete_ready_calls(batch.calls, ready_run)
+  case list.all(calls, call_is_completed) {
+    // More calls left to work: the batch stays in the tools phase with
+    // the materialized results already in the tree.
+    False -> {
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase: Tools(batch: ToolBatch(..batch, calls:)),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          [
+            build.set_leaf(op.strand, Some(newest)),
+            build.set_op_state(op.id, next),
+          ],
+        ]),
+      )
     }
+    True ->
+      close_batch(
+        op,
+        in,
+        control,
+        settings,
+        inbox,
+        latest,
+        calls,
+        entry_writes,
+        newest,
+      )
   }
 }
 
@@ -2463,47 +2432,47 @@ fn place_ready_run(
   let placed =
     list.try_fold(ready_run, #([], in.leaf, in.generator), fn(acc, call) {
       let #(writes, parent, generator) = acc
-      case call {
+      use #(result_entry, terminate) <- result.try(case call {
         CallOutcomeReady(source_index: _, result_entry:, terminate:) ->
-          case deref_pending(in, result_entry) {
-            Error(report) -> Error(report)
-            Ok(PendingMessage(message:)) -> {
-              let entry_writes = [
-                build.message_entry(result_entry, parent, message, terminate),
-                build.delete_pending(result_entry),
-              ]
-              let #(usage_writes, generator) = case message {
-                ToolResultMessage(usage: Some(usage), ..) -> {
-                  let #(usage_id, generator) = ids.mint_usage(generator)
-                  #(
-                    [build.usage_row(usage_id, Some(result_entry), usage)],
-                    generator,
-                  )
-                }
-                _ -> #([], generator)
-              }
-              Ok(#(
-                list.flatten([writes, entry_writes, usage_writes]),
-                Some(result_entry),
-                generator,
-              ))
-            }
-            Ok(PendingCustom(..)) ->
-              Error(corruption.report(
-                at: "machine/planner.materialize",
-                on: ids.entry_id_to_string(result_entry),
-                expected: "a staged tool-result message",
-                context: "a custom pending payload under a result id",
-              ))
-          }
-        _ ->
+          Ok(#(result_entry, terminate))
+        CallPlanned(..) | CallEffectPending(..) | CallCompleted(..) ->
           Error(corruption.report(
             at: "machine/planner.materialize",
             on: build.op_key(op.id),
             expected: "an outcome-ready call in the ready run",
             context: "a non-ready call",
           ))
+      })
+      use pending <- result.try(deref_pending(in, result_entry))
+      use message <- result.try(case pending {
+        PendingMessage(message:) -> Ok(message)
+        PendingCustom(..) ->
+          Error(corruption.report(
+            at: "machine/planner.materialize",
+            on: ids.entry_id_to_string(result_entry),
+            expected: "a staged tool-result message",
+            context: "a custom pending payload under a result id",
+          ))
+      })
+      let entry_writes = [
+        build.message_entry(result_entry, parent, message, terminate),
+        build.delete_pending(result_entry),
+      ]
+      // Tool-reported usage becomes a ledger row of its own, under an id
+      // minted here rather than reserved in the intent — the tool did
+      // not have to report any.
+      let #(usage_writes, generator) = case message {
+        ToolResultMessage(usage: Some(usage), ..) -> {
+          let #(usage_id, generator) = ids.mint_usage(generator)
+          #([build.usage_row(usage_id, Some(result_entry), usage)], generator)
+        }
+        _ -> #([], generator)
       }
+      Ok(#(
+        list.flatten([writes, entry_writes, usage_writes]),
+        Some(result_entry),
+        generator,
+      ))
     })
   use #(writes, newest, _generator) <- result.map(placed)
   #(writes, newest)
@@ -2634,23 +2603,19 @@ fn deferred_action(
             latest,
           )
         Running ->
-          case in.poll_permit {
-            False -> Wait(until: DeferredPollDue(source_entry:))
-            True ->
-              start_poll(
-                op,
-                in,
-                control,
-                settings,
-                step_id,
-                source_entry,
-                poll,
-                configuration,
-                stream_options,
-                inbox,
-                latest,
-              )
-          }
+          start_poll(
+            op,
+            in,
+            control,
+            settings,
+            step_id,
+            source_entry,
+            poll,
+            configuration,
+            stream_options,
+            inbox,
+            latest,
+          )
       }
     DeferredEffectPending(
       step_id:,
@@ -2679,9 +2644,10 @@ fn deferred_action(
   }
 }
 
-/// `suspended` with a permit in hand: identity resolution decides
-/// whether the next fetch is made. An unresolvable identity drains the
-/// run rather than burning permits against a model that is gone.
+/// `suspended`: a fetch costs a permit the caller grants, and then
+/// identity resolution decides whether it is made at all. An
+/// unresolvable identity drains the run rather than burning further
+/// permits against a model that is gone.
 fn start_poll(
   op: Operation,
   in: PlannerInputs,
@@ -2695,6 +2661,10 @@ fn start_poll(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
+  use <- bool.guard(
+    when: !in.poll_permit,
+    return: Wait(until: DeferredPollDue(source_entry:)),
+  )
   case in.observation {
     ObservedResolution(resolution: ModelUnresolved(error:)) ->
       enter_configuration_failure_drain(
@@ -2787,23 +2757,19 @@ fn await_poll(
             latest,
           )
         Running ->
-          case in.poll_permit {
-            False -> Wait(until: DeferredPollDue(source_entry:))
-            True ->
-              replace_orphaned_poll(
-                op,
-                in,
-                control,
-                settings,
-                step_id,
-                source_entry,
-                poll,
-                configuration,
-                stream_options,
-                inbox,
-                latest,
-              )
-          }
+          replace_orphaned_poll(
+            op,
+            in,
+            control,
+            settings,
+            step_id,
+            source_entry,
+            poll,
+            configuration,
+            stream_options,
+            inbox,
+            latest,
+          )
       }
     NoObservation ->
       AwaitEffect(key: PollKey(
@@ -2820,7 +2786,8 @@ fn await_poll(
 /// so it is simply made again under *fresh* ids at the **same** poll
 /// number — the poll count measures permits spent against the source
 /// handle, and a replacement is not a new poll. The abandoned reserved
-/// ids are never materialized.
+/// ids are never materialized. The replacement still costs a permit,
+/// which is why the same guard as `start_poll` opens this function.
 fn replace_orphaned_poll(
   op: Operation,
   in: PlannerInputs,
@@ -2834,6 +2801,10 @@ fn replace_orphaned_poll(
   inbox: Inbox,
   latest: Option(EntryId),
 ) -> Action {
+  use <- bool.guard(
+    when: !in.poll_permit,
+    return: Wait(until: DeferredPollDue(source_entry:)),
+  )
   case orphan_poll_resolution(in) {
     OrphanPollUnresolved(error) ->
       enter_configuration_failure_drain(
@@ -3326,44 +3297,38 @@ fn drain_failure_input(
   consumed: List(EntryId),
   remove: fn(Inbox) -> Inbox,
 ) -> Action {
-  case place_pending(in, in.leaf, consumed) {
-    Error(report) -> Fault(report:)
-    Ok(Placement(writes: entry_writes, newest:, projecting:)) -> {
-      let remaining = remove(inbox)
-      let next_phase = case projecting, newest {
-        True, Some(newest) ->
-          Checkpoint(checkpoint: CheckpointPhase(
-            continuation: NeedAssistant(overflow_recovery_used: False),
-            trigger: newest,
-            threshold_checked: None,
-            skip_inbox_once: True,
-          ))
-        _, _ -> phase
-      }
-      let next =
-        RunState(
-          control:,
-          settings:,
-          phase: next_phase,
-          inbox: remaining,
-          latest_assistant: latest,
-        )
-      let leaf_writes = case newest {
-        Some(id) -> [build.set_leaf(op.strand, Some(id))]
-        None -> []
-      }
-      transition(
-        op,
-        in,
-        next,
-        list.flatten([
-          entry_writes,
-          leaf_writes,
-          [build.set_op_state(op.id, next)],
-        ]),
-      )
-    }
+  use Placement(writes: entry_writes, newest:, projecting:) <- or_fault(
+    place_pending(in, in.leaf, consumed),
+  )
+  let remaining = remove(inbox)
+  let next_phase = case projecting, newest {
+    True, Some(newest) ->
+      Checkpoint(checkpoint: CheckpointPhase(
+        continuation: NeedAssistant(overflow_recovery_used: False),
+        trigger: newest,
+        threshold_checked: None,
+        skip_inbox_once: True,
+      ))
+    _, _ -> phase
   }
+  let next =
+    RunState(
+      control:,
+      settings:,
+      phase: next_phase,
+      inbox: remaining,
+      latest_assistant: latest,
+    )
+  let leaf_writes = case newest {
+    Some(id) -> [build.set_leaf(op.strand, Some(id))]
+    None -> []
+  }
+  transition(
+    op,
+    in,
+    next,
+    list.flatten([entry_writes, leaf_writes, [build.set_op_state(op.id, next)]]),
+  )
 }
 
 // --- cancellation reconciliation (pi §4.6) --------------------------------
@@ -3473,34 +3438,33 @@ fn drain_writes_then_finish_aborted(
   latest: Option(EntryId),
 ) -> Action {
   case inbox.writes {
-    [_, ..] ->
-      case place_pending(in, in.leaf, inbox.writes) {
-        Error(report) -> Fault(report:)
-        Ok(Placement(writes: entry_writes, newest:, projecting: _)) -> {
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase:,
-              inbox: Inbox(..inbox, writes: []),
-              latest_assistant: latest,
-            )
-          let leaf_writes = case newest {
-            Some(id) -> [build.set_leaf(op.strand, Some(id))]
-            None -> []
-          }
-          transition(
-            op,
-            in,
-            next,
-            list.flatten([
-              entry_writes,
-              leaf_writes,
-              [build.set_op_state(op.id, next)],
-            ]),
-          )
-        }
+    [_, ..] -> {
+      use Placement(writes: entry_writes, newest:, projecting: _) <- or_fault(
+        place_pending(in, in.leaf, inbox.writes),
+      )
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase:,
+          inbox: Inbox(..inbox, writes: []),
+          latest_assistant: latest,
+        )
+      let leaf_writes = case newest {
+        Some(id) -> [build.set_leaf(op.strand, Some(id))]
+        None -> []
       }
+      transition(
+        op,
+        in,
+        next,
+        list.flatten([
+          entry_writes,
+          leaf_writes,
+          [build.set_op_state(op.id, next)],
+        ]),
+      )
+    }
     [] -> {
       let staged = case phase {
         Tools(batch:) -> staged_result_ids(batch)
@@ -4063,96 +4027,103 @@ fn publish_structural(
   from_hook: Bool,
 ) -> Action {
   case host {
-    InRunHost(settings:, inbox:, latest:, resume:, ..) ->
-      case compaction_publication(op, in, summary, usage, from_hook) {
-        Error(report) -> Fault(report:)
-        Ok(#(writes, _entry_id)) -> {
-          let next =
-            RunState(
-              control: Running,
-              settings:,
-              phase: Checkpoint(checkpoint: resume),
-              inbox:,
-              latest_assistant: latest,
-            )
-          transition(
-            op,
-            in,
-            next,
-            list.append(writes, [build.set_op_state(op.id, next)]),
-          )
-        }
-      }
-    StandaloneHost(..) ->
-      case compaction_publication(op, in, summary, usage, from_hook) {
-        Error(report) -> Fault(report:)
-        Ok(#(writes, entry_id)) ->
-          finish(
-            op,
-            in,
-            [],
-            CompactionLastResult(
-              operation: op.id,
-              leaf: Some(entry_id),
-              outcome: StructuralCompleted,
-            ),
-            writes,
-          )
-      }
+    InRunHost(settings:, inbox:, latest:, resume:, ..) -> {
+      use #(writes, _entry_id) <- or_fault(compaction_publication(
+        op,
+        in,
+        summary,
+        usage,
+        from_hook,
+      ))
+      let next =
+        RunState(
+          control: Running,
+          settings:,
+          phase: Checkpoint(checkpoint: resume),
+          inbox:,
+          latest_assistant: latest,
+        )
+      transition(
+        op,
+        in,
+        next,
+        list.append(writes, [build.set_op_state(op.id, next)]),
+      )
+    }
+    StandaloneHost(..) -> {
+      use #(writes, entry_id) <- or_fault(compaction_publication(
+        op,
+        in,
+        summary,
+        usage,
+        from_hook,
+      ))
+      finish(
+        op,
+        in,
+        [],
+        CompactionLastResult(
+          operation: op.id,
+          leaf: Some(entry_id),
+          outcome: StructuralCompleted,
+        ),
+        writes,
+      )
+    }
     NavigationHost(target:, label:, custom_instructions: _) -> {
       let #(summary_entry, generator) = ids.mint_entry(in.generator)
-      case op.source_leaf {
-        None ->
-          Fault(report: corruption.report(
-            at: "machine/planner.publish_structural",
-            on: build.op_key(op.id),
-            expected: "a non-null source leaf for a summarized navigation",
-            context: "null source leaf",
-          ))
-        Some(source_leaf) -> {
-          let hook_usage_writes = case from_hook, usage {
-            True, Some(usage) -> {
-              let #(usage_id, _generator) = ids.mint_usage(generator)
-              [build.usage_row(usage_id, Some(summary_entry), usage)]
-            }
-            _, _ -> []
-          }
-          let label_writes = case label {
-            Some(label) -> [build.set_entry_label(target, label)]
-            None -> []
-          }
-          let writes =
-            list.flatten([
-              hook_usage_writes,
-              [
-                build.set_leaf(op.strand, Some(target)),
-                build.branch_summary_entry(
-                  summary_entry,
-                  Some(target),
-                  source_leaf,
-                  summary,
-                  from_hook,
-                  usage,
-                ),
-                build.set_leaf(op.strand, Some(summary_entry)),
-              ],
-              label_writes,
-            ])
-          finish(
-            op,
-            in,
-            [],
-            NavigationLastResult(
-              operation: op.id,
-              leaf: Some(summary_entry),
-              old_leaf: op.source_leaf,
-              outcome: StructuralCompleted,
-              summary: Some(summary_entry),
-            ),
-            writes,
-          )
+      // The branch summary is parented on the abandoned leaf, so a
+      // navigation that never had one has nothing to summarize.
+      use source_leaf <- or_fault(option.to_result(
+        op.source_leaf,
+        corruption.report(
+          at: "machine/planner.publish_structural",
+          on: build.op_key(op.id),
+          expected: "a non-null source leaf for a summarized navigation",
+          context: "null source leaf",
+        ),
+      ))
+      let hook_usage_writes = case from_hook, usage {
+        True, Some(usage) -> {
+          let #(usage_id, _generator) = ids.mint_usage(generator)
+          [build.usage_row(usage_id, Some(summary_entry), usage)]
         }
+        _, _ -> []
       }
+      let label_writes = case label {
+        Some(label) -> [build.set_entry_label(target, label)]
+        None -> []
+      }
+      let writes =
+        list.flatten([
+          hook_usage_writes,
+          [
+            build.set_leaf(op.strand, Some(target)),
+            build.branch_summary_entry(
+              summary_entry,
+              Some(target),
+              source_leaf,
+              summary,
+              from_hook,
+              usage,
+            ),
+            build.set_leaf(op.strand, Some(summary_entry)),
+          ],
+          label_writes,
+        ])
+      finish(
+        op,
+        in,
+        [],
+        NavigationLastResult(
+          operation: op.id,
+          leaf: Some(summary_entry),
+          old_leaf: op.source_leaf,
+          outcome: StructuralCompleted,
+          summary: Some(summary_entry),
+        ),
+        writes,
+      )
     }
   }
 }
@@ -4353,6 +4324,55 @@ fn staged_result_ids(batch: ToolBatch) -> List(EntryId) {
 }
 
 // --- shared helpers -------------------------------------------------------
+
+/// Binds a fallible read of the inputs or the durable state, faulting on
+/// corruption. This is the planner's `use` form for
+/// `Result(a, CorruptionReport)`: `result.try` cannot serve, because the
+/// continuation returns an `Action` and not another `Result`.
+///
+/// It exists because the alternative is the same two-armed `case` at a
+/// dozen sites, whose error arm is always exactly `Fault(report:)` and
+/// whose success arm swallows the rest of the function into another
+/// level of indentation. Gleam has no early return; this is how the
+/// planner gets one for the corruption path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use batch <- or_fault(plan_batch(in, message, context, entry))
+/// ```
+///
+fn or_fault(
+  result: Result(a, CorruptionReport),
+  then: fn(a) -> Action,
+) -> Action {
+  case result {
+    Error(report) -> Fault(report:)
+    Ok(value) -> then(value)
+  }
+}
+
+/// The guard form of `or_fault`: proceed when the condition holds,
+/// otherwise fault with the given report. `bool.guard` cannot serve,
+/// because its `return` is an `Action` and the report has to become
+/// one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use <- or_fault_unless(is_tool_result(result), report)
+/// ```
+///
+fn or_fault_unless(
+  condition: Bool,
+  report: CorruptionReport,
+  then: fn() -> Action,
+) -> Action {
+  case condition {
+    True -> then()
+    False -> Fault(report:)
+  }
+}
 
 /// The default transition action: writes guarded by the op-state seq.
 fn transition(
