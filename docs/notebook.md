@@ -2,6 +2,91 @@
 
 ---
 
+## 2026-08-25 — M4 kickoff: cap set pinned, vetting lint landed
+
+### State
+
+M4 (code mode) under way. `main` carries the two architecture docs
+(`code-mode.md` with the security argument + mermaid, `messaging.md`)
+and the vetting lint. `make check-codemode` green (30 test fns, 58+
+hostile programs). The cap prelude (J2) is still in flight in the
+working tree (`packages/cap/*` uncommitted, another agent's); J3
+(compile service + satellite runtime) not yet started.
+
+### The cap-set conflict, resolved
+
+Design §6.2 named `cap/{fs,proc,net,git,lsp,task,actor,report}`; spec
+WP-J named `cap/{fs,proc,git,lsp,report,task,actor,kv}`. They disagree
+on two modules (`net` vs `kv`), and the vetting allowlist *is* this set,
+so J1 and J2 could have pinned different sets. Resolved as the **union,
+the canonical nine**: `cap/{fs, proc, net, git, lsp, report, task,
+actor, kv}`. `cap/net` ships as a real module but **deny-by-default** —
+importing it passes the lint, but every call refuses unless an approved
+net policy grants it, so the design's "cannot open a socket unless you
+import cap/net, and even then it needs an approved policy" stays
+literally true. Recorded in `spec-gaps.md`; relayed to both agents.
+
+### What the vetting lint decides (J1, committed)
+
+`vet(source, policy) -> VetResult`, total: a parse failure is a
+`Rejected([Unparseable])`, never a crash. Three rules from design §6.2:
+no attribute at all (fail-closed on the whole class, not just
+`@external`, since attributes are the only in-source path to foreign
+code); imports confined to the allowlist; no dependency outside the
+prelude. Collects *all* violations in one pass so the model fixes them
+in one round-trip. A pass yields an opaque `Vetted` (no public
+constructor) carrying source + parsed AST — the compile service takes a
+`Vetted`, not a `String`, so the type system forbids compiling unvetted
+source.
+
+Lookalike defense is by **grammar, not Unicode normalization**: legal
+Gleam module names are ASCII, so any homoglyph / fullwidth / ZWJ / NFD
+byte is definitionally not a legal reference and dies at the grammar
+gate before the byte-identical membership test. Normalization is avoided
+on purpose — folding a Cyrillic and a Latin letter together would be the
+bug, not the fix.
+
+### Handoff findings for J3 (compile + satellite)
+
+J1 surfaced four coordination points, all for the compile/satellite
+stage to honor:
+
+1. **The submitted module's own name is not in its source** — Gleam
+   derives it from the file path. So "declares itself as `cap/fs`" /
+   prelude-shadowing is not source-visible; the **compile service must
+   pin the filename/module name**. The lint cannot and does not cover
+   this.
+2. **glance drops dangling attributes** (a trailing `@external` binding
+   no definition vanishes from the AST). J1 added a raw-source backstop
+   (reject if source contains `@external` but the AST surfaced none).
+   Trade-off: the literal token inside a string constant is also
+   rejected — accepted fail-closed. J3 should not assume the AST is the
+   only attribute surface.
+3. **glance rejects most lookalikes at parse time** — Cyrillic/fullwidth
+   names surface as `Unparseable`, not `ImportNotAllowed`. Both reject;
+   the grammar gate is belt-and-suspenders (unit-tested directly).
+4. **`gleam/dynamic[/decode]` is left out** of the default allowlist. If
+   the finalized cap API returns `dynamic.Dynamic` and programs must
+   decode it, add it via `policy.allow`/`new`. Confirm once J2's API is
+   fixed.
+
+Also: `VetPolicy`/`VetResult`/`Vetted` are J1's design (no frozen Part-1
+interface exists for them). If J3 needs a different `Vetted` contract
+that is a coordination point, not a protocol change. J3 should build its
+policy with `policy.new(<exact shipped cap names from J2>)` rather than
+trusting the built-in `default`.
+
+### Next
+
+Verify + commit J2 (cap prelude) when it lands, checking its shipped
+module set is exactly the nine and `cap/net` is deny-by-default. Then
+write J3's detailed spec (compile service takes `Vetted`, pins the
+module name per finding 1; satellite runtime + escaped-satellite
+tabletop) and dispatch it (Opus). Adversarial review of the whole M4
+surface before it is trusted, per the standing pattern.
+
+---
+
 ## 2026-08-24 — M3 review-fix wave complete
 
 ### State
