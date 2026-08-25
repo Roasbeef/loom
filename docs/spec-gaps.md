@@ -508,6 +508,34 @@ instead and are only referenced here.
    needs a policy and attribution story before it needs an API. Deferred,
    and recorded here so it is decided rather than drifted into.
 
+14. **The satellite's enforcement report is usually lost.** `satellite`
+    reports enforcement only on `CallExited`, but `destroy` aborts the
+    operation as soon as the outcome arrives, so a healthy run reports the
+    build's layers and nothing for the node — observed live while wiring
+    the code-mode tool. The tool therefore says a stage that made no
+    report is not a claim it was confined, which is honest but weaker than
+    it should be. Carrying the report in `Ran`, or reporting on the abort
+    path, would make honest reporting structural rather than a racing
+    side-channel. Worth fixing before anyone leans on the sandbox line.
+
+15. **Approved escalations never widen a code-mode execution.** Every
+    clearance the pipeline makes passes `grants: []`, so an operator who
+    approves a denial for a program's benefit changes nothing. It fails
+    closed, which is the right direction, but the design documents do not
+    say it. This compounds with the finding that no production path raises
+    an escalation at all (see WP-L below): a code-mode program cannot
+    request a widening, and could not use one if it were granted.
+
+16. **Identity and budget are specified three times.** `ExecConfig` makes
+    a caller build `BuildConfig` and `SatelliteConfig` + `ExecId`
+    separately, each carrying its own operation, step, and budget, and
+    nothing structurally stops three different identities reaching the
+    broker. The pooling invariant — one ledger per execution — is
+    therefore a convention the caller must honor rather than a property of
+    the types, and `make e2e-codemode` itself does not: it builds under
+    `step_id <> "-build"`, opening a second ledger. One threaded
+    `ExecIdentity` would make it unbreakable.
+
 ## From M3 messaging (design §4.6 reconciliation)
 
 1. **Request/reply is explicit-poll, not auto-enqueue.** §4.6 says a
