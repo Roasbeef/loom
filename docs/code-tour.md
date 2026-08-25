@@ -533,7 +533,7 @@ exactly as it would for a dead provider.
 
 `stream.await_terminal` returns, the effect process sends `ProviderDone`
 to the driver, and the driver turns it into an observation and plans
-again. `settle_assistant` (`machine/planner.gleam:1114`) classifies the
+again. `settle_assistant` (`machine/planner.gleam:1263`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask
@@ -1095,11 +1095,11 @@ could finish.
 Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:786`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
-transaction wrote atomically beside the latest-wins
-`strand.last_result` (`machine/planner.gleam:3759`). Keying on the strand
-register alone had a hole: a child that starts a second run overwrites
-it, and a parent still waiting on the first run's result would read the
-second's.
+transaction wrote atomically beside the latest-wins `strand.last_result`
+register (`build.set_last_result`, `machine/planner.gleam:4271`). Keying
+on the strand register alone had a hole: a child that starts a second
+run overwrites it, and a parent still waiting on the first run's result
+would read the second's.
 
 Four corners of `fact.custom` are reserved and refused to `put_fact`:
 `escalation/`, `operation-result/`, `lineage/` and `prompt/`
@@ -1277,11 +1277,12 @@ actor would lose `pg`'s monitor-based crash cleanup.
 
 And two honest omissions. **Hot code loading is not implemented.** The
 design names it as the mechanism for the self-improvement loop; no
-release-upgrade machinery, no `code_change` handling, and no extension
-zone exists in the tree — the single `code_change/3` in the source is a
-`gen_server` boilerplate stub in `client_ffi.erl:102`. **Distribution is
-not used either**: the bus is a single node's, and the control-plane half
-of the two-channel doctrine has no code behind it yet.
+release-upgrade machinery, no upgrade handling, and no extension zone
+exists in the tree. The single `code_change/3` in the source is the
+SIGTERM relay's gen_event boilerplate — a no-op
+`code_change` (`client_ffi.erl:102`). **Distribution is not used
+either**: the bus is a single node's, and the control-plane half of the
+two-channel doctrine has no code behind it yet.
 
 One more thing is deliberately *not* taken from the BEAM. Delayed wakeups
 go through an injected `effects.Timers` seam rather than the VM's timer

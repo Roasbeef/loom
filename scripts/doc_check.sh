@@ -11,18 +11,40 @@
 # The fourth runs over docs/ instead:
 #
 #   4. citations — docs/**/*.md cite `file.gleam:431`; the file must
-#      resolve and still hold the symbol the prose names.          (warning)
+#      resolve and still hold the symbol the prose names.  (error, with
+#      three exemptions below)
 #
-# Citations are warning-level for now: the existing ones drifted long
-# before anything checked them, so the finding list is a work queue, not
-# a wall. Resolution is a suffix match against the tracked tree, so a
-# bare `planner.gleam` and a package-relative `machine/planner.gleam`
-# both land; a name that matches two files is reported rather than
-# guessed at. Drift is a windowed symbol check: the backticked symbol
-# nearest before the citation must appear within DOC_CHECK_CITE_WINDOW
-# lines of the cited span. Citations with no symbol to check are resolution-only and
-# counted separately, so the census says how much of the doc corpus the
-# stronger check actually covers.
+# Resolution is a suffix match against the tracked tree, so a bare
+# `planner.gleam` and a package-relative `machine/planner.gleam` both
+# land; a name that matches two files is reported rather than guessed
+# at. Drift is a windowed symbol check: the backticked symbol nearest
+# before the citation must appear within DOC_CHECK_CITE_WINDOW lines of
+# the cited span. Citations with no symbol to check are resolution-only
+# and counted separately, so the census says how much of the doc corpus
+# the stronger check actually covers.
+#
+# Every citation is checked and every finding is reported. What the tier
+# decides is which findings fail the build (D2, docs/design-notes/
+# four-decisions.md). A finding is an error only when all three hold:
+#
+#   * The document is not under docs/review/. Review documents record
+#     what a reviewer saw at a commit; re-pinning them to today's tree
+#     would falsify the record. They stay in the warning census, where
+#     their drift is information about how far the tree has moved.
+#   * The citation is backticked. Backticks are how these documents
+#     already separate "a real path in this tree" from prose, and bare
+#     prose includes rhetorical examples — a fictional `auth.gleam:42`
+#     illustrating ghost state — that are not claims about the tree.
+#     Bare citations stay checked and warned, never gated.
+#   * The finding is decidable. "No such file", "several files match",
+#     "the file is shorter than that", and "the symbol is in the file
+#     but at line N" are all claims the checker can prove and name the
+#     fix for. "The symbol is nowhere in this file" is not: it is the
+#     one shape a mis-attributed span (an OTP behaviour name, a register
+#     name) and a genuinely deleted symbol share, so gating on it would
+#     fail correct prose. It stays a warning — printed, counted, and in
+#     the drift total. A drifted line number cannot hide there: if the
+#     symbol is in the file at all, the finding is decidable and gates.
 #
 # Staleness is a warning by design: source moves faster than prose, and
 # the warning list is the work queue for the /doc-gardening skill. File
@@ -32,7 +54,6 @@
 # the staleness check rather than guessing.
 #
 # No builds, no toolchain: this stays usable while other work compiles.
-
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -192,6 +213,11 @@ function nearest_span(s,   best) {
 	}
 	return best
 }
+# Is the citation inside a code span? Odd backtick count before it.
+function backticked(before,   copy) {
+	copy = before
+	return gsub(/`/, "&", copy) % 2
+}
 # First line in [a,b] holding sym as a whole word, else 0.
 function seek(f, a, b, sym,   i, re) {
 	re = "(^|[^A-Za-z0-9_])" sym "([^A-Za-z0-9_]|$)"
@@ -211,13 +237,26 @@ function nearest(f, a, b, sym,   i, d, best, dist) {
 	}
 	return best
 }
-function report(msg) {
-	flagged++
-	if (limit == 0 || flagged <= limit) print msg
+# Buffer one finding at its tier. Errors are never elided; warnings are
+# tallied by the reason they are not gated, so the census says why.
+function report(sev, msg) {
+	nfind++
+	fsev[nfind] = sev
+	fmsg[nfind] = msg
+	if (sev == "E") {
+		nerr++
+		return
+	}
+	nwarn++
+	if (!gated) w_review++
+	else if (!ticked) w_bare++
+	else w_absent++
 }
 END {
 	for (d = 1; d <= ndocs; d++) {
 		doc = docs[d]
+		# Review documents are historical records: checked, never gated.
+		gated = (doc !~ /^docs\/review\//)
 		lineno = 0
 		while ((getline line < doc) > 0) {
 			lineno++
@@ -227,6 +266,10 @@ END {
 				before = substr(line, 1, length(line) - length(rest) + RSTART - 1)
 				rest = substr(rest, RSTART + RLENGTH)
 				total++
+				ticked = backticked(before)
+				if (ticked) backticks++
+				# Decidable findings gate; the rest warn.
+				hard = (gated && ticked) ? "E" : "W"
 				split(cite, part, ":")
 				file = part[1]
 				first = part[2] + 0
@@ -240,16 +283,16 @@ END {
 				where = "%s:%d cites %s"
 				f = resolve(file)
 				if (f == "") {
-					report(sprintf(where " — no such file in the tree", doc, lineno, cite))
+					report(hard, sprintf(where " — no such file in the tree", doc, lineno, cite))
 					continue
 				}
 				if (f == "?") {
-					report(sprintf(where " — several files match that name", doc, lineno, cite))
+					report(hard, sprintf(where " — several files match that name", doc, lineno, cite))
 					continue
 				}
 				load(f)
 				if (last > nlines[f]) {
-					report(sprintf(where " — %s has %d lines", doc, lineno, cite, f, nlines[f]))
+					report(hard, sprintf(where " — %s has %d lines", doc, lineno, cite, f, nlines[f]))
 					continue
 				}
 				resolved++
@@ -263,48 +306,66 @@ END {
 				for (i = 1; i <= nsym; i++)
 					if ((at = nearest(f, first, last, sym[i]))) break
 				if (i <= nsym)
-					report(sprintf(where " — `%s` is at line %d", doc, lineno, cite, sym[i], at))
+					report(hard, sprintf(where " — `%s` is at line %d", doc, lineno, cite, sym[i], at))
 				else
-					report(sprintf(where " — `%s` is not in %s", doc, lineno, cite, sym[1], f))
+					# Undecidable: a mis-attributed span looks exactly
+					# like a symbol that has been deleted.
+					report("W", sprintf(where " — `%s` is not in %s", doc, lineno, cite, sym[1], f))
 				drifted++
 			}
 		}
 		close(doc)
 	}
-	printf "%d cited, %d resolve, %d symbol-checked (%d resolution-only), %d drifted\n",
-		total, resolved, checked, unchecked, drifted
-	if (limit > 0 && flagged > limit)
-		printf "%d flagged, %d shown — DOC_CHECK_CITE_LIMIT=0 lists every one\n",
-			flagged, limit
-	printf "#%d\n", flagged
+	for (i = 1; i <= nfind; i++)
+		if (fsev[i] == "E") print "E " fmsg[i]
+	shown = 0
+	for (i = 1; i <= nfind; i++) {
+		if (fsev[i] != "W") continue
+		if (limit > 0 && shown >= limit) continue
+		shown++
+		print "W " fmsg[i]
+	}
+	printf "S %d cited (%d backticked), %d resolve, %d symbol-checked (%d resolution-only), %d drifted\n",
+		total, backticks, resolved, checked, unchecked, drifted
+	printf "S %d error(s), %d warning(s): %d docs/review, %d bare prose, %d symbol absent from file\n",
+		nerr + 0, nwarn + 0, w_review + 0, w_bare + 0, w_absent + 0
+	if (limit > 0 && nwarn > shown)
+		printf "S %d warning(s), %d shown — DOC_CHECK_CITE_LIMIT=0 lists every one\n",
+			nwarn, shown
+	printf "#%d %d\n", nerr + 0, nwarn + 0
 }')
 
-# Awk ends with the finding count; the findings come first, then the
-# census — which is one line, or two when the listing was capped.
-cite_count=$(printf '%s\n' "$cite_out" | tail -1)
-cite_count=${cite_count#\#}
-case $cite_count in "" | *[!0-9]*) cite_count=0 ;; esac
+# Awk ends with the two finding counts; before it come the findings,
+# each tagged with its tier, then the census.
+nl='
+'
+cite_tail=${cite_out##*"$nl"}
+cite_tail=${cite_tail#\#}
+cite_errors=${cite_tail%% *}
+cite_warnings=${cite_tail##* }
+case $cite_errors in "" | *[!0-9]*) cite_errors=0 ;; esac
+case $cite_warnings in "" | *[!0-9]*) cite_warnings=0 ;; esac
 cite_body=$(printf '%s\n' "$cite_out" | sed '$d')
 
-shown=$cite_count
-if [ "$cite_limit" -gt 0 ] && [ "$shown" -gt "$cite_limit" ]; then
-	shown=$cite_limit
-fi
-
 echo
-printf '%s\n' "$cite_body" | head -n "$shown" |
+printf '%s\n' "$cite_body" |
 	while IFS= read -r finding; do
-		printf 'WARNING  %-12s %s\n' citations "$finding"
+		tag=${finding%% *}
+		text=${finding#* }
+		case $tag in
+		E) printf 'ERROR    %-12s %s\n' citations "$text" ;;
+		W) printf 'WARNING  %-12s %s\n' citations "$text" ;;
+		S)
+			if [ "$cite_errors" -eq 0 ] && [ "$cite_warnings" -eq 0 ]; then
+				printf 'ok       %-12s %s\n' citations "$text"
+			else
+				printf '         %-12s %s\n' citations "$text"
+			fi
+			;;
+		esac
 	done
-printf '%s\n' "$cite_body" | tail -n +"$((shown + 1))" |
-	while IFS= read -r summary; do
-		if [ "$cite_count" -eq 0 ]; then
-			printf 'ok       %-12s %s\n' citations "$summary"
-		else
-			printf '         %-12s %s\n' citations "$summary"
-		fi
-	done
-warnings=$((warnings + cite_count))
+errors=$((errors + cite_errors))
+warnings=$((warnings + cite_warnings))
 
 echo
 if [ "$errors" -gt 0 ]; then
