@@ -56,15 +56,18 @@ pub fn sources_are_all_read_test() {
   let paths = list.map(sources(), fn(source) { source.0 })
   assert list.contains(paths, "src/prompt/pack.gleam")
   assert list.contains(paths, "src/prompt/default.gleam")
+  assert list.contains(paths, "src/prompt/summary.gleam")
 }
 
 pub fn src_imports_only_stdlib_and_core_test() {
   // Purity is structural, not a convention: `prompt` is `core` plus
   // `gleam_stdlib`, so no time source exists in its graph to reach for.
+  // A module of this package may of course reach another one.
   list.each(sources(), fn(source) {
     list.each(import_lines(source.1), fn(module) {
       assert string.starts_with(module, "gleam/")
         || string.starts_with(module, "core/")
+        || string.starts_with(module, "prompt/")
     })
   })
 }

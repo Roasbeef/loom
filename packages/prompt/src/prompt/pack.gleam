@@ -1099,3 +1099,55 @@ fn hex_digit(nibble: Int) -> String {
     _ -> "f"
   }
 }
+
+// --- reading a pack section directly ---------------------------------------
+
+/// One section's template by name, `Error(Nil)` when the pack does not
+/// carry it. Fragments are reachable through this too: `render` refuses
+/// to emit them on their own, but a caller assembling something that is
+/// *not* the session's system prompt — a summarization request, say —
+/// needs to reach a named body deliberately.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(decoded) =
+///   pack.decode("%% loom-prompt-pack 1\n%% version t\n%% section identity\nhi\n")
+/// assert pack.section(decoded, "identity") == Ok("hi")
+/// ```
+///
+/// ```gleam
+/// let assert Ok(decoded) =
+///   pack.decode("%% loom-prompt-pack 1\n%% version t\n%% section identity\nhi\n")
+/// assert pack.section(decoded, "absent") == Error(Nil)
+/// ```
+///
+pub fn section(pack: Pack, name: String) -> Result(String, Nil) {
+  body(pack, name)
+}
+
+/// Fills `{placeholder}` holes in a template from an association list,
+/// under exactly `render`'s substitution rules: one pass, a substituted
+/// value is never re-scanned, an unknown name renders empty, and a brace
+/// that does not open a placeholder survives literally.
+///
+/// The never-re-scanned property is why this is the only substitution in
+/// the package. A summarization request splices a *conversation* — model
+/// output, tool results, whatever a repository contains — into a
+/// template, and a second pass over the result would let that content
+/// name a binding and expand it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert pack.fill("hello {who}", [#("who", "world")]) == "hello world"
+/// ```
+///
+/// ```gleam
+/// // A substituted value is inert: its own braces never expand.
+/// assert pack.fill("{a}", [#("a", "{b}"), #("b", "no")]) == "{b}"
+/// ```
+///
+pub fn fill(template: String, bindings: List(#(String, String))) -> String {
+  substitute(template, dict.from_list(bindings))
+}
