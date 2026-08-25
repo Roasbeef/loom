@@ -1,11 +1,13 @@
 //// The shipped pack, checked as content rather than as syntax.
 ////
-//// These tests hold the two things the design and the adversarial
-//// judgment settled: the build-constant sections stay build-constant, so
-//// every strand in a session shares one cached prefix; and the sandbox
-//// section states posture behaviourally, always says something about
+//// These tests hold what the design and the adversarial judgment
+//// settled: the build-constant sections stay build-constant, so every
+//// strand in a session shares one cached prefix; the sandbox section
+//// states posture behaviourally, always says something about
 //// enforcement, and tells a degraded host's agent that it is looking at
-//// a host failure rather than a policy denial.
+//// a host failure rather than a policy denial; and the delegation
+//// section states the facts about the `agent_*` tools that their
+//// schemas cannot carry.
 
 import gleam/list
 import gleam/option.{None}
@@ -55,7 +57,7 @@ pub fn shipped_pack_has_no_problems_test() {
   assert pack.problems(shipped()) == []
 }
 
-pub fn shipped_pack_carries_the_six_sections_in_design_order_test() {
+pub fn shipped_pack_carries_the_canonical_sections_in_design_order_test() {
   let rendered =
     list.filter(shipped().sections, fn(section) {
       !string.starts_with(section.name, "_")
@@ -68,10 +70,10 @@ pub fn shipped_pack_carries_the_six_sections_in_design_order_test() {
 
 pub fn build_constant_sections_carry_no_placeholders_test() {
   // Guarantee 3 of the stability contract: identical for every strand,
-  // including model-spawned children. A placeholder in one of these
-  // three would make the prompt vary with the host for text that has no
-  // reason to.
-  list.each(["identity", "tool_discipline", "conduct"], fn(name) {
+  // including model-spawned children. A placeholder in any of these
+  // would make the prompt vary with the host for text that has no reason
+  // to.
+  list.each(["identity", "tool_discipline", "delegation", "conduct"], fn(name) {
     let assert Ok(section) =
       list.find(shipped().sections, fn(section) { section.name == name })
     assert pack.placeholders(section.template) == []
@@ -84,6 +86,92 @@ pub fn host_specific_sections_use_only_environment_bindings_test() {
       assert list.contains(pack.binding_names, name)
     })
   })
+}
+
+// --- the delegation section ----------------------------------------------
+//
+// The six `agent_*` schemas are on the wire, so the model already knows
+// these tools exist. What the pack owes it is the policy a schema cannot
+// carry, and each test below pins one fact that is true of the code in
+// `tools/agent` and `client/agency` and false of a plausible guess.
+
+pub fn delegation_is_rendered_on_every_host_test() {
+  // Placeholder-free, so it is the same bytes for every strand of every
+  // session on this build — and never dropped as an empty section.
+  let assert Ok(section) =
+    list.find(shipped().sections, fn(section) { section.name == "delegation" })
+  assert pack.placeholders(section.template) == []
+  list.each(
+    [pack.FullyEnforced, pack.DegradedRefusing, pack.BestEffort],
+    fn(enforcement) {
+      assert string.contains(
+        phrases(enforcement),
+        "a subagent is a strand of this session",
+      )
+    },
+  )
+}
+
+pub fn delegation_says_a_wait_holds_the_operation_open_test() {
+  // `agent_wait` blocks between the intent and settle commits, and a
+  // steer committed in that window drains only at the next checkpoint.
+  // An agent that does not know this cannot trade it off.
+  let rendered = phrases(pack.FullyEnforced)
+  assert string.contains(
+    rendered,
+    "waiting blocks the operation you are inside and holds it open",
+  )
+  assert string.contains(rendered, "queued rather than dropped")
+  assert string.contains(rendered, "reaches you only at your next checkpoint")
+}
+
+pub fn delegation_says_to_wait_on_the_batch_test() {
+  // `agent_wait` takes an array against one deadline precisely because
+  // the shipped `tool_execution` is Sequential: eight one-handle waits
+  // are eight serial windows.
+  let rendered = phrases(pack.FullyEnforced)
+  assert string.contains(rendered, "spawn the batch, then wait on the batch")
+  assert string.contains(
+    rendered,
+    "one wait takes a list of handles and joins them all against one deadline",
+  )
+  assert string.contains(rendered, "comes back pending")
+}
+
+pub fn delegation_states_the_descendant_only_addressing_rule_test() {
+  // The rule the Agency enforces: wait only downward, address a parent
+  // or a descendant. A refusal is cheaper if it is never attempted.
+  let rendered = phrases(pack.FullyEnforced)
+  assert string.contains(rendered, "wait only on what you spawned")
+  assert string.contains(
+    rendered,
+    "address only your parent or something below you",
+  )
+  assert string.contains(rendered, "refused rather than queued")
+}
+
+pub fn delegation_says_a_childs_answer_is_its_last_message_test() {
+  // `LastResult` carries `final_assistant: Option(EntryId)` and no
+  // payload, so the report is the child's last assistant text and there
+  // is no structured result format to write a brief against.
+  let rendered = phrases(pack.FullyEnforced)
+  assert string.contains(
+    rendered,
+    "its last assistant message, not a structured report",
+  )
+  assert string.contains(rendered, "a final answer that stands on its own")
+  // `Ready` carries the child's blackboard cells beside its report, so
+  // notes are the one way a child can hand back something with shape.
+  assert string.contains(rendered, "a child's notes come back with its result")
+}
+
+pub fn delegation_distinguishes_a_note_from_a_message_test() {
+  // `agent_note` writes a durable cell and notifies nobody; `agent_send`
+  // lands in a run, and a send to a finished parent is refused outright.
+  let rendered = phrases(pack.FullyEnforced)
+  assert string.contains(rendered, "writing one notifies nobody")
+  assert string.contains(rendered, "read once")
+  assert string.contains(rendered, "parent whose run has ended is refused")
 }
 
 // --- the sandbox section, as the judgment rewrote it ---------------------

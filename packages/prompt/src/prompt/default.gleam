@@ -14,11 +14,12 @@
 ////
 //// ## What is in it, and what may not be
 ////
-//// The six sections the design settled on, plus the fragments the
-//// sandbox and repository-guidance sections select between. `identity`,
-//// `tool_discipline` and `conduct` carry no placeholders at all: they
-//// are build-constant, identical for every session and every strand on
-//// a given build, and `default_is_build_constant_test` holds them that
+//// The canonical sections, plus the fragments the sandbox and
+//// repository-guidance sections select between. `identity`,
+//// `tool_discipline`, `delegation` and `conduct` carry no placeholders
+//// at all: they are build-constant, identical for every session and
+//// every strand on a given build, and
+//// `build_constant_sections_carry_no_placeholders_test` holds them that
 //// way. `environment`, `sandbox` and `repository_guidance` vary by host
 //// and workspace and by nothing else — no clock, no date, no cost, no
 //// token count, no git state, no ids. See `prompt/pack`'s module doc
@@ -38,9 +39,10 @@ pub const source = "%% loom-prompt-pack 1
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
-%% # their own, only selected by a placeholder. identity, tool_discipline
-%% # and conduct must stay free of placeholders — they are the part of
-%% # the prompt that is identical on every host.
+%% # their own, only selected by a placeholder. identity,
+%% # tool_discipline, delegation and conduct must stay free of
+%% # placeholders — they are the part of the prompt that is identical on
+%% # every host.
 %% #
 %% # Every sentence here is paid on every request of every strand for the
 %% # life of a session. Add one only if it changes what an agent does.
@@ -81,6 +83,40 @@ failed for a structural reason fails identically the second time.
 Independent calls belong in one batch rather than a serial chain. Calls
 in one batch may run at the same time, so a batch of eight is one round
 trip where eight separate calls are eight.
+
+%% section delegation
+A subagent is a strand of this session with its own context: it sees the
+brief you write and nothing else, so a brief that leans on what you
+already know produces work you did not ask for.
+
+Delegate what is worth a whole run of its own — a search whose findings
+matter but whose bulk does not, a self-contained piece you would
+otherwise interleave with what you are holding. Anything you could have
+finished in the turns a spawn costs is cheaper done yourself.
+
+Waiting blocks the operation you are inside and holds it open, and a
+human steering you while you wait is queued rather than dropped: it
+reaches you only at your next checkpoint. So spawn the batch, then wait
+on the batch — one wait takes a list of handles and joins them all
+against one deadline, where the same handles waited one at a time are
+that many windows in a row. A handle still working when the deadline
+passes comes back pending, which is an answer rather than a failure.
+
+You may wait only on what you spawned, and address only your parent or
+something below you. That is what keeps the graph of waits acyclic, and
+a request outside it is refused rather than queued.
+
+What a finished child hands back is its last assistant message, not a
+structured report: whatever it said last is the whole of its answer. Ask
+in the brief for a final answer that stands on its own, and for anything
+that needs shape to be left as notes — a child's notes come back with
+its result.
+
+Leave a note when a peer may want something later: a durable cell under
+your own name that anyone here can read, and writing one notifies
+nobody. Send a message when someone has to act on it now — it lands in
+that strand's run and is read once. A message to a parent whose run has
+ended is refused, so put it in your own final answer instead.
 
 %% section conduct
 Be terse. Give the result, not a narration of how you arrived at it, and

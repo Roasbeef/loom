@@ -46,6 +46,18 @@ all outside this package: it performs no I/O.
   provides. Deliberately separate from `decode`: a mutated pack that
   drops a section is still a valid pack, and the harness decides whether
   to run with it.
+- `prompt/pack.Severity` — `Corrupting` / `Shaping`, and
+  `prompt/pack.severity : Problem -> Severity`. **Corrupting** is the
+  pack naming something it does not carry: a placeholder no binding
+  provides, or a fragment a binding selects. **Shaping** is the pack
+  being smaller than canonical: a section is absent. The line is drawn
+  where intent is: a typo renders empty and says so nowhere, a dropped
+  section may be exactly what a mutation meant.
+- `prompt/pack.Assessment` / `prompt/pack.assess` — `problems`
+  partitioned by `severity`, so `assess(pack).corrupting == []` is the
+  question a prompt optimizer asks (is this variant scorable at all?) in
+  one expression. It is a partition and nothing more: between them the
+  two lists hold exactly what `problems` returns.
 - `prompt/default.source` — the pack Loom ships with, as pack source.
   There is no helper returning an unwrapped `Pack`; producing one would
   need a crash-ladder construct, and the harness has to handle a failed
@@ -62,9 +74,11 @@ A directive whose content begins with `#` is a comment; any other
 unrecognized directive is corruption. The cost of that strictness is
 that a body line may not begin with `%%`.
 
-The default pack carries the six sections the design settled on —
-`identity`, `tool_discipline`, `conduct`, `environment`, `sandbox`,
+The default pack carries the canonical sections — `identity`,
+`tool_discipline`, `delegation`, `conduct`, `environment`, `sandbox`,
 `repository_guidance` — plus the fragments the last two select between.
+`canonical_sections` is the list, in render order, and the shipped pack
+is held against it.
 
 ## Relationships
 
@@ -147,13 +161,31 @@ written by whoever calls `render`, not here.
   voice, and the residual risk is accepted and named.
 - **`decode` accepts more than `problems` approves.** Keep it that way:
   syntax is the decoder's business, completeness is the harness's
-  decision.
+  decision. `severity` refines the *report* and must never reach back
+  into the parser: a pack `assess` calls corrupting still decodes and
+  still renders.
+- **A missing section is `Shaping`, never `Corrupting`.** A mutated pack
+  that drops a section is a valid pack; the severity axis exists to let
+  an optimizer keep scoring one, so nothing may reclassify it into a
+  refusal.
+- **The delegation section says only what an `agent_*` schema cannot.**
+  The six schemas are on the wire already and the pack does not repeat
+  them. What it carries is the policy: a wait holds the operation open
+  and queues a human's steer, so batch the spawns and wait on the batch;
+  addressing is parent-or-descendant and a wait is descendant-only,
+  which is what keeps the wait graph acyclic; a child's result is its
+  last assistant message plus its blackboard notes, not a structured
+  report, so a brief must ask for a self-contained final answer. Each
+  sentence is checked against `tools/agent` and `client/agency` by a
+  test in `default_test`; if one of those changes, the sentence is
+  wrong, not merely stale.
 
 ## Deep Docs
 
 - [docs/design-notes/agent-comms-and-system-prompt.md](../../docs/design-notes/agent-comms-and-system-prompt.md)
   — Part B: the design this package implements, including the stability
-  contract and the alternatives rejected.
+  contract and the alternatives rejected. Part A is the `agent_*` tool
+  semantics the `delegation` section states policy for.
 - [docs/review/m5-agent-comms-judgment.md](../../docs/review/m5-agent-comms-judgment.md)
   — claim 4 and change item 5, which overrode the design's sandbox
   reasoning and are what the wording here follows.
