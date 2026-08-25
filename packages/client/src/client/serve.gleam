@@ -25,6 +25,12 @@
 ////   `docs/examples/loom.toml` is the worked example). A file that does
 ////   not parse or validate refuses the boot with a worded message —
 ////   the documented halt path, never a partial start.
+//// - `--codemode-seed <dir>` — the prepared code-mode build seed
+////   (`make codemode-seed`); default `<workspace>/build/codemode-seed`.
+////   Code mode also needs `gleam` and `erl` on `PATH`. A host missing any
+////   of the three says so once on stderr and registers no `code_mode`
+////   tool at all, rather than shipping a definition in the provider's
+////   cached prefix that can only ever refuse.
 //// - `--best-effort` — accept a degraded sandbox helper (development
 ////   kernels without bwrap/Landlock). The default demands full
 ////   enforcement, under which a degraded helper is refused at dispatch
@@ -109,6 +115,7 @@ import broker/policy
 import broker/token
 import client/agency
 import client/catalog
+import client/codemode as codemode_wiring
 import client/gateway as hub
 import client/internal/ffi_os
 import client/server
@@ -133,6 +140,7 @@ import session/session
 import simplifile
 import tools/agent
 import tools/bash
+import tools/codemode as codemode_tool
 import tools/fs
 import tools/grep
 import tools/tool.{type Registry}
@@ -182,6 +190,9 @@ pub type Settings {
     context_window: Int,
     /// Fallback output ceiling for the wiring config.
     max_output_tokens: Int,
+    /// Where the prepared code-mode build seed lives. A host without one
+    /// registers no `code_mode` tool.
+    codemode_seed: String,
   )
 }
 
@@ -263,6 +274,7 @@ type Flags {
     workspace: Option(String),
     helper: Option(String),
     config: Option(String),
+    codemode_seed: Option(String),
     best_effort: Bool,
   )
 }
@@ -277,6 +289,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       workspace: None,
       helper: None,
       config: None,
+      codemode_seed: None,
       best_effort: False,
     ),
   )
@@ -297,6 +310,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, helper: Some(value)))
     ["--config", value, ..rest] ->
       parse_loop(rest, Flags(..flags, config: Some(value)))
+    ["--codemode-seed", value, ..rest] ->
+      parse_loop(rest, Flags(..flags, codemode_seed: Some(value)))
     ["--best-effort", ..rest] ->
       parse_loop(rest, Flags(..flags, best_effort: True))
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
@@ -309,6 +324,7 @@ const usage = "usage: loom-server --session <path.db>
   [--workspace <dir>]      workspace root (default the current directory)
   [--helper <path>]        loom-exec binary (default: PATH, then ./bin)
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
+  [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed)
   [--best-effort]          accept a degraded sandbox helper"
 
 // Fills every default and builds the provider gateway from the model
@@ -369,6 +385,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     ),
     context_window: main_entry.context_window,
     max_output_tokens: main_entry.max_output_tokens,
+    codemode_seed: option.unwrap(
+      flags.codemode_seed,
+      workspace <> "/" <> default_seed_directory,
+    ),
   ))
 }
 
@@ -582,10 +602,30 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   let agency_name = process.new_name(prefix: "loom_agency")
   let agency_config = agency.default_config(agency_name, clock)
   let agency_seam = agency.seam(agency_config)
+  // Code mode needs no such indirection — its seam closes over the
+  // broker, which already exists — but it does need a toolchain and a
+  // prepared build seed on this host. A host without them says so once
+  // here and registers no `code_mode` tool, rather than shipping a
+  // definition in the cached prefix that can only ever refuse.
+  let code_mode = case codemode_wiring.discover(settings.codemode_seed) {
+    Ok(toolchain) ->
+      Some(
+        codemode_wiring.seam(codemode_wiring.default_config(
+          broker: broker_actor,
+          clock:,
+          workspace: settings.workspace,
+          toolchain:,
+        )),
+      )
+    Error(reason) -> {
+      io.println_error("loom-server: no code_mode tool: " <> reason <> ".")
+      None
+    }
+  }
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
-  let tool_registry = registry(Some(agency_seam))
+  let tool_registry = registry(Some(agency_seam), code_mode)
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
   // cell is therefore read straight off the store here — legal, nothing
@@ -847,25 +887,29 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 }
 
 /// The tool registry: the five core tools, plus the six `agent_*` tools
-/// when this host wired a messaging plane.
+/// when this host wired a messaging plane, plus `code_mode` when it wired
+/// a code-mode pipeline.
 ///
-/// Registration is gated on the Agency rather than the tools being
+/// Registration is gated on the seam existing rather than the tools being
 /// registered unconditionally and refusing at call time, and the reason
 /// is arithmetic rather than tidiness: the wire tool array is built from
 /// this registry, renders ahead of the system prompt, and is the byte
-/// prefix of the provider's cached region — so six permanently-refusing
+/// prefix of the provider's cached region — so permanently-refusing
 /// definitions would be paid for on every request of every strand for the
-/// life of the session. A host without a plane simply has five tools.
+/// life of the session. A host with neither plane simply has five tools.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.lookup(serve.registry(option.None), "bash")
+/// // tool.lookup(serve.registry(option.None, option.None), "bash")
 /// ```
 ///
-pub fn registry(agency: Option(agent.Agency)) -> Registry {
+pub fn registry(
+  agency: Option(agent.Agency),
+  code_mode: Option(codemode_tool.CodeMode),
+) -> Registry {
   tool.registry(
-    list.append(
+    list.flatten([
       [
         bash.tool(),
         grep.tool(),
@@ -877,9 +921,18 @@ pub fn registry(agency: Option(agent.Agency)) -> Registry {
         None -> []
         Some(agency) -> agent.tools(agency)
       },
-    ),
+      case code_mode {
+        None -> []
+        Some(code_mode) -> codemode_tool.tools(code_mode)
+      },
+    ]),
   )
 }
+
+/// Where a code-mode build seed lives by default, relative to the
+/// workspace: exactly where `make codemode-seed` writes one in this repo,
+/// so a development host that ran it is wired without a flag.
+pub const default_seed_directory = "build/codemode-seed"
 
 // One entropy seam serves two masters: id seeds must never repeat
 // within a session lifetime (spec-gaps WP-E item 6) and the bearer

@@ -85,6 +85,9 @@ fn settings_under(root: String) -> serve.Settings {
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,
     max_output_tokens: 4096,
+    // No seed here: the boot smoke must not go looking for a toolchain,
+    // and a host without one registers no `code_mode` tool.
+    codemode_seed: root <> "/no-such-seed",
   )
 }
 

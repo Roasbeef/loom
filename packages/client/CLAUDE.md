@@ -10,7 +10,9 @@ that decodes stored escalation JSON back into typed broker grants, the
 scripted end-to-end demo that drives the whole M3 flow through the
 protocol alone — and, as the tree's host package, the production wiring
 adapter (`client/wiring`, promoted from conformance), the system
-prompt's assembly and its durable pin (`client/system_prompt`), plus the
+prompt's assembly and its durable pin (`client/system_prompt`), the two
+seams that give a model other agents and code mode (`client/agency`,
+`client/codemode`), plus the
 `loom-server` entry point (`client/serve`) that boots the whole stack
 over one session file. WP-L.
 
@@ -72,6 +74,17 @@ over one session file. WP-L.
   fan-out caps, the multi-handle wait loop, the lineage ledger's four
   reconciliation branches, the lazy deadline reap, and the framing that
   marks another agent's text as data.
+- `client/codemode.{Config, Toolchain, seam, discover, default_config,
+  execute, exec_config, build_config, exec_root, execution_policy,
+  translate, pooled_budget}` — code mode: `tools/codemode`'s seam
+  implemented over the real pipeline, the other package this one exists
+  to join (`tools` cannot see `codemode`, which already depends on it).
+  `discover` locates `gleam`, `erl` and a verified build seed or says
+  what is missing; `seam` closes over a `Config` and needs no process
+  name, because the broker it dispatches through already exists;
+  `execute` prepares a per-execution directory, drives vet → compile →
+  run under the caller's own `{op_id, step_id}`, drains the enforcement
+  reports and removes the directory again.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -85,8 +98,10 @@ over one session file. WP-L.
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
-- `client/serve.registry(Option(Agency))` — the tool registry: five core
-  tools, plus the six `agent_*` tools only when a messaging plane exists.
+- `client/serve.registry(Option(Agency), Option(CodeMode))` — the tool
+  registry: five core tools, plus the six `agent_*` tools only when a
+  messaging plane exists, plus `code_mode` only when this host wired a
+  code-mode pipeline.
 - `client/serve.Booted` — what `shutdown` takes apart, plus
   `prompt: system_prompt.Assembled`: the exact bytes this boot handed the
   wiring, so a test can prove the pinned prompt is the one on the wire
@@ -113,6 +128,9 @@ over one session file. WP-L.
   entry point build their own plans), `broker` (`policy.Grant`,
   `escalation` vocabulary), `provider` (`stream.Delta` for the tap),
   `prompt` (the pack, its decoder and its renderer),
+  `codemode` (the vetting policy, the hermetic compile service, the
+  production builder and launcher, and the satellite host — the pipeline
+  `client/codemode` fills the `tools/codemode` seam with),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
   token file, the pack file, and the workspace's `CLAUDE.md`).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
@@ -282,6 +300,40 @@ over one session file. WP-L.
   enqueued child results were rejected over. The refusal is upward only:
   a parent giving an idle child more work is a live agent's explicit
   decision inside its own run.
+- **A code-mode execution runs under the calling strand's own
+  `{op_id, step_id}`.** The hermetic build, the jailed `erl`, and every
+  capability call the running program makes are dispatched under that one
+  pair, which *is* the execution identity the broker pools budget under —
+  so the compile and the run share one ledger and one wall deadline
+  rather than minting a second budget, and `broker.abort` on the
+  operation reaches the build and the node alike. The pooled
+  outstanding-effect cap is never below two: the node holds one for its
+  whole life.
+- **The only thing the code-mode wiring adds to a session base is two
+  environment *names*.** `LOOM_CAP_SOCK` and `LOOM_CAP_TOKEN_FILE` are
+  set by the launcher and cannot be shadowed by a caller's `env`, but
+  policy composition takes the meet — so a base that does not name them
+  composes them away and the satellite cannot find the channel it exists
+  to speak on. `execution_policy` adds exactly those two and leaves every
+  other dimension untouched; it is one small named function so it stays
+  auditable rather than diffusing into the wiring.
+- **An execution's files live in their own directory inside the
+  workspace,** named for `{op_id, step_id}` and removed when the
+  execution settles. Inside the workspace, so the session base already
+  makes it writable and nothing has to be widened to build there; unique
+  per execution, so two strands running code mode at once cannot share a
+  build root. The directory's name is a short digest of that pair rather
+  than the pair itself, because the cap socket sits inside it and an
+  AF_UNIX path is capped near 108 bytes — a socket that would exceed the
+  limit is refused in band, naming the workspace, instead of failing as an
+  opaque `einval` from `listen`.
+- **Registration is gated on the seam, for both families.** A host with
+  no messaging plane ships no `agent_*` tools and a host with no
+  toolchain or no prepared build seed ships no `code_mode` — the boot
+  says which is missing, once, on stderr. The wire tool array is the byte
+  prefix of the provider's cached region, so a permanently-refusing
+  definition would be paid for on every request of every strand for the
+  life of the session.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.
@@ -303,6 +355,10 @@ over one session file. WP-L.
 - [docs/review/m5-agent-comms-judgment.md](../../docs/review/m5-agent-comms-judgment.md)
   — change items 5 and 6, which the sandbox wording and the
   pin-around-the-lease ordering follow.
+- [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md) —
+  the pipeline `client/codemode` wires, and what each layer confines.
+- [packages/codemode/CLAUDE.md](../codemode/CLAUDE.md) — the pipeline's
+  own package.
 - [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
   the pack format, the renderer, and what `Environment` may never grow.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
