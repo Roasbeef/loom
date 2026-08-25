@@ -115,6 +115,7 @@ import runtime/supervisor
 import runtime/writer
 import session/session
 import storage/storage
+import tools/tool.{type Registry}
 
 /// A running gateway hub, addressed by name so the provider tap and the
 /// commit forwarder can reach it before it starts.
@@ -131,7 +132,11 @@ pub type Gateway {
 /// present, adds events-bus publications as extra pull hints; `catalog`,
 /// when present, backs the `models` command and `set_config`'s
 /// `model_name` key (without one the listing is empty and name switches
-/// are refused in-band).
+/// are refused in-band); `registry` is the same tool registry the
+/// effect wiring dispatches through, and backs `set_config`'s
+/// `active_tools` key (without one, changes to the active set are
+/// refused in-band — the hub will not write a tool name it cannot
+/// check).
 pub type Options {
   Options(
     session_id: String,
@@ -139,10 +144,12 @@ pub type Options {
     recent_entries: Int,
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
+    registry: Option(Registry),
   )
 }
 
-/// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue.
+/// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue,
+/// no tool registry.
 ///
 /// ## Examples
 ///
@@ -151,7 +158,14 @@ pub type Options {
 /// ```
 ///
 pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
-  Options(session_id:, runtime:, recent_entries: 50, bus: None, catalog: None)
+  Options(
+    session_id:,
+    runtime:,
+    recent_entries: 50,
+    bus: None,
+    catalog: None,
+    registry: None,
+  )
 }
 
 /// Supplies the model catalogue the hub serves and switches by name.
@@ -165,6 +179,21 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
 ///
 pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
   Options(..options, catalog: Some(catalog))
+}
+
+/// Supplies the tool registry `set_config`'s `active_tools` validates
+/// against. Pass the very registry the effect wiring was built with:
+/// the durable active list is meaningless against any other one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_registry(serve.registry())
+/// ```
+///
+pub fn with_registry(options: Options, registry: Registry) -> Options {
+  Options(..options, registry: Some(registry))
 }
 
 /// Messages understood by the hub. Opaque in spirit: callers use the
@@ -197,6 +226,8 @@ type State {
     entry_strand: Dict(String, String),
     // The model catalogue, when the host configured one.
     catalog: Option(catalog.Catalog),
+    // The tool registry, when the host configured one.
+    registry: Option(Registry),
   )
 }
 
@@ -243,6 +274,7 @@ pub fn start(
         live: dict.new(),
         entry_strand: dict.new(),
         catalog: options.catalog,
+        registry: options.registry,
       )
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
@@ -2323,8 +2355,10 @@ fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
 // server-side; with a `strand` it switches that strand, without one it
 // switches every strand) — and, with a `strand`, the durable
 // per-strand configuration keys `model` ({provider, model_id}),
-// `thinking_level`, and `active_tools`. Unknown keys are refused
-// (`bad_request`) and nothing is applied.
+// `thinking_level`, and `active_tools` (validated against the
+// configured tool registry and stored canonically — see
+// `canonical_tool_names`). Unknown keys are refused (`bad_request`)
+// and nothing is applied.
 fn set_config(
   state: State,
   connection: Int,
@@ -2471,6 +2505,8 @@ fn validate_config_key(
         }
         Some(_), _ -> Error("thinking_level must be a string")
       }
+    // Every name is checked against the live registry and the list is
+    // stored canonically; see `canonical_tool_names`.
     "active_tools" ->
       case strand, value {
         None, _ -> Error("active_tools requires a strand")
@@ -2483,6 +2519,7 @@ fn validate_config_key(
               }
             }),
           )
+          use names <- result.try(canonical_tool_names(state, names))
           Ok(
             update_configuration(_, strand, fn(configuration) {
               machine_strand.StrandConfiguration(
@@ -2495,6 +2532,53 @@ fn validate_config_key(
         Some(_), _ -> Error("active_tools must be an array of tool names")
       }
     other -> Error("unknown config key: " <> other)
+  }
+}
+
+// The durable form of an active-tools list: every name checked against
+// the live registry, then sorted with duplicates collapsed.
+//
+// The sort is load-bearing, not tidiness. This list is what
+// `client/wiring.tool_specs` renders into a request's tool array, which
+// sits ahead of the system prompt in the provider's render order; the
+// prompt cache matches on an exact byte prefix, and the Anthropic
+// adapter hangs one breakpoint on the last tool definition and another
+// on the system block. A client that re-sends the same set in a new
+// order would move those bytes and pay both cache writes again, every
+// turn. `tool_specs` sorts too — belt and braces, since a durable list
+// can be written by other paths — but a strand's stored configuration
+// is the honest place for the canonical form, and it is what the
+// `config` snapshot echoes back.
+//
+// Neither the sort nor the dedup moves the authorization line:
+// `wiring.clear` decides what may run by `list.contains` on this same
+// list, and set membership is blind to order and multiplicity.
+//
+// An unregistered name refuses the whole command, in band and by name,
+// the way an unknown `model_name` does — a tool that does not exist has
+// no business in durable configuration, and silently dropping it would
+// leave the client believing it had enabled something.
+fn canonical_tool_names(
+  state: State,
+  names: List(String),
+) -> Result(List(String), String) {
+  case state.registry {
+    None -> Error("no tool registry is configured")
+    Some(registry) -> {
+      use _known <- result.try(
+        list.try_map(names, fn(name) {
+          case tool.lookup(registry, name) {
+            Ok(_registered) -> Ok(name)
+            Error(Nil) -> Error("unknown tool name: " <> name)
+          }
+        }),
+      )
+      Ok(
+        names
+        |> list.sort(string.compare)
+        |> list.unique,
+      )
+    }
   }
 }
 

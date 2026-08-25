@@ -531,11 +531,18 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       "the commit forwarder did not start: " <> string.inspect(error)
     }),
   )
+  // One registry serves two masters: the effect wiring dispatches
+  // through it, and the hub validates `set_config active_tools` against
+  // it. They must be the same registry or the check means nothing.
+  let tool_registry = registry()
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
       thinking_level: machine_strand.ThinkingOff,
-      active_tool_names: ["bash", "fs_read", "fs_write", "fs_edit", "grep"],
+      // Sorted, as every durable active list should be: the render
+      // order of the tool array is the provider cache's byte prefix
+      // (see `gateway.canonical_tool_names`).
+      active_tool_names: ["bash", "fs_edit", "fs_read", "fs_write", "grep"],
     )
   let built =
     wiring.build_effects(wiring.Config(
@@ -547,7 +554,7 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       provider_timeout_ms: 300_000,
       broker: broker_actor,
       broker_timeout_ms: 30_000,
-      registry: registry(),
+      registry: tool_registry,
       workspace: settings.workspace,
       blob_root:,
       base_policy: base_policy(settings.workspace),
@@ -576,7 +583,8 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   use _hub <- result.try(
     hub.start(
       hub.default_options(settings.session_id, runtime)
-        |> hub.with_catalog(settings.catalog),
+        |> hub.with_catalog(settings.catalog)
+        |> hub.with_registry(tool_registry),
       name,
     )
     |> result.map_error(fn(error) {

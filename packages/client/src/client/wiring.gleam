@@ -37,7 +37,12 @@
 //// - **Tools on the wire.** The intent's captured
 ////   `active_tool_names`, looked up in the registry and rendered as
 ////   `ToolSpec`s; names with no registration are silently omitted from
-////   the request (the model cannot call what does not exist).
+////   the request (the model cannot call what does not exist). The
+////   render is canonical — sorted by name, duplicates collapsed —
+////   because the tool array is the byte prefix of the provider's
+////   cached region and reordering it invalidates the cache head. The
+////   gateway stores the durable list in the same canonical form; this
+////   sort also covers lists written by any other path.
 //// - **Polls and summaries.** `ProviderRequest` cannot express a
 ////   deferred continuation fetch, and structural summaries have no
 ////   provider surface yet, so `PollRequest`/`SummaryRequest` settle
@@ -84,6 +89,7 @@ import core/ids.{type OpId}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None}
+import gleam/string
 import machine/operation.{type ReplayPolicy}
 import machine/strand.{type StrandConfiguration}
 import provider/gateway.{type Gateway}
@@ -307,17 +313,36 @@ pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
 }
 
 /// The wire-facing specs for the active tool names: registry lookups
-/// rendered as `ToolSpec`s, unregistered names omitted.
+/// rendered as `ToolSpec`s in one canonical order — sorted by name,
+/// duplicates collapsed — with unregistered names omitted.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // wiring.tool_specs(config, ["bash", "ghost"])
-/// // -> [model.ToolSpec(name: "bash", ..)]
+/// // wiring.tool_specs(config, ["grep", "bash", "ghost"])
+/// // -> [model.ToolSpec(name: "bash", ..), model.ToolSpec(name: "grep", ..)]
 /// ```
 ///
 pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
-  list.filter_map(active, fn(name) {
+  // The sort is load-bearing, not tidiness. Tool definitions render
+  // ahead of the system prompt and the messages in a provider request,
+  // and prompt caching matches on an exact byte prefix of that render:
+  // the Anthropic adapter hangs one cache breakpoint on the last tool
+  // definition and a second on the system block, so this array is a
+  // strict prefix of both cached regions. Two requests whose active
+  // set is the same but whose configuration lists it in a different
+  // order would render different bytes and miss the cache entirely,
+  // paying the write again on every turn. Deduping is the same
+  // argument plus an honesty one: a name listed twice would advertise
+  // the same tool twice on the wire.
+  //
+  // Neither step touches authorization. `clear` below decides what may
+  // run by `list.contains` on the same list, and set membership is
+  // blind to order and multiplicity.
+  active
+  |> list.sort(string.compare)
+  |> list.unique
+  |> list.filter_map(fn(name) {
     case tool.lookup(config.registry, name) {
       Ok(registered) ->
         Ok(ToolSpec(

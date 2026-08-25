@@ -5,6 +5,7 @@
 import client/catalog
 import client/gateway
 import client/protocol
+import client/serve
 import core/clock
 import core/json
 import core/message
@@ -12,12 +13,14 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/string
 import machine/strand as machine_strand
 import provider/model
 import provider/stream
 import runtime/api
 import runtime/effects
 import session/session
+import tools/tool
 
 // --- wiring ----------------------------------------------------------------
 
@@ -27,6 +30,19 @@ type Harness {
 
 fn start_harness() -> Harness {
   start_harness_with(catalog: None)
+}
+
+// Every harness but one carries the production tool registry, so
+// `set_config active_tools` has the same registry to validate against
+// that the effect wiring dispatches through.
+fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
+  start_harness_full(catalogue, Some(serve.registry()))
+}
+
+// The host that configured no registry: active-set changes have
+// nothing to check against and are refused.
+fn start_harness_without_registry() -> Harness {
+  start_harness_full(None, None)
 }
 
 // A two-entry catalogue whose second entry ("fallback") is routed but
@@ -60,7 +76,10 @@ fn test_catalog() -> catalog.Catalog {
   )
 }
 
-fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
+fn start_harness_full(
+  catalogue: Option(catalog.Catalog),
+  registry: Option(tool.Registry),
+) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
   let assert Ok(counter) =
@@ -136,6 +155,10 @@ fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
   let options = gateway.default_options("sess-01", runtime)
   let options = case catalogue {
     Some(catalogue) -> gateway.with_catalog(options, catalogue)
+    None -> options
+  }
+  let options = case registry {
+    Some(registry) -> gateway.with_registry(options, registry)
     None -> options
   }
   let assert Ok(_started) = gateway.start(options, name)
@@ -410,4 +433,136 @@ pub fn set_config_model_name_without_strand_switches_all_test() {
     envelope.event
   let assert json.Object(fields) = config
   assert list.key_find(fields, "model_name") == Ok(json.String("fallback"))
+}
+
+// --- the active tool list --------------------------------------------------
+
+// The durable list is the provider request's cached byte prefix, so
+// the hub stores a canonical form: sorted, deduped. A client that
+// re-sends the same set in a new order must not move a single byte.
+pub fn set_config_active_tools_canonicalized_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    20,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #(
+          "active_tools",
+          json.Array([
+            json.String("grep"),
+            json.String("bash"),
+            json.String("grep"),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(20)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  let assert json.Object(fields) = config
+  assert list.key_find(fields, "active_tools")
+    == Ok(json.Array([json.String("bash"), json.String("grep")]))
+}
+
+// An unregistered name refuses the whole command in band and names the
+// offender, the way an unknown `model_name` does — and, per
+// `apply_config`'s validate-then-apply contract, nothing is written.
+pub fn set_config_unknown_active_tool_refused_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    21,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #(
+          "active_tools",
+          json.Array([json.String("bash"), json.String("ghost")]),
+        ),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(21)
+  let assert protocol.ErrorEvent(code: "bad_request", message:, ..) =
+    envelope.event
+  assert string.contains(message, "ghost")
+  // Read the strand's configuration back: the refused command left the
+  // harness's empty active set alone, `bash` included.
+  send(
+    harness,
+    22,
+    protocol.SetConfig(strand: Some("main"), config: json.Object([])),
+  )
+  let envelope = next(harness)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  let assert json.Object(fields) = config
+  assert list.key_find(fields, "active_tools") == Ok(json.Array([]))
+}
+
+// A hub with no registry cannot check membership, so it writes nothing
+// rather than trusting the client — the same shape as a `model_name`
+// switch with no catalogue.
+pub fn set_config_active_tools_needs_a_registry_test() {
+  let harness = start_harness_without_registry()
+  subscribe(harness)
+  send(
+    harness,
+    23,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #("active_tools", json.Array([json.String("bash")])),
+      ]),
+    ),
+  )
+  expect_error(harness, 23, "bad_request")
+}
+
+// The canonical durable list is also the one authorization reads:
+// after the hub sorts and dedups, `bash` is still active and `fs_write`
+// — never sent — is still not.
+pub fn set_config_active_tools_preserves_membership_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    24,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([
+        #(
+          "active_tools",
+          json.Array([
+            json.String("grep"),
+            json.String("bash"),
+            json.String("grep"),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  let envelope = next(harness)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  let assert json.Object(fields) = config
+  let assert Ok(json.Array(stored)) = list.key_find(fields, "active_tools")
+  let names =
+    list.map(stored, fn(item) {
+      let assert json.String(name) = item
+      name
+    })
+  // Set membership, which is what `wiring.clear` tests, is unchanged by
+  // the canonicalization: what was sent still clears, what was not sent
+  // still does not.
+  assert list.contains(names, "bash")
+  assert list.contains(names, "grep")
+  assert !list.contains(names, "fs_write")
 }
