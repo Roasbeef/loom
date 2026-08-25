@@ -432,6 +432,29 @@ instead and are only referenced here.
    not frozen Part-1 interfaces; a different contract J3 needs is a
    coordination point, not a protocol-change.
 
+5. **Code mode is not the agent-to-agent transport.** The two planes are
+   separate by design, and the separation is a trust boundary, not an
+   oversight. Agent-to-agent *is* the messaging plane: subagents are
+   strands (design §182), and they communicate through durable commits —
+   request/reply, peer-to-peer, blackboard, broadcast — because a BEAM
+   mailbox evaporates on crash (§198). Code mode runs *within* one
+   strand's operation, and `cap/actor` is explicitly program-scoped: its
+   actors live and die inside the satellite. None of the canonical nine
+   cap modules can reach another strand, so a code-mode program cannot
+   message one at all.
+
+   Whether a `cap/strand` should exist is a genuine open question, not a
+   missing feature to fill in. The messaging plane's rule is a
+   *correctness* rule about durability (§211: if the recipient would act
+   differently having received it, it goes through a commit), and it was
+   designed assuming **trusted** participants — §211 is explicit that
+   subagent strands are trusted harness code, the model influencing their
+   content but not their code. A code-mode program is the opposite: it is
+   untrusted model-written code. Giving it a messaging capability would
+   import an untrusted writer into a plane built for trusted ones, which
+   needs a policy and attribution story before it needs an API. Deferred,
+   and recorded here so it is decided rather than drifted into.
+
 ## From M3 messaging (design §4.6 reconciliation)
 
 1. **Request/reply is explicit-poll, not auto-enqueue.** §4.6 says a
