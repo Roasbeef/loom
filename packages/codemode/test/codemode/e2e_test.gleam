@@ -26,6 +26,7 @@ import broker/token
 import codemode/build
 import codemode/codemode
 import codemode/compile
+import codemode/enforcement
 import codemode/launch
 import codemode/satellite
 import codemode/vet
@@ -33,7 +34,7 @@ import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import core/msgpack
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/string
@@ -106,14 +107,10 @@ pub fn a_type_error_comes_back_in_band_test() {
 
 fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "happy", prerequisites:, pool_size: 3)
-  let reports = process.new_subject()
-  let result =
-    codemode.execute(
-      program_source(),
-      exec_config(live, prerequisites, "e2e", reports),
-    )
+  let execution =
+    codemode.execute(program_source(), exec_config(live, prerequisites, "e2e"))
 
-  let assert codemode.Ran(source:, artifact:, outcome:) = result
+  let assert codemode.Ran(source:, artifact:, outcome:) = execution.outcome
     as "the program must vet, compile, and run to an outcome"
   // The source handed back for the durable entry is the source submitted.
   assert source == program_source()
@@ -138,25 +135,48 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   // the artifact and its content address.
   let stale = artifact.beam_dir <> "/stale.beam"
   let assert Ok(Nil) = simplifile.write(to: stale, contents: "not a beam")
-  let assert codemode.Ran(artifact: again, outcome: repeated, ..) =
+  let repeat =
     codemode.execute(
       program_source(),
-      exec_config(live, prerequisites, "e2e-again", reports),
+      exec_config(live, prerequisites, "e2e-again"),
     )
+  let assert codemode.Ran(artifact: again, outcome: repeated, ..) =
+    repeat.outcome
     as "the pipeline must be repeatable over the same build root"
   assert repeated == outcome
   assert !rig.exists(stale)
   assert again.manifest_hash == artifact.manifest_hash
 
-  announce(reports)
+  // The acceptance issue #5 asks for: a *healthy* run — this one, the one
+  // everybody actually runs — carries the enforcement report for both
+  // jailed stages, not just the build's. The node's used to arrive (when
+  // it arrived at all) after the outcome had already been reported, so a
+  // green run could not prove the jail engaged at all.
+  //
+  // What is asserted is that each stage reported; *what* it reported is
+  // printed, not asserted, because that is a property of the kernel this
+  // runs on rather than of the harness.
+  assert_both_stages_reported(execution.enforcement)
+  assert_both_stages_reported(repeat.enforcement)
+  announce(execution.enforcement)
   rig.stop(live)
+}
+
+// Both jailed stages of an execution said what the kernel applied to them.
+// A stage that made no report fails here naming itself, rather than being
+// quietly absent from a list.
+fn assert_both_stages_reported(reports: enforcement.Enforcement) -> Nil {
+  let assert enforcement.Reported(..) = reports.build
+    as "the hermetic build must report what its jail enforced"
+  let assert enforcement.Reported(..) = reports.node
+    as "the satellite node must report what its jail enforced"
+  Nil
 }
 
 // --- the build-graph gate -------------------------------------------------
 
 fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "transitive", prerequisites:, pool_size: 2)
-  let reports = process.new_subject()
   // Vetting is deliberately told to allow `core/msgpack`, so this program
   // reaches the compiler. `core` is a dependency of the *prelude*, not of
   // the generated program, and the hermetic build compiles with warnings
@@ -169,19 +189,25 @@ fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
     <> "pub fn main() -> report.Outcome {\n"
     <> "  report.value(msgpack.NilValue)\n"
     <> "}\n"
-  let result =
+  let execution =
     codemode.execute(
       source,
       codemode.ExecConfig(
-        ..exec_config(live, prerequisites, "transitive", reports),
+        ..exec_config(live, prerequisites, "transitive"),
         vet_policy: vet_policy.new(["cap/report", "core/msgpack"]),
       ),
     )
   let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
-    result
+    execution.outcome
     as "importing a transitive dependency must fail the build, not run"
   assert string.contains(diagnostics, "direct dependency")
   assert string.contains(diagnostics, "core")
+  // The build really ran — inside a jail — so it reports; the node never
+  // existed, and says that rather than nothing at all.
+  let assert enforcement.Reported(..) = execution.enforcement.build
+    as "a build that rejected a program still reports what confined it"
+  let assert enforcement.Unreported(reason) = execution.enforcement.node
+  assert string.contains(reason, "did not compile")
   rig.stop(live)
 }
 
@@ -189,7 +215,6 @@ fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
 
 fn run_deadline(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "deadline", prerequisites:, pool_size: 2)
-  let reports = process.new_subject()
   // A program that never returns and never makes a capability call. The
   // only thing that can end it is the wall deadline killing the node as a
   // unit — the host's timer plus `broker.abort` plus the jail's own wall
@@ -207,17 +232,17 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
     <> "    False -> spin(n + 1)\n"
     <> "  }\n"
     <> "}\n"
-  let config = exec_config(live, prerequisites, "deadline", reports)
+  let config = exec_config(live, prerequisites, "deadline")
   // Compile under the generous budget the rig hands out, then run under a
   // deliberately short one, so the test spends its seconds on the deadline
   // rather than on the build.
   let assert vet.Passed(vetted) = vet.vet(source, config.vet_policy)
     as "the spinning program must vet"
-  let assert Ok(artifact) = compile.compile(vetted, config.compile)
+  let assert Ok(artifact) = compile.compile(vetted, config.compile).result
     as "the spinning program must compile"
   let #(started, _clock) = clock.read(rig.wall_clock())
   let short = budget.Budget(max_outstanding: 4, deadline_ms: started + 6000)
-  let outcome =
+  let ran =
     satellite.run(
       artifact,
       config.exec_id,
@@ -226,7 +251,30 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
       config.launch,
     )
   let #(ended, _clock) = clock.read(rig.wall_clock())
-  assert outcome == Error(satellite.DeadlineExceeded)
+  assert ran.outcome == Error(satellite.DeadlineExceeded)
+  // The abort path answers too. This is the case the old side-channel lost
+  // most reliably — the host aborts the operation and reports at once —
+  // and it is the case where knowing whether the jail held matters most:
+  // the program was still running when it was killed.
+  //
+  // Which of the two answers comes back is the kernel's to decide, and
+  // the assertion is careful about the difference. A helper that survived
+  // to write `exec_exit` reports its layers. One killed outright by the
+  // cancel ladder never wrote one, and says *that* — which is a stage
+  // that genuinely made no report, not one whose report lost a race with
+  // the teardown. The reason must therefore name the execution's own end,
+  // never this harness giving up waiting.
+  case ran.node {
+    enforcement.Reported(..) -> Nil
+    enforcement.Unreported(reason:) -> {
+      assert !string.contains(reason, "of teardown")
+        as "a lost report must never be dressed up as a stage that had none"
+      assert string.contains(reason, "did not settle with an exec_exit")
+    }
+  }
+  io.println(
+    "code-mode e2e: " <> rig.enforcement_line("the killed node", ran.node),
+  )
   // Not vacuous: the node was alive right up to the deadline. Anything
   // that stopped it earlier — a node that would not boot, a satellite
   // that could not reach the socket — closes the cap channel and settles
@@ -263,7 +311,6 @@ fn gone_loop(path: String, attempts: Int) -> Bool {
 
 fn run_type_error(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "type-error", prerequisites:, pool_size: 2)
-  let reports = process.new_subject()
   // A mistyped capability call is caught here, cheaply, before any
   // satellite spins up — the type checker doing double duty as the
   // tool-argument validator.
@@ -275,13 +322,10 @@ fn run_type_error(prerequisites: Prerequisites) -> Nil {
     <> "  let _ = proc.run(proc.command(\"not-an-argv\"))\n"
     <> "  report.text(\"unreachable\")\n"
     <> "}\n"
-  let result =
-    codemode.execute(
-      source,
-      exec_config(live, prerequisites, "type-error", reports),
-    )
+  let execution =
+    codemode.execute(source, exec_config(live, prerequisites, "type-error"))
   let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
-    result
+    execution.outcome
     as "a type error must come back in band"
   assert string.contains(diagnostics, "Type mismatch")
   rig.stop(live)
@@ -289,16 +333,10 @@ fn run_type_error(prerequisites: Prerequisites) -> Nil {
 
 // --- wiring ---------------------------------------------------------------
 
-// One labelled enforcement report from the helper.
-type Enforcement {
-  Enforcement(what: String, entries: List(String), degraded: Bool)
-}
-
 fn exec_config(
   live: Rig,
   prerequisites: Prerequisites,
   step_id: String,
-  reports: Subject(Enforcement),
 ) -> codemode.ExecConfig {
   let #(now, _clock) = clock.read(rig.wall_clock())
   let deadline = now + 180_000
@@ -309,28 +347,20 @@ fn exec_config(
     compile: compile.CompileConfig(
       build_root: live.build_root,
       dependencies: compile.default_dependencies(),
-      build: build.builder(
-        build.BuildConfig(
-          broker: live.broker,
-          op_id: op_id(now),
-          step_id: step_id <> "-build",
-          seed_root: prerequisites.seed_root,
-          gleam_path: prerequisites.gleam_path,
-          base_policy: live.base_policy,
-          toolchain_roots: ["/"],
-          budget: pooled,
-          demand: exec.BestEffort,
-          env: [#("PATH", path)],
-          dependencies: compile.default_dependencies(),
-          timeout_ms: 120_000,
-          enforcement: fn(entries, degraded) {
-            process.send(
-              reports,
-              Enforcement("the hermetic build", entries, degraded),
-            )
-          },
-        ),
-      ),
+      build: build.builder(build.BuildConfig(
+        broker: live.broker,
+        op_id: op_id(now),
+        step_id: step_id <> "-build",
+        seed_root: prerequisites.seed_root,
+        gleam_path: prerequisites.gleam_path,
+        base_policy: live.base_policy,
+        toolchain_roots: ["/"],
+        budget: pooled,
+        demand: exec.BestEffort,
+        env: [#("PATH", path)],
+        dependencies: compile.default_dependencies(),
+        timeout_ms: 120_000,
+      )),
     ),
     broker: live.broker,
     exec_id: satellite.ExecId(op_id: op_id(now), step_id:),
@@ -348,21 +378,13 @@ fn exec_config(
       router: satellite.default_router,
       call_timeout_ms: 60_000,
     ),
-    launch: launch.launcher(
-      launch.LaunchConfig(
-        broker: live.broker,
-        clock: rig.wall_clock(),
-        erl_path: prerequisites.erl_path,
-        demand: exec.BestEffort,
-        accept_timeout_ms: 30_000,
-        enforcement: fn(entries, degraded) {
-          process.send(
-            reports,
-            Enforcement("the satellite node", entries, degraded),
-          )
-        },
-      ),
-    ),
+    launch: launch.launcher(launch.LaunchConfig(
+      broker: live.broker,
+      clock: rig.wall_clock(),
+      erl_path: prerequisites.erl_path,
+      demand: exec.BestEffort,
+      accept_timeout_ms: 30_000,
+    )),
   )
 }
 
@@ -375,23 +397,20 @@ fn op_id(now: Int) -> ids.OpId {
 // Prints what the running kernel actually enforced, and says plainly when
 // the hermeticity claim was not proven here rather than letting a green
 // test imply it was.
-fn announce(reports: Subject(Enforcement)) -> Nil {
-  let seen = drain(reports, [])
-  list.each(seen, fn(report) {
-    io.println(
-      "code-mode e2e: "
-      <> report.what
-      <> " enforced ["
-      <> string.join(report.entries, ", ")
-      <> "]"
-      <> case report.degraded {
-        True -> " (DEGRADED)"
-        False -> ""
-      },
-    )
-  })
+fn announce(reports: enforcement.Enforcement) -> Nil {
+  io.println(
+    "code-mode e2e: "
+    <> rig.enforcement_line("the hermetic build", reports.build),
+  )
+  io.println(
+    "code-mode e2e: "
+    <> rig.enforcement_line("the satellite node", reports.node),
+  )
   let network_off =
-    list.any(seen, fn(report) { list.contains(report.entries, "seccomp-net") })
+    list.any([reports.build, reports.node], fn(report) {
+      let #(applied, _skipped) = enforcement.layers(report)
+      list.contains(applied, "seccomp-net")
+    })
   case network_off {
     True ->
       io.println(
@@ -404,15 +423,5 @@ fn announce(reports: Subject(Enforcement)) -> Nil {
         <> "ran offline, but this run does NOT prove it could not reach the "
         <> "network; see `make selftest`",
       )
-  }
-}
-
-fn drain(
-  reports: Subject(Enforcement),
-  seen: List(Enforcement),
-) -> List(Enforcement) {
-  case process.receive(reports, 5000) {
-    Error(Nil) -> list.reverse(seen)
-    Ok(report) -> drain(reports, [report, ..seen])
   }
 }

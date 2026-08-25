@@ -64,6 +64,7 @@
 //// mistyped capability call is rejected here, cheaply, before any
 //// satellite spins up — never a crash.
 
+import codemode/enforcement.{type Report}
 import codemode/vet.{type Vetted}
 import gleam/list
 import gleam/result
@@ -135,12 +136,30 @@ pub type BuildProducts {
   BuildProducts(beam_dir: String, manifest_hash: String)
 }
 
+/// What one run of the build seam produced: the products or a structured
+/// error, and what the kernel enforced on the jail it ran in.
+///
+/// The enforcement report is a field rather than a callback because a
+/// build's confinement is part of what the build *produced*: a caller
+/// holding a `Built` holds the report too, and one that never ran holds
+/// an `Unreported` saying so (`codemode/enforcement`).
+pub type Built {
+  Built(result: Result(BuildProducts, CompileError), enforcement: Report)
+}
+
 /// The build seam. Given the prepared build root, it runs the offline
-/// build and returns the products or a structured error. Production wraps
-/// a network-off `broker.clear_call`; tests inject a fake. See the module
-/// doc.
+/// build and returns the products or a structured error, plus the jail's
+/// enforcement report. Production wraps a network-off
+/// `broker.clear_call`; tests inject a fake. See the module doc.
 pub type Builder =
-  fn(String) -> Result(BuildProducts, CompileError)
+  fn(String) -> Built
+
+/// A compiled program, and what the kernel enforced on the build that
+/// produced it. Total in both fields: a compile that never reached the
+/// builder still says why no enforcement report exists.
+pub type Compiled {
+  Compiled(result: Result(Artifact, CompileError), enforcement: Report)
+}
 
 /// One pinned build dependency. The generated `gleam.toml` lists only
 /// these, so the build sees exactly the prelude and stdlib (design rule 3).
@@ -177,16 +196,47 @@ pub fn default_dependencies() -> List(Dependency) {
   ]
 }
 
-/// Compiles a vetted program into an `Artifact`.
+/// Compiles a vetted program into an `Artifact`, and says what the kernel
+/// enforced on the build.
 ///
 /// Prepares the hermetic workspace — writes the program under the pinned
 /// module name, generates the satellite entry, and pins exactly the given
 /// dependencies — then runs the injected build. A build/type error comes
-/// back as `BuildRejected`; nothing crashes.
-pub fn compile(
+/// back as `BuildRejected`; nothing crashes. A workspace that could not be
+/// prepared never reaches the builder, so its enforcement is `Unreported`
+/// naming that: no jail ran, and none is claimed.
+pub fn compile(vetted: Vetted, config: CompileConfig) -> Compiled {
+  case prepare(vetted, config) {
+    Error(error) ->
+      Compiled(
+        result: Error(error),
+        enforcement: enforcement.Unreported(
+          "it was never dispatched: its workspace could not be prepared",
+        ),
+      )
+    Ok(root) -> {
+      let Built(result:, enforcement:) = config.build(root)
+      Compiled(
+        result: result.map(result, fn(products) {
+          Artifact(
+            build_root: root,
+            beam_dir: products.beam_dir,
+            entry_module: entry_module,
+            manifest_hash: products.manifest_hash,
+          )
+        }),
+        enforcement:,
+      )
+    }
+  }
+}
+
+// Writes the hermetic workspace, returning the build root the builder is
+// then handed.
+fn prepare(
   vetted: Vetted,
   config: CompileConfig,
-) -> Result(Artifact, CompileError) {
+) -> Result(String, CompileError) {
   let root = config.build_root
   let src_dir = root <> "/src"
   use _ <- result.try(make_directory(src_dir))
@@ -206,13 +256,7 @@ pub fn compile(
     root <> "/gleam.toml",
     project_toml(config.dependencies),
   ))
-  use products <- result.try(config.build(root))
-  Ok(Artifact(
-    build_root: root,
-    beam_dir: products.beam_dir,
-    entry_module: entry_module,
-    manifest_hash: products.manifest_hash,
-  ))
+  Ok(root)
 }
 
 /// The generated satellite entry module source. It imports the pinned

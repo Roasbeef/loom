@@ -5,6 +5,7 @@
 //// here the seam is faked so the plumbing is proved without a toolchain.
 
 import codemode/compile
+import codemode/enforcement
 import codemode/vet
 import codemode/vet/policy
 import gleam/result
@@ -25,10 +26,14 @@ fn fresh_root(name: String) -> String {
   root
 }
 
-fn ok_builder(
-  root: String,
-) -> Result(compile.BuildProducts, compile.CompileError) {
-  Ok(compile.BuildProducts(beam_dir: root <> "/ebin", manifest_hash: "cafef00d"))
+fn ok_builder(root: String) -> compile.Built {
+  compile.Built(
+    result: Ok(compile.BuildProducts(
+      beam_dir: root <> "/ebin",
+      manifest_hash: "cafef00d",
+    )),
+    enforcement: enforcement.Reported(entries: ["bwrap"], degraded: False),
+  )
 }
 
 pub fn compile_writes_program_under_pinned_name_test() {
@@ -40,9 +45,14 @@ pub fn compile_writes_program_under_pinned_name_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let assert Ok(artifact) = compile.compile(vetted(source), config)
+  let compiled = compile.compile(vetted(source), config)
+  let assert Ok(artifact) = compiled.result
   assert artifact.entry_module == compile.entry_module
   assert artifact.manifest_hash == "cafef00d"
+  // The build's jail travels with its products: a caller holding the
+  // artifact holds what confined the build that made it.
+  assert compiled.enforcement
+    == enforcement.Reported(entries: ["bwrap"], degraded: False)
   // The submitted source is written under the compile-service-controlled
   // module name, not one the source chose — the structural close on the
   // prelude-shadowing / self-naming attack.
@@ -60,7 +70,7 @@ pub fn generated_entry_boots_the_pinned_program_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let assert Ok(_artifact) = compile.compile(vetted(source), config)
+  let assert Ok(_artifact) = compile.compile(vetted(source), config).result
   let assert Ok(entry) =
     simplifile.read(root <> "/src/" <> compile.entry_module <> ".gleam")
   // The entry hands the pinned program's main to the cap boot runtime.
@@ -81,7 +91,7 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
       build: ok_builder,
     )
   let assert Ok(_artifact) =
-    compile.compile(vetted("pub fn main() { 1 }\n"), config)
+    compile.compile(vetted("pub fn main() { 1 }\n"), config).result
   let assert Ok(toml) = simplifile.read(root <> "/gleam.toml")
   // Exactly the standard library and the vendored prelude are pinned —
   // nothing else can enter the offline build (design rule 3).
@@ -123,7 +133,12 @@ pub fn the_prelude_is_vendored_at_a_relative_path_test() {
 pub fn build_rejection_is_in_band_test() {
   let root = fresh_root("reject")
   let failing = fn(_root) {
-    Error(compile.BuildRejected(diagnostics: "type error: expected Int"))
+    compile.Built(
+      result: Error(compile.BuildRejected(
+        diagnostics: "type error: expected Int",
+      )),
+      enforcement: enforcement.Reported(entries: ["bwrap"], degraded: False),
+    )
   }
   let config =
     compile.CompileConfig(
@@ -131,9 +146,13 @@ pub fn build_rejection_is_in_band_test() {
       dependencies: compile.default_dependencies(),
       build: failing,
     )
-  let result = compile.compile(vetted("pub fn main() { 1 }\n"), config)
-  let assert Error(compile.BuildRejected(diagnostics:)) = result
+  let compiled = compile.compile(vetted("pub fn main() { 1 }\n"), config)
+  let assert Error(compile.BuildRejected(diagnostics:)) = compiled.result
   assert string.contains(diagnostics, "type error")
+  // A program the compiler refused still ran a real jailed build, and the
+  // report says so.
+  assert compiled.enforcement
+    == enforcement.Reported(entries: ["bwrap"], degraded: False)
 }
 
 pub fn workspace_setup_failure_is_reported_test() {
@@ -145,7 +164,10 @@ pub fn workspace_setup_failure_is_reported_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let result = compile.compile(vetted("pub fn main() { 1 }\n"), config)
-  assert result.is_error(result)
-  let assert Error(compile.WorkspaceSetupFailed(_)) = result
+  let compiled = compile.compile(vetted("pub fn main() { 1 }\n"), config)
+  assert result.is_error(compiled.result)
+  let assert Error(compile.WorkspaceSetupFailed(_)) = compiled.result
+  // The builder was never reached, so nothing is claimed about a jail.
+  let assert enforcement.Unreported(why) = compiled.enforcement
+  assert string.contains(why, "never dispatched")
 }

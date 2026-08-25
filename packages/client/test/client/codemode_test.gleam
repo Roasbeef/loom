@@ -24,7 +24,6 @@ import core/ids.{type OpId}
 import core/json
 import core/message
 import core/msgpack
-import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -94,11 +93,10 @@ pub fn both_jailed_stages_run_under_the_callers_identity_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let reports = process.new_subject()
-  let built = codemode.exec_config(config, request, "/work/x", 9000, reports)
+  let built = codemode.exec_config(config, request, "/work/x", 9000)
   assert built.exec_id
     == satellite.ExecId(op_id: request.op_id, step_id: "turn-4:tools")
-  let build = codemode.build_config(config, request, 9000, reports)
+  let build = codemode.build_config(config, request, 9000)
   assert build.op_id == request.op_id
   assert build.step_id == "turn-4:tools"
   broker.stop(broker_actor)
@@ -108,9 +106,8 @@ pub fn one_pooled_budget_covers_the_build_and_the_node_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let reports = process.new_subject()
-  let built = codemode.exec_config(config, request, "/work/x", 9000, reports)
-  let build = codemode.build_config(config, request, 9000, reports)
+  let built = codemode.exec_config(config, request, "/work/x", 9000)
+  let build = codemode.build_config(config, request, 9000)
   // One ledger: same cap, same deadline, and the deadline is the one the
   // caller's `within_ms` produced rather than one this module invented.
   assert built.satellite.budget == build.budget
@@ -124,15 +121,8 @@ pub fn one_pooled_budget_covers_the_build_and_the_node_test() {
 pub fn the_program_runs_in_the_callers_workspace_test() {
   let broker_actor = idle_broker()
   let request = request_for("turn-4:tools")
-  let reports = process.new_subject()
   let built =
-    codemode.exec_config(
-      config_for(broker_actor),
-      request,
-      "/work/x",
-      9000,
-      reports,
-    )
+    codemode.exec_config(config_for(broker_actor), request, "/work/x", 9000)
   assert built.satellite.cwd == "/work"
   // The program's own children inherit the driver's constructed
   // environment, not the build's toolchain PATH.
@@ -181,11 +171,10 @@ pub fn the_pipeline_is_handed_the_widened_base_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let reports = process.new_subject()
-  let built = codemode.exec_config(config, request, "/work/x", 9000, reports)
+  let built = codemode.exec_config(config, request, "/work/x", 9000)
   assert built.satellite.base_policy
     == codemode.execution_policy(request.base_policy)
-  assert codemode.build_config(config, request, 9000, reports).base_policy
+  assert codemode.build_config(config, request, 9000).base_policy
     == codemode.execution_policy(request.base_policy)
   broker.stop(broker_actor)
 }
@@ -239,14 +228,12 @@ pub fn a_step_id_cannot_climb_out_of_the_work_root_test() {
 pub fn the_socket_and_the_token_live_under_that_directory_test() {
   let broker_actor = idle_broker()
   let request = request_for("turn-4:tools")
-  let reports = process.new_subject()
   let built =
     codemode.exec_config(
       config_for(broker_actor),
       request,
       "/work/.codemode/one",
       9000,
-      reports,
     )
   assert built.satellite.cap_socket_path == "/work/.codemode/one/s"
   assert built.compile.build_root == "/work/.codemode/one"
@@ -429,8 +416,12 @@ pub fn an_unusable_work_root_fails_in_band_test() {
   )) = execution.result
     as "an uncreatable work directory must settle in band"
   assert string.contains(reason, "/proc/loom-codemode")
-  // Nothing ran, so nothing is claimed about enforcement.
-  assert execution.enforcement == []
+  // Nothing ran, so nothing is claimed about enforcement — and both
+  // stages say that themselves rather than being absent.
+  let assert codemode_tool.Unreported(build) = execution.enforcement.build
+  let assert codemode_tool.Unreported(node) = execution.enforcement.node
+  assert string.contains(build, "nothing was dispatched")
+  assert string.contains(node, "nothing was dispatched")
   broker.stop(broker_actor)
 }
 

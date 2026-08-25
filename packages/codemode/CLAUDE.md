@@ -10,17 +10,27 @@ model-influenced code itself (Rule Zero). WP-J.
 
 ## Key Types
 
-- `codemode/codemode.{ExecOutcome, ExecConfig}` — `execute` threads source
-  through vet → compile → run, short-circuiting at the first refusal.
-  Every stage's failure is a value: `VetRejected`, `CompileFailed`,
-  `RunFailed`, `Ran(source, artifact, outcome)`.
+- `codemode/codemode.{Execution, ExecOutcome, ExecConfig}` — `execute`
+  threads source through vet → compile → run, short-circuiting at the
+  first refusal, and returns an `Execution`: the outcome plus what the
+  kernel enforced on both jailed stages. Every stage's failure is a
+  value: `VetRejected`, `CompileFailed`, `RunFailed`,
+  `Ran(source, artifact, outcome)`.
+- `codemode/enforcement.{Report, Enforcement, of_call, of_result, layers}`
+  — what a jailed stage's helper reported, or why no report exists.
+  `Reported(entries, degraded)` is `exec_exit`'s ground truth with the
+  broker's own degraded rule applied (any `skip:` entry counts);
+  `Unreported(reason)` is never a claim of confinement. `layers` splits
+  applied layers from skipped ones so no renderer can confuse them.
 - `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.VetPolicy`
   — the pure import/`@external` lint. `Vetted` is opaque, so only linted
   source can reach a build.
-- `codemode/compile.{Artifact, CompileError, BuildProducts, Builder,
-  Dependency, CompileConfig}` — the hermetic compile service. Writes the
-  program under the pinned `program_module`, generates `entry_module`, and
-  pins exactly `default_dependencies()`.
+- `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
+  Compiled, Builder, Dependency, CompileConfig}` — the hermetic compile
+  service. Writes the program under the pinned `program_module`,
+  generates `entry_module`, and pins exactly `default_dependencies()`.
+  `compile` returns a `Compiled`: the artifact or its error, and the
+  build jail's enforcement report.
 - `codemode/seed` — the pre-resolved package cache a hermetic build is
   cloned from. `prepare` lays one out, `verify` refuses a stale or
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
@@ -30,10 +40,12 @@ model-influenced code itself (Rule Zero). WP-J.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`.
-- `codemode/satellite.{ExecId, RunError, Outcome, SatelliteConfig,
+- `codemode/satellite.{ExecId, Run, RunError, Outcome, SatelliteConfig,
   LaunchSpec, CapConnection, Launcher, WireIn, CapRouter, CapRequest,
   CapPlan, CapDenial}` — the in-harness host: the broker end of the cap
-  channel, the deadline, the teardown. `Msg` is opaque so no forged
+  channel, the deadline, the teardown. `run` returns a `Run`: the
+  program's outcome and the node's enforcement report, which
+  `CapConnection.destroy` hands back. `Msg` is opaque so no forged
   settlement can be injected.
 
 ## Relationships
@@ -103,6 +115,16 @@ model-influenced code itself (Rule Zero). WP-J.
   teardown when it dies however it died — the broker's fd-3 safety net in
   miniature. A host killed from outside leaves no node running, no socket
   bound, and no token file on disk.
+- **Every outcome carries both stages' enforcement reports.** The
+  build's rides in `compile.Compiled`, the node's in `satellite.Run`, and
+  `codemode.Execution` carries both as a two-field record, so an outcome
+  cannot exist without them. The node's comes from
+  `CapConnection.destroy`, which the host calls *before* it reports its
+  outcome; the launcher's holder cancels the node's clearance whichever
+  way teardown and clearance race, and a cancelled execution still
+  answers with `exec_exit`. A stage that genuinely made no report says
+  why, which is a different value from one whose report was lost
+  (issue #5, spec-gaps WP-J 14).
 - **The wall deadline is armed on `Connected`, not on launch.** A timer
   armed up front could stop the host before the launch delivered its
   connection, leaving the node's `destroy` handle undelivered;

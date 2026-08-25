@@ -135,9 +135,20 @@ fn run_live(ready: Ready) -> Nil {
     as "a live run must carry its artifact's content address"
   assert string.starts_with(hash, "sha256-")
   // And the result says what the kernel actually provided rather than
-  // implying a jail. Printed, so a degraded run is visible rather than
-  // silently green.
-  io.println("code-mode tool e2e: " <> sandbox_line(text))
+  // implying a jail. Both jailed stages are named on a healthy run — the
+  // node's report used to be lost to the abort that settles the outcome,
+  // so this line named the build alone and the tool had to say it could
+  // not vouch for the stage the program actually ran in (issue #5).
+  let sandbox = sandbox_line(text)
+  assert string.contains(sandbox, codemode_tool.build_stage <> " enforced [")
+  assert string.contains(
+    sandbox,
+    codemode_tool.satellite_stage <> " enforced [",
+  )
+  assert !string.contains(sandbox, "made NO enforcement report")
+  // Printed, so a degraded run is visible rather than silently green:
+  // *which* layers held is a property of this kernel, not of the harness.
+  io.println("code-mode tool e2e: " <> sandbox)
   broker.stop(broker_actor)
   exec.stop_pool(pool)
 }

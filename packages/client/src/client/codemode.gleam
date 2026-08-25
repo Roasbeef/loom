@@ -67,6 +67,7 @@ import client/internal/ffi_os
 import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
+import codemode/enforcement
 import codemode/launch
 import codemode/satellite
 import codemode/seed
@@ -75,31 +76,12 @@ import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
 import simplifile
 import tools/codemode as codemode_tool
-
-/// The stage label for the hermetic build in an enforcement report.
-pub const build_stage = "the hermetic build"
-
-/// The stage label for the satellite node in an enforcement report.
-pub const satellite_stage = "the satellite node"
-
-/// How long to wait for one more enforcement report before concluding
-/// that a stage produced none.
-///
-/// The build's report is always in the mailbox before `execute` returns —
-/// the build is synchronous. The node's is not guaranteed: it is written
-/// when the node's own execution settles, and a program that finishes
-/// promptly has its node destroyed (which aborts the operation's calls)
-/// before that settlement is always delivered. A short grace catches the
-/// common case; a missing report is reported as missing rather than
-/// assumed enforced.
-pub const enforcement_grace_ms = 500
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
 /// the node holds one for its whole life, so anything less starves the
@@ -328,7 +310,6 @@ pub fn execute(
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
   let root = exec_root(config, request)
-  let reports = process.new_subject()
   // The socket check first: it is pure, and failing it after creating the
   // directory would leave one behind for an execution that never ran.
   case check_socket_path(root) |> result.try(fn(_) { prepare_root(root) }) {
@@ -337,29 +318,28 @@ pub fn execute(
         result: codemode_tool.CompileFailed(codemode_tool.WorkspaceSetupFailed(
           reason:,
         )),
-        enforcement: [],
+        enforcement: nothing_dispatched(
+          "the code-mode work directory could not be created, so nothing "
+          <> "was dispatched",
+        ),
       )
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
       let deadline_ms = now + request.within_ms
-      let outcome =
+      let execution =
         pipeline.execute(
           request.source,
-          exec_config(config, request, root, deadline_ms, reports),
+          exec_config(config, request, root, deadline_ms),
         )
       // The whole execution is over: the node is destroyed, the socket and
       // token are unlinked by the host's own teardown, and nothing but the
       // outcome outlives it. The seed clone is large and every build makes
       // a fresh one, so the directory goes too.
       let _removed = simplifile.delete(root)
-      let result = translate(outcome)
-      codemode_tool.Execution(result:, enforcement: case result {
-        // Vetting refused the program: nothing was dispatched, so no
-        // report can exist and waiting the grace for one would tax the
-        // repair loop — the very loop that is meant to be cheap.
-        codemode_tool.VetRejected(rejections: _) -> []
-        _ran_or_tried -> drain(reports, [])
-      })
+      codemode_tool.Execution(
+        result: translate(execution.outcome),
+        enforcement: translate_enforcement(execution.enforcement),
+      )
     }
   }
 }
@@ -491,7 +471,6 @@ pub fn exec_config(
   request: codemode_tool.Request,
   root: String,
   deadline_ms: Int,
-  reports: Subject(codemode_tool.Enforcement),
 ) -> pipeline.ExecConfig {
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
@@ -500,7 +479,7 @@ pub fn exec_config(
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
-      build: build.builder(build_config(config, request, deadline_ms, reports)),
+      build: build.builder(build_config(config, request, deadline_ms)),
     ),
     broker: config.broker,
     exec_id: satellite.ExecId(op_id: request.op_id, step_id: request.step_id),
@@ -521,21 +500,13 @@ pub fn exec_config(
       router: satellite.default_router,
       call_timeout_ms: config.call_timeout_ms,
     ),
-    launch: launch.launcher(
-      launch.LaunchConfig(
-        broker: config.broker,
-        clock: config.clock,
-        erl_path: config.erl_path,
-        demand: request.demand,
-        accept_timeout_ms: config.accept_timeout_ms,
-        enforcement: fn(entries, degraded) {
-          process.send(
-            reports,
-            codemode_tool.Enforcement(satellite_stage, entries, degraded),
-          )
-        },
-      ),
-    ),
+    launch: launch.launcher(launch.LaunchConfig(
+      broker: config.broker,
+      clock: config.clock,
+      erl_path: config.erl_path,
+      demand: request.demand,
+      accept_timeout_ms: config.accept_timeout_ms,
+    )),
   )
 }
 
@@ -553,7 +524,6 @@ pub fn build_config(
   config: Config,
   request: codemode_tool.Request,
   deadline_ms: Int,
-  reports: Subject(codemode_tool.Enforcement),
 ) -> build.BuildConfig {
   build.BuildConfig(
     broker: config.broker,
@@ -570,12 +540,6 @@ pub fn build_config(
     env: [#("PATH", config.toolchain_path)],
     dependencies: compile.default_dependencies(),
     timeout_ms: config.build_timeout_ms,
-    enforcement: fn(entries, degraded) {
-      process.send(
-        reports,
-        codemode_tool.Enforcement(build_stage, entries, degraded),
-      )
-    },
   )
 }
 
@@ -713,18 +677,39 @@ fn program_outcome(outcome: satellite.Outcome) -> codemode_tool.Outcome {
 
 // --- what actually ran -----------------------------------------------------
 
-// Drains the enforcement reports, waiting the grace once more after the
-// last one. Every receive is bounded, so a stage that never reports costs
-// one grace period and is then reported as unreported — which is the whole
-// point: a result must never imply a jail that was not applied.
-fn drain(
-  reports: Subject(codemode_tool.Enforcement),
-  seen: List(codemode_tool.Enforcement),
-) -> List(codemode_tool.Enforcement) {
-  case process.receive(reports, enforcement_grace_ms) {
-    Ok(report) -> drain(reports, [report, ..seen])
-    Error(Nil) -> list.reverse(seen)
+// Restates the pipeline's enforcement reports in the tool's own vocabulary
+// (`tools` cannot see `codemode`, so the two shapes are mirrors, as
+// `Outcome` already is).
+//
+// The applied layers and the skipped ones are separated here rather than
+// left as one list with `skip:` prefixes in it, so no renderer downstream
+// can present a layer the kernel did not provide as one it did.
+fn translate_enforcement(
+  reports: enforcement.Enforcement,
+) -> codemode_tool.Enforcement {
+  codemode_tool.Enforcement(
+    build: stage_report(reports.build),
+    node: stage_report(reports.node),
+  )
+}
+
+fn stage_report(report: enforcement.Report) -> codemode_tool.Report {
+  case report {
+    enforcement.Unreported(reason:) -> codemode_tool.Unreported(reason:)
+    enforcement.Reported(entries: _, degraded:) -> {
+      let #(applied, skipped) = enforcement.layers(report)
+      codemode_tool.Enforced(applied:, skipped:, degraded:)
+    }
   }
+}
+
+// Neither stage ran, and the result says so for both rather than leaving
+// a silence for a reader to fill in.
+fn nothing_dispatched(reason: String) -> codemode_tool.Enforcement {
+  codemode_tool.Enforcement(
+    build: codemode_tool.Unreported(reason:),
+    node: codemode_tool.Unreported(reason:),
+  )
 }
 
 fn directory_of(path: String) -> String {

@@ -58,13 +58,13 @@ import broker/token
 import codemode/build
 import codemode/codemode
 import codemode/compile
+import codemode/enforcement
 import codemode/launch
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import core/msgpack
-import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
@@ -103,12 +103,11 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "migration-sample", prerequisites:, pool_size: 7)
   sample_repo.create(live.workspace)
 
-  let reports = process.new_subject()
   let source = read_sample()
-  let result =
-    codemode.execute(source, exec_config(live, prerequisites, reports))
+  let execution = codemode.execute(source, exec_config(live, prerequisites))
 
-  let assert codemode.Ran(source: returned, artifact:, outcome:) = result
+  let assert codemode.Ran(source: returned, artifact:, outcome:) =
+    execution.outcome
     as "the migration sample must vet, compile, and run to an outcome"
   // The source handed back for the durable entry is the file's own bytes.
   assert returned == source
@@ -123,7 +122,13 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
   let overlap_ms = assert_fan_out_overlapped(live)
   assert_order_was_preserved(live)
   let ticks = assert_the_race_loser_was_killed(live)
-  announce(overlap_ms, ticks, reports)
+  // Both jailed stages of a healthy run report what confined them; see
+  // `e2e_test` for the assertion this shares.
+  let assert enforcement.Reported(..) = execution.enforcement.build
+    as "the hermetic build must report what its jail enforced"
+  let assert enforcement.Reported(..) = execution.enforcement.node
+    as "the satellite node must report what its jail enforced"
+  announce(overlap_ms, ticks, execution.enforcement)
 
   rig.stop(live)
 }
@@ -177,7 +182,11 @@ fn assert_the_race_loser_was_killed(live: Rig) -> Int {
 // Prints the evidence rather than only the verdict, so a passing run says
 // how much margin it actually had — the same habit as `e2e_test`'s
 // enforcement report.
-fn announce(overlap_ms: Int, ticks: Int, reports: Subject(String)) -> Nil {
+fn announce(
+  overlap_ms: Int,
+  ticks: Int,
+  reports: enforcement.Enforcement,
+) -> Nil {
   io.println(
     "code-mode migration sample: three sweeps overlapped by "
     <> int.to_string(overlap_ms)
@@ -187,36 +196,15 @@ fn announce(overlap_ms: Int, ticks: Int, reports: Subject(String)) -> Nil {
   )
   // What the kernel under this run actually applied. The concurrency
   // claims above hold whatever it says; the *jail* claims in this
-  // module's own doc hold only as far as this line goes.
-  list.each(drain(reports, []), io.println)
-}
-
-fn drain(reports: Subject(String), seen: List(String)) -> List(String) {
-  case process.receive(reports, 5000) {
-    Error(Nil) -> list.reverse(seen)
-    Ok(line) -> drain(reports, [line, ..seen])
-  }
-}
-
-// One labelled enforcement report from the helper, rendered for printing.
-fn enforcement_reporter(
-  reports: Subject(String),
-  what: String,
-) -> fn(List(String), Bool) -> Nil {
-  fn(entries, degraded) {
-    process.send(
-      reports,
-      "code-mode migration sample: "
-        <> what
-        <> " enforced ["
-        <> string.join(entries, ", ")
-        <> "]"
-        <> case degraded {
-        True -> " (DEGRADED)"
-        False -> ""
-      },
-    )
-  }
+  // module's own doc hold only as far as these two lines go.
+  io.println(
+    "code-mode migration sample: "
+    <> rig.enforcement_line("the hermetic build", reports.build),
+  )
+  io.println(
+    "code-mode migration sample: "
+    <> rig.enforcement_line("the satellite node", reports.node),
+  )
 }
 
 fn nanos(stamp: sample_repo.Stamp) -> Int {
@@ -231,11 +219,7 @@ fn read_sample() -> String {
 
 // --- wiring ---------------------------------------------------------------
 
-fn exec_config(
-  live: Rig,
-  prerequisites: Prerequisites,
-  reports: Subject(String),
-) -> codemode.ExecConfig {
+fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
   let #(now, _clock) = clock.read(rig.wall_clock())
   let deadline = now + 180_000
   let path = rig.toolchain_path(prerequisites)
@@ -262,7 +246,6 @@ fn exec_config(
         env: [#("PATH", path)],
         dependencies: compile.default_dependencies(),
         timeout_ms: 120_000,
-        enforcement: enforcement_reporter(reports, "the hermetic build"),
       )),
     ),
     broker: live.broker,
@@ -287,7 +270,6 @@ fn exec_config(
       erl_path: prerequisites.erl_path,
       demand: exec.BestEffort,
       accept_timeout_ms: 30_000,
-      enforcement: enforcement_reporter(reports, "the satellite node"),
     )),
   )
 }

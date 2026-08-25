@@ -119,7 +119,7 @@ fn echoing() -> codemode.CodeMode {
           ),
           manifest_hash: "sha256-echo",
         ),
-        enforcement: [],
+        enforcement: jailed(),
       )
     },
     allowed_imports: allowlist,
@@ -132,18 +132,29 @@ fn echoing() -> codemode.CodeMode {
 fn ran(outcome: codemode.Outcome) -> codemode.Execution {
   codemode.Execution(
     result: codemode.Ran(outcome:, manifest_hash: "sha256-abc"),
-    enforcement: [
-      codemode.Enforcement(
-        "the hermetic build",
-        ["bwrap", "seccomp-net"],
-        False,
-      ),
-      codemode.Enforcement(
-        "the satellite node",
-        ["bwrap", "seccomp-net"],
-        False,
-      ),
-    ],
+    enforcement: jailed(),
+  )
+}
+
+// Both stages confined, as a healthy run on a capable kernel reports.
+fn jailed() -> codemode.Enforcement {
+  codemode.Enforcement(build: enforced(), node: enforced())
+}
+
+fn enforced() -> codemode.Report {
+  codemode.Enforced(
+    applied: ["bwrap", "seccomp-net"],
+    skipped: [],
+    degraded: False,
+  )
+}
+
+// Neither stage ran, so neither reports — the shape vetting's refusal and
+// a build that never started both produce.
+fn nothing_ran() -> codemode.Enforcement {
+  codemode.Enforcement(
+    build: codemode.Unreported("nothing was dispatched"),
+    node: codemode.Unreported("nothing was dispatched"),
   )
 }
 
@@ -234,18 +245,16 @@ pub fn a_program_that_reported_a_failure_is_an_error_result_test() {
 pub fn a_vetting_rejection_names_the_rule_and_the_import_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.ImportNotAllowed,
-              detail: "`gleam/io` is not an allowed import",
-              location: codemode.SourceSpan(start: 0, end: 14),
-            ),
-          ]),
-          enforcement: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.ImportNotAllowed,
+            detail: "`gleam/io` is not an allowed import",
+            location: codemode.SourceSpan(start: 0, end: 14),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+      )),
       [#("program", json.String("import gleam/io"))],
     )
   assert outcome.is_error
@@ -283,23 +292,21 @@ pub fn every_violation_is_listed_in_one_pass_test() {
   // exactly what in-band repair exists to avoid.
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.ImportNotAllowed,
-              detail: "`gleam/io` is not an allowed import",
-              location: codemode.Unlocated,
-            ),
-            codemode.Rejection(
-              rule: codemode.NoForeignInterface,
-              detail: "an attribute on the function `escape`",
-              location: codemode.SourceSpan(start: 40, end: 61),
-            ),
-          ]),
-          enforcement: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.ImportNotAllowed,
+            detail: "`gleam/io` is not an allowed import",
+            location: codemode.Unlocated,
+          ),
+          codemode.Rejection(
+            rule: codemode.NoForeignInterface,
+            detail: "an attribute on the function `escape`",
+            location: codemode.SourceSpan(start: 40, end: 61),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+      )),
       [#("program", json.String("..."))],
     )
   let text = text_of(outcome)
@@ -314,18 +321,16 @@ pub fn every_violation_is_listed_in_one_pass_test() {
 pub fn a_parse_error_points_at_a_byte_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.Unparseable,
-              detail: "unexpected token",
-              location: codemode.SourcePoint(byte_offset: 12),
-            ),
-          ]),
-          enforcement: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.Unparseable,
+            detail: "unexpected token",
+            location: codemode.SourcePoint(byte_offset: 12),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+      )),
       [#("program", json.String("pub fn main( {"))],
     )
   assert string.contains(text_of(outcome), "does not parse")
@@ -344,14 +349,17 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
     <> "Expected type:\n    List(String)\nFound type:\n    String\n"
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildRejected(diagnostics:)),
-          enforcement: [
-            codemode.Enforcement("the hermetic build", ["bwrap"], False),
-          ],
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(diagnostics:)),
+        enforcement: codemode.Enforcement(
+          build: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
+          ),
+          node: codemode.Unreported("the program did not compile"),
         ),
-      ),
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -369,14 +377,12 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
 pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildUnavailable(
-            reason: "the helper pool is empty",
-          )),
-          enforcement: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildUnavailable(
+          reason: "the helper pool is empty",
+        )),
+        enforcement: nothing_ran(),
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -390,14 +396,17 @@ pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
 pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.RunFailed(codemode.DeadlineExceeded),
-          enforcement: [
-            codemode.Enforcement("the satellite node", ["bwrap"], False),
-          ],
+      scripted(codemode.Execution(
+        result: codemode.RunFailed(codemode.DeadlineExceeded),
+        enforcement: codemode.Enforcement(
+          build: enforced(),
+          node: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
+          ),
         ),
-      ),
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -416,55 +425,118 @@ pub fn an_unreported_jail_is_never_implied_test() {
   // helper said so.
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.Ran(
-            outcome: codemode.Completed(msgpack.StringValue("done")),
-            manifest_hash: "sha256-abc",
-          ),
-          enforcement: [],
+      scripted(codemode.Execution(
+        result: codemode.Ran(
+          outcome: codemode.Completed(msgpack.StringValue("done")),
+          manifest_hash: "sha256-abc",
         ),
-      ),
+        enforcement: nothing_ran(),
+      )),
       [#("program", json.String("..."))],
     )
-  assert string.contains(text_of(outcome), "no enforcement was reported")
+  let text = text_of(outcome)
+  // Neither stage is passed over in silence, and neither reads as
+  // confined: each says it made no report, and why.
+  assert string.contains(text, "the hermetic build made NO enforcement report")
+  assert string.contains(text, "the satellite node made NO enforcement report")
+  assert string.contains(text, "not a claim that it was confined")
+  assert !string.contains(text, "enforced [")
   let assert Some(json.Object(fields)) = outcome.details
     as "a run must carry structured details"
-  assert list.contains(fields, #("sandbox", json.Array([])))
+  assert list.contains(fields, #(
+    "sandbox",
+    json.Object([
+      #(
+        "build",
+        json.Object([
+          #("reported", json.Bool(False)),
+          #("reason", json.String("nothing was dispatched")),
+        ]),
+      ),
+      #(
+        "node",
+        json.Object([
+          #("reported", json.Bool(False)),
+          #("reason", json.String("nothing was dispatched")),
+        ]),
+      ),
+    ]),
+  ))
+}
+
+pub fn a_healthy_run_names_both_jailed_stages_test() {
+  // Issue #5's acceptance, at the seam the model reads: a run that went
+  // all the way through says what confined the build *and* what confined
+  // the node. Neither is inferred from the other's silence.
+  let outcome =
+    call(scripted(ran(codemode.Completed(msgpack.StringValue("done")))), [
+      #("program", json.String("...")),
+    ])
+  let text = text_of(outcome)
+  assert string.contains(
+    text,
+    "the hermetic build enforced [bwrap, seccomp-net]",
+  )
+  assert string.contains(
+    text,
+    "the satellite node enforced [bwrap, seccomp-net]",
+  )
+  assert !string.contains(text, "NO enforcement report")
 }
 
 pub fn a_degraded_stage_says_so_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.Ran(
-            outcome: codemode.Completed(msgpack.StringValue("done")),
-            manifest_hash: "sha256-abc",
-          ),
-          enforcement: [
-            codemode.Enforcement("the satellite node", ["bwrap"], True),
-          ],
+      scripted(codemode.Execution(
+        result: codemode.Ran(
+          outcome: codemode.Completed(msgpack.StringValue("done")),
+          manifest_hash: "sha256-abc",
         ),
-      ),
+        enforcement: codemode.Enforcement(
+          build: enforced(),
+          node: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: ["landlock: unavailable"],
+            degraded: True,
+          ),
+        ),
+      )),
       [#("program", json.String("..."))],
     )
   let text = text_of(outcome)
   assert string.contains(text, "the satellite node enforced [bwrap]")
   assert string.contains(text, "DEGRADED")
-  // The build is missing from this report, and the line says outright
-  // that its absence is not a claim about it.
-  assert string.contains(text, "made no report")
+  // A layer the kernel skipped is named as skipped. It must never appear
+  // inside the list of layers that were enforced — the reader would take
+  // it for one.
+  assert string.contains(text, "SKIPPED [landlock: unavailable]")
+  assert !string.contains(text, "enforced [bwrap, landlock")
   let assert Some(json.Object(fields)) = outcome.details
     as "a run must carry structured details"
   assert list.contains(fields, #(
     "sandbox",
-    json.Array([
-      json.Object([
-        #("stage", json.String("the satellite node")),
-        #("enforced", json.Array([json.String("bwrap")])),
-        #("degraded", json.Bool(True)),
-      ]),
+    json.Object([
+      #(
+        "build",
+        json.Object([
+          #("reported", json.Bool(True)),
+          #(
+            "enforced",
+            json.Array([json.String("bwrap"), json.String("seccomp-net")]),
+          ),
+          #("skipped", json.Array([])),
+          #("degraded", json.Bool(False)),
+        ]),
+      ),
+      #(
+        "node",
+        json.Object([
+          #("reported", json.Bool(True)),
+          #("enforced", json.Array([json.String("bwrap")])),
+          #("skipped", json.Array([json.String("landlock: unavailable")])),
+          #("degraded", json.Bool(True)),
+        ]),
+      ),
     ]),
   ))
 }

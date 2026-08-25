@@ -13,6 +13,7 @@ import broker/exec.{type Pool}
 import broker/policy.{type SandboxPolicy}
 import broker/token
 import codemode/compile
+import codemode/enforcement.{type Report}
 import codemode/launch
 import codemode/seed
 import core/clock.{type Clock}
@@ -243,5 +244,33 @@ pub fn exists(path: String) -> Bool {
   case simplifile.link_info(path) {
     Ok(_info) -> True
     Error(_error) -> False
+  }
+}
+
+/// One stage's enforcement report as a line to print: the layers the
+/// kernel really applied, the ones it skipped named as skipped, and — for
+/// a stage that reported nothing — the reason instead.
+///
+/// Printed rather than asserted on, because what a given kernel provides
+/// varies. What *is* asserted is that a line exists for both stages.
+pub fn enforcement_line(what: String, report: Report) -> String {
+  case report {
+    enforcement.Unreported(reason:) ->
+      what <> " made NO enforcement report: " <> reason
+    enforcement.Reported(entries: _, degraded:) -> {
+      let #(applied, skipped) = enforcement.layers(report)
+      what
+      <> " enforced ["
+      <> string.join(applied, ", ")
+      <> "]"
+      <> case skipped {
+        [] -> ""
+        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
+      }
+      <> case degraded {
+        True -> " (DEGRADED)"
+        False -> ""
+      }
+    }
   }
 }

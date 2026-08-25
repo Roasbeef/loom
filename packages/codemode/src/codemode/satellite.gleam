@@ -25,8 +25,8 @@
 ////   (`u32_be length ++ msgpack`); Gleam owns frame boundaries (packet
 ////   raw). The launcher wires the socket's inbound bytes to
 ////   `LaunchSpec.wire` and returns a `CapConnection` whose `send` writes
-////   outbound frames and whose `destroy` closes the socket and reaps the
-////   node.
+////   outbound frames and whose `destroy` closes the socket, reaps the
+////   node, and hands back what the kernel enforced on it.
 //// - **argv** launches the compiled artifact's boot entry with Erlang
 ////   distribution OFF and no epmd, e.g.:
 ////   ```
@@ -115,7 +115,9 @@
 //// payloads itself, hands `cap_call`/`cancel`/`heartbeat` payloads to
 //// `broker/framing` for typed decoding, and decodes the one `outcome`
 //// frame's body itself into an `Outcome`. That frame is the signal the
-//// program finished; the host records the outcome and destroys the node.
+//// program finished; the host destroys the node and then reports the
+//// outcome — in that order, so the node's enforcement report, which
+//// `destroy` returns, travels out with it (issue #5).
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
@@ -124,6 +126,7 @@ import broker/framing.{type CapOutcome}
 import broker/policy.{type SandboxPolicy}
 import broker/token
 import codemode/compile.{type Artifact}
+import codemode/enforcement.{type Report}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
@@ -145,8 +148,12 @@ pub const outcome_kind = "outcome"
 // How long the host actor's initialiser may take.
 const host_init_timeout_ms = 1000
 
-// Slack over the wall deadline before `run` gives up on a wholly dead host.
-const result_margin_ms = 5000
+// Slack over the wall deadline before `run` gives up on a wholly dead
+// host. It has to outlast the host's own teardown, which waits on the
+// launcher for the node's settlement — a `run` that gave up first would
+// report a wedged host for an execution that was merely being killed
+// tidily, and would throw away the node's report with it.
+const result_margin_ms = 15_000
 
 // How long a per-cap-call clearance (the synchronous `clear_call`) may take.
 const clear_timeout_ms = 5000
@@ -168,6 +175,18 @@ pub type Outcome {
 /// `{op_id, step_id}` shared by every `cap_call`.
 pub type ExecId {
   ExecId(op_id: OpId, step_id: String)
+}
+
+/// One satellite run: the program's outcome, and what the kernel actually
+/// enforced on the node that produced it.
+///
+/// The report is a field of the result rather than a side-channel, so
+/// there is no way to obtain an outcome without also obtaining the node's
+/// report. A run whose node was never launched, or whose helper never
+/// reported, carries an `Unreported` saying which — never silence for a
+/// reader to mistake for confinement (`codemode/enforcement`, issue #5).
+pub type Run {
+  Run(outcome: Result(Outcome, RunError), node: Report)
 }
 
 /// Why an execution did not return an `Outcome`. Every variant is a value;
@@ -267,10 +286,18 @@ pub type LaunchSpec {
   )
 }
 
-/// The host's handle on a launched satellite: how to write outbound frames
-/// and how to destroy the node (which closes the socket).
+/// The host's handle on a launched satellite: how to write outbound
+/// frames, and how to destroy the node — which closes the socket and
+/// hands back what the kernel enforced on the node it just reaped.
+///
+/// `destroy` returns the report rather than announcing it on a side
+/// channel because destruction is the moment the node's story ends: the
+/// host tears the node down and reports its outcome in the same breath,
+/// so a report still in flight is a report the outcome cannot carry. A
+/// launcher whose node never settled returns `Unreported` with the
+/// reason.
 pub type CapConnection {
-  CapConnection(send: fn(BitArray) -> Nil, destroy: fn() -> Nil)
+  CapConnection(send: fn(BitArray) -> Nil, destroy: fn() -> Report)
 }
 
 /// Launches a satellite node for a `LaunchSpec`, or fails in-band with a
@@ -314,7 +341,8 @@ pub type SatelliteConfig {
 
 /// Runs a compiled artifact in a jailed satellite, servicing its
 /// capability calls through `broker` under the pooled `exec_id`, and
-/// returns the program's structured `Outcome`.
+/// returns the program's structured `Outcome` together with what the
+/// kernel enforced on the node.
 ///
 /// Mints and delivers the cap-channel token, launches the node, owns the
 /// broker end of the cap channel, enforces the wall deadline, and destroys
@@ -330,7 +358,7 @@ pub fn run(
   broker: Broker,
   config: SatelliteConfig,
   launch: Launcher,
-) -> Result(Outcome, RunError) {
+) -> Run {
   let ExecId(op_id:, step_id:) = exec_id
   let vault = token.new(config.entropy)
   let binding =
@@ -341,10 +369,11 @@ pub fn run(
       deadline_ms: config.budget.deadline_ms,
     )
   case token.mint(vault, binding) {
-    Error(mint_error) -> Error(TokenMintFailed(mint_error_text(mint_error)))
+    Error(mint_error) ->
+      never_launched(TokenMintFailed(mint_error_text(mint_error)))
     Ok(#(vault, minted)) ->
       case config.write_token_file(token.to_bytes(minted)) {
-        Error(reason) -> Error(TokenFileFailed(reason))
+        Error(reason) -> never_launched(TokenFileFailed(reason))
         Ok(token_path) ->
           run_launched(
             artifact,
@@ -360,6 +389,15 @@ pub fn run(
   }
 }
 
+// A run that never got a node: the failure, and a node report that says
+// outright that nothing was launched rather than leaving a silence.
+fn never_launched(error: RunError) -> Run {
+  Run(
+    outcome: Error(error),
+    node: enforcement.Unreported("no node was launched"),
+  )
+}
+
 fn run_launched(
   artifact: Artifact,
   op_id: OpId,
@@ -369,7 +407,7 @@ fn run_launched(
   launch: Launcher,
   vault: token.Vault,
   token_path: String,
-) -> Result(Outcome, RunError) {
+) -> Run {
   let #(now, _clock) = clock.read(config.clock)
   let result_subject = process.new_subject()
   case
@@ -385,7 +423,7 @@ fn run_launched(
   {
     Error(start_error) -> {
       config.unlink_token_file(token_path)
-      Error(HostUnavailable(start_error_text(start_error)))
+      never_launched(HostUnavailable(start_error_text(start_error)))
     }
     Ok(host) -> {
       let spec =
@@ -404,17 +442,35 @@ fn run_launched(
       case launch(spec) {
         Error(reason) -> {
           process.send(host.commands, Stop)
-          Error(LaunchRejected(reason))
+          never_launched(LaunchRejected(reason))
         }
         Ok(connection) -> {
-          hand_over(host, connection)
+          let handed = hand_over(host, connection)
           let wait =
             int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
           case process.receive(result_subject, wait) {
-            Ok(outcome) -> outcome
+            // The host took the connection and destroyed it itself, so its
+            // report is the authoritative one — unless the host was gone
+            // before it could take it, in which case `hand_over` destroyed
+            // the node here and holds the only report there is.
+            Ok(settled) ->
+              case handed {
+                None -> settled
+                Some(node) -> Run(..settled, node:)
+              }
             Error(Nil) -> {
               process.send(host.commands, Stop)
-              Error(HostUnavailable("no terminal result within the deadline"))
+              // The host owns `destroy`, and with it the node's report; a
+              // host that never answered never handed one back.
+              Run(
+                outcome: Error(HostUnavailable(
+                  "no terminal result within the deadline",
+                )),
+                node: enforcement.Unreported(
+                  "the host produced no terminal result, so the node's "
+                  <> "report was never collected",
+                ),
+              )
             }
           }
         }
@@ -430,7 +486,9 @@ type HandOver {
 }
 
 // Hands the launched node's connection to the host, and destroys it here if
-// the host stopped before it could take it.
+// the host stopped before it could take it — in which case the node's
+// enforcement report comes back here, since the host is not around to
+// carry it.
 //
 // `Connected` carries the node's `destroy`, the host's only handle on the
 // launched node and its socket. A message to a stopped actor is dropped, so
@@ -439,7 +497,7 @@ type HandOver {
 // host's death are ordered signals from the same process, so exactly one of
 // them arrives first, and a death that beats the acknowledgement means the
 // host never took the connection (CH-F3).
-fn hand_over(host: Host, connection: CapConnection) -> Nil {
+fn hand_over(host: Host, connection: CapConnection) -> Option(Report) {
   let ack = process.new_subject()
   let monitor = process.monitor(host.pid)
   let outcome =
@@ -450,13 +508,16 @@ fn hand_over(host: Host, connection: CapConnection) -> Nil {
     host.commands,
     Connected(send: connection.send, destroy: connection.destroy, ack:),
   )
-  case process.selector_receive(outcome, hand_over_timeout_ms) {
-    Ok(HostGone) -> connection.destroy()
+  let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
+    // The host is gone, so it will never destroy the node — nor report
+    // what confined it. Both fall to the caller here.
+    Ok(HostGone) -> Some(connection.destroy())
     // Taken, or the host is alive but wedged; either way it owns `destroy`
     // and destroying here as well would reap the node twice.
-    Ok(HostTook) | Error(Nil) -> Nil
+    Ok(HostTook) | Error(Nil) -> None
   }
   process.demonitor_process(monitor)
+  handed
 }
 
 // --- the host actor -------------------------------------------------------
@@ -473,7 +534,11 @@ type Host {
 /// so nothing outside can inject a forged capability settlement.
 pub opaque type Msg {
   FromWire(event: WireIn)
-  Connected(send: fn(BitArray) -> Nil, destroy: fn() -> Nil, ack: Subject(Nil))
+  Connected(
+    send: fn(BitArray) -> Nil,
+    destroy: fn() -> Report,
+    ack: Subject(Nil),
+  )
   CapStarted(id: Int, handle: broker.CallHandle)
   CapDone(id: Int, outcome: CapOutcome)
   Deadline
@@ -509,10 +574,10 @@ type State {
     // The outbound writer, once the launcher has connected. Frames emitted
     // before then buffer in `pending_out` and flush on `Connected`.
     send: Option(fn(BitArray) -> Nil),
-    destroy: Option(fn() -> Nil),
+    destroy: Option(fn() -> Report),
     pending_out: List(BitArray),
     inflight: Dict(Int, InFlight),
-    result: Subject(Result(Outcome, RunError)),
+    result: Subject(Run),
   )
 }
 
@@ -523,7 +588,7 @@ fn start_host(
   config: SatelliteConfig,
   vault: token.Vault,
   token_path: String,
-  result_subject: Subject(Result(Outcome, RunError)),
+  result_subject: Subject(Run),
 ) -> Result(Host, actor.StartError) {
   let #(_now, clock) = clock.read(config.clock)
   actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
@@ -633,7 +698,7 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
       }
     Deadline -> terminate(state, Error(DeadlineExceeded))
     Stop -> {
-      cleanup(state)
+      let _node = cleanup(state)
       actor.stop()
     }
   }
@@ -876,26 +941,41 @@ fn handle_cancel(state: State, id: Int) -> State {
   }
 }
 
-// Reports the terminal result once, destroys the satellite, and stops.
+// Destroys the satellite, then reports the terminal result — carrying
+// what the node's teardown learned about its jail — and stops.
+//
+// The order is the fix for issue #5. Reporting first and cleaning up
+// afterwards left the node's enforcement report chasing an outcome that
+// had already been delivered, so a healthy run said nothing about the
+// stage whose confinement matters most. Teardown now happens first and
+// hands the report back, so the outcome cannot leave without it.
 fn terminate(
   state: State,
   outcome_result: Result(Outcome, RunError),
 ) -> actor.Next(State, Msg) {
-  process.send(state.result, outcome_result)
-  cleanup(state)
+  let node = cleanup(state)
+  process.send(state.result, Run(outcome: outcome_result, node:))
   actor.stop()
 }
 
-// Destroys the satellite as a unit and unlinks the token file. `abort`
-// revokes every token of the operation and cancels every executor it
-// fanned out; `destroy` closes the socket and reaps the node.
-fn cleanup(state: State) -> Nil {
+// Destroys the satellite as a unit and unlinks the token file, returning
+// what the kernel enforced on the node. `abort` revokes every token of the
+// operation and cancels every executor it fanned out; `destroy` closes the
+// socket, reaps the node, and hands back its helper's report.
+//
+// `abort` comes first, exactly as before: the deadline path must not wait
+// on anything before killing the node. What the launcher's `destroy` then
+// waits for is the settlement the abort itself provokes — a cancelled
+// execution still answers with `exec_exit`, and that report is the ground
+// truth this whole path exists to carry.
+fn cleanup(state: State) -> Report {
   broker.abort(state.broker, state.op_id)
-  case state.destroy {
+  let node = case state.destroy {
     Some(destroy) -> destroy()
-    None -> Nil
+    None -> enforcement.Unreported("no node was launched")
   }
   state.unlink_token_file(state.token_path)
+  node
 }
 
 // Encodes and writes one frame, buffering until the launcher connects.

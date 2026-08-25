@@ -59,7 +59,7 @@ reported failure into something a model can repair from.
   sentence the model is charged for on every request cannot drift from
   the policy the program is judged against.
 - `tools/codemode.{Request, Execution, ExecResult, Outcome, Rejection,
-  Rule, Location, CompileFailure, RunFailure, Enforcement}` — the
+  Rule, Location, CompileFailure, RunFailure, Enforcement, Report}` — the
   vocabulary crossing that seam, mirroring `codemode/vet`,
   `codemode/compile`, `codemode/satellite` and `cap/report` rather than
   importing them. `RunFailure` is the one deliberate narrowing: eight
@@ -191,10 +191,14 @@ reported failure into something a model can repair from.
   budget — and a satellite needs two outstanding effects to exist at
   all.
 - **A code-mode result never implies a jail that was not applied.** The
-  seam hands back one enforcement report per stage that produced one,
-  and the rendering names a degraded stage as degraded and an absent
-  report as absent. A vetting rejection carries no sandbox field at all,
-  because nothing ran.
+  seam hands back an `Enforcement` naming *both* jailed stages — the
+  hermetic build and the satellite node — as a record rather than a
+  list, so neither can go unmentioned. Each is either `Enforced`, whose
+  applied and `skipped` layers are separate fields so a layer the kernel
+  did not provide can never render as one it did, or `Unreported` with
+  the reason there is no report. A vetting rejection reports both stages
+  as unreported *saying vetting refused the program*, which is a
+  different statement from silence (issue #5).
 - **A refusal is a repair brief.** Every violation vetting found is
   listed in one pass with its rule, its offending construct, its byte
   span where one exists, and the allowlist it was judged against;

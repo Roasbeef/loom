@@ -12,6 +12,7 @@ import broker/exec
 import broker/policy
 import broker/token
 import codemode/compile
+import codemode/enforcement
 import codemode/launch
 import codemode/satellite
 import core/clock
@@ -83,7 +84,6 @@ fn config(broker_actor: broker.Broker) -> launch.LaunchConfig {
     erl_path: "/usr/bin/erl",
     demand: exec.BestEffort,
     accept_timeout_ms: 3000,
-    enforcement: fn(_entries, _degraded) { Nil },
   )
 }
 
@@ -322,7 +322,10 @@ pub fn a_node_that_never_starts_closes_the_wire_test() {
     launch.launcher(config(broker_actor))(spec(dir, wire))
   let assert Ok(satellite.WireClosed(reason:)) = process.receive(wire, 5000)
   assert string.contains(reason, "refused")
-  connection.destroy()
+  // A node that never ran has nothing to report, and says so rather than
+  // handing back an empty layer list a reader could mistake for one.
+  let assert enforcement.Unreported(why) = connection.destroy()
+  assert string.contains(why, "refused before it ran")
   broker.stop(broker_actor)
 }
 
@@ -415,7 +418,7 @@ pub fn the_cap_socket_carries_frames_both_ways_test() {
   // The socket really is on disk before teardown, so the assertion after it
   // is not measuring a file that never existed.
   assert rig.exists(launched.cap_socket_path)
-  connection.destroy()
+  let _report = connection.destroy()
   // Teardown unlinks the socket file, so a later execution can reuse the
   // path without tripping over a stale inode.
   assert !rig.exists(launched.cap_socket_path)
@@ -461,4 +464,71 @@ fn read_until(
         }
       }
   }
+}
+
+// --- the node's enforcement report (issue #5) -----------------------------
+
+pub fn destroying_the_node_yields_its_enforcement_report_test() {
+  let dir = fresh_dir("enforcement")
+  let wire = process.new_subject()
+  // The "node" runs until it is cancelled, which is what the host's own
+  // teardown does; the helper answers the cancel with an `exec_exit` that
+  // carries its enforcement report.
+  let broker_actor =
+    start_broker(fn() {
+      Ok(fake_helper.start_helper(fake_helper.HoldForCancel))
+    })
+  let assert Ok(connection) =
+    launch.launcher(config(broker_actor))(spec(dir, wire))
+  // The report is in hand by the time `destroy` returns, because it *is*
+  // what destroy returns: the host tears the node down and reports its
+  // outcome in the same breath, so a report merely on its way is a report
+  // the outcome cannot carry. The abort destroy performs is what provokes
+  // the settlement it then collects — a cancelled execution still answers
+  // with `exec_exit`, carrying the same enforcement list.
+  let assert enforcement.Reported(entries:, degraded:) = connection.destroy()
+    as "destroy must not return before the node's enforcement report exists"
+  assert list.contains(entries, "bwrap")
+  assert degraded == False
+  broker.stop(broker_actor)
+}
+
+pub fn a_node_reporting_a_skipped_layer_is_never_read_as_enforced_test() {
+  let dir = fresh_dir("skipped")
+  let wire = process.new_subject()
+  // A helper on a kernel that could not provide every demanded layer: the
+  // report names the layer it skipped, and the run counts as degraded even
+  // though the helper's own `degraded` bool (which tracks only bwrap)
+  // stayed false. That is the broker's ground-truth rule, applied here so
+  // a skipped layer can never be rendered as an enforced one.
+  let broker_actor =
+    start_broker(fn() { Ok(fake_helper.start_helper(fake_helper.PartialJail)) })
+  let assert Ok(connection) =
+    launch.launcher(config(broker_actor))(spec(dir, wire))
+  let report = connection.destroy()
+  let assert enforcement.Reported(degraded:, ..) = report
+  assert degraded
+  let #(applied, skipped) = enforcement.layers(report)
+  assert applied == ["bwrap"]
+  assert skipped == ["landlock: unavailable on this kernel"]
+  broker.stop(broker_actor)
+}
+
+pub fn a_second_destroy_is_answered_from_the_held_report_test() {
+  let dir = fresh_dir("twice")
+  let wire = process.new_subject()
+  // The host destroys on its exit path and the janitor may destroy again;
+  // the second ask must be answered from what the first collected rather
+  // than waiting out the timeout for a settlement that already happened.
+  let broker_actor =
+    start_broker(fn() {
+      Ok(fake_helper.start_helper(fake_helper.HoldForCancel))
+    })
+  let assert Ok(connection) =
+    launch.launcher(config(broker_actor))(spec(dir, wire))
+  let first = connection.destroy()
+  let second = connection.destroy()
+  assert second == first
+  let assert enforcement.Reported(..) = second
+  broker.stop(broker_actor)
 }

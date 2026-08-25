@@ -19,6 +19,7 @@ import broker/framing.{type CapOutcome}
 import broker/policy
 import broker/token
 import codemode/compile
+import codemode/enforcement
 import codemode/satellite
 import core/clock
 import core/ids
@@ -114,13 +115,52 @@ pub fn happy_path_returns_the_program_outcome_test() {
       broker,
       cfg,
       satellite_peer.launcher(finish_peer),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   assert value == msgpack.StringValue("done")
   broker.stop(broker)
 }
 
 fn finish_peer(ctx: PeerCtx) -> Nil {
+  satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
+}
+
+// --- the node's enforcement report rides out with the outcome (issue #5) --
+
+pub fn a_completed_run_carries_the_nodes_enforcement_report_test() {
+  let dir = fresh_dir("node-report")
+  let broker = start_broker(echoing())
+  let cfg =
+    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let report =
+    enforcement.Reported(entries: ["bwrap", "seccomp-net"], degraded: False)
+  let ran =
+    satellite.run(
+      artifact(),
+      exec_id(),
+      broker,
+      cfg,
+      satellite_peer.reporting_launcher(connected_then_finish, report),
+    )
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  // What the launcher learned on teardown reaches the caller *with* the
+  // outcome. It used to be published on a side channel the host's own
+  // teardown raced, so a run exactly like this one — healthy, prompt —
+  // reported nothing for the node.
+  assert ran.node == report
+  broker.stop(broker)
+}
+
+// A peer that makes one capability call and waits for its settlement
+// before reporting its outcome. The settlement can only reach it through
+// `CapConnection.send`, which exists only once the host has taken the
+// connection — so by the time the terminal frame is written, the host owns
+// `destroy` and must carry the report out itself. (The peers that finish
+// instantly settle before the hand-over, which is a different path:
+// `hand_over` destroys the node and carries the report back.)
+fn connected_then_finish(ctx: PeerCtx) -> Nil {
+  satellite_peer.send_proc_run(ctx, ctx.token, 1, ["/bin/echo", "hi"])
+  let _settled = satellite_peer.collect_results(ctx, 1, 3000)
   satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
 }
 
@@ -145,7 +185,7 @@ pub fn cap_calls_without_the_token_are_all_denied_test() {
       broker,
       cfg,
       satellite_peer.launcher(denied_peer(3)),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(denied))) = outcome
   assert denied == 3
   broker.stop(broker)
@@ -173,7 +213,7 @@ pub fn satellite_that_never_returns_is_killed_at_the_deadline_test() {
       broker,
       cfg,
       satellite_peer.launcher(satellite_peer.wait_for_close),
-    )
+    ).outcome
   assert outcome == Error(satellite.DeadlineExceeded)
   broker.stop(broker)
 }
@@ -195,7 +235,7 @@ pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
     satellite.run(artifact(), exec_id(), broker, cfg, fn(_spec) {
       process.sleep(400)
       Ok(recording_connection(destroyed))
-    })
+    }).outcome
   assert outcome == Error(satellite.DeadlineExceeded)
   assert process.receive(destroyed, 2000) == Ok(Nil)
   broker.stop(broker)
@@ -214,7 +254,7 @@ pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
       process.send(spec.wire, satellite.WireClosed(reason: "socket closed"))
       process.sleep(100)
       Ok(recording_connection(destroyed))
-    })
+    }).outcome
   assert outcome == Error(satellite.SatelliteGone("socket closed"))
   assert process.receive(destroyed, 2000) == Ok(Nil)
   broker.stop(broker)
@@ -223,6 +263,7 @@ pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
 fn recording_connection(destroyed: Subject(Nil)) -> satellite.CapConnection {
   satellite.CapConnection(send: fn(_bytes) { Nil }, destroy: fn() {
     process.send(destroyed, Nil)
+    enforcement.Unreported("this test launcher runs no node")
   })
 }
 
@@ -250,7 +291,7 @@ pub fn the_real_token_does_not_widen_policy_test() {
       broker,
       cfg,
       satellite_peer.launcher(real_token_peer),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   // The token was accepted (no `unauthorized`) and the call was refused
   // anyway, by the broker's per-call policy check.
@@ -335,7 +376,7 @@ pub fn an_outcome_frame_of_another_version_is_rejected_test() {
         ])
         satellite_peer.wait_for_close(ctx)
       }),
-    )
+    ).outcome
   assert is_channel_faulted(outcome)
   broker.stop(broker)
 }
@@ -359,7 +400,7 @@ pub fn an_outcome_frame_missing_its_id_is_rejected_test() {
         ])
         satellite_peer.wait_for_close(ctx)
       }),
-    )
+    ).outcome
   assert is_channel_faulted(outcome)
   broker.stop(broker)
 }
@@ -393,7 +434,7 @@ pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
       broker,
       cfg,
       satellite_peer.launcher(budget_peer(3)),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(refused))) = outcome
   assert refused == 3
 }
@@ -426,7 +467,7 @@ pub fn parallel_results_preserve_input_order_test() {
       broker,
       cfg,
       satellite_peer.launcher(echo_peer(count)),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   // Each result's stdout matched its own id (correlation held), and the
   // arrival order really was scrambled (the property is not vacuous).
@@ -508,7 +549,7 @@ pub fn pooled_budget_refuses_fanout_past_the_cap_test() {
       broker,
       cfg,
       satellite_peer.launcher(budget_peer(count)),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(refused))) = outcome
   assert refused == 2
   broker.stop(broker)
@@ -541,7 +582,7 @@ pub fn cancel_kills_the_losers_clearance_only_test() {
       broker,
       cfg,
       satellite_peer.launcher(cancel_peer),
-    )
+    ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   // The cancelled clearance settled (cancel really fired at the broker),
   // with the cancel-driven exit code, while the other stayed outstanding.

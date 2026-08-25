@@ -13,6 +13,7 @@
 //// reads the peer's findings straight out of the returned `Outcome`.
 
 import broker/framing.{type CapOutcome}
+import codemode/enforcement
 import codemode/satellite
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
@@ -42,7 +43,26 @@ pub type PeerCtx {
 /// launcher reads the token from the spec's token file, so the peer
 /// presents the genuine token (a script may deliberately present a bogus
 /// one instead).
+///
+/// Its `destroy` reports honestly that nothing was jailed: an in-process
+/// peer is not a node, and a test seam that returned layers it never
+/// applied would be the exact lie the report exists to prevent. Use
+/// `reporting_launcher` to stand in for a helper that did report.
 pub fn launcher(script: fn(PeerCtx) -> Nil) -> satellite.Launcher {
+  reporting_launcher(
+    script,
+    enforcement.Unreported(
+      "an in-process test peer runs no jailed node, so no helper reported",
+    ),
+  )
+}
+
+/// A peer launcher whose `destroy` hands back `report`, standing in for a
+/// real launcher that collected one from its node's helper.
+pub fn reporting_launcher(
+  script: fn(PeerCtx) -> Nil,
+  report: enforcement.Report,
+) -> satellite.Launcher {
   fn(spec: satellite.LaunchSpec) {
     let token = read_token(spec.token_path)
     let handoff = process.new_subject()
@@ -57,7 +77,10 @@ pub fn launcher(script: fn(PeerCtx) -> Nil) -> satellite.Launcher {
         Ok(
           satellite.CapConnection(
             send: fn(bytes) { process.send(inbox, InboundBytes(data: bytes)) },
-            destroy: fn() { process.send(inbox, InboundClose) },
+            destroy: fn() {
+              process.send(inbox, InboundClose)
+              report
+            },
           ),
         )
     }

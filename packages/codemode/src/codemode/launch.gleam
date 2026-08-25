@@ -66,6 +66,7 @@ import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
+import codemode/enforcement.{type Report}
 import codemode/internal/ffi_unix.{type Listener, type Socket}
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
@@ -112,6 +113,26 @@ const settle_margin_ms = 10_000
 // status to arrive and sharpen the close reason.
 const exit_reason_wait_ms = 2000
 
+// How long `destroy` waits for the node's own settlement, and with it the
+// helper's enforcement report.
+//
+// `destroy` aborts first, so by the time it waits the node is either
+// already gone (the program returned and the node exited) or being killed.
+// A cancelled execution still answers with `exec_exit`, but only after the
+// helper's TERM-then-KILL ladder; the broker's relay gives that ladder a
+// 5s grace and then settles the call itself as `CancelEscalated`.
+//
+// This wait must outlast that grace, and the number is chosen for a
+// reason beyond patience: whichever of the two expires first decides what
+// the report *says*. Giving up first would answer "nobody reported in
+// time", which is a statement about this timer; waiting for the broker
+// answers "the helper was killed before it could report", which is a
+// statement about the node. The second is the truth, and a report that
+// describes a race rather than a jail is the failure this whole path was
+// built to remove (issue #5). Still bounded either way: a broker that
+// never settles at all costs this once.
+const node_report_wait_ms = 6000
+
 // The satellite node itself holds one outstanding effect for the whole
 // execution, so a pooled budget of one would starve every `cap_call`.
 const minimum_outstanding = 2
@@ -130,10 +151,6 @@ pub type LaunchConfig {
     demand: EnforcementDemand,
     /// How long to wait for the satellite to connect back.
     accept_timeout_ms: Int,
-    /// Receives the node's enforcement report (`entries`, `degraded`) once
-    /// it settles, so a caller can say out loud which layers the running
-    /// kernel actually provided. `fn(_, _) { Nil }` to ignore it.
-    enforcement: fn(List(String), Bool) -> Nil,
   )
 }
 
@@ -210,12 +227,13 @@ fn start_channel(
           Error("the cap-socket reader did not start")
         }
         Ok(exits) -> {
-          spawn_node(config, spec, requirements, exits, now)
-          start_janitor(config, spec, outbox)
+          let settlement = start_reporter(config.broker)
+          spawn_node(config, spec, requirements, exits, settlement, now)
+          start_janitor(config, spec, outbox, settlement)
           Ok(
             satellite.CapConnection(
               send: fn(bytes) { process.send(outbox, Emit(bytes:)) },
-              destroy: fn() { destroy(config, spec, outbox) },
+              destroy: fn() { destroy(config, spec, outbox, settlement) },
             ),
           )
         }
@@ -225,17 +243,165 @@ fn start_channel(
 }
 
 // Destroying the satellite: abort the operation (which revokes its tokens
-// and kills the node and every executor it fanned out), close both ends of
-// the socket, and unlink the socket file. Idempotent — the host calls it
-// once on every exit path, and `satellite.hand_over` may call it instead.
+// and kills the node and every executor it fanned out), collect what the
+// kernel enforced on the node, close both ends of the socket, and unlink
+// the socket file. Idempotent — the host calls it once on every exit path,
+// and `satellite.hand_over` may call it instead.
+//
+// The abort is what makes the report *reachable* rather than what loses
+// it: a node that has already exited has already settled, and a node still
+// running settles because the abort cancels it, which the helper answers
+// with an `exec_exit` carrying the same report. So destroy aborts, then
+// waits (bounded) for the settlement, and hands the report to the caller —
+// which is the host, about to report the execution's outcome (issue #5).
 fn destroy(
   config: LaunchConfig,
   spec: LaunchSpec,
   outbox: Subject(Out),
-) -> Nil {
+  settlement: Subject(Settlement),
+) -> Report {
   broker.abort(config.broker, spec.op_id)
+  let report = await_report(settlement)
   process.send(outbox, Shutdown)
   unlink(spec.cap_socket_path)
+  report
+}
+
+// --- the node's enforcement report ---------------------------------------
+
+// The node's lifecycle, held for whoever destroys the connection.
+//
+// A plain subject would not do: the collector, the host actor, and the
+// janitor are three different processes, and a subject is received on only
+// by its owner. This is a tiny holder process instead. It does two things
+// no shared mailbox could:
+//
+// - It **remembers** the one settlement the collector produced, so a
+//   second `destroy` — the janitor's, after the host's — is answered from
+//   memory rather than left waiting for a settlement that already
+//   happened.
+// - It **orders teardown against the clearance**. `destroy` may run before
+//   the node's `clear_call` has even returned, and an `abort` that arrives
+//   first cancels nothing: the node would then run on to its jail's wall
+//   limit, and no settlement — so no report — would ever arrive. The
+//   holder knows both events, so it cancels whichever arrives second and
+//   the node settles either way.
+type Settlement {
+  /// The node's clearance succeeded; this is the handle to cancel it by.
+  Cleared(handle: broker.CallHandle)
+  /// The node settled, and this is what its helper reported.
+  Settled(report: Report)
+  /// Someone is tearing the node down and wants its report.
+  Ask(reply: Subject(Report))
+}
+
+// Where the node has got to, from the holder's point of view.
+type NodeState {
+  /// The clearance has not come back yet.
+  Pending
+  /// Cleared and running under this handle.
+  Running(handle: broker.CallHandle)
+  /// Settled, with the report to hand out.
+  Done(report: Report)
+}
+
+fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
+  let handoff = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let inbox = process.new_subject()
+      process.send(handoff, inbox)
+      reporter_loop(broker_actor, inbox, Pending, False, [])
+    })
+  case process.receive(handoff, handoff_timeout_ms) {
+    Ok(inbox) -> inbox
+    // A holder that would not start is a report nobody can collect; the
+    // ask then times out and says so, which is the honest answer.
+    Error(Nil) -> process.new_subject()
+  }
+}
+
+fn reporter_loop(
+  broker_actor: Broker,
+  inbox: Subject(Settlement),
+  node: NodeState,
+  torn_down: Bool,
+  waiting: List(Subject(Report)),
+) -> Nil {
+  // Once the node has settled, the report has been handed over, and
+  // nobody is still waiting, this execution is over — so the holder
+  // lingers only long enough to answer a second `destroy` (the janitor's,
+  // right behind the host's) and then ends, rather than outliving every
+  // execution the session ever ran.
+  case node, torn_down, waiting {
+    Done(report: _), True, [] ->
+      case process.receive(inbox, node_report_wait_ms) {
+        Error(Nil) -> Nil
+        Ok(message) ->
+          reporter_step(broker_actor, inbox, node, torn_down, waiting, message)
+      }
+    _, _, _ ->
+      reporter_step(
+        broker_actor,
+        inbox,
+        node,
+        torn_down,
+        waiting,
+        process.receive_forever(inbox),
+      )
+  }
+}
+
+fn reporter_step(
+  broker_actor: Broker,
+  inbox: Subject(Settlement),
+  node: NodeState,
+  torn_down: Bool,
+  waiting: List(Subject(Report)),
+  message: Settlement,
+) -> Nil {
+  case message {
+    Cleared(handle:) -> {
+      // Teardown got here first, so its cancel had nothing to name. Now it
+      // does.
+      case torn_down {
+        True -> broker.cancel(broker_actor, handle)
+        False -> Nil
+      }
+      reporter_loop(broker_actor, inbox, Running(handle:), torn_down, waiting)
+    }
+    Settled(report:) -> {
+      list.each(waiting, fn(reply) { process.send(reply, report) })
+      reporter_loop(broker_actor, inbox, Done(report:), torn_down, [])
+    }
+    Ask(reply:) ->
+      case node {
+        Done(report:) -> {
+          process.send(reply, report)
+          reporter_loop(broker_actor, inbox, node, True, waiting)
+        }
+        Running(handle:) -> {
+          broker.cancel(broker_actor, handle)
+          reporter_loop(broker_actor, inbox, node, True, [reply, ..waiting])
+        }
+        Pending ->
+          reporter_loop(broker_actor, inbox, node, True, [reply, ..waiting])
+      }
+  }
+}
+
+fn await_report(settlement: Subject(Settlement)) -> Report {
+  let reply = process.new_subject()
+  process.send(settlement, Ask(reply:))
+  case process.receive(reply, node_report_wait_ms) {
+    Ok(report) -> report
+    Error(Nil) ->
+      enforcement.Unreported(
+        "its helper did not report within "
+        <> int.to_string(node_report_wait_ms)
+        <> "ms of teardown",
+      )
+  }
 }
 
 // The safety net for a host that never gets to clean up.
@@ -254,6 +420,7 @@ fn start_janitor(
   config: LaunchConfig,
   spec: LaunchSpec,
   outbox: Subject(Out),
+  settlement: Subject(Settlement),
 ) -> Nil {
   case process.subject_owner(spec.wire) {
     Error(Nil) -> Nil
@@ -265,7 +432,9 @@ fn start_janitor(
             process.new_selector()
             |> process.select_specific_monitor(monitor, fn(_down) { Nil })
           let _ = process.selector_receive_forever(down)
-          destroy(config, spec, outbox)
+          // Nobody is left to carry the report: the host that would have
+          // reported the outcome is the process that just died.
+          let _report = destroy(config, spec, outbox, settlement)
           // The token file is the host's to unlink, and a killed host will
           // not do it. A leaked token is not a disclosure — its directory is
           // mode 0700 — but it is a leak.
@@ -418,6 +587,7 @@ fn spawn_node(
   spec: LaunchSpec,
   requirements: SandboxPolicy,
   exits: Subject(String),
+  settlement: Subject(Settlement),
   now: Int,
 ) -> Nil {
   let call = node_call(config, spec, requirements)
@@ -433,21 +603,40 @@ fn spawn_node(
           waiting: clear_timeout_ms,
         )
       {
-        Error(refusal) ->
+        Error(refusal) -> {
+          process.send(
+            settlement,
+            Settled(report: enforcement.Unreported(
+              "it was refused before it ran",
+            )),
+          )
           process.send(
             exits,
             "the satellite node was refused before launch: "
               <> refusal_text(refusal),
           )
-        Ok(_handle) ->
+        }
+        Ok(handle) -> {
+          process.send(settlement, Cleared(handle:))
           case tool.collect_events(events, waiting:) {
             Ok(collected) -> {
-              report_enforcement(config, collected)
+              process.send(
+                settlement,
+                Settled(report: enforcement.of_call(collected.outcome)),
+              )
               process.send(exits, exit_text(collected))
             }
-            Error(Nil) ->
+            Error(Nil) -> {
+              process.send(
+                settlement,
+                Settled(report: enforcement.Unreported(
+                  "it produced no settlement, so its helper never reported",
+                )),
+              )
               process.send(exits, "the satellite node produced no settlement")
+            }
           }
+        }
       }
     })
   Nil
@@ -725,14 +914,6 @@ fn file_error(
 }
 
 // --- diagnostics ---------------------------------------------------------
-
-fn report_enforcement(config: LaunchConfig, collected: Collected) -> Nil {
-  case collected.outcome {
-    broker.CallExited(result:) ->
-      config.enforcement(result.enforcement, result.degraded)
-    broker.CallFailed(failure: _) -> Nil
-  }
-}
 
 // How the node ended, as the close reason the host reports when no
 // terminal `outcome` frame arrived first.

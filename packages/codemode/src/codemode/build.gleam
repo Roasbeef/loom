@@ -60,7 +60,10 @@ import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type SandboxPolicy}
-import codemode/compile.{type BuildProducts, type CompileError, type Dependency}
+import codemode/compile.{
+  type BuildProducts, type Built, type CompileError, type Dependency, Built,
+}
+import codemode/enforcement
 import codemode/seed
 import core/ids.{type OpId}
 import gleam/bit_array
@@ -115,9 +118,6 @@ pub type BuildConfig {
     dependencies: List(Dependency),
     /// How long the build itself may take.
     timeout_ms: Int,
-    /// Receives the build's enforcement report (`entries`, `degraded`), so
-    /// a caller can say out loud which layers the kernel provided.
-    enforcement: fn(List(String), Bool) -> Nil,
   )
 }
 
@@ -126,17 +126,29 @@ pub fn builder(config: BuildConfig) -> compile.Builder {
   fn(build_root) { build(config, build_root) }
 }
 
-fn build(
-  config: BuildConfig,
-  root: String,
-) -> Result(BuildProducts, CompileError) {
+// The build's report is a return value, not a callback: a caller holding
+// the products holds what the kernel enforced on the jail that made them,
+// and a build that never ran says so rather than saying nothing
+// (`codemode/enforcement`, issue #5).
+fn build(config: BuildConfig, root: String) -> Built {
+  case prepare(config, root) {
+    Error(error) ->
+      Built(
+        result: Error(error),
+        enforcement: enforcement.Unreported(
+          "it was never dispatched: its seed could not be prepared",
+        ),
+      )
+    Ok(Nil) -> run_build(config, root)
+  }
+}
+
+fn prepare(config: BuildConfig, root: String) -> Result(Nil, CompileError) {
   use _ <- result.try(
     seed.verify(config.seed_root, config.dependencies)
     |> result.map_error(compile.BuildUnavailable),
   )
-  use _ <- result.try(clone_seed(config.seed_root, root))
-  use _ <- result.try(run_build(config, root))
-  products(root)
+  clone_seed(config.seed_root, root)
 }
 
 // --- preparing the root ---------------------------------------------------
@@ -170,7 +182,7 @@ fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
 
 // --- running the build ----------------------------------------------------
 
-fn run_build(config: BuildConfig, root: String) -> Result(Nil, CompileError) {
+fn run_build(config: BuildConfig, root: String) -> Built {
   let events = process.new_subject()
   case
     broker.clear_call(
@@ -181,9 +193,12 @@ fn run_build(config: BuildConfig, root: String) -> Result(Nil, CompileError) {
     )
   {
     Error(refusal) ->
-      Error(compile.BuildUnavailable(
-        "the hermetic build was refused: " <> refusal_text(refusal),
-      ))
+      Built(
+        result: Error(compile.BuildUnavailable(
+          "the hermetic build was refused: " <> refusal_text(refusal),
+        )),
+        enforcement: enforcement.Unreported("it was refused before it ran"),
+      )
     Ok(_handle) ->
       case
         tool.collect_events(
@@ -192,25 +207,30 @@ fn run_build(config: BuildConfig, root: String) -> Result(Nil, CompileError) {
         )
       {
         Error(Nil) ->
-          Error(compile.BuildUnavailable(
-            "the hermetic build produced no settlement",
-          ))
-        Ok(collected) -> settle(config, collected)
+          Built(
+            result: Error(compile.BuildUnavailable(
+              "the hermetic build produced no settlement",
+            )),
+            enforcement: enforcement.Unreported(
+              "it produced no settlement, so its helper never reported",
+            ),
+          )
+        Ok(collected) ->
+          Built(
+            result: result.try(settle(collected), fn(_nil) { products(root) }),
+            enforcement: enforcement.of_call(collected.outcome),
+          )
       }
   }
 }
 
-fn settle(
-  config: BuildConfig,
-  collected: Collected,
-) -> Result(Nil, CompileError) {
+fn settle(collected: Collected) -> Result(Nil, CompileError) {
   case collected.outcome {
     broker.CallFailed(failure:) ->
       Error(compile.BuildUnavailable(
         "the hermetic build could not run: " <> tool.exec_failure_text(failure),
       ))
     broker.CallExited(result:) -> {
-      config.enforcement(result.enforcement, result.degraded)
       let diagnostics = diagnostics(collected)
       case result.timed_out, result.code {
         True, _ ->

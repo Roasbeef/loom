@@ -168,10 +168,25 @@ pub type Outcome {
 }
 
 /// What one jailed stage's helper reported about the layers it actually
-/// applied. A stage that produced no report is absent from the list, and
-/// the result says so rather than assuming enforcement.
+/// applied — or why no such report exists. `Unreported` is never a claim
+/// that the stage was confined; it is the seam saying, in as many words,
+/// that it does not know.
+pub type Report {
+  /// The helper's ground truth: the layers it applied, the ones it
+  /// skipped (`skipped`, named without their `skip:` prefix), and whether
+  /// the run counts as degraded.
+  Enforced(applied: List(String), skipped: List(String), degraded: Bool)
+  /// This stage produced no report, and this is why.
+  Unreported(reason: String)
+}
+
+/// What the kernel enforced on each of an execution's two jailed stages.
+///
+/// A record rather than a list, so neither stage can go unmentioned: a
+/// seam that named one and omitted the other is exactly what made a green
+/// code-mode run unable to prove its jail engaged (issue #5).
 pub type Enforcement {
-  Enforcement(stage: String, entries: List(String), degraded: Bool)
+  Enforcement(build: Report, node: Report)
 }
 
 /// How far the pipeline got, and what it produced.
@@ -187,9 +202,10 @@ pub type ExecResult {
   Ran(outcome: Outcome, manifest_hash: String)
 }
 
-/// One whole execution: how it settled, and what the kernel really did.
+/// One whole execution: how it settled, and what the kernel really did to
+/// each stage of it.
 pub type Execution {
-  Execution(result: ExecResult, enforcement: List(Enforcement))
+  Execution(result: ExecResult, enforcement: Enforcement)
 }
 
 /// The code-mode seam: everything this tool may do, as data.
@@ -641,8 +657,12 @@ fn ran_outcome(
 // --- saying what actually ran ---------------------------------------------
 
 /// What the running kernel really enforced, as one line the model can
-/// read. A stage that reported nothing is named as unreported rather than
-/// assumed confined, and a degraded stage says so — a tool result must
+/// read.
+///
+/// Both stages are always named, so there is no absence to misread: a
+/// stage that reported nothing says why instead of going missing, a
+/// skipped layer is listed as skipped rather than folded in with the
+/// applied ones, and a degraded stage says so outright. A tool result must
 /// never imply a jail that was not applied.
 ///
 /// ## Examples
@@ -652,39 +672,64 @@ fn ran_outcome(
 /// ```
 ///
 pub fn sandbox_text(execution: Execution) -> String {
-  case execution.enforcement {
-    [] ->
-      "sandbox: no enforcement was reported for this execution; do not "
-      <> "assume it was confined."
-    reports ->
-      "sandbox: "
-      <> string.join(list.map(reports, stage_text), "; ")
-      <> ". A stage not named here made no report — which is not a claim "
-      <> "that it was confined."
+  "sandbox: "
+  <> stage_text(build_stage, execution.enforcement.build)
+  <> "; "
+  <> stage_text(satellite_stage, execution.enforcement.node)
+  <> "."
+}
+
+/// The stage label for the hermetic build.
+pub const build_stage = "the hermetic build"
+
+/// The stage label for the jailed satellite node.
+pub const satellite_stage = "the satellite node"
+
+fn stage_text(stage: String, report: Report) -> String {
+  case report {
+    Unreported(reason:) ->
+      stage
+      <> " made NO enforcement report ("
+      <> reason
+      <> "), which is not a claim that it was confined"
+    Enforced(applied:, skipped:, degraded:) ->
+      stage
+      <> " enforced ["
+      <> string.join(applied, ", ")
+      <> "]"
+      <> case skipped {
+        [] -> ""
+        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
+      }
+      <> case degraded {
+        True -> " (DEGRADED: the kernel did not provide every demanded layer)"
+        False -> ""
+      }
   }
 }
 
-fn stage_text(report: Enforcement) -> String {
-  report.stage
-  <> " enforced ["
-  <> string.join(report.entries, ", ")
-  <> "]"
-  <> case report.degraded {
-    True -> " (DEGRADED: the kernel did not provide every demanded layer)"
-    False -> ""
-  }
+fn enforcement_json(reports: Enforcement) -> JsonValue {
+  json.Object([
+    #("build", stage_json(reports.build)),
+    #("node", stage_json(reports.node)),
+  ])
 }
 
-fn enforcement_json(reports: List(Enforcement)) -> JsonValue {
-  json.Array(
-    list.map(reports, fn(report) {
+fn stage_json(report: Report) -> JsonValue {
+  case report {
+    Unreported(reason:) ->
       json.Object([
-        #("stage", json.String(report.stage)),
-        #("enforced", json.Array(list.map(report.entries, json.String))),
-        #("degraded", json.Bool(report.degraded)),
+        #("reported", json.Bool(False)),
+        #("reason", json.String(reason)),
       ])
-    }),
-  )
+    Enforced(applied:, skipped:, degraded:) ->
+      json.Object([
+        #("reported", json.Bool(True)),
+        #("enforced", json.Array(list.map(applied, json.String))),
+        #("skipped", json.Array(list.map(skipped, json.String))),
+        #("degraded", json.Bool(degraded)),
+      ])
+  }
 }
 
 // --- values ----------------------------------------------------------------
