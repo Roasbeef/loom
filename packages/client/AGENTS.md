@@ -32,6 +32,11 @@ over one session file. WP-L.
   nothing here crashes.
 - `client/gateway.{Gateway, Options, Message, start}` — the hub actor,
   one per served session, over a `runtime/api.Runtime`.
+  `with_catalog` and `with_registry` supply the two things `set_config`
+  validates against: the model catalogue behind `model_name`, and the
+  live tool registry behind `active_tools` (the same registry the
+  effect wiring dispatches through; without one, active-set changes are
+  refused in band).
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
   text, and nothing in the module knows about sockets.
@@ -163,6 +168,16 @@ over one session file. WP-L.
   the token in a `0600` file next to the session, moving the
   peer-credential check into the filesystem, because `mist` has no
   unix-socket listener to carry `SO_PEERCRED`.
+- **A strand's durable `active_tool_names` is canonical: sorted, with
+  duplicates collapsed, and every name registered.** The list renders
+  into the request's tool array, which sits ahead of the system prompt
+  in the provider's render order, and prompt caching matches on an
+  exact byte prefix — so a reordering costs both cache-head writes on
+  every subsequent turn. The hub canonicalizes at the `set_config`
+  boundary and `client/wiring.tool_specs` sorts again at render.
+  Neither moves the authorization line: `wiring.clear` admits a call by
+  `list.contains` on this same list, and set membership is blind to
+  order and multiplicity.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.
