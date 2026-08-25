@@ -319,7 +319,7 @@ translated: a busy strand is `conflict`, an unknown strand is
 `unknown_strand`, a lost seq race that four retries could not win is
 `conflict` again.
 
-Two ack shapes are not what the reply table alone suggests. **A steer or
+Two ack shapes describe something other than a placed entry. **A steer or
 follow-up ack describes a durably queued item, not a placed entry.** The
 queue admission mints a reserved entry id and writes the payload to a
 pending register; the tree entry appears only when the run consumes it.

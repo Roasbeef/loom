@@ -47,8 +47,8 @@ peer credentials; remote connections send `Authorization: Bearer
 | `subscribe`    | `snapshot` (mode `full` or `resume`)       |
 | `catch_up`     | `snapshot` (mode `resume` or `full`)       |
 | `prompt`       | `entry` (the appended user entry)          |
-| `steer`        | `entry`                                    |
-| `follow_up`    | `entry`                                    |
+| `steer`        | `entry` (queued — see below)               |
+| `follow_up`    | `entry` (queued — see below)               |
 | `abort`        | `op_transition` (phase `cancel_requested`) |
 | `approve`      | `escalation` (status `approved`)           |
 | `deny`         | `escalation` (status `rejected`)           |
@@ -58,6 +58,21 @@ peer credentials; remote connections send `Authorization: Bearer
 | `compact`      | `op_transition` (phase `compacting`)       |
 | `models`       | `snapshot` (mode `models`)                 |
 | `set_config`   | `snapshot` (mode `config`)                 |
+
+**Queued versus placed.** Not every `entry` reply describes an entry
+that is in the tree. The `entry` acking a `steer` or a `follow_up` is
+the **queued** case: the item is durable as a pending register and not
+yet placed, so the nested entry carries the reserved entry id and the
+message with no parent and a storage `seq` of `0`, and the envelope
+carries no event `seq`. The placed entry broadcasts later — same entry
+id, real parent, real storage seq, and an event `seq` of its own — when
+the run consumes the item. Anything still queued when the run reaches a
+terminal boundary is dropped instead — after an `abort`, or when the
+run settles without ever reaching that item — and is never placed. A
+client must therefore treat a queued ack as a pending marker keyed by
+the reserved id, replaced by the broadcast that shares that id, and
+must not assume the replacement arrives. The `entry` acking a `prompt`
+is the **placed** case and carries both seqs.
 
 ## Subscription, catch-up, reconnect
 

@@ -13,7 +13,7 @@ work with a home** (real work a milestone or a Part 5 follow-up track
 already owns), or **deferred work with no home** (real work scheduled
 nowhere). The two tables below name the second and third classes. The
 rule for reading them: *an item named in neither table is settled* —
-which is 86 of the 114 items. A recorded option nobody must exercise (a
+which is 92 of the 114 items. A recorded option nobody must exercise (a
 "candidate for hoisting if the duplication grates") stays settled; only
 work someone must do to meet a stated criterion is listed here.
 
@@ -33,9 +33,9 @@ Items are cited as section plus the number as written in the list
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
 | WP-J 14 | carry the satellite's enforcement report in the outcome (or report on the abort path) so a green run proves the jail engaged | M4.5 / WP-N, which sequences it before the seam |
 
-### Deferred work with no home (20)
+### Deferred work with no home (14)
 
-Twenty items, nineteen rows: the canonical session id is recorded
+Fourteen items, thirteen rows: the canonical session id is recorded
 twice. Nothing in the right-hand column is scheduled — it is where the
 work would sit if someone scheduled it, recorded so the choice is made
 rather than drifted into. Part 5.1 of the spec says the same thing from
@@ -52,16 +52,10 @@ the other side.
 | WP-F 7 | the per-OS keychain backends WP-F's scope names; only the environment backend ships | a Part 5 track |
 | WP-F 6 | pricing tables somewhere ledger-side, since the adapters zero every cost field and §3.4 calls the ledger the billing source of truth | the token-budget work `design-notes/orchestration-comparison.md` sequences after WP-N |
 | WP-K 4, WP-C-full 3 | a canonical session id in `core`: the bus, the search service, and the schema's unwritten `parent_session_id` column all wait on one | §1.1 via a protocol-change; M5 |
-| M2 integration 2 | a wire mapping for `stream_options`, or its removal — the runtime carries a bag the provider request cannot express and the wire drops | §1.5 via a protocol-change |
 | WP-L 8 | per-identity model facts in the wiring seam, so a strand switched off its role's resolution stops doing overflow arithmetic against fallback numbers | M5 |
 | M3 runtime wave 13 | decide a catalogue entry's `thinking`: the default a strand overrides, or refused like `headers` — today it is validated and discarded | M5 |
-| WP-I 7 | decide whether the tool timeout ceiling is the tool-side clamp or session policy; the entry deferred it to runtime wiring, which has since landed | a §3 line; no milestone |
-| M2 integration 1 | state in §0.2 that one clock — or one era — is injected across runtime, tools, and broker | amend §0.2 |
-| WP-K 1 | promote the catch-up frontier rule from an entry here to a convention in §0.2 | amend §0.2 |
-| WP-A 7 | restate WP-A's "≥95% branch coverage on decoders" in terms something can check; no Gleam coverage tooling exists | amend WP-A's exit criteria |
 | WP-L 2 | `api.compact` and `api.navigate`, so the gateway and the conformance runner stop keeping two copies of acceptance-plan building | no milestone |
 | WP-L 3 | an optional-brief `create_strand`, so protocol fork and create-strand stop seeding registers in the gateway | no milestone |
-| WP-L 6 | address queued-versus-placed acks in the protocol document's reply table | `protocol/`; no milestone |
 
 ## From WP-A (`core`)
 
@@ -90,9 +84,13 @@ the other side.
    …) belong to WP-D. Core carries payloads as tagged JSON; machine owns
    the rich codecs. Documented in `core/register`'s module doc.
 7. **Decoder coverage criterion.** WP-A's "≥95% branch coverage on
-   decoders" is not machine-verified — no Gleam coverage tooling exists.
-   Compensated with adversarial corpora (90+ inputs) and per-variant
-   property tests. The criterion should be restated in testable terms.
+   decoders" was never machine-verified — no Gleam coverage tooling
+   exists to measure a branch percentage. Restated in the spec's own
+   exit criteria as what the suite already does and a reviewer can
+   check: a roundtrip case per constructor of every decoded type, and an
+   adversarial corpus at each codec boundary (msgpack bytes, JSON
+   values, the entry/message codecs) whose every input decodes to a
+   `CorruptionReport`.
 8. **Numeric edges.** JSON floats beyond IEEE 754 double range decode as
    corruption (the BEAM has no Inf/NaN); JSON ints are arbitrary
    precision; msgpack ints outside `[-2^63, 2^64-1]` are encode errors.
@@ -250,9 +248,16 @@ the other side.
    declared requirements exist for uniform policy audit.
 6. **Blob refs "readable via fs_read"** requires the runtime to place the
    blob root under a readable workspace path; tools only record the ref.
-7. **Timeout ceiling** is clamped tool-side (600 s max, 120 s default);
-   if "policy ceiling" was meant to be session-policy-driven, revisit
-   when wiring the runtime.
+7. **Timeout ceiling** is clamped tool-side (600 s max, 120 s default),
+   and the wiring has since decided it: the clamp *is* the ceiling, now
+   §3.5. Session policy narrows and cannot widen past it —
+   `client/serve.base_policy` gives the session a `wall_s` of 600 and
+   `broker/policy.compose` meets the limits, while the tool derives its
+   own `wall_s` requirement from the already-clamped timeout. An
+   approved `wall_s` grant joins upward inside the jail, but the tool's
+   budget deadline and receive window were fixed at the clamped value,
+   so no grant lengthens a call. `grep` takes no timeout argument at
+   all: a fixed 60 s.
 8. **Ripgrep-missing detection** keys on the helper's spawn-failed error
    plus exit 127; the framing spec does not enumerate helper error codes.
 
@@ -349,11 +354,25 @@ the other side.
    computed on the tool-side clock and checked against the broker-side
    clock; nothing required the injected clocks to share an era, and
    misaligned eras made the broker refuse every call as past deadline.
-   §0.2's time-injection rule should state that one clock (or one era)
-   must be injected across runtime, tools, and broker.
-2. **`stream_options` has no wire mapping.** The runtime carries an
-   opaque options bag the provider request shape cannot express; it is
-   dropped at the wire. Extend §1.5 or define the mapping.
+   §0.2 now carries the rule as a convention — one clock, or at minimum
+   one era, across runtime, tools, and broker — and `client/serve.boot`
+   builds a single clock function for session, broker, tools, and
+   provider.
+2. **`stream_options` gets no wire mapping.** The runtime threads an
+   opaque options bag from `runtime/api.Options` through the durable
+   generation intent to `client/wiring`, which drops it because
+   `ProviderRequest` has no field for it. Decided against mapping, and
+   §1.5 now says why: the request vocabulary is closed, and
+   dialect-specific per-request options belong to the adapter, which
+   derives them from the request's own contents. The OpenAI adapter
+   already writes the wire's own `stream_options.include_usage` itself,
+   so a bag threaded from above would collide with the field the adapter
+   owns; the Anthropic adapter places its cache breakpoints on the same
+   terms (WP-F item 9). Dropping the bag is conformance, not loss.
+   Nothing writes it either: production seeds `json.Object([])` and the
+   admission hook passes it through untouched, so the field is inert and
+   its removal is cleanup nobody must do. Carrying it would need a
+   protocol-change against §1.5; not carrying it needs none.
 3. **No provider surface for deferred polls or structural summaries.**
    The provider request type cannot express a continuation fetch; wiring
    settles both in-band as transport failures, unreachable under default
@@ -383,13 +402,13 @@ the other side.
 
 ## From WP-K (`events`)
 
-1. **The catch-up frontier rule** (load-bearing, promote to convention):
-   a projection catch-up that reads more than one scan must bound every
-   scan by a frontier sequence read before the first one. Without it, a
-   commit landing between two scans advances the high-water past rows
-   the earlier scan never saw, losing them permanently. Sequences are
-   strictly increasing and rows write-once, so the bounded window is
-   immutable and the batch consistent.
+1. **The catch-up frontier rule**, load-bearing and now a §0.2
+   convention: a projection catch-up that reads more than one scan must
+   bound every scan by a frontier sequence read before the first one.
+   Without it, a commit landing between two scans advances the
+   high-water past rows the earlier scan never saw, losing them
+   permanently. Sequences are strictly increasing and rows write-once,
+   so the bounded window is immutable and the batch consistent.
 2. **Checkpoints persist state, high-water, and rewrite generation
    together.** The spec says "persisted high-water seq"; for a stateful
    in-memory projection a high-water without its matching state is
@@ -677,8 +696,12 @@ the other side.
    protocol-change note.
 6. **Queued versus placed acks**: steer and follow-up acks describe the
    durably queued item with a reserved id and no sequence; the placed
-   entry broadcasts on consumption. The protocol document's reply table
-   does not address the distinction.
+   entry broadcasts on consumption under that same id, and an item still
+   queued at the run's terminal boundary is deleted rather than placed,
+   so some acks are never followed by anything. The protocol document's
+   reply table now marks both rows queued and states the rule beneath
+   it, including what a client must do with an ack it may never see
+   placed.
 7. **Provider deltas tee through a wrapper** around the provider
    surface — the documented seam; the runtime needed no change.
 8. **Off-route model facts fall back.** A strand switched by

@@ -65,6 +65,8 @@ storage, machine, provider, and broker alongside runtime and events.)*
 - **No `panic`/`let assert` outside tests** except for documented invariant violations that must fault the process (mirrors pi's "failed admitted commit faults the harness").
 - Erlang FFI: confined to `*/internal/ffi_*.gleam` modules; every `@external` carries a comment naming the OTP function and why no pure alternative exists. CI greps enforce confinement.
 - Time: all timestamps Unix ms, from an injected `Clock` capability (testability). Ids: UUIDv7 from an injected generator; tool-result ids inherit the assistant id's 48-bit time prefix (pi §1.2 rules 1–3).
+- **One clock per session**: one `Clock` — or at minimum one era — must be injected across runtime, tools, and broker. A budget deadline is computed on the tool side and checked on the broker side, so clocks whose eras disagree make the broker refuse every call as already past its deadline. A host that builds its clocks separately must still build them from one source.
+- **Catch-up frontier**: a projection catch-up that reads more than one scan must bound every scan by a frontier sequence read before the first. Sequences are strictly increasing and rows are write-once, so the bounded range is immutable while the scans run and the batch is consistent. Unbounded, a commit landing between two scans advances the high-water past rows the earlier scan never saw, and they are lost for good.
 
 ### 0.3 Agent working protocol (for the implementing agents)
 
@@ -207,6 +209,8 @@ pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
 
 Fallback chains resolve at dispatch; the durable state stores the resolved `{provider, model_id}`. Adapters must map provider stop reasons totally; unknown → `Failed(UnmappedStopReason)` (in-band), never a crash. Adapter-computable overflow (input+cache_read > context_window, negligible output) settles as `error` with the canonical overflow message pattern.
 
+**The request vocabulary is closed.** `ProviderRequest` carries what the block above names and nothing else, and no options bag crosses the gateway seam. Dialect-specific per-request options — streaming flags, cache breakpoints — are the adapter's, derived from the request's own contents: the OpenAI adapter sets the wire's `stream_options.include_usage` itself, and the Anthropic adapter places its own cache breakpoints, so nothing above the seam learns either dialect. A harness-side options value the request shape cannot express therefore stops at the seam by rule; dropping it is conformance, not loss. Widening the shape to carry one is a protocol change.
+
 ### 1.6 Client protocol (WP-L; thin clients)
 
 Websocket, JSON (client-friendliness beats msgpack here), versioned:
@@ -229,7 +233,7 @@ s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
 
 **Scope**: everything in §1.1; `AgentMessage` model (user/assistant/tool-result + custom roles with registered runtime schemas); msgpack + JSON codecs; UUIDv7 generator (follower minting); `CorruptionReport`.
 **Must not**: perform I/O; import anything but stdlib.
-**Exit**: property tests — codec roundtrip for every type (incl. adversarial junk → decode error, never crash); UUIDv7 ordering & follower-prefix laws; ≥95% branch coverage on decoders.
+**Exit**: property tests — codec roundtrip for every type (incl. adversarial junk → decode error, never crash); UUIDv7 ordering & follower-prefix laws; decoder totality shown by construction rather than by a coverage percentage, since no Gleam coverage tool exists to measure one. Concretely: every constructor of every decoded type carries a roundtrip case, and each codec boundary — msgpack bytes, JSON values, the entry/message codecs — carries an adversarial corpus whose every input decodes to a `CorruptionReport`. A decoder that no corpus entry is aimed at fails the criterion.
 
 ### WP-B `storage` — backends
 
@@ -431,6 +435,10 @@ Projection per pi §2.5 (stop at compaction inclusive; drop error/aborted/deferr
 
 Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step}` context everywhere; OpenTelemetry export optional; usage events mirrored to the ledger are the billing source of truth (telemetry is observability only).
 
+### 3.5 Tool timeout ceiling (WP-I + WP-G)
+
+The ceiling on a tool call's wall clock is the tool's own clamp, not session policy: each tool declares its default and maximum timeout, clamps any caller-supplied value to that maximum, and derives the sandbox `wall_s` requirement from the clamped result. Session policy narrows further — composition meets the limits — but cannot widen past the clamp, so an approved `wall_s` grant raises the jail's limit while the tool still stops waiting at its own deadline. As built: `bash` clamps to 600 s over a 120 s default; `grep` runs a fixed 60 s and takes no timeout argument.
+
 ---
 
 ## Part 4 — Milestone acceptance (cut points for integration)
@@ -559,11 +567,11 @@ and rewriting their acceptance would erase what was actually accepted.
 
 ### 5.1 Recorded work with no home
 
-`docs/spec-gaps.md` now classifies all 114 of its items. Eighty-six are
-settled interpretations; eight name a milestone or a track above; **twenty
-name work scheduled nowhere at all**, and its triage table lists each with
-a proposed home. A proposal there is not a schedule: nothing is committed
-until it appears in Part 2 or Part 4.
+`docs/spec-gaps.md` now classifies all 114 of its items. Ninety-two are
+settled interpretations; eight name a milestone or a track above;
+**fourteen name work scheduled nowhere at all**, and its triage table
+lists each with a proposed home. A proposal there is not a schedule:
+nothing is committed until it appears in Part 2 or Part 4.
 
 Four bodies of unscheduled work are larger than any single item, and are
 named here so no row above implies otherwise:
