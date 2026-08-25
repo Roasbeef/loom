@@ -12,6 +12,7 @@
 //// only ever returns one the boot module stored.
 
 import cap/internal/channel.{type Channel}
+import gleam/erlang/process.{type Pid}
 
 /// Stores the channel in the global slot, overwriting any prior value.
 ///
@@ -27,3 +28,24 @@ pub fn put_channel(channel: Channel) -> Nil
 /// slot is a `Result`, not a `badarg` crash.
 @external(erlang, "cap_ffi", "get_channel")
 pub fn get_channel() -> Result(Channel, Nil)
+
+/// Records the pid owning the installed channel actor. `dispatch` reads it
+/// back to refuse a kept-alive re-install over a still-live channel (C-F1).
+///
+/// Uses `persistent_term:put/2`.
+@external(erlang, "cap_ffi", "put_owner")
+pub fn put_owner(owner: Pid) -> Nil
+
+/// Reads the recorded owner pid, or `Error(Nil)` when none is recorded.
+///
+/// Uses `persistent_term:get/2` with a sentinel default.
+@external(erlang, "cap_ffi", "get_owner")
+pub fn get_owner() -> Result(Pid, Nil)
+
+/// Erases both the channel and owner slots. Called on clean teardown so a
+/// later execution's `install_exclusive` sees an empty slot, and by tests
+/// to reset the VM-global state between cases.
+///
+/// Uses `persistent_term:erase/1`.
+@external(erlang, "cap_ffi", "clear_slot")
+pub fn clear() -> Nil

@@ -13,6 +13,9 @@
 -export([
     put_channel/1,
     get_channel/0,
+    put_owner/1,
+    get_owner/0,
+    clear_slot/0,
     getenv/1,
     read_file/1,
     connect_unix/1,
@@ -22,9 +25,11 @@
 ]).
 
 -define(KEY, {cap, channel}).
+-define(OWNER_KEY, {cap, channel_owner}).
 
-%% Store the channel term. Overwrites any prior value (a kept-alive
-%% satellite re-installs with each invocation's fresh token).
+%% Store the channel term. Overwrites any prior value; the boot module
+%% guards a kept-alive re-install through `install_exclusive`, which
+%% consults the owner slot below before calling this (C-F1).
 put_channel(Channel) ->
     persistent_term:put(?KEY, Channel),
     nil.
@@ -36,6 +41,25 @@ get_channel() ->
         undefined -> {error, nil};
         Channel -> {ok, Channel}
     end.
+
+%% Record the pid of the process that owns the installed channel actor, so
+%% a later install can refuse while it is still alive (C-F1).
+put_owner(Pid) ->
+    persistent_term:put(?OWNER_KEY, Pid),
+    nil.
+
+%% Read the recorded owner pid, or {error, nil} when none is recorded.
+get_owner() ->
+    case persistent_term:get(?OWNER_KEY, undefined) of
+        undefined -> {error, nil};
+        Pid -> {ok, Pid}
+    end.
+
+%% Erase both slots. Called on clean teardown and to reset between tests.
+clear_slot() ->
+    _ = persistent_term:erase(?KEY),
+    _ = persistent_term:erase(?OWNER_KEY),
+    nil.
 
 %% -- production transport (J3) -------------------------------------------
 %%

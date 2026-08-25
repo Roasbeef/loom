@@ -5,6 +5,8 @@
 //// own process (a plain subject can only be received by its owner).
 
 import cap/fs
+import cap/internal/channel
+import cap/internal/dispatch
 import cap/internal/inbound
 import cap/internal/wire
 import cap/report
@@ -83,6 +85,10 @@ type Booted {
 }
 
 fn boot(program: fn() -> report.Outcome) -> Booted {
+  // Each case stands for one satellite node, which starts with an empty
+  // channel slot. The tests share one VM, so clear the slot the way a fresh
+  // node would — `boot` refuses to install over a live one (C-F1).
+  dispatch.reset()
   let sent = process.new_subject()
   let outcomes = process.new_subject()
   let wire = start_wire()
@@ -196,6 +202,47 @@ pub fn boot_program_crash_becomes_errored_test() {
   let assert Ok(outcome_bytes) = process.receive(booted.outcomes, 2000)
   let body = errored_body(outcome_bytes)
   assert wire.string_field(body, "message") == Ok("program crashed: killed")
+}
+
+// --- a live channel slot refuses a second install (C-F1) ----------------
+
+// The channel and token live in a VM-global slot. If a prior execution's
+// channel actor is still alive, a process that survived it would read the
+// new execution's channel — and so act under the new token — on its next
+// cap call. `boot` must refuse rather than overwrite, so the executor's
+// obligation to reap first fails loudly instead of silently.
+pub fn boot_refuses_to_install_over_a_live_channel_test() {
+  dispatch.reset()
+  let assert Ok(prior) = channel.start(<<1>>, fn(_bytes) { Nil })
+  let assert Ok(owner) = process.subject_owner(channel.subject(prior))
+  let assert Ok(Nil) =
+    dispatch.install_exclusive(channel.to_channel(prior), owner)
+
+  let booted = boot_over_live_slot(fn() { report.text("never runs") })
+  assert case booted {
+    Error(runtime.ChannelSlotOccupied(_)) -> True
+    _ -> False
+  }
+  // The refusal left the prior execution's channel in place, untouched.
+  assert process.is_alive(owner)
+
+  channel.stop(prior)
+  dispatch.reset()
+}
+
+// Boots straight through, without the fresh-node reset `boot` performs, so
+// the install lands on whatever the case already put in the slot.
+fn boot_over_live_slot(
+  program: fn() -> report.Outcome,
+) -> Result(Nil, runtime.BootError) {
+  let wire = start_wire()
+  let transport =
+    runtime.Transport(
+      send: fn(_bytes) { Nil },
+      recv: fn() { process.call(wire, waiting: 60_000, sending: WirePull) },
+      outcome_sink: fn(_bytes) { Nil },
+    )
+  runtime.boot(<<7, 7, 7>>, transport, program)
 }
 
 // --- the deframer is invariant to chunk boundaries ----------------------

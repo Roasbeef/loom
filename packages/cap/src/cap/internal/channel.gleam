@@ -15,14 +15,40 @@
 //// neither supply, read, nor replace them.
 ////
 //// The token itself is 32 broker-minted random bytes, injected once by
-//// the boot module (`start`) and never surfaced to program code. A
+//// the boot module (`start`) and never surfaced to *pure* program code. A
 //// `cap_call` a program makes always carries *its* token for *its*
-//// `{op_id, step_id}`; the program cannot fabricate a different token to
-//// widen policy, and the satellite has no network or distribution to
-//// reach another execution's channel. A malicious `.beam` that slips
-//// vetting (defence in depth, design §6.3) still finds only this one
-//// token-checked door: the worst it can do is what the API already
-//// allows.
+//// `{op_id, step_id}`; ordinary program code cannot fabricate a different
+//// token to widen policy, and the satellite has no network or distribution
+//// to reach another execution's channel.
+////
+//// ## What the token does and does not defend (CH-F4)
+////
+//// The token's real job is narrow and worth stating precisely. It
+//// **authenticates the channel** — it rejects a socket peer that never
+//// read the token file (a cross-execution or external-socket caller) — and
+//// it **enables revocation and binds the channel to one
+//// `{op_id, step_id, deadline}`**, so a captured token cannot be replayed
+//// into another execution or after the deadline.
+////
+//// The token does **not** confine a hostile `.beam` that slipped vetting.
+//// Such a `.beam` carries its own `@external`, so it can read
+//// `LOOM_CAP_TOKEN_FILE` and present the genuine token; the token check
+//// then passes. What confines that adversary is the **kernel jail** (the
+//// cap socket is its only reachable effect) and the **broker's per-call
+//// policy check**, which composes and checks policy on every `cap_call`
+//// regardless of the token. Confinement is policy plus jail, not the
+//// token — do not overstate it.
+////
+//// ## Kept-alive re-install depends on external reaping (C-F1)
+////
+//// The channel lives in a VM-global slot the boot module installs per
+//// execution. The isolation guarantee for the kept-alive satellite mode is
+//// therefore contingent on the executor reaping every process a program
+//// spawned before the next execution re-installs: a survivor would
+//// otherwise read the new execution's channel on its next cap call.
+//// `cap/internal/dispatch.install_exclusive` refuses to overwrite a slot
+//// whose channel actor is still alive precisely to make that contingency
+//// fail loudly rather than silently.
 ////
 //// ## The channel is an actor
 ////
@@ -200,8 +226,10 @@ pub fn fail(handle: Handle, reason: String) -> Nil {
   process.send(handle.subject, Fail(reason:))
 }
 
-/// Stops the channel actor. Fire-and-forget; killing the satellite reaps
-/// it regardless.
+/// Stops the channel actor, settling any in-flight calls `Unreachable`
+/// in-band on the way out (C-F3) so a blocked program unblocks at once
+/// rather than waiting out its deadline. Fire-and-forget; killing the
+/// satellite reaps it regardless.
 pub fn stop(handle: Handle) -> Nil {
   process.send(handle.subject, Stop)
 }
@@ -284,16 +312,29 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
     Fail(reason:) -> {
       // Unblock every caller waiting on a result that will never arrive,
       // drop their monitors, and latch the failure for subsequent calls.
-      list.each(dict.to_list(state.inflight), fn(entry) {
-        let in_flight = entry.1
-        process.demonitor_process(in_flight.monitor)
-        process.send(in_flight.reply, Error(Unreachable(reason)))
-      })
+      settle_inflight(state, reason)
       actor.continue(State(..state, inflight: dict.new(), failed: Some(reason)))
     }
 
-    Stop -> actor.stop()
+    // Teardown settles in-flight calls in-band before stopping, the same
+    // way `Fail` does — a program blocked on a call unblocks with
+    // `Unreachable` at once rather than waiting out its deadline (C-F3).
+    Stop -> {
+      settle_inflight(state, "cap channel stopped")
+      actor.stop()
+    }
   }
+}
+
+// Answers every in-flight caller `Unreachable(reason)` and drops its
+// monitor. Shared by the `Fail` (reader-driven) and `Stop` (teardown)
+// paths so neither abandons a blocked caller.
+fn settle_inflight(state: State, reason: String) -> Nil {
+  list.each(dict.to_list(state.inflight), fn(entry) {
+    let in_flight = entry.1
+    process.demonitor_process(in_flight.monitor)
+    process.send(in_flight.reply, Error(Unreachable(reason)))
+  })
 }
 
 // A monitored caller died before its `cap_result` arrived — the race /

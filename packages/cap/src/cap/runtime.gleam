@@ -129,6 +129,10 @@ pub type BootError {
   TransportUnavailable(reason: String)
   /// The token-file path is unset, or the file could not be read.
   TokenUnavailable(reason: String)
+  /// A prior execution's capability channel still occupies the VM-global
+  /// slot. Only reachable in the kept-alive satellite mode, and only when
+  /// the executor has not reaped the prior execution first.
+  ChannelSlotOccupied(reason: String)
 }
 
 // What the boot process waits on: the program's outcome, or its death.
@@ -139,13 +143,14 @@ type ProgramReport {
 
 /// Boots the satellite over an injected transport and runs `program`.
 ///
-/// The sequence is: start the channel holding `token`; install it as the
-/// one door every `cap/*` call resolves; start the inbound reader; run
-/// `program` in a monitored child (so a crash becomes an outcome, not a
-/// dead satellite); marshal and frame the outcome and write it to the
-/// sink; then tear the channel and reader down. Returns `Ok(Nil)` once the
-/// outcome has been written, or a `BootError` if the channel would not
-/// start.
+/// The sequence is: start the channel holding `token`; claim the one door
+/// every `cap/*` call resolves, refusing if a prior execution's channel is
+/// still installed; start the inbound reader; run `program` in a monitored
+/// child (so a crash becomes an outcome, not a dead satellite); marshal and
+/// frame the outcome and write it to the sink; then tear the channel and
+/// reader down and release the door. Returns `Ok(Nil)` once the outcome has
+/// been written, or a `BootError` if the channel would not start or the
+/// door was still held.
 pub fn boot(
   token: BitArray,
   transport: Transport,
@@ -157,7 +162,7 @@ pub fn boot(
       ChannelStartFailed(describe_start_error(error))
     }),
   )
-  dispatch.install(channel.to_channel(handle))
+  use owner <- result.try(install_channel(handle))
   let reader = start_reader(handle, transport.recv)
 
   // Run the program to completion (or death) and marshal whatever it
@@ -167,9 +172,37 @@ pub fn boot(
 
   // Clean teardown: the reader is blocked in `recv`, so kill it; killing
   // the satellite would reap both regardless, but tests need it tidy.
+  // Releasing the slot leaves any process that survived this execution
+  // with no channel at all, so its next cap call is `Unreachable` rather
+  // than a call under the *next* execution's token.
   process.kill(reader)
   channel.stop(handle)
+  dispatch.release(owner)
   Ok(Nil)
+}
+
+// Claims the VM-global channel slot for this execution, refusing if a
+// prior execution's channel actor is still alive (see
+// `dispatch.install_exclusive`). On refusal the channel just started is
+// stopped again, so a refused boot leaves nothing behind.
+fn install_channel(handle: Handle) -> Result(Pid, BootError) {
+  case process.subject_owner(channel.subject(handle)) {
+    Error(Nil) -> {
+      channel.stop(handle)
+      Error(ChannelStartFailed("the channel actor has no owner"))
+    }
+    Ok(owner) ->
+      case dispatch.install_exclusive(channel.to_channel(handle), owner) {
+        Ok(Nil) -> Ok(owner)
+        Error(Nil) -> {
+          channel.stop(handle)
+          Error(ChannelSlotOccupied(
+            "a prior execution's capability channel is still installed; the "
+            <> "executor must reap it before this one boots",
+          ))
+        }
+      }
+  }
 }
 
 /// The production convenience the generated entry calls: read the socket

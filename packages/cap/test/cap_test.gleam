@@ -146,6 +146,73 @@ pub fn channel_round_trip_test() {
   channel.stop(handle)
 }
 
+// `stop` must settle in-flight callers in-band (Unreachable), like `fail`,
+// rather than abandoning them to wait out their deadline (C-F3).
+pub fn stop_settles_inflight_calls_test() {
+  let sent = process.new_subject()
+  let send = fn(bytes) {
+    process.send(sent, bytes)
+    Nil
+  }
+  let assert Ok(handle) = channel.start(<<3>>, send)
+  let ch = channel.to_channel(handle)
+
+  // A caller blocked on a long-deadline call.
+  let result = process.new_subject()
+  let _ =
+    process.spawn_unlinked(fn() {
+      let channel.Channel(call:) = ch
+      process.send(result, call("proc.run", map([]), 60_000))
+    })
+  let assert Ok(call_bytes) = process.receive(sent, 1000)
+  assert frame_head(call_bytes) == Ok(#(0, "cap_call"))
+
+  // Stopping the channel unblocks the caller at once with Unreachable — not
+  // after the 60s deadline. A 1s receive proves it settled in-band.
+  channel.stop(handle)
+  let assert Ok(settled) = process.receive(result, 1000)
+  assert case settled {
+    Error(channel.Unreachable(_)) -> True
+    _ -> False
+  }
+}
+
+// Re-installing over a live channel slot must be refused, so a process
+// surviving a prior execution cannot act under a new execution's token
+// (C-F1). The refusal lifts once the prior channel's actor is reaped.
+pub fn install_exclusive_refuses_over_live_channel_test() {
+  dispatch.reset()
+  let assert Ok(h1) = channel.start(<<1>>, fn(_bytes) { Nil })
+  let assert Ok(owner1) = process.subject_owner(channel.subject(h1))
+  let assert Ok(Nil) =
+    dispatch.install_exclusive(channel.to_channel(h1), owner1)
+
+  let assert Ok(h2) = channel.start(<<2>>, fn(_bytes) { Nil })
+  let assert Ok(owner2) = process.subject_owner(channel.subject(h2))
+  // h1's actor is still alive, so the second install refuses.
+  assert dispatch.install_exclusive(channel.to_channel(h2), owner2)
+    == Error(Nil)
+
+  // Reap the prior channel; a re-install may now proceed.
+  channel.stop(h1)
+  wait_until_dead(owner1, 1000)
+  let assert Ok(Nil) =
+    dispatch.install_exclusive(channel.to_channel(h2), owner2)
+
+  channel.stop(h2)
+  dispatch.reset()
+}
+
+fn wait_until_dead(pid: process.Pid, budget_ms: Int) -> Nil {
+  case process.is_alive(pid) && budget_ms > 0 {
+    True -> {
+      process.sleep(10)
+      wait_until_dead(pid, budget_ms - 10)
+    }
+    False -> Nil
+  }
+}
+
 pub fn channel_cancels_dead_caller_test() {
   let sent = process.new_subject()
   let send = fn(bytes) {
