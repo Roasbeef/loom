@@ -15,6 +15,7 @@ provider = { path = "../provider" }
 broker = { path = "../broker" }
 tools = { path = "../tools" }
 client = { path = "../client" }
+prompt = { path = "../prompt" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

@@ -129,10 +129,10 @@ fn run_happy(helper_path: String) -> Nil {
       clock: clock.stepping(from: 1_700_000_000_000, by: 7),
     )
   let turns = happy_turns()
-  let effects =
-    wiring.build_effects(rig.config(rig_jail, rig.scripted_gateway(turns)))
-  let options = api.default_options(rig.configuration())
   let assert Ok(sess) = open_session(rig_jail.session_path, "e2e-happy")
+  let effects =
+    wiring.build_effects(rig.config(rig_jail, rig.scripted_gateway(turns), sess))
+  let options = api.default_options(rig.configuration())
   let assert Ok(runtime) = api.open(sess, effects, options)
   let assert Ok(op) =
     api.prompt(runtime, [user("Write notes.txt, then refine it.")])
@@ -221,7 +221,16 @@ fn run_happy(helper_path: String) -> Nil {
   let fingerprints = list.map(messages, fingerprint)
   let assert Ok(Nil) = api.close(runtime)
   let assert Ok(reopened) = open_session(rig_jail.session_path, "e2e-happy-2")
-  let assert Ok(runtime2) = api.open(reopened, effects, options)
+  // Fresh effects over the reopened handle: the compaction hooks read
+  // their durable projection from `wiring.Config.session`, and the
+  // original handle's store went with the closed tree.
+  let reopened_effects =
+    wiring.build_effects(rig.config(
+      rig_jail,
+      rig.scripted_gateway(turns),
+      reopened,
+    ))
+  let assert Ok(runtime2) = api.open(reopened, reopened_effects, options)
   assert list.map(projected(reopened), fingerprint) == fingerprints
   let assert Ok(Nil) = api.close(runtime2)
   jail.stop(rig_jail)
@@ -252,10 +261,10 @@ fn run_crash(helper_path: String) -> Nil {
       output_tokens: 6,
     ),
   ]
-  let effects =
-    wiring.build_effects(rig.config(rig_jail, rig.scripted_gateway(turns)))
-  let options = api.default_options(rig.configuration())
   let assert Ok(sess) = open_session(rig_jail.session_path, "e2e-crash")
+  let effects =
+    wiring.build_effects(rig.config(rig_jail, rig.scripted_gateway(turns), sess))
+  let options = api.default_options(rig.configuration())
   let assert Ok(runtime) = api.open(sess, effects, options)
   let assert Ok(op) = api.prompt(runtime, [user("Run the long task.")])
 
@@ -276,7 +285,14 @@ fn run_crash(helper_path: String) -> Nil {
   // synthetic interrupted result settles under the reserved id; the
   // remaining script then completes the run.
   let assert Ok(reopened) = open_session(rig_jail.session_path, "e2e-crash-2")
-  let assert Ok(runtime2) = api.open(reopened, effects, options)
+  // Fresh effects over the reopened handle — see `run_happy`.
+  let reopened_effects =
+    wiring.build_effects(rig.config(
+      rig_jail,
+      rig.scripted_gateway(turns),
+      reopened,
+    ))
+  let assert Ok(runtime2) = api.open(reopened, reopened_effects, options)
   let assert Ok(outcome) = api.await_result(runtime2, op, within_ms: 60_000)
     as "the recovered run must reach a terminal result"
   let assert operation.RunLastResult(outcome: operation.RunCompleted(..), ..) =

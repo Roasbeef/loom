@@ -3,15 +3,20 @@
 //// the production wiring config assembled from a live jail.
 
 import broker/exec
+import client/summaries
+import client/system_prompt
 import client/wiring
 import core/clock
-import gleam/option.{Some}
+import gleam/option.{None, Some}
+import machine/operation
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration, ThinkingOff,
 }
+import provider/adapter/anthropic
 import provider/gateway.{type Gateway}
 import provider/model.{ResolvedModel}
 import provider/secret
+import session/session.{type Session}
 import support/internal/ffi_shell
 import support/jail.{type Jail}
 import support/script.{type Turn}
@@ -65,16 +70,36 @@ pub fn scripted_gateway(turns: List(Turn)) -> Gateway {
   ])
 }
 
-/// The production wiring config over a live jail and a scripted
-/// gateway.
-pub fn config(jail_rig: Jail, gw: Gateway) -> wiring.Config {
+/// The production wiring config over a live jail, a scripted gateway,
+/// and the session the compaction hooks read their durable projection
+/// from.
+///
+/// Compaction is *live* here, with production's own settings against a
+/// 200,000-token window: the scripted turns report a few hundred tokens
+/// apiece, so the threshold never fires, and the e2e proves that the
+/// compaction seams cost a normal session nothing rather than that they
+/// fire.
+pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
+  let assert Ok(#(summary_pack, [])) = system_prompt.summary_pack(None)
+    as "the shipped summarization pack must load cleanly"
+  let assert Ok(sink) = summaries.start() as "the summary sink must start"
   wiring.Config(
     gateway: gw,
     role: model.Main,
     system: Some("Drive the workspace tools exactly as instructed."),
+    api: anthropic.api_name,
     fallback_context_window: 200_000,
     fallback_max_output_tokens: 8192,
     provider_timeout_ms: 30_000,
+    summary_role: model.Summarize,
+    summary_pack:,
+    summaries: sink,
+    session: sess,
+    compaction: operation.CompactionSettings(
+      enabled: True,
+      reserve_tokens: 16_384,
+      keep_recent_tokens: 20_000,
+    ),
     broker: jail_rig.broker,
     broker_timeout_ms: 15_000,
     registry: registry(),
