@@ -1,8 +1,23 @@
 //// `cap/task` — structured concurrency, and nothing else. There is no
 //// raw spawn here: every task is a child of the combinator that started
-//// it, joined or killed before that combinator returns, so no work ever
-//// outlives its call and killing the satellite reaps the lot
-//// (design §6.5).
+//// it, joined or killed before that combinator returns, so no work
+//// outlives its call while the combinator lives, and killing the satellite
+//// reaps the lot (design §6.5).
+////
+//// ## Where the structure ends
+////
+//// Workers are spawned unlinked and monitored, and the combinator drives
+//// their cancellation from its own loop. That structure holds exactly as
+//// long as the combinator's process does. If something kills it out from
+//// under the loop — most plausibly a linked `cap/actor` crashing while
+//// `main` is blocked inside a combinator — the loop is abandoned and its
+//// workers are orphaned: nothing kills them, and their monitors died with
+//// the parent. They keep running, spending pooled budget, until the host
+//// tears the node down. So the guarantee to state is "no work outlives the
+//// satellite", and "no work outlives its call" holds only while the
+//// combinator is alive. Linking the workers into a per-combinator
+//// sub-supervisor would make the stronger claim true; it is a recorded
+//// follow-up (M4 triage C-F2), not today's behaviour.
 ////
 //// ## Ordering
 ////

@@ -6,11 +6,22 @@
 ////
 //// What is *not* here is as important as what is (design §6.5): no links
 //// or monitors with custom trap-exit logic, no self-defined supervision
-//// strategies, no global registration. The policy is fixed — actors are
-//// spawned linked into the program's process tree, so a crash propagates
-//// and the program fails as a unit (all-for-one), and killing the
-//// satellite reaps them. Those exotic OTP surfaces are for L3 extensions,
-//// where a human approved them.
+//// strategies, no global registration. The policy is fixed — an actor is
+//// spawned linked to whichever process called `spawn`, and killing the
+//// satellite reaps them all. Those exotic OTP surfaces are for L3
+//// extensions, where a human approved them.
+////
+//// ## What the link actually propagates
+////
+//// "All-for-one" describes the common case, not a guarantee that holds
+//// from anywhere. The link runs between the actor and its *spawner*, so an
+//// abnormal actor crash kills that process — which is the program root
+//// when `main` spawned it, and so does fail the program as a unit. An
+//// actor spawned inside a `cap/task` branch is linked to that branch's
+//// worker instead, so its crash is contained to the branch and reported as
+//// a `Crashed` failure; the program carries on. That is fault isolation
+//// rather than all-for-one, and it is worth knowing which one a given
+//// spawn site gets (M4 triage C-F2).
 ////
 //// ## Bounded mailbox (backpressure, not OOM)
 ////

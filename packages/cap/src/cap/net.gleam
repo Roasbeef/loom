@@ -10,6 +10,18 @@
 //// allowlist for a host (the escalation flow, design §5.3) turns the
 //// same calls into real requests through the harness-owned proxy; no
 //// direct sockets ever exist.
+////
+//// ## Deny-by-default is a broker property, not a property of this module
+////
+//// Say it plainly: nothing here refuses anything. Every function marshals
+//// its arguments and calls `dispatch`, exactly as `cap/fs.read` does; the
+//// refusal is composed and returned by the broker, and `map_error` only
+//// *labels* it as a `NetError`. There is no local policy check, and — the
+//// point of the design — no policy field for a program to flip, so a
+//// program cannot widen its own network access. The other side of that
+//// coin is that this module contributes no defence in depth: if the broker
+//// ever admitted `net.request` under a default policy, `cap/net` would not
+//// catch it. Deny-by-default is a property of the broker (M4 triage C-F4).
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
