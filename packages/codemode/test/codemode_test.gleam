@@ -19,6 +19,7 @@ import codemode/vet.{
 }
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
+import gleam/string
 import gleeunit
 
 pub fn main() -> Nil {
@@ -47,6 +48,15 @@ fn has_rule(result: VetResult, rule: Rule) -> Bool {
   case result {
     Passed(_) -> False
     Rejected(rejections) -> list.any(rejections, fn(r) { r.rule == rule })
+  }
+}
+
+/// Whether any rejection's `detail` contains `needle`.
+fn any_detail_contains(result: VetResult, needle: String) -> Bool {
+  case result {
+    Passed(_) -> False
+    Rejected(rejections) ->
+      list.any(rejections, fn(r) { string.contains(r.detail, needle) })
   }
 }
 
@@ -128,6 +138,47 @@ pub fn stacked_attributes_test() {
   assert all_rejected_with(cases, NoForeignInterface)
 }
 
+// --- Category 1b: the @external backstop scans tokens, not raw bytes ---------
+//
+// The backstop must fire on a real `@external` token (attached, dangling, or
+// whitespace/comment-separated) and on any other dangling attribute, but must
+// NOT fire on the literal bytes `@external` appearing inside a string or a
+// comment — those never lex to an `At` token followed by `Name("external")`.
+
+/// The literal in a string constant is inert; the program must PASS (V-F1).
+pub fn external_literal_in_string_passes_test() {
+  let source = "import cap/fs\npub fn main() { \"@external\" }\n"
+  assert is_passed(vet.vet(source, policy()))
+}
+
+/// The literal in a comment is inert; the program must PASS (V-F1).
+pub fn external_literal_in_comment_passes_test() {
+  let source = "import cap/fs\n// @external here\npub fn main() { 1 }\n"
+  assert is_passed(vet.vet(source, policy()))
+}
+
+/// The realistic agent task — grepping source for the FFI keyword — must PASS
+/// rather than train the model that the word is radioactive (V-F1 case c).
+pub fn external_grep_task_passes_test() {
+  let source =
+    "import cap/fs\nimport gleam/string\npub fn scan(s: String) -> Bool { string.contains(s, \"@external\") }\n"
+  assert is_passed(vet.vet(source, policy()))
+}
+
+/// A whitespace-separated dangling `@ external` still REJECTS: the token scan
+/// sees `At` then `Name("external")` regardless of the gap (V-F2).
+pub fn whitespace_separated_external_rejects_test() {
+  let source = "@ external(erlang, \"os\", \"cmd\")"
+  assert has_rule(vet.vet(source, policy()), NoForeignInterface)
+}
+
+/// A dangling non-`@external` attribute is dropped by `glance` but still caught
+/// by the token backstop, so the whole attribute class fails closed (V-F5).
+pub fn dangling_benign_attribute_rejects_test() {
+  let source = "pub fn main() { 1 }\n@deprecated(\"x\")\n"
+  assert has_rule(vet.vet(source, policy()), NoForeignInterface)
+}
+
 // --- Category 2: imports outside the allowlist (well-formed names) -----------
 
 /// Well-formed but forbidden imports — the FFI-bearing and effectful modules a
@@ -160,6 +211,22 @@ fn forbidden_import_cases() -> List(String) {
 
 pub fn forbidden_imports_test() {
   assert all_rejected_with(forbidden_import_cases(), ImportNotAllowed)
+}
+
+/// `gleam/erlang*` and `gleam/otp/*` are rejected by an explicit denylist with
+/// a clear message, redundant to their mere absence from the allowlist (CH-F1).
+pub fn denylisted_imports_rejected_with_clear_message_test() {
+  let cases = [
+    "import gleam/erlang\npub fn main() { 1 }\n",
+    "import gleam/erlang/process\npub fn main() { 1 }\n",
+    "import gleam/otp\npub fn main() { 1 }\n",
+    "import gleam/otp/actor\npub fn main() { 1 }\n",
+  ]
+  assert list.all(cases, fn(source) {
+    let result = vet.vet(source, policy())
+    has_rule(result, ImportNotAllowed)
+    && any_detail_contains(result, "explicitly denied")
+  })
 }
 
 /// Aliasing a forbidden import does not launder it — the module named is still

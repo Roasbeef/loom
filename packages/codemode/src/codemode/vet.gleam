@@ -31,9 +31,15 @@
 ////
 //// # Totality
 ////
-//// `vet` is total. A program that fails to *parse* is a `Rejected`, never a
-//// crash or a panic. Malformed, incomplete, or hostile input all settle as
-//// `Rejection` values the model can read and fix in-band.
+//// `vet` is total *given `glance` returns*: a program that fails to parse is a
+//// `Rejected`, never a crash, and malformed, incomplete, or hostile input all
+//// settle as `Rejection` values the model can read and fix in-band. The one
+//// residual is inside the parser itself — `glance` carries a hard `panic`
+//// (`glance.gleam:944`, "parser bug, expression not full reduced") on a path
+//// no fuzzing has reached. If some input ever reaches it the panic propagates
+//// out of `glance.module` and crashes `vet`; this is availability (a crash
+//// never yields a spurious `Passed`), not a capability bypass, and a
+//// fail-closed parser boundary is deferred hardening (see the M4 triage, V-F4).
 ////
 //// # The `Vetted` token and downstream bypass prevention
 ////
@@ -47,6 +53,8 @@ import codemode/vet/policy.{type VetPolicy} as allowlist
 import glance.{type Attribute, type Module}
 import gleam/list
 import gleam/string
+import glexer
+import glexer/token
 
 /// The outcome of vetting a source string.
 pub type VetResult {
@@ -135,7 +143,7 @@ pub fn vet(source: String, policy: VetPolicy) -> VetResult {
       let rejections =
         list.flatten([
           attribute_rejections(module),
-          external_backstop(source, module),
+          dangling_attribute_backstop(source, module),
           import_rejections(module, policy),
         ])
       case rejections {
@@ -234,48 +242,128 @@ fn function_location(function: glance.Function) -> Location {
   SourceSpan(start, end)
 }
 
-/// A fail-closed backstop for `@external` that does not depend on the parser
-/// attaching the attribute to a definition.
+/// A fail-closed backstop that catches every attribute `glance` dropped,
+/// keyed off the token stream rather than the raw source or the AST.
 ///
-/// `glance` discards attributes that precede no definition — a dangling
-/// `@external` at end of input, for instance, vanishes from the AST (it binds
-/// no function, so it is inert, but we refuse it on principle rather than
-/// reason about inertness). This also hardens rule 1 against any future change
-/// in how the parser surfaces attributes: whatever the AST does, a submitted
-/// program that contains the `@external` token is refused. To avoid
-/// double-reporting the common case — `@external` on a function, which the AST
-/// sweep already catches — the backstop only fires when the AST surfaced no
-/// `external` attribute of its own.
-fn external_backstop(source: String, module: Module) -> List(Rejection) {
-  case
-    module_has_external_attribute(module),
-    string.contains(source, "@external")
-  {
-    False, True -> [
+/// `glance` discards an attribute that precedes no definition — a dangling
+/// `@external` at end of input, for instance, vanishes from the AST. It binds
+/// no function so it is inert, and the real `gleam` compiler rejects an
+/// unattached attribute outright, but we refuse it here on principle: the whole
+/// attribute class fails closed, whatever the parser does with it.
+///
+/// The scan is over `glexer` tokens, not the raw source. Scanning raw bytes for
+/// the substring `"@external"` (the previous approach) fired on the literal
+/// appearing inside a string constant or a comment — rejecting effect-free
+/// programs such as an agent grepping a codebase for FFI (M4 triage V-F1). A
+/// string or comment lexes to a single `String`/comment token that never
+/// decomposes into `At` followed by a `Name`, so the token scan sees only real
+/// attribute syntax. It is also spacing- and comment-adjacency-independent:
+/// `@ external` and `@//c\nexternal` both lex to `At, Name("external")` once
+/// whitespace and comments are discarded (M4 triage V-F2), and it sees every
+/// `@name`, not just `@external` (M4 triage V-F5).
+///
+/// To avoid double-reporting the common case — an attribute attached to a
+/// definition, which the AST sweep already catches — the backstop reports only
+/// the attribute names present in the token stream *beyond* those the AST
+/// surfaced (a multiset difference). What remains is exactly the dropped,
+/// dangling attributes.
+fn dangling_attribute_backstop(
+  source: String,
+  module: Module,
+) -> List(Rejection) {
+  let dropped =
+    subtract_first_occurrences(
+      token_attribute_names(source),
+      ast_attribute_names(module),
+    )
+  list.map(dropped, dangling_attribute_rejection)
+}
+
+/// The attribute names in the token stream: every `At` token immediately
+/// followed by a `Name`. Whitespace and comments are discarded first, so an
+/// attribute is caught however it is spaced, and a `"@external"` inside a string
+/// or comment is a single non-`At` token that is never counted.
+fn token_attribute_names(source: String) -> List(String) {
+  glexer.new(source)
+  |> glexer.discard_whitespace
+  |> glexer.discard_comments
+  |> glexer.lex
+  |> scan_attribute_names([])
+}
+
+fn scan_attribute_names(
+  tokens: List(#(token.Token, glexer.Position)),
+  names: List(String),
+) -> List(String) {
+  case tokens {
+    [#(token.At, _), #(token.Name(name), _), ..rest] ->
+      scan_attribute_names(rest, [name, ..names])
+    [_, ..rest] -> scan_attribute_names(rest, names)
+    [] -> list.reverse(names)
+  }
+}
+
+/// The attribute names `glance` surfaced on every kind of definition.
+fn ast_attribute_names(module: Module) -> List(String) {
+  list.flatten([
+    list.flat_map(module.functions, definition_attribute_names),
+    list.flat_map(module.custom_types, definition_attribute_names),
+    list.flat_map(module.type_aliases, definition_attribute_names),
+    list.flat_map(module.constants, definition_attribute_names),
+    list.flat_map(module.imports, definition_attribute_names),
+  ])
+}
+
+fn definition_attribute_names(
+  definition: glance.Definition(a),
+) -> List(String) {
+  list.map(definition.attributes, fn(attribute) { attribute.name })
+}
+
+/// Removes, for each element of `remove`, its first occurrence in `from` — a
+/// multiset difference. The result is the token-stream attributes the AST did
+/// not account for: the dangling ones.
+fn subtract_first_occurrences(
+  from: List(String),
+  remove: List(String),
+) -> List(String) {
+  list.fold(remove, from, remove_first)
+}
+
+fn remove_first(names: List(String), name: String) -> List(String) {
+  case names {
+    [] -> []
+    [first, ..rest] ->
+      case first == name {
+        True -> rest
+        False -> [first, ..remove_first(rest, name)]
+      }
+  }
+}
+
+/// A rejection for a dangling attribute the token scan found. `@external` names
+/// the FFI hazard specifically; every other attribute is refused on the same
+/// fail-closed rule the AST sweep applies to attached ones.
+fn dangling_attribute_rejection(name: String) -> Rejection {
+  case name {
+    "external" ->
       Rejection(
         NoForeignInterface,
         "the `@external` attribute appears in the submitted source; it binds "
           <> "foreign Erlang/JavaScript code and is never permitted",
         Unlocated,
-      ),
-    ]
-    _, _ -> []
+      )
+    other ->
+      Rejection(
+        NoForeignInterface,
+        "attribute `@"
+          <> other
+          <> "` appears in the submitted source; vetting fails closed on every "
+          <> "attribute, since attributes are the only construct that can reach "
+          <> "foreign code",
+        Unlocated,
+      )
   }
-}
-
-/// Whether any definition in the module carries an attribute named `external`.
-fn module_has_external_attribute(module: Module) -> Bool {
-  let attribute_lists =
-    list.flatten([
-      list.map(module.functions, fn(definition) { definition.attributes }),
-      list.map(module.custom_types, fn(definition) { definition.attributes }),
-      list.map(module.type_aliases, fn(definition) { definition.attributes }),
-      list.map(module.constants, fn(definition) { definition.attributes }),
-      list.map(module.imports, fn(definition) { definition.attributes }),
-    ])
-  attribute_lists
-  |> list.flatten
-  |> list.any(fn(attribute) { attribute.name == "external" })
 }
 
 // --- Rules 2 & 3: imports confined to the allowlist ------------------------
@@ -305,17 +393,34 @@ fn import_rejections(module: Module, policy: VetPolicy) -> List(Rejection) {
           Unlocated,
         ))
       True ->
-        case allowlist.contains(policy, name) {
-          True -> Error(Nil)
-          False ->
+        // The denylist is consulted before the allowlist: these modules are
+        // rejected with a specific reason, and stay rejected even if a
+        // misconfigured policy allowed one (CH-F1, redundant defense).
+        case allowlist.is_denied(name) {
+          True ->
             Ok(Rejection(
               ImportNotAllowed,
               "import `"
                 <> name
-                <> "` is not in the capability allowlist; a submitted program "
-                <> "may import only the pinned prelude",
+                <> "` is explicitly denied: `gleam/erlang` and `gleam/otp` (and "
+                <> "their submodules) expose raw processes, atoms, OS access, "
+                <> "and supervision; a submitted program's concurrency is "
+                <> "`cap/task`/`cap/actor`",
               Unlocated,
             ))
+          False ->
+            case allowlist.contains(policy, name) {
+              True -> Error(Nil)
+              False ->
+                Ok(Rejection(
+                  ImportNotAllowed,
+                  "import `"
+                    <> name
+                    <> "` is not in the capability allowlist; a submitted "
+                    <> "program may import only the pinned prelude",
+                  Unlocated,
+                ))
+            }
         }
     }
   })

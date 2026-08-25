@@ -112,6 +112,34 @@ pub fn contains(policy: VetPolicy, module: String) -> Bool {
   set.contains(policy.allowed_imports, module)
 }
 
+/// Whether `name` names a module on the explicit denylist: `gleam/erlang` and
+/// everything beneath it, and `gleam/otp` and everything beneath it.
+///
+/// This is redundant defense (CH-F1). These modules are already excluded by
+/// omission from the allowlist, so `contains` alone rejects them; the denylist
+/// exists so the rejection carries a *specific* reason — these modules expose
+/// raw processes, atoms, OS access, and supervision reaching the real VM, and a
+/// submitted program's concurrency is `cap/task`/`cap/actor` instead — and so a
+/// future policy that mistakenly `allow`ed one still cannot let it through. The
+/// vetting layer consults this before the allowlist for exactly that reason. It
+/// does not close the transitive-dependency build-graph path (that is J3c
+/// Builder work); it is a source-level import guard.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.is_denied("gleam/erlang/process")
+/// assert policy.is_denied("gleam/otp/actor")
+/// assert !policy.is_denied("gleam/list")
+/// ```
+///
+pub fn is_denied(name: String) -> Bool {
+  name == "gleam/erlang"
+  || string.starts_with(name, "gleam/erlang/")
+  || name == "gleam/otp"
+  || string.starts_with(name, "gleam/otp/")
+}
+
 /// Whether `name` is a syntactically legal ASCII Gleam module name: one or
 /// more segments joined by `/`, each segment a lowercase ASCII identifier
 /// (`[a-z][a-z0-9_]*`).
