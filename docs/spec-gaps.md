@@ -383,6 +383,35 @@ instead and are only referenced here.
 6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
    pooled budget remains the concurrency ceiling underneath.
 
+11. **The fallback chain is never walked by the session server.** The
+    catalogue lets an operator write an ordered chain per role, and the
+    gateway implements the walk — but `client/wiring.request_target`
+    always returns `ForResolved`, never `ForRole`, and the module doc
+    gives the reason at the call site: recovery must re-dispatch exactly
+    what was committed, and a fallback walk would let it come back on a
+    different model than the durable record names. Durable exactness won.
+    The consequence is that a retryably-failing request retries the same
+    identity through the machine's retry ladder; the chain tail is parsed,
+    validated, and inert. This is a real tension, not an oversight, but
+    `effects.md`, the design doc, and the comment in
+    `docs/examples/loom.toml` all still read as though the chain engages.
+    Resolving it properly means either committing the *role* rather than
+    the resolved identity, or having recovery consult the chain that was
+    in force at commit time. Deferred, recorded so it is decided.
+
+12. **Only the `main` role is dispatched on.** `client/serve` builds one
+    wiring config with `role: Main` for the whole session, so the
+    `subagent`, `plan`, `summarize`, and `vision` rows are parsed,
+    validated, registered, and listed while selecting nothing. Consistent
+    with role routing being an M5 concern; stated here because nothing
+    else says it as an as-built fact.
+
+13. **A catalogue entry's `thinking` never reaches the wire.**
+    `request_target` overwrites it with the strand's per-turn thinking
+    level on both branches, so the field is validated and then discarded.
+    Either the entry's value should be the default the strand overrides,
+    or the field should be refused like `headers` is.
+
 ## From WP-J (`codemode`, `cap`) — decided at M4 kickoff
 
 1. **Canonical cap module set.** Design §6.2 lists `cap/net` + `cap/report`
