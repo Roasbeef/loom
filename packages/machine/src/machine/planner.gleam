@@ -1447,8 +1447,9 @@ fn settle_overflow(
       overflow_operation_error(message),
     )
   }
-  // A spent recovery never asks for a preparation, which is why the
-  // first subject is matched before the second is looked at.
+  // A spent recovery drains whatever the preparation would have said,
+  // so its arm matches on the first subject alone and never asks for
+  // one.
   case context.overflow_recovery_used, overflow_preparation {
     True, _ -> drain_as_failure()
     False, None ->
@@ -2950,6 +2951,16 @@ fn settle_poll(
       // disabled.
       intended_output_limit: 0,
       expected_model: configuration.model,
+      // Not a captured api, unlike `settle_assistant`'s: neither the
+      // deferred state nor the `DeferredFetch` intent persists one, so
+      // this compares the response against its own claim and can never
+      // fail. ORCH-L4 is upheld one step later instead —
+      // `resuspend_on_poll_handle` requires the returned handle to be
+      // *completely* equal to the source handle, api included, and the
+      // first source handle was validated against the real captured api
+      // in `settle_assistant`. By induction every accepted poll handle
+      // carries that api. `classification.handle_valid` names this split
+      // too: poll-source equality is the planner's, stricter, check.
       expected_api: message_api(message),
       error_retryable: settled_retryable(message),
     )
