@@ -122,14 +122,42 @@ launch contract (argv/env/socket/policy), then spec'd from it. cap and
 codemode are build-independent, so the two agents' cross-checks don't
 race.
 
+### Update: J3a + J3b landed; M4 review wave in flight
+
+Both Gleam pieces are committed + pushed and independently verified green:
+`cap/runtime` boot runtime (J3a, `65d3b38`, 26 cap tests) and codemode's
+compile service + satellite host + orchestrator (J3b, `fcde26a`, 44
+codemode tests). The whole **security core of code mode is now written**:
+vet (layer one), the token/channel boundary, the compile-time module-name
++ dependency pinning, and the host's constant-time token check on every
+cap_call. J3a/J3b reconciled cleanly — the terminal `outcome` frame
+(kind `"outcome"`, which broker/framing rightly treats as UnknownKind) is
+decoded by the host's own splitter; the host mints the cap-channel token
+via broker/token (no new FFI) and checks it constant-time before routing;
+each cap_call is one clearance under a shared `{op_id, step_id}` (pooled
+budget). The escaped-satellite tabletop proves the token-denial and
+deadline-kill halves in-process; the kernel "reaches nothing" half is
+deferred to `make e2e` on a target kernel.
+
+Following the standing pattern (adversarial review before the surface is
+trusted), THREE Opus reviewers are now running over J1–J3b, BEFORE J3c is
+built, so the host is not churned while under scrutiny: (1) vetting
+soundness → `docs/review/m4-vetting.md`; (2) cap boundary + token +
+boot-runtime totality/cancellation → `docs/review/m4-cap.md`; (3) compile
+hermeticity + host token/budget/deadline/cleanup + tabletop rigor →
+`docs/review/m4-compile-host.md`. Each reports reproduced findings with
+severity + a proposed fix and an "attacks that correctly fail" section.
+
 ### Next
 
-Verify + commit J3a and J3b as each lands (green gate, contracts honored).
-Then spec + dispatch J3c (Go) from J3b's launch contract, wire the
-integration compile+boot test, and run the adversarial review of the
-whole M4 surface before it is trusted, per the standing pattern. Standing
-items unchanged (GitHub default branch to `main` + stale remote branch
-delete; `make selftest` / `make e2e` on a target-tier kernel).
+Triage the three M4 reviews into `docs/review/m4-triage.md`; run a fix
+wave (failing-first test precedes every fix, the standing rule). THEN
+spec + dispatch J3c (Go sandbox satellite-launch + the Gleam production
+`Launcher`/`Builder`) against J3b's now-frozen `LaunchSpec`/`CapConnection`
+seam, and wire the integration compile→boot path. The real jailed run and
+the kernel half of the tabletop land with `make e2e` on a target-tier
+kernel. Standing items unchanged (GitHub default branch to `main` + stale
+remote branch delete; `make selftest`/`make e2e` on a target kernel).
 
 ---
 
