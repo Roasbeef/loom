@@ -57,8 +57,8 @@ Two corrections to the design's phrasing, neither fatal:
   queue in the *same* mailbox as the writer's commits. The design already
   concedes "under contention, arbitrarily more" for elapsed time; the
   mechanism is this mailbox, and it is worth naming.
-- Every writer entry point is `process.call_forever` (`writer.gleam:254,
-  269, 285, 301, 316, 331, 345`) — no timeout anywhere. Nothing in this
+- Every writer entry point is `process.call_forever` (`writer.gleam:270,
+  285, 301, 317, 332, 347, 361`) — no timeout anywhere. Nothing in this
   design wedges the writer, but the consequence of ever doing so is
   session-wide and permanent, not a timeout. That raises the bar for
   claim 1(a)'s cousin, below.
@@ -577,7 +577,7 @@ at the end of an implementation rather than the start.
 **Bootstrap knot — UNPROVEN. The design names it and does not solve it.**
 "Production wiring fills it with closures over the live runtime" is not
 achievable as stated. `serve` builds `wiring.Config` → `wiring.build_effects`
-→ `effects_record` and only *then* calls `api.open` (`serve.gleam:541-573`),
+→ `effects_record` and only *then* calls `api.open` (`serve.gleam:877-910`),
 and `Runtime` **contains** `effects: Effects` (`api.gleam:68-76`). A closure
 reachable from `Effects` that captures the `Runtime` is a genuine value
 cycle, not a plumbing inconvenience. `tool.Ctx` is built inside

@@ -244,6 +244,8 @@ pub type SandboxPolicy {
 }
 ```
 
+**Memory and pid ceilings are the operator's grant, not the kernel's gift.** `mem_bytes` and `pids` need a cgroup — `RLIMIT_AS` is per-process and escaped by forking, `RLIMIT_NPROC` is per-user — and cgroup v2 will not enable controllers for the children of a cgroup that has member processes. The helper's own cgroup always contains the helper, so it can only serve as a base in the true root cgroup. Any *delegated, process-empty* cgroup works, which is exactly what systemd's `Delegate=yes` (with `DelegateSubgroup=` on v254+) produces; the operator names one in `LOOM_CGROUP_BASE` or `--cgroup-base` and the helper enables `memory` and `pids` for its children. Absent that grant the two ceilings are **not** applied, and the per-execution enforcement report says so with a `skip:cgroup-v2` entry — which fails a full-enforcement demand rather than passing one with the ceilings quietly missing.
+
 **Defaults**: workspace-write, network **off**, `.git/`, `~/.ssh`, credential paths protected. Secrets are injected into provider calls by the ProviderGateway from the OS keychain — never in tool environments, never in transcripts; executor environments are allowlist-constructed, not inherited. `Proxy(allowlist)` egress runs through a harness-owned proxy; the sandbox blocks direct sockets, making the allowlist enforceable and loggable.
 
 ### 5.3 The ToolBroker: one door, capability tokens

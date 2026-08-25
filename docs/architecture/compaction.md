@@ -97,12 +97,12 @@ ceiling come from the resolved route, under the adapter's own api name
 (`compaction_hooks`, `client/wiring.gleam:273`). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:411` (`default_reserve_tokens`) and
+once in `client/serve.gleam:483` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:423`).
+(`compaction_settings`, `client/serve.gleam:495`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
@@ -336,14 +336,14 @@ as a faulted driver or a crashed effect.
 
 Each nested request settles its own ledger row and clears the in-flight
 marker in one transaction, so the next pass is unambiguously "between
-requests" (`settle_summary_request`, `machine/planner.gleam:3736`). Those
+requests" (`settle_summary_request`, `machine/planner.gleam:3739`). Those
 rows carry no entry id, because they commit before the result entry
 exists. When progress finally reports `SummaryProduced`, the publication
 is a single transaction: the compaction entry parented on the current
 leaf, carrying the summary, the complete retained tail from the frozen
 preparation, the `tokens_before` the preparation recorded, a `from_hook`
 of `False`, and the summarizer's display usage — plus the leaf move
-(`compaction_publication`, `machine/planner.gleam:4134`). No extra usage
+(`compaction_publication`, `machine/planner.gleam:4267`). No extra usage
 row is written on this path; the hook-supplied path writes one because
 nothing else billed it, and the generated path already paid per request.
 
@@ -351,19 +351,99 @@ Where the run goes next depends on who hosted the work. An in-run
 compaction restores the checkpoint it copied aside, already marked
 threshold-checked, so the same boundary is never rechecked and the run
 carries straight on to its generation step (`publish_structural`,
-`machine/planner.gleam:4020`). A standalone compaction operation
+`machine/planner.gleam:4153`). A standalone compaction operation
 finishes, with the new entry as its result leaf.
 
-Failure and decline are not the same thing, and the difference is
-asymmetric. A *declined* threshold compaction restores the checkpoint
-and the run carries on unsummarized; a declined overflow compaction
-drains, because the request still does not fit. But a summary that
-*fails* past its retry ladder drains the run whichever reason started
-it — a threshold compaction that cannot reach a summarizer takes the run
-down with it. What it never does is publish: an empty summary would
-replace the conversation with nothing, and
+## When the compaction does not happen
+
+Decline and failure both end an in-run compaction with nothing published,
+and for both the first question is the `CompactionReason` — not the error
+and not how far the retry ladder got. That is one rule read at two sites,
+`decide_structural` for a decline (`machine/planner.gleam:3544`) and
+`structural_failure` for a failure (`machine/planner.gleam:4098`).
+
+**A threshold compaction is Loom's own clamp**, applied because the
+context crossed an inequality the harness chose. Failing to apply it
+costs the clamp, not the conversation: every message that was in the
+tree is still in the tree, still projecting to the same context, still
+the size it was when the last generation request fitted the window. So
+the run restores the checkpoint the compaction copied aside and carries
+on unsummarized, whether the compaction was declined by a hook or failed
+past its retry ladder against a summarizer that was down.
+
+**An overflow compaction is the provider's verdict** that the context
+does not fit, and a run that cannot shrink a context the provider has
+already refused has nowhere left to go. A declined or failed overflow
+compaction drains the run, exactly as before.
+
+What neither ever does is publish. An empty summary would replace the
+conversation with nothing, and
 `a_terminally_failed_summary_publishes_nothing_test` asserts the tree
 gains no compaction at all.
+
+### What the run does next, and why it is not nothing
+
+A threshold compaction that failed leaves a question a decline does not:
+the summarizer will be just as unavailable at the next boundary, and the
+context did not shrink, so the threshold will be crossed again. Restoring
+the checkpoint alone would re-enter the whole structural lifecycle — a
+decision hook, a resolution, a full retry ladder of provider requests
+against the same dead route — on every turn for the rest of the run.
+
+So abandoning a threshold compaction also **switches threshold compaction
+off for the remainder of that run**, by clearing `enabled` in the run's
+own captured `CompactionSettings`
+(`abandon_threshold_compaction`, `machine/planner.gleam:4031`). That is
+the durable record of the attempt the backoff needs, and it needs no new
+state: `enabled` is already the single gate step 3 reads
+(`after_inbox`, `machine/planner.gleam:739`), already inside `op.state`,
+and therefore already survives a crash-restore rather than re-opening the
+gate on recovery.
+
+The backoff interval is the operation. `RunSettings` is captured per
+operation at acceptance, so the next prompt on the strand takes a fresh
+snapshot with compaction enabled and asks the summarizer again. A
+summarizer outage costs the run its compaction, not the session its
+ability to compact.
+
+The run then continues unclamped, which is survivable because the clamp
+was never the only guard. Overflow recovery does not consult these
+settings at all — a request that does not fit still diverts into a
+compaction task (`settle_overflow`, `machine/planner.gleam:1403`) — so
+the provider's own limit remains the backstop. If the summarizer is
+still down when it fires, that compaction drains the run, and by then
+draining is the honest outcome.
+
+### Which failures leave the run alive
+
+Not every structural error is about the summarizer, so the threshold path
+consults one predicate before it decides to survive
+(`fatal_to_the_context`, `machine/planner.gleam:3992`). It asks what the
+error is a statement *about*. An unresolvable route, a provider that
+would not answer, a summarizer that replied with a tool call instead of
+a summary, a settlement lost with its process, an attempt orphaned at the
+attempt cap — all of those describe the summarizer, and the run survives
+them. An error that says the *context* does not fit describes the
+conversation, and the run drains on it even from the threshold path.
+
+The predicate is a denylist rather than an allowlist, deliberately. A
+code it has never heard of, from a host's own hooks, is far likelier to
+be one more way for a summarizer to be unavailable than a claim that the
+conversation cannot continue — and the two mistakes cost differently.
+Continuing when the run should have drained costs one more generation
+request, which the overflow path catches. Draining when the run should
+have continued costs the whole session, which is the failure this
+distinction exists to prevent (issue #34). Corruption is untouched by
+any of it: an undecodable register or an impossible observation is a
+`Fault` raised at its own site, never an `OperationError`, so nothing
+here can turn an impossible state into a survivable one.
+
+`threshold_summarizer_unresolved_keeps_the_run_alive_test`,
+`threshold_summary_failure_past_the_ladder_keeps_the_run_alive_test`,
+`overflow_summarizer_unresolved_still_drains_test` and
+`threshold_context_overflow_still_drains_test` in
+`packages/machine/test/machine/failure_test.gleam` drive a failing
+summarize route down each path and pin the four outcomes apart.
 
 ## What a later projection sees
 
@@ -392,7 +472,7 @@ the storage plane was already built around.
 **Overflow.** When a provider reports that the context does not fit, the
 settlement classifies as an overflow and the machine asks the runtime for
 a preparation before deciding anything (`settle_overflow`,
-`machine/planner.gleam:1402`). The hook behind that key is the same
+`machine/planner.gleam:1403`). The hook behind that key is the same
 builder the threshold uses, asked unconditionally: a provider that says
 the context does not fit has already evaluated the inequality, so the
 only question left is whether there is anything to compact
@@ -402,16 +482,18 @@ response, its leaf move, its usage row, the preparation and the new state
 as one transaction — so the compaction task can never exist without the
 response that caused it — and resumes the same trigger with the one-shot
 recovery marked spent, so a retried request cannot loop on overflow
-(`enter_overflow_compaction`, `machine/planner.gleam:1461`). An empty
+(`enter_overflow_compaction`, `machine/planner.gleam:1462`). An empty
 preparation, or a second overflow on the same step, drains the run as
-`context_overflow`. Before the wiring existed the default preparation was
+`context_overflow`; so does a compaction that was declined or that failed
+against its summarizer, which is where this path parts company with the
+threshold's. Before the wiring existed the default preparation was
 always empty, which is why an overflowing production run simply died.
 
 **The manual command.** `Compact(strand, instructions)` accepts a
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2179`). An
+(`compaction_preparation`, `client/gateway.gleam:2186`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
@@ -468,6 +550,18 @@ and it is a preparation change rather than a prompt one.
 **`SummaryNeedsRequest` is never returned in production.** Because this
 builder cannot produce a split preparation, one request per attempt is
 the whole loop.
+
+**The simulation never fails a summarizer.** Its `summary_progress` hook
+answers only `SummaryProduced` or `SummaryNeedsRequest`
+(`hooks`, `conformance/simulation/surface.gleam:905`), so no seed drives
+a structural failure and the seeded soak proves the survival rule only by
+*not* regressing around it. Adding a refusing summarizer means a new
+`script.Structural` variant, and drawing it would reshuffle every seed's
+schedule — the corpus is the oracle, so a variant added here should stay
+out of the weight table and be reached by an explicitly constructed
+script. The rule itself is pinned at the machine level, in
+`packages/machine/test/machine/failure_test.gleam`, and at the seam level
+by `a_terminally_failed_summary_publishes_nothing_test`.
 
 ## Where the code lives
 

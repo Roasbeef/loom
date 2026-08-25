@@ -267,6 +267,21 @@ teardown when it dies however it died — the same shape as the broker's own
 fd-3 safety net. A host killed from outside therefore still leaves no node
 running, no socket bound, and no token file on disk.
 
+Teardown is also where the node's **enforcement report** is collected, and
+the ordering is deliberate. `CapConnection.destroy` aborts the operation,
+waits for the node's own settlement, and *returns* what the helper
+reported; the host destroys the node before it reports the execution's
+outcome, so the report travels out in `satellite.Run` rather than chasing
+an outcome that has already left. The abort is what makes the report
+reachable rather than what loses it — a cancelled execution still answers
+with `exec_exit`, carrying the same enforcement list — and the launcher
+holds the node's clearance handle so that teardown cancels it whichever of
+the two arrives first. A stage that genuinely never reported carries an
+`Unreported` naming the reason, which is a different value from a report
+that was lost. Before this, the report was published on a callback the
+abort usually beat, so a healthy run reported the build's layers and
+nothing at all for the node (issue #5, spec-gaps WP-J 14).
+
 A hostile `.beam` that slipped past vetting and the compiler lands here, in
 a jail whose only reachable effect is the one broker channel. Be exact
 about which layer holds that line, because it is easy to credit the wrong
@@ -765,8 +780,10 @@ much margin it had.
 
 What the run does not prove depends on the kernel under it, and the suite
 says so out loud rather than letting green imply more than it earned. It
-prints the helper's own enforcement report for both the build and the node,
-and prints in as many words whether network-off was *enforced*. In the
+prints the helper's own enforcement report for both the build and the node
+— and asserts that both are *present*, which is the property `make
+e2e-codemode` owes the sandbox's value claim — and prints in as many words
+whether network-off was *enforced*. In the
 development container it is not: there is no bubblewrap binary, no Landlock
 in the kernel, and no delegated cgroup v2 hierarchy, so the build runs
 offline but this run does not prove it *could not* have reached the network.
@@ -791,6 +808,7 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `codemode/build.gleam` | The production `Builder`: `gleam build --warnings-as-errors` in a network-off jail, the flattened `.beam` set, the content address. |
 | `codemode/launch.gleam` | The production `Launcher`: the cap socket, the reachability checks, the jailed `erl`, the janitor. |
 | `codemode/satellite.gleam` | The in-harness host: the broker end of the cap channel, the router, the deadline, teardown. |
+| `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |
 | `cap/fs.gleam`, `cap/proc.gleam`, `cap/net.gleam`, `cap/git.gleam`, `cap/lsp.gleam`, `cap/kv.gleam`, `cap/report.gleam` | The prelude's capability modules — typed stubs over `cap_call`. |
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |

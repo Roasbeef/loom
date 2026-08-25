@@ -20,7 +20,7 @@ work someone must do to meet a stated criterion is listed here.
 Items are cited as section plus the number as written in the list
 (`WP-J 14`, `M3 runtime wave 11`).
 
-### Deferred work with a home (8)
+### Deferred work with a home (7)
 
 | Item | The work | Scheduled at |
 |---|---|---|
@@ -31,11 +31,10 @@ Items are cited as section plus the number as written in the list
 | M3 runtime wave 12 | dispatch on the `subagent`/`plan`/`summarize`/`vision` roles, not `main` alone | M5 |
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
-| WP-J 14 | carry the satellite's enforcement report in the outcome (or report on the abort path) so a green run proves the jail engaged | M4.5 / WP-N, which sequences it before the seam |
 
-### Deferred work with no home (14)
+### Deferred work with no home (13)
 
-Fourteen items, thirteen rows: the canonical session id is recorded
+Thirteen items, twelve rows: the canonical session id is recorded
 twice. Nothing in the right-hand column is scheduled — it is where the
 work would sit if someone scheduled it, recorded so the choice is made
 rather than drifted into. Part 5.1 of the spec says the same thing from
@@ -47,7 +46,6 @@ the other side.
 | WP-J 15 | let an approved escalation widen a code-mode execution; every clearance the pipeline makes passes no grants, so approving one changes nothing | M4.5 / WP-N, with WP-L 1 |
 | WP-J 16 | one threaded `ExecIdentity`, so one-ledger-per-execution is a property of the types rather than a convention the caller must honor | M4.5 / WP-N |
 | WP-E 8 | the chaos tier of WP-E's own exit criteria — random kills under load, ten-minute soak. `make soak` is the deterministic-simulation seed soak, not a chaos runner | WP-T, and M1 recorded partial until it runs |
-| WP-E 3 | root the session tree under an application supervisor: close is a controlled crash, and `client/serve` is now the long-lived host the entry said to wait for | a `serve` fix; no milestone |
 | WP-G 9 | the MCP adapter — in WP-G's scope, deferred post-M2, integrated by no row since | a Part 5 track |
 | WP-F 7 | the per-OS keychain backends WP-F's scope names; only the environment backend ships | a Part 5 track |
 | WP-F 6 | pricing tables somewhere ledger-side, since the adapters zero every cost field and §3.4 calls the ledger the billing source of truth | the token-budget work `design-notes/orchestration-comparison.md` sequences after WP-N |
@@ -314,6 +312,21 @@ the other side.
    exponent twenty; overflow during a deferred poll drains as failure
    (pi's poll table has no compaction path); summary usage rows carry no
    entry id because they commit before the result entry exists.
+7. **A failed threshold compaction does not drain the run** (issue #34).
+   pi's structural-failure row is uniform: any in-run summary that fails
+   past its retry ladder ends the run. Loom reads the `CompactionReason`
+   there, the same way the decline row already did. A *threshold*
+   compaction is the harness's own clamp, so failing to apply it against
+   an unavailable summarizer restores the resume checkpoint and the run
+   carries on; an *overflow* compaction still drains, because the
+   provider has already refused the context. Two things bound the
+   divergence. An error whose subject is the context rather than the
+   summarizer (`context_overflow`) drains from either path, and
+   abandoning a threshold compaction clears `enabled` in the run's
+   captured `CompactionSettings`, so the threshold cannot re-fire into
+   the same dead route on every later boundary of that run. Settings are
+   captured per operation, so the next run asks the summarizer again.
+   `docs/architecture/compaction.md` carries the reasoning.
 
 ## From WP-E (`runtime`, `session`)
 
@@ -325,11 +338,20 @@ the other side.
 2. **Boot seeding bypasses the writer** — strand seeding commits through
    the session handle before the tree exists, CAS-guarded; every
    post-boot commit flows through the writer.
-3. **Close is a controlled crash.** The otp static supervisor offers no
-   graceful external shutdown, so close kills the tree (commits are
-   atomic, so durable state stops at a commit boundary) and releases the
-   lease. Trees should root under an application supervisor when a
-   long-lived host exists.
+3. **Close is an orderly shutdown** (was: a controlled crash; closed by
+   issue #8). `gleam/otp/static_supervisor` wraps no graceful external
+   stop, so `api.close` reaches OTP's own — `sys:terminate/3`, the one
+   external stop a `supervisor` offers — through the runtime's single
+   FFI. Children terminate in reverse start order with reason
+   `shutdown`, so every strand driver is gone before the writer it
+   commits through, and a close that was asked for is no longer
+   indistinguishable from a fault. A tree that will not stop inside the
+   grace is still killed: a session locked out for a whole lease TTL is
+   the worse failure. `client/serve` roots the whole stack on an
+   exit-trapping host process (`client/host`) rather than an OTP
+   application — the boot threads values, not names, through steps that
+   a static supervisor's pre-built child list cannot express — and its
+   restartable pieces sit under a supervisor of their own.
 4. **Abort is strand-routed** so its marker commit serializes with the
    strand's own transitions; a pre-commit crash loses the request exactly
    as pi's no-live-task case does — callers re-request.
@@ -622,15 +644,25 @@ the other side.
    needs a policy and attribution story before it needs an API. Deferred,
    and recorded here so it is decided rather than drifted into.
 
-14. **The satellite's enforcement report is usually lost.** `satellite`
-    reports enforcement only on `CallExited`, but `destroy` aborts the
-    operation as soon as the outcome arrives, so a healthy run reports the
-    build's layers and nothing for the node — observed live while wiring
-    the code-mode tool. The tool therefore says a stage that made no
-    report is not a claim it was confined, which is honest but weaker than
-    it should be. Carrying the report in `Ran`, or reporting on the abort
-    path, would make honest reporting structural rather than a racing
-    side-channel. Worth fixing before anyone leans on the sandbox line.
+14. **The satellite's enforcement report was usually lost — fixed**
+    (issue #5). `satellite` reported enforcement only on `CallExited`,
+    on a `fn(entries, degraded)` side channel, and `destroy` aborted the
+    operation as soon as the outcome arrived — so a healthy run reported
+    the build's layers and nothing for the node, observed live while
+    wiring the code-mode tool. Both candidate fixes were taken, because
+    each answers half of it. The report is now **carried in the
+    outcome**: `compile.Compiled` carries the build's, `satellite.Run`
+    carries the node's, and `codemode.Execution` carries both as a
+    two-field record, so no outcome can exist without them. And it is
+    **collected on the abort path**: `CapConnection.destroy` returns the
+    report, the host tears the node down before it reports its outcome,
+    and the launcher's holder cancels the node's clearance whichever way
+    teardown and clearance race — a cancelled execution still answers
+    with `exec_exit`, which is what makes the report reachable rather
+    than lost. A stage that genuinely made no report says why
+    (`enforcement.Unreported`), which is not the same value as one that
+    reported nothing. `make e2e-codemode` asserts both stages report on
+    the happy path and on the deadline kill.
 
 15. **Approved escalations never widen a code-mode execution.** Every
     clearance the pipeline makes passes `grants: []`, so an operator who

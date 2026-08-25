@@ -174,7 +174,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1029`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1062`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -563,7 +563,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:484`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:511`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -591,7 +591,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1532`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1567`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -746,33 +746,41 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:991`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1083`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
 helper through a shell:
 
 ```gleam
-  let args = [
-    "-c",
-    "exec 3<\"$2\" \"$1\"",
-    "loom-exec",
-    config.helper_path,
-    policy_path,
-  ]
+  let args =
+    list.append(
+      [
+        "-c",
+        "helper=$1; policy=$2; shift 2; exec 3<\"$policy\" \"$helper\" \"$@\"",
+        "loom-exec",
+        config.helper_path,
+        policy_path,
+      ],
+      config.helper_args,
+    )
 ```
 
 Positional parameters sidestep every quoting pitfall in the paths; the
 file is unlinked the moment the helper's hello proves it was read, and a
 janitor process monitors the helper actor for deaths the actor never
 sees. Per-execution policy still travels inside `exec_start` and remains
-authoritative there.
+authoritative there. `helper_args` is how the two things the helper can
+only learn from its command line get there — a delegated cgroup base, and
+the `--allow-unenforced` opt-out on a platform with no jail — since an
+Erlang port cannot set its child's environment.
 
 `loom-exec` is one static Go binary whose first argument selects its role
-(`cmd/loom-exec/main.go:35`): server mode with no argument at all, stage 2
-under `--exec`, plus `--self-test`, `--probe-socket`, and
-`--allow-unenforced`, which is server mode on a platform Loom has no jail
-for. Server mode spawns bwrap, which owns every namespace and
+(`cmd/loom-exec/main.go:39`): server mode with no argument at all, stage 2
+under `--exec`, plus `--self-test`, the `--probe-socket` and
+`--probe-setsid` witnesses, `--cgroup-base` (the delegated cgroup v2 base
+the memory and pid ceilings need), and `--allow-unenforced`, which is
+server mode on a platform Loom has no jail for. Server mode spawns bwrap, which owns every namespace and
 mount — load-bearing, because the Go runtime is multithreaded from the
 first instruction and unshare/fork namespace assembly in a multithreaded
 process is the tar pit that gave runc its `nsexec.c`. The helper only
@@ -1096,7 +1104,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:786`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:4271`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:4404`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
@@ -1186,8 +1194,8 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:974`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:254`) finds `gleam` and `erl`
+`serve.registry` (`client/serve.gleam:1197`) appends the tool only when
+`codemode.discover` (`client/codemode.gleam:236`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1280,7 +1288,7 @@ design names it as the mechanism for the self-improvement loop; no
 release-upgrade machinery, no upgrade handling, and no extension zone
 exists in the tree. The single `code_change/3` in the source is the
 SIGTERM relay's gen_event boilerplate — a no-op
-`code_change` (`client_ffi.erl:102`). **Distribution is not used
+`code_change` (`client_ffi.erl:119`). **Distribution is not used
 either**: the bus is a single node's, and the control-plane half of the
 two-channel doctrine has no code behind it yet.
 
