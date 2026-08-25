@@ -36,7 +36,11 @@ package is wrong.
   which is the map. Two conventions hold throughout: every type the
   module has is declared before the first function body (the private ones
   included), and a phase's entry function is a dispatch table whose arms
-  name the decision rather than making it.
+  name the decision rather than making it. The corruption path has its
+  own `use` forms — `or_fault` and `or_fault_unless` — because Gleam has
+  no early return and `result.try` cannot serve where the continuation
+  returns an `Action`; reach for them rather than nesting a `case` whose
+  error arm is `Fault(report:)`.
 - `machine/acceptance.accept_prompt` — the single acceptance transaction
   for a run, standalone compaction, or navigation.
 - `machine/classification.{settle, classify}` — the normative
