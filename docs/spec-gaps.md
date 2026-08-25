@@ -383,6 +383,20 @@ instead and are only referenced here.
 6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
    pooled budget remains the concurrency ceiling underneath.
 
+## From WP-J (`codemode`, `cap`) — decided at M4 kickoff
+
+1. **Canonical cap module set.** Design §6.2 lists `cap/net` + `cap/report`
+   but omits `cap/kv`; the WP-J spec lists `cap/kv` but omits `cap/net`.
+   Resolved as the union, since the vetting allowlist IS this set and the
+   two must not diverge:
+   `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`.
+   `cap/net` ships as a real module whose calls deny by default (network
+   is off by default; a policy escalation is the only path to egress),
+   so the design's canonical "a program that never imports `cap/net`
+   cannot open a socket, and importing it still yields nothing without an
+   approved policy" story stays literally true. §6.2's list is stale on
+   `cap/kv`; the WP-J list is stale on `cap/net`.
+
 ## From M3 messaging (design §4.6 reconciliation)
 
 1. **Request/reply is explicit-poll, not auto-enqueue.** §4.6 says a
