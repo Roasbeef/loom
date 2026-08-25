@@ -76,6 +76,14 @@ live runtime would be a value cycle rather than an ordering problem. The
 seam closes over a process name and the holder starts under that name
 after the open.
 
+The tool registry is assembled next, and what goes into it is decided
+here rather than at call time: the `agent_*` family when a messaging
+plane was wired, and `code_mode` only if this host has the toolchain and
+the build seed code mode needs (§15). One registry serves two masters —
+the effect wiring dispatches through it and the hub validates
+`set_config active_tools` against it — so they must be the same registry
+or the check means nothing.
+
 The system prompt is assembled once and pinned into a reserved `prompt/`
 cell, read straight off the store before the open (nothing owns it yet)
 and written back through the writer after it. Every later boot sends the
@@ -136,7 +144,7 @@ the reply table, and the three places the fixtures deliberately differ
 from `core/codec`.
 
 The connection was authenticated long before this frame: `route`
-(`client/server.gleam:238`) runs the bearer check ahead of the upgrade,
+(`client/server.gleam:232`) runs the bearer check ahead of the upgrade,
 so a `401` is emitted with no websocket state in existence.
 `authorized` (`client/server.gleam:257`) branches only on the public
 `Bearer ` prefix and then hands both operands to `crypto:hash_equals`
@@ -276,7 +284,7 @@ process message is fine.
 ## 6. The machine wakes
 
 The strand driver is an actor whose entire loop is the machine's contract
-read literally (`runtime/strand_runtime.gleam:591`):
+read literally (`runtime/strand_runtime.gleam:595`):
 
 ```
 load registers  →  build PlannerInputs  →  next_action  →  act  →  repeat
@@ -442,7 +450,7 @@ effect to match:
           KeyObservation(planner.ObservedAssistantOrphaned(partial: []))
 ```
 
-`runtime/strand_runtime.gleam:749`. The machine, not the driver,
+`runtime/strand_runtime.gleam:754`. The machine, not the driver,
 decides what an orphan means: an assistant request or deferred poll is
 wholly uncertain and settles synthetically at zero usage, following
 ordinary classification afterwards; a tool call consults the replay
@@ -760,9 +768,11 @@ janitor process monitors the helper actor for deaths the actor never
 sees. Per-execution policy still travels inside `exec_start` and remains
 authoritative there.
 
-`loom-exec` is one static Go binary with three roles selected by its
-first argument (`cmd/loom-exec/main.go:31`): server mode, stage 2, and
-`--self-test`. Server mode spawns bwrap, which owns every namespace and
+`loom-exec` is one static Go binary whose first argument selects its role
+(`cmd/loom-exec/main.go:35`): server mode with no argument at all, stage 2
+under `--exec`, plus `--self-test`, `--probe-socket`, and
+`--allow-unenforced`, which is server mode on a platform Loom has no jail
+for. Server mode spawns bwrap, which owns every namespace and
 mount — load-bearing, because the Go runtime is multithreaded from the
 first instruction and unshare/fork namespace assembly in a multithreaded
 process is the tar pit that gave runc its `nsexec.c`. The helper only
@@ -780,7 +790,7 @@ then:
 	if err := syscall.Exec(path, cfg.Argv, os.Environ()); err != nil {
 ```
 
-`internal/jail/stage2.go:152`. That order works because Landlock domains,
+`internal/jail/stage2.go:156`. That order works because Landlock domains,
 seccomp filters, rlimits and `no_new_privs` all persist across `execve`
 and can only tighten: the target starts life inside the cage with none of
 our code left in its address space.
@@ -795,6 +805,48 @@ because features are a promise and the exit report is a fact.
 order, why network-off is enforced at socket creation rather than at
 connect, and why cgroups rather than rlimits bound memory and process
 count.
+
+### Off Linux, it refuses
+
+Everything above is Linux. `loom-exec` nonetheless *compiles* everywhere
+Go does, because a helper that will not build is a helper nobody can run
+`--self-test` against to discover it has no jail. Two `//go:build` splits
+carry that: `internal/jail/nnp_other.go` returns a skip reason where
+`internal/jail/nnp_linux.go` would set `PR_SET_NO_NEW_PRIVS`, and
+`internal/seccompf/seccompf_other.go` answers `false` from `Supported()`
+and an error from `Install()` — so a caller that ignored `Supported()`
+gets a refusal rather than a silent no-op that would leave the network
+open under a report claiming a filter.
+
+`internal/jail/platform.go` holds the decision itself, and its whole
+point is that this gap is a *different kind* from a missing layer.
+Everything else in `Features` probes the running kernel and reports a
+shortfall as an environmental skip — no bwrap binary, no Landlock in this
+kernel. `PlatformSupport` probes nothing, because there is nothing to
+probe: the layer is missing from Loom, not from the machine.
+
+So the two are kept apart at every point they surface. `hello.features`
+carries a `platform-unsupported` tag of its own, distinct from the
+`degraded` tag that flags an absent bwrap, and `Features.Degraded()` is
+true for either reason. Every per-execution `enforcement` list *leads*
+with the platform skip, because that entry governs how to read the rest:
+`rlimits` and `pgroup` really are applied on such a build, and they are
+also the whole of the confinement, so a reader who missed the first line
+would take the list for a sandbox report. The self-test prints the
+unsupported-platform report in place of the probes and exits nonzero.
+And `runServer` refuses to serve at all unless the operator passes
+`--allow-unenforced` — the opt-in that makes running with no confinement
+a decision rather than an accident.
+
+Two things about that path deserve saying plainly rather than being read
+between the lines. **Seatbelt is not implemented.** WP-H phase 2 (macOS,
+generated deny-default profiles under `sandbox-exec`) and phase 3
+(Windows restricted tokens and ACLs) are specified and unbuilt; on
+`darwin` the helper applies no filesystem view, no network filter, and no
+memory or process ceiling. And **no part of the non-Linux path has ever
+run.** `PlatformFor` takes the OS as an argument precisely so its darwin
+and windows answers are testable from Linux, which is the only host this
+tree has ever executed on.
 
 Output comes back as `exec_out` frames, the tool collects them
 (`tools/tool.gleam:692`), overflows anything past 64 KiB to a
@@ -862,11 +914,48 @@ the previous turn. `prompt/pack.Environment` has no numeric field and
 must never grow one — a timestamp, an elapsed count, a cost and a token
 total all arrive as an `Int`, and adding one is how the caching contract
 gets broken silently. `packages/prompt/CLAUDE.md` is the place to read
-before touching any of that. One caveat while you do: `pack.problems` is
-gaining a severity axis right now, so treat its exact return shape as in
-motion. The rule behind it does not move — `decode` accepts more than
-`problems` approves, and the harness decides whether to run with a thin
-pack.
+before touching any of that.
+
+### What is in the pinned bytes
+
+The prompt is rendered from a data pack, and the pack has seven canonical
+sections (`prompt/pack.gleam:308`): `identity`, `tool_discipline`,
+`delegation`, `conduct`, `environment`, `sandbox`,
+`repository_guidance`. The first four carry no placeholders at all — they
+are identical for every strand on a given build, and a test holds them
+that way — while the last three vary by host and workspace and by nothing
+else.
+
+`delegation` is the one worth reading before you touch the `agent_*`
+tools, because it is where their policy is stated to the model rather
+than enforced on it. Three of its facts matter to anyone reading the
+messaging plane. A wait blocks the operation the caller is inside
+and holds it open, so the pack tells the model to spawn a batch and then
+wait on the batch — one wait takes a list of handles against one
+deadline, where the same handles waited one at a time are that many
+windows in a row. Addressing is descendant-only: a strand may wait on
+what it spawned and address only its parent or something below it, which
+is what keeps the graph of waits acyclic, and a request outside it is
+refused rather than queued. And a finished child's result *is its last
+assistant message* — not a structured report — so the brief has to ask
+for a final answer that stands on its own, with anything that needs shape
+left as notes, which come back attached to the result.
+
+A pack's problems carry a severity, and the split is the point.
+`severity` (`prompt/pack.gleam:388`) calls an unknown placeholder, or a
+missing *fragment*, `Corrupting`: the pack names something it does not
+carry, so a section that is present says nothing on some host, and the
+shortfall is invisible in the rendered bytes. A missing *canonical
+section* is `Shaping` instead, because a pack that drops a section is
+still a valid pack and may well have meant to.
+
+`assess` returns the two lists at once, which is what a caller keys on.
+`corrupting == []` is the optimizer's question — is this variant scorable
+at all — as one expression, and `shaping` is what an operator is told
+about a pack that runs anyway. `problems` itself still returns one flat
+`List(Problem)`: the axis was added beside it, not folded into it. And
+the rule underneath has not moved — `decode` accepts more than `problems`
+approves, and the harness decides whether to run with a thin pack.
 
 ## 13. A crash, anywhere
 
@@ -906,10 +995,6 @@ reboot the strand a human is talking to or spend the restart budget that
 protects it. The runtime cannot tell a model-spawned strand from an
 operator-spawned one — lineage is a layer up — so the host injects the
 `subagent` predicate, and the default says nobody is a subagent.
-
-(`docs/architecture/orchestration.md` still draws this tree with two
-children, from before the registry, the second factory, and the booter
-existed. The five above are what `runtime/supervisor.gleam` builds.)
 
 **Recovery is cold start is the first drive pass.** A restarted driver
 nudges itself in its initialiser (`runtime/strand_runtime.gleam:223`), so
@@ -1023,8 +1108,8 @@ from `facts`, harness code reads and writes those through
 `reserved_facts` / `put_reserved_fact`, which refuse everything outside
 the reserved set — the two doors are disjoint so neither can be pressed
 into service as the other. `docs/architecture/messaging.md` covers the
-four inter-strand patterns; it currently names two reserved corners
-rather than four.
+four inter-strand patterns and what a forged write under each reserved
+corner would buy.
 
 ## 15. Code mode
 
@@ -1058,26 +1143,78 @@ the host's own `{op_id, step_id}` — so the deadline kills it and the
 budget pools across the whole execution.
 
 The model reaches all of that through a `code_mode` tool
-(`tools/codemode.gleam`) built on the same shape as the `agent_*` family:
-a record of closures declared in `tools` as plain data and filled by the
-one package that can see both ends. `codemode` already depends on `tools`
-— its capability router renders a `tool.Collected` into a `cap_result` —
-so the two meet in `client/codemode.gleam` rather than drawing a cycle.
-`serve.registry` registers the tool only when `discover` finds a
-toolchain and a prepared build seed on the host; a host without them says
-so once at boot and ships no definition, rather than putting one in the
-cached prefix that could only ever refuse. This wiring landed recently
-and is still settling, so read those two modules rather than trusting a
-line number here.
+(`tools/codemode.gleam:264`) built on the same shape as the `agent_*`
+family: a `CodeMode` record of closures declared in `tools` as plain
+data, and filled by the one package that can see both ends. `codemode`
+already depends on `tools` — its capability router renders a
+`tool.Collected` into a `cap_result` — so the two meet in
+`client/codemode.seam` (`client/codemode.gleam:304`) rather than drawing
+a cycle.
 
-The whole execution runs under the calling strand's own
-`{op_id, step_id}`, which is what makes `broker.abort` reach the build
-and the node alike and what pools the budget across everything the
-program does. `execute` itself still reaches into no storage: it
-*returns* the source and the artifact for the caller to persist, which is
-what keeps the purity layering intact.
-`docs/architecture/code-mode.md` is the depth on all three layers and on
-what each one actually confines.
+Two of the tool's declarations carry more than their names suggest.
+Replay is `tool.Never`, and not out of caution: a program's capability
+calls have neither a minted id to reconcile onto, the way `agent_spawn`
+has one, nor a digest-bound pre-image, the way `fs_edit` has one, so a
+crash mid-execution can only synthesize an interrupted result. Execution
+is `tool.Exclusive`, and the workspace it may mutate is the lesser half
+of the reason. The broker opens an execution's pooled ledger on the
+*first* clearance under a `{op_id, step_id}`, with that call's budget
+(`broker/broker.gleam:578`) — so a concurrent call in the same step both
+sets the budget the program will live under and holds a slot the program
+needs, and a satellite needs two outstanding slots to launch at all: one
+the node holds for its whole life, one for the capability call it is
+serving.
+
+Identity is threaded, never minted. `codemode.request`
+(`tools/codemode.gleam:367`) copies `{strand, op_id, step_id, workspace,
+base_policy, demand, env}` straight off the dispatching `Ctx` and takes
+only the program and a clamped `within_ms` from the model, so the
+hermetic build, the jailed `erl`, and every `cap_call` the running
+program makes are dispatched under one identity. That is what puts them
+on one ledger and one wall deadline, and what makes `broker.abort` on the
+operation reach the build and the node alike.
+
+The base policy such an execution is judged against is the session's own
+plus exactly two environment *names*. `execution_policy`
+(`client/codemode.gleam:612`) appends `LOOM_CAP_SOCK` and
+`LOOM_CAP_TOKEN_FILE` to `env_allow` and touches no root, no network
+posture, and no limit. It has to: composition takes the meet, so a base
+that does not name those two composes them away and the node comes up
+unable to find the channel it exists to speak on. Their values are the
+harness's own per-execution paths, minted by the launcher and never
+model-supplied, so the widening is in what the launcher may *state*, not
+in what a program may reach.
+
+Registration is gated on discovery rather than on refusing at call time.
+`serve.registry` (`client/serve.gleam:907`) appends the tool only when
+`codemode.discover` (`client/codemode.gleam:254`) finds `gleam` and `erl`
+on `PATH` *and* a prepared build seed whose dependency table is
+byte-identical to the one the compile service generates — a seed built
+from a different table resolved a different graph, so building against it
+would pin something other than what the service says it pins. The seed
+directory is `--codemode-seed <dir>`, defaulting to
+`<workspace>/build/codemode-seed`, which is where `make codemode-seed`
+writes one. A host failing any of the three prints the reason once on
+stderr and ships no `code_mode` definition at all, because a definition
+renders into the tool array ahead of the system prompt and a
+permanently-refusing one would be paid for on every request of every
+strand for the life of the session.
+
+`execute` itself still reaches into no storage: it *returns* the source
+and the artifact for the caller to persist, which is what keeps the
+purity layering intact. `docs/architecture/code-mode.md` is the depth on
+all three layers and on what each one actually confines, and
+`make e2e-codemode` is where the whole pipeline runs for real — five
+scenarios against a live toolchain, the last of which reads
+`docs/examples/stale_symbol_sweep.gleam` verbatim and puts that file
+through vetting, a jailed `gleam build`, a real satellite, and five
+jailed processes behind `proc.run`. The sample is a migration chore, and
+the suite asserts on an instrumented fixture rather than on the outcome
+line alone: that the last sweep started before the first finished (the
+fan-out is really concurrent), that the sweeps report in input order
+while completing in the reverse of it (order preservation is really a
+property), and that the losing build strategy stops ticking within a
+bound (the race really kills, rather than abandoning).
 
 ## 16. Where the BEAM earns its place
 
