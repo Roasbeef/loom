@@ -43,11 +43,14 @@ over one session file. WP-L.
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
   text, and nothing in the module knows about sockets.
-- `client/gateway.{commit_forwarder, tap_provider}` — the two
-  composition-layer seams: the runtime writer's post-commit publication
-  becomes a pull hint, and an injected `effects.ProviderSurface` is
-  wrapped so provider deltas tee to the hub while the runtime's effect
-  process consumes the stream unchanged.
+- `client/gateway.{commit_forwarder, supervised_commit_forwarder,
+  tap_provider}` — the two composition-layer seams: the runtime writer's
+  post-commit publication becomes a pull hint, and an injected
+  `effects.ProviderSurface` is wrapped so provider deltas tee to the hub
+  while the runtime's effect process consumes the stream unchanged. The
+  forwarder registers under a name and the writer subscribes to that
+  name, which is what lets it be supervised and restarted without the
+  writer noticing.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
@@ -83,8 +86,9 @@ over one session file. WP-L.
   what is missing; `seam` closes over a `Config` and needs no process
   name, because the broker it dispatches through already exists;
   `execute` prepares a per-execution directory, drives vet → compile →
-  run under the caller's own `{op_id, step_id}`, drains the enforcement
-  reports and removes the directory again.
+  run under the caller's own `{op_id, step_id}`, restates the pipeline's
+  two enforcement reports in the tool's vocabulary, and removes the
+  directory again.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -112,8 +116,8 @@ over one session file. WP-L.
   request a structural summary is made as, how a settled response reads,
   what the sink's record means to the machine, and whether a captured
   identity still routes.
-- `client/summaries.{Summaries, Settlement, Record, start, key, record,
-  read}` — the summary sink: a small bounded actor keyed by
+- `client/summaries.{Summaries, Settlement, Record, start, stop, pid,
+  key, record, read}` — the summary sink: a small bounded actor keyed by
   `(operation, task, attempt)`, the rendezvous between the effect
   process that receives a summary and the driver process that reports on
   it. Nothing here is durable, on purpose; see Invariants.
@@ -130,16 +134,27 @@ over one session file. WP-L.
   registry: five core tools, plus the six `agent_*` tools only when a
   messaging plane exists, plus `code_mode` only when this host wired a
   code-mode pipeline.
-- `client/serve.Booted` — what `shutdown` takes apart, plus
-  `prompt: system_prompt.Assembled`: the exact bytes this boot handed the
-  wiring, so a test can prove the pinned prompt is the one on the wire
-  and the startup line can name its digest.
+- `client/serve.Booted` — what `shutdown` takes apart, plus three things
+  it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
+  this boot handed the wiring (so a test can prove the pinned prompt is
+  the one on the wire and the startup line can name its digest);
+  `services`, the supervisor over the restartable composition layer; and
+  `stops`, the subject the host reports a `SIGTERM` or a fatal fault on,
+  owned by whichever process called `boot`.
+- `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
+  process tree. `adopt` runs a boot on a dedicated exit-trapping process
+  so every link an `actor.start` forms lands there rather than on the
+  caller; the first fatal death runs the teardown *first* — releasing
+  the session lease — and reports `Faulted` afterwards, leaving the exit
+  status to the entry point. `relay_sigterm` puts the signal on the same
+  subject, so one receive covers both ways the server stops.
 - `client/serve.{Settings, boot, shutdown, main}` — the server entry
   point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
   shipment): flags/env in, session + helper pool + broker + system
-  prompt + runtime + hub + websocket server up, one startup line out,
-  `SIGTERM` closes the runtime so the lease is released. `client.main`
-  delegates here for the shipment's entrypoint.
+  prompt + runtime + service supervisor + websocket server up, one
+  startup line out, and either `SIGTERM` or a fatal fault runs the same
+  `shutdown` so the lease is released rather than left to its TTL.
+  `client.main` delegates here for the shipment's entrypoint.
 - `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
   jailed commands run under, the session's composed base policy, and the
@@ -176,8 +191,9 @@ over one session file. WP-L.
   client, coupled only through the protocol and the golden fixtures.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
   wall clock, unique entropy, `PATH` lookup, `os:type`/machine
-  architecture for the prompt's platform line, the SIGTERM relay, and the
-  documented exit-code halt. Test-side, `client_test_ffi.erl` is a
+  architecture for the prompt's platform line, the SIGTERM relay,
+  `sys:terminate/3` for stopping the service supervisor the way OTP
+  stops one, and the documented exit-code halt. Test-side, `client_test_ffi.erl` is a
   minimal websocket probe for the boot smoke.
 
 ## Traffic
@@ -240,6 +256,14 @@ over one session file. WP-L.
   snapshot carries live state, so a client that missed an intermediate
   phase still converges — overlap and gaps are resolved by seq dedup, as
   the protocol already requires.
+- **The writer's post-commit publication is production's hint source,
+  and `serve` supplies no bus** (issue #8's aside, decided). A
+  one-session server's writer and hub share a VM, so
+  `commit_forwarder` already carries every commit; adding a bus
+  subscription would trigger the same pull twice. `Options.bus` remains
+  for a host whose hints are not all its own writer's — a projection, a
+  second node's session, telemetry — which is what `events/bus.bridge`
+  exists to feed.
 - **Live materialization is a pull, never an apply.** Both the writer's
   post-commit publication and any bus publication merely trigger a pull
   from storage above the hub's high-water seq; a lost hint costs latency,
@@ -338,6 +362,14 @@ over one session file. WP-L.
   operation reaches the build and the node alike. The pooled
   outstanding-effect cap is never below two: the node holds one for its
   whole life.
+- **Both jailed stages' enforcement reports travel in the outcome.**
+  `pipeline.execute` returns them beside the outcome — the build's from
+  `compile.Compiled`, the node's from `satellite.Run`, whose report is
+  what `CapConnection.destroy` returns — so this module does not wait on
+  a mailbox and has no grace period to lose. It only restates them as
+  `tools/codemode.Report`, splitting the helper's `skip:` entries out of
+  the applied list so no renderer can present a skipped layer as an
+  enforced one (issue #5).
 - **The only thing the code-mode wiring adds to a session base is two
   environment *names*.** `LOOM_CAP_SOCK` and `LOOM_CAP_TOKEN_FILE` are
   set by the launcher and cannot be shadowed by a caller's `env`, but
@@ -408,6 +440,30 @@ over one session file. WP-L.
   preparation goes through `runtime/hooks.preparation` — the same
   builder the threshold and overflow hooks use — against the run's own
   settings snapshot.
+- **The server has two supervision tiers, and the line between them is
+  reachability.** A child under `Booted.services` — the commit
+  forwarder, the Agency holder, the gateway hub — is addressed by
+  *name*, so a replacement under that name is the same address and a
+  crash costs hints and the sockets already attached to the old hub
+  rather than the server. The helper pool, the broker, and the summary
+  sink are captured *by value* into closures built during the boot, so a
+  replacement would be unreachable by everything already holding the old
+  handle: restarting one leaves a server that looks alive and refuses
+  every call, and failing closed is the posture the effect plane wants
+  anyway. Those are fatal, along with the session tree, the listener,
+  and the service supervisor once its own budget is spent.
+- **A fatal death is an orderly shutdown, not a side effect.** The host
+  traps exits, so a child's death is a message: it runs the whole
+  teardown — listener, services, runtime (which releases the writer
+  lease), broker, pool, sink — *before* reporting, and the entry point
+  exits nonzero afterwards. The one case this cannot cover is the
+  storage actor's own death, because it is the connection that would
+  delete the lease row.
+- **Only an entry point installs the signal handler.** `wait_for_sigterm`
+  replaces the VM's default `erl_signal_handler`, whose answer to
+  `SIGTERM` is an immediate `init:stop()`, so `boot` never touches it —
+  `main` does, through `host.relay_sigterm`, and a test that boots a
+  server leaves the node's signal handling alone.
 
 ## Deep Docs
 

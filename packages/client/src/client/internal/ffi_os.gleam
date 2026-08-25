@@ -3,6 +3,8 @@
 //// behind it and why no pure alternative exists. Nothing else in this
 //// package touches foreign code.
 
+import gleam/erlang/process.{type Pid}
+
 /// Wall-clock milliseconds since the Unix epoch, for the server's
 /// injected `Clock`. OTP `erlang:system_time(millisecond)` via the
 /// package FFI — time is an ambient OS fact; §0.2 requires it injected
@@ -41,6 +43,25 @@ pub fn wait_for_sigterm() -> Nil
 /// because the call never returns.
 @external(erlang, "client_ffi", "halt")
 pub fn halt(code: Int) -> anything
+
+/// Asks a running OTP supervisor to terminate: children are shut down in
+/// reverse start order, each with an `exit(Child, shutdown)` and its
+/// child spec's grace, and the supervisor then exits `shutdown`. OTP
+/// `sys:terminate/3` — a supervisor's only graceful stop reachable from
+/// a process that is not its parent, and the one thing
+/// `gleam/otp/static_supervisor` does not wrap. No pure alternative
+/// exists: killing the pid instead propagates `kill` to every child at
+/// once, which is the controlled crash this replaces.
+///
+/// `Ok(Nil)` means the shutdown is under way, not that the tree is gone;
+/// the caller waits for the pid to die. `Error(Nil)` covers an
+/// already-dead pid and a shutdown that outran the timeout alike, and
+/// leaves the caller to kill.
+@external(erlang, "client_ffi", "terminate_supervisor")
+pub fn terminate_supervisor(
+  supervisor supervisor: Pid,
+  timeout_ms timeout_ms: Int,
+) -> Result(Nil, Nil)
 
 /// The host's operating system name and machine architecture, raw:
 /// `#("linux", "x86_64-pc-linux-gnu")`, `#("darwin",

@@ -9,8 +9,10 @@
 
 import broker/exec
 import client/catalog
+import client/host
 import client/protocol
 import client/serve
+import client/summaries
 import client/system_prompt
 import core/clock
 import core/message
@@ -20,6 +22,7 @@ import gleam/httpc
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import machine/strand as machine_strand
@@ -29,6 +32,7 @@ import provider/http
 import provider/model
 import provider/secret
 import runtime/api
+import session/session
 import simplifile
 import support/internal/ffi_ws
 
@@ -265,4 +269,233 @@ fn capturing_gateway(sent: Subject(String)) -> provider_gateway.Gateway {
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
+}
+
+// --- the host: what a death costs -------------------------------------------
+
+/// The bar this exists for. Kill a fatal child and the server does not
+/// vanish with an unreleased lease: the host runs the whole orderly
+/// shutdown first, so the same session file opens again *at once*
+/// instead of after its sixty-second TTL — and only then reports what
+/// died, leaving the exit status to the entry point.
+///
+/// The children this reaches are the ones a boot links to whichever
+/// process ran it. Before the host existed that process was the one
+/// waiting for `SIGTERM`, it did not trap exits, and the generated
+/// runner above it turned the link into `init:stop(1)` — no shutdown, no
+/// lease release, a session locked out for a minute by a crash.
+pub fn a_fatal_childs_death_releases_the_lease_test() {
+  let fault_root = "build/serve-test-fault"
+  let _stale = simplifile.delete(fault_root)
+  let assert Ok(booted) = serve.boot(settings_under(fault_root))
+    as "the server must boot"
+
+  // The session tree: fatal by policy, and one of the three the host
+  // must *monitor* rather than trap, because it unlinks from its
+  // starter by design.
+  process.kill(booted.runtime.tree.supervisor)
+
+  let assert Ok(host.Faulted(child:, ..)) =
+    process.receive(booted.stops, within: 10_000)
+    as "the host must report the fault rather than take the node with it"
+  assert child == "the session tree"
+
+  // The proof: the lease is gone, so a second opener wins immediately.
+  // With the lease left to expire this refuses with LeaseHeld.
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: fault_root <> "/session.db",
+      owner: "probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the writer lease must have been released, not left to its TTL"
+  let _sealed = session.close(reopened)
+
+  // And the front door is shut: the teardown ran in full, not just far
+  // enough to reach the lease.
+  let base = "http://127.0.0.1:" <> int.to_string(booted.served.port)
+  let assert Ok(health) = request.to(base <> "/healthz")
+  assert httpc.send(health) |> result.is_error
+    as "the listener must be closed once the host has torn the stack down"
+}
+
+/// A linked child — the summary sink is one, started with a plain
+/// `actor.start` on the boot process — reaches the host through its exit
+/// trap rather than through a monitor, and costs the same orderly
+/// shutdown.
+pub fn a_linked_childs_death_releases_the_lease_test() {
+  let fault_root = "build/serve-test-linked-fault"
+  let _stale = simplifile.delete(fault_root)
+  let assert Ok(booted) = serve.boot(settings_under(fault_root))
+    as "the server must boot"
+
+  let assert Ok(sink) = summaries.pid(booted.summaries)
+    as "the summary sink must be alive"
+  process.kill(sink)
+
+  let assert Ok(host.Faulted(child:, ..)) =
+    process.receive(booted.stops, within: 10_000)
+    as "a linked child's death must be reported, not fatal by side effect"
+  assert child == "the summary sink"
+
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: fault_root <> "/session.db",
+      owner: "probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the writer lease must have been released, not left to its TTL"
+  let _sealed = session.close(reopened)
+}
+
+/// The other half of the policy: the composition layer is supervised, so
+/// a hub crash is a restart under the same name, not the end of the
+/// server. The listener, the commit forwarder, and the provider tap all
+/// address the hub by name, which is the whole reason this one can be
+/// replaced in place — and the session is untouched, so the websocket
+/// surface answers again.
+pub fn a_hub_crash_restarts_rather_than_ending_the_server_test() {
+  let restart_root = "build/serve-test-restart"
+  let _stale = simplifile.delete(restart_root)
+  let assert Ok(booted) = serve.boot(settings_under(restart_root))
+    as "the server must boot"
+
+  let assert Ok(before) = hub_pid(booted)
+    as "the hub must be registered before the crash"
+  process.kill(before)
+
+  let assert Ok(after) = replacement_hub_pid(booted, before, 400)
+    as "the hub must come back under the same name"
+  assert after != before
+  assert process.receive(booted.stops, within: 250) == Error(Nil)
+    as "a restartable child's crash must not stop the server"
+
+  // Proof it is a working hub and not just a live pid: a real subscribe
+  // over a real socket, answered with the full snapshot.
+  let subscribe =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 7,
+      command: protocol.Subscribe(session: "session", from_seq: None),
+    ))
+  let assert Ok(frame) =
+    ffi_ws.ws_roundtrip(
+      "127.0.0.1",
+      booted.served.port,
+      booted.served.token,
+      subscribe,
+    )
+    as "the restarted hub must answer a fresh subscription"
+  let assert Ok(envelope) = protocol.decode_event(frame)
+  assert envelope.reply_to == Some(7)
+  let assert protocol.SnapshotEvent(protocol.FullSnapshot(..)) = envelope.event
+
+  serve.shutdown(booted)
+}
+
+/// A crash loop spends the service supervisor's restart budget, and then
+/// the composition layer *is* fatal — but still orderly. "Restartable"
+/// is a bounded promise, not an unbounded one.
+pub fn an_unrecoverable_service_still_releases_the_lease_test() {
+  let loop_root = "build/serve-test-service-loop"
+  let _stale = simplifile.delete(loop_root)
+  let assert Ok(booted) = serve.boot(settings_under(loop_root))
+    as "the server must boot"
+
+  // One kill more than the budget, each waiting for the replacement so
+  // the intensity counter sees distinct restarts.
+  kill_hub_repeatedly(
+    booted,
+    Ok(before_the_loop(booted)),
+    serve.service_restart_intensity + 1,
+  )
+
+  let assert Ok(host.Faulted(child:, ..)) =
+    process.receive(booted.stops, within: 10_000)
+    as "a spent restart budget must end the server, in order"
+  assert child == "the service supervisor"
+
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: loop_root <> "/session.db",
+      owner: "probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the writer lease must have been released, not left to its TTL"
+  let _sealed = session.close(reopened)
+}
+
+fn before_the_loop(booted: serve.Booted) -> process.Pid {
+  let assert Ok(pid) = settled_hub_pid(booted, 400)
+    as "the hub must be registered before the crash loop"
+  pid
+}
+
+// Kills the hub `times` over, each time waiting for the supervisor to
+// put a *different* pid under the name, so every kill costs a restart
+// rather than landing on a corpse.
+fn kill_hub_repeatedly(
+  booted: serve.Booted,
+  current: Result(process.Pid, Nil),
+  times: Int,
+) -> Nil {
+  case current, times <= 0 {
+    _, True -> Nil
+    Error(Nil), _ -> Nil
+    Ok(pid), False -> {
+      process.kill(pid)
+      kill_hub_repeatedly(
+        booted,
+        replacement_hub_pid(booted, pid, 400),
+        times - 1,
+      )
+    }
+  }
+}
+
+// The pid under the hub's name once it is neither missing nor the one
+// that was just killed.
+fn replacement_hub_pid(
+  booted: serve.Booted,
+  before: process.Pid,
+  attempts: Int,
+) -> Result(process.Pid, Nil) {
+  case hub_pid(booted) {
+    Ok(pid) if pid != before -> Ok(pid)
+    _ ->
+      case attempts <= 0 {
+        True -> Error(Nil)
+        False -> {
+          process.sleep(5)
+          replacement_hub_pid(booted, before, attempts - 1)
+        }
+      }
+  }
+}
+
+// The hub registers under a name the boot minted, so the only handle a
+// test has on it is the gateway record the server holds.
+fn hub_pid(booted: serve.Booted) -> Result(process.Pid, Nil) {
+  process.subject_owner(process.named_subject(booted.gateway.name))
+}
+
+// The pid once the supervisor has finished replacing it, or `Error(Nil)`
+// if it never comes back.
+fn settled_hub_pid(
+  booted: serve.Booted,
+  attempts: Int,
+) -> Result(process.Pid, Nil) {
+  case hub_pid(booted) {
+    Ok(pid) -> Ok(pid)
+    Error(Nil) ->
+      case attempts <= 0 {
+        True -> Error(Nil)
+        False -> {
+          process.sleep(5)
+          settled_hub_pid(booted, attempts - 1)
+        }
+      }
+  }
 }

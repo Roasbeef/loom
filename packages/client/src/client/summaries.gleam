@@ -39,7 +39,7 @@
 import core/ids.{type OpId}
 import core/message.{type Usage}
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
@@ -73,6 +73,7 @@ pub type Record {
 type Message {
   Put(key: String, settlement: Settlement, reply: Subject(Nil))
   Get(key: String, reply: Subject(Record))
+  Halt
 }
 
 type State {
@@ -101,8 +102,37 @@ pub fn start() -> Result(Summaries, actor.StartError) {
   |> result.map(fn(started) { Summaries(subject: started.data) })
 }
 
+/// Stops the sink. Held records are ephemeral by design — a read that
+/// finds nothing reports a retryable summary failure — so there is
+/// nothing to flush, and this exists so a shutdown leaves no actor
+/// behind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // summaries.stop(sink)
+/// ```
+///
+pub fn stop(summaries: Summaries) -> Nil {
+  process.send(summaries.subject, Halt)
+}
+
+/// The sink's pid, for a host that watches the processes whose death
+/// ends the server. `Error(Nil)` once it is gone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // summaries.pid(sink)
+/// ```
+///
+pub fn pid(summaries: Summaries) -> Result(Pid, Nil) {
+  process.subject_owner(summaries.subject)
+}
+
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    Halt -> actor.stop()
     Get(key:, reply:) -> {
       let record = case dict.get(state.held, key) {
         Ok(settlement) -> Recorded(settlement:)

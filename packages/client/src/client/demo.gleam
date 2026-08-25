@@ -111,8 +111,9 @@ pub fn run() -> Result(Narrative, String) {
   )
   use entropy <- result.try(start_entropy())
   let name = process.new_name(prefix: "loom_gateway_demo")
-  use forwarder <- result.try(
-    gateway.commit_forwarder(to: name)
+  let forwarder_name = process.new_name(prefix: "loom_forwarder_demo")
+  use _forwarder <- result.try(
+    gateway.commit_forwarder(to: name, as_name: forwarder_name)
     |> result.map_error(fn(_) { "the commit forwarder did not start" }),
   )
   // Compaction runs on the *production* seams. The demo scripts the
@@ -147,7 +148,9 @@ pub fn run() -> Result(Narrative, String) {
   use runtime <- result.try(api.open(
     session,
     effects,
-    api.Options(..options, poll_interval_ms: 25, subscribers: [forwarder.data]),
+    api.Options(..options, poll_interval_ms: 25, subscribers: [
+      process.named_subject(forwarder_name),
+    ]),
   ))
   // --- the served gateway -------------------------------------------------
   use _gateway <- result.try(

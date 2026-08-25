@@ -95,7 +95,9 @@ fn start_harness_full(
     * 7919
   }
   let name = process.new_name(prefix: "loom_gateway_test")
-  let assert Ok(forwarder) = gateway.commit_forwarder(to: name)
+  let forwarder_name = process.new_name(prefix: "loom_forwarder_test")
+  let assert Ok(_forwarder) =
+    gateway.commit_forwarder(to: name, as_name: forwarder_name)
   let effects =
     effects.Effects(
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
@@ -149,7 +151,7 @@ fn start_harness_full(
       session,
       effects,
       api.Options(..options, poll_interval_ms: 25, subscribers: [
-        forwarder.data,
+        process.named_subject(forwarder_name),
       ]),
     )
   let options = gateway.default_options("sess-01", runtime)

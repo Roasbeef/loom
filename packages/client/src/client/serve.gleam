@@ -5,8 +5,9 @@
 //// ToolBroker, tool registry, provider gateway, runtime with the
 //// `client/wiring` effects, gateway hub, and the `client/server`
 //// websocket transport — prints where it is listening, and serves any
-//// number of thin clients until `SIGTERM`, then closes the runtime so
-//// the session lease is released rather than left to expire.
+//// number of thin clients until `SIGTERM` or a fatal fault, then closes
+//// the runtime so the session lease is released rather than left to
+//// expire.
 ////
 //// ## Flags
 ////
@@ -89,24 +90,58 @@
 //// This module is an entry point, so §0.2's no-panic rule is honored
 //// by construction rather than by supervision: every boot step returns
 //// a `Result`, `main` prints the first failure and exits nonzero via
-//// the documented halt in `client/internal/ffi_os`. Shutdown is
-//// `SIGTERM` → close the runtime (release the lease) → stop the
-//// listener, broker, and helper pool → exit 0.
+//// the documented halt in `client/internal/ffi_os`. A boot that fails
+//// has started nothing worth keeping and leaves nothing behind.
 ////
-//// Nothing outside the runtime is supervised either. The runtime owns
-//// a supervision tree; the gateway hub, its commit forwarder, the
-//// broker, the helper pool, and the Agency holder are each started from
-//// `boot` with a plain linked `actor.start`, on the process that then
-//// blocks in `wait_for_sigterm` — and that process does not trap exits.
-//// A crash in any of the five kills it, and the Gleam-generated runner linked
-//// above it, which does trap, prints the exit reason and halts the
-//// node with exit 1. So a hub crash ends the server rather than
-//// leaving a listener accepting sockets no hub will answer, and a dead
-//// Agency holder ends the server rather than leaving every `agent_*`
-//// call refusing in band for the rest of the session. It also
-//// skips the `SIGTERM` path, so the session lease is left to expire
-//// on its TTL instead of being released, and restarting is the job of
-//// whatever runs `loom-server`.
+//// A boot that *succeeds* is rooted on a host process — `client/host` —
+//// that traps exits, so every link an `actor.start` forms during the
+//// boot lands there rather than on the caller. The server then stops
+//// exactly two ways, and both arrive on one subject (`Booted.stops`):
+////
+//// - **`SIGTERM`.** `main` runs `shutdown` and exits 0.
+//// - **A fatal child died.** The host runs `shutdown` *first* — so the
+////   listener is closed and the session lease is released, not left to
+////   its sixty-second TTL — and only then reports what died. `main`
+////   prints it and exits 1, leaving the restart to whatever runs
+////   `loom-server`.
+////
+//// Either way `shutdown` is the same path, front to back: listener,
+//// then the service supervisor, then the runtime (whose close stops the
+//// strand drivers before the writer they commit through and releases
+//// the lease), then broker, pool, and summary sink.
+////
+//// ## Which deaths are fatal, and which restart
+////
+//// Two tiers, and the difference is whether a replacement process would
+//// be *reachable*.
+////
+//// **Restartable** — the commit forwarder, the Agency holder, and the
+//// gateway hub, under `Booted.services` (one-for-one, three restarts in
+//// five seconds). None of the three is addressed by pid: the forwarder
+//// is the writer's subscriber by name, the Agency's tool seam borrows
+//// the runtime through the holder's name, and the listener, the
+//// forwarder, and the provider tap all reach the hub through the
+//// gateway name. A replacement under the same name is therefore the
+//// same address, and a crash costs a moment of hints and the sockets
+//// already attached to the old hub — clients reconnect — rather than
+//// the whole server. A spent restart budget is fatal, in order.
+////
+//// **Fatal** — the helper pool, the broker, the summary sink, the
+//// session tree, the listener, and the service supervisor. Each of the
+//// first three is captured *by value* into closures built during the
+//// boot (the broker into the wiring effects and the code-mode seam, the
+//// pool into the broker's checkout, the sink into `wiring.Config`), so
+//// a replacement would be unreachable by everything already holding the
+//// old handle: restarting one leaves a server that looks alive and
+//// refuses every call. That is also the posture the effect plane wants
+//// — a harness that cannot broker capabilities or jail a helper must
+//// not keep serving. The session tree is fatal because it is itself a
+//// supervisor whose own restart budget is already spent by the time it
+//// dies.
+////
+//// One case is neither: the storage actor's death. It *is* the
+//// connection that would delete the lease row, so when it goes the
+//// lease can only expire. Everything else releases it.
 
 import argv
 import broker/broker.{type Broker}
@@ -117,17 +152,20 @@ import client/agency
 import client/catalog
 import client/codemode as codemode_wiring
 import client/gateway as hub
+import client/host
 import client/internal/ffi_os
 import client/server
 import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock
-import gleam/erlang/process
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/static_supervisor as sup
+import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import machine/operation
@@ -207,13 +245,26 @@ pub type Settings {
 }
 
 /// A running server: everything `shutdown` needs to take it apart in
-/// order.
+/// order, plus the channel the host reports a stop on.
+///
+/// Constructor invariants: `services` is the supervisor over the
+/// restartable composition layer (commit forwarder, Agency holder,
+/// gateway hub); `stops` is owned by whichever process called `boot` and
+/// is the only process that may receive on it.
 pub type Booted {
   Booted(
     runtime: api.Runtime,
     served: server.Server,
     broker: Broker,
     pool: Pool,
+    summaries: summaries.Summaries,
+    /// The hub's stable address. Everything that talks to the hub — the
+    /// listener, the commit forwarder, the provider tap — holds this
+    /// name rather than a pid, which is what lets the hub be restarted
+    /// under it.
+    gateway: hub.Gateway,
+    services: Pid,
+    stops: Subject(host.Stop),
     session_id: String,
     token_path: String,
     bind_host: String,
@@ -242,10 +293,31 @@ pub fn main() -> Nil {
     }
     Ok(booted) -> {
       announce(booted)
-      ffi_os.wait_for_sigterm()
-      io.println("loom-server: SIGTERM, closing")
-      shutdown(booted)
-      io.println("loom-server: closed")
+      // Only an entry point installs the signal handler: doing so
+      // replaces the VM's default, whose answer to `SIGTERM` is an
+      // immediate `init:stop()`. From here both ways the server can stop
+      // arrive on one subject.
+      host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
+      case process.receive_forever(booted.stops) {
+        host.Signalled -> {
+          io.println("loom-server: SIGTERM, closing")
+          shutdown(booted)
+          io.println("loom-server: closed")
+        }
+        // The host already tore the stack down, lease included, before
+        // it said anything. All that is left is to say what died and
+        // exit nonzero so whatever runs `loom-server` restarts it.
+        host.Faulted(child:, reason:) -> {
+          io.println_error(
+            "loom-server: "
+            <> child
+            <> " died ("
+            <> reason
+            <> "); the session was closed and its lease released",
+          )
+          ffi_os.halt(1)
+        }
+      }
     }
   }
 }
@@ -574,9 +646,15 @@ fn env_catalog() -> catalog.Catalog {
 
 /// Boots the full stack over one session file: directories, session
 /// open (acquiring the writer lease), helper pool, broker, runtime
-/// with the production wiring, gateway hub, websocket server. Returns
-/// the running pieces or the first failure, already worded for a
-/// person.
+/// with the production wiring, the service supervisor, websocket
+/// server. Returns the running pieces or the first failure, already
+/// worded for a person.
+///
+/// The stack is raised on a host process of its own (`client/host`), so
+/// the links every `actor.start` forms land on a process that traps
+/// exits rather than on the caller. A fatal death is therefore an
+/// orderly shutdown followed by a `host.Faulted` on `Booted.stops`, not
+/// a link that fells whoever called this.
 ///
 /// ## Examples
 ///
@@ -587,6 +665,47 @@ fn env_catalog() -> catalog.Catalog {
 /// ```
 ///
 pub fn boot(settings: Settings) -> Result(Booted, String) {
+  host.adopt(
+    boot: fn(stops) { assemble(settings, stops) },
+    fatal: fatal_children,
+    teardown: shutdown,
+  )
+}
+
+/// The deaths that end the server, named for the log line, and the
+/// three that must be *monitored* because they unlink from their
+/// starter by design — the session tree, the `mist` listener, and the
+/// service supervisor. Everything else the boot started is still linked
+/// to the host and reaches it through the exit trap.
+///
+/// This is the fatal half of the per-child policy. Each of these is
+/// captured **by value** into closures built during the boot — the
+/// broker into the wiring effects and the code-mode seam, the pool into
+/// the broker's checkout, the sink into `wiring.Config` — so a
+/// replacement process would be unreachable by everything already
+/// holding the old handle: restarting one would leave a server that
+/// looks alive and refuses every call. Failing closed is also the
+/// posture the effect plane wants; a harness that cannot broker
+/// capabilities or jail a helper must not keep serving. The pieces that
+/// *can* be replaced in place are under `Booted.services` instead, and
+/// only that supervisor's own death — its restart budget spent —
+/// reaches this list.
+fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
+  let named = [
+    #("the session tree", booted.runtime.tree.supervisor),
+    #("the websocket listener", booted.served.supervisor),
+    #("the service supervisor", booted.services),
+  ]
+  case summaries.pid(booted.summaries) {
+    Ok(pid) -> [#("the summary sink", pid), ..named]
+    Error(Nil) -> named
+  }
+}
+
+fn assemble(
+  settings: Settings,
+  stops: Subject(host.Stop),
+) -> Result(Booted, String) {
   let blob_root = settings.workspace <> "/.blobs"
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
@@ -645,12 +764,11 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   // the hub's two composition seams — commit hints in, provider deltas
   // teed out — threaded through before `api.open`.
   let name = process.new_name(prefix: "loom_gateway")
-  use forwarder <- result.try(
-    hub.commit_forwarder(to: name)
-    |> result.map_error(fn(error) {
-      "the commit forwarder did not start: " <> string.inspect(error)
-    }),
-  )
+  // The forwarder itself starts later, under the service supervisor.
+  // Only its *name* is needed here, because that is what the writer
+  // subscribes to — a subscription by name is what lets the forwarder be
+  // restarted without the writer noticing.
+  let forwarder_name = process.new_name(prefix: "loom_forwarder")
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -773,7 +891,7 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
           ..options.settings,
           compaction: settings.compaction,
         ),
-        subscribers: [forwarder.data],
+        subscribers: [process.named_subject(forwarder_name)],
         // Model-spawned strands run under the tree's second strand
         // factory, so a subagent crash loop cannot spend the restart
         // budget protecting `main`.
@@ -789,23 +907,48 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   // next boot reads them rather than deriving them again from inputs that
   // may have moved.
   use Nil <- result.try(system_prompt.pin(runtime, assembled))
-  use _holder <- result.try(
-    agency.start(agency_config, runtime)
-    |> result.map_error(fn(error) {
-      "the agency holder did not start: " <> string.inspect(error)
-    }),
-  )
-  use _hub <- result.try(
-    hub.start(
-      hub.default_options(settings.session_id, runtime)
-        |> hub.with_catalog(settings.catalog)
-        |> hub.with_registry(tool_registry),
-      name,
+  // The restartable half of the per-child policy. These three hold no
+  // state a restart cannot rebuild and — crucially — none of them is
+  // addressed by pid: the forwarder is the writer's subscriber by name,
+  // the Agency's tool seam borrows the runtime through the holder's
+  // name, and the listener, the forwarder, and the provider tap all
+  // reach the hub through `name`. So a replacement under the same name
+  // is the same address, and a crash here costs a moment of hints and
+  // the sockets already attached to the old hub rather than the server.
+  // One-for-one because they are independent: nothing in the three
+  // reaches another except through a name.
+  use services <- result.try(
+    sup.new(sup.OneForOne)
+    |> sup.restart_tolerance(
+      intensity: service_restart_intensity,
+      period: service_restart_period,
     )
+    |> sup.add(hub.supervised_commit_forwarder(
+      to: name,
+      as_name: forwarder_name,
+    ))
+    |> sup.add(
+      supervision.worker(fn() { agency.start(agency_config, runtime) }),
+    )
+    |> sup.add(
+      supervision.worker(fn() {
+        hub.start(
+          hub.default_options(settings.session_id, runtime)
+            |> hub.with_catalog(settings.catalog)
+            |> hub.with_registry(tool_registry),
+          name,
+        )
+      }),
+    )
+    |> sup.start
     |> result.map_error(fn(error) {
-      "the gateway hub did not start: " <> string.inspect(error)
+      "the service supervisor did not start: " <> string.inspect(error)
     }),
   )
+  // The host owns this supervisor through the record and a monitor, not
+  // through the start link, so that its death is a fault the host
+  // *handles* rather than a signal that fells the host mid-teardown.
+  process.unlink(services.pid)
   use served <- result.try(
     server.serve(server.Config(
       gateway: hub.Gateway(name:),
@@ -823,6 +966,10 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
     served:,
     broker: broker_actor,
     pool:,
+    summaries: summary_sink,
+    gateway: hub.Gateway(name:),
+    services: services.pid,
+    stops:,
     session_id: settings.session_id,
     token_path: settings.token_path,
     bind_host: settings.bind_host,
@@ -830,9 +977,19 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   ))
 }
 
-/// Takes a booted server apart in dependency order: runtime first (its
-/// close is the one that releases the session lease and stops the
-/// writer at a commit boundary), then the listener, broker, and pool.
+/// Takes a booted server apart, front to back: the listener first so no
+/// new client arrives mid-teardown, then the service supervisor (hub,
+/// Agency holder, commit forwarder), then the runtime — whose close
+/// stops the strand drivers before the writer they commit through and
+/// releases the session lease — and finally the effect plane, broker
+/// before pool because the broker is what holds helpers out on loan.
+///
+/// Idempotent and callable from any process, which both paths need: the
+/// entry point runs it on `SIGTERM`, and the host runs it from its own
+/// process when a fatal child dies. An error closing the session is
+/// swallowed deliberately — it means the lease release did not commit,
+/// which only the TTL can now mop up, and there is nothing left to
+/// abandon.
 ///
 /// ## Examples
 ///
@@ -841,12 +998,60 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
 /// ```
 ///
 pub fn shutdown(booted: Booted) -> Nil {
-  // Close is a controlled crash (spec-gaps WP-E item 3); an error here
-  // means the lease release did not commit, which the TTL will mop up.
-  let _closed = api.close(booted.runtime)
   server.stop(booted.served)
+  stop_services(booted.services)
+  let _closed = api.close(booted.runtime)
   broker.stop(booted.broker)
   exec.stop_pool(booted.pool)
+  summaries.stop(booted.summaries)
+}
+
+/// How many restarts the service supervisor allows within
+/// `service_restart_period` seconds before it gives up and the host
+/// treats the composition layer as fatal. Three is loose enough to ride
+/// out a transient — a hub that crashed decoding one bad frame — and
+/// tight enough that a deterministic fault surfaces as a dead server
+/// with a released lease rather than a restart storm.
+pub const service_restart_intensity = 3
+
+/// The window `service_restart_intensity` is counted over, in seconds.
+pub const service_restart_period = 5
+
+/// How long the service supervisor is given to stop before it is
+/// killed. Its children are plain actors that die on the shutdown
+/// signal at once, so this is headroom, not an expected wait.
+pub const service_grace_ms = 5000
+
+// Stops the service supervisor the way OTP stops one: children
+// terminated in reverse start order with reason `shutdown`. A
+// supervisor that will not answer, or outruns its grace, is killed —
+// the next act is releasing the writer lease, and nothing may hold that
+// up.
+fn stop_services(services: Pid) -> Nil {
+  case process.is_alive(services) {
+    False -> Nil
+    True -> {
+      case ffi_os.terminate_supervisor(services, service_grace_ms) {
+        Ok(Nil) -> Nil
+        Error(Nil) -> process.kill(services)
+      }
+      await_death(services, service_grace_ms)
+    }
+  }
+}
+
+fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
+  case process.is_alive(pid) {
+    False -> Nil
+    True ->
+      case remaining_ms <= 0 {
+        True -> process.kill(pid)
+        False -> {
+          process.sleep(5)
+          await_death(pid, remaining_ms - 5)
+        }
+      }
+  }
 }
 
 fn prepare_directories(

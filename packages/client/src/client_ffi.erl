@@ -8,7 +8,8 @@
 
 -export([system_time_ms/0, unique_positive_integer/0, find_executable/1,
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
-         create_exclusive_private_file/2, platform/0]).
+         create_exclusive_private_file/2, platform/0,
+         terminate_supervisor/2]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -52,6 +53,22 @@ wait_for_sigterm() ->
 
 halt(Code) ->
     erlang:halt(Code).
+
+%% sys:terminate/3 against a running OTP supervisor: the only graceful
+%% external stop a supervisor offers, and the one gleam_otp's
+%% static_supervisor does not wrap. The supervisor answers the system
+%% message before it begins terminating its children, so `ok` means the
+%% shutdown is under way rather than finished. Every failure -- an
+%% already-dead pid, a process that answers no system messages, a
+%% shutdown that outran the timeout -- collapses to {error, nil}, because
+%% the caller's recourse is to kill either way.
+terminate_supervisor(Pid, TimeoutMs) ->
+    try sys:terminate(Pid, shutdown, TimeoutMs) of
+        ok -> {ok, nil};
+        _Other -> {error, nil}
+    catch
+        _:_ -> {error, nil}
+    end.
 
 %% crypto:hash/2 (sha256) over each operand followed by
 %% crypto:hash_equals/2 on the two fixed-size digests -- the bearer

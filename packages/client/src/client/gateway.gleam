@@ -100,6 +100,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import machine/acceptance
@@ -144,6 +145,14 @@ pub type Options {
     session_id: String,
     runtime: api.Runtime,
     recent_entries: Int,
+    /// An extra hint source. `None` is the production answer and
+    /// `client/serve` supplies none: a one-session server's writer sits
+    /// in the same VM as its hub, so `commit_forwarder` already carries
+    /// every commit's hint, and a bus subscription would only make the
+    /// same pull happen twice. The field stays for the host the bus was
+    /// designed for — one whose hint sources are *not* all its own
+    /// writer (a projection, a second node's session, telemetry) — and
+    /// `events/bus.bridge` is the seam that feeds it.
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
@@ -337,26 +346,50 @@ pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
 }
 
 /// Starts a forwarder that turns the runtime writer's post-commit
-/// publication into hub pull hints. Pass its subject in
-/// `api.Options.subscribers` when opening the runtime — the writer
-/// re-registers it on every restart, so hints survive tree reboots.
+/// publication into hub pull hints, registered under `as_name`.
+///
+/// Subscribe the writer to `process.named_subject(as_name)` rather than
+/// to the returned subject: the forwarder holds no state worth keeping,
+/// so it is the one piece of the composition layer that can simply be
+/// restarted, and a subscription made by *name* survives that restart
+/// while one made to a pid does not. The writer skips a subscriber whose
+/// name is momentarily unregistered, so the restart window costs hints,
+/// never the commit path.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(started) = gateway.commit_forwarder(to: name)
-/// // api.Options(..options, subscribers: [started.data])
+/// // let assert Ok(_started) = gateway.commit_forwarder(to: name, as_name: forwarder)
+/// // api.Options(..options, subscribers: [process.named_subject(forwarder)])
 /// ```
 ///
 pub fn commit_forwarder(
   to name: Name(Message),
+  as_name as_name: Name(writer.Event),
 ) -> actor.StartResult(Subject(writer.Event)) {
   actor.new(Nil)
   |> actor.on_message(fn(_state, _event: writer.Event) {
     send_if_alive(name, CommitHint)
     actor.continue(Nil)
   })
+  |> actor.named(as_name)
   |> actor.start
+}
+
+/// The commit forwarder as a supervision child, so a crash restarts it
+/// under the same name instead of ending the server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sup.add(builder, gateway.supervised_commit_forwarder(to: name, as_name: forwarder))
+/// ```
+///
+pub fn supervised_commit_forwarder(
+  to name: Name(Message),
+  as_name as_name: Name(writer.Event),
+) -> ChildSpecification(Subject(writer.Event)) {
+  supervision.worker(fn() { commit_forwarder(to: name, as_name:) })
 }
 
 /// Wraps a provider surface so every streamed delta is teed to the hub
