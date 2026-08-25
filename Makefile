@@ -198,7 +198,7 @@ docs: ## Build HexDocs-style API documentation for every Gleam package
 	done
 
 .PHONY: doc-check
-doc-check: ## Check the per-package doc graph (coverage, AGENTS.md mirror, staleness)
+doc-check: ## Check the doc graph (coverage, AGENTS.md mirror, staleness, citations)
 	@scripts/doc_check.sh
 
 .PHONY: clean
