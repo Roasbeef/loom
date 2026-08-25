@@ -146,6 +146,26 @@ instead and are only referenced here.
    Pricing tables belong to a ledger-side concern, not the adapters.
 7. **Keychain backends** are deferred behind the secret-store seam; the
    environment backend ships now, per-OS keychain FFI later.
+8. **Overflow counts cache writes too.** §1.5 words the adapter's overflow
+   comparison as `input + cache_read > context_window`, written before
+   either adapter declared a prompt-cache breakpoint and so before either
+   could report a cache *write*. Both adapters compare
+   `input + cache_read + cache_write`, which is the quantity the spec
+   names — the whole prompt — and collapses to the spec's two terms when
+   nothing is cached. Without the third term, caching would shrink the
+   apparent request by exactly the tokens it just wrote, and an oversized
+   request would retry unchanged instead of compacting.
+9. **Cache breakpoint placement is adapter-local and unconfigurable.** The
+   Anthropic adapter spends all four of the API's breakpoints on every
+   request — one-hour on the last tool definition and on the system block,
+   five-minute on the last block of each of the final two user turns —
+   derived purely from the request's contents, so no caching knob reaches
+   `ProviderRequest` and no package above the adapter seam learns the
+   dialect's cache vocabulary. The system prompt is consequently rendered
+   as a one-element block array rather than a bare string; `system` stays
+   `Option(String)`, so no frozen interface moves. The OpenAI dialect
+   declares nothing, its caching being automatic and prefix-matched
+   server-side.
 
 ## From WP-I (`tools`)
 
@@ -312,10 +332,14 @@ instead and are only referenced here.
    the earlier scan never saw, losing them permanently. Sequences are
    strictly increasing and rows write-once, so the bounded window is
    immutable and the batch consistent.
-2. **Checkpoints persist state and high-water together.** The spec says
-   "persisted high-water seq"; for a stateful in-memory projection a
-   high-water without its matching state is meaningless. Search persists
-   cursor-only because its state is the database itself.
+2. **Checkpoints persist state, high-water, and rewrite generation
+   together.** The spec says "persisted high-water seq"; for a stateful
+   in-memory projection a high-water without its matching state is
+   meaningless, and both are void after a rewrite renumbers seqs — so the
+   checkpoint is a `#(state, high_water, generation)` triple, and a driver
+   whose recorded generation no longer matches the store's restarts the
+   fold from `initial` at seq zero. Search persists cursor-and-generation
+   only, because its state is the database itself.
 3. **Operation-transition events carry a display string**, not a machine
    type — keeping events off a machine dependency per the DAG; the
    register remains the truth.
