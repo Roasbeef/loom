@@ -41,3 +41,16 @@ pub fn wait_for_sigterm() -> Nil
 /// because the call never returns.
 @external(erlang, "client_ffi", "halt")
 pub fn halt(code: Int) -> anything
+
+/// The host's operating system name and machine architecture, raw:
+/// `#("linux", "x86_64-pc-linux-gnu")`, `#("darwin",
+/// "aarch64-apple-darwin23.6.0")`. OTP `os:type/0` and
+/// `erlang:system_info(system_architecture)` — both are ambient facts of
+/// the running system, and the system prompt needs them because an agent
+/// that does not know its platform guesses at command syntax.
+///
+/// Deliberately unnormalized: `client/system_prompt.platform` turns the
+/// pair into the label the prompt carries, so the mapping is a pure
+/// function with tests rather than a line of Erlang.
+@external(erlang, "client_ffi", "platform")
+pub fn platform() -> #(String, String)

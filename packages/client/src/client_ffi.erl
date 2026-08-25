@@ -8,7 +8,7 @@
 
 -export([system_time_ms/0, unique_positive_integer/0, find_executable/1,
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
-         create_exclusive_private_file/2]).
+         create_exclusive_private_file/2, platform/0]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -19,6 +19,17 @@ system_time_ms() ->
 
 unique_positive_integer() ->
     erlang:unique_integer([positive, monotonic]).
+
+%% os:type/0 and erlang:system_info(system_architecture) as a raw pair.
+%% Both are ambient facts of the running system with no pure answer, and
+%% both are fixed for the life of the node -- which is what the system
+%% prompt's byte-stability contract needs. No normalization happens here:
+%% turning {unix, darwin} and "aarch64-apple-darwin23" into "macos/arm64"
+%% is a decision, and decisions belong in Gleam.
+platform() ->
+    {_Family, Name} = os:type(),
+    {atom_to_binary(Name, utf8),
+     unicode:characters_to_binary(erlang:system_info(system_architecture))}.
 
 find_executable(Name) ->
     case os:find_executable(binary_to_list(Name)) of

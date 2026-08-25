@@ -52,6 +52,32 @@
 //// adaptive thinking, and it sidesteps the adapter's `budget_tokens`
 //// vocabulary, which newer models reject.
 ////
+//// ## The system prompt
+////
+//// Assembled once, at the first open of a session, and pinned into the
+//// reserved `prompt/` blackboard cell; every later boot sends the pinned
+//// bytes rather than deriving them again. `client/system_prompt` owns
+//// the whole story, including why re-deriving would be expensive. Two
+//// environment variables reach it:
+////
+//// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
+////   shipped in `prompt/default`. A file that cannot be read, or does not
+////   decode, or renders to nothing, refuses the boot with a worded
+////   message naming the file; a pack that merely renders *incompletely*
+////   warns on stderr and serves.
+//// - `LOOM_SYSTEM_PROMPT` — a literal prompt that bypasses the pack
+////   entirely, still pinned, and taking precedence over an existing pin
+////   because setting it is a deliberate act. Whitespace is not an
+////   override: the pack renders as usual.
+////
+//// Everything the pack renders comes from a real source — the workspace
+//// root, the VM's platform, the jail's shell, the registry's sorted tool
+//// names, the demanded enforcement paired with a helper's `degraded`
+//// hello, the base policy's network posture and protected paths, and the
+//// workspace's own `CLAUDE.md`. Nothing volatile may join them: the
+//// string sits behind a one-hour cache breakpoint and must be identical
+//// for every strand and every turn of the session.
+////
 //// ## Failure and shutdown
 ////
 //// This module is an entry point, so §0.2's no-panic rule is honored
@@ -86,6 +112,7 @@ import client/catalog
 import client/gateway as hub
 import client/internal/ffi_os
 import client/server
+import client/system_prompt
 import client/wiring
 import core/clock
 import gleam/erlang/process
@@ -145,7 +172,9 @@ pub type Settings {
     gateway: provider_gateway.Gateway,
     /// The model catalogue behind the gateway's registry.
     catalog: catalog.Catalog,
-    /// The system prompt, if any.
+    /// An explicit `LOOM_SYSTEM_PROMPT` override, which bypasses the
+    /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
+    /// to use the session's pinned prompt or render the pack.
     system: Option(String),
     /// The identity new strands are configured with.
     model: machine_strand.ModelIdentity,
@@ -167,6 +196,7 @@ pub type Booted {
     session_id: String,
     token_path: String,
     bind_host: String,
+    prompt: system_prompt.Assembled,
   )
 }
 
@@ -210,6 +240,14 @@ fn announce(booted: Booted) -> Nil {
     <> "/v1/ws (token file "
     <> booted.token_path
     <> ")",
+  )
+  // The digest is what makes a cache miss attributable: a changed head
+  // is either a prompt change, which this line names, or a bug.
+  io.println(
+    "loom-server: system prompt "
+    <> system_prompt.named(booted.prompt.origin)
+    <> ", digest "
+    <> booted.prompt.digest,
   )
 }
 
@@ -324,7 +362,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       clock:,
     ),
     catalog: catalogue,
-    system: option.from_result(env_text("LOOM_SYSTEM_PROMPT")),
+    system: option.from_result(env_text(system_prompt.override_variable)),
     model: machine_strand.ModelIdentity(
       provider: main_entry.name,
       model_id: main_entry.model_id,
@@ -499,7 +537,7 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   let spawn_config =
     exec.SpawnConfig(
       helper_path: settings.helper_path,
-      shell_path: "/bin/sh",
+      shell_path:,
       base_policy: base_policy(settings.workspace),
       tmp_dir:,
       handshake_timeout_ms: 5000,
@@ -548,6 +586,19 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
   let tool_registry = registry(Some(agency_seam))
+  // The system prompt, before the open, because `wiring.Config` needs
+  // the string and `api.open` is what stands the writer up. The pinned
+  // cell is therefore read straight off the store here — legal, nothing
+  // owns it yet — and written back through the writer after the open.
+  use pinned <- result.try(system_prompt.pinned_in(opened))
+  use assembled <- result.try(
+    system_prompt.assemble(pinned:, override: settings.system, render: fn() {
+      render_prompt(settings, pool, tool.names(tool_registry))
+    }),
+  )
+  list.each(assembled.warnings, fn(warning) {
+    io.println_error("loom-server: " <> warning)
+  })
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
@@ -561,7 +612,7 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
     wiring.build_effects(wiring.Config(
       gateway: settings.gateway,
       role: model.Main,
-      system: settings.system,
+      system: Some(assembled.text),
       fallback_context_window: settings.context_window,
       fallback_max_output_tokens: settings.max_output_tokens,
       provider_timeout_ms: 300_000,
@@ -604,6 +655,11 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       "the runtime did not open: " <> string.inspect(error)
     }),
   )
+  // The writer exists now, so the other half of the pin can land: the
+  // bytes every strand of this session will send, recorded durably so the
+  // next boot reads them rather than deriving them again from inputs that
+  // may have moved.
+  use Nil <- result.try(system_prompt.pin(runtime, assembled))
   use _holder <- result.try(
     agency.start(agency_config, runtime)
     |> result.map_error(fn(error) {
@@ -641,6 +697,7 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
     session_id: settings.session_id,
     token_path: settings.token_path,
     bind_host: settings.bind_host,
+    prompt: assembled,
   ))
 }
 
@@ -689,6 +746,89 @@ fn parent_directory(path: String) -> Option(String) {
     _ -> None
   }
 }
+
+// --- the system prompt -----------------------------------------------------
+
+/// How long the boot waits on the helper it spawns to ask whether this
+/// host can confine anything. Above the pool's own handshake timeout, so
+/// the helper actor has always settled into ready or dead by the time the
+/// answer is due and the call cannot outrun it.
+pub const helper_probe_ms = 15_000
+
+// Renders the prompt for a session that has none pinned yet. Everything
+// expensive lives behind this thunk — the pack file, the workspace's
+// `CLAUDE.md`, and the helper spawn the degraded question needs — so a
+// resumed session pays for none of it.
+fn render_prompt(
+  settings: Settings,
+  pool: Pool,
+  tools: List(String),
+) -> Result(system_prompt.Rendered, String) {
+  let #(guidance, notes) = system_prompt.guidance(settings.workspace)
+  use #(origin, source) <- result.try(
+    system_prompt.pack_source(
+      option.from_result(env_text(system_prompt.pack_path_variable)),
+    ),
+  )
+  use rendered <- result.try(system_prompt.render_pack(
+    origin,
+    source,
+    system_prompt.Host(
+      workspace: settings.workspace,
+      platform: ffi_os.platform(),
+      shell: shell_path,
+      tools:,
+      demand: settings.demand,
+      degraded: degraded(pool),
+      base_policy: base_policy(settings.workspace),
+      guidance:,
+    ),
+  ))
+  Ok(
+    system_prompt.Rendered(
+      ..rendered,
+      warnings: list.append(notes, rendered.warnings),
+    ),
+  )
+}
+
+/// Whether this host's helper advertises degraded enforcement, asked once
+/// at session open by borrowing a helper from the pool the session will
+/// use anyway. The system prompt has no other source for it: the
+/// per-layer `skip:` report lives inside an `ExecResult`, which is after
+/// a run, and the `ENFORCED`/`SKIPPED` table is a separate `--self-test`
+/// process invocation.
+///
+/// A helper that will not spawn, or will not finish its handshake, is
+/// reported as degraded — which is what it behaves as: under
+/// `FullEnforcement` every jailed execution against it fails, and the
+/// pack's degraded fragment says exactly that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.degraded(pool) == False   // a healthy loom-exec
+/// ```
+///
+pub fn degraded(pool: Pool) -> Bool {
+  case exec.checkout(pool, waiting: helper_probe_ms) {
+    Error(_unavailable) -> True
+    Ok(helper) -> {
+      let answer = case exec.await_ready(helper, waiting: helper_probe_ms) {
+        Ok(features) -> list.contains(features, "degraded")
+        Error(_dead) -> True
+      }
+      exec.checkin(pool, helper)
+      answer
+    }
+  }
+}
+
+/// The shell every jailed command runs under, and the shell the system
+/// prompt tells the agent about. One constant so the two cannot drift:
+/// a prompt that named a shell the helper does not use would be a lie
+/// the agent could only discover by writing a broken command.
+pub const shell_path = "/bin/sh"
 
 /// The session base policy: workspace writable, the whole filesystem
 /// readable (interpreters live outside the workspace — spec-gaps WP-I

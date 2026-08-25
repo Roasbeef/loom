@@ -8,6 +8,7 @@ core = { path = "../core" }
 storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }
+prompt = { path = "../prompt" }
 events = { path = "../events" }
 runtime = { path = "../runtime" }
 broker = { path = "../broker" }
