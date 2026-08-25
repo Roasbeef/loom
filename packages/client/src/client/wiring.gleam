@@ -72,9 +72,13 @@
 //// - **Replay-still-safe** consults the *live* registry (pi §4.5: stored
 ////   and current declarations must both say safe); an unregistered name
 ////   is never safe.
-//// - **Hooks** are `runtime/effects.default_hooks()` for now: no
-////   injected messages, unlimited admission windows, no compaction. The
-////   real hook registry is post-M2 work.
+//// - **Hooks** are `runtime/effects.default_hooks()` here: no injected
+////   messages, unlimited admission windows, no compaction. The real hook
+////   registry is post-M2 work. A host that wires a messaging plane wraps
+////   this record afterwards — `client/serve` composes
+////   `client/agency.reaping_hooks` over it so a run's end reaps the
+////   undetached children that run spawned — which is why the field is
+////   built here rather than fixed here.
 //// - **Enforcement demand** is caller-chosen config: production sessions
 ////   pass `exec.FullEnforcement`; the conformance container's helper
 ////   runs degraded (no bwrap/Landlock), so its suites pass
@@ -85,7 +89,6 @@ import broker/broker.{type Broker}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import core/clock.{type Clock}
-import core/ids.{type OpId}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None}
@@ -408,7 +411,7 @@ pub fn clear(
 /// ```
 ///
 pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
-  let ctx = tool_context(config, run.operation, run.step_id)
+  let ctx = tool_context(config, run)
   let outcome =
     tool.dispatch(config.registry, ctx, run.call.name, run.arguments)
   let #(now, _clock) = clock.read(config.clock)
@@ -424,27 +427,31 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
   )
 }
 
-/// The per-call tool context: op/step identity from the run, everything
-/// else from the config. The broker seam is `tool.broker_runner` over
-/// the config's live broker; the filesystem seam is the production
-/// simplifile-backed one.
+/// The per-call tool context: the caller's durable coordinates from the
+/// run, everything else from the config. The broker seam is
+/// `tool.broker_runner` over the config's live broker; the filesystem
+/// seam is the production simplifile-backed one.
+///
+/// The whole coordinate quadruple travels rather than just op and step,
+/// because the agent tools are judged against `strand` and derive a
+/// spawned child's name from `{operation, step, source index}` — the same
+/// triple a replayed call arrives under, which is what makes a spawn
+/// idempotent. Every one of them comes from the driver, never from the
+/// model.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // wiring.tool_context(config, op_id, "turn-1:tools").workspace
-/// //   == config.workspace
+/// // wiring.tool_context(config, run).workspace == config.workspace
 /// ```
 ///
-pub fn tool_context(
-  config: Config,
-  operation: OpId,
-  step_id: String,
-) -> tool.Ctx {
+pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
   tool.Ctx(
     workspace: config.workspace,
-    op_id: operation,
-    step_id:,
+    strand: run.strand,
+    op_id: run.operation,
+    step_id: run.step_id,
+    source_index: run.source_index,
     base_policy: config.base_policy,
     grants: config.grants,
     demand: config.demand,

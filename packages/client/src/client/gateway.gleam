@@ -2789,6 +2789,10 @@ fn describe_api_error(
       protocol.code_bad_request,
       "reserved fact key: " <> key,
     )
+    api.UnreservedFactKey(key:) -> #(
+      protocol.code_bad_request,
+      "not a reserved fact key: " <> key,
+    )
     api.EscalationExists(id:) -> #(
       protocol.code_conflict,
       "escalation " <> id <> " already exists",

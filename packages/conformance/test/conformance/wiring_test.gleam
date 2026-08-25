@@ -15,7 +15,7 @@ import core/message
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import machine/operation
+import machine/operation as machine_operation
 import machine/strand.{ModelIdentity, StrandConfiguration}
 import provider/gateway
 import provider/http
@@ -306,7 +306,7 @@ pub fn clearance_maps_replay_declarations_test() {
   assert wiring.clear(config, query)
     == effects.Cleared(
       effective_arguments: arguments,
-      replay: operation.ReplayNever,
+      replay: machine_operation.ReplayNever,
     )
   // fs_read: replay Safe.
   let read_query =
@@ -314,7 +314,7 @@ pub fn clearance_maps_replay_declarations_test() {
       ..query,
       call: call("fs_read", json.Object([#("path", json.String("a"))])),
     )
-  let assert effects.Cleared(replay: operation.ReplaySafe, ..) =
+  let assert effects.Cleared(replay: machine_operation.ReplaySafe, ..) =
     wiring.clear(config, read_query)
 }
 
@@ -362,10 +362,26 @@ pub fn replay_still_safe_consults_live_registry_test() {
 pub fn tool_context_construction_test() {
   let config = wide_config()
   let operation = op_id()
-  let ctx = wiring.tool_context(config, operation, "turn-3:tools")
+  let run =
+    effects.ToolRun(
+      operation:,
+      step_id: "turn-3:tools",
+      source_index: 2,
+      strand: "sub:main/reviewer-turn-3-tools-2",
+      call: call("fs_read", json.Object([])),
+      arguments: json.Object([]),
+      replay: machine_operation.ReplaySafe,
+    )
+  let ctx = wiring.tool_context(config, run)
   assert ctx.workspace == config.workspace
   assert ctx.op_id == operation
   assert ctx.step_id == "turn-3:tools"
+  // The driver's own coordinates reach the tool untouched: the agent
+  // tools are judged against `strand` and mint a child's name from the
+  // rest, so a value invented here would be an identity a model could
+  // claim.
+  assert ctx.strand == "sub:main/reviewer-turn-3-tools-2"
+  assert ctx.source_index == 2
   assert ctx.base_policy == config.base_policy
   assert ctx.grants == [policy.GrantEnv(name: "LANG")]
   assert ctx.demand == exec.BestEffort
@@ -384,6 +400,7 @@ pub fn run_tool_wraps_outcome_as_result_message_test() {
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,
+      strand: "main",
       call: call(
         "fs_write",
         json.Object([
@@ -395,7 +412,7 @@ pub fn run_tool_wraps_outcome_as_result_message_test() {
         #("path", json.String("wiring_test.txt")),
         #("content", json.String("mapped")),
       ]),
-      replay: operation.ReplaySafe,
+      replay: machine_operation.ReplaySafe,
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(config, run)
@@ -419,9 +436,10 @@ pub fn run_tool_unknown_name_is_in_band_error_test() {
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,
+      strand: "main",
       call: call("ghost", json.Object([])),
       arguments: json.Object([]),
-      replay: operation.ReplaySafe,
+      replay: machine_operation.ReplaySafe,
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(config, run)
@@ -439,9 +457,10 @@ pub fn run_tool_policy_refusal_carries_wanted_grants_test() {
       operation: op_id(),
       step_id: "turn-1:tools",
       source_index: 0,
+      strand: "main",
       call: call("bash", bash_arguments()),
       arguments: bash_arguments(),
-      replay: operation.ReplayNever,
+      replay: machine_operation.ReplayNever,
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(narrow, run)

@@ -63,13 +63,15 @@
 ////
 //// Nothing outside the runtime is supervised either. The runtime owns
 //// a supervision tree; the gateway hub, its commit forwarder, the
-//// broker, and the helper pool are each started from `boot` with a
-//// plain linked `actor.start`, on the process that then blocks in
-//// `wait_for_sigterm` — and that process does not trap exits. A crash
-//// in any of the four kills it, and the Gleam-generated runner linked
+//// broker, the helper pool, and the Agency holder are each started from
+//// `boot` with a plain linked `actor.start`, on the process that then
+//// blocks in `wait_for_sigterm` — and that process does not trap exits.
+//// A crash in any of the five kills it, and the Gleam-generated runner linked
 //// above it, which does trap, prints the exit reason and halts the
 //// node with exit 1. So a hub crash ends the server rather than
-//// leaving a listener accepting sockets no hub will answer. It also
+//// leaving a listener accepting sockets no hub will answer, and a dead
+//// Agency holder ends the server rather than leaving every `agent_*`
+//// call refusing in band for the rest of the session. It also
 //// skips the `SIGTERM` path, so the session lease is left to expire
 //// on its TTL instead of being released, and restarting is the job of
 //// whatever runs `loom-server`.
@@ -79,6 +81,7 @@ import broker/broker.{type Broker}
 import broker/exec.{type EnforcementDemand, type Pool}
 import broker/policy
 import broker/token
+import client/agency
 import client/catalog
 import client/gateway as hub
 import client/internal/ffi_os
@@ -101,6 +104,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import tools/agent
 import tools/bash
 import tools/fs
 import tools/grep
@@ -531,18 +535,27 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
       "the commit forwarder did not start: " <> string.inspect(error)
     }),
   )
+  // The Agency's holder cannot exist yet: `api.open` takes the effects
+  // and returns the runtime, and the runtime contains the effects, so a
+  // closure over the live runtime is a value cycle rather than an
+  // ordering problem. The seam closes over a *name* instead — the same
+  // indirection `hub.commit_forwarder` uses four lines above — and the
+  // holder is started under that name once the open has returned.
+  let agency_name = process.new_name(prefix: "loom_agency")
+  let agency_config = agency.default_config(agency_name, clock)
+  let agency_seam = agency.seam(agency_config)
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
-  let tool_registry = registry()
+  let tool_registry = registry(Some(agency_seam))
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
       thinking_level: machine_strand.ThinkingOff,
-      // Sorted, as every durable active list should be: the render
-      // order of the tool array is the provider cache's byte prefix
-      // (see `gateway.canonical_tool_names`).
-      active_tool_names: ["bash", "fs_edit", "fs_read", "fs_write", "grep"],
+      // `tool.names` is sorted, which is what a durable active list must
+      // be: the render order of the tool array is the provider cache's
+      // byte prefix (see `gateway.canonical_tool_names`).
+      active_tool_names: tool.names(tool_registry),
     )
   let built =
     wiring.build_effects(wiring.Config(
@@ -568,16 +581,33 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
     effects.Effects(
       ..built,
       provider: hub.tap_provider(built.provider, to: name),
+      // The only work this adds on the driver process is one
+      // `process.spawn_unlinked`; everything a reap actually does happens
+      // on that spawned process. See `client/agency`.
+      hooks: agency.reaping_hooks(built.hooks, agency_config),
     )
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
       opened,
       effects_record,
-      api.Options(..options, subscribers: [forwarder.data]),
+      api.Options(
+        ..options,
+        subscribers: [forwarder.data],
+        // Model-spawned strands run under the tree's second strand
+        // factory, so a subagent crash loop cannot spend the restart
+        // budget protecting `main`.
+        subagent: agency.is_subagent,
+      ),
     )
     |> result.map_error(fn(error) {
       "the runtime did not open: " <> string.inspect(error)
+    }),
+  )
+  use _holder <- result.try(
+    agency.start(agency_config, runtime)
+    |> result.map_error(fn(error) {
+      "the agency holder did not start: " <> string.inspect(error)
     }),
   )
   use _hub <- result.try(
@@ -676,22 +706,39 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
   ])
 }
 
-/// The full core tool registry.
+/// The tool registry: the five core tools, plus the six `agent_*` tools
+/// when this host wired a messaging plane.
+///
+/// Registration is gated on the Agency rather than the tools being
+/// registered unconditionally and refusing at call time, and the reason
+/// is arithmetic rather than tidiness: the wire tool array is built from
+/// this registry, renders ahead of the system prompt, and is the byte
+/// prefix of the provider's cached region — so six permanently-refusing
+/// definitions would be paid for on every request of every strand for the
+/// life of the session. A host without a plane simply has five tools.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.lookup(serve.registry(), "bash")
+/// // tool.lookup(serve.registry(option.None), "bash")
 /// ```
 ///
-pub fn registry() -> Registry {
-  tool.registry([
-    bash.tool(),
-    grep.tool(),
-    fs.read_tool(),
-    fs.write_tool(),
-    fs.edit_tool(),
-  ])
+pub fn registry(agency: Option(agent.Agency)) -> Registry {
+  tool.registry(
+    list.append(
+      [
+        bash.tool(),
+        grep.tool(),
+        fs.read_tool(),
+        fs.write_tool(),
+        fs.edit_tool(),
+      ],
+      case agency {
+        None -> []
+        Some(agency) -> agent.tools(agency)
+      },
+    ),
+  )
 }
 
 // One entropy seam serves two masters: id seeds must never repeat

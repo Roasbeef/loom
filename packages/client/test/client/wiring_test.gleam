@@ -84,7 +84,7 @@ fn config() -> wiring.Config {
     provider_timeout_ms: 1000,
     broker: helperless_broker(),
     broker_timeout_ms: 1000,
-    registry: serve.registry(),
+    registry: serve.registry(None),
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy: policy.workspace_default(workspace),
