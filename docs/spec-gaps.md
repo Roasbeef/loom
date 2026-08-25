@@ -397,6 +397,41 @@ instead and are only referenced here.
    approved policy" story stays literally true. §6.2's list is stale on
    `cap/kv`; the WP-J list is stale on `cap/net`.
 
+2. **The `cancel` frame is correlated to a cap_call's frame `id`.** Part
+   1.4 sketches `cancel` from the exec-helper's single-execution view,
+   where an execution is the unit; but the satellite channel multiplexes
+   many concurrent `cap_call`s over one port, so a `cancel` must name
+   *which* in-flight call to revoke. Resolved: `cancel` carries the same
+   frame `id` as the `cap_call` it cancels. A killed satellite process is
+   one the channel actor monitors; its `DOWN` emits a `cancel` for that
+   process's outstanding call id, and the broker revokes + kills the
+   pgroup for exactly that capability invocation.
+
+3. **cap_result value shape and the encode/decode split.** The inbound
+   `cap_result` value shape matches WP-G broker item 4
+   (`{ok, value | error{code, msg}, usage?}`). Ownership of the wire:
+   `cap` owns *outbound* `cap_call`/`cancel` byte encoding (over
+   `core/msgpack`, with no `broker` dependency — the satellite must not
+   link the broker), while J3's satellite runtime owns *inbound*
+   deframing and feeds decoded outcomes to `channel.deliver`. This keeps
+   the trust boundary clean: the untrusted satellite serializes requests,
+   the trusted runtime parses replies.
+
+4. **J3 boot-module init contract (cap → satellite runtime).** Before
+   `main`: `channel.start(token, send)` once (`send: fn(BitArray) -> Nil`
+   is the framed port write), then
+   `dispatch.install(channel.to_channel(handle))`. Then run the read
+   loop: deframe inbound `cap_result` frames and call
+   `channel.deliver(handle, frame_id, CapOk | CapErr)`, mapping
+   `broker/framing.CapOutcome` → `channel.CapOutcome`. Marshal `main`'s
+   `report.Outcome` back with `report.to_msgpack`; `channel.stop(handle)`
+   on teardown. `channel.subject(handle)` is available if a forwarding
+   loop is wanted. A kept-alive cell re-`start`s + re-`install`s per
+   invocation with the fresh token. These shapes (`VetPolicy`,
+   `VetResult`, `Vetted`, the channel/dispatch API) are agent-designed,
+   not frozen Part-1 interfaces; a different contract J3 needs is a
+   coordination point, not a protocol-change.
+
 ## From M3 messaging (design §4.6 reconciliation)
 
 1. **Request/reply is explicit-poll, not auto-enqueue.** §4.6 says a
