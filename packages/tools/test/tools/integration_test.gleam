@@ -110,6 +110,8 @@ fn run_echo(
       workspace:,
       op_id:,
       step_id: "integration-1",
+      source_index: 0,
+      strand: "main",
       base_policy: base_policy(workspace),
       grants: [],
       // No bwrap in most dev containers: accept whatever enforcement

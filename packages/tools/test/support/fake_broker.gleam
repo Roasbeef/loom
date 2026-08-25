@@ -86,6 +86,8 @@ fn base_ctx(
     workspace:,
     op_id:,
     step_id: "step-1",
+    source_index: 0,
+    strand: "main",
     base_policy: base_policy(workspace),
     grants: [],
     demand: exec.FullEnforcement,

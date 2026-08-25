@@ -143,15 +143,24 @@ pub type RunningCall {
 /// paths; `env` is the allowlist-constructed child environment for
 /// jailed executions (never an inherited one); `clear_call` honors the
 /// broker contract — on `Ok` exactly one `CallSettled` eventually
-/// arrives on the events subject.
+/// arrives on the events subject; `strand`, `op_id`, `step_id` and
+/// `source_index` are the driver's own durable coordinates for this call,
+/// never anything the model supplied — the agent tools are judged against
+/// `strand` and derive a spawned child's name from the other three, so a
+/// value invented here would let a model claim an identity or mint a
+/// second child on replay.
 pub type Ctx {
   Ctx(
     /// Absolute workspace root; every tool path resolves under it.
     workspace: String,
+    /// The strand whose driver dispatched this call.
+    strand: String,
     /// The operation this tool call belongs to.
     op_id: OpId,
     /// The step id of the producing tool batch.
     step_id: String,
+    /// This call's index within its source assistant message.
+    source_index: Int,
     /// The session's base sandbox policy.
     base_policy: SandboxPolicy,
     /// Grants from consumed escalation approvals, if any.
@@ -492,6 +501,46 @@ pub fn optional_string_list(
   }
 }
 
+/// An optional boolean argument; absent or null is `None`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let args = json.Object([#("detach", json.Bool(True))])
+/// assert tool.optional_bool(args, "detach") == Ok(option.Some(True))
+/// ```
+///
+pub fn optional_bool(
+  args: JsonValue,
+  key: String,
+) -> Result(Option(Bool), String) {
+  case field(args, key) {
+    Ok(json.Bool(value)) -> Ok(Some(value))
+    Ok(json.Null) | Error(Nil) -> Ok(None)
+    Ok(_) -> Error("`" <> key <> "` must be a boolean")
+  }
+}
+
+/// An optional argument of any JSON shape; absent is `None`, but an
+/// explicit `null` is `Some(json.Null)` — a blackboard cell may legally
+/// hold null, and collapsing the two would make "write null" unwritable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.optional_value(json.Object([]), "value") == Ok(option.None)
+/// ```
+///
+pub fn optional_value(
+  args: JsonValue,
+  key: String,
+) -> Result(Option(JsonValue), String) {
+  case field(args, key) {
+    Ok(value) -> Ok(Some(value))
+    Error(Nil) -> Ok(None)
+  }
+}
+
 // First occurrence of a field in an args object; non-objects have no
 // fields.
 fn field(args: JsonValue, key: String) -> Result(JsonValue, Nil) {
@@ -545,6 +594,28 @@ pub fn integer_property(description: String) -> JsonValue {
     #("type", json.String("integer")),
     #("description", json.String(description)),
   ])
+}
+
+/// A boolean-typed schema property.
+pub fn boolean_property(description: String) -> JsonValue {
+  json.Object([
+    #("type", json.String("boolean")),
+    #("description", json.String(description)),
+  ])
+}
+
+/// A closed-vocabulary schema property: a string restricted to `values`.
+pub fn enum_property(values: List(String), description: String) -> JsonValue {
+  json.Object([
+    #("type", json.String("string")),
+    #("enum", json.Array(list.map(values, json.String))),
+    #("description", json.String(description)),
+  ])
+}
+
+/// A schema property of any JSON shape.
+pub fn any_property(description: String) -> JsonValue {
+  json.Object([#("description", json.String(description))])
 }
 
 /// An array-of-strings schema property.
