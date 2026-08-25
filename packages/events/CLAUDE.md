@@ -27,13 +27,18 @@ WP-K.
   `apply(state, Change) -> state`. `Change` is `EntryAppended(entry)` or
   `UsageAppended(row)`.
 - `events/projection.Checkpoint(state)` — `load`/`save` of a `#(state,
-  high_water)` **pair**; `ephemeral()` persists nothing and rebuilds every
-  restart.
+  high_water, generation)` **triple**: state without its high-water is
+  meaningless, and either without the rewrite generation they were folded
+  under cannot be trusted after a rewrite. `ephemeral()` persists nothing
+  and rebuilds every restart.
 - `events/projection.{catch_up, rebuild}` — the convergence primitives;
   `stats_projection()` is the shipped example, folding to
   `storage.SessionStats`.
 - `events/projection.{Options, Hints, Message(state), start, poke, read,
-  sync}` — the driver actor; `Hints` is `FromBus(bus, session)` or
+  sync}` — the driver actor. `Options` carries `store` and `generation` as
+  *thunks*, called fresh on every pull rather than captured once, because a
+  precise rewrite swaps the store handle and bumps its generation
+  underneath a long-lived driver. `Hints` is `FromBus(bus, session)` or
   `NoHints`.
 - `events/search.{Search, SearchError, Hit, open, sync, query, remove}` —
   the FTS5 index and its durable per-session cursor, in one
@@ -93,17 +98,24 @@ WP-K.
   immutable by the time either scan runs. Without it, a commit landing
   between the entry and usage scans advances the high-water past entries
   the entry scan never saw, losing them permanently.
-- **A checkpoint persists state and high-water together.** Either without
-  the other is meaningless. Persistence is best-effort: a checkpoint that
-  loses writes costs a longer catch-up, never correctness.
+- **A checkpoint persists state, high-water, and generation together.**
+  State without its high-water is meaningless, and either without the
+  generation cannot be told apart from a checkpoint a rewrite has
+  invalidated. Persistence is best-effort: a checkpoint that loses writes
+  costs a longer catch-up, never correctness.
 - **Indexing is pull-based and crash-safe.** Index rows and the advanced
   cursor commit in one transaction, so a crash mid-batch simply re-runs
   the batch into the same state; a lost hint is caught by the next sweep.
-- **A rewrite invalidates the index by generation.** The cursor is stored
-  with the session store's rewrite generation
-  (`storage/sqlite.generation`; memory sessions pass `0`); on mismatch the
-  session's index rows are dropped and it re-indexes from zero in the same
-  transaction, because a rewrite may renumber seqs.
+- **A rewrite invalidates by generation, on both read models.** A rewrite
+  may renumber seqs, so anything folded or indexed under the old numbering
+  is void. `events/search` stores the session store's rewrite generation
+  (`storage/sqlite.generation`; memory sessions pass `0`) alongside its
+  cursor and, on mismatch, drops that session's index rows and re-indexes
+  from zero in the same transaction. `events/projection` compares its
+  recorded generation against `Options.generation()` on every pull and, on
+  mismatch, restarts the fold from `projection.initial` at seq zero against
+  the freshly-read store. A cold start has nothing to compare against, so
+  it simply records whatever generation the store reports.
 - **Search indexes message text and compaction/branch summaries only.**
   Thinking blocks and tool-call arguments are deliberately not indexed.
 - **The typed boundary over `pg` is re-established by pairing.** `pg`

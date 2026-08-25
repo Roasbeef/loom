@@ -97,6 +97,17 @@ model-influenced code itself (Rule Zero). WP-J.
   A satellite that writes its terminal `outcome` and exits can never have
   its death overtake its result. The node's exit status arrives by another
   path and only *enriches* a close the reader already saw.
+- **Teardown does not depend on the host surviving to run it.** The host
+  cleans up on every exit path it takes itself, and `launch.start_janitor`
+  spawns an unlinked process monitoring the host that runs the same
+  teardown when it dies however it died — the broker's fd-3 safety net in
+  miniature. A host killed from outside leaves no node running, no socket
+  bound, and no token file on disk.
+- **The wall deadline is armed on `Connected`, not on launch.** A timer
+  armed up front could stop the host before the launch delivered its
+  connection, leaving the node's `destroy` handle undelivered;
+  `hand_over` monitors the host so a connection arriving after its death
+  is destroyed rather than dropped.
 - **The node runs under the host's own `{op_id, step_id}`.** That is what
   makes `broker.abort` at the deadline actually kill it, and what pools
   the budget across the whole execution — fan-out buys parallelism, not
@@ -111,10 +122,13 @@ model-influenced code itself (Rule Zero). WP-J.
   readable roots *and* refuses the two cases the vocabulary cannot state:
   a path under a `protected` entry, and a path under the scratch tmpfs
   mount. See `protocol-change/004-sandbox-policy-explicit-mounts.md`.
-- **The default router refuses what it does not service.** A `proc.run`
-  carrying `cwd`, `stdin`, `env`, or `timeout_ms` is denied in band rather
-  than run without them, and output is rendered as msgpack *text* because
-  `cap/proc` decodes it into a `String`.
+- **The default router refuses what it does not service.** `proc.run` is
+  the only capability it maps today; every other `cap` name comes back
+  `unsupported_cap` until the harness-side tool bridge lands, and a caller
+  holding that bridge injects a fuller router. Even within `proc.run`, a
+  call carrying `cwd`, `stdin`, `env`, or `timeout_ms` is denied in band
+  rather than run without them, and output is rendered as msgpack *text*
+  because `cap/proc` decodes it into a `String`.
 
 ## Deep Docs
 

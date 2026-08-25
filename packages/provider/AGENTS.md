@@ -66,6 +66,10 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   - OpenAI chat-completions SSE — unnamed events whose `data:` is a chunk
     document, terminated by the literal `[DONE]`; tool calls arrive as
     `choices[0].delta.tool_calls` fragments carrying a provider-side index.
+  - Anthropic requests carry four `cache_control` breakpoints — one-hour
+    on the last tool definition and on the system block, five-minute on
+    the last block of each of the final two user turns. The system prompt
+    therefore goes out as a one-element block array, not a bare string.
   - `api_name` constants pin the two dialects: `"anthropic-messages"`,
     `"openai-completions"`.
 
@@ -114,6 +118,32 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   decision — so a lying proxy can at worst waste a compact-and-retry cycle.
 - **Usage costs are zeroed**; token extraction only. Pricing tables are a
   ledger-side concern, not an adapter's.
+- **Cache breakpoint placement is deterministic and adapter-local.** No
+  caching knob crosses the package boundary: the four positions are a
+  function of the request's own contents, so two builds of the same
+  `ProviderRequest` are byte-identical and a cache hit is possible at all.
+  The head (tools, system) takes the one-hour lifetime because it is read
+  every turn of a session and must survive a human pause; the rolling tail
+  takes the five-minute default because each entry is read about once. The
+  final two *user* turns are marked, never assistant turns: a `thinking`
+  block is not cacheable, and the alternation means consecutive requests
+  re-mark a shared position instead of relying on the API's 20-block
+  backwards search. One-hour breakpoints must precede five-minute ones,
+  which head-before-tail satisfies by construction.
+- **A rewritten prefix is a cost, never a correctness problem.** The cache
+  key is the prompt bytes, so a precise rewrite or a compaction cannot
+  serve stale content — breakpoints at or after the changed position
+  simply miss and are written again. Nothing invalidates anything.
+- **Overflow counts the whole prompt.** Spec §1.5 words the comparison as
+  `input + cache_read`, from before either adapter reported a cache
+  *write*; both now add `cache_write`, which is the same quantity the spec
+  names and collapses to its two terms when nothing is cached. Leaving it
+  out would shrink the apparent request by exactly what caching wrote.
+- **The OpenAI dialect declares no breakpoints on purpose.** Its caching
+  is automatic and prefix-matched server-side; the adapter owes it only a
+  stable prefix (system message first, fixed field order). The optional
+  `prompt_cache_key` routing hint is not sent — it needs a stable session
+  identifier no `ProviderRequest` field supplies.
 
 ## Deep Docs
 
