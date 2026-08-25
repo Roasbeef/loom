@@ -398,3 +398,145 @@ pub fn build_request_tool_result_becomes_tool_role_test() {
   assert string.contains(built.body, "\"tool_call_id\":\"call_a1\"")
   assert string.contains(built.body, "sunny")
 }
+
+// --- prompt caching ---------------------------------------------------------
+
+pub fn the_request_carries_no_cache_breakpoints_test() {
+  // Deliberate, not an omission: OpenAI-compatible prompt caching is
+  // automatic on the server, matched by rendered prefix with no marker to
+  // place and no request field to set. A `cache_control` block here would
+  // be dialect noise at best and a 400 at worst.
+  let request =
+    model.ProviderRequest(
+      target: model.ForResolved(resolved()),
+      system: Some("You are Loom."),
+      messages: [
+        message.UserMessage(
+          content: [message.UserText(text: "hi", text_signature: None)],
+          timestamp: 1,
+        ),
+      ],
+      tools: [
+        model.ToolSpec(
+          name: "bash",
+          description: "runs a command",
+          input_schema: json.Object([#("type", json.String("object"))]),
+        ),
+      ],
+      max_output_tokens: None,
+    )
+  let built =
+    openai.build_request(
+      base_url: "https://api.openai.com/v1",
+      api_key: "k",
+      resolved: resolved(),
+      request:,
+    )
+  assert !string.contains(built.body, "cache_control")
+  assert !string.contains(built.body, "prompt_cache_key")
+  // What the adapter does owe automatic caching is a stable prefix: the
+  // system prompt ahead of all history, and the same bytes twice.
+  let assert Ok(messages) = wire.array_field(parsed(built.body), "messages")
+  let assert [first, ..] = messages
+  assert wire.string_field_or(first, "role", or: "") == "system"
+  let again =
+    openai.build_request(
+      base_url: "https://api.openai.com/v1",
+      api_key: "k",
+      resolved: resolved(),
+      request:,
+    )
+  assert built.body == again.body
+}
+
+fn parsed(body: String) -> json.JsonValue {
+  let assert Ok(document) = json.parse(body)
+  document
+}
+
+fn cached_usage_chunk(
+  prompt: Int,
+  completion: Int,
+  cached: Int,
+  written: Int,
+) -> String {
+  chunk(
+    "\"choices\":[],\"usage\":{\"prompt_tokens\":"
+    <> json.to_string(json.Int(prompt))
+    <> ",\"completion_tokens\":"
+    <> json.to_string(json.Int(completion))
+    <> ",\"total_tokens\":"
+    <> json.to_string(json.Int(prompt + completion))
+    <> ",\"prompt_tokens_details\":{\"cached_tokens\":"
+    <> json.to_string(json.Int(cached))
+    <> ",\"cache_write_tokens\":"
+    <> json.to_string(json.Int(written))
+    <> "}}",
+  )
+}
+
+pub fn cache_read_and_write_split_out_of_prompt_tokens_test() {
+  // `prompt_tokens` is the whole prompt. Both cached halves come back out
+  // of it so the ledger's `input` means the same thing here as it does in
+  // the Anthropic adapter, and the three still sum to the prompt.
+  let transcript =
+    finish_chunk("stop") <> cached_usage_chunk(9000, 40, 7000, 1500) <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: settled, usage:)] = events
+  assert usage.cache_read == 7000
+  assert usage.cache_write == 1500
+  assert usage.input == 500
+  assert usage.input + usage.cache_read + usage.cache_write == 9000
+  assert usage.output == 40
+  assert usage.total_tokens == 9040
+  // This dialect reports one cache lifetime, so there is no 1h subset.
+  assert usage.cache_write_1h == None
+  let assert message.AssistantMessage(usage: committed, ..) =
+    stream.message(settled)
+  assert committed == usage
+  assert_usage_encodable(usage)
+}
+
+pub fn an_absent_cache_write_count_reads_as_zero_test() {
+  // Most OpenAI-compatible endpoints report only `cached_tokens`. The
+  // missing field must read as "nothing reported", not shift `input`.
+  let transcript = finish_chunk("stop") <> usage_chunk(9000, 40, 7000) <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: _, usage:)] = events
+  assert usage.cache_read == 7000
+  assert usage.cache_write == 0
+  assert usage.input == 2000
+}
+
+pub fn an_impossible_cache_write_count_cannot_drive_input_negative_test() {
+  // A proxy reporting more written than the prompt holds saturates
+  // against what is left after the read rather than producing a negative
+  // `input` the durable planes would have to encode.
+  let transcript =
+    finish_chunk("stop") <> cached_usage_chunk(1000, 5, 900, 5000) <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: _, usage:)] = events
+  assert usage.cache_read == 900
+  assert usage.cache_write == 100
+  assert usage.input == 0
+}
+
+pub fn cache_write_counts_toward_overflow_test() {
+  // Overflow compares the whole prompt against the window, and the
+  // written half is prompt. Splitting it out of `input` must not shrink
+  // the request the classifier sees.
+  let transcript =
+    finish_chunk("stop")
+    <> cached_usage_chunk(260_000, 0, 100_000, 60_000)
+    <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: settled, usage: _)] = events
+  let assert message.AssistantMessage(
+    stop_reason:,
+    error_message: Some(error_message),
+    ..,
+  ) = stream.message(settled)
+  assert stop_reason == message.Errored
+  assert retry.is_overflow_message(error_message)
+  assert string.contains(error_message, "260000")
+}

@@ -13,14 +13,30 @@
 //// `Failed(UnmappedStopReason)` in-band, and adapter-computed overflow
 //// settling as `error` with the canonical overflow message. Usage is
 //// extracted from the final usage chunk (`stream_options.include_usage`
-//// is always requested): `prompt_tokens` minus `cached_tokens` becomes
-//// `input`, `cached_tokens` becomes `cache_read`. Usage counters are
+//// is always requested): `prompt_tokens` covers the whole prompt, so the
+//// cached halves are split back out of it — `cached_tokens` becomes
+//// `cache_read`, `cache_write_tokens` becomes `cache_write`, and what
+//// remains is `input`, which is the vocabulary the ledger shares with
+//// the Anthropic adapter. Usage counters are
 //// clamped into `[0, wire.max_usage_count]` at the read (see
 //// `provider/internal/wire`'s module documentation), so no count an
 //// untrusted proxy reports can ever reach a settled message the durable
 //// planes cannot encode; beyond that range check the counters remain
 //// provider-reported facts that steer accounting and overflow
 //// classification only.
+////
+//// This dialect declares no cache breakpoints, and that is not an
+//// omission: OpenAI-compatible prompt caching is automatic. The server
+//// matches the rendered prefix by itself on any prompt over the model's
+//// minimum, with no per-block marker to place and no request field to
+//// set. What the adapter owes caching is therefore only prefix
+//// stability, which it already has — the system prompt is emitted as the
+//// first message, ahead of all history, and every field below it is
+//// built in a fixed order from the request. The optional
+//// `prompt_cache_key` routing hint is deliberately not sent: it wants a
+//// stable per-session identifier, which no value in `ProviderRequest`
+//// supplies, and inventing one here would be a guess rather than a
+//// routing improvement.
 ////
 //// The API key is accepted as an argument and written into one
 //// `authorization` header; it is never stored in the accumulator, any
@@ -310,6 +326,7 @@ pub opaque type Accumulator {
     prompt_tokens: Int,
     completion_tokens: Int,
     cached_tokens: Int,
+    cache_write_tokens: Int,
     total_tokens: Option(Int),
     reasoning_tokens: Option(Int),
     stop: Option(StopReason),
@@ -363,6 +380,7 @@ pub fn response_machine(
       prompt_tokens: 0,
       completion_tokens: 0,
       cached_tokens: 0,
+      cache_write_tokens: 0,
       total_tokens: None,
       reasoning_tokens: None,
       stop: None,
@@ -558,6 +576,17 @@ fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
       Ok(details) ->
         wire.count_field_or(details, "cached_tokens", or: acc.cached_tokens)
       Error(Nil) -> acc.cached_tokens
+    },
+    // Endpoints that report no cache-write count leave this at zero,
+    // which is the honest reading: nothing was reported.
+    cache_write_tokens: case wire.field(usage, "prompt_tokens_details") {
+      Ok(details) ->
+        wire.count_field_or(
+          details,
+          "cache_write_tokens",
+          or: acc.cache_write_tokens,
+        )
+      Error(Nil) -> acc.cache_write_tokens
     },
     reasoning_tokens: case wire.field(usage, "completion_tokens_details") {
       Ok(details) ->
@@ -799,7 +828,13 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
             Error(report) -> fail(acc, MalformedStream(report))
             Ok(content) -> {
               let usage = build_usage(acc)
-              let input_tokens = usage.input + usage.cache_read
+              // Spec §1.5 words this as input plus cache-read, from
+              // before either adapter reported a cache *write*. The
+              // quantity it names is the whole prompt, so the write half
+              // belongs in the sum too; with nothing cached the three
+              // terms collapse to the spec's two.
+              let input_tokens =
+                usage.input + usage.cache_read + usage.cache_write
               let overflowed =
                 input_tokens > acc.resolved.context_window
                 && usage.output <= negligible_output_tokens
@@ -890,15 +925,23 @@ fn build_blocks(
 }
 
 fn build_usage(acc: Accumulator) -> Usage {
-  // `prompt_tokens` includes cached reads; split them out so the ledger's
-  // vocabulary (`input` = uncached) holds across adapters.
+  // `prompt_tokens` is the whole prompt, cached reads and cache writes
+  // included; split both out so the ledger's vocabulary (`input` = tokens
+  // neither read from nor written to cache) holds across adapters. The
+  // clamps keep `input` non-negative whatever a proxy reports, and keep
+  // `input + cache_read + cache_write` equal to `prompt_tokens`, which is
+  // what makes the total below add up.
   let cache_read = int.min(acc.cached_tokens, acc.prompt_tokens)
-  let input = acc.prompt_tokens - cache_read
+  let cache_write =
+    int.min(acc.cache_write_tokens, acc.prompt_tokens - cache_read)
+  let input = acc.prompt_tokens - cache_read - cache_write
   Usage(
     input:,
     output: acc.completion_tokens,
     cache_read:,
-    cache_write: 0,
+    cache_write:,
+    // The chat-completions dialect has one cache lifetime and reports no
+    // per-TTL breakdown, so there is no one-hour subset to name.
     cache_write_1h: None,
     reasoning: acc.reasoning_tokens,
     total_tokens: option.unwrap(
