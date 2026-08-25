@@ -533,10 +533,20 @@ refuses it up front rather than deadlocking.
 
 ## A worked example
 
-Here is a program of the kind the model would write, against the shipped
-prelude signatures. It counts a stale symbol across three packages in
-parallel, races two ways of confirming the tree still builds, and reports
-what it found.
+The program below is not an illustration written for this document. It is
+`docs/examples/stale_symbol_sweep.gleam` — the migration sample M4's
+acceptance names — and
+`packages/codemode/test/codemode/migration_sample_test.gleam` reads that
+file *verbatim* and puts it through the real pipeline: real vetting, a real
+offline `gleam build` inside a network-off jail, a real `erl` satellite, a
+real AF_UNIX cap channel, and five real jailed processes behind `proc.run`,
+against a fixture repository laid out under the rig's workspace. A sample
+edited into something that no longer vets, compiles, or runs fails the
+suite. The chore is an ordinary one: a symbol is being retired, and the
+model wants to know how much of it is left in three packages and whether
+the tree still builds. As tool calls that is five round trips and five
+intermediate payloads landing in the conversation. As a program it is one
+execution returning one line.
 
 ```gleam
 import cap/proc
@@ -546,70 +556,124 @@ import gleam/int
 import gleam/list
 import gleam/string
 
+/// The symbol being retired.
+const symbol = "deprecated_decode"
+
+/// The packages to sweep, in the order the report should list them.
+const packages = ["packages/core", "packages/broker", "packages/runtime"]
+
 pub fn main() -> report.Outcome {
-  let dirs = ["packages/core", "packages/broker", "packages/runtime"]
-
-  let counts =
-    task.parallel_map(dirs, max_concurrency: 3, with: fn(dir) {
-      proc.run(proc.command(["rg", "--count", "deprecated_decode", dir]))
-    })
-
+  // Two ways to confirm the tree still builds, started together. The
+  // first to finish wins and the other is cancelled where it stands.
   let build =
     task.race([
-      fn() { proc.run(proc.command(["gleam", "build"])) },
-      fn() { proc.run(proc.command(["make", "check-core"])) },
+      fn() { proc.run(proc.command(["/bin/sh", "tools/build-quick"])) },
+      fn() { proc.run(proc.command(["/bin/sh", "tools/build-thorough"])) },
     ])
 
-  case counts, build {
-    Ok(outputs), Ok(built) ->
+  // One sweep per package, all at once. Each is its own `cap_call`, each
+  // checked against policy, all drawing on one pooled budget — and the
+  // results arrive in `packages` order however they finish.
+  let sweeps =
+    task.parallel_map(packages, max_concurrency: 3, with: fn(dir) {
+      proc.run(proc.command(["/bin/sh", "tools/sweep", symbol, dir]))
+    })
+
+  case build, sweeps {
+    Ok(built), Ok(outputs) ->
       report.text(
         string.join(
-          list.map(outputs, fn(out) { string.trim(out.stdout) }),
-          ", ",
+          list.map2(packages, outputs, fn(dir, output) {
+            dir <> "=" <> int.to_string(match_count(output.stdout))
+          }),
+          " ",
         )
-        <> " build exit="
+        <> " build="
+        <> string.trim(built.stdout)
+        <> " exit="
         <> int.to_string(built.exit_code),
       )
-    _, _ -> report.failure("the sweep did not settle")
+    Error(_failure), _ -> report.failure("no build strategy finished")
+    _, Error(_failures) -> report.failure("the sweep did not settle")
   }
+}
+
+/// How many files one sweep listed. The whole file listing stays here, in
+/// the program; only the count reaches the conversation.
+fn match_count(stdout: String) -> Int {
+  stdout
+  |> string.split("\n")
+  |> list.filter(fn(line) { string.trim(line) != "" })
+  |> list.length
 }
 ```
 
 Trace what each line is permitted to do. The six imports are the entire
 permission grant: this program can run processes, use structured
-concurrency, report a result, and do arithmetic and string work. It cannot
-open a socket — `cap/net` is absent — and it cannot touch git history,
-because `cap/git` is absent. Vetting confirmed both absences before the
-program compiled. Its `main` returns a `report.Outcome`, which is the shape
-the generated entry module hands to the boot runtime; the runtime marshals
-it back as the terminal frame, so the strand receives a structured value
-and never scrapes stdout.
-
-`parallel_map` fans three `proc.run` calls across the packages at once.
-Each is a separate `cap_call`, each routed and checked against policy, each
-drawing from the one pooled budget; whichever directory finishes first,
-`outputs` still lists results in `dirs` order, so its first element is
-always `core`'s. All three draw on one outstanding-effect cap and one
-deadline.
+concurrency, report a result, and do list, string, and integer work. It
+cannot open a socket — `cap/net` is absent — and it cannot touch git
+history, because `cap/git` is absent. Vetting confirmed both absences
+before the program compiled, and the hermetic build's dependency table
+leaves the compiler nothing else to resolve. Its `main` returns a
+`report.Outcome`, which is the shape the generated entry module hands to
+the boot runtime; the runtime marshals it back as the terminal frame, so
+the strand receives a value off the wire and never scrapes stdout.
 
 `race` starts both build strategies together and returns the first to
-finish. Say `gleam build` wins. The `make check-core` branch is now a race
-loser, and its cancellation is real: killing it makes the channel emit a
-`cancel` for its outstanding `proc.run`, and the broker kills the executor
-process group running `make`, so the losing build stops mid-flight instead
-of grinding on and spending budget the winner already made moot. Had the
-whole program overrun its wall-clock deadline instead, the satellite would
-die as a unit — all three sweeps, both builds, and the program root —
-leaving nothing behind. Whatever the program means to keep leaves through
-its `Outcome` or through an emitted artifact; the satellite's own memory is
-gone the moment the node is destroyed.
+finish. `tools/build-quick` wins. The `tools/build-thorough` branch is now
+a race loser, and its cancellation is real: killing it makes the channel
+emit a `cancel` for its outstanding `proc.run`, and the broker kills the
+executor process group behind it, so the losing build stops mid-flight
+instead of grinding on and spending budget the winner already made moot.
 
-Two caveats about running this today. `proc.run` is the one capability the
-default router services, which is why the example is written in terms of
-it; a program calling `fs.read` compiles and gets `unsupported_cap` back
-until the harness-side bridge lands. And `rg` must exist inside the jail
-and be permitted by the composed policy, exactly as it must for the
-harness's own `grep` tool.
+`parallel_map` then fans three `proc.run` calls across the packages at
+once. Each is a separate `cap_call`, each routed and checked against
+policy, each drawing from the one pooled budget; whichever package
+finishes first, `outputs` still lists results in `packages` order, so its
+first element is always `packages/core`'s. All three draw on one
+outstanding-effect cap and one deadline. Had the whole program overrun its
+wall-clock deadline instead, the satellite would die as a unit — both
+builds, all three sweeps, and the program root — leaving nothing behind.
+
+None of those three claims is free, so the fixture is instrumented and the
+suite reads the instrumentation back rather than trusting a green outcome
+line. `tools/sweep` stamps the wall time at which each sweep starts and
+finishes: the last start lands before the first finish, which three
+sequential runs cannot produce, and the per-package sleeps make the
+completion order the exact *reverse* of the input order, so results
+arriving in `packages` order is a property rather than a coincidence.
+`tools/build-thorough` appends a tick every half second for thirty
+seconds; the race is decided about a third of a second in and the program
+then sweeps for three more, so the assertion bounds the tick count from
+*both* sides — a loser merely abandoned would tick its way through the
+sweep, and a loser that never started would prove nothing about
+cancellation at all.
+
+Three caveats about running this today.
+
+1. **`proc.run` is the one capability the default router services**, which
+   is why the sample is written in terms of it. A program calling
+   `fs.read` or `report.emit` compiles and gets `unsupported_cap` back
+   until the harness-side bridge lands — so an `Outcome` is currently the
+   only way anything leaves the satellite at all. Even within `proc.run`,
+   the router services argv alone: a `Command` carrying `in_dir`,
+   `with_env`, `with_stdin`, or `with_timeout` is denied in band as
+   `unsupported_argument` rather than run without it, which is why the
+   sample's commands are bare argv and why its fixture scripts write
+   relative to the jail's cwd.
+2. **`report.value` is out of reach, for a different reason.** Building a
+   structured `MsgPackValue` needs `import core/msgpack`, and `core` is a
+   transitive dependency of the *prelude* rather than a direct dependency
+   of the generated program, so `--warnings-as-errors` turns Gleam's
+   transitive-import warning into a hard compile error — the same gate the
+   end-to-end's second scenario asserts. The richest outcome a program can
+   return today is therefore `report.text` over a string it composed
+   itself. Everything above about structure is about the *frame*, not
+   about the payload's shape.
+3. **Every executable named has to be inside the jail** and permitted by
+   the composed policy — `/bin/sh` here, plus the `grep`, `sleep`, and
+   `date` the fixture's scripts call — exactly as `rg` must be for the
+   harness's own `grep` tool.
 
 ## Where code mode sits: the promotion ladder
 
@@ -662,12 +726,14 @@ case at all.
 ## What the end-to-end proves
 
 `make e2e-codemode` builds the Go helper, rebuilds the offline seed, and
-runs four scenarios through the real pipeline: real vetting, a real
+runs five scenarios through the real pipeline: real vetting, a real
 `gleam build` inside a network-off jail, a real `erl` node, a real AF_UNIX
-socket, and a real `broker.clear_call` behind the capability. It is
-feature-detected — without the Go toolchain, the Gleam and Erlang
-toolchains, or a prepared seed, each test prints its skip reason and passes,
-so `make check` stays hermetic and fast.
+socket, and a real `broker.clear_call` behind the capability. Four are in
+`test/codemode/e2e_test.gleam`; the fifth is the migration sample, in
+`test/codemode/migration_sample_test.gleam`. All are feature-detected —
+without the Go toolchain, the Gleam and Erlang toolchains, or a prepared
+seed, each test prints its skip reason and passes, so `make check` stays
+hermetic and fast.
 
 The happy path submits a program that shells out to `/bin/echo` and returns
 what it printed. The assertions are specific: the compiled entry module
@@ -686,6 +752,16 @@ after at least five of its six seconds, so the kill is the deadline and not
 a node that failed to boot, and that the cap socket and the private token
 file are both gone afterwards. The fourth submits a mistyped capability call
 and asserts a `Type mismatch` comes back in band, before any node spins up.
+
+The fifth is the migration sample described above. It is the only scenario
+whose program is read from a file rather than restated inline, the only one
+that uses concurrency, and the only one whose assertions reach past the
+outcome into evidence the fixture recorded while the program ran: that the
+three sweeps overlapped in time, that they completed in the reverse of the
+order the outcome reports them in, and that the race loser stopped ticking
+when the race was decided rather than when the program ended. It prints the
+overlap it measured and the tick count it saw, so a passing run says how
+much margin it had.
 
 What the run does not prove depends on the kernel under it, and the suite
 says so out loud rather than letting green imply more than it earned. It
@@ -720,10 +796,13 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |
 | `test/codemode/e2e_test.gleam` | The jailed acceptance described above. |
+| `test/codemode/migration_sample_test.gleam`, `test/support/sample_repo.gleam` | The migration sample's run and the instrumented fixture repository it sweeps. |
+| `docs/examples/stale_symbol_sweep.gleam` | The migration sample itself — the readable artifact, and the exact bytes the suite submits. |
 
 Each path is relative to its package's source root — `codemode/vet.gleam`
-is `packages/codemode/src/codemode/vet.gleam` — except the last row, which
-is under `packages/codemode/test/`. The frozen wire contracts
+is `packages/codemode/src/codemode/vet.gleam` — except the last three
+rows, which are under `packages/codemode/test/` and, for the sample
+itself, at the repository root. The frozen wire contracts
 these packages implement against — the framing, `cap_call` and
 `cap_result`, the token rules, and `SandboxPolicyV1` — live in Part 1.4 of
 `docs/loom-implementation-spec.md` and are shared with the executor and

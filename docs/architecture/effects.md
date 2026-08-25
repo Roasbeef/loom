@@ -268,6 +268,22 @@ helper at dispatch on its hello features *and* fails any execution whose
 are a promise and the exit report is a fact. `BestEffort` accepts what is
 available and still hands the report to the caller.
 
+One gap is deliberately not folded into that vocabulary. A kernel missing
+a layer is an *environmental* gap, and degraded is the honest word for it.
+A build with no jail for its operating system is a gap in Loom, and
+running under `BestEffort` there would mean model-influenced code
+executing with `network: off` in its policy and nothing enforcing it. Only
+Linux has a jail: macOS Seatbelt is WP-H phase 2 and the Windows sandbox
+phase 3, both specified and unbuilt. So the helper compiles for those
+platforms — the non-Linux halves of the seccomp and `no_new_privs` layers
+are stubs that report themselves unavailable — and then **refuses to serve
+on them** unless started with `--allow-unenforced`. Where it is asked to
+serve anyway, `hello.features` carries `platform-unsupported`, every
+`enforcement` list leads with `skip:jail: ...`, and `--self-test` prints
+`RESULT: UNSUPPORTED PLATFORM` and exits nonzero instead of calling zero
+attempted probes a pass. None of that path has ever executed; it is
+written from Linux and its acceptance is a run on a real Mac.
+
 `loom-exec --self-test` runs seven probes through the real jail path:
 write outside the writable roots, write to a protected path, create a
 socket under network-off, read a non-allowlisted environment variable,

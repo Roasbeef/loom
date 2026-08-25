@@ -310,7 +310,9 @@ a remote client against a hosted one differ only in the socket.
   mistaken for a verified sandbox. The development container enforces four
   of the seven; bubblewrap, Landlock, and delegated cgroups need a fuller
   kernel. The Linux jail is also the only one that exists — macOS Seatbelt
-  and the Windows sandbox are designed and unbuilt.
+  and the Windows sandbox are designed and unbuilt. The helper builds on
+  those platforms and *refuses to serve* on them (`--allow-unenforced`
+  overrides), rather than running with nothing enforcing the policy.
 
 ## Building and running
 
