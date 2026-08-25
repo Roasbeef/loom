@@ -1,0 +1,137 @@
+# Loom CI — the scheduled path.
+#
+# Everything here is valuable and too slow to sit on the critical path of
+# a pull request. The split is deliberate: ci.yml answers "is this change
+# sound" in minutes; this workflow answers "is the tree still sound from
+# nothing, and does the simulator still agree" once a day.
+#
+#   soak            the full 2000-seed deterministic simulation, sharded
+#                   four ways. The oracle that makes `machine` refactors
+#                   safe; ci.yml runs only the first 200 seeds.
+#   cold-gate       `make check` and `make doc-check` with every cache
+#                   switched off. The one run that can tell whether a
+#                   restored cache has started masking a build that no
+#                   longer works from scratch — which is the failure mode
+#                   that makes caching dangerous rather than merely stale.
+#
+# Both also run on demand, because the first question after a suspicious
+# green is usually "does it still pass cold".
+
+name: Nightly
+
+on:
+  schedule:
+    # 07:00 UTC daily — after most of a working day in the Americas has
+    # landed, before one starts in Europe.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      soak-seeds:
+        description: Total simulation seeds to run.
+        required: false
+        default: "2000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GLEAM_VERSION: "1.18.1"
+  OTP_VERSION: "28.5.0.5"
+  REBAR3_VERSION: "3.27.0"
+  GO_VERSION: "1.24.7"
+  CACHE_EPOCH: "1"
+
+jobs:
+  # Four shards of 500 seeds each. `make soak` already chunks its seeds
+  # per test-runner invocation (SOAK_CHUNK, because the framework's
+  # per-test timeout is about a minute); the shards are a second axis on
+  # top of that, so a 30-minute serial run becomes four 8-minute ones and
+  # a failure names the seed range that broke.
+  soak:
+    name: soak (seeds ${{ matrix.from }}..)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        from: [1, 501, 1001, 1501]
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: soak-nightly
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+
+      - name: make soak
+        # A dispatch input reaches the shell through the environment, never
+        # through string interpolation into the script.
+        env:
+          TOTAL_SEEDS: ${{ github.event.inputs.soak-seeds || '2000' }}
+          SEED_FROM: ${{ matrix.from }}
+        run: |
+          set -euo pipefail
+          case "$TOTAL_SEEDS" in
+            ''|*[!0-9]*) echo "soak-seeds must be a number" >&2; exit 2 ;;
+          esac
+          make soak SOAK_SEEDS="$(( TOTAL_SEEDS / 4 ))" \
+            SOAK_FROM="$SEED_FROM" SOAK_CHUNK=50
+
+  # No caches at all — not the Hex tarballs, not the compiled artifacts,
+  # not the Go module cache. If ci.yml is green and this is red, the
+  # difference is the cache, and that is exactly what this job exists to
+  # surface within a day rather than at the next cache eviction.
+  cold-gate:
+    name: cold gate (linux, no caches)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: cold
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: "false"
+
+      - name: Prepare the code-mode build seed
+        run: make codemode-seed
+
+      - name: make check
+        run: set -o pipefail; make check 2>&1 | tee cold-check.log
+
+      - name: make doc-check
+        run: make doc-check
+
+      - name: Skip census
+        run: .github/scripts/skip_census.sh "cold gate (linux)" cold-check.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cold-gate-logs
+          path: cold-check.log
+          retention-days: 14

@@ -1,0 +1,60 @@
+# What CI requires `loom-exec --self-test` to have actually enforced.
+#
+# The sandbox reports honestly: a probe whose kernel layer the machine
+# cannot provide prints SKIPPED with a reason and does not fail the run
+# (packages/sandbox/CLAUDE.md, "Degraded means degraded, out loud"). That
+# is the right behaviour for a developer's laptop and the wrong one for a
+# merge gate, where a run that enforced nothing would be indistinguishable
+# from a run that enforced everything. This file closes that gap: it is
+# the declared, reviewed answer to "which layers must this CI machine
+# really have applied", and `.github/scripts/enforcement_report.sh` fails
+# the job when the run and this file disagree in either direction.
+#
+# Format, one probe per line:
+#
+#   required|<probe name>
+#   known-gap|<probe name>|<why this machine cannot provide the layer>
+#
+# Rules the checker enforces:
+#
+#   - a `required` probe that did not print ENFORCED fails the job;
+#   - a `known-gap` probe that *did* print ENFORCED also fails the job,
+#     because the gap is over and this file has started lying;
+#   - a probe in the run but not in this file, or in this file but not in
+#     the run, fails the job: the probe set changed and nobody looked.
+#
+# Moving a probe from `required` to `known-gap` is the only way to make a
+# missing layer stop failing CI, it takes a written reason, and it shows
+# up in review as what it is — a deliberate reduction in what CI proves.
+# Deleting a line is never the fix.
+
+# --- Loom-side layers: these need no kernel opt-in and hold everywhere,
+# --- including inside a stripped container. Never movable.
+required|env not in allowlist withheld
+required|output flood truncated at cap
+required|orphaned grandchild reaped via pgroup
+
+# --- Kernel layers. The jail job installs bubblewrap and lifts Ubuntu's
+# --- AppArmor restriction on unprivileged user namespaces before running
+# --- the self-test, so these are required of a hosted Linux runner.
+required|write outside writable_roots denied
+required|protected path write denied
+required|direct socket denied under network off
+
+# --- cgroup v2.
+#
+# `internal/cgroup.Detect` returns the helper's *own* cgroup as the base,
+# and `Setup` then creates the per-exec cgroup inside it and writes
+# `memory.max`/`pids.max` there. Those files only exist if the base cgroup
+# lists the controllers in `cgroup.subtree_control`, and cgroup v2's
+# no-internal-process rule forbids a non-root cgroup from having both
+# member processes and enabled controllers for its children. A helper
+# therefore has a delegated hierarchy it can use only when it runs in the
+# true root cgroup, which is exempt from that rule — not the shape a
+# GitHub-hosted runner (or any systemd host) puts a workflow step in.
+#
+# The jail job records this rather than papering over it: it runs the
+# self-test in the production shape, where this probe is expected to skip,
+# and then runs a clearly-labelled supplementary probe from the root
+# cgroup whose result is printed but never allowed to satisfy this file.
+known-gap|fork bomb capped by pids limit|the runner's workflow step lives in a systemd service cgroup, and per-exec cgroups can only be created from the root cgroup (cgroup v2 no-internal-process rule); the supplementary root-cgroup run in the jail job reports what this kernel would give

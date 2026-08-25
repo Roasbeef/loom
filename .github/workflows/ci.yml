@@ -1,0 +1,380 @@
+# Loom CI — the per-PR path.
+#
+# The root CLAUDE.md says `make check` is "the full gate — format check,
+# warning-free build, and tests across every package — and is exactly what
+# CI runs". Until this file existed that sentence described nothing: there
+# was no CI, and spec §0.3's "a WP is done when its exit criteria pass in
+# CI on Linux and macOS" was unenforced from the first work package
+# onwards. Everything here exists to make those two sentences true.
+#
+# Four jobs, and they are not interchangeable:
+#
+#   gate-linux    the merge gate. `make check` over all sixteen packages
+#                 plus `make doc-check`. Prepares the code-mode seed first
+#                 and then insists nothing skipped, because a suite that
+#                 quietly declines to run is how a partial milestone reads
+#                 as a complete one.
+#   gate-macos    the same gate on the second platform §0.3 demands and
+#                 that nothing in this tree has ever run on. Expected red
+#                 today; see the job's own comment for exactly why. It is
+#                 not marked continue-on-error: a known failure that CI
+#                 keeps reporting is a finding, one CI hides is a lie.
+#   jail-linux    the suites whose value is kernel enforcement, run on a
+#                 machine given bubblewrap and unprivileged user
+#                 namespaces. The self-test's ENFORCED/SKIPPED report is
+#                 checked against .github/enforcement-expectations, so a
+#                 layer this runner did not apply can never read as one it
+#                 did.
+#   soak-short    200 deterministic-simulation seeds. The full 2000-seed
+#                 oracle runs nightly; this is the tripwire.
+#
+# Only `gate-linux` is meant as the required status check for merging.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cache:
+        description: 'Use build caches ("false" forces a fully cold build)'
+        required: false
+        default: "true"
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run's answer stale.
+# `main` is exempt: every commit that lands there gets its own verdict.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Exact, never floating. The rationale for each number, and where it
+  # came from, is in .github/actions/setup-toolchain/action.yml.
+  GLEAM_VERSION: "1.18.1"
+  OTP_VERSION: "28.5.0.5"
+  REBAR3_VERSION: "3.27.0"
+  GO_VERSION: "1.24.7"
+  # Bump to invalidate every cache at once.
+  CACHE_EPOCH: "1"
+
+jobs:
+  # ---------------------------------------------------------------- the gate
+  gate-linux:
+    name: gate (linux)
+    # Pinned, not ubuntu-latest: a runner label that silently moves to the
+    # next Ubuntu is the same coin flip as a floating compiler.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: gate
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # `make check` runs the code-mode package's suite, whose end-to-end
+      # tests check for a prepared build seed and print `SKIP` when there
+      # is none — which, on a fresh checkout, is always. Seeding first is
+      # what makes the gate's green mean the code-mode path actually ran.
+      # This is also the only step allowed the network for package
+      # resolution (scripts/codemode_seed.sh explains why).
+      - name: Prepare the code-mode build seed
+        run: make codemode-seed
+
+      - name: make check
+        run: set -o pipefail; make check 2>&1 | tee check.log
+
+      - name: make doc-check
+        run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
+
+      # The gate installed every prerequisite above, so any skip left in
+      # the log is coverage this run is not entitled to claim.
+      - name: Skip census
+        run: .github/scripts/skip_census.sh "gate (linux)" check.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: gate-linux-logs
+          path: |
+            check.log
+            doc-check.log
+          retention-days: 14
+
+  # --------------------------------------------------------- the second OS
+  #
+  # §0.3 requires exit criteria to pass "in CI on Linux and macOS". No part
+  # of this tree has ever executed on macOS, and this job is expected to be
+  # red on its first run for a reason that is documented, not accidental:
+  #
+  #   `loom-exec` has no jail for darwin — Seatbelt is WP-H phase 2 and
+  #   deliberately unbuilt — so on macOS the helper refuses to serve in
+  #   server mode unless it is passed `--allow-unenforced`
+  #   (packages/sandbox/internal/jail/platform.go). Nothing on the Gleam
+  #   side can pass it: `broker/exec.SpawnConfig` has no field for extra
+  #   arguments. Four suites spawn the real helper — broker's and tools'
+  #   integration tests panic outright on a spawn failure, and
+  #   conformance's and code-mode's end-to-end rigs assert their way to
+  #   the same place — so `make check` fails on macOS in four packages.
+  #
+  # The Go packages should fare better: every Linux-only test in
+  # packages/sandbox carries `//go:build linux`, leaving darwin with pure
+  # unit tests, and packages/tui is portable. The point of running this
+  # job is to find out rather than to assume, and to keep the gap in
+  # everyone's face until it is either closed or consciously accepted.
+  gate-macos:
+    name: gate (macos)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: gate-macos
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # Reported before the gate runs, so the log distinguishes "no jail
+      # for this platform" from "a kernel that could not provide a layer".
+      - name: What the platform says about itself
+        run: |
+          set -euo pipefail
+          make sandbox
+          ./packages/sandbox/loom-exec --self-test > selftest-macos.log 2>&1 || true
+          .github/scripts/enforcement_report.sh \
+            selftest-macos.log .github/enforcement-expectations "macos (self-test)" || true
+
+      - name: Prepare the code-mode build seed
+        run: make codemode-seed
+
+      - name: make check
+        run: set -o pipefail; make check 2>&1 | tee check-macos.log
+
+      - name: make doc-check
+        run: set -o pipefail; make doc-check 2>&1 | tee doc-check-macos.log
+
+      - name: Skip census
+        run: .github/scripts/skip_census.sh "gate (macos)" check-macos.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: gate-macos-logs
+          path: |
+            check-macos.log
+            doc-check-macos.log
+            selftest-macos.log
+          retention-days: 14
+
+  # ------------------------------------------------------------- the jail
+  #
+  # `make check` on Linux already runs the jailed suites, but it runs them
+  # on whatever the runner happens to provide — which, out of the box, is a
+  # helper with no bubblewrap and no user namespaces, enforcing a fraction
+  # of the policy and honestly saying so. Those runs prove the plumbing,
+  # not the jail. This job is the one that gives the machine the kernel
+  # features the sandbox is designed around and then checks, probe by
+  # probe, that they were actually applied.
+  jail-linux:
+    name: jail (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: jail
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      - name: Kernel census (before)
+        run: .github/scripts/kernel_census.sh
+
+      # bwrap owns all namespace and mount work (packages/sandbox
+      # CLAUDE.md: "bwrap owns all namespace and mount work"), so without
+      # it the filesystem-view probes have no layer to test. Ubuntu 24.04
+      # additionally refuses unprivileged user namespaces through AppArmor
+      # unless the profile allows it, which bubblewrap's own profile does
+      # not cover for arbitrary callers — so the restriction is lifted
+      # explicitly and the census below records whether that worked.
+      - name: Give the runner a kernel the sandbox can use
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$knob" ]; then
+            echo "apparmor_restrict_unprivileged_userns was: $(cat "$knob")"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||
+              echo "could not lift the AppArmor userns restriction"
+            echo "apparmor_restrict_unprivileged_userns now: $(cat "$knob")"
+          else
+            echo "no AppArmor userns restriction on this kernel"
+          fi
+
+      - name: Kernel census (after)
+        run: .github/scripts/kernel_census.sh
+
+      # The production shape: the helper running as the ordinary workflow
+      # user, exactly as the broker would spawn it. The exit code is not
+      # the verdict here — the next step is, because it knows which of the
+      # skips this machine was entitled to. Failing on the spot would keep
+      # the enforcement matrix out of the summary in exactly the case
+      # where it is most worth reading.
+      - name: Sandbox self-test
+        run: |
+          set -euo pipefail
+          make sandbox
+          ./packages/sandbox/loom-exec --self-test > selftest.log 2>&1 || true
+          cat selftest.log
+
+      - name: Enforcement matrix vs. declared expectations
+        run: |
+          .github/scripts/enforcement_report.sh \
+            selftest.log .github/enforcement-expectations "jail (linux, workflow user)"
+
+      # Supplementary, and deliberately fenced off. `internal/cgroup`
+      # creates each execution's cgroup inside the helper's *own* cgroup,
+      # which only has memory.max/pids.max to write when that cgroup lists
+      # the controllers in cgroup.subtree_control — and cgroup v2 forbids a
+      # non-root cgroup from having both member processes and enabled
+      # controllers. The root cgroup is exempt, so this run says what the
+      # kernel would give a helper that lived there. Its result is printed
+      # and never allowed to satisfy an expectation: a layer enforced in a
+      # shape production does not use is not an enforced layer.
+      - name: Supplementary — cgroup delegation from the root cgroup
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          report=selftest-rootcgroup.log
+          # The redirect belongs to this shell, not to root, which is what
+          # we want: root moves itself into the root cgroup and execs the
+          # helper, and the report lands in a file the workflow owns.
+          # shellcheck disable=SC2024
+          sudo sh -c 'echo $$ > /sys/fs/cgroup/cgroup.procs
+                      exec ./packages/sandbox/loom-exec --self-test' \
+            >"$report" 2>&1 || true
+          {
+            echo "### Supplementary self-test — root cgroup"
+            echo
+            echo "Not the production shape: the broker spawns \`loom-exec\` as"
+            echo "the session user, not as root in the root cgroup. This run"
+            echo "says what the kernel *would* give a helper placed there; it"
+            echo "satisfies no expectation in .github/enforcement-expectations."
+            echo
+            echo '```'
+            cat "$report"
+            echo '```'
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+
+      # `go test` reports a t.Skip only under -v, and the jail integration
+      # tests skip themselves whenever the kernel lacks a layer. With the
+      # layers now installed, a skip here means the install did not take.
+      - name: Go jail integration tests, verbosely
+        run: |
+          set -o pipefail
+          cd packages/sandbox && go test -v -count=1 ./internal/jail/... ./internal/selftest/... \
+            2>&1 | tee ../../go-jail.log
+
+      - name: Skip census (go jail tests)
+        run: .github/scripts/skip_census.sh "jail (linux, go tests)" go-jail.log
+
+      - name: Prepare the code-mode build seed
+        run: make codemode-seed
+
+      # Both end-to-end suites again — but this time over a helper that
+      # has bwrap, Landlock and namespaces, so the enforcement they report
+      # in their tool details is the real thing rather than the degraded
+      # fallback the gate job exercises.
+      - name: make e2e
+        run: set -o pipefail; make e2e 2>&1 | tee e2e.log
+
+      - name: make e2e-codemode
+        run: set -o pipefail; make e2e-codemode 2>&1 | tee e2e-codemode.log
+
+      - name: Skip census (end to end)
+        run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: jail-linux-logs
+          path: |
+            selftest.log
+            selftest-rootcgroup.log
+            go-jail.log
+            e2e.log
+            e2e-codemode.log
+          retention-days: 14
+
+  # ------------------------------------------------------------- the oracle
+  #
+  # The deterministic simulation is what makes a `machine` refactor safe,
+  # and it is too slow to run in full on every push: 2000 seeds is roughly
+  # half an hour. The per-PR share is a 200-seed tripwire — enough to catch
+  # a planner that broke outright — and nightly.yml runs the full 2000
+  # sharded four ways.
+  soak-short:
+    name: soak (200 seeds)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The build runs project code; it has no business inheriting
+          # a token in .git/config.
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: soak
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      - name: make soak (seeds 1..200)
+        run: make soak SOAK_SEEDS=200 SOAK_FROM=1 SOAK_CHUNK=50

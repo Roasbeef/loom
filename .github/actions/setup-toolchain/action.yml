@@ -1,0 +1,153 @@
+# The one place CI decides what toolchain Loom is built with.
+#
+# Every version here is exact, never a range and never "latest". A
+# floating toolchain turns a green build into a coin flip: the tree's
+# `gleam.toml` files declare a *floor* (`gleam >= 1.11.0`, and the root
+# CLAUDE.md adds Erlang/OTP >= 27), and a floor is a compatibility claim,
+# not a build input. What CI must reproduce is the toolchain the tree is
+# actually developed against, so that a red run means "the code broke"
+# and never "the runner picked up a different compiler this morning".
+#
+# Where the numbers come from:
+#
+#   gleam    1.18.1     the version in the development environment; above
+#                       the >= 1.11.0 floor every packages/*/gleam.toml
+#                       declares.
+#   otp      28.5.0.5   the development environment's Erlang/OTP (`erl`
+#                       reports OTP 28, ERTS 16.4.0.5); above the >= 27
+#                       floor. Published for both ubuntu-24.04 (amd64,
+#                       builds.hex.pm) and macOS (aarch64, erlef/otp_builds).
+#   rebar3   3.27.0     the development environment's rebar3; needed
+#                       because `esqlite` (under `sqlight`, ADR-002) is a
+#                       rebar3 package with a C NIF.
+#   go       1.24.7     the highest `go` directive in the tree —
+#                       packages/tui/go.mod says `go 1.24.7`,
+#                       packages/sandbox/go.mod says `go 1.24.0` — and the
+#                       development environment's Go. Under Go's toolchain
+#                       rules anything below 1.24.7 refuses to build `tui`.
+#
+# Bumping a version is a deliberate, reviewed edit to this file, and it
+# changes every job at once. That is the point.
+
+name: Set up the Loom toolchain
+description: >-
+  Installs the pinned Gleam, Erlang/OTP, rebar3 and Go, restores the safe
+  caches, and prints a toolchain census so every log states which
+  compilers actually produced the result.
+
+inputs:
+  gleam-version:
+    description: Exact Gleam version.
+    required: true
+  otp-version:
+    description: Exact Erlang/OTP version.
+    required: true
+  rebar3-version:
+    description: Exact rebar3 version.
+    required: true
+  go-version:
+    description: Exact Go version.
+    required: true
+  cache-namespace:
+    description: >-
+      Cache key namespace: every job gets its own, so one job's cache
+      churn cannot evict another's and no job inherits a tree another
+      job left half-built. (Gleam's own cache is not the hazard it looks
+      like: a module compiled by a plain `gleam build` still re-emits its
+      stored warnings when a later `gleam build --warnings-as-errors`
+      reuses it, so a warm cache cannot launder a warning into a pass.
+      Verified by building a deliberately-warning module both ways.)
+    required: true
+  cache-epoch:
+    description: Bump to invalidate every cache at once.
+    required: false
+    default: "1"
+  cache:
+    description: >-
+      "true" restores and saves caches; "false" runs completely cold.
+      The nightly cold build passes "false" so that a stale cache can
+      never mask a build that no longer works from scratch.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Erlang/OTP, Gleam and rebar3
+      # erlef/setup-beam v1.24.1
+      uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
+      with:
+        otp-version: ${{ inputs.otp-version }}
+        gleam-version: ${{ inputs.gleam-version }}
+        rebar3-version: ${{ inputs.rebar3-version }}
+        version-type: strict
+
+    - name: Install Go
+      # actions/setup-go v7.0.0
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: ${{ inputs.go-version }}
+        # Both Go modules in the tree, so the module cache key tracks
+        # every dependency that can change.
+        cache-dependency-path: |
+          packages/sandbox/go.sum
+          packages/tui/go.sum
+        cache: ${{ inputs.cache }}
+
+    # Hex tarballs are content-addressed and every one of them is
+    # checksummed against the committed manifest.toml, so this cache
+    # cannot serve different bytes than a cold download would. Shared
+    # across jobs for that reason.
+    - name: Cache Hex packages
+      if: inputs.cache == 'true'
+      # actions/cache v6.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ~/.cache/gleam
+        key: >-
+          hex-${{ runner.os }}-${{ runner.arch }}-e${{ inputs.cache-epoch }}-${{
+          hashFiles('packages/*/manifest.toml') }}
+
+    # Compiled Gleam artifacts — the cache that actually saves time (a
+    # cold build of the client package alone is about 85 seconds). Fenced
+    # three ways: the key carries the compiler and OTP versions, so
+    # artifacts from another toolchain are never reachable; the namespace
+    # keeps jobs from feeding each other; and nightly.yml compiles the
+    # whole tree from nothing every day, so a cache that has started
+    # lying — a lingering module for a source file that was deleted, say —
+    # is found within a day rather than at the next eviction.
+    - name: Cache compiled Gleam artifacts
+      if: inputs.cache == 'true'
+      # actions/cache v6.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: packages/*/build
+        key: >-
+          gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
+          }}-g${{ inputs.gleam-version }}-o${{ inputs.otp-version }}-e${{
+          inputs.cache-epoch }}-${{ hashFiles('packages/*/manifest.toml',
+          'packages/*/gleam.toml', 'packages/*/src/**', 'packages/*/test/**') }}
+        restore-keys: >-
+          gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
+          }}-g${{ inputs.gleam-version }}-o${{ inputs.otp-version }}-e${{
+          inputs.cache-epoch }}-
+
+    # Ground truth in every log: what actually ran, not what was asked
+    # for. A silently-substituted toolchain shows up here.
+    - name: Toolchain census
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "### Toolchain"
+          echo
+          echo '```'
+          echo "runner       ${RUNNER_OS} ${RUNNER_ARCH} (${ImageOS:-unknown image})"
+          echo "gleam        $(gleam --version)"
+          echo "erl          OTP $(erl -noshell -eval \
+            'io:format("~s / ERTS ~s",[erlang:system_info(otp_release), erlang:system_info(version)]), halt().')"
+          echo "rebar3       $(rebar3 --version | head -1)"
+          echo "go           $(go version)"
+          echo "cache        ${{ inputs.cache }} (namespace ${{ inputs.cache-namespace }}, epoch ${{ inputs.cache-epoch }})"
+          echo '```'
+        } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
