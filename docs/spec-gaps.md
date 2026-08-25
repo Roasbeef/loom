@@ -494,6 +494,43 @@ the other side.
     Either the entry's value should be the default the strand overrides,
     or the field should be refused like `headers` is.
 
+## From the planner navigability pass (`machine`, `conformance`)
+
+1. **The simulation drops a steer when the writer lease is stolen.**
+   `conformance/simulation/surface.apply` calls `api.steer_quietly` and
+   discards the `Result`, while `runtime/api.enqueue` retries only
+   `tx.StaleExpectation`. A stolen lease returns `CommitFailed`, the steer
+   is silently dropped, and the faulted transcript diverges by one turn —
+   surfacing as a `convergence/projection` failure, or downstream as
+   `convergence/ledger`. Reproduced on seed 264 against the *pre-refactor*
+   planner, so it is a harness fault rather than a planner one: the steer
+   never reaches the machine. Any fault schedule pairing `steer@turnN`
+   with `leasetheft` can hit it, which makes it a rare red in an otherwise
+   deterministic suite — the worst kind, because it trains a reader to
+   re-run rather than look. Fix belongs in the simulation surface: honor
+   the result, or retry `CommitFailed` in `enqueue` the way
+   `StaleExpectation` is retried.
+
+2. **A long checkout path breaks the code-mode tests.** The cap socket is
+   an AF_UNIX path, capped at 108 bytes by `sun_path`. In an agent
+   worktree the test's path measured 119 and every code-mode test failed
+   with `einval`; in the ordinary checkout the same path is 77. The
+   production launcher already names execution directories by a short
+   digest and refuses an oversized path in band, but the test harness does
+   not, so the failure reads as a code fault rather than an environment
+   one. Give the tests the same digest-naming, or have them refuse with
+   the launcher's worded reason.
+
+3. **`settle_poll`'s `expected_api` looks like the mistake ORCH-L4 warns
+   about, and is not.** It passes the response's self-reported api, which
+   the invariant forbids trusting — but a poll has no captured api to
+   check against, and the guarantee is upheld one step later by
+   `resuspend_on_poll_handle`'s full handle equality against the source,
+   which inducts back to the assistant response's validated api. The
+   reasoning lived two functions away with nothing at the site; a
+   cross-reference now sits there. Recorded because the next reader will
+   have the same doubt.
+
 ## From WP-J (`codemode`, `cap`) — decided at M4 kickoff
 
 1. **Canonical cap module set.** Design §6.2 lists `cap/net` + `cap/report`
