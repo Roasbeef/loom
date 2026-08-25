@@ -23,7 +23,6 @@ import codemode/satellite
 import core/clock
 import core/ids
 import core/msgpack.{type MsgPackValue}
-import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -609,15 +608,13 @@ fn is_code(outcome: CapOutcome, code: String) -> Bool {
   }
 }
 
+// `stdout` is msgpack text, not binary: `cap/proc` decodes it into a
+// `String` (see `satellite.proc_render`).
 fn stdout_has(outcome: CapOutcome, prefix: String) -> Bool {
   case outcome {
     framing.CapOk(value:) ->
       case map_field(value, "stdout") {
-        Ok(msgpack.BinaryValue(bytes:)) ->
-          case bit_array.to_string(bytes) {
-            Ok(text) -> string.starts_with(text, prefix)
-            Error(Nil) -> False
-          }
+        Ok(msgpack.StringValue(text)) -> string.starts_with(text, prefix)
         _ -> False
       }
     framing.CapErr(..) -> False

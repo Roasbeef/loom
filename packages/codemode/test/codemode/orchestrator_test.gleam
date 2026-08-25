@@ -53,7 +53,7 @@ fn exec_config(
     vet_policy: vet_policy.default(),
     compile: compile.CompileConfig(
       build_root: dir <> "/build",
-      dependencies: compile.default_dependencies("../cap"),
+      dependencies: compile.default_dependencies(),
       build:,
     ),
     broker:,

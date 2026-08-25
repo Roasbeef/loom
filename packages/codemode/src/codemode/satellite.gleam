@@ -32,16 +32,24 @@
 ////   ```
 ////   erl -noshell -boot no_dot_erlang -pa <artifact.beam_dir> \
 ////       -proto_dist none -start_epmd false \
-////       -run <artifact.entry_module> main
+////       -run <artifact.entry_module> main -s init stop
 ////   ```
 ////   No `-name`/`-sname` is ever passed, so the node cannot cluster; the
 ////   framed cap socket is its only link to anything (two-channel doctrine).
+////   `-s init stop` is not decoration: `-run` alone leaves a `-noshell`
+////   node idling after the entry returns, and the node must die with the
+////   program.
 //// - **env** is allowlist-constructed (never inherited) and carries the
 ////   two cap-channel handles the boot runtime reads:
 ////   - `LOOM_CAP_TOKEN_FILE` — path to the private, mode-0600 token file
-////     (inside a mode-0700 dir) the host wrote, read-only bind-mounted into
-////     the jail. The runtime reads the 32-byte token and echoes it on
-////     every `cap_call`.
+////     (inside a mode-0700 dir) the host wrote, readable inside the jail.
+////     The runtime reads the 32-byte token and echoes it on every
+////     `cap_call`. Be exact about *how* it is readable: `SandboxPolicyV1`
+////     has no "bind this path" verb, so the launcher names the token's
+////     directory as a readable root and the helper's base view (the whole
+////     host filesystem, ro-bound) does the rest. See
+////     `protocol-change/004-sandbox-policy-explicit-mounts.md` and the
+////     reachability checks in `codemode/launch`.
 ////   - `LOOM_CAP_SOCK` — path to the AF_UNIX cap socket. The runtime
 ////     connects it with `gen_tcp:connect({local, Path}, 0, [binary,
 ////     {active,false}, {packet,raw}])`.
@@ -72,8 +80,8 @@
 //// Revoking it (`broker.abort` on teardown) shuts the channel.
 ////
 //// What the check does **not** buy is confinement of a hostile `.beam`
-//// that slipped vetting. The token file is bind-mounted readable into the
-//// jail — `cap/runtime` has to read it — and its path is in an ordinary
+//// that slipped vetting. The token file is readable inside the jail —
+//// `cap/runtime` has to read it — and its path is in an ordinary
 //// environment variable. A hand-written `.beam` carries its own
 //// `@external`, so it reads the file and presents the genuine token, and
 //// the check passes. That adversary is confined by two other things: the
@@ -1025,6 +1033,7 @@ pub fn default_router(request: CapRequest) -> Result(CapPlan, CapDenial) {
 }
 
 fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
+  use _ <- result.try(reject_unserviced(request.args))
   case decode_argv(request.args) {
     Error(reason) -> Error(CapDenial(code: "invalid_argument", message: reason))
     Ok([]) ->
@@ -1052,8 +1061,43 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
   }
 }
 
+// The parts of a `cap/proc.Command` the default router does not service
+// yet. A `Command` always carries all of them, `NilValue` where unset, so
+// only a *set* one is a refusal — and it is a refusal rather than a
+// silent drop: running a command in a different directory, without its
+// stdin, or without its timeout, and reporting success, would let a
+// program believe it did something it did not.
+fn reject_unserviced(args: MsgPackValue) -> Result(Nil, CapDenial) {
+  list.try_each(["cwd", "stdin", "timeout_ms", "env"], fn(field) {
+    case map_field(args, field) {
+      Error(_) -> Ok(Nil)
+      Ok(value) ->
+        case is_unset(value) {
+          True -> Ok(Nil)
+          False ->
+            Error(CapDenial(
+              code: "unsupported_argument",
+              message: "proc.run `"
+                <> field
+                <> "` is not serviced by the default router; the command "
+                <> "would have run without it",
+            ))
+        }
+    }
+  })
+}
+
+fn is_unset(value: MsgPackValue) -> Bool {
+  value == msgpack.NilValue || value == msgpack.MapValue([])
+}
+
 /// Renders a jailed process settlement to the `proc.run` result shape
 /// (`exit_code`, `stdout`, `stderr`, truncation and timeout flags).
+///
+/// Output is rendered as msgpack *text*, not binary: `cap/proc.Output`
+/// declares `stdout`/`stderr` as `String` and decodes them with
+/// `wire.string_field`, which refuses a binary — a binary here would reach
+/// every program as `bad proc.run result` instead of its own output.
 pub fn proc_render(collected: Collected) -> CapOutcome {
   case collected.outcome {
     broker.CallExited(result:) ->
@@ -1062,11 +1106,11 @@ pub fn proc_render(collected: Collected) -> CapOutcome {
           #(msgpack.StringValue("exit_code"), msgpack.IntValue(result.code)),
           #(
             msgpack.StringValue("stdout"),
-            msgpack.BinaryValue(collected.stdout),
+            msgpack.StringValue(output_text(collected.stdout)),
           ),
           #(
             msgpack.StringValue("stderr"),
-            msgpack.BinaryValue(collected.stderr),
+            msgpack.StringValue(output_text(collected.stderr)),
           ),
           #(
             msgpack.StringValue("stdout_truncated"),
@@ -1087,6 +1131,19 @@ pub fn proc_render(collected: Collected) -> CapOutcome {
         code: "exec_failed",
         message: tool.exec_failure_text(failure),
       )
+  }
+}
+
+// Jailed output is expected to be UTF-8; anything else is summarized
+// rather than corrupted into a program's `String` (the same rule
+// `tools/bash` applies to the transcript).
+fn output_text(bytes: BitArray) -> String {
+  case bit_array.to_string(bytes) {
+    Ok(text) -> text
+    Error(Nil) ->
+      "["
+      <> int.to_string(bit_array.byte_size(bytes))
+      <> " bytes of non-UTF-8 output]"
   }
 }
 
