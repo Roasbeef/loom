@@ -11,9 +11,14 @@
 //// `execution_policy` adds are the two the launcher actually needed.
 ////
 //// Feature-detected, like the pipeline's own suite. It needs `gleam` and
-//// `erl` on `PATH`, a prepared seed (`make codemode-seed`) and a built
-//// helper (`make binaries`); without them each test prints a skip reason
-//// and passes, so `make check` stays hermetic and fast.
+//// `erl` on `PATH`, a prepared seed (`make codemode-seed`) and a *current*
+//// helper (`make binaries`) — built no earlier than the Go sources under
+//// `packages/sandbox`, not merely present (issue #61: a helper built
+//// before the wire protocol's most recent required-field change passes a
+//// bare presence check and then fails as an anonymous protocol break,
+//// which cost an hour to diagnose the one time it happened). Without a
+//// satisfied prerequisite each test prints a skip reason and passes, so
+//// `make check` stays hermetic and fast.
 
 import broker/broker
 import broker/exec
@@ -28,6 +33,7 @@ import core/message
 import gleam/io
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam/string
 import simplifile
 import tools/codemode as codemode_tool
@@ -170,20 +176,158 @@ fn prerequisites() -> Result(Ready, String) {
   let repo = here <> "/../.."
   let helper_path = repo <> "/bin/loom-exec"
   let seed_root = repo <> "/build/codemode-seed"
+  use Nil <- result.try(check_helper_current(
+    helper_path,
+    repo <> "/packages/sandbox",
+  ))
+  case codemode.discover(seed_root) {
+    Error(reason) -> Error(reason)
+    Ok(_toolchain) ->
+      Ok(Ready(
+        helper_path:,
+        seed_root:,
+        root: here <> "/build/codemode-tool-e2e",
+      ))
+  }
+}
+
+// --- helper staleness (issue #61) -------------------------------------------
+//
+// `bin/loom-exec` is a checked-in artifact, refreshed only by `make
+// binaries`; every other live-helper suite in this tree builds its own
+// helper from source into its own build directory on every run and so can
+// never go stale (`broker/integration_test`, `codemode/support/rig`,
+// `conformance/support/jail`, `tools/integration_test` — grepped for
+// `loom-exec` across `packages/*/test` to confirm this is the one site
+// with the trap). A helper from any commit before the wire protocol's
+// most recent required-field change passes a bare `simplifile.is_file`
+// check and then fails 3/3 as an anonymous `ChannelFault` — the decode is
+// correctly refusing a frame the stale helper never learned to send — so
+// the check here establishes *currency*, not merely presence.
+//
+// Absent and stale are told apart in the message even though `make
+// binaries` remedies both, because only one of them looks like a missing
+// file. And this is a skip, not a failure: a stale checked-in artifact is
+// the same category of unsatisfied local prerequisite as a missing `go`
+// or `erl` toolchain, which every other guard in this file already treats
+// as a skip — failing it would turn "you forgot to run a make target"
+// into a red `make check` for a reason no code change in this tree
+// caused, which is exactly the wrong signal to send from a suite whose
+// whole point is to be hermetic when its prerequisites are not met.
+
+fn check_helper_current(
+  helper_path: String,
+  sandbox_root: String,
+) -> Result(Nil, String) {
   case simplifile.is_file(helper_path) {
-    Ok(True) ->
-      case codemode.discover(seed_root) {
-        Error(reason) -> Error(reason)
-        Ok(_toolchain) ->
-          Ok(Ready(
-            helper_path:,
-            seed_root:,
-            root: here <> "/build/codemode-tool-e2e",
-          ))
-      }
-    _absent ->
+    Ok(True) -> check_helper_freshness(helper_path, sandbox_root)
+    _absent_or_unreadable ->
       Error("no loom-exec at " <> helper_path <> "; run `make binaries`")
   }
+}
+
+fn check_helper_freshness(
+  helper_path: String,
+  sandbox_root: String,
+) -> Result(Nil, String) {
+  use info <- result.try(
+    simplifile.file_info(helper_path)
+    |> result.replace_error(
+      "cannot read the mtime of " <> helper_path <> "; run `make binaries`",
+    ),
+  )
+  use sources <- result.try(go_source_mtimes(sandbox_root))
+  case freshness(info.mtime_seconds, sources) {
+    Current -> Ok(Nil)
+    Stale(newer_source:) ->
+      Error(
+        "loom-exec at "
+        <> helper_path
+        <> " is stale (older than "
+        <> newer_source
+        <> "); run `make binaries`",
+      )
+  }
+}
+
+// Every `.go` file's path and mtime under the sandbox package. The
+// `build/` directory it also contains holds transient test binaries, not
+// sources, so filtering on the `.go` suffix rather than excluding a path
+// keeps this honest if that directory is ever renamed.
+fn go_source_mtimes(
+  sandbox_root: String,
+) -> Result(List(#(String, Int)), String) {
+  use paths <- result.try(
+    simplifile.get_files(in: sandbox_root)
+    |> result.replace_error(
+      "cannot list " <> sandbox_root <> " to check loom-exec staleness",
+    ),
+  )
+  paths
+  |> list.filter(string.ends_with(_, ".go"))
+  |> list.try_map(go_source_mtime)
+}
+
+fn go_source_mtime(path: String) -> Result(#(String, Int), String) {
+  simplifile.file_info(path)
+  |> result.map(fn(info) { #(path, info.mtime_seconds) })
+  |> result.replace_error("cannot read the mtime of " <> path)
+}
+
+/// Whether a binary built at `binary_mtime` is at least as new as every
+/// source in `sources` — `Current`, or `Stale` naming the newest source
+/// that outdates it. Pure and total: split out from the filesystem walk
+/// above so the comparison itself is fixture-testable without touching
+/// the filesystem or rebuilding anything real, which is the property the
+/// live test's staleness check needs to prove on its own.
+type Freshness {
+  Current
+  Stale(newer_source: String)
+}
+
+fn freshness(binary_mtime: Int, sources: List(#(String, Int))) -> Freshness {
+  case freshest(sources) {
+    option.None -> Current
+    option.Some(#(path, mtime)) ->
+      case mtime > binary_mtime {
+        True -> Stale(path)
+        False -> Current
+      }
+  }
+}
+
+fn freshest(sources: List(#(String, Int))) -> option.Option(#(String, Int)) {
+  list.fold(sources, option.None, fn(acc, entry) {
+    case acc {
+      option.None -> option.Some(entry)
+      option.Some(#(_, best)) ->
+        case entry.1 > best {
+          True -> option.Some(entry)
+          False -> acc
+        }
+    }
+  })
+}
+
+pub fn freshness_flags_a_binary_older_than_its_newest_source_test() {
+  let sources = [
+    #("packages/sandbox/cmd/loom-exec/main.go", 150),
+    #("packages/sandbox/internal/jail/cancel.go", 200),
+  ]
+  let assert Stale(newer_source:) = freshness(100, sources)
+  assert newer_source == "packages/sandbox/internal/jail/cancel.go"
+}
+
+pub fn freshness_accepts_a_binary_at_least_as_new_as_every_source_test() {
+  let sources = [
+    #("packages/sandbox/cmd/loom-exec/main.go", 50),
+    #("packages/sandbox/internal/jail/cancel.go", 100),
+  ]
+  assert freshness(100, sources) == Current
+}
+
+pub fn freshness_with_no_sources_is_current_test() {
+  assert freshness(0, []) == Current
 }
 
 // The session base a live code-mode execution runs under: its own root
