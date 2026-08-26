@@ -396,11 +396,11 @@ explicit `--best-effort` flag is passed; `wiring.gleam:141-144` says
 
 - A helper whose hello advertises `degraded` is refused **before dispatch**:
   `case request.demand, degraded_features(features) { FullEnforcement, True
-  -> process.send(reply, Error(DegradedHelper(features:))) }`
-  (`broker/exec.gleam:597-601`).
+  -> refuse_run(state, reply, DegradedHelper(features:)) }`
+  (`broker/exec.gleam:691-693`).
 - A result whose `enforcement` list carries any `skip:` entry is refused
   **after** the run: `FullEnforcement, True -> Failed(failure:
-  DegradedExecution(result:))` (`broker/exec.gleam:761-763`), and the
+  DegradedExecution(result:))` (`broker/exec.gleam:911`), and the
   comment is explicit that a `skip:` counts "whatever the bool says".
 
 So on a degraded production host, every jailed execution **fails**. The

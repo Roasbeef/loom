@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1119`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1106`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.
@@ -434,19 +434,19 @@ this seam leans on hardest"
 
 **WP-J 15** (`docs/spec-gaps.md:616`): every clearance the code-mode
 pipeline makes passes empty grants — `grants: []` at the build call
-(`packages/codemode/src/codemode/build.gleam:255`), the node launch
-(`packages/codemode/src/codemode/launch.gleam:468`), the launch policy
-composition (`packages/codemode/src/codemode/launch.gleam:588`), and the
-cap router (`packages/codemode/src/codemode/satellite.gleam:1051`). An
+(`packages/codemode/src/codemode/build.gleam:292`), the node launch
+(`packages/codemode/src/codemode/launch.gleam:706`), the launch policy
+composition (`packages/codemode/src/codemode/launch.gleam:821`), and the
+cap router (`packages/codemode/src/codemode/satellite.gleam:1204`). An
 approved escalation widens nothing, and it fails closed.
 
 **WP-J 16** (`docs/spec-gaps.md:624`): identity and budget are specified
 in three places — `ExecConfig`
-(`packages/codemode/src/codemode/codemode.gleam:60`) has the caller
+(`packages/codemode/src/codemode/codemode.gleam:74`) has the caller
 assemble `BuildConfig`
-(`packages/codemode/src/codemode/build.gleam:90`), `SatelliteConfig`
-(`packages/codemode/src/codemode/satellite.gleam:292`), and `ExecId`
-(`packages/codemode/src/codemode/satellite.gleam:169`), each carrying its
+(`packages/codemode/src/codemode/build.gleam:93`), `SatelliteConfig`
+(`packages/codemode/src/codemode/satellite.gleam:319`), and `ExecId`
+(`packages/codemode/src/codemode/satellite.gleam:176`), each carrying its
 own operation, step, and budget. The broker opens one ledger per
 `{op_id, step_id}` (`packages/broker/src/broker/budget.gleam:11`), and the
 e2e builds under `step_id <> "-build"`
@@ -496,7 +496,7 @@ the package into the queue for the decision.
   mechanism applied to the code-mode pipeline and cannot be specified
   until that mechanism is chosen — a re-run "carrying the grants" means
   grants threaded into `ExecConfig` and composed at
-  `packages/codemode/src/codemode/launch.gleam:588`, and *when* a re-run
+  `packages/codemode/src/codemode/launch.gleam:821`, and *when* a re-run
   happens is precisely D1's open half. The v0.1 milestone's escalation
   claim ("some production path raises an escalation") is fully satisfied
   by the workspace tool path; keeping the code-mode half in #4 couples a

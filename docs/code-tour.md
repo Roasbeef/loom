@@ -174,7 +174,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1100`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1191`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -298,7 +298,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:714`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:746`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -467,7 +467,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1043`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1112`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -591,7 +591,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1586`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1764`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -686,7 +686,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1087`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1157`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1093`). That is the
@@ -726,7 +726,7 @@ through this door and no other.
 `broker.clear_call` (`broker/broker.gleam:279`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
-(`broker/broker.gleam:476` and `:516`):
+(`broker/broker.gleam:479` and `:519`):
 
 1. **Compose** — the meet of the session base and the tool's
    requirements, root coverage prefix-aware, the network lattice meeting
@@ -760,7 +760,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1128`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1229`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1116,7 +1116,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:820`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:809`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
@@ -1137,7 +1137,7 @@ corner would buy.
 ## 15. Code mode
 
 The other branch off a tool batch is a model that submits a *program*
-rather than a call. `codemode.execute` (`codemode/codemode.gleam:73`)
+rather than a call. `codemode.execute` (`codemode/codemode.gleam:88`)
 threads its source through three trust stages, short-circuiting at the
 first refusal:
 
@@ -1182,7 +1182,7 @@ crash mid-execution can only synthesize an interrupted result. Execution
 is `tool.Exclusive`, and the workspace it may mutate is the lesser half
 of the reason. The broker opens an execution's pooled ledger on the
 *first* clearance under a `{op_id, step_id}`, with that call's budget
-(`broker/broker.gleam:578`) — so a concurrent call in the same step both
+(`broker/broker.gleam:594`) — so a concurrent call in the same step both
 sets the budget the program will live under and holds a slot the program
 needs, and a satellite needs two outstanding slots to launch at all: one
 the node holds for its whole life, one for the capability call it is
@@ -1209,7 +1209,7 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1279`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1304`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:236`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

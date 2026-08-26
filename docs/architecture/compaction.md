@@ -28,7 +28,7 @@ complete copy of the retained tail (`core/entry.gleam:53`). Nothing is
 deleted. Every summarized message stays in the tree, navigable,
 forkable, and indexable; what changes is only the *projection*, because
 a context scan stops inclusively at the first compaction it meets
-(`project`, `session/session.gleam:625`). Recovery therefore replays the
+(`project`, `session/session.gleam:636`). Recovery therefore replays the
 same context it had before the crash, since the compaction entry is in
 the log like everything else.
 
@@ -97,12 +97,12 @@ ceiling come from the resolved route, under the adapter's own api name
 (`compaction_hooks`, `client/wiring.gleam:273`). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:532` (`default_reserve_tokens`) and
+once in `client/serve.gleam:539` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:520`).
+(`compaction_settings`, `client/serve.gleam:527`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
@@ -184,12 +184,12 @@ the split (`preparation`, `runtime/hooks.gleam:478`). It walks the
 projection newest-first spending the keep-recent budget, and stops at the
 first message that does not fit rather than skipping it, because a
 retained tail has to be a contiguous suffix of the projection
-(`recent`, `runtime/hooks.gleam:516`). Everything older than the
+(`recent`, `runtime/hooks.gleam:524`). Everything older than the
 resulting boundary is what the summarizer is sent; everything newer
 survives verbatim.
 
 Then the boundary moves. **A cut point moves later off a tool result,
-never earlier** (`cut`, `runtime/hooks.gleam:546`). A tool result at the
+never earlier** (`cut`, `runtime/hooks.gleam:553`). A tool result at the
 head of a retained tail is an answer to a call the model can no longer
 see, so it belongs on the summarized side with the assistant turn that
 made it, and moving the boundary later is what puts it there. The
@@ -493,7 +493,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2224`). An
+(`compaction_preparation`, `client/gateway.gleam:2358`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
