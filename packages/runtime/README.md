@@ -1,0 +1,148 @@
+# runtime
+
+`runtime` is the orchestration plane's live half: the OTP supervision
+tree that turns an open session into a running one. It does not decide
+anything — `machine/planner.next_action` does that, as a pure function —
+`runtime` is what *performs* what the planner decided: one
+`StorageWriter` owns the commit path for the whole session, one strand
+driver per strand loads durable state, calls the planner, and acts on the
+`Action` that comes back, against an injected effect seam
+(`runtime/effects.Effects`) that tests, the simulation, and production
+(`client/wiring`) each fill differently.
+
+## The drive loop is the machine's contract, verbatim
+
+Every pass of a strand driver is the same four steps, and this is the
+whole of what "runtime drives machine" means:
+
+```mermaid
+flowchart TD
+    A["load registers:<br/>strand.config, strand.state, strand.leaf,<br/>op.meta, op.state, sibling payloads"]
+    B["build PlannerInputs<br/>(fresh id generator each pass)"]
+    C["machine.next_action(op, state, inputs)"]
+    D{"Action"}
+    E1["Transition(next, tx): commit, then plan again"]
+    E2["Dispatch(intent, next, tx): commit the intent,<br/>THEN start the effect"]
+    E3["AwaitEffect(key): resolve the observation, plan again"]
+    E4["Wait(until): arm a timer or a poll permit"]
+    E5["Finish(result, tx): commit the terminal transaction —<br/>the operation ceases to exist"]
+    E6["Fault(report): stop abnormally — supervisor restarts"]
+
+    A --> B --> C --> D
+    D --> E1 --> C
+    D --> E2
+    D --> E3 --> C
+    D --> E4
+    D --> E5
+    D --> E6
+```
+
+The machine never learns anything the driver did not hand it, and the
+driver never invents a transaction the machine did not build. `Dispatch`
+is the one branch worth pausing on: the intent transaction commits
+*before* the effect starts, which is the effect sandwich — a crash before
+that commit means the effect never ran at all; a crash after the
+settlement commit means it is fully recorded; a crash inside the window
+leaves `op.state` saying `effect_pending`, which is exactly the state the
+driver reloads and reports as an orphan.
+
+## Crash recovery and cold start are the same code
+
+There is no separate recovery path to keep in sync with normal
+operation. A cold open and a post-crash reboot both resolve to "list
+`strand.*` in storage and start whatever driver each strand is missing" —
+the **strand booter**, sitting fourth in the tree's rest-for-one order,
+does exactly that on every boot.
+
+```mermaid
+stateDiagram-v2
+    [*] --> TreeStarting: runtime/supervisor.start(config)
+    TreeStarting --> RegistryUp: strand-name registry (survives writer/strand crashes)
+    RegistryUp --> WriterUp: StorageWriter
+    WriterUp --> FactoriesUp: primary + subagent StrandSupervisor factories<br/>(empty at this point)
+    FactoriesUp --> Booting: strand booter starts
+    Booting --> Booting: list strand.* registers,<br/>start_strand for each one found,<br/>routed to its own factory
+    Booting --> Running: every known strand has a live driver
+    Running --> Running: normal operation — drive loop, commits, doorbells
+    Running --> Reboot: writer crash (rest-for-one restarts writer AND both factories)
+    Running --> StrandRestart: one strand's driver crashes (only that strand restarts)
+    Reboot --> Booting: factories restart empty; booter repopulates them
+    StrandRestart --> Resume: the replacement re-reads op.state and resumes —<br/>same code as a fresh drive-loop pass
+```
+
+Because the registry sits *first* in the rest-for-one order, it survives
+both a writer crash and a strand crash, so a replacement driver registers
+under the exact same process name and stays addressable — doorbells
+resolve through a lookup at ring time rather than caching a pid, and a
+lost doorbell only costs latency: the periodic `PollTick` finds queued
+work anyway.
+
+A model-spawned subagent cannot take `main` down with it. The tree keeps
+**two** strand factories — primary and subagent — and `Config.subagent`
+decides by name alone which one a given strand starts under; the subagent
+factory sits *after* the primary one in the rest-for-one order, so a
+subagent's crash-loop restarts only itself and the booter.
+
+## Effects are monitored, and a reaper bounds their lifetime
+
+Every effect the driver dispatches — a provider request, a tool run, a
+parked escalation call — is a process the driver `spawn`s and monitors
+directly, and each driver incarnation also spawns its own **reaper**: a
+small trapping process, linked to the driver, that every effect links to
+at birth. The moment the driver dies, the reaper dies with it and takes
+every effect it was holding down too — so a strand-actor restart can
+never leak a live effect into the next incarnation. That is what makes
+the exclusivity gate and the "is this an orphan or a live replay"
+decision sound: both read the incarnation-local `live` list, and neither
+would mean anything if an effect could survive past its incarnation.
+
+An effect process that dies without ever reporting settles **in band** —
+a synthetic tool error, or an orphaned-provider-request classification —
+never by faulting the strand. The harness never wedges on a dead worker,
+and it never blames the strand for one either.
+
+## Correlation travels as a value, through the spawn
+
+`runtime/effects.spawn_effect` takes the step-scoped `telemetry/log.Logger`
+as an argument, and the spawned body closes over it — Erlang `logger`'s
+process metadata is *not* inherited across `spawn`, and the effect
+sandwich is nothing but spawns, so a design that relied on inheritance
+would lose correlation exactly where interleaved strands make it matter,
+and lose it silently: the lines would still appear, just uncorrelated.
+The spawned body also calls `telemetry/log.adopt`, which stamps the same
+`{session, strand, op, step}` into that process's own `logger` metadata,
+so an OTP crash report *about* the effect process — which this package
+did not author and cannot route through the value — is still correlated
+when it lands.
+
+## The modules
+
+| Module | What it holds |
+|---|---|
+| `runtime/api` | The session-facing surface: open/recover, prompt, steer, follow-up, abort, close, subagent creation, the `fact.*` blackboard, escalation decisions. |
+| `runtime/supervisor` | `SessionTree` — the five-child rest-for-one tree — plus `shutdown`. |
+| `runtime/strand_runtime` | The driver: the drive loop, doorbells, effect spawning, the reaper. |
+| `runtime/writer` | The single commit-serializing actor and its `Committed` event fan-out. |
+| `runtime/registry` | The strand-name registry: mint or return the process name a driver registers under. |
+| `runtime/effects` | The injected effect seam: `Effects`, `RequestSpec`, `ToolRun`, `Clearance`. |
+| `runtime/hooks` | The one seam production, tests, and the simulation all build `Effects.hooks` through; the compaction arithmetic. |
+| `runtime/escalation` | The durable escalation record: `Status` (`Pending`/`Approved`/`Rejected`/`Consumed`) and `CallScope`. |
+| `runtime/lineage` | The durable spawn ledger: parent edges, depth, deadlines, the reap mark. |
+
+Paths are relative to `packages/runtime/src/` — `runtime/strand_runtime`
+is `packages/runtime/src/runtime/strand_runtime.gleam`.
+
+## Reading further
+
+- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
+  key types, real dependency edges, actor and register traffic, and the
+  invariants that break things when violated. Read it before editing.
+- [`docs/architecture/orchestration.md`](../../docs/architecture/orchestration.md)
+  — the drive loop, the supervision tree, doorbells, the interleave
+  harness.
+- [`packages/machine/README.md`](../machine/README.md) — the pure
+  planner this package drives, and the six-action vocabulary it returns.
+- [`docs/architecture/simulation.md`](../../docs/architecture/simulation.md)
+  — what the deterministic runner does to this tree.
+- [`docs/spec-gaps.md`](../../docs/spec-gaps.md) — "From WP-E": crash
+  semantics, boot seeding, close-as-crash, injected entropy.
