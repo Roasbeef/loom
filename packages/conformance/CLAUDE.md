@@ -16,7 +16,12 @@ them from their own test mains.
   a backend constructor. A backend passes WP-B's exit criteria only when
   `run` is green.
 - `conformance/simulation/runner.{run, check, examine, soak, Verdict,
-  Report}` — seed in, verdict out.
+  Report, Corroboration}` — seed in, verdict out. A `Failed` verdict
+  carries a `Corroboration`: the seed is replanned and re-run up to
+  three times, and `Reproducible` means every run failed while
+  `Unstable` means the same script under the same schedule reached
+  different verdicts. Both, plus the run's own `[timing]` evidence, are
+  folded into `Failure.detail` so every existing printer shows them.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
   semantic half: what the session is *asked* to do. `Script.subagent` is
   the multi-strand coda: an optional brief that spawns a subagent strand
@@ -34,7 +39,13 @@ them from their own test mains.
 - `conformance/simulation/vclock.Clockwork` — the one logical clock and its
   timer wheel.
 - `conformance/simulation/control.Control` — the counters, one-shot claims,
-  and runtime handle that outlive the session tree.
+  and runtime handle that outlive the session tree. Also
+  `control.Attempted`, the three-way outcome of running an action on a
+  disposable process: `Answered`, `Raised` (the carrier died — observed
+  through a monitor, so it costs no wall-clock time), and `Expired` (a
+  real millisecond budget ran out). `Raised` and `Expired` are equally
+  uninformative about whether the action happened, and callers must
+  treat them alike.
 - `conformance/simulation/{store, surface, invariant, wire}` — the
   instrumented session, the scripted effect surface, the named per-run
   checks, and the framing properties.
@@ -59,10 +70,11 @@ them from their own test mains.
 ## Traffic
 
 - **Actor messages**: `control.Message` (counters, claims, notes, the
-  runtime handle, the seam arm/quiet protocol) and `vclock.Message` (now,
-  schedule, advance, park). Both are calls. The runner also subscribes to
-  `runtime/writer.Event.Committed` indirectly through the instrumented
-  store's commit counter.
+  runtime handle, the seam arm/quiet protocol, the harness-conduct
+  record behind `Report.waits`, and the atomic intervention claim) and
+  `vclock.Message` (now, schedule, advance, park). Both are calls. The
+  runner also subscribes to `runtime/writer.Event.Committed` indirectly
+  through the instrumented store's commit counter.
 - **Commits**: `simulation/store.instrument` wraps a real memory backend's
   `Storage` record so every commit passes through it — counted with a
   counter that survives writer restarts, optionally refused as
@@ -113,6 +125,28 @@ them from their own test mains.
 - **Split-summary progress is counted at the commit boundary**, not at
   send time: a settlement lost with a halted strand must lead to another
   request rather than to a summary the ledger never paid for.
+- **The wall clock is a deadlock backstop, and says so when it fires.**
+  `control.attempt` is how anything reaches into a tree that may be
+  mid-restart, and its `within_ms` is real milliseconds — it cannot be
+  logical, because the action blocks on a real OTP call and the runner
+  is the process waiting on it. What used to reach that budget routinely
+  was the carrier *dying*; that is now a monitored `Raised` and costs no
+  clock, which leaves the budget bounding only a wedge nothing is
+  expected to reach. Every `Expired`, every `Raised`, and every scripted
+  intervention claimed but never seen to land is recorded through
+  `control.note_wait` into `Report.waits` and named in the failure the
+  run reports. Neither `Raised` nor `Expired` is evidence the action
+  failed: an admission whose reply was lost may already be durable, and
+  every caller asks the durable state rather than concluding (issue #44,
+  and the same ambiguity #6 records).
+- **A failing seed says whether it is repeatable.** `run`, `examine`, and
+  `check` replan the failing seed — same script, same schedule, since
+  `plan` draws only from the seed — and re-run it up to three times
+  before reporting. Shrinking is skipped for an unstable seed, because
+  "does this smaller schedule still fail?" is answered by coin toss
+  there. An unstable verdict is not an all-clear: a genuine race in the
+  code under test is unreproducible too, so what it licenses is
+  comparing *rates*, never dismissing the run.
 - **Fault addressing is ordinal, not temporal.** Commit-indexed faults name
   a global commit ordinal counted across writer restarts; effect-indexed
   faults name a dispatch ordinal. Neither is a wall-clock instant, so a
@@ -141,10 +175,15 @@ them from their own test mains.
   `sound` fails the seed on. Two refusals are deliberately exempt and
   marked instead of noted: an `AtTerminalCommit` steer, where the run the
   item would attach to is already closed and refusal is the documented
-  outcome, and an admission the surface's own 2 s window did not observe,
+  outcome, and an admission whose reply the surface did not observe,
   which is not evidence the commit failed. The recording lives on an
   error path and touches no schedule, so the seed corpus keeps its
-  meaning as a before/after oracle.
+  meaning as a before/after oracle. An intervention's one-shot claim and
+  its admission are one indivisible step on one disposable process
+  (`control.claim_intervention`), because a claim spent by a process the
+  reaper then kills is a scripted turn the run silently loses; when the
+  carrier itself is lost the debt is left open and the run reports
+  `HARNESS LOST A SCRIPTED TURN` rather than an unexplained divergence.
 - **The perf smoke asserts, it does not merely print.** `storage_suite_test`
   holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
   to the 5 ms M0 target it reports against — shared CI hardware has

@@ -118,9 +118,15 @@ run while the fault armed on its last commit was still queued. The
 runner therefore waits for the seam to close before accepting a terminal
 result, and a crash counts as the seam closing, since the writer was
 killed inside it. That is what keeps a commit-indexed fault's chance to
-fire part of the run rather than a race against the observer. The one wall-clock wait left in a simulated session is
-the provider surface's own settlement timeout, which only a scripted
-timeout fault reaches.
+fire part of the run rather than a race against the observer.
+
+Two wall-clock waits are left in a simulated session, and both are named
+where they live. The first is the provider surface's own settlement
+timeout, which only a scripted timeout fault reaches. The second is
+`control.attempt`'s budget, which is how anything reaches into a tree
+that may be mid-restart; it is documented as **not simulation-safe** in
+its own doc comment and is discussed under "What this does not cover"
+below. Neither is part of a seed.
 
 ## The fault taxonomy
 
@@ -214,19 +220,43 @@ way `runtime/api` builds a run's and commits it through the same writer.
 
 ## Reproducing a failure
 
-A failing seed prints one line:
+A failing seed prints its check, then two lines about the failure rather
+than about the property, then the reproduction line:
 
 ```
+convergence/projection — fault-free [...] but faulted [...]
+    [timing] HARNESS LOST A SCRIPTED TURN: faulted run:
+      intervening@follow-up-during-effect — ...
+    [verdict] NOT REPRODUCIBLE — this seed was run 2 times and failed 1. ...
 seed 317  |  script: run(defer>overflow) then navigate | no threshold |
 generated/split | abort@turn0  |  faults: crash@c1 + readfault@c3 + dropbell@1
 ```
+
+The two annotations exist so that a red soak does not have to be
+re-litigated by hand. `[timing]` is what the run observed about its own
+conduct — whether a real millisecond budget expired in it, whether any
+reply went unobserved, and whether a scripted intervention was claimed
+and never seen to land. `[verdict]` is stronger and costs re-runs: the
+same seed is replanned (the same script, the same schedule — `plan` draws
+only from the seed) and run again up to three times, and the failure is
+reported as `REPRODUCIBLE` only if every one of them failed too.
+
+`NOT REPRODUCIBLE` does not mean "nothing is wrong". A genuine race in
+the code under test is unreproducible too. What it means is that this one
+red run does not distinguish a diff from the commit before it, so the
+thing to compare is the failure *rate* over many runs of the seed — and a
+seed that was stable before a change and unstable after it is a finding,
+because becoming unstable is a behaviour change. Shrinking is skipped for
+an unreproducible failure: "does this smaller schedule still fail?" is
+answered by coin toss there, and a minimal schedule arrived at that way
+would be a fiction.
 
 The seed alone re-runs the case. The script and fault summaries are
 there so the shape of the failure is legible without re-running it, and
 so a failure that no longer reproduces can still be recognized.
 
-The soak entry point shrinks before it reports. On failure it re-runs
-the case with candidate simpler schedules — drop one fault, or pull one
+The soak entry point corroborates first and shrinks second. On failure it
+re-runs the case with candidate simpler schedules — drop one fault, or pull one
 fault's index toward the start of the run — and keeps the smallest that
 *still fails*. Nothing is inferred: a reported minimal schedule is one
 that was observed to fail, so the worst shrinking can do is fail to
@@ -290,6 +320,57 @@ means a failure that depends on a rare interleaving may not reproduce on
 demand. A true reproducible-interleaving simulator needs the whole
 runtime to run on an injected scheduler, which is a larger change than
 this.
+
+What *is* controlled is how such a failure reads. Every failure carries
+the `[timing]` and `[verdict]` annotations described under "Reproducing a
+failure", so an unreproducible one says so in its own output instead of
+looking exactly like a behaviour difference. That distinction is the
+point: the expensive failure mode is not the flake, it is a real
+regression waved away as "the box was busy".
+
+**`control.attempt` still holds a real millisecond budget.** Reaching
+into a session tree that may be mid-restart is done on a disposable
+process, and waiting for that process is bounded by real time, not
+logical time. It cannot be made logical: the action blocks on a real OTP
+call, the logical clock moves only when the runner moves it, and the
+runner is the process doing the waiting — a logical deadline would have
+nobody left to fire it. So the budget stays, demoted to a **deadlock
+backstop**: a bound that stops a wedged call hanging a CI job, not a
+bound anything is expected to reach.
+
+What used to reach it routinely was the disposable process *dying*, which
+is the ordinary outcome when the writer it is calling is killed
+mid-commit. That is now observed through a process monitor and reported
+at once as `Raised`, so it costs no wall-clock time and happens at the
+same point in the run on an idle box and a loaded one. The budget expiring
+is a separate outcome, `Expired`; every occurrence is recorded and named
+in the failure the run reports, so a seed that touched the wall clock says
+which call site did it. Neither outcome is treated as proof that the
+action failed — an admission whose reply was lost may already be durable,
+and the retry paths ask the durable state rather than assuming (this is
+the same ambiguity the steer-drop work records).
+
+**A scripted intervention can be lost to a partial crash.** An
+intervention claims a one-shot and then admits; the admission runs on a
+disposable process so it survives the tree, but the effect process
+awaiting it can be reaped by a `RestartStrand` fault — and once nothing is
+awaiting, nothing enforces the disposable process's own budget either. A
+carrier that is stuck rather than merely slow then never settles, the
+claim is spent, and the faulted run ends one scripted turn short of the
+fault-free one. This is harness damage, not a durability defect, and it is
+the known cause of the `convergence/projection` flake on seeds like 53 and
+63.
+
+It is recorded rather than repaired. The claim and its settlement are
+bracketed (`intervening@path` / `intervened@path`), so a run that lost one
+reports `HARNESS LOST A SCRIPTED TURN` and names it, instead of reporting
+a divergence with no cause. Making the runner *wait* for the debt before
+accepting a terminal result was tried and is worse: a stuck carrier never
+settles, so the wait turns a divergence that names its own cause into a
+run that never terminates. Repairing it properly needs the intervention to
+be driven by the runner rather than fired from inside an effect, which
+changes what the seeds mean and so belongs with the injected-scheduler
+work above.
 
 **One backend, one strand, one session.** Every simulated session is an
 in-memory store with a synthetic lease. The SQLite backend's own

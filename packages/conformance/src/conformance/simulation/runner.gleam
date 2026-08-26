@@ -90,6 +90,11 @@ pub type Report {
     coverage: List(String),
     /// Effects dispatched, counted across restarts.
     effects: Int,
+    /// Every reply an `attempt` did not observe, labelled
+    /// `raised@<site>` or `expired@<site>`. An `expired@` entry is the
+    /// only place a real clock decided anything, so a run with none of
+    /// them has no wall-clock wait to blame.
+    waits: List(String),
   )
 }
 
@@ -103,8 +108,17 @@ pub type Verdict {
   /// Every check held.
   Passed
   /// A check failed; `reproduce` is the line to paste to re-run this
-  /// case alone.
-  Failed(seed: Int, failure: Failure, reproduce: String)
+  /// case alone, and `corroboration` says whether re-running it changes
+  /// the answer — which is the difference between a behaviour
+  /// difference and a harness artefact. `failure.detail` carries both
+  /// that verdict and the run's own timing evidence in prose, so a
+  /// printer that only shows the detail still shows them.
+  Failed(
+    seed: Int,
+    failure: Failure,
+    reproduce: String,
+    corroboration: Corroboration,
+  )
 }
 
 // The drive budget: planning passes the runner will wait through for one
@@ -152,7 +166,13 @@ pub fn examine(seed seed: Int) -> Examination {
   let verdict = case judge(script, schedule, base, faulted) {
     Ok(Nil) -> Passed
     Error(failure) ->
-      Failed(seed:, failure:, reproduce: reproduce(seed, script, schedule))
+      failed(
+        seed,
+        failure,
+        script,
+        schedule,
+        corroborate(seed, corroboration_runs, 1, 1),
+      )
   }
   Examination(verdict:, coverage:)
 }
@@ -172,15 +192,23 @@ pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
   let #(script, schedule, base) = plan(seed)
   case verify(script, schedule, base) {
     Ok(Nil) -> Passed
-    Error(failure) -> {
-      let #(smallest, smallest_failure) =
-        shrink(script, base, schedule, failure, shrink_budget)
-      Failed(
-        seed:,
-        failure: smallest_failure,
-        reproduce: reproduce(seed, script, smallest),
-      )
-    }
+    // Corroborate before shrinking, not after. Shrinking asks "does this
+    // smaller schedule still fail?", and a seed whose verdict is not
+    // stable answers that question by coin toss — it would wander to
+    // whichever candidate happened to lose the race, and report a
+    // minimal schedule that means nothing. So an unstable seed is
+    // reported at full size, which is also the honest thing to hand
+    // someone: the case as it was drawn.
+    Error(failure) ->
+      case corroborate(seed, corroboration_runs, 1, 1) {
+        Unstable(..) as corroboration ->
+          failed(seed, failure, script, schedule, corroboration)
+        Reproducible(..) as corroboration -> {
+          let #(smallest, smallest_failure) =
+            shrink(script, base, schedule, failure, shrink_budget)
+          failed(seed, smallest_failure, script, smallest, corroboration)
+        }
+      }
   }
 }
 
@@ -318,7 +346,22 @@ fn verify(
   judge(script, schedule, base, execute(script, schedule))
 }
 
+// Every failure leaves here carrying what the run knows about its own
+// timing. A reader of a red soak needs to know whether the harness went
+// anywhere near a clock before deciding whether the diff is at fault,
+// and asking them to re-run to find out is exactly the expensive habit
+// this annotation exists to retire.
 fn judge(
+  script: Script,
+  schedule: Schedule,
+  base: Report,
+  faulted: Report,
+) -> Result(Nil, Failure) {
+  adjudicate(script, schedule, base, faulted)
+  |> result.map_error(with_timing(_, base, faulted))
+}
+
+fn adjudicate(
   script: Script,
   schedule: Schedule,
   base: Report,
@@ -338,6 +381,218 @@ fn judge(
       same_ledger(base, faulted)
     }
   }
+}
+
+// --- telling a timing artefact from a behaviour difference ----------------
+//
+// The soak is only worth what its failures mean. A seed that diverges
+// because a planner changed and a seed that diverges because the BEAM
+// interleaved two processes differently look identical once they are a
+// line in a log, and the second-order cost of that is the expensive one:
+// a real regression gets waved away as "the box was busy". So a failure
+// carries its own evidence about which it is, and the reader is never
+// asked to reconstruct it.
+//
+// Two independent pieces of evidence are attached. The first is what the
+// run itself observed — every reply an `attempt` did not see, and in
+// particular whether any of them was a wall-clock expiry, the one thing
+// in a simulated session a loaded host can manufacture. The second is
+// stronger and costs a re-run: whether the *same seed*, replanned from
+// scratch with the same script and the same schedule, fails again.
+
+// Attaches what the two runs observed about their own timing. This is
+// cheap and always available, but it is only half the story: a run can
+// diverge on an interleaving without ever touching a clock, and then
+// this line correctly reports no wall-clock wait while the failure is
+// still not a behaviour difference. `Corroboration` is the half that
+// settles it.
+fn with_timing(failure: Failure, base: Report, faulted: Report) -> Failure {
+  let dangling =
+    list.append(dangling("fault-free", base), dangling("faulted", faulted))
+  let expiries =
+    list.append(
+      matching("fault-free", base, "expired@"),
+      matching("faulted", faulted, "expired@"),
+    )
+  let raises =
+    list.append(
+      matching("fault-free", base, "raised@"),
+      matching("faulted", faulted, "raised@"),
+    )
+  Failure(
+    ..failure,
+    detail: failure.detail
+      <> "\n    "
+      <> timing_line(dangling, expiries, raises),
+  )
+}
+
+fn matching(which: String, report: Report, prefix: String) -> List(String) {
+  report.waits
+  |> list.filter(string.starts_with(_, prefix))
+  |> list.map(fn(wait) { which <> " run: " <> wait })
+}
+
+// A scripted intervention the run started and never finished. `surface`
+// brackets each admission with `intervening@path` and `intervened@path`,
+// so an opening with no closing is an admission that was still in flight
+// when the report was read.
+fn dangling(which: String, report: Report) -> List(String) {
+  let opened = paths_after(report, "intervening@")
+  let closed = paths_after(report, "intervened@")
+  opened
+  |> list.filter(fn(path) { !list.contains(closed, path) })
+  |> list.map(fn(path) { which <> " run: intervening@" <> path })
+}
+
+fn paths_after(report: Report, prefix: String) -> List(String) {
+  report.waits
+  |> list.filter(string.starts_with(_, prefix))
+  |> list.map(string.drop_start(_, string.length(prefix)))
+}
+
+// The verdict on a failing run's own conduct, strongest evidence first.
+// Each case names a mechanism the reader can act on rather than a
+// suspicion they have to chase.
+fn timing_line(
+  dangling: List(String),
+  expiries: List(String),
+  raises: List(String),
+) -> String {
+  case dangling, expiries, raises {
+    // The strongest of the three, and the only one that settles the
+    // question outright: the harness took a scripted turn's one-shot
+    // claim and then lost the process that was to admit it. The two
+    // runs are not comparing the same conversation, and no amount of
+    // reading the diff will explain the difference.
+    [_, ..], _, _ ->
+      "[timing] HARNESS LOST A SCRIPTED TURN: "
+      <> string.join(dangling, ", ")
+      <> " — a scripted intervention was claimed and never observed to "
+      <> "land, because the partial crash reaped the process awaiting it. "
+      <> "The faulted run is one scripted turn short of the fault-free one "
+      <> "for a reason that has nothing to do with the code under test. "
+      <> "This is a known harness limitation, not a finding: see "
+      <> "docs/architecture/simulation.md, \"What this does not cover\"."
+    // A real millisecond budget ran out. Whatever the check says, this
+    // run had a bound in it that is not part of the seed.
+    [], [_, ..], _ ->
+      "[timing] WALL CLOCK: "
+      <> string.join(expiries, ", ")
+      <> " — a real millisecond budget expired in this run. Nothing in the "
+      <> "simulation controls it (control.attempt, \"Not simulation-safe\"), "
+      <> "so this failure may be an artefact of a loaded host rather than "
+      <> "of the code under test."
+    // Replies that went unobserved because the process carrying them
+    // died. Deterministic — a monitor saw it, not a clock — but worth
+    // naming, because an unobserved admission is the ambiguity every
+    // convergence divergence should be read against: it does not say
+    // the commit failed, only that nobody saw it succeed.
+    [], [], [_, ..] ->
+      "[timing] no wall-clock wait; unobserved replies: "
+      <> string.join(raises, ", ")
+      <> " (each seen through a process monitor, not a clock, so each "
+      <> "happened at the same point in the run on any machine)"
+    [], [], [] ->
+      "[timing] clean — no wall-clock wait, no unobserved reply, and every "
+      <> "scripted intervention landed. Nothing about the harness explains "
+      <> "this failure."
+  }
+}
+
+// How many times a failing seed is replanned and re-run before its
+// failure is characterised. Only a failing seed ever pays this, and the
+// search stops at the first run that passes, so the common flake costs
+// one extra run and a genuinely broken seed costs three.
+const corroboration_runs = 3
+
+/// Whether a failed check survived being run again. The runner drives
+/// real BEAM processes and does not control how they interleave (see
+/// `docs/architecture/simulation.md`, "What this does not cover"), so a
+/// verdict that changes between two identical runs of one seed is a
+/// statement about the harness, not about the code under it.
+pub type Corroboration {
+  /// Every run of this seed failed. Timing does not excuse it.
+  Reproducible(runs: Int)
+  /// A re-run of this seed passed. This particular failure is not
+  /// evidence that behaviour changed — though a seed that only *became*
+  /// unstable is still a finding, since instability is behaviour too.
+  Unstable(failed: Int, of: Int)
+}
+
+/// How a corroboration reads in a failure report.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // runner.describe_corroboration(runner.Reproducible(runs: 4))
+/// ```
+///
+pub fn describe_corroboration(corroboration: Corroboration) -> String {
+  case corroboration {
+    Reproducible(runs:) ->
+      "[verdict] REPRODUCIBLE — this seed was run "
+      <> int.to_string(runs)
+      <> " times and failed every one. This is a behaviour difference; "
+      <> "read the check."
+    Unstable(failed:, of:) ->
+      "[verdict] NOT REPRODUCIBLE — this seed was run "
+      <> int.to_string(of)
+      <> " times and failed "
+      <> int.to_string(failed)
+      <> ". The same script under the same schedule reached different "
+      <> "verdicts, so this run is not by itself evidence of a behaviour "
+      <> "change: it turns on an interleaving the runner does not control "
+      <> "(docs/architecture/simulation.md, \"What this does not cover\"). "
+      <> "It does not follow that nothing is wrong — a genuine race in the "
+      <> "code under test is unreproducible too. What follows is only that "
+      <> "one red run does not distinguish a diff from the commit before "
+      <> "it. Compare the failure *rate* over many runs of this seed, and "
+      <> "treat a seed that was stable before a change and unstable after "
+      <> "it as a finding, because becoming unstable is a behaviour change."
+  }
+}
+
+// Replans and re-runs the seed until one run passes or the budget is
+// spent. Replanning re-derives the same script and the same schedule —
+// `plan` draws only from the seed — so nothing here consults the
+// generator differently or reshuffles a corpus; the only thing that
+// varies between these runs is the machine.
+fn corroborate(
+  seed: Int,
+  remaining: Int,
+  failed: Int,
+  of: Int,
+) -> Corroboration {
+  use <- bool.guard(when: remaining <= 0, return: Reproducible(runs: of))
+  let #(script, schedule, base) = plan(seed)
+  case verify(script, schedule, base) {
+    Ok(Nil) -> Unstable(failed:, of: of + 1)
+    Error(_failure) -> corroborate(seed, remaining - 1, failed + 1, of + 1)
+  }
+}
+
+// Builds the verdict for a seed that failed, paying for corroboration
+// once and folding it into the detail the existing printers already
+// show.
+fn failed(
+  seed: Int,
+  failure: Failure,
+  script: Script,
+  schedule: Schedule,
+  corroboration: Corroboration,
+) -> Verdict {
+  Failed(
+    seed:,
+    failure: Failure(
+      ..failure,
+      detail: failure.detail
+        <> "\n    "
+        <> describe_corroboration(corroboration),
+    ),
+    reproduce: reproduce(seed, script, schedule),
+    corroboration:,
+  )
 }
 
 // The checks one run must pass on its own, regardless of the other. Each
@@ -612,6 +867,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
         + control.read(ctl, "last_result:" <> sub_strand),
       coverage: control.marks(ctl),
       effects: control.read(ctl, "effect"),
+      waits: control.waits(ctl),
     )
   process.kill(runtime.tree.supervisor)
   let _closed = session.close(raw)
@@ -719,15 +975,17 @@ fn terminal_interventions(ctl: Control, script: Script) -> Nil {
   })
 }
 
+// The claim and the mark are `surface.apply`'s business now, and they
+// happen on the disposable process it spawns rather than here. That
+// matters most on this path: this runs inside the writer, and a crash
+// schedule aimed at this very commit is about to kill it — claiming
+// here would risk spending the one-shot on a process that does not live
+// long enough to use it.
 fn fire_if_terminal(ctl: Control, intervention: script.Intervention) -> Nil {
   use <- bool.guard(
     when: script.trigger_of(intervention) != script.AtTerminalCommit,
     return: Nil,
   )
-  let claimed =
-    control.claim(ctl, "intervention:" <> string.inspect(intervention))
-  use <- bool.guard(when: !claimed, return: Nil)
-  control.mark(ctl, surface.intervention_path(intervention))
   surface.apply(ctl, intervention, awaited: False)
 }
 
@@ -758,6 +1016,25 @@ fn drive_ops(
       }
     }
   }
+}
+
+// A retry that follows an unobserved reply is a retry into a tree that
+// may still be rebooting, and addressing a process that is not yet
+// registered raises again — spending an attempt off a finite ladder
+// without learning anything. So the runner lets the world move first:
+// one logical step, which releases anything parked on a deadline, and
+// one real millisecond, which is the supervisor's chance to put the tree
+// back.
+//
+// That millisecond is a wall clock and is named as one. It replaces a
+// far larger one: `attempt` used to learn about a dead carrier only by
+// letting a three-second budget expire, which gave the tree all the time
+// in the world by accident. Learning it from a monitor instead is what
+// makes the ladder's pacing something the runner has to state on purpose
+// rather than inherit from a timeout.
+fn before_retrying(ctx: Context) -> Nil {
+  let _advanced = vclock.advance(ctx.vc)
+  process.sleep(1)
 }
 
 // What became of an acceptance attempt.
@@ -831,10 +1108,21 @@ fn attempt_create_child(
   attempts: Int,
 ) -> Admission {
   use <- bool.guard(when: attempts <= 0, return: Refused)
-  case control.attempt(fn() { create_child(ctx, brief) }, within_ms: 3000) {
-    Some(Ok(op_id)) -> Opened(op_id)
-    Some(Error(_)) | None -> {
-      let _advanced = vclock.advance(ctx.vc)
+  case
+    control.attempt(
+      ctx.ctl,
+      at: "create-strand",
+      action: fn() { create_child(ctx, brief) },
+      within_ms: 3000,
+    )
+  {
+    control.Answered(Ok(op_id)) -> Opened(op_id)
+    // A refusal, a raise, and an expiry are one case here on purpose:
+    // only the first says the create failed, and the other two say
+    // nothing at all — so all three go back to `spawn_child`, which asks
+    // the durable state what actually happened before trying again.
+    control.Answered(Error(_)) | control.Raised | control.Expired -> {
+      before_retrying(ctx)
       spawn_child(ctx, brief, attempts - 1)
     }
   }
@@ -866,16 +1154,18 @@ fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
   let child = api.on_strand(ctx.runtime, sub_strand)
   let accepted =
     control.attempt(
-      fn() { api.accept_quietly(child, [surface.user(brief)]) },
+      ctx.ctl,
+      at: "accept-brief",
+      action: fn() { api.accept_quietly(child, [surface.user(brief)]) },
       within_ms: 3000,
     )
   case accepted {
-    Some(Ok(op_id)) -> {
+    control.Answered(Ok(op_id)) -> {
       control.detached(fn() { api.nudge(child) })
       Opened(op_id)
     }
-    Some(Error(_)) | None -> {
-      let _advanced = vclock.advance(ctx.vc)
+    control.Answered(Error(_)) | control.Raised | control.Expired -> {
+      before_retrying(ctx)
       spawn_child(ctx, brief, attempts - 1)
     }
   }
@@ -908,7 +1198,9 @@ fn deliver_cross(
   use <- bool.guard(when: attempts <= 0, return: Refused)
   let sent =
     control.attempt(
-      fn() {
+      ctx.ctl,
+      at: "deliver-cross",
+      action: fn() {
         api.send_to_strand(
           ctx.runtime,
           to: strand,
@@ -918,10 +1210,13 @@ fn deliver_cross(
       within_ms: 3000,
     )
   case sent {
-    Some(Ok(api.Started(operation:))) -> Opened(operation)
+    control.Answered(Ok(api.Started(operation:))) -> Opened(operation)
     // The main strand is idle after its ops, so a steer means a
     // racing run this runner did not open; treat like a lost reply.
-    Some(Ok(api.Steered(..))) | Some(Error(_)) | None ->
+    control.Answered(Ok(api.Steered(..)))
+    | control.Answered(Error(_))
+    | control.Raised
+    | control.Expired ->
       case open_operation(ctx.raw), latest_result(ctx.raw) {
         Some(open), _ -> Opened(open)
         None, after if after != before ->
@@ -930,7 +1225,7 @@ fn deliver_cross(
             None -> Refused
           }
         None, _ -> {
-          let _advanced = vclock.advance(ctx.vc)
+          before_retrying(ctx)
           deliver_cross(ctx, before, attempts - 1)
         }
       }
@@ -948,9 +1243,20 @@ fn admit(
   before: Option(LastResult),
   attempts: Int,
 ) -> Admission {
-  case control.attempt(fn() { accept(ctx, op) }, within_ms: 3000) {
-    Some(Ok(op_id)) -> Opened(op_id)
-    Some(Error(_)) | None ->
+  case
+    control.attempt(
+      ctx.ctl,
+      at: "admit",
+      action: fn() { accept(ctx, op) },
+      within_ms: 3000,
+    )
+  {
+    control.Answered(Ok(op_id)) -> Opened(op_id)
+    // An unobserved reply is not a failed admission: the commit may be
+    // durable already, with only the answer lost. So every non-answer
+    // goes the same way — read the strand's durable state, and only
+    // retry when it shows nothing happened.
+    control.Answered(Error(_)) | control.Raised | control.Expired ->
       case open_operation(ctx.raw), latest_result(ctx.raw) {
         Some(open), _ -> Opened(open)
         None, after if after != before ->
@@ -962,7 +1268,7 @@ fn admit(
           case attempts <= 1 {
             True -> Refused
             False -> {
-              let _advanced = vclock.advance(ctx.vc)
+              before_retrying(ctx)
               admit(ctx, op, before, attempts - 1)
             }
           }
@@ -1170,6 +1476,16 @@ fn pump_strand(
     // post-commit seam for the transaction that wrote it, so taking
     // it here would end the run while a fault aimed at that commit
     // was still queued. Wait for the seam to close.
+    //
+    // A scripted intervention looks like the same race one layer out —
+    // it is claimed before it is admitted, and a partial crash can reap
+    // the process awaiting it — but it is deliberately *not* waited for
+    // here. Waiting was tried: a reaped effect process leaves nobody to
+    // enforce the carrier's own budget either, so a carrier that is
+    // stuck rather than merely slow never settles, and the gate turns a
+    // divergence that names its own cause into a run that never
+    // terminates. The debt is recorded and reported instead — issue #44,
+    // and "What this does not cover" in docs/architecture/simulation.md.
     Some(last) ->
       case control.seam_quiet(ctx.ctl) {
         True -> {

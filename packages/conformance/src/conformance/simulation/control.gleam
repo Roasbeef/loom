@@ -12,6 +12,12 @@
 //// abort the very session it is running inside without the runner
 //// threading a handle through every closure.
 ////
+//// It also owns `attempt`, the way anything reaches into a session tree
+//// that may be mid-restart, and with it the simulation's one remaining
+//// piece of wall clock. `attempt`'s docs say exactly how much clock is
+//// left, why it cannot be made logical, and how a run that touched it
+//// says so — `Report.waits` in the runner is fed from here.
+////
 //// This module is test infrastructure: `let assert` appears here (as in
 //// `conformance/storage_suite`) because a runner whose control actor
 //// will not start has nothing to say.
@@ -42,6 +48,10 @@ pub opaque type Message {
   Crashed(reply: Subject(Bool))
   Note(text: String)
   Notes(reply: Subject(List(String)))
+  NoteWait(text: String)
+  Waits(reply: Subject(List(String)))
+  ClaimIntervention(key: String, path: String, reply: Subject(Bool))
+  Intervened(path: String)
   Mark(path: String)
   Marks(reply: Subject(List(String)))
   Shutdown
@@ -58,6 +68,7 @@ type State {
     seam_open: Bool,
     crashed: Bool,
     notes: List(String),
+    waits: List(String),
     marks: Set(String),
   )
 }
@@ -87,6 +98,7 @@ pub fn start() -> Control {
       seam_open: False,
       crashed: False,
       notes: [],
+      waits: [],
       marks: set.new(),
     ))
     |> actor.on_message(handle)
@@ -176,6 +188,38 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, list.reverse(state.notes))
       actor.continue(state)
     }
+    // Deliberately not counted in `events`: the runner reads that
+    // counter to tell a working session from a quiescent one, and an
+    // observation about the harness is not the session doing work.
+    NoteWait(text:) ->
+      actor.continue(State(..state, waits: [text, ..state.waits]))
+    Waits(reply:) -> {
+      process.send(reply, list.reverse(state.waits))
+      actor.continue(state)
+    }
+    // Claiming a scripted intervention and registering it as in flight
+    // are one actor step, so there is no instant at which the one-shot
+    // is spent and the run does not yet know an admission is owed.
+    ClaimIntervention(key:, path:, reply:) ->
+      case set.contains(state.claimed, key) {
+        True -> {
+          process.send(reply, False)
+          actor.continue(state)
+        }
+        False -> {
+          process.send(reply, True)
+          actor.continue(
+            State(..state, claimed: set.insert(state.claimed, key), waits: [
+              "intervening@" <> path,
+              ..state.waits
+            ]),
+          )
+        }
+      }
+    Intervened(path:) ->
+      actor.continue(
+        State(..state, waits: ["intervened@" <> path, ..state.waits]),
+      )
     Mark(path:) ->
       actor.continue(State(..state, marks: set.insert(state.marks, path)))
     Marks(reply:) -> {
@@ -323,8 +367,38 @@ pub fn crashed(ctl: Control) -> Bool {
   process.call_forever(ctl.subject, Crashed)
 }
 
-/// Runs `action` on a disposable process and waits up to `within_ms`
-/// for its result.
+/// What became of an action run on a disposable process.
+///
+/// The three cases are not three degrees of failure. `Answered` is the
+/// only one that says anything about the session; **both** other cases
+/// mean *the reply was not observed*, which is emphatically not the same
+/// as "the action did not happen". A commit whose reply is lost may
+/// already be durable. Callers must therefore treat `Raised` and
+/// `Expired` alike — ask the durable state what happened rather than
+/// concluding anything — and the two are kept apart only so a run can
+/// say which of them it went through.
+pub type Attempted(value) {
+  /// The action returned, and this is what it returned.
+  Answered(value: value)
+  /// The carrier process died before answering: the action raised.
+  /// Addressing a named process the tree has not re-registered raises,
+  /// and so does `process.call_forever` when the callee it monitors
+  /// dies mid-call — which is exactly what a writer killed inside its
+  /// post-commit seam looks like from a caller. Observed through a
+  /// monitor, so it is reported the instant it happens and costs no
+  /// wall-clock time: an idle box and a loaded one see the same event
+  /// at the same point in the run.
+  Raised
+  /// The wall clock ran out with the carrier still alive, and the
+  /// carrier was killed. This is the one outcome in the simulation that
+  /// a busy host can manufacture, and the only reason `attempt` still
+  /// reads a real clock at all — see `attempt`'s own docs.
+  Expired
+}
+
+/// Runs `action` on a disposable process and waits for it to answer or
+/// to die, giving up after `within_ms` of *real* time if it does
+/// neither.
 ///
 /// Anything that reaches into the session tree from outside it — a steer
 /// admitted by an effect script, an abort requested from the writer —
@@ -333,22 +407,161 @@ pub fn crashed(ctl: Control) -> Bool {
 /// die keeps the caller alive; waiting for the reply keeps the action
 /// ordered before whatever the caller does next.
 ///
+/// # Not simulation-safe
+///
+/// The `within_ms` budget is real milliseconds, not logical ones, and
+/// nothing in the simulation controls it. It cannot be made logical: the
+/// action blocks on a real OTP call, the logical clock only moves when
+/// the runner moves it, and the runner is the process blocked here — a
+/// logical deadline would have nobody left to fire it. So the wall clock
+/// stays, demoted to what it can honestly be: a **deadlock backstop**, a
+/// bound that keeps a wedged call from hanging a CI job forever rather
+/// than a bound anything is expected to reach.
+///
+/// What used to reach it routinely was the carrier *dying* — the
+/// overwhelmingly common non-answer, and one with nothing timing-shaped
+/// about it. That is now observed through a monitor and returned as
+/// `Raised` immediately, which takes the wall clock off the ordinary
+/// path entirely. Every `Expired` that does happen is recorded through
+/// `note_wait`, reaches the runner as `Report.waits`, and is named in
+/// the failure a run reports, so a seed that touched the wall clock says
+/// so instead of looking like a behaviour difference.
+///
+/// # Perturbation
+///
+/// An `Expired` carrier is killed, and the kill is not free: the action
+/// it was running may already have committed and be waiting only for a
+/// reply it will now never deliver. That is why the outcome is `Expired`
+/// and not `Failed` — it says the reply was lost, and nothing else. The
+/// kill is still the right move, because a carrier left running could
+/// land its admission *after* the caller has retried and land the same
+/// turn twice, which corrupts a run far worse than losing a reply does.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // control.attempt(fn() { api.steer_quietly(rt, message) }, within_ms: 1000)
+/// // control.attempt(ctl, at: "steer", action: fn() {
+/// //   api.steer_quietly(rt, message)
+/// // }, within_ms: 1000)
 /// ```
 ///
-pub fn attempt(action: fn() -> a, within_ms within_ms: Int) -> Option(a) {
-  let reply: Subject(a) = process.new_subject()
+pub fn attempt(
+  ctl: Control,
+  at at: String,
+  action action: fn() -> value,
+  within_ms within_ms: Int,
+) -> Attempted(value) {
+  let reply: Subject(value) = process.new_subject()
   let pid: Pid = process.spawn_unlinked(fn() { process.send(reply, action()) })
-  case process.receive(reply, within_ms) {
-    Ok(value) -> Some(value)
+  // Monitoring after the spawn is safe even when the carrier is already
+  // gone: `erlang:monitor/2` answers a dead pid with an immediate
+  // `noproc` down rather than with silence. And a carrier that replied
+  // and then exited normally leaves both messages queued, reply first,
+  // so the selector reads the reply — a scan of the mailbox in arrival
+  // order, not a race.
+  let monitor = process.monitor(pid)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(reply, Answered)
+    |> process.select_specific_monitor(monitor, fn(_down) { Raised })
+    |> process.selector_receive(within: within_ms)
+    |> expired_when_silent(pid)
+  process.demonitor_process(monitor)
+  record_attempt(ctl, at, outcome)
+  outcome
+}
+
+// The one place the wall clock actually decides something: no reply and
+// no death inside the budget. The carrier is killed on the way out (see
+// the perturbation note on `attempt`).
+fn expired_when_silent(
+  received: Result(Attempted(value), Nil),
+  pid: Pid,
+) -> Attempted(value) {
+  case received {
+    Ok(outcome) -> outcome
     Error(Nil) -> {
       process.kill(pid)
-      None
+      Expired
     }
   }
+}
+
+// An answered attempt is the ordinary case and says nothing worth
+// recording. The other two are what a reader of a failing run needs, and
+// they are labelled by call site so the record names *which* admission
+// went unobserved rather than merely that one did.
+fn record_attempt(ctl: Control, at: String, outcome: Attempted(value)) -> Nil {
+  case outcome {
+    Answered(..) -> Nil
+    Raised -> note_wait(ctl, "raised@" <> at)
+    Expired -> note_wait(ctl, "expired@" <> at)
+  }
+}
+
+/// Claims a scripted intervention's one-shot and, in the same actor
+/// step, registers that the run now owes an admission for it.
+///
+/// The two halves cannot be separated. The claim outlives every restart,
+/// so a run that spent it owes the transcript a turn; if the process
+/// that spent it is reaped before the admission lands, the run is one
+/// scripted turn short of the fault-free run for a reason that has
+/// nothing to do with the code under test. Registering here means the
+/// runner can see that debt — `waits` carries an `intervening@` with no
+/// `intervened@` after it — rather than discovering it only as an
+/// unexplained divergence at the end.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.claim_intervention(ctl, "intervention:Steer(..)", "steer")
+/// ```
+///
+pub fn claim_intervention(ctl: Control, key: String, path: String) -> Bool {
+  process.call_forever(ctl.subject, ClaimIntervention(key, path, _))
+}
+
+/// Reports that a claimed intervention's admission has finished, however
+/// it finished. Settles the debt `claim_intervention` opened.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.intervened(ctl, "steer-during-effect")
+/// ```
+///
+pub fn intervened(ctl: Control, path: String) -> Nil {
+  process.send(ctl.subject, Intervened(path:))
+}
+
+/// Records that an `attempt` did not observe its reply, and how. The
+/// runner collects these into `Report.waits`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.note_wait(ctl, "expired@admit")
+/// ```
+///
+pub fn note_wait(ctl: Control, text: String) -> Nil {
+  process.send(ctl.subject, NoteWait(text:))
+}
+
+/// Every unobserved reply this run went through, oldest first, each
+/// labelled `raised@<site>` or `expired@<site>`.
+///
+/// An `expired@` entry is the whole of the simulation's exposure to the
+/// host's clock, so a run that reports none of them did not have one
+/// available to blame.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.waits(ctl)
+/// ```
+///
+pub fn waits(ctl: Control) -> List(String) {
+  process.call_forever(ctl.subject, Waits)
 }
 
 /// Records a violation (or any other observation) seen deep inside the

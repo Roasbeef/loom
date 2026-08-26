@@ -506,7 +506,9 @@ fn escalation_dance(
       control.mark(ctl, "escalation-raised")
       let _approved =
         control.attempt(
-          fn() { raise_and_approve(ctl, strand, query) },
+          ctl,
+          at: "escalation",
+          action: fn() { raise_and_approve(ctl, strand, query) },
           within_ms: 3000,
         )
       // Restart the driver (not the tree): recovery replans from the
@@ -747,30 +749,37 @@ fn kill_strand(ctl: Control, strand: String) -> Nil {
 
 // --- interventions --------------------------------------------------------
 
+// Everything this trigger is due fires together, on one disposable
+// process, in script order.
+//
+// A steer and a follow-up scripted at the same turn are two halves of
+// one scripted moment, and the trigger that names them is a *phase* —
+// once the first of them commits, the projection has moved and that
+// phase never comes round again. Firing them one process at a time
+// leaves the gap between them exposed to the dying strand incarnation's
+// reaper: it lands in the gap, takes the effect process down before the
+// second admission is even attempted, and the second turn is gone for
+// the rest of the run. One unlinked carrier makes the group
+// all-or-nothing with respect to that.
+//
+// Measured honestly, closing this window did not move the observed rate
+// of the divergence it was suspected of causing (issue #44, seed 53):
+// the dominant cause is a carrier that is itself lost, which no
+// arrangement of the callers can prevent and which the run records
+// instead. The window was real, so it is closed; it was not the bug.
 fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
   case trigger {
     None -> Nil
     Some(trigger) ->
-      list.each(script.interventions, fn(intervention) {
-        fire_intervention(ctl, intervention, trigger)
-      })
+      case
+        list.filter(script.interventions, fn(intervention) {
+          script.trigger_of(intervention) == trigger
+        })
+      {
+        [] -> Nil
+        [_, ..] as due -> apply_all(ctl, due, awaited: True)
+      }
   }
-}
-
-fn fire_intervention(
-  ctl: Control,
-  intervention: script.Intervention,
-  trigger: Trigger,
-) -> Nil {
-  use <- bool.guard(
-    when: script.trigger_of(intervention) != trigger,
-    return: Nil,
-  )
-  let claimed =
-    control.claim(ctl, "intervention:" <> string.inspect(intervention))
-  use <- bool.guard(when: !claimed, return: Nil)
-  control.mark(ctl, intervention_path(intervention))
-  apply(ctl, intervention, awaited: True)
 }
 
 /// The coverage path an intervention reaches.
@@ -812,9 +821,19 @@ pub fn apply(
   intervention: script.Intervention,
   awaited awaited: Bool,
 ) -> Nil {
+  apply_all(ctl, [intervention], awaited:)
+}
+
+// Nothing to admit against until the runtime handle is published; a
+// trigger that fires before then simply has no session to reach.
+fn apply_all(
+  ctl: Control,
+  due: List(script.Intervention),
+  awaited awaited: Bool,
+) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
-    Some(runtime) -> apply_on(ctl, runtime, intervention, awaited)
+    Some(runtime) -> apply_on(ctl, runtime, due, awaited)
   }
 }
 
@@ -836,26 +855,86 @@ pub fn apply(
 fn apply_on(
   ctl: Control,
   runtime: api.Runtime,
-  intervention: script.Intervention,
+  due: List(script.Intervention),
   awaited: Bool,
 ) -> Nil {
-  let act = fn() { perform(runtime, intervention) }
-  let record = fn(verdict) { record_landing(ctl, intervention, verdict) }
+  // Claiming, admitting, and recording all happen on the carrier, so
+  // the group survives its caller: an effect process reaped halfway
+  // through still leaves a run whose scripted turns all landed and were
+  // all accounted for.
+  let act = fn() {
+    list.each(due, fn(intervention) {
+      claim_perform_record(ctl, runtime, intervention)
+    })
+  }
   case awaited {
     True ->
-      case control.attempt(act, within_ms: 2000) {
-        Some(verdict) -> record(verdict)
-        // The admission did not answer inside the window, or the
-        // disposable process carrying it died addressing a tree that
-        // was mid-restart. Neither says the commit failed — it may
-        // have landed with only the reply lost — so this is marked,
-        // not noted: faulting the seed here would fail it for
-        // something the harness cannot prove. A steer that truly
-        // vanished still fails, one check later, on the line-for-line
-        // projection comparison.
-        None -> control.mark(ctl, "admission-unobserved")
+      case control.attempt(ctl, at: "intervene", action: act, within_ms: 2000) {
+        control.Answered(Nil) -> Nil
+        // The disposable process carrying the admissions died addressing
+        // a tree that was mid-restart, or it did not answer inside the
+        // window. Neither says a commit failed — one may have landed
+        // with only the reply lost — so both are marked, not noted:
+        // faulting the seed here would fail it for something the
+        // harness cannot prove. A steer that truly vanished still
+        // fails, one check later, on the line-for-line projection
+        // comparison. Which of the two happened is recorded separately,
+        // by `attempt` itself, and reaches the runner as `Report.waits`.
+        control.Raised | control.Expired ->
+          control.mark(ctl, "admission-unobserved")
       }
-    False -> control.detached(fn() { record(act()) })
+    False -> control.detached(act)
+  }
+}
+
+// The one-shot claim, the admission it entitles, and the record of how
+// that admission went are one indivisible step.
+//
+// The claim outlives every restart, so whoever takes it owes the run a
+// turn. Taking it on the effect process and admitting from somewhere
+// else leaves a window — two synchronous calls wide — in which the dying
+// strand incarnation's reaper can kill the effect process between the
+// two. The claim is spent, nothing was written, the intervention never
+// fires again, and the faulted run quietly ends one user turn short of
+// the fault-free one. That is not a fault being survived; it is the
+// harness dropping a scripted turn, and it reads at the end as an
+// unexplained `convergence/projection` divergence. `control.attempt`
+// spawns *unlinked*, so a carrier that holds the claim cannot be reaped
+// before it has admitted, and an awaited caller still gets the admission
+// ordered ahead of the settlement it is about to send.
+//
+// What this cannot do is save a carrier that is itself lost. That case
+// is not prevented here; it is recorded, by the `intervening@` /
+// `intervened@` pair below, and reported.
+fn claim_perform_record(
+  ctl: Control,
+  runtime: api.Runtime,
+  intervention: script.Intervention,
+) -> Nil {
+  let path = intervention_path(intervention)
+  case
+    control.claim_intervention(
+      ctl,
+      "intervention:" <> string.inspect(intervention),
+      path,
+    )
+  {
+    // Already spent: this intervention has fired, and a run that fired
+    // it twice would be a different session from the fault-free one.
+    False -> Nil
+    True -> {
+      control.mark(ctl, path)
+      // The claim opened a debt and this settles it, whichever way the
+      // admission goes. The pair is what lets a failing run say the
+      // difference between "this scripted turn was admitted" and "this
+      // scripted turn was claimed by a process that never came back":
+      // an `intervening@` with no `intervened@` after it is the second,
+      // and the runner reports it as harness damage rather than as an
+      // unexplained divergence (`runner.timing_line`).
+      let outcome = perform(runtime, intervention)
+      control.intervened(ctl, path)
+      record_landing(ctl, intervention, outcome)
+    }
   }
 }
 
