@@ -24,7 +24,8 @@ import machine/operation.{
   type Control, type OperationState, CancelRequested, CompactionState,
   NavigationState, RunState, Running,
 }
-import storage/storage.{type Storage}
+import machine/strand.{type StrandState}
+import storage/storage.{type Register, type Storage}
 
 /// A violated check: which one, and what was seen.
 pub type Violation {
@@ -94,43 +95,56 @@ fn queued_ids(
         check: "placement/queued-id",
         detail: "strand state unreadable: " <> describe_error(error),
       ))
-    Ok(Some(cell)) ->
-      case codec.decode_strand_state(cell.value.payload) {
+    Ok(Some(cell)) -> queued_ids_from_strand_state(store, cell)
+  }
+}
+
+fn queued_ids_from_strand_state(
+  store: Storage(handle),
+  cell: Register,
+) -> Result(List(EntryId), Violation) {
+  use state <- result.try(decoded_strand_state(cell, "placement/queued-id"))
+  case state.current_operation {
+    None -> Ok(state.pending_next_run)
+    Some(op) -> queued_ids_with_open_op(store, state, op)
+  }
+}
+
+// Decoded under the caller's own check name, so a corrupt strand state is
+// reported as whichever boundary check was reading it.
+fn decoded_strand_state(
+  cell: Register,
+  check: String,
+) -> Result(StrandState, Violation) {
+  case codec.decode_strand_state(cell.value.payload) {
+    Ok(state) -> Ok(state)
+    Error(report) ->
+      Error(Violation(
+        check:,
+        detail: "strand state corrupt at " <> report.boundary,
+      ))
+  }
+}
+
+fn queued_ids_with_open_op(
+  store: Storage(handle),
+  state: StrandState,
+  op: ids.OpId,
+) -> Result(List(EntryId), Violation) {
+  case storage.get_register(store, register.OpState, ids.op_id_to_string(op)) {
+    Ok(Some(op_cell)) ->
+      case codec.decode_state(op_cell.value.payload) {
+        Ok(op_state) ->
+          Ok(list.append(state.pending_next_run, inbox_ids(op_state)))
         Error(report) ->
           Error(Violation(
             check: "placement/queued-id",
-            detail: "strand state corrupt at " <> report.boundary,
+            detail: "op state corrupt at " <> report.boundary,
           ))
-        Ok(state) ->
-          case state.current_operation {
-            None -> Ok(state.pending_next_run)
-            Some(op) ->
-              case
-                storage.get_register(
-                  store,
-                  register.OpState,
-                  ids.op_id_to_string(op),
-                )
-              {
-                Ok(Some(op_cell)) ->
-                  case codec.decode_state(op_cell.value.payload) {
-                    Ok(op_state) ->
-                      Ok(list.append(
-                        state.pending_next_run,
-                        inbox_ids(op_state),
-                      ))
-                    Error(report) ->
-                      Error(Violation(
-                        check: "placement/queued-id",
-                        detail: "op state corrupt at " <> report.boundary,
-                      ))
-                  }
-                // No op state yet (or already gone): the strand's own
-                // queue is all there is to check.
-                _ -> Ok(state.pending_next_run)
-              }
-          }
       }
+    // No op state yet (or already gone): the strand's own queue is all
+    // there is to check.
+    _ -> Ok(state.pending_next_run)
   }
 }
 
@@ -196,27 +210,23 @@ pub fn terminal_registers(
     }),
   )
   case storage.get_register(store, register.StrandState, strand) {
-    Ok(Some(cell)) ->
-      case codec.decode_strand_state(cell.value.payload) {
-        Ok(state) ->
-          case state.current_operation {
-            None -> Ok(Nil)
-            Some(_) ->
-              Error(Violation(
-                check: "terminal/registers",
-                detail: "the strand still names an open operation",
-              ))
-          }
-        Error(report) ->
-          Error(Violation(
-            check: "terminal/registers",
-            detail: "strand state corrupt at " <> report.boundary,
-          ))
-      }
+    Ok(Some(cell)) -> check_strand_idle(cell)
     _ ->
       Error(Violation(
         check: "terminal/registers",
         detail: "the strand state is missing",
+      ))
+  }
+}
+
+fn check_strand_idle(cell: Register) -> Result(Nil, Violation) {
+  use state <- result.try(decoded_strand_state(cell, "terminal/registers"))
+  case state.current_operation {
+    None -> Ok(Nil)
+    Some(_) ->
+      Error(Violation(
+        check: "terminal/registers",
+        detail: "the strand still names an open operation",
       ))
   }
 }
@@ -249,31 +259,8 @@ pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
       ))
     Ok(entries) -> {
       let messages = list.filter_map(entries, message_of)
-      let answered =
-        list.filter_map(messages, fn(message) {
-          case message {
-            core_message.ToolResultMessage(tool_call_id:, ..) ->
-              Ok(tool_call_id)
-            _ -> Error(Nil)
-          }
-        })
-      let called =
-        list.flat_map(messages, fn(message) {
-          case message {
-            core_message.AssistantMessage(stop_reason:, content:, ..) ->
-              case stop_reason {
-                core_message.Aborted | core_message.Errored -> []
-                _ ->
-                  list.filter_map(content, fn(block) {
-                    case block {
-                      core_message.AssistantToolCall(call:) -> Ok(call.id)
-                      _ -> Error(Nil)
-                    }
-                  })
-              }
-            _ -> []
-          }
-        })
+      let answered = answered_call_ids(messages)
+      let called = executable_call_ids(messages)
       list.try_fold(called, Nil, fn(_acc, id) {
         case list.count(answered, fn(other) { other == id }) {
           1 -> Ok(Nil)
@@ -289,6 +276,42 @@ pub fn calls_answered(store: Storage(handle)) -> Result(Nil, Violation) {
         }
       })
     }
+  }
+}
+
+fn answered_call_ids(
+  messages: List(core_message.AgentMessage),
+) -> List(String) {
+  list.filter_map(messages, fn(message) {
+    case message {
+      core_message.ToolResultMessage(tool_call_id:, ..) -> Ok(tool_call_id)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Aborted and errored responses never plan a batch (doc comment above),
+// so their tool-call blocks are excluded from the demand side; every
+// other assistant response's calls are executable.
+fn executable_call_ids(
+  messages: List(core_message.AgentMessage),
+) -> List(String) {
+  list.flat_map(messages, fn(message) {
+    case message {
+      core_message.AssistantMessage(stop_reason:, content:, ..) ->
+        case stop_reason {
+          core_message.Aborted | core_message.Errored -> []
+          _ -> list.filter_map(content, tool_call_id_of)
+        }
+      _ -> []
+    }
+  })
+}
+
+fn tool_call_id_of(block: core_message.AssistantBlock) -> Result(String, Nil) {
+  case block {
+    core_message.AssistantToolCall(call:) -> Ok(call.id)
+    _ -> Error(Nil)
   }
 }
 

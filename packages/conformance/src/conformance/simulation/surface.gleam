@@ -30,6 +30,7 @@ import core/message.{
   DeferredHandle, ToolCall, ToolResultMessage, ToolResultText, UserMessage,
   UserText,
 }
+import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -40,8 +41,8 @@ import machine/operation.{
   CompactionSettings, FileOperations, ReplaySafe,
 }
 import machine/planner.{
-  Prepared, SummaryNeedsRequest, SummaryProduced, ThresholdExceeded,
-  ThresholdNotExceeded, VerdictGenerate, VerdictSupplied,
+  type ThresholdStatus, Prepared, SummaryNeedsRequest, SummaryProduced,
+  ThresholdExceeded, ThresholdNotExceeded, VerdictGenerate, VerdictSupplied,
 }
 import provider/stream
 import runtime/api
@@ -647,63 +648,64 @@ fn effect_fault(
   list.fold(schedule.faults, Ran, fn(fate, item) {
     case fate, item {
       Ran, fault.CrashDuringEffect(index: at) if at == index ->
-        case control.claim(ctl, "crash@e" <> int.to_string(index)) {
-          False -> Ran
-          True -> {
-            control.note_crash(ctl)
-            control.mark(ctl, "crash-during-effect")
-            kill_tree(ctl)
-            Killed
-          }
-        }
+        claimed_effect(ctl, "crash@e" <> int.to_string(index), fn() {
+          control.note_crash(ctl)
+          control.mark(ctl, "crash-during-effect")
+          kill_tree(ctl)
+          Killed
+        })
       Ran, fault.RestartStrand(index: at) if at == index ->
-        case control.claim(ctl, "strandkill@e" <> int.to_string(index)) {
-          False -> Ran
-          True -> {
-            control.mark(ctl, "strand-restart-during-effect")
-            // Kill only this effect's own driver: the partial crash.
-            // The dying incarnation's reaper takes this very effect
-            // process down with it, so nothing is settled from here —
-            // and anything sent regardless is dropped by the wake
-            // guard, because the incarnation it addresses is gone.
-            kill_strand(ctl, strand)
-            Killed
-          }
-        }
+        claimed_effect(ctl, "strandkill@e" <> int.to_string(index), fn() {
+          control.mark(ctl, "strand-restart-during-effect")
+          // Kill only this effect's own driver: the partial crash.
+          // The dying incarnation's reaper takes this very effect
+          // process down with it, so nothing is settled from here —
+          // and anything sent regardless is dropped by the wake
+          // guard, because the incarnation it addresses is gone.
+          kill_strand(ctl, strand)
+          Killed
+        })
       Ran, fault.ProviderEffectDies(index: at) if at == index ->
-        case
-          loss_allowed && control.claim(ctl, "died@e" <> int.to_string(index))
-        {
+        case loss_allowed {
           False -> Ran
-          True -> {
-            control.mark(ctl, "effect-process-died")
-            process.kill(process.self())
-            Starved
-          }
+          True ->
+            claimed_effect(ctl, "died@e" <> int.to_string(index), fn() {
+              control.mark(ctl, "effect-process-died")
+              process.kill(process.self())
+              Starved
+            })
         }
       Ran, fault.ProviderEffectTimesOut(index: at) if at == index ->
-        case
-          loss_allowed
-          && control.claim(ctl, "timeout@e" <> int.to_string(index))
-        {
+        case loss_allowed {
           False -> Ran
-          True -> {
-            control.mark(ctl, "effect-timed-out")
-            Starved
-          }
+          True ->
+            claimed_effect(ctl, "timeout@e" <> int.to_string(index), fn() {
+              control.mark(ctl, "effect-timed-out")
+              Starved
+            })
         }
       Ran, fault.SlowEffect(index: at, delay_ms:) if at == index ->
-        case control.claim(ctl, "slow@e" <> int.to_string(index)) {
-          False -> Ran
-          True -> {
-            control.mark(ctl, "slow-effect")
-            vclock.park(vc, delay_ms)
-            Ran
-          }
-        }
+        claimed_effect(ctl, "slow@e" <> int.to_string(index), fn() {
+          control.mark(ctl, "slow-effect")
+          vclock.park(vc, delay_ms)
+          Ran
+        })
       _, _ -> fate
     }
   })
+}
+
+// A fault fires only once: the first fold pass to reach it claims the
+// one-shot slot and runs its consequence, every later pass (or a losing
+// race with another fault at the same index) finds it already claimed
+// and leaves the fate alone.
+fn claimed_effect(
+  ctl: Control,
+  key: String,
+  on_claim: fn() -> EffectFate,
+) -> EffectFate {
+  use <- bool.guard(when: !control.claim(ctl, key), return: Ran)
+  on_claim()
 }
 
 // Kill the writer, not the session supervisor: the supervisor is the top
@@ -750,24 +752,25 @@ fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
     None -> Nil
     Some(trigger) ->
       list.each(script.interventions, fn(intervention) {
-        case script.trigger_of(intervention) == trigger {
-          False -> Nil
-          True ->
-            case
-              control.claim(
-                ctl,
-                "intervention:" <> string.inspect(intervention),
-              )
-            {
-              False -> Nil
-              True -> {
-                control.mark(ctl, intervention_path(intervention))
-                apply(ctl, intervention, awaited: True)
-              }
-            }
-        }
+        fire_intervention(ctl, intervention, trigger)
       })
   }
+}
+
+fn fire_intervention(
+  ctl: Control,
+  intervention: script.Intervention,
+  trigger: Trigger,
+) -> Nil {
+  use <- bool.guard(
+    when: script.trigger_of(intervention) != trigger,
+    return: Nil,
+  )
+  let claimed =
+    control.claim(ctl, "intervention:" <> string.inspect(intervention))
+  use <- bool.guard(when: !claimed, return: Nil)
+  control.mark(ctl, intervention_path(intervention))
+  apply(ctl, intervention, awaited: True)
 }
 
 /// The coverage path an intervention reaches.
@@ -811,66 +814,82 @@ pub fn apply(
 ) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
-    Some(runtime) -> {
-      // Each admission reports whether it landed, and a refusal that
-      // should not have happened is recorded rather than dropped. Every
-      // `api.ApiError` reaches the caller having written nothing, so a
-      // refused steer is a turn the transcript has permanently lost:
-      // from there the faulted run is a different conversation from the
-      // fault-free one, and the runner would report it one check later
-      // as an unexplained one-turn divergence rather than as the
-      // harness fault it is.
-      //
-      // The note goes to `control.note`, which the runner collects into
-      // `Report.violations` and fails the seed on. Recording the drop
-      // rather than rescheduling around it is deliberate: seeds are
-      // drawn against the fault schedule, so adding a step to it would
-      // renumber every commit-indexed fault and retire the pinned
-      // corpus as a before/after oracle. A note changes no schedule,
-      // and on a green run this path does not fire at all.
-      let act = fn() {
-        case intervention {
-          script.Steer(text:, ..) ->
-            landed("steer", api.steer_quietly(runtime, user(text)))
-          script.FollowUp(text:, ..) ->
-            landed("follow-up", api.follow_up(runtime, user(text)))
-          // Abort is fire-and-forget by design (api §4.6): it returns
-          // nothing to honor, and the runner already treats an aborted
-          // run's transcript as a race rather than a convergence claim.
-          script.Abort(..) -> {
-            api.abort(runtime)
-            Ok(Nil)
-          }
-        }
+    Some(runtime) -> apply_on(ctl, runtime, intervention, awaited)
+  }
+}
+
+// Each admission reports whether it landed, and a refusal that should
+// not have happened is recorded rather than dropped. Every `api.ApiError`
+// reaches the caller having written nothing, so a refused steer is a
+// turn the transcript has permanently lost: from there the faulted run
+// is a different conversation from the fault-free one, and the runner
+// would report it one check later as an unexplained one-turn divergence
+// rather than as the harness fault it is.
+//
+// The note goes to `control.note`, which the runner collects into
+// `Report.violations` and fails the seed on. Recording the drop rather
+// than rescheduling around it is deliberate: seeds are drawn against
+// the fault schedule, so adding a step to it would renumber every
+// commit-indexed fault and retire the pinned corpus as a before/after
+// oracle. A note changes no schedule, and on a green run this path
+// does not fire at all.
+fn apply_on(
+  ctl: Control,
+  runtime: api.Runtime,
+  intervention: script.Intervention,
+  awaited: Bool,
+) -> Nil {
+  let act = fn() { perform(runtime, intervention) }
+  let record = fn(verdict) { record_landing(ctl, intervention, verdict) }
+  case awaited {
+    True ->
+      case control.attempt(act, within_ms: 2000) {
+        Some(verdict) -> record(verdict)
+        // The admission did not answer inside the window, or the
+        // disposable process carrying it died addressing a tree that
+        // was mid-restart. Neither says the commit failed — it may
+        // have landed with only the reply lost — so this is marked,
+        // not noted: faulting the seed here would fail it for
+        // something the harness cannot prove. A steer that truly
+        // vanished still fails, one check later, on the line-for-line
+        // projection comparison.
+        None -> control.mark(ctl, "admission-unobserved")
       }
-      let record = fn(verdict) {
-        case verdict, landing(intervention) {
-          Ok(Nil), _ -> Nil
-          Error(dropped), MustLand -> control.note(ctl, dropped)
-          // A refusal this trigger is entitled to. Marked so the run
-          // still reports that it happened, since a mark costs a
-          // coverage line and a note costs the seed.
-          Error(_dropped), MayBeRefused ->
-            control.mark(ctl, "admission-refused-late")
-        }
-      }
-      case awaited {
-        True ->
-          case control.attempt(act, within_ms: 2000) {
-            Some(verdict) -> record(verdict)
-            // The admission did not answer inside the window, or the
-            // disposable process carrying it died addressing a tree
-            // that was mid-restart. Neither says the commit failed — it
-            // may have landed with only the reply lost — so this is
-            // marked, not noted: faulting the seed here would fail it
-            // for something the harness cannot prove. A steer that
-            // truly vanished still fails, one check later, on the
-            // line-for-line projection comparison.
-            None -> control.mark(ctl, "admission-unobserved")
-          }
-        False -> control.detached(fn() { record(act()) })
-      }
+    False -> control.detached(fn() { record(act()) })
+  }
+}
+
+fn perform(
+  runtime: api.Runtime,
+  intervention: script.Intervention,
+) -> Result(Nil, String) {
+  case intervention {
+    script.Steer(text:, ..) ->
+      landed("steer", api.steer_quietly(runtime, user(text)))
+    script.FollowUp(text:, ..) ->
+      landed("follow-up", api.follow_up(runtime, user(text)))
+    // Abort is fire-and-forget by design (api §4.6): it returns nothing
+    // to honor, and the runner already treats an aborted run's
+    // transcript as a race rather than a convergence claim.
+    script.Abort(..) -> {
+      api.abort(runtime)
+      Ok(Nil)
     }
+  }
+}
+
+fn record_landing(
+  ctl: Control,
+  intervention: script.Intervention,
+  verdict: Result(Nil, String),
+) -> Nil {
+  case verdict, landing(intervention) {
+    Ok(Nil), _ -> Nil
+    Error(dropped), MustLand -> control.note(ctl, dropped)
+    // A refusal this trigger is entitled to. Marked so the run still
+    // reports that it happened, since a mark costs a coverage line and
+    // a note costs the seed.
+    Error(_dropped), MayBeRefused -> control.mark(ctl, "admission-refused-late")
   }
 }
 
@@ -929,6 +948,36 @@ pub fn user(text: String) -> AgentMessage {
 
 // --- hooks ----------------------------------------------------------------
 
+// The scripted threshold: unset means never exceeded, and once set it
+// trips only once the durable projection itself agrees — no unsummarized
+// generation turns and at least `after` turns of them — so the decision
+// is the same after a crash as it was before one.
+fn threshold_decision(
+  ctl: Control,
+  raw: Session,
+  strand: String,
+  threshold_after: Option(Int),
+) -> ThresholdStatus {
+  case threshold_after {
+    None -> ThresholdNotExceeded
+    Some(after) -> threshold_past_turn(ctl, raw, strand, after)
+  }
+}
+
+fn threshold_past_turn(
+  ctl: Control,
+  raw: Session,
+  strand: String,
+  after: Int,
+) -> ThresholdStatus {
+  let context = projection(raw, strand)
+  let exceeded =
+    summaries_of(context) == 0 && turn_of(context) >= after && context != []
+  use <- bool.guard(when: !exceeded, return: ThresholdNotExceeded)
+  control.mark(ctl, "threshold-compaction")
+  ThresholdExceeded(outcome: compaction(context))
+}
+
 // The simulation hooks, built through the production hook registry
 // (`runtime/hooks`) so production wiring and the simulation share one
 // seam; only the script-driven slots are replaced.
@@ -945,23 +994,7 @@ fn hooks(
     context_window: 1_000_000,
   ))
   |> hooks.with_threshold(fn(_query) {
-    case script.threshold_after {
-      None -> ThresholdNotExceeded
-      Some(after) -> {
-        let context = projection(raw, strand)
-        case
-          summaries_of(context) == 0
-          && turn_of(context) >= after
-          && context != []
-        {
-          False -> ThresholdNotExceeded
-          True -> {
-            control.mark(ctl, "threshold-compaction")
-            ThresholdExceeded(outcome: compaction(context))
-          }
-        }
-      }
-    }
+    threshold_decision(ctl, raw, strand, script.threshold_after)
   })
   |> hooks.with_overflow_preparation(fn(_) {
     let context = projection(raw, strand)

@@ -655,7 +655,7 @@ funnel through one `plan` (`acceptance.gleam:212,263,343,365` → `420-434`),
 so the `build.expect_leaf` addition covers every acceptance transaction
 rather than the run path only. All three `AcceptCtx` construction sites
 outside the machine — `runtime/api.gleam:262`,
-`client/gateway.gleam:2188`, `conformance/simulation/runner.gleam:1068` —
+`client/gateway.gleam:2188`, `conformance/simulation/runner.gleam:1065` —
 read the real cell rather than passing a placeholder, so no caller
 silently expects absence.
 

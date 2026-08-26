@@ -22,6 +22,7 @@ import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import machine/codec
 import machine/operation
 import session/session.{type Session, Session}
@@ -161,27 +162,44 @@ fn commit(
   let next = control.commits(ctl) + 1
   case refuse_as_stale(ctl, schedule, next, stale_faults, transaction) {
     Some(error) -> Error(error)
-    None ->
-      case storage.commit(inner, transaction) {
-        Error(error) -> Error(error)
-        Ok(result) -> {
-          let _ordinal = control.note_commit(ctl)
-          note_terminal_writes(ctl, transaction)
-          note_summary_settlements(ctl, transaction)
-          case invariant.placement(inner, strand:) {
-            Ok(Nil) -> Nil
-            Error(violation) ->
-              control.note(
-                ctl,
-                invariant.describe(violation)
-                  <> " (at commit "
-                  <> int.to_string(next)
-                  <> ")",
-              )
-          }
-          Ok(result)
-        }
-      }
+    None -> commit_and_check(inner, ctl, strand, next, transaction)
+  }
+}
+
+fn commit_and_check(
+  inner: Storage(handle),
+  ctl: Control,
+  strand: String,
+  next: Int,
+  transaction: Tx,
+) -> Result(CommitResult, CommitError) {
+  use result <- result.try(storage.commit(inner, transaction))
+  let _ordinal = control.note_commit(ctl)
+  note_terminal_writes(ctl, transaction)
+  note_summary_settlements(ctl, transaction)
+  note_placement_violation(ctl, inner, strand, next)
+  Ok(result)
+}
+
+// The boundary invariant is checked at the transaction that caused it,
+// not at the end of the run, so a violation names the commit that
+// produced it.
+fn note_placement_violation(
+  ctl: Control,
+  inner: Storage(handle),
+  strand: String,
+  next: Int,
+) -> Nil {
+  case invariant.placement(inner, strand:) {
+    Ok(Nil) -> Nil
+    Error(violation) ->
+      control.note(
+        ctl,
+        invariant.describe(violation)
+          <> " (at commit "
+          <> int.to_string(next)
+          <> ")",
+      )
   }
 }
 

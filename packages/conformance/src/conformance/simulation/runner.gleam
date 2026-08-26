@@ -37,11 +37,13 @@ import core/message.{
   ToolResultText, UserImage, UserMessage, UserText,
 }
 import core/register
+import gleam/bool
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/acceptance
 import machine/codec
@@ -322,80 +324,84 @@ fn judge(
   base: Report,
   faulted: Report,
 ) -> Result(Nil, Failure) {
-  use _ <- try(sound("fault-free", base))
-  use _ <- try(sound("faulted", faulted))
-  use _ <- try(crash_fired(schedule, faulted))
+  use _ <- result.try(sound("fault-free", base))
+  use _ <- result.try(sound("faulted", faulted))
+  use _ <- result.try(crash_fired(schedule, faulted))
   case script.aborts(script) {
     // An abort is a race by design: how far the run got before the
     // marker landed is not a property of the fault schedule. Outcome
     // shape and the invariants still hold, and are checked above.
     True -> Ok(Nil)
     False -> {
-      use _ <- try(same_outcomes(base, faulted))
-      use _ <- try(same_projection(base, faulted))
+      use _ <- result.try(same_outcomes(base, faulted))
+      use _ <- result.try(same_projection(base, faulted))
       same_ledger(base, faulted)
     }
   }
 }
 
-fn try(
-  outcome: Result(Nil, Failure),
-  continue: fn(Nil) -> Result(Nil, Failure),
-) -> Result(Nil, Failure) {
-  case outcome {
-    Ok(Nil) -> continue(Nil)
-    Error(failure) -> Error(failure)
+// The checks one run must pass on its own, regardless of the other. Each
+// stage either continues or reports the first failing check; the order
+// here is the order a violation is diagnosed in.
+fn sound(which: String, report: Report) -> Result(Nil, Failure) {
+  use _ <- result.try(check_terminated(which, report))
+  use _ <- result.try(check_no_violation(which, report))
+  use _ <- result.try(check_replay_once(which, report))
+  check_terminal_writes_once(which, report)
+}
+
+fn check_terminated(which: String, report: Report) -> Result(Nil, Failure) {
+  use <- bool.guard(when: !report.stalled, return: Ok(Nil))
+  Error(Failure(
+    check: "run/terminated",
+    detail: which <> " run did not reach a terminal result",
+  ))
+}
+
+fn check_no_violation(which: String, report: Report) -> Result(Nil, Failure) {
+  case report.violations {
+    [] -> Ok(Nil)
+    [first, ..] ->
+      Error(Failure(
+        check: "invariant/boundary",
+        detail: which <> " run: " <> first,
+      ))
   }
 }
 
-// The checks one run must pass on its own, regardless of the other.
-fn sound(which: String, report: Report) -> Result(Nil, Failure) {
-  case report.stalled {
-    True ->
+fn check_replay_once(which: String, report: Report) -> Result(Nil, Failure) {
+  case list.find(report.never_calls, fn(pair: #(String, Int)) { pair.1 > 1 }) {
+    Error(Nil) -> Ok(Nil)
+    Ok(#(call, count)) ->
       Error(Failure(
-        check: "run/terminated",
-        detail: which <> " run did not reach a terminal result",
+        check: "replay/never-once",
+        detail: which
+          <> " run executed "
+          <> call
+          <> " "
+          <> int.to_string(count)
+          <> " times",
       ))
-    False ->
-      case report.violations {
-        [first, ..] ->
-          Error(Failure(
-            check: "invariant/boundary",
-            detail: which <> " run: " <> first,
-          ))
-        [] ->
-          case
-            list.find(report.never_calls, fn(pair: #(String, Int)) {
-              pair.1 > 1
-            })
-          {
-            Ok(#(call, count)) ->
-              Error(Failure(
-                check: "replay/never-once",
-                detail: which
-                  <> " run executed "
-                  <> call
-                  <> " "
-                  <> int.to_string(count)
-                  <> " times",
-              ))
-            Error(Nil) ->
-              case report.terminal_writes == list.length(report.outcomes) {
-                True -> Ok(Nil)
-                False ->
-                  Error(Failure(
-                    check: "terminal/last-result-once",
-                    detail: which
-                      <> " run wrote strand.last_result "
-                      <> int.to_string(report.terminal_writes)
-                      <> " times for "
-                      <> int.to_string(list.length(report.outcomes))
-                      <> " operations",
-                  ))
-              }
-          }
-      }
   }
+}
+
+fn check_terminal_writes_once(
+  which: String,
+  report: Report,
+) -> Result(Nil, Failure) {
+  use <- bool.guard(
+    when: report.terminal_writes == list.length(report.outcomes),
+    return: Ok(Nil),
+  )
+  Error(Failure(
+    check: "terminal/last-result-once",
+    detail: which
+      <> " run wrote strand.last_result "
+      <> int.to_string(report.terminal_writes)
+      <> " times for "
+      <> int.to_string(list.length(report.outcomes))
+      <> " operations",
+  ))
 }
 
 // A commit-indexed crash is drawn inside the fault-free run's commit
@@ -704,28 +710,25 @@ fn fire_post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
 // times out — which is how a crash armed on the terminal commit came to
 // lose a race against the runner's own terminal detection.
 fn terminal_interventions(ctl: Control, script: Script) -> Nil {
-  case control.read(ctl, "terminal_commits") >= 1 {
-    False -> Nil
-    True ->
-      list.each(script.interventions, fn(intervention) {
-        case script.trigger_of(intervention) == script.AtTerminalCommit {
-          False -> Nil
-          True ->
-            case
-              control.claim(
-                ctl,
-                "intervention:" <> string.inspect(intervention),
-              )
-            {
-              False -> Nil
-              True -> {
-                control.mark(ctl, surface.intervention_path(intervention))
-                surface.apply(ctl, intervention, awaited: False)
-              }
-            }
-        }
-      })
-  }
+  use <- bool.guard(
+    when: control.read(ctl, "terminal_commits") < 1,
+    return: Nil,
+  )
+  list.each(script.interventions, fn(intervention) {
+    fire_if_terminal(ctl, intervention)
+  })
+}
+
+fn fire_if_terminal(ctl: Control, intervention: script.Intervention) -> Nil {
+  use <- bool.guard(
+    when: script.trigger_of(intervention) != script.AtTerminalCommit,
+    return: Nil,
+  )
+  let claimed =
+    control.claim(ctl, "intervention:" <> string.inspect(intervention))
+  use <- bool.guard(when: !claimed, return: Nil)
+  control.mark(ctl, surface.intervention_path(intervention))
+  surface.apply(ctl, intervention, awaited: False)
 }
 
 fn drive_ops(
@@ -818,21 +821,22 @@ fn spawn_child(ctx: Context, brief: String, attempts: Int) -> Admission {
         None, Some(last) -> Completed(last)
         None, None -> accept_child_brief(ctx, brief, attempts)
       }
-    _ ->
-      case attempts <= 0 {
-        True -> Refused
-        False -> {
-          let created =
-            control.attempt(fn() { create_child(ctx, brief) }, within_ms: 3000)
-          case created {
-            Some(Ok(op_id)) -> Opened(op_id)
-            Some(Error(_)) | None -> {
-              let _advanced = vclock.advance(ctx.vc)
-              spawn_child(ctx, brief, attempts - 1)
-            }
-          }
-        }
-      }
+    _ -> attempt_create_child(ctx, brief, attempts)
+  }
+}
+
+fn attempt_create_child(
+  ctx: Context,
+  brief: String,
+  attempts: Int,
+) -> Admission {
+  use <- bool.guard(when: attempts <= 0, return: Refused)
+  case control.attempt(fn() { create_child(ctx, brief) }, within_ms: 3000) {
+    Some(Ok(op_id)) -> Opened(op_id)
+    Some(Error(_)) | None -> {
+      let _advanced = vclock.advance(ctx.vc)
+      spawn_child(ctx, brief, attempts - 1)
+    }
   }
 }
 
@@ -858,25 +862,21 @@ fn create_child(ctx: Context, brief: String) -> Result(OpId, Nil) {
 // The strand exists but its brief run never opened (the seed committed,
 // the acceptance was lost to a fault): accept it directly.
 fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
-  case attempts <= 0 {
-    True -> Refused
-    False -> {
-      let child = api.on_strand(ctx.runtime, sub_strand)
-      let accepted =
-        control.attempt(
-          fn() { api.accept_quietly(child, [surface.user(brief)]) },
-          within_ms: 3000,
-        )
-      case accepted {
-        Some(Ok(op_id)) -> {
-          control.detached(fn() { api.nudge(child) })
-          Opened(op_id)
-        }
-        Some(Error(_)) | None -> {
-          let _advanced = vclock.advance(ctx.vc)
-          spawn_child(ctx, brief, attempts - 1)
-        }
-      }
+  use <- bool.guard(when: attempts <= 0, return: Refused)
+  let child = api.on_strand(ctx.runtime, sub_strand)
+  let accepted =
+    control.attempt(
+      fn() { api.accept_quietly(child, [surface.user(brief)]) },
+      within_ms: 3000,
+    )
+  case accepted {
+    Some(Ok(op_id)) -> {
+      control.detached(fn() { api.nudge(child) })
+      Opened(op_id)
+    }
+    Some(Error(_)) | None -> {
+      let _advanced = vclock.advance(ctx.vc)
+      spawn_child(ctx, brief, attempts - 1)
     }
   }
 }
@@ -905,39 +905,35 @@ fn deliver_cross(
   before: Option(LastResult),
   attempts: Int,
 ) -> Admission {
-  case attempts <= 0 {
-    True -> Refused
-    False -> {
-      let sent =
-        control.attempt(
-          fn() {
-            api.send_to_strand(
-              ctx.runtime,
-              to: strand,
-              message: surface.user(surface.cross_report),
-            )
-          },
-          within_ms: 3000,
+  use <- bool.guard(when: attempts <= 0, return: Refused)
+  let sent =
+    control.attempt(
+      fn() {
+        api.send_to_strand(
+          ctx.runtime,
+          to: strand,
+          message: surface.user(surface.cross_report),
         )
-      case sent {
-        Some(Ok(api.Started(operation:))) -> Opened(operation)
-        // The main strand is idle after its ops, so a steer means a
-        // racing run this runner did not open; treat like a lost reply.
-        Some(Ok(api.Steered(..))) | Some(Error(_)) | None ->
-          case open_operation(ctx.raw), latest_result(ctx.raw) {
-            Some(open), _ -> Opened(open)
-            None, after if after != before ->
-              case after {
-                Some(last) -> Completed(last)
-                None -> Refused
-              }
-            None, _ -> {
-              let _advanced = vclock.advance(ctx.vc)
-              deliver_cross(ctx, before, attempts - 1)
-            }
+      },
+      within_ms: 3000,
+    )
+  case sent {
+    Some(Ok(api.Started(operation:))) -> Opened(operation)
+    // The main strand is idle after its ops, so a steer means a
+    // racing run this runner did not open; treat like a lost reply.
+    Some(Ok(api.Steered(..))) | Some(Error(_)) | None ->
+      case open_operation(ctx.raw), latest_result(ctx.raw) {
+        Some(open), _ -> Opened(open)
+        None, after if after != before ->
+          case after {
+            Some(last) -> Completed(last)
+            None -> Refused
           }
+        None, _ -> {
+          let _advanced = vclock.advance(ctx.vc)
+          deliver_cross(ctx, before, attempts - 1)
+        }
       }
-    }
   }
 }
 
@@ -1061,6 +1057,8 @@ fn accept_directly(
   {
     Ok(Some(state_cell)), Ok(leaf_cell) -> {
       let now = vclock.now(ctx.vc)
+      let leaf = option.then(leaf_cell, fn(cell) { cell.value })
+      let leaf_seq = option.map(leaf_cell, fn(cell) { cell.seq })
       let plan =
         acceptance.accept_prompt(
           request,
@@ -1073,14 +1071,8 @@ fn accept_directly(
             ),
             strand_state: state_cell.value,
             strand_state_seq: state_cell.seq,
-            leaf: case leaf_cell {
-              Some(cell) -> cell.value
-              None -> None
-            },
-            leaf_seq: case leaf_cell {
-              Some(cell) -> Some(cell.seq)
-              None -> None
-            },
+            leaf:,
+            leaf_seq:,
             settings: ctx.runtime.settings,
             pending: dict.new(),
           ),
@@ -1104,26 +1096,18 @@ fn accept_directly(
 }
 
 fn oldest_entry(raw: Session) -> Option(ids.EntryId) {
-  case session.strand_leaf(raw, strand) {
-    Ok(Some(cell)) ->
-      case cell.value {
-        None -> None
-        Some(leaf) ->
-          case storage.scan_branch(raw.store, storage.branch_scan(from: leaf)) {
-            Ok(entries) ->
-              case list.reverse(entries) {
-                [oldest, ..rest] ->
-                  case rest {
-                    // A single-entry branch has nowhere to navigate to.
-                    [] -> None
-                    _ -> Some(entry_id(oldest))
-                  }
-                [] -> None
-              }
-            Error(_) -> None
-          }
-      }
-    _ -> None
+  use cell <- option.then(result.unwrap(session.strand_leaf(raw, strand), None))
+  use leaf <- option.then(cell.value)
+  use entries <- option.then(
+    option.from_result(storage.scan_branch(
+      raw.store,
+      storage.branch_scan(from: leaf),
+    )),
+  )
+  case list.reverse(entries) {
+    // A single-entry (or empty) branch has nowhere to navigate to.
+    [] | [_] -> None
+    [oldest, ..] -> Some(entry_id(oldest))
   }
 }
 
@@ -1180,57 +1164,61 @@ fn pump_strand(
   op_id: OpId,
   remaining: Int,
 ) -> Result(LastResult, Nil) {
-  case remaining <= 0 {
-    True -> Error(Nil)
-    False ->
-      case terminal_on(ctx.raw, strand_name, op_id) {
-        // A terminal result is visible before the writer has run the
-        // post-commit seam for the transaction that wrote it, so taking
-        // it here would end the run while a fault aimed at that commit
-        // was still queued. Wait for the seam to close.
-        Some(last) ->
-          case control.seam_quiet(ctx.ctl) {
-            True -> {
-              // The terminal transaction writes the result twice,
-              // atomically: the strand's latest-wins register and the
-              // operation-keyed record awaiting keys on. A terminal
-              // reachable only through the strand register means the
-              // operation-keyed half is missing — the ABA hole where a
-              // child's second run makes the first result unobservable.
-              case op_result_on(ctx.raw, op_id) {
-                Some(_) -> Nil
-                None ->
-                  control.note(
-                    ctx.ctl,
-                    "terminal/op-result: "
-                      <> strand_name
-                      <> " finished an operation without its "
-                      <> "operation-keyed result record",
-                  )
-              }
-              Ok(last)
-            }
-            False -> {
-              process.sleep(1)
-              pump_strand(ctx, strand_name, op_id, remaining - 1)
-            }
-          }
-        None ->
-          case process.receive(ctx.events, 1) {
-            // A commit landed: the session is working, so leave time
-            // alone and look again.
-            Ok(_committed) ->
-              pump_strand(ctx, strand_name, op_id, remaining - 1)
-            // Nothing committed: either the session is waiting for a
-            // deadline, or it is inside an effect. Advancing logical
-            // time releases the first and costs the second one wasted
-            // planning pass.
-            Error(Nil) -> {
-              let _advanced = vclock.advance(ctx.vc)
-              pump_strand(ctx, strand_name, op_id, remaining - 1)
-            }
-          }
+  use <- bool.guard(when: remaining <= 0, return: Error(Nil))
+  case terminal_on(ctx.raw, strand_name, op_id) {
+    // A terminal result is visible before the writer has run the
+    // post-commit seam for the transaction that wrote it, so taking
+    // it here would end the run while a fault aimed at that commit
+    // was still queued. Wait for the seam to close.
+    Some(last) ->
+      case control.seam_quiet(ctx.ctl) {
+        True -> {
+          note_missing_op_result(ctx.ctl, ctx.raw, strand_name, op_id)
+          Ok(last)
+        }
+        False -> {
+          process.sleep(1)
+          pump_strand(ctx, strand_name, op_id, remaining - 1)
+        }
       }
+    None ->
+      case process.receive(ctx.events, 1) {
+        // A commit landed: the session is working, so leave time
+        // alone and look again.
+        Ok(_committed) -> pump_strand(ctx, strand_name, op_id, remaining - 1)
+        // Nothing committed: either the session is waiting for a
+        // deadline, or it is inside an effect. Advancing logical
+        // time releases the first and costs the second one wasted
+        // planning pass.
+        Error(Nil) -> {
+          let _advanced = vclock.advance(ctx.vc)
+          pump_strand(ctx, strand_name, op_id, remaining - 1)
+        }
+      }
+  }
+}
+
+// The terminal transaction writes the result twice, atomically: the
+// strand's latest-wins register and the operation-keyed record awaiting
+// keys on. A terminal reachable only through the strand register means
+// the operation-keyed half is missing — the ABA hole where a child's
+// second run makes the first result unobservable.
+fn note_missing_op_result(
+  ctl: Control,
+  raw: Session,
+  strand_name: String,
+  op_id: OpId,
+) -> Nil {
+  case op_result_on(raw, op_id) {
+    Some(_) -> Nil
+    None ->
+      control.note(
+        ctl,
+        "terminal/op-result: "
+          <> strand_name
+          <> " finished an operation without its "
+          <> "operation-keyed result record",
+      )
   }
 }
 

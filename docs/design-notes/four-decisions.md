@@ -40,7 +40,7 @@ consumes those details. The raiser exists — `raise_escalation_for`
 scoped to the exact call — but its only callers are the demo, through the
 unscoped legacy `raise_escalation`
 (`packages/client/src/client/demo.gleam:252`), and the simulation surface
-(`packages/conformance/src/conformance/simulation/surface.gleam:547`). The
+(`packages/conformance/src/conformance/simulation/surface.gleam:548`). The
 machinery beneath is real and hardened: `clear_tool_call`
 (`packages/runtime/src/runtime/strand_runtime.gleam:1460`) filters approved
 records by exact `CallScope`
@@ -63,7 +63,7 @@ settled. Production settles every policy refusal: the denial surfaces
 inside the tool run, after clearance, and comes back as a completed result.
 The one caller that ever spends a scoped approval is the simulation, and
 look at what it has to do: `escalation_dance`
-(`packages/conformance/src/conformance/simulation/surface.gleam:497`)
+(`packages/conformance/src/conformance/simulation/surface.gleam:498`)
 raises, approves, and then **kills its own driver** instead of returning a
 clearance, precisely so that recovery re-clears the same durable
 coordinates with the approval in place. A model that reads the in-band

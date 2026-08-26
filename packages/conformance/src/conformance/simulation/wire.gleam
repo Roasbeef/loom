@@ -28,9 +28,11 @@
 import broker/framing.{type Frame, type Inbound, Frame}
 import conformance/simulation/random.{type Rng}
 import gleam/bit_array
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 
 /// A wire property that did not hold.
@@ -51,19 +53,11 @@ pub fn check(seed seed: Int) -> Result(Nil, WireFailure) {
   let #(frames, rng) = frame_stream(rng)
   let bytes = encode_all(frames)
   let #(chunks, rng) = tear(rng, bytes)
-  case chunking_is_irrelevant(frames, chunks) {
-    Error(failure) -> Error(failure)
-    Ok(Nil) -> {
-      let #(damaged, rng) = corrupt(rng, bytes)
-      case damage_is_total(damaged) {
-        Error(failure) -> Error(failure)
-        Ok(Nil) -> {
-          let #(cut, _rng) = truncate(rng, bytes)
-          truncation_carries(cut)
-        }
-      }
-    }
-  }
+  use Nil <- result.try(chunking_is_irrelevant(frames, chunks))
+  let #(damaged, rng) = corrupt(rng, bytes)
+  use Nil <- result.try(damage_is_total(damaged))
+  let #(cut, _rng) = truncate(rng, bytes)
+  truncation_carries(cut)
 }
 
 // --- properties -----------------------------------------------------------
@@ -73,34 +67,29 @@ fn chunking_is_irrelevant(
   chunks: List(BitArray),
 ) -> Result(Nil, WireFailure) {
   let #(_deframer, inbound, fault) = feed(chunks)
-  case fault {
-    Some(_) ->
-      Error(WireFailure(
-        check: "wire/chunking",
-        detail: "a stream of well-formed frames faulted when chunked",
-      ))
-    None -> {
-      let decoded =
-        list.filter_map(inbound, fn(item) {
-          case item {
-            framing.Known(frame:) -> Ok(frame)
-            framing.UnknownInbound(..) -> Error(Nil)
-          }
-        })
-      case decoded == frames {
-        True -> Ok(Nil)
-        False ->
-          Error(WireFailure(
-            check: "wire/chunking",
-            detail: "chunking changed the frames: "
-              <> int.to_string(list.length(frames))
-              <> " sent, "
-              <> int.to_string(list.length(decoded))
-              <> " decoded",
-          ))
+  use <- bool.guard(
+    when: option.is_some(fault),
+    return: Error(WireFailure(
+      check: "wire/chunking",
+      detail: "a stream of well-formed frames faulted when chunked",
+    )),
+  )
+  let decoded =
+    list.filter_map(inbound, fn(item) {
+      case item {
+        framing.Known(frame:) -> Ok(frame)
+        framing.UnknownInbound(..) -> Error(Nil)
       }
-    }
-  }
+    })
+  use <- bool.guard(when: decoded == frames, return: Ok(Nil))
+  Error(WireFailure(
+    check: "wire/chunking",
+    detail: "chunking changed the frames: "
+      <> int.to_string(list.length(frames))
+      <> " sent, "
+      <> int.to_string(list.length(decoded))
+      <> " decoded",
+  ))
 }
 
 // Damage must be *reported or absorbed*, never crash the decoder and
@@ -108,21 +97,17 @@ fn chunking_is_irrelevant(
 // declared broken.
 fn damage_is_total(bytes: BitArray) -> Result(Nil, WireFailure) {
   let pushed = framing.push(framing.deframer(), bytes)
-  case pushed.fault {
-    None -> Ok(Nil)
-    Some(_) -> {
-      // Once faulted, the deframer stays faulted and produces nothing
-      // more, whatever it is fed.
-      let again = framing.push(pushed.deframer, <<0, 1, 2, 3>>)
-      case again.inbound, again.fault {
-        [], Some(_) -> Ok(Nil)
-        _, _ ->
-          Error(WireFailure(
-            check: "wire/fault-is-sticky",
-            detail: "a faulted deframer kept decoding",
-          ))
-      }
-    }
+  use <- bool.guard(when: option.is_none(pushed.fault), return: Ok(Nil))
+  // Once faulted, the deframer stays faulted and produces nothing more,
+  // whatever it is fed.
+  let again = framing.push(pushed.deframer, <<0, 1, 2, 3>>)
+  case again.inbound, again.fault {
+    [], Some(_) -> Ok(Nil)
+    _, _ ->
+      Error(WireFailure(
+        check: "wire/fault-is-sticky",
+        detail: "a faulted deframer kept decoding",
+      ))
   }
 }
 
