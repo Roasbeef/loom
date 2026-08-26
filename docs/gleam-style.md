@@ -389,8 +389,12 @@ deprecate for a release cycle, then remove.
   Wrapping a dependency's raw error as your entire error type is an
   anti-pattern.
 - **Chain with `use` + `result.try`/`result.map`**, `bool.guard` for early
-  exits (`use <- bool.guard(when: input == "", return: Error(Nil))`). Nested
-  `case` on `Result`s is a smell; `case` is for ADT dispatch.
+  exits (`use <- bool.guard(when: input == "", return: Error(Nil))` — note
+  that `return:` there is a constant, which is the only kind of argument the
+  eager form should carry). Nested `case` on `Result`s is a smell; `case` is
+  for ADT dispatch. This one rule is worth five sections on its own, below:
+  it is the rule this codebase has broken most often, and the guards that
+  fix it have a hazard of their own.
 - **Never check-then-assert** (`result.is_ok` followed by
   `let assert Ok(..)`) — pattern match once.
 - **Avoid catch-all `_ ->` patterns.** Exhaustiveness checking is how the
@@ -404,6 +408,231 @@ deprecate for a release cycle, then remove.
 ```gleam
 let assert Ok(pid) = named(name) as "Sending to unregistered name"
 ```
+
+### Flattening nested `case`
+
+The bullet above is the most under-applied rule in this guide, so it gets
+sections of its own. A sweep across every package flattened the tree from
+6067 lines sitting ten or more columns in to 3156 — a 48% cut — and almost
+none of it was restructuring. It was chains written where staircases had
+grown.
+
+The shape to recognize: a `case` whose error arm is one line and whose
+success arm swallows the rest of the function into another level of
+indentation. That is a `use` line pretending to be a block. When both sides
+are `Result`, `result.try` and `result.map` take it directly; when they are
+not, the file writes a small combinator (see below) rather than accepting
+the pyramid. `core/json.gleam` went from 134 deep lines to 44 this way, and
+`machine/planner.gleam` from 786 to 412, without a single behavioural
+change between them.
+
+**Depth from data is not a pyramid.** `gleam format` gives a wide call one
+argument per line, so a nested `json.Object([#("k", json.Array(...))])`
+indents as far as any staircase and means nothing of the kind.
+`client/protocol.gleam` and `machine/codec.gleam` both read as deep to any
+indentation census and neither contains a pyramid: every deep line in them
+is inside a literal the formatter wrapped. Both were left entirely alone by
+the sweep, deliberately. Do not "fix" the formatter, and do not let a depth
+metric send you into an encoder.
+
+**Never flatten at the cost of exhaustiveness.** This is the catch-all rule
+above, arriving from the other direction: collapsing two nested matches into
+one often means writing a final arm that is a bare variable, and a bare
+variable is a catch-all whatever you call it. `session/session.gleam`'s
+`heal_loop` keeps its two levels — an outer match on the list, an inner one
+on the message — for exactly this reason. Collapsed, the second level's
+three explicitly named variants (`UserMessage`, `ToolResultMessage`,
+`CustomMessage`) become `[message, ..rest] ->`, and the day a fourth message
+variant is added the compiler says nothing. Two levels and a working
+exhaustiveness check beat one level and a silent hole; the check is the
+whole reason we match variants by name.
+
+### Eager arguments: `return:`, replacements, and fallbacks
+
+`bool.guard` is a function, not syntax. So is `result.replace_error`, and so
+are `result.unwrap` and `option.unwrap`. Gleam evaluates call arguments
+eagerly, which means **`return:`, the replacement error, and the fallback
+value are all computed on every call, whether or not the branch that uses
+them is taken.**
+
+This is a correctness hazard when the argument recurses. Three sites in
+three packages hit it independently and all three stayed plain `case`
+expressions:
+
+- `provider/stream.gleam`'s `run_loop` — the chunk arm's `None` branch
+  recurses into `run_loop`, so `option.unwrap(forward(events, deliver),
+  run_loop(..))` would recurse unconditionally, even on a stream that has
+  already terminated.
+- `tools/blob.gleam`'s `utf8_slice_at`, which retries with a shorter range
+  when a cut lands mid-character.
+- `tools/fs.gleam`'s `walk_segment`, whose missing-path arm recurses into
+  `walk_loop`.
+
+It is a performance hazard when the argument is merely expensive, and that
+is how we shipped a quadratic JSON parser. Flattening `core/json.gleam` left
+the string-body guard in the eager form:
+
+```gleam
+// Wrong: `fail` runs once per character parsed, not once per failure.
+use <- bool.guard(
+  when: code < 0x20,
+  return: Error(fail(cursor, "control characters to be escaped in a string")),
+)
+```
+
+`fail` builds a `CorruptionReport`, a report carries `excerpt(cursor.rest)`,
+and `excerpt` ended with `list.length(rest) > 24` — a walk of all remaining
+input. So every character of every string in a document paid for two reports
+over the rest of that document, on the happy path, where nothing had gone
+wrong at all. The fix is the lazy counterpart plus a length test that stops
+where the question does:
+
+```gleam
+use <- bool.lazy_guard(when: code < 0x20, return: fn() {
+  Error(fail(cursor, "control characters to be escaped in a string"))
+})
+```
+
+— and, in `excerpt` itself, `case list.drop(rest, 24) != []`, which answers
+a question about the first twenty-five elements without walking the tail.
+Making the guard lazy alone would only have moved the quadratic factor off
+the hot path; removing it took both.
+
+A fifty-entry branch scan over a ten-thousand-entry chain went from 29 ms
+back to 2.7 ms. Every unit test was green throughout.
+
+**The rule.** Use the eager form only when `return:` is a value you would
+happily compute anyway — a constant, or a bare constructor over data you
+already have in hand. `machine/acceptance.gleam`'s `accept_navigation`
+stacks five guards returning `Error(InvalidNavigation(reason: "..."))` over
+string literals; that is free and the eager form is right there. If the
+argument recurses, allocates, walks a list, or formats a message, reach for
+`bool.lazy_guard`, `result.map_error`, `result.lazy_unwrap` /
+`option.lazy_unwrap` — or leave the plain `case`, which is always correct
+and sometimes clearest. The `lazy_*` row in the naming table exists for this
+and is not a micro-optimisation: here it was the difference between linear
+and quadratic.
+
+The same eagerness argues against `result.try` chains in one more place.
+`provider/internal/wire.gleam`'s `retry_after_ms` must not fall back from a
+present-but-malformed `retry-after-ms` header to `retry-after`; absent and
+invalid are different facts about the world. A chain flattens both into one
+error and silently changes behaviour. Dispatch that distinguishes them stays
+a `case`.
+
+### Short-circuit combinators, and why every file grows its own
+
+Where the two sides are not both `Result`, the house pattern is a tiny
+combinator taking the fallible value first and the continuation last, so it
+reads in `use` position. `machine/planner.gleam`'s `or_fault` is the
+original:
+
+```gleam
+fn or_fault(
+  result: Result(a, CorruptionReport),
+  then: fn(a) -> Action,
+) -> Action {
+  case result {
+    Error(report) -> Fault(report:)
+    Ok(value) -> then(value)
+  }
+}
+```
+
+```gleam
+use batch <- or_fault(plan_batch(in, message, context, entry))
+```
+
+That one function removed a two-armed `case` from a dozen sites whose error
+arm was always exactly `Fault(report:)`. The lineage now runs across the
+tree:
+
+| Combinator | Source | Target |
+|---|---|---|
+| `machine/planner.or_fault` | `Result(a, CorruptionReport)` | `Action` |
+| `machine/planner.or_fault_unless` | `Bool` + a report | `Action` |
+| `or_fail`, in each provider adapter | `Result(a, e)` + `to_error` | `#(Accumulator, List(StreamEvent))` |
+| `provider/gateway.or_failure` | `Result(a, Nil)` | `StreamEvent` |
+| `tools/tool.or_outcome` | `Result(a, e)` + `to_outcome` | `ToolOutcome` |
+| `client/gateway.or_reply` | `Result(a, #(String, String))` | `State` |
+| `runtime/strand_runtime.or_continue` | `Option(a)` | `Outcome` |
+| `runtime/strand_runtime.or_halt` | `Result(a, String)` | `Outcome` |
+| `runtime/strand_runtime.or_key_halt` | `Result(a, String)` | `KeyResolution` |
+
+**Say plainly what this list is: structural, not duplication.** Gleam has no
+type classes, so a short-circuit combinator binds one source type and one
+target type at once. There is no generic or-else to import and no way to
+abstract over "the thing this function eventually returns". A file needs a
+new combinator the moment it acquires a second way to escape — which is why
+`strand_runtime.gleam` has three, two of them identical apart from what they
+return. Write the fourth without apology. Name it `or_<what happens
+instead>`, and document it with the commented `// use x <- or_fault(..)`
+form, since a doctest cannot call a private function.
+
+**Where the lineage stops: error paths that owe cleanup.** A combinator, and
+`result.map_error` in particular, reads like a rename. It must not be a
+place where side effects hide. `broker/broker.gleam`'s clearance path fails
+into *different* rollbacks depending on how far it got: a mint failure hands
+back the reserved budget slot, while a helper-checkout failure hands back
+the slot *and* revokes the minted token. Threading that through an error
+mapper would bury two distinct pieces of state repair inside something that
+looks like formatting. The tool there is named extraction — `authorize`,
+`mint_token`, `checkout_helper`, one decision each, each owning its own
+undo — which flattens the staircase just as well and leaves the cleanup
+where a reader trips over it.
+
+### Frictions the language imposes
+
+Each of these came up more than once during the sweep. None has a
+workaround; knowing them saves the attempt.
+
+- **Guards cannot call functions.** A pattern guard is restricted to inline
+  boolean expressions, so `Some(handle) if handle_valid(handle, ctx) ->` is
+  not legal Gleam and `machine/classification.gleam`'s `classify_running`
+  keeps a nested match where a guard would have flattened it.
+- **`use` does not compose across a closure boundary.** `use` desugars the
+  rest of *its own block*; a `list.fold` or `list.try_fold` callback is a new
+  block, so a `case` inside one cannot be lifted out by a `use` in the
+  enclosing function. `machine/planner.gleam`'s `plan_batch` keeps its fold
+  body's match for this reason.
+- **The capture shorthand takes exactly one hole.** `f(a, _, c)` is fine;
+  two underscores is not a capture. A second hole means a full `fn(x, y)`.
+- **`bool.guard`'s `return:` must unify with the function's eventual
+  return type**, not with an early-exit type of its own. There is no bare
+  early return, so each guard repeats a whole constructor —
+  `accept_navigation`'s five guards are five near-identical blocks, and that
+  is as small as it gets.
+- **An opaque actor `Msg` taxes every handler split out of its dispatch.**
+  A handler that takes the message has to re-match the variant, and outside
+  the module the constructors are not available at all, so the dispatch
+  destructures each variant and passes the fields on individually:
+  `codemode/satellite.gleam`'s `handle` hands `handle_connected` three
+  separate arguments rather than the message. Extraction is still right; it
+  just is not free.
+
+### Verifying a refactor that changes no behaviour
+
+A behaviour-preserving refactor is not verified by unit tests alone, because
+unit tests assert results and a refactor can only break *how* they are
+reached. The quadratic parser above passed all 96 core tests and all 26
+storage tests. What caught it was one timing assertion —
+`sqlite_perf_smoke_test` in the conformance storage suite, which scans the
+newest fifty entries of a ten-thousand-entry chain twenty times and asserts
+the p50 against a ceiling. A green test suite and a red number is a shape to
+expect from this kind of work, not a surprise.
+
+So: after a readability pass over anything on a hot path, run the perf smoke
+(`make check-conformance`), alternating control and candidate runs rather
+than measuring each once, and **isolate one file**. The json regression was
+misattributed to `storage/sqlite.gleam` for an hour because the control tree
+was cut from a commit before the json change and the candidate carried both.
+Two changes, one measurement, no answer.
+
+And do not substitute one number for another. That same hour was spent
+arguing that the control run was "more loaded" because it inserted more
+slowly — but the smoke's insert phase is dominated by durable commit and its
+scan phase by CPU, so insert time is no proxy for the load a scan sees. Time
+the thing you are claiming got slower.
 
 ### Type design
 
