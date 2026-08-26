@@ -54,10 +54,13 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 // executable itself and the command to run) for a policy.
 //
 // Ordering is load-bearing: bwrap applies mount operations in argv
-// order, so protected-path masks must come after the writable binds that
-// would otherwise re-expose them, and the scratch tmpfs after the
-// read-only root it punches through. `kinds` classifies each protected
-// path (callers stat outside this function to keep it pure).
+// order, so every mask must come after the binds that would otherwise
+// re-expose what it hides — protected-path masks after the writable
+// binds, the fresh /proc and minimal /dev after any bind of one of their
+// ancestors (`/` as a readable root is the ordinary case, not a corner
+// one), and the scratch tmpfs after the read-only root it punches
+// through. `kinds` classifies each protected path (callers stat outside
+// this function to keep it pure).
 //
 // Masking choices: an existing protected *file* is bind-mounted onto
 // itself read-only — unwritable, still readable (design §5.2 defaults
@@ -87,9 +90,8 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 		args = append(args, "--unshare-net")
 	}
 
-	// The base view: the entire host filesystem, read-only, then fresh
-	// /proc and a minimal /dev for the new namespaces.
-	args = append(args, "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev")
+	// The base view: the entire host filesystem, read-only.
+	args = append(args, "--ro-bind", "/", "/")
 
 	// Explicit read-only binds. Usually redundant with the ro root, but
 	// kept explicit so a readable root nested inside a writable root is
@@ -101,8 +103,37 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 		args = append(args, "--bind", w, w)
 	}
 
-	// Protected masks come after writable binds so a protected path
-	// inside a writable root is still masked.
+	// A fresh /proc and a minimal /dev for the new namespaces — and they
+	// go *after* every bind above, because they are masks, not binds.
+	// `--ro-bind / /` brings the host's /proc and /dev along with
+	// everything else, so a bind of any ancestor of these two paths
+	// emitted later puts the host's versions back on top of the masks.
+	//
+	// A policy naming "/" as a readable root is not exotic: it is what a
+	// jailed build that needs the toolchain asks for, and it is what the
+	// code-mode session base sends. While these two lines came first,
+	// that policy silently got:
+	//
+	//   - the host's /proc. Every process on the machine listed inside a
+	//     jail that reports itself fully enforced, with its cmdline and
+	//     its environ, and /proc/self resolving to the *host* pid rather
+	//     than the namespace one. Measured on this tree: 82 pids visible
+	//     and /proc/1/cmdline reading the host's init.
+	//   - the host's /dev, and this one also *breaks* the jail rather
+	//     than merely widening it. bwrap binds with MS_NODEV unless
+	//     asked for --dev-bind, so the re-exposed device tree is a nodev
+	//     view: every node is visible and none can be opened. The BEAM
+	//     that `gleam build` spawns to compile Erlang retries
+	//     openat("/dev/null", O_WRONLY) forever against the resulting
+	//     EACCES — 145k syscalls in twelve seconds, a build that never
+	//     returns, and the timeout behind issue #37.
+	//
+	// Masks last, always.
+	args = append(args, "--proc", "/proc", "--dev", "/dev")
+
+	// Protected masks come after the writable binds so a protected path
+	// inside a writable root is still masked, and after /proc and /dev
+	// so a protected path under either survives them.
 	for _, prot := range sortedPaths(p.Protected) {
 		if kinds[prot] == PathFile {
 			args = append(args, "--ro-bind", prot, prot)

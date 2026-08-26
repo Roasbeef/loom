@@ -38,16 +38,76 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"--unshare-cgroup-try",
 		"--unshare-net",
 		"--ro-bind", "/", "/",
-		"--proc", "/proc",
-		"--dev", "/dev",
 		"--ro-bind", "/opt/tools", "/opt/tools",
 		"--bind", "/work", "/work",
+		"--proc", "/proc",
+		"--dev", "/dev",
 		"--ro-bind", "/work/.env", "/work/.env",
 		"--tmpfs", "/work/.git", "--remount-ro", "/work/.git",
 		"--tmpfs", "/tmp",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bwrap argv mismatch:\n got  %q\nwant %q", got, want)
+	}
+}
+
+// A readable root of "/" is the ordinary case for a jailed build that
+// needs a toolchain, and it is a bind of the ancestor of both /proc and
+// /dev. If it is emitted after the two mask mounts it puts the host's
+// procfs and the host's device tree back: a confinement gap (every host
+// process readable from inside the jail) and a functional break (bwrap
+// binds nodev, so no device node in the re-exposed /dev can be opened,
+// and a jailed BEAM spins forever on /dev/null). So: every bind first,
+// then the masks.
+func TestBwrapArgsRootReadableDoesNotUnmaskProcOrDev(t *testing.T) {
+	p := basePol()
+	p.ReadableRoots = []string{"/"}
+	p.Protected = nil
+	got := BwrapArgs(p, nil)
+	lastBindOfRoot, procAt, devAt := -1, -1, -1
+	for i := 0; i+2 < len(got); i++ {
+		if (got[i] == "--ro-bind" || got[i] == "--bind") && got[i+1] == "/" && got[i+2] == "/" {
+			lastBindOfRoot = i
+		}
+	}
+	for i := 0; i+1 < len(got); i++ {
+		switch {
+		case got[i] == "--proc" && got[i+1] == "/proc":
+			procAt = i
+		case got[i] == "--dev" && got[i+1] == "/dev":
+			devAt = i
+		}
+	}
+	if lastBindOfRoot < 0 || procAt < 0 || devAt < 0 {
+		t.Fatalf("argv missing a root bind, --proc or --dev: %q", got)
+	}
+	if procAt < lastBindOfRoot || devAt < lastBindOfRoot {
+		t.Fatalf("--proc/--dev masked before the last bind of \"/\" and so undone by it: %q", got)
+	}
+}
+
+// The general rule the case above is one instance of: no bind may follow
+// the /proc and /dev masks, whatever the policy names.
+func TestBwrapArgsNoBindFollowsTheVirtualMounts(t *testing.T) {
+	p := basePol()
+	p.ReadableRoots = []string{"/", "/opt/tools"}
+	p.WritableRoots = []string{"/", "/work"}
+	p.Protected = nil
+	got := BwrapArgs(p, nil)
+	seenProc := false
+	for i := 0; i < len(got); i++ {
+		if got[i] == "--proc" {
+			seenProc = true
+		}
+		if !seenProc {
+			continue
+		}
+		if got[i] == "--ro-bind" || got[i] == "--bind" {
+			// The only binds allowed after the masks are the protected
+			// masks themselves (a read-only self-bind of a file) and the
+			// path-scratch mount, neither of which this policy has.
+			t.Fatalf("bind at index %d follows --proc and undoes it: %q", i, got)
+		}
 	}
 }
 

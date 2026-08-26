@@ -70,37 +70,118 @@ pub fn program_source() -> String {
   <> "}\n"
 }
 
-// --- the three scenarios --------------------------------------------------
+// --- how long a jailed test is allowed to take ----------------------------
 
-pub fn code_mode_end_to_end_test() {
-  case rig.prerequisites() {
-    Error(reason) -> io.println("SKIP code_mode_end_to_end: " <> reason)
-    Ok(prerequisites) -> run_end_to_end(prerequisites)
-  }
+/// The ceiling on one test in this file.
+///
+/// Not a budget — a deadlock ceiling. Measured on this tree with a real
+/// bubblewrap jail engaged, the four tests here cost 1.0 s, 1.0 s, 4.2 s
+/// and 7.1 s, and 6 s of that last one is the deliberately short deadline
+/// `a_runaway_program_dies_at_its_deadline` sets for itself rather than
+/// work. The ceiling is deliberately *not* sized from those numbers,
+/// because the case a ceiling exists for is not the normal one.
+///
+/// It is sized from what the code under test is *allowed* to consume
+/// before something in Loom is obliged to speak. Per `rig.base_policy`
+/// and the e2e's own config, one end-to-end run may legitimately spend
+/// 120 s inside the hermetic build (`cpu_s`/`wall_s` are 120 s and 180 s;
+/// `timeout_ms` is 120 s) plus a 10 s settle margin, then 30 s waiting
+/// for the satellite to accept, then 60 s in a cap call: about 225 s of
+/// sanctioned waiting before every layer has had its say.
+///
+/// That matters because when a jailed stage wedges, Loom is the thing
+/// that should report it — "the hermetic build hit its wall limit and was
+/// killed", or a `BuildRejected` carrying the compiler's own diagnostics
+/// — since Loom knows what it was doing and eunit does not. A ceiling
+/// below Loom's own limits takes that away and substitutes an anonymous
+/// stack trace.
+///
+/// Which is exactly what happened. This suite spent its whole life under
+/// eunit's *inherited* budget — gleeunit asks for `ScaleTimeouts(10)` over
+/// eunit's 5-second default, so 50 seconds nobody in this tree chose. When
+/// a real jail exposed the /dev masking bug behind issue #37 (see
+/// `jail.BwrapArgs`), the guillotine fell at 50 s and reported `Timeout`
+/// at a line number. Re-run against the same bug with this ceiling in
+/// place, the failure arrives at 121 s reading `compile_failed`,
+/// `build_rejected`, and the compiler's own text — the RLIMIT_CPU ceiling
+/// of 120 s killing the spinning BEAM, reported by the layer that set it.
+/// That is the sentence that points at the bug. A number chosen from the
+/// stopwatch would have re-created the useless one.
+///
+/// 300 s: above the ~225 s of waiting the stack may legitimately do,
+/// above the 120 s at which the worst real wedge observed here reports
+/// itself, ~42x the slowest healthy test, and comfortably inside the
+/// 45-minute cap on the `jail-linux` job that runs this suite for real.
+const jailed_test_timeout_seconds = 300
+
+/// gleeunit runs eunit with `ScaleTimeouts(10)`, and that scale is applied
+/// to *every* timeout — including one a generator asks for explicitly, not
+/// only to eunit's 5-second default. So the number handed to eunit has to
+/// be the number we want divided by ten, and a reader who takes
+/// `Timeout(300, _)` at face value would be setting fifty minutes: past
+/// the 45-minute cap on the job that runs this, which turns a wedged test
+/// into a killed CI job instead of a reported failure. Stated here rather
+/// than folded into the constant, because the arithmetic is the whole
+/// trap. (It is also how eunit's unchosen default came out as the 50 s
+/// that guillotined this suite: 5 x 10.)
+const gleeunit_timeout_scale = 10
+
+/// The eunit test representation, built in Gleam rather than through FFI.
+/// A Gleam constructor with fields compiles to a tagged Erlang tuple, so
+/// `Timeout(300, body)` is literally `{timeout, 300, Body}` — which is
+/// what eunit reads back from a zero-arity `*_test_` *generator* function.
+/// (`*_test` without the trailing underscore is a plain test and takes
+/// eunit's default; the underscore is what makes the timeout reachable at
+/// all from a gleeunit suite.)
+pub type EunitTest {
+  Timeout(seconds: Int, body: fn() -> Nil)
 }
 
-pub fn hermetic_build_refuses_a_transitive_import_test() {
-  case rig.prerequisites() {
-    Error(reason) ->
-      io.println("SKIP hermetic_build_refuses_a_transitive_import: " <> reason)
-    Ok(prerequisites) -> run_transitive_import(prerequisites)
-  }
+fn jailed(body: fn() -> Nil) -> EunitTest {
+  Timeout(jailed_test_timeout_seconds / gleeunit_timeout_scale, body)
 }
 
-pub fn a_runaway_program_dies_at_its_deadline_test() {
-  case rig.prerequisites() {
-    Error(reason) ->
-      io.println("SKIP a_runaway_program_dies_at_its_deadline: " <> reason)
-    Ok(prerequisites) -> run_deadline(prerequisites)
-  }
+// --- the four scenarios ---------------------------------------------------
+
+pub fn code_mode_end_to_end_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) -> io.println("SKIP code_mode_end_to_end: " <> reason)
+      Ok(prerequisites) -> run_end_to_end(prerequisites)
+    }
+  })
 }
 
-pub fn a_type_error_comes_back_in_band_test() {
-  case rig.prerequisites() {
-    Error(reason) ->
-      io.println("SKIP a_type_error_comes_back_in_band: " <> reason)
-    Ok(prerequisites) -> run_type_error(prerequisites)
-  }
+pub fn hermetic_build_refuses_a_transitive_import_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println(
+          "SKIP hermetic_build_refuses_a_transitive_import: " <> reason,
+        )
+      Ok(prerequisites) -> run_transitive_import(prerequisites)
+    }
+  })
+}
+
+pub fn a_runaway_program_dies_at_its_deadline_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println("SKIP a_runaway_program_dies_at_its_deadline: " <> reason)
+      Ok(prerequisites) -> run_deadline(prerequisites)
+    }
+  })
+}
+
+pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println("SKIP a_type_error_comes_back_in_band: " <> reason)
+      Ok(prerequisites) -> run_type_error(prerequisites)
+    }
+  })
 }
 
 // --- the happy path -------------------------------------------------------
