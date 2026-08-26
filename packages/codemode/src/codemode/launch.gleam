@@ -72,7 +72,7 @@ import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
 import filepath
 import gleam/bit_array
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -208,36 +208,46 @@ fn start_channel(
       unlink(spec.cap_socket_path)
       Error("the cap-socket writer did not start")
     }
-    Ok(outbox) -> {
-      let reader_handoff = process.new_subject()
-      let _reader =
-        process.spawn_unlinked(fn() {
-          reader_main(
-            listener,
-            outbox,
-            spec.wire,
-            config.accept_timeout_ms,
-            reader_handoff,
-          )
-        })
-      case process.receive(reader_handoff, handoff_timeout_ms) {
-        Error(Nil) -> {
-          process.send(outbox, Shutdown)
-          unlink(spec.cap_socket_path)
-          Error("the cap-socket reader did not start")
-        }
-        Ok(exits) -> {
-          let settlement = start_reporter(config.broker)
-          spawn_node(config, spec, requirements, exits, settlement, now)
-          start_janitor(config, spec, outbox, settlement)
-          Ok(
-            satellite.CapConnection(
-              send: fn(bytes) { process.send(outbox, Emit(bytes:)) },
-              destroy: fn() { destroy(config, spec, outbox, settlement) },
-            ),
-          )
-        }
-      }
+    Ok(outbox) ->
+      start_reader(config, spec, requirements, listener, outbox, now)
+  }
+}
+
+fn start_reader(
+  config: LaunchConfig,
+  spec: LaunchSpec,
+  requirements: SandboxPolicy,
+  listener: Listener,
+  outbox: Subject(Out),
+  now: Int,
+) -> Result(CapConnection, String) {
+  let reader_handoff = process.new_subject()
+  let _reader =
+    process.spawn_unlinked(fn() {
+      reader_main(
+        listener,
+        outbox,
+        spec.wire,
+        config.accept_timeout_ms,
+        reader_handoff,
+      )
+    })
+  case process.receive(reader_handoff, handoff_timeout_ms) {
+    Error(Nil) -> {
+      process.send(outbox, Shutdown)
+      unlink(spec.cap_socket_path)
+      Error("the cap-socket reader did not start")
+    }
+    Ok(exits) -> {
+      let settlement = start_reporter(config.broker)
+      spawn_node(config, spec, requirements, exits, settlement, now)
+      start_janitor(config, spec, outbox, settlement)
+      Ok(
+        satellite.CapConnection(
+          send: fn(bytes) { process.send(outbox, Emit(bytes:)) },
+          destroy: fn() { destroy(config, spec, outbox, settlement) },
+        ),
+      )
     }
   }
 }
@@ -425,24 +435,33 @@ fn start_janitor(
   case process.subject_owner(spec.wire) {
     Error(Nil) -> Nil
     Ok(host) -> {
-      let _pid =
-        process.spawn_unlinked(fn() {
-          let monitor = process.monitor(host)
-          let down =
-            process.new_selector()
-            |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-          let _ = process.selector_receive_forever(down)
-          // Nobody is left to carry the report: the host that would have
-          // reported the outcome is the process that just died.
-          let _report = destroy(config, spec, outbox, settlement)
-          // The token file is the host's to unlink, and a killed host will
-          // not do it. A leaked token is not a disclosure — its directory is
-          // mode 0700 — but it is a leak.
-          unlink(spec.token_path)
-        })
+      process.spawn_unlinked(fn() {
+        run_janitor(config, spec, outbox, settlement, host)
+      })
       Nil
     }
   }
+}
+
+fn run_janitor(
+  config: LaunchConfig,
+  spec: LaunchSpec,
+  outbox: Subject(Out),
+  settlement: Subject(Settlement),
+  host: Pid,
+) -> Nil {
+  let monitor = process.monitor(host)
+  let down =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+  let _ = process.selector_receive_forever(down)
+  // Nobody is left to carry the report: the host that would have reported
+  // the outcome is the process that just died.
+  let _report = destroy(config, spec, outbox, settlement)
+  // The token file is the host's to unlink, and a killed host will not do
+  // it. A leaked token is not a disclosure — its directory is mode 0700 —
+  // but it is a leak.
+  unlink(spec.token_path)
 }
 
 // --- the writer process ---------------------------------------------------
@@ -527,30 +546,44 @@ fn accept_loop(
 ) -> Nil {
   case process.receive(exits, 0) {
     Ok(reason) -> close_wire(wire, reason)
-    Error(Nil) -> {
-      let slice = int.min(accept_poll_ms, int.max(remaining, 0))
-      case ffi_unix.accept(listener, slice) {
-        Ok(socket) -> {
-          process.send(outbox, Attach(socket:))
-          read_loop(socket, wire, exits)
-        }
-        Error(ffi_unix.AcceptTimeout) ->
-          case remaining - slice > 0 {
-            True ->
-              accept_loop(listener, outbox, wire, exits, remaining - slice)
-            False ->
-              close_wire(
-                wire,
-                "the satellite never connected to the cap socket",
-              )
-          }
-        Error(ffi_unix.AcceptFailed(reason:)) ->
-          close_wire(
-            wire,
-            "the cap socket faulted before the satellite connected: " <> reason,
-          )
-      }
+    Error(Nil) -> poll_accept(listener, outbox, wire, exits, remaining)
+  }
+}
+
+fn poll_accept(
+  listener: Listener,
+  outbox: Subject(Out),
+  wire: Subject(satellite.WireIn),
+  exits: Subject(String),
+  remaining: Int,
+) -> Nil {
+  let slice = int.min(accept_poll_ms, int.max(remaining, 0))
+  case ffi_unix.accept(listener, slice) {
+    Ok(socket) -> {
+      process.send(outbox, Attach(socket:))
+      read_loop(socket, wire, exits)
     }
+    Error(ffi_unix.AcceptTimeout) ->
+      retry_or_give_up(listener, outbox, wire, exits, remaining, slice)
+    Error(ffi_unix.AcceptFailed(reason:)) ->
+      close_wire(
+        wire,
+        "the cap socket faulted before the satellite connected: " <> reason,
+      )
+  }
+}
+
+fn retry_or_give_up(
+  listener: Listener,
+  outbox: Subject(Out),
+  wire: Subject(satellite.WireIn),
+  exits: Subject(String),
+  remaining: Int,
+  slice: Int,
+) -> Nil {
+  case remaining - slice > 0 {
+    True -> accept_loop(listener, outbox, wire, exits, remaining - slice)
+    False -> close_wire(wire, "the satellite never connected to the cap socket")
   }
 }
 
@@ -592,54 +625,70 @@ fn spawn_node(
 ) -> Nil {
   let call = node_call(config, spec, requirements)
   let waiting = int.max(spec.budget.deadline_ms - now, 0) + settle_margin_ms
-  let _pid =
-    process.spawn_unlinked(fn() {
-      let events = process.new_subject()
-      case
-        broker.clear_call(
-          config.broker,
-          call,
-          events:,
-          waiting: clear_timeout_ms,
-        )
-      {
-        Error(refusal) -> {
-          process.send(
-            settlement,
-            Settled(report: enforcement.Unreported(
-              "it was refused before it ran",
-            )),
-          )
-          process.send(
-            exits,
-            "the satellite node was refused before launch: "
-              <> refusal_text(refusal),
-          )
-        }
-        Ok(handle) -> {
-          process.send(settlement, Cleared(handle:))
-          case tool.collect_events(events, waiting:) {
-            Ok(collected) -> {
-              process.send(
-                settlement,
-                Settled(report: enforcement.of_call(collected.outcome)),
-              )
-              process.send(exits, exit_text(collected))
-            }
-            Error(Nil) -> {
-              process.send(
-                settlement,
-                Settled(report: enforcement.Unreported(
-                  "it produced no settlement, so its helper never reported",
-                )),
-              )
-              process.send(exits, "the satellite node produced no settlement")
-            }
-          }
-        }
-      }
-    })
+  process.spawn_unlinked(fn() {
+    run_node(config, call, exits, settlement, waiting)
+  })
   Nil
+}
+
+fn run_node(
+  config: LaunchConfig,
+  call: CallSpec,
+  exits: Subject(String),
+  settlement: Subject(Settlement),
+  waiting: Int,
+) -> Nil {
+  let events = process.new_subject()
+  case
+    broker.clear_call(config.broker, call, events:, waiting: clear_timeout_ms)
+  {
+    Error(refusal) -> report_refused(exits, settlement, refusal)
+    Ok(handle) -> {
+      process.send(settlement, Cleared(handle:))
+      collect_node_result(exits, settlement, events, waiting)
+    }
+  }
+}
+
+fn report_refused(
+  exits: Subject(String),
+  settlement: Subject(Settlement),
+  refusal: broker.Refusal,
+) -> Nil {
+  process.send(
+    settlement,
+    Settled(report: enforcement.Unreported("it was refused before it ran")),
+  )
+  process.send(
+    exits,
+    "the satellite node was refused before launch: " <> refusal_text(refusal),
+  )
+}
+
+fn collect_node_result(
+  exits: Subject(String),
+  settlement: Subject(Settlement),
+  events: Subject(broker.CallEvent),
+  waiting: Int,
+) -> Nil {
+  case tool.collect_events(events, waiting:) {
+    Ok(collected) -> {
+      process.send(
+        settlement,
+        Settled(report: enforcement.of_call(collected.outcome)),
+      )
+      process.send(exits, exit_text(collected))
+    }
+    Error(Nil) -> {
+      process.send(
+        settlement,
+        Settled(report: enforcement.Unreported(
+          "it produced no settlement, so its helper never reported",
+        )),
+      )
+      process.send(exits, "the satellite node produced no settlement")
+    }
+  }
 }
 
 /// The clearance that launches the node: the same `{op_id, step_id}` the

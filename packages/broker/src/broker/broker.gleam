@@ -409,13 +409,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
           // in hand its death is expected, so stop watching (which also
           // flushes an already-queued DOWN).
           process.demonitor_process(active.monitor)
-          state.config.checkin(active.helper)
-          // Tokens are single-use: settlement revokes.
-          let vault = token.revoke(state.vault, active.token_bytes)
-          let state = release_budget(state, active)
-          actor.continue(
-            State(..state, vault:, active: dict.delete(state.active, call_id)),
-          )
+          actor.continue(reclaim(state, call_id, active))
         }
       }
     RelayDown(down:) -> handle_relay_down(state, down)
@@ -449,15 +443,24 @@ fn handle_relay_down(
         Error(Nil) -> actor.continue(state)
         Ok(#(call_id, active)) -> {
           exec.cancel(active.helper)
-          state.config.checkin(active.helper)
-          let vault = token.revoke(state.vault, active.token_bytes)
-          let state = release_budget(state, active)
-          actor.continue(
-            State(..state, vault:, active: dict.delete(state.active, call_id)),
-          )
+          actor.continue(reclaim(state, call_id, active))
         }
       }
   }
+}
+
+// Returns a settled call's helper and budget slot and revokes its token
+// — the common tail of both an in-band `Settle` and a relay dying
+// unsettled. The caller decides beforehand whether the execution itself
+// still needs cancelling (a `Settle` means it already finished; an
+// unsettled relay death means it might not have).
+fn reclaim(state: State, call_id: Int, active: Active) -> State {
+  state.config.checkin(active.helper)
+  // Tokens are single-use: settlement (or the fail-closed reclaim of an
+  // unsettled death) revokes.
+  let vault = token.revoke(state.vault, active.token_bytes)
+  let state = release_budget(state, active)
+  State(..state, vault:, active: dict.delete(state.active, call_id))
 }
 
 // The active call whose relay is `pid`, if any.
@@ -526,50 +529,63 @@ fn authorize(
   case reserve_budget(state, spec, now) {
     Error(refusal) -> #(state, Error(BudgetRefused(refusal:)))
     Ok(#(state, generation)) ->
-      // 3. Token: mint bound to {op_id, step_id, policy, deadline}.
-      case
-        token.mint(
-          state.vault,
-          token.Binding(
-            op_id: spec.op_id,
-            step_id: spec.step_id,
-            policy: final_policy,
-            deadline_ms: spec.budget.deadline_ms,
-          ),
-        )
-      {
-        Error(error) -> {
-          // Nothing dispatched: hand the slot back.
-          let state = release_slot(state, spec.op_id, spec.step_id, generation)
-          #(state, Error(MintRefused(error:)))
-        }
-        Ok(#(vault, minted)) -> {
-          let state = State(..state, vault:)
-          // 4. Helper: borrow through the pool seam.
-          case state.config.checkout() {
-            Error(error) -> {
-              // Nothing dispatched: hand back the slot and the token
-              // (its bytes never left the broker, but a live entry for
-              // an execution that will not run has no business in the
-              // vault).
-              let state =
-                release_slot(state, spec.op_id, spec.step_id, generation)
-              let vault = token.revoke(state.vault, token.to_bytes(minted))
-              #(State(..state, vault:), Error(NoHelper(error:)))
-            }
-            Ok(helper) ->
-              dispatch(
-                state,
-                spec,
-                final_policy,
-                minted,
-                helper,
-                events,
-                generation,
-              )
-          }
-        }
-      }
+      mint_token(state, spec, final_policy, events, generation)
+  }
+}
+
+// 3. Token: mint bound to {op_id, step_id, policy, deadline}.
+fn mint_token(
+  state: State,
+  spec: CallSpec,
+  final_policy: SandboxPolicy,
+  events: Subject(CallEvent),
+  generation: Int,
+) -> #(State, Result(CallHandle, Refusal)) {
+  let binding =
+    token.Binding(
+      op_id: spec.op_id,
+      step_id: spec.step_id,
+      policy: final_policy,
+      deadline_ms: spec.budget.deadline_ms,
+    )
+  case token.mint(state.vault, binding) {
+    Error(error) -> {
+      // Nothing dispatched: hand the slot back.
+      let state = release_slot(state, spec.op_id, spec.step_id, generation)
+      #(state, Error(MintRefused(error:)))
+    }
+    Ok(#(vault, minted)) ->
+      checkout_helper(
+        State(..state, vault:),
+        spec,
+        final_policy,
+        events,
+        minted,
+        generation,
+      )
+  }
+}
+
+// 4. Helper: borrow through the pool seam.
+fn checkout_helper(
+  state: State,
+  spec: CallSpec,
+  final_policy: SandboxPolicy,
+  events: Subject(CallEvent),
+  minted: token.Token,
+  generation: Int,
+) -> #(State, Result(CallHandle, Refusal)) {
+  case state.config.checkout() {
+    Error(error) -> {
+      // Nothing dispatched: hand back the slot and the token (its bytes
+      // never left the broker, but a live entry for an execution that
+      // will not run has no business in the vault).
+      let state = release_slot(state, spec.op_id, spec.step_id, generation)
+      let vault = token.revoke(state.vault, token.to_bytes(minted))
+      #(State(..state, vault:), Error(NoHelper(error:)))
+    }
+    Ok(helper) ->
+      dispatch(state, spec, final_policy, minted, helper, events, generation)
   }
 }
 
@@ -615,18 +631,17 @@ fn release_slot(
   let key = #(op_id, step_id)
   case dict.get(state.ledgers, key) {
     Error(Nil) -> state
-    Ok(slot) ->
-      case slot.generation == generation {
-        False -> state
-        True -> {
-          let ledger = budget.settle(slot.ledger)
-          let ledgers = case budget.outstanding(ledger) {
-            0 -> dict.delete(state.ledgers, key)
-            _ -> dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
-          }
-          State(..state, ledgers:)
-        }
+    // A stale release from before an abort: the key now names a later
+    // ledger incarnation, or none at all, and must not be touched.
+    Ok(slot) if slot.generation != generation -> state
+    Ok(slot) -> {
+      let ledger = budget.settle(slot.ledger)
+      let ledgers = case budget.outstanding(ledger) {
+        0 -> dict.delete(state.ledgers, key)
+        _ -> dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
       }
+      State(..state, ledgers:)
+    }
   }
 }
 

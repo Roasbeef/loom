@@ -431,16 +431,18 @@ fn decode_env(
   value: MsgPackValue,
 ) -> Result(List(#(String, String)), FrameError) {
   case value {
-    msgpack.MapValue(entries:) ->
-      list.try_map(entries, fn(entry) {
-        case entry {
-          #(msgpack.StringValue(name), msgpack.StringValue(text)) ->
-            Ok(#(name, text))
-          _ -> Error(malformed("exec_start.env", "string pairs", ""))
-        }
-      })
+    msgpack.MapValue(entries:) -> list.try_map(entries, decode_env_pair)
     msgpack.NilValue -> Ok([])
     _ -> Error(malformed("exec_start.env", "a map of strings", ""))
+  }
+}
+
+fn decode_env_pair(
+  entry: #(MsgPackValue, MsgPackValue),
+) -> Result(#(String, String), FrameError) {
+  case entry {
+    #(msgpack.StringValue(name), msgpack.StringValue(text)) -> Ok(#(name, text))
+    _ -> Error(malformed("exec_start.env", "string pairs", ""))
   }
 }
 
@@ -557,30 +559,40 @@ fn decode_cap_result(entries: Entries) -> Result(Body, FrameError) {
     Ok(value) -> Some(value)
   }
   case ok {
-    True -> {
-      use value <- result.try(body_field(entries, "cap_result", "value"))
-      Ok(CapResult(outcome: CapOk(value:), usage:))
+    True -> decode_cap_ok(entries, usage)
+    False -> decode_cap_err(entries, usage)
+  }
+}
+
+fn decode_cap_ok(
+  entries: Entries,
+  usage: Option(MsgPackValue),
+) -> Result(Body, FrameError) {
+  use value <- result.try(body_field(entries, "cap_result", "value"))
+  Ok(CapResult(outcome: CapOk(value:), usage:))
+}
+
+fn decode_cap_err(
+  entries: Entries,
+  usage: Option(MsgPackValue),
+) -> Result(Body, FrameError) {
+  use error_value <- result.try(body_field(entries, "cap_result", "error"))
+  case error_value {
+    msgpack.MapValue(error_entries) -> {
+      use Nil <- result.try(check_keys(error_entries, ["code", "msg"]))
+      use code <- result.try(body_string(
+        error_entries,
+        "cap_result.error",
+        "code",
+      ))
+      use message <- result.try(body_string(
+        error_entries,
+        "cap_result.error",
+        "msg",
+      ))
+      Ok(CapResult(outcome: CapErr(code:, message:), usage:))
     }
-    False -> {
-      use error_value <- result.try(body_field(entries, "cap_result", "error"))
-      case error_value {
-        msgpack.MapValue(error_entries) -> {
-          use Nil <- result.try(check_keys(error_entries, ["code", "msg"]))
-          use code <- result.try(body_string(
-            error_entries,
-            "cap_result.error",
-            "code",
-          ))
-          use message <- result.try(body_string(
-            error_entries,
-            "cap_result.error",
-            "msg",
-          ))
-          Ok(CapResult(outcome: CapErr(code:, message:), usage:))
-        }
-        _ -> Error(malformed("cap_result.error", "a map", ""))
-      }
-    }
+    _ -> Error(malformed("cap_result.error", "a map", ""))
   }
 }
 
@@ -671,51 +683,53 @@ fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   case buffer {
     <<size:size(32), rest:bits>> ->
       case size > max_frame_bytes {
-        True -> {
-          let fault = OversizedFrame(declared_bytes: size)
-          Pushed(
-            deframer: Deframer(buffer:, fault: Some(fault)),
-            inbound: list.reverse(seen),
-            fault: Some(fault),
-          )
-        }
+        True -> faulted(buffer, seen, OversizedFrame(declared_bytes: size))
         False ->
           case take_frame(rest, size) {
             // Not enough bytes yet: carry and wait for more.
-            Error(Nil) ->
-              Pushed(
-                deframer: Deframer(buffer:, fault: None),
-                inbound: list.reverse(seen),
-                fault: None,
-              )
+            Error(Nil) -> carry(buffer, seen)
             Ok(#(payload, remainder)) ->
-              case decode_payload(payload) {
-                Ok(frame) -> push_loop(remainder, [Known(frame:), ..seen])
-                // Well-formed but unrecognized: not a poisoning fault.
-                // The deframer keeps scanning `remainder` normally so
-                // later, understood frames still arrive — only a
-                // genuinely broken envelope kills the channel.
-                Error(UnknownKind(id:, kind:)) ->
-                  push_loop(remainder, [UnknownInbound(id:, kind:), ..seen])
-                // Both faults below poison the deframer via `faulted`:
-                // every subsequent `push` reports the same fault instead
-                // of resuming the scan, matching the close-the-channel
-                // contract (spec §3.3 invariant 6).
-                Error(Malformed(report:)) ->
-                  faulted(buffer, seen, CorruptFrame(report:))
-                Error(UnsupportedVersion(version:)) ->
-                  faulted(buffer, seen, VersionMismatch(version:))
-              }
+              push_decoded(buffer, remainder, seen, decode_payload(payload))
           }
       }
-    _ ->
-      // Fewer than four bytes buffered: carry.
-      Pushed(
-        deframer: Deframer(buffer:, fault: None),
-        inbound: list.reverse(seen),
-        fault: None,
-      )
+    // Fewer than four bytes buffered: carry.
+    _ -> carry(buffer, seen)
   }
+}
+
+// Applies one decoded payload to the scan. Well-formed but unrecognized
+// is not a poisoning fault: the deframer keeps scanning `remainder`
+// normally so later, understood frames still arrive — only a genuinely
+// broken envelope poisons it via `faulted`, so every subsequent `push`
+// reports the same fault instead of resuming the scan, matching the
+// close-the-channel contract (spec §3.3 invariant 6). `buffer` (not
+// `remainder`) is what a fault carries: once poisoned, `push` never
+// looks at the deframer's buffer again, but the field still records the
+// scan's position honestly.
+fn push_decoded(
+  buffer: BitArray,
+  remainder: BitArray,
+  seen: List(Inbound),
+  decoded: Result(Frame, FrameError),
+) -> Pushed {
+  case decoded {
+    Ok(frame) -> push_loop(remainder, [Known(frame:), ..seen])
+    Error(UnknownKind(id:, kind:)) ->
+      push_loop(remainder, [UnknownInbound(id:, kind:), ..seen])
+    Error(Malformed(report:)) -> faulted(buffer, seen, CorruptFrame(report:))
+    Error(UnsupportedVersion(version:)) ->
+      faulted(buffer, seen, VersionMismatch(version:))
+  }
+}
+
+// The carry-on-incomplete-data outcome: buffer kept as-is, no fault, the
+// frames seen so far in arrival order.
+fn carry(buffer: BitArray, seen: List(Inbound)) -> Pushed {
+  Pushed(
+    deframer: Deframer(buffer:, fault: None),
+    inbound: list.reverse(seen),
+    fault: None,
+  )
 }
 
 fn faulted(buffer: BitArray, seen: List(Inbound), fault: Fault) -> Pushed {

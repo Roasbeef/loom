@@ -425,56 +425,90 @@ fn run_launched(
       config.unlink_token_file(token_path)
       never_launched(HostUnavailable(start_error_text(start_error)))
     }
-    Ok(host) -> {
-      let spec =
-        LaunchSpec(
-          artifact:,
-          token_path:,
-          cap_socket_path: config.cap_socket_path,
-          op_id:,
-          step_id:,
-          base_policy: config.base_policy,
-          budget: config.budget,
-          env: config.env,
-          cwd: config.cwd,
-          wire: host.wire,
-        )
-      case launch(spec) {
-        Error(reason) -> {
-          process.send(host.commands, Stop)
-          never_launched(LaunchRejected(reason))
-        }
-        Ok(connection) -> {
-          let handed = hand_over(host, connection)
-          let wait =
-            int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
-          case process.receive(result_subject, wait) {
-            // The host took the connection and destroyed it itself, so its
-            // report is the authoritative one — unless the host was gone
-            // before it could take it, in which case `hand_over` destroyed
-            // the node here and holds the only report there is.
-            Ok(settled) ->
-              case handed {
-                None -> settled
-                Some(node) -> Run(..settled, node:)
-              }
-            Error(Nil) -> {
-              process.send(host.commands, Stop)
-              // The host owns `destroy`, and with it the node's report; a
-              // host that never answered never handed one back.
-              Run(
-                outcome: Error(HostUnavailable(
-                  "no terminal result within the deadline",
-                )),
-                node: enforcement.Unreported(
-                  "the host produced no terminal result, so the node's "
-                  <> "report was never collected",
-                ),
-              )
-            }
-          }
-        }
+    Ok(host) ->
+      dispatch_launch(
+        artifact,
+        op_id,
+        step_id,
+        token_path,
+        config,
+        launch,
+        host,
+        now,
+        result_subject,
+      )
+  }
+}
+
+fn dispatch_launch(
+  artifact: Artifact,
+  op_id: OpId,
+  step_id: String,
+  token_path: String,
+  config: SatelliteConfig,
+  launch: Launcher,
+  host: Host,
+  now: Int,
+  result_subject: Subject(Run),
+) -> Run {
+  let spec =
+    LaunchSpec(
+      artifact:,
+      token_path:,
+      cap_socket_path: config.cap_socket_path,
+      op_id:,
+      step_id:,
+      base_policy: config.base_policy,
+      budget: config.budget,
+      env: config.env,
+      cwd: config.cwd,
+      wire: host.wire,
+    )
+  case launch(spec) {
+    Error(reason) -> {
+      process.send(host.commands, Stop)
+      never_launched(LaunchRejected(reason))
+    }
+    Ok(connection) ->
+      await_result(config, host, connection, now, result_subject)
+  }
+}
+
+// Waits for the host's terminal result, bounded by the wall deadline plus
+// slack for the host's own teardown (`result_margin_ms`). The node's
+// enforcement report comes from whichever side actually ran `destroy`:
+// the host, ordinarily, or `hand_over` here when the host was already
+// gone before it could take the connection (CH-F3).
+fn await_result(
+  config: SatelliteConfig,
+  host: Host,
+  connection: CapConnection,
+  now: Int,
+  result_subject: Subject(Run),
+) -> Run {
+  let handed = hand_over(host, connection)
+  let wait = int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
+  case process.receive(result_subject, wait) {
+    // The host took the connection and destroyed it itself, so its
+    // report is the authoritative one — unless the host was gone before
+    // it could take it, in which case `hand_over` destroyed the node
+    // here and holds the only report there is.
+    Ok(settled) ->
+      case handed {
+        None -> settled
+        Some(node) -> Run(..settled, node:)
       }
+    Error(Nil) -> {
+      process.send(host.commands, Stop)
+      // The host owns `destroy`, and with it the node's report; a host
+      // that never answered never handed one back.
+      Run(
+        outcome: Error(HostUnavailable("no terminal result within the deadline")),
+        node: enforcement.Unreported(
+          "the host produced no terminal result, so the node's report was "
+          <> "never collected",
+        ),
+      )
     }
   }
 }
@@ -640,66 +674,79 @@ fn start_host(
 
 fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   case msg {
-    Connected(send:, destroy:, ack:) -> {
-      // Flush anything buffered before the launcher connected.
-      list.each(list.reverse(state.pending_out), send)
-      // The node exists from here, so the wall deadline starts here: after
-      // it, the node dies as a unit (`broker.abort` plus `destroy`).
-      let #(now, clock) = clock.read(state.clock)
-      let delay = int.max(state.budget.deadline_ms - now, 0)
-      let _ = process.send_after(state.commands, delay, Deadline)
-      // The host now owns `destroy`. Telling `run_launched` so is what lets
-      // it distinguish this from a host that stopped first (CH-F3).
-      process.send(ack, Nil)
-      actor.continue(
-        State(
-          ..state,
-          clock:,
-          send: Some(send),
-          destroy: Some(destroy),
-          pending_out: [],
-        ),
-      )
-    }
+    Connected(send:, destroy:, ack:) ->
+      handle_connected(state, send, destroy, ack)
     FromWire(WireBytes(data:)) -> handle_bytes(state, data)
     FromWire(WireClosed(reason:)) ->
       terminate(state, Error(SatelliteGone(reason)))
-    CapStarted(id:, handle:) ->
-      case dict.get(state.inflight, id) {
-        // Already settled and removed: nothing to track.
-        Error(Nil) -> actor.continue(state)
-        Ok(entry) -> {
-          // A cancel that raced ahead of the clearance fires now.
-          case entry.cancelled {
-            True -> broker.cancel(state.broker, handle)
-            False -> Nil
-          }
-          actor.continue(
-            State(
-              ..state,
-              inflight: dict.insert(
-                state.inflight,
-                id,
-                InFlight(..entry, handle: Some(handle)),
-              ),
-            ),
-          )
-        }
-      }
-    CapDone(id:, outcome:) ->
-      case dict.get(state.inflight, id) {
-        Error(Nil) -> actor.continue(state)
-        Ok(_) -> {
-          let state = emit(state, id, outcome)
-          actor.continue(
-            State(..state, inflight: dict.delete(state.inflight, id)),
-          )
-        }
-      }
+    CapStarted(id:, handle:) -> handle_cap_started(state, id, handle)
+    CapDone(id:, outcome:) -> handle_cap_done(state, id, outcome)
     Deadline -> terminate(state, Error(DeadlineExceeded))
     Stop -> {
       let _node = cleanup(state)
       actor.stop()
+    }
+  }
+}
+
+fn handle_connected(
+  state: State,
+  send: fn(BitArray) -> Nil,
+  destroy: fn() -> Report,
+  ack: Subject(Nil),
+) -> actor.Next(State, Msg) {
+  // Flush anything buffered before the launcher connected.
+  list.each(list.reverse(state.pending_out), send)
+  // The node exists from here, so the wall deadline starts here: after it,
+  // the node dies as a unit (`broker.abort` plus `destroy`).
+  let #(now, clock) = clock.read(state.clock)
+  let delay = int.max(state.budget.deadline_ms - now, 0)
+  let _ = process.send_after(state.commands, delay, Deadline)
+  // The host now owns `destroy`. Telling `run_launched` so is what lets it
+  // distinguish this from a host that stopped first (CH-F3).
+  process.send(ack, Nil)
+  actor.continue(
+    State(
+      ..state,
+      clock:,
+      send: Some(send),
+      destroy: Some(destroy),
+      pending_out: [],
+    ),
+  )
+}
+
+fn handle_cap_started(
+  state: State,
+  id: Int,
+  handle: broker.CallHandle,
+) -> actor.Next(State, Msg) {
+  case dict.get(state.inflight, id) {
+    // Already settled and removed: nothing to track.
+    Error(Nil) -> actor.continue(state)
+    Ok(entry) -> {
+      // A cancel that raced ahead of the clearance fires now.
+      case entry.cancelled {
+        True -> broker.cancel(state.broker, handle)
+        False -> Nil
+      }
+      let inflight =
+        dict.insert(state.inflight, id, InFlight(..entry, handle: Some(handle)))
+      actor.continue(State(..state, inflight:))
+    }
+  }
+}
+
+fn handle_cap_done(
+  state: State,
+  id: Int,
+  outcome: CapOutcome,
+) -> actor.Next(State, Msg) {
+  case dict.get(state.inflight, id) {
+    Error(Nil) -> actor.continue(state)
+    Ok(_) -> {
+      let state = emit(state, id, outcome)
+      actor.continue(State(..state, inflight: dict.delete(state.inflight, id)))
     }
   }
 }
@@ -840,42 +887,44 @@ fn route_cap_call(
         id,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) ->
-      // The pooled outstanding-effect cap is checked here, in the actor,
-      // before a collector exists. The broker enforces the same cap, but
-      // only from inside the spawned collector, so a satellite that floods
-      // the channel used to buy one harness-VM process per `cap_call` up to
-      // the wall deadline (CH-F6). A refused call now costs no process.
-      case dict.size(state.inflight) >= state.budget.max_outstanding {
-        True ->
-          emit(
-            state,
-            id,
-            framing.CapErr(
-              code: "budget",
-              message: "the pooled outstanding-effect cap "
-                <> int.to_string(state.budget.max_outstanding)
-                <> " is reached; the call was refused before dispatch",
-            ),
-          )
-        False -> {
-          let inflight =
-            dict.insert(
-              state.inflight,
-              id,
-              InFlight(handle: None, cancelled: False),
-            )
-          spawn_collector(
-            state.commands,
-            state.broker,
-            plan,
-            id,
-            state.call_timeout_ms,
-          )
-          State(..state, inflight:)
-        }
-      }
+    Ok(plan) -> admit_cap_call(state, id, plan)
   }
+}
+
+// The pooled outstanding-effect cap is checked here, in the actor, before
+// a collector exists. The broker enforces the same cap, but only from
+// inside the spawned collector, so a satellite that floods the channel
+// used to buy one harness-VM process per `cap_call` up to the wall
+// deadline (CH-F6). A refused call now costs no process.
+fn admit_cap_call(state: State, id: Int, plan: CapPlan) -> State {
+  case dict.size(state.inflight) >= state.budget.max_outstanding {
+    True -> emit(state, id, budget_denial(state.budget.max_outstanding))
+    False -> {
+      let inflight =
+        dict.insert(
+          state.inflight,
+          id,
+          InFlight(handle: None, cancelled: False),
+        )
+      spawn_collector(
+        state.commands,
+        state.broker,
+        plan,
+        id,
+        state.call_timeout_ms,
+      )
+      State(..state, inflight:)
+    }
+  }
+}
+
+fn budget_denial(max_outstanding: Int) -> CapOutcome {
+  framing.CapErr(
+    code: "budget",
+    message: "the pooled outstanding-effect cap "
+      <> int.to_string(max_outstanding)
+      <> " is reached; the call was refused before dispatch",
+  )
 }
 
 // Services one clearance off the actor's timeline: it clears through the
@@ -888,35 +937,51 @@ fn spawn_collector(
   id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
-  let _pid =
-    process.spawn_unlinked(fn() {
-      let events = process.new_subject()
-      case
-        broker.clear_call(broker, plan.spec, events:, waiting: clear_timeout_ms)
-      {
-        Error(refusal) ->
-          process.send(host, CapDone(id:, outcome: refusal_outcome(refusal)))
-        Ok(handle) -> {
-          process.send(host, CapStarted(id:, handle:))
-          case tool.collect_events(events, waiting: call_timeout_ms) {
-            Ok(collected) ->
-              process.send(host, CapDone(id:, outcome: plan.render(collected)))
-            Error(Nil) ->
-              process.send(
-                host,
-                CapDone(
-                  id:,
-                  outcome: framing.CapErr(
-                    code: "unsettled",
-                    message: "no settlement within the call deadline",
-                  ),
-                ),
-              )
-          }
-        }
-      }
-    })
+  process.spawn_unlinked(fn() {
+    run_collector(host, broker, plan, id, call_timeout_ms)
+  })
   Nil
+}
+
+fn run_collector(
+  host: Subject(Msg),
+  broker: Broker,
+  plan: CapPlan,
+  id: Int,
+  call_timeout_ms: Int,
+) -> Nil {
+  let events = process.new_subject()
+  case
+    broker.clear_call(broker, plan.spec, events:, waiting: clear_timeout_ms)
+  {
+    Error(refusal) ->
+      process.send(host, CapDone(id:, outcome: refusal_outcome(refusal)))
+    Ok(handle) -> {
+      process.send(host, CapStarted(id:, handle:))
+      report_collected(host, id, plan, events, call_timeout_ms)
+    }
+  }
+}
+
+fn report_collected(
+  host: Subject(Msg),
+  id: Int,
+  plan: CapPlan,
+  events: Subject(broker.CallEvent),
+  call_timeout_ms: Int,
+) -> Nil {
+  case tool.collect_events(events, waiting: call_timeout_ms) {
+    Ok(collected) ->
+      process.send(host, CapDone(id:, outcome: plan.render(collected)))
+    Error(Nil) -> process.send(host, CapDone(id:, outcome: unsettled_outcome()))
+  }
+}
+
+fn unsettled_outcome() -> CapOutcome {
+  framing.CapErr(
+    code: "unsettled",
+    message: "no settlement within the call deadline",
+  )
 }
 
 fn handle_cancel(state: State, id: Int) -> State {
@@ -1027,26 +1092,34 @@ fn deframe_loop(buffer: BitArray, seen: List(BitArray)) -> Deframed {
   case buffer {
     <<size:size(32), rest:bits>> ->
       case size > framing.max_frame_bytes {
-        True ->
-          Deframed(
-            payloads: list.reverse(seen),
-            buffer:,
-            fault: Some(
-              "a cap frame declared " <> int.to_string(size) <> " bytes",
-            ),
-          )
+        True -> deframe_oversized(buffer, seen, size)
         False ->
           case take_payload(rest, size) {
             // Not enough bytes yet: carry and wait for more.
-            Error(Nil) ->
-              Deframed(payloads: list.reverse(seen), buffer:, fault: None)
+            Error(Nil) -> deframe_carry(buffer, seen)
             Ok(#(payload, remainder)) ->
               deframe_loop(remainder, [payload, ..seen])
           }
       }
     // Fewer than four bytes buffered: carry.
-    _ -> Deframed(payloads: list.reverse(seen), buffer:, fault: None)
+    _ -> deframe_carry(buffer, seen)
   }
+}
+
+fn deframe_oversized(
+  buffer: BitArray,
+  seen: List(BitArray),
+  size: Int,
+) -> Deframed {
+  Deframed(
+    payloads: list.reverse(seen),
+    buffer:,
+    fault: Some("a cap frame declared " <> int.to_string(size) <> " bytes"),
+  )
+}
+
+fn deframe_carry(buffer: BitArray, seen: List(BitArray)) -> Deframed {
+  Deframed(payloads: list.reverse(seen), buffer:, fault: None)
 }
 
 fn take_payload(
@@ -1149,22 +1222,29 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
 // program believe it did something it did not.
 fn reject_unserviced(args: MsgPackValue) -> Result(Nil, CapDenial) {
   list.try_each(["cwd", "stdin", "timeout_ms", "env"], fn(field) {
-    case map_field(args, field) {
-      Error(_) -> Ok(Nil)
-      Ok(value) ->
-        case is_unset(value) {
-          True -> Ok(Nil)
-          False ->
-            Error(CapDenial(
-              code: "unsupported_argument",
-              message: "proc.run `"
-                <> field
-                <> "` is not serviced by the default router; the command "
-                <> "would have run without it",
-            ))
-        }
-    }
+    check_unserviced_field(args, field)
   })
+}
+
+fn check_unserviced_field(
+  args: MsgPackValue,
+  field: String,
+) -> Result(Nil, CapDenial) {
+  case map_field(args, field) {
+    Error(_) -> Ok(Nil)
+    Ok(value) ->
+      case is_unset(value) {
+        True -> Ok(Nil)
+        False ->
+          Error(CapDenial(
+            code: "unsupported_argument",
+            message: "proc.run `"
+              <> field
+              <> "` is not serviced by the default router; the command "
+              <> "would have run without it",
+          ))
+      }
+  }
 }
 
 fn is_unset(value: MsgPackValue) -> Bool {

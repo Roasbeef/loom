@@ -58,7 +58,7 @@
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
-import broker/exec.{type EnforcementDemand}
+import broker/exec.{type EnforcementDemand, type ExecResult}
 import broker/policy.{type SandboxPolicy}
 import codemode/compile.{
   type BuildProducts, type Built, type CompileError, type Dependency, Built,
@@ -67,7 +67,7 @@ import codemode/enforcement
 import codemode/seed
 import core/ids.{type OpId}
 import gleam/bit_array
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/result
 import gleam/string
@@ -192,36 +192,46 @@ fn run_build(config: BuildConfig, root: String) -> Built {
       waiting: clear_timeout_ms,
     )
   {
-    Error(refusal) ->
-      Built(
-        result: Error(compile.BuildUnavailable(
-          "the hermetic build was refused: " <> refusal_text(refusal),
-        )),
-        enforcement: enforcement.Unreported("it was refused before it ran"),
-      )
-    Ok(_handle) ->
-      case
-        tool.collect_events(
-          events,
-          waiting: config.timeout_ms + settle_margin_ms,
-        )
-      {
-        Error(Nil) ->
-          Built(
-            result: Error(compile.BuildUnavailable(
-              "the hermetic build produced no settlement",
-            )),
-            enforcement: enforcement.Unreported(
-              "it produced no settlement, so its helper never reported",
-            ),
-          )
-        Ok(collected) ->
-          Built(
-            result: result.try(settle(collected), fn(_nil) { products(root) }),
-            enforcement: enforcement.of_call(collected.outcome),
-          )
-      }
+    Error(refusal) -> build_refused(refusal)
+    Ok(_handle) -> collect_build(config, root, events)
   }
+}
+
+fn build_refused(refusal: broker.Refusal) -> Built {
+  Built(
+    result: Error(compile.BuildUnavailable(
+      "the hermetic build was refused: " <> refusal_text(refusal),
+    )),
+    enforcement: enforcement.Unreported("it was refused before it ran"),
+  )
+}
+
+fn collect_build(
+  config: BuildConfig,
+  root: String,
+  events: Subject(broker.CallEvent),
+) -> Built {
+  case
+    tool.collect_events(events, waiting: config.timeout_ms + settle_margin_ms)
+  {
+    Error(Nil) -> build_unsettled()
+    Ok(collected) ->
+      Built(
+        result: result.try(settle(collected), fn(_nil) { products(root) }),
+        enforcement: enforcement.of_call(collected.outcome),
+      )
+  }
+}
+
+fn build_unsettled() -> Built {
+  Built(
+    result: Error(compile.BuildUnavailable(
+      "the hermetic build produced no settlement",
+    )),
+    enforcement: enforcement.Unreported(
+      "it produced no settlement, so its helper never reported",
+    ),
+  )
 }
 
 fn settle(collected: Collected) -> Result(Nil, CompileError) {
@@ -230,30 +240,37 @@ fn settle(collected: Collected) -> Result(Nil, CompileError) {
       Error(compile.BuildUnavailable(
         "the hermetic build could not run: " <> tool.exec_failure_text(failure),
       ))
-    broker.CallExited(result:) -> {
-      let diagnostics = diagnostics(collected)
-      case result.timed_out, result.code {
-        True, _ ->
-          Error(compile.BuildUnavailable(
-            "the hermetic build hit its wall limit and was killed",
-          ))
-        False, 0 -> Ok(Nil)
-        // A build that reached for Hex is a broken *seed*, not a broken
-        // program, and saying so is the difference between "fix your
-        // code" and "rebuild the package cache".
-        False, _ ->
-          case reached_for_hex(diagnostics) {
-            True ->
-              Error(compile.BuildUnavailable(
-                "the hermetic build tried to resolve dependencies, which "
-                <> "means its package cache was not usable; the network was "
-                <> "off, so it failed rather than fetching: "
-                <> diagnostics,
-              ))
-            False -> Error(compile.BuildRejected(diagnostics:))
-          }
-      }
-    }
+    broker.CallExited(result:) -> settle_exit(result, diagnostics(collected))
+  }
+}
+
+fn settle_exit(
+  result: ExecResult,
+  diagnostics: String,
+) -> Result(Nil, CompileError) {
+  case result.timed_out, result.code {
+    True, _ ->
+      Error(compile.BuildUnavailable(
+        "the hermetic build hit its wall limit and was killed",
+      ))
+    False, 0 -> Ok(Nil)
+    // A build that reached for Hex is a broken *seed*, not a broken
+    // program, and saying so is the difference between "fix your code"
+    // and "rebuild the package cache".
+    False, _ -> diagnose_failure(diagnostics)
+  }
+}
+
+fn diagnose_failure(diagnostics: String) -> Result(Nil, CompileError) {
+  case reached_for_hex(diagnostics) {
+    True ->
+      Error(compile.BuildUnavailable(
+        "the hermetic build tried to resolve dependencies, which means its "
+        <> "package cache was not usable; the network was off, so it failed "
+        <> "rather than fetching: "
+        <> diagnostics,
+      ))
+    False -> Error(compile.BuildRejected(diagnostics:))
   }
 }
 

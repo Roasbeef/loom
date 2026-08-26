@@ -31,11 +31,13 @@
 
 import broker/broker.{type Broker}
 import codemode/compile.{type Artifact, type CompileConfig, type CompileError}
-import codemode/enforcement.{type Enforcement, Enforcement, Unreported}
+import codemode/enforcement.{
+  type Enforcement, type Report, Enforcement, Unreported,
+}
 import codemode/satellite.{
   type ExecId, type Launcher, type Outcome, type RunError, type SatelliteConfig,
 }
-import codemode/vet.{type Rejection}
+import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 
 /// One whole code-mode execution: how far it got, and what the kernel
@@ -85,54 +87,67 @@ pub type ExecConfig {
 /// outcome carries both stages' enforcement reports.
 pub fn execute(source: String, config: ExecConfig) -> Execution {
   case vet.vet(source, config.vet_policy) {
-    // Nothing was dispatched, so nothing about a jail is claimed — and
-    // the two stages say that in as many words rather than by omission.
-    vet.Rejected(rejections) ->
-      Execution(
-        outcome: VetRejected(rejections),
-        enforcement: Enforcement(
-          build: Unreported(
-            "vetting refused the program, so no build was dispatched",
-          ),
-          node: Unreported(
-            "vetting refused the program, so no node was launched",
-          ),
-        ),
-      )
-    vet.Passed(vetted) -> {
-      let compiled = compile.compile(vetted, config.compile)
-      case compiled.result {
-        Error(error) ->
-          Execution(
-            outcome: CompileFailed(error),
-            enforcement: Enforcement(
-              build: compiled.enforcement,
-              node: Unreported(
-                "the program did not compile, so no node was launched",
-              ),
-            ),
-          )
-        Ok(artifact) -> {
-          let ran =
-            satellite.run(
-              artifact,
-              config.exec_id,
-              config.broker,
-              config.satellite,
-              config.launch,
-            )
-          Execution(
-            outcome: case ran.outcome {
-              Error(error) -> RunFailed(error)
-              Ok(outcome) -> Ran(source:, artifact:, outcome:)
-            },
-            enforcement: Enforcement(
-              build: compiled.enforcement,
-              node: ran.node,
-            ),
-          )
-        }
-      }
-    }
+    vet.Rejected(rejections) -> vet_rejected(rejections)
+    vet.Passed(vetted) -> compile_and_run(source, vetted, config)
   }
+}
+
+// Nothing was dispatched, so nothing about a jail is claimed — and the two
+// stages say that in as many words rather than by omission.
+fn vet_rejected(rejections: List(Rejection)) -> Execution {
+  Execution(
+    outcome: VetRejected(rejections),
+    enforcement: Enforcement(
+      build: Unreported(
+        "vetting refused the program, so no build was dispatched",
+      ),
+      node: Unreported("vetting refused the program, so no node was launched"),
+    ),
+  )
+}
+
+fn compile_and_run(
+  source: String,
+  vetted: Vetted,
+  config: ExecConfig,
+) -> Execution {
+  let compiled = compile.compile(vetted, config.compile)
+  case compiled.result {
+    Error(error) -> compile_failed(compiled.enforcement, error)
+    Ok(artifact) ->
+      run_and_report(source, artifact, compiled.enforcement, config)
+  }
+}
+
+fn compile_failed(build: Report, error: CompileError) -> Execution {
+  Execution(
+    outcome: CompileFailed(error),
+    enforcement: Enforcement(
+      build:,
+      node: Unreported("the program did not compile, so no node was launched"),
+    ),
+  )
+}
+
+fn run_and_report(
+  source: String,
+  artifact: Artifact,
+  build: Report,
+  config: ExecConfig,
+) -> Execution {
+  let ran =
+    satellite.run(
+      artifact,
+      config.exec_id,
+      config.broker,
+      config.satellite,
+      config.launch,
+    )
+  Execution(
+    outcome: case ran.outcome {
+      Error(error) -> RunFailed(error)
+      Ok(outcome) -> Ran(source:, artifact:, outcome:)
+    },
+    enforcement: Enforcement(build:, node: ran.node),
+  )
 }

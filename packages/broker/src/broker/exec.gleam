@@ -324,24 +324,10 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
     // The port must be opened by this process: port messages are
     // delivered to the opener, and the opener is where the selector
     // lives.
-    use #(wire_out, selector) <- result.try(case config.transport {
-      ChannelTransport(send:, close:) -> Ok(#(WireChannel(send:, close:), base))
-      PortTransport(executable:, args:, cleanup:) ->
-        case ffi_port.open_helper(executable, args) {
-          Error(Nil) -> Error(port_open_failure)
-          Ok(opened) -> {
-            let os_pid = option.from_result(ffi_port.port_os_pid(opened))
-            let selector =
-              process.select_record(
-                base,
-                tag: opened,
-                fields: 1,
-                mapping: fn(message) { FromWire(port_wire_event(message)) },
-              )
-            Ok(#(WirePort(port: opened, os_pid:, cleanup:), selector))
-          }
-        }
-    })
+    use #(wire_out, selector) <- result.try(open_transport(
+      config.transport,
+      base,
+    ))
     // The handshake must complete within its deadline or the helper is
     // declared dead — this bounds every `await_ready` call.
     let _ =
@@ -375,6 +361,33 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
     let #(commands, wire) = started.data
     Helper(commands:, wire:, pid: started.pid)
   })
+}
+
+// Opens the resolved runtime channel for a transport spec. The port
+// case must run in the calling (actor) process: port messages are
+// delivered to the opener, and the opener is where the selector lives.
+fn open_transport(
+  transport: Transport,
+  base: process.Selector(Msg),
+) -> Result(#(Wire, process.Selector(Msg)), String) {
+  case transport {
+    ChannelTransport(send:, close:) -> Ok(#(WireChannel(send:, close:), base))
+    PortTransport(executable:, args:, cleanup:) ->
+      case ffi_port.open_helper(executable, args) {
+        Error(Nil) -> Error(port_open_failure)
+        Ok(opened) -> {
+          let os_pid = option.from_result(ffi_port.port_os_pid(opened))
+          let selector =
+            process.select_record(
+              base,
+              tag: opened,
+              fields: 1,
+              mapping: fn(message) { FromWire(port_wire_event(message)) },
+            )
+          Ok(#(WirePort(port: opened, os_pid:, cleanup:), selector))
+        }
+      }
+  }
 }
 
 // The initialiser failure message for an unopenable port; spawn_helper
@@ -497,127 +510,171 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
     FromWire(WireBytes(data:)) -> handle_bytes(state, data)
     FromWire(WireClosed(status:)) -> die(state, ChannelClosed(status:))
-    AwaitReady(reply:) ->
-      case state.phase {
-        Ready(features:) -> {
-          process.send(reply, Ok(features))
-          actor.continue(state)
-        }
-        Dead(failure:) -> {
-          process.send(reply, Error(failure))
-          actor.continue(state)
-        }
-        AwaitingHello ->
-          actor.continue(
-            State(..state, ready_waiters: [reply, ..state.ready_waiters]),
-          )
-      }
-    QueryStatus(reply:) -> {
-      let helper_status = case state.phase {
-        AwaitingHello -> StatusStarting
-        Ready(features:) -> StatusReady(features:)
-        Dead(failure:) -> StatusDead(failure:)
-      }
-      process.send(reply, helper_status)
+    AwaitReady(reply:) -> handle_await_ready(state, reply)
+    QueryStatus(reply:) -> handle_query_status(state, reply)
+    Run(request:, events:, reply:) -> handle_run(state, request, events, reply)
+    Stdin(data:, eof:) -> handle_stdin(state, data, eof)
+    CancelExec -> handle_cancel(state)
+    CancelDeadline(exec_id:) -> handle_cancel_deadline(state, exec_id)
+    HandshakeDeadline -> handle_handshake_deadline(state)
+    HeartbeatTick -> handle_heartbeat_tick(state)
+    Heartbeat(reply:) -> handle_heartbeat(state, reply)
+    Shutdown -> handle_shutdown(state)
+  }
+}
+
+fn handle_await_ready(
+  state: State,
+  reply: Subject(Result(List(String), ExecFailure)),
+) -> actor.Next(State, Msg) {
+  case state.phase {
+    Ready(features:) -> {
+      process.send(reply, Ok(features))
       actor.continue(state)
     }
-    Run(request:, events:, reply:) -> handle_run(state, request, events, reply)
-    Stdin(data:, eof:) ->
-      case state.exec {
-        None -> actor.continue(state)
-        Some(exec) ->
-          send_or_die(
-            state,
-            framing.Frame(id: exec.id, body: framing.ExecStdin(data:, eof:)),
-          )
+    Dead(failure:) -> {
+      process.send(reply, Error(failure))
+      actor.continue(state)
+    }
+    AwaitingHello ->
+      actor.continue(
+        State(..state, ready_waiters: [reply, ..state.ready_waiters]),
+      )
+  }
+}
+
+fn handle_query_status(
+  state: State,
+  reply: Subject(HelperStatus),
+) -> actor.Next(State, Msg) {
+  let helper_status = case state.phase {
+    AwaitingHello -> StatusStarting
+    Ready(features:) -> StatusReady(features:)
+    Dead(failure:) -> StatusDead(failure:)
+  }
+  process.send(reply, helper_status)
+  actor.continue(state)
+}
+
+fn handle_stdin(
+  state: State,
+  data: BitArray,
+  eof: Bool,
+) -> actor.Next(State, Msg) {
+  case state.exec {
+    None -> actor.continue(state)
+    Some(exec) ->
+      send_or_die(
+        state,
+        framing.Frame(id: exec.id, body: framing.ExecStdin(data:, eof:)),
+      )
+  }
+}
+
+fn handle_cancel(state: State) -> actor.Next(State, Msg) {
+  case state.exec {
+    None -> actor.continue(state)
+    Some(exec) ->
+      case exec.cancel_timer {
+        // Already cancelling: idempotent, keep the first deadline.
+        Some(_) -> actor.continue(state)
+        None -> start_cancel(state, exec)
       }
-    CancelExec ->
-      case state.exec {
-        None -> actor.continue(state)
-        Some(exec) ->
-          case exec.cancel_timer {
-            // Already cancelling: idempotent, keep the first deadline.
-            Some(_) -> actor.continue(state)
-            None -> {
-              let timer =
-                process.send_after(
-                  state.commands,
-                  state.config.cancel_grace_ms,
-                  CancelDeadline(exec_id: exec.id),
-                )
-              let exec = RunningExec(..exec, cancel_timer: Some(timer))
-              let state = State(..state, exec: Some(exec))
-              send_or_die(
-                state,
-                framing.Frame(id: exec.id, body: framing.Cancel),
-              )
-            }
-          }
-      }
-    CancelDeadline(exec_id:) ->
-      case state.exec {
-        // The exec_exit arrived in time; nothing to escalate.
-        None -> actor.continue(state)
-        Some(exec) ->
-          case exec.id == exec_id {
-            // The exec that scheduled this deadline already settled and
-            // a new one started (one helper runs one execution at a
-            // time, so ids never overlap) — a stale timer must not
-            // escalate against a request it knows nothing about.
-            False -> actor.continue(state)
-            True -> {
-              // Belt and braces: the helper missed its own 2s ladder.
-              kill_transport(state.wire_out)
-              die(state, CancelEscalated)
-            }
-          }
-      }
-    HandshakeDeadline ->
-      case state.phase {
-        AwaitingHello -> die(state, HandshakeTimeout)
-        Ready(_) | Dead(_) -> actor.continue(state)
-      }
-    HeartbeatTick ->
-      case state.phase {
-        Ready(_) ->
-          case state.tick_outstanding {
-            True -> die(state, HeartbeatMissed)
-            False -> {
-              let #(state, id) = fresh_id(state)
-              let state = State(..state, tick_outstanding: True)
-              schedule_tick(state)
-              send_or_die(state, framing.Frame(id:, body: framing.Heartbeat))
-            }
-          }
-        AwaitingHello | Dead(_) -> actor.continue(state)
-      }
-    Heartbeat(reply:) ->
-      case state.phase {
-        Ready(_) -> {
-          let #(state, id) = fresh_id(state)
-          let state =
-            State(..state, pending_heartbeats: [
-              #(id, reply),
-              ..state.pending_heartbeats
-            ])
-          send_or_die(state, framing.Frame(id:, body: framing.Heartbeat))
-        }
-        AwaitingHello -> {
-          process.send(reply, Error(NotReady))
-          actor.continue(state)
-        }
-        Dead(failure:) -> {
-          process.send(reply, Error(failure))
-          actor.continue(state)
+  }
+}
+
+// Arms the escalation deadline and sends the payload its TERM. See
+// `cancel`'s doc comment for who each rung of the ladder is addressed to.
+fn start_cancel(state: State, exec: RunningExec) -> actor.Next(State, Msg) {
+  let timer =
+    process.send_after(
+      state.commands,
+      state.config.cancel_grace_ms,
+      CancelDeadline(exec_id: exec.id),
+    )
+  let exec = RunningExec(..exec, cancel_timer: Some(timer))
+  let state = State(..state, exec: Some(exec))
+  send_or_die(state, framing.Frame(id: exec.id, body: framing.Cancel))
+}
+
+fn handle_cancel_deadline(
+  state: State,
+  exec_id: Int,
+) -> actor.Next(State, Msg) {
+  case state.exec {
+    // The exec_exit arrived in time; nothing to escalate.
+    None -> actor.continue(state)
+    Some(exec) ->
+      case exec.id == exec_id {
+        // The exec that scheduled this deadline already settled and a
+        // new one started (one helper runs one execution at a time, so
+        // ids never overlap) — a stale timer must not escalate against
+        // a request it knows nothing about.
+        False -> actor.continue(state)
+        True -> {
+          // Belt and braces: the helper missed its own 2s ladder.
+          kill_transport(state.wire_out)
+          die(state, CancelEscalated)
         }
       }
-    Shutdown -> {
-      let state = notify_death(state, ChannelClosed(status: 0))
-      close_transport(state.wire_out)
-      run_cleanup(state)
-      actor.stop()
+  }
+}
+
+fn handle_handshake_deadline(state: State) -> actor.Next(State, Msg) {
+  case state.phase {
+    AwaitingHello -> die(state, HandshakeTimeout)
+    Ready(_) | Dead(_) -> actor.continue(state)
+  }
+}
+
+fn handle_heartbeat_tick(state: State) -> actor.Next(State, Msg) {
+  case state.phase {
+    Ready(_) ->
+      case state.tick_outstanding {
+        True -> die(state, HeartbeatMissed)
+        False -> send_heartbeat_tick(state)
+      }
+    AwaitingHello | Dead(_) -> actor.continue(state)
+  }
+}
+
+fn send_heartbeat_tick(state: State) -> actor.Next(State, Msg) {
+  let #(state, id) = fresh_id(state)
+  let state = State(..state, tick_outstanding: True)
+  schedule_tick(state)
+  send_or_die(state, framing.Frame(id:, body: framing.Heartbeat))
+}
+
+fn handle_heartbeat(
+  state: State,
+  reply: Subject(Result(Nil, ExecFailure)),
+) -> actor.Next(State, Msg) {
+  case state.phase {
+    Ready(_) -> {
+      let #(state, id) = fresh_id(state)
+      let state =
+        State(..state, pending_heartbeats: [
+          #(id, reply),
+          ..state.pending_heartbeats
+        ])
+      send_or_die(state, framing.Frame(id:, body: framing.Heartbeat))
+    }
+    AwaitingHello -> {
+      process.send(reply, Error(NotReady))
+      actor.continue(state)
+    }
+    Dead(failure:) -> {
+      process.send(reply, Error(failure))
+      actor.continue(state)
     }
   }
+}
+
+fn handle_shutdown(state: State) -> actor.Next(State, Msg) {
+  let state = notify_death(state, ChannelClosed(status: 0))
+  close_transport(state.wire_out)
+  run_cleanup(state)
+  actor.stop()
 }
 
 fn handle_run(
@@ -627,51 +684,53 @@ fn handle_run(
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> actor.Next(State, Msg) {
   case state.phase, state.exec {
-    Dead(failure:), _ -> {
-      process.send(reply, Error(failure))
-      actor.continue(state)
-    }
-    AwaitingHello, _ -> {
-      process.send(reply, Error(NotReady))
-      actor.continue(state)
-    }
-    Ready(_), Some(_) -> {
-      process.send(reply, Error(HelperBusy))
-      actor.continue(state)
-    }
+    Dead(failure:), _ -> refuse_run(state, reply, failure)
+    AwaitingHello, _ -> refuse_run(state, reply, NotReady)
+    Ready(_), Some(_) -> refuse_run(state, reply, HelperBusy)
     Ready(features:), None ->
       case request.demand, degraded_features(features) {
-        FullEnforcement, True -> {
-          process.send(reply, Error(DegradedHelper(features:)))
-          actor.continue(state)
-        }
-        _, _ -> {
-          let #(state, id) = fresh_id(state)
-          let frame =
-            framing.Frame(
-              id:,
-              body: framing.ExecStart(
-                argv: request.argv,
-                env: request.env,
-                cwd: request.cwd,
-                policy: request.policy,
-                token: request.token,
-                limits: None,
-              ),
-            )
-          let exec =
-            RunningExec(
-              id:,
-              events:,
-              demand: request.demand,
-              cancel_timer: None,
-            )
-          let state = State(..state, exec: Some(exec))
-          process.send(reply, Ok(Nil))
-          send_or_die(state, frame)
-        }
+        FullEnforcement, True ->
+          refuse_run(state, reply, DegradedHelper(features:))
+        _, _ -> dispatch_exec(state, request, events, reply)
       }
   }
+}
+
+// The shared shape of every dispatch-time refusal: answer the caller and
+// keep the actor running with no execution recorded.
+fn refuse_run(
+  state: State,
+  reply: Subject(Result(Nil, ExecFailure)),
+  failure: ExecFailure,
+) -> actor.Next(State, Msg) {
+  process.send(reply, Error(failure))
+  actor.continue(state)
+}
+
+fn dispatch_exec(
+  state: State,
+  request: ExecRequest,
+  events: Subject(ExecEvent),
+  reply: Subject(Result(Nil, ExecFailure)),
+) -> actor.Next(State, Msg) {
+  let #(state, id) = fresh_id(state)
+  let frame =
+    framing.Frame(
+      id:,
+      body: framing.ExecStart(
+        argv: request.argv,
+        env: request.env,
+        cwd: request.cwd,
+        policy: request.policy,
+        token: request.token,
+        limits: None,
+      ),
+    )
+  let exec =
+    RunningExec(id:, events:, demand: request.demand, cancel_timer: None)
+  let state = State(..state, exec: Some(exec))
+  process.send(reply, Ok(Nil))
+  send_or_die(state, frame)
 }
 
 // A helper advertising "degraded" (bwrap unavailable) cannot provide
@@ -694,30 +753,33 @@ fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
   let framing.Pushed(deframer:, inbound:, fault:) =
     framing.push(state.deframer, data)
   let state = State(..state, deframer:)
-  let state =
-    list.fold(inbound, state, fn(state, item) {
-      case state.phase {
-        Dead(_) -> state
-        AwaitingHello | Ready(_) ->
-          case item {
-            framing.Known(frame:) -> handle_frame(state, frame)
-            framing.UnknownInbound(id:, kind:) ->
-              // Well-formed but unknown: answer in-band, keep the
-              // channel (forward compatibility, mirrors the helper).
-              send_frame(
-                state,
-                framing.Frame(
-                  id:,
-                  body: framing.ErrorBody(code: "unknown_kind", message: kind),
-                ),
-              )
-          }
-      }
-    })
+  let state = list.fold(inbound, state, apply_inbound)
   case fault, state.phase {
     _, Dead(_) -> actor.continue(state)
     None, _ -> actor.continue(state)
     Some(fault), _ -> die(state, ChannelFault(fault:))
+  }
+}
+
+// Applies one deframed item to the state. Once the channel is dead
+// further inbound items are dropped rather than acted on.
+fn apply_inbound(state: State, item: framing.Inbound) -> State {
+  case state.phase {
+    Dead(_) -> state
+    AwaitingHello | Ready(_) ->
+      case item {
+        framing.Known(frame:) -> handle_frame(state, frame)
+        framing.UnknownInbound(id:, kind:) ->
+          // Well-formed but unknown: answer in-band, keep the channel
+          // (forward compatibility, mirrors the helper).
+          send_frame(
+            state,
+            framing.Frame(
+              id:,
+              body: framing.ErrorBody(code: "unknown_kind", message: kind),
+            ),
+          )
+      }
   }
 }
 
@@ -726,50 +788,9 @@ fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
 fn handle_frame(state: State, frame: Frame) -> State {
   case frame.body {
     framing.Hello(proto:, peer: _, features:) ->
-      case state.phase {
-        AwaitingHello ->
-          case proto == framing.protocol_version {
-            False -> mark_dead(state, ProtocolViolation(kind: "hello"))
-            True -> {
-              // Contract: the broker's hello precedes any other frame
-              // it sends. The helper has proven it read the fd-3
-              // policy, so the temp file can be unlinked now.
-              let #(state, id) = fresh_id(state)
-              let state =
-                send_frame(
-                  state,
-                  framing.Frame(
-                    id:,
-                    body: framing.Hello(
-                      proto: framing.protocol_version,
-                      peer: "broker",
-                      features: [],
-                    ),
-                  ),
-                )
-              let state = run_cleanup(state)
-              let state = State(..state, phase: Ready(features:))
-              list.each(list.reverse(state.ready_waiters), fn(waiter) {
-                process.send(waiter, Ok(features))
-              })
-              schedule_tick(state)
-              State(..state, ready_waiters: [])
-            }
-          }
-        Ready(_) | Dead(_) -> mark_dead(state, ProtocolViolation(kind: "hello"))
-      }
+      handle_hello(state, proto, features)
     framing.ExecOut(stream:, data:, bytes:, truncated:) ->
-      case running_with_id(state, frame.id) {
-        Some(exec) -> {
-          process.send(
-            exec.events,
-            Output(stream:, data:, total_bytes: bytes, truncated:),
-          )
-          state
-        }
-        // Stale output from a settled or unknown execution: dropped.
-        None -> state
-      }
+      handle_exec_out(state, frame.id, stream, data, bytes, truncated)
     framing.ExecExit(
       code:,
       signal:,
@@ -781,61 +802,25 @@ fn handle_frame(state: State, frame: Frame) -> State {
       degraded:,
       wall_ms:,
       timed_out:,
-    ) ->
-      case running_with_id(state, frame.id) {
-        Some(exec) -> {
-          let result =
-            ExecResult(
-              code:,
-              signal:,
-              stdout_bytes:,
-              stderr_bytes:,
-              stdout_truncated:,
-              stderr_truncated:,
-              enforcement:,
-              degraded:,
-              wall_ms:,
-              timed_out:,
-            )
-          cancel_pending_timer(exec)
-          // The enforcement report is ground truth: a degraded run
-          // against a FullEnforcement demand settles as a failure even
-          // though the helper looked healthy at hello. `skip:` entries
-          // count as degradation whatever the bool says — the bool only
-          // tracks the bwrap layer, while a skip marks any layer the
-          // policy called for that was not applied.
-          let event = case exec.demand, degraded_report(enforcement, degraded) {
-            FullEnforcement, True -> Failed(failure: DegradedExecution(result:))
-            FullEnforcement, False | BestEffort, _ -> Exited(result:)
-          }
-          process.send(exec.events, event)
-          State(..state, exec: None)
-        }
-        None -> state
-      }
-    framing.Heartbeat ->
-      case list.key_pop(state.pending_heartbeats, frame.id) {
-        Ok(#(reply, pending_heartbeats)) -> {
-          process.send(reply, Ok(Nil))
-          State(..state, pending_heartbeats:)
-        }
-        // Not a caller probe: it answers the idle tick.
-        Error(Nil) -> State(..state, tick_outstanding: False)
-      }
+    ) -> {
+      let result =
+        ExecResult(
+          code:,
+          signal:,
+          stdout_bytes:,
+          stderr_bytes:,
+          stdout_truncated:,
+          stderr_truncated:,
+          enforcement:,
+          degraded:,
+          wall_ms:,
+          timed_out:,
+        )
+      handle_exec_exit(state, frame.id, result)
+    }
+    framing.Heartbeat -> handle_heartbeat_frame(state, frame.id)
     framing.ErrorBody(code:, message:) ->
-      case running_with_id(state, frame.id) {
-        Some(exec) -> {
-          cancel_pending_timer(exec)
-          process.send(
-            exec.events,
-            Failed(failure: RefusedByHelper(code:, message:)),
-          )
-          State(..state, exec: None)
-        }
-        // An error we cannot correlate (id 0 usually precedes a close;
-        // the close itself settles things). Dropped.
-        None -> state
-      }
+      handle_error_frame(state, frame.id, code, message)
     // These kinds never flow helper-to-broker; a peer sending them is
     // broken or hostile, and the channel dies (spec §3.3 invariant 6).
     framing.ExecStart(..) ->
@@ -846,6 +831,122 @@ fn handle_frame(state: State, frame: Frame) -> State {
     framing.CapResult(..) ->
       mark_dead(state, ProtocolViolation(kind: "cap_result"))
     framing.Cancel -> mark_dead(state, ProtocolViolation(kind: "cancel"))
+  }
+}
+
+fn handle_hello(state: State, proto: Int, features: List(String)) -> State {
+  case state.phase {
+    AwaitingHello ->
+      case proto == framing.protocol_version {
+        False -> mark_dead(state, ProtocolViolation(kind: "hello"))
+        True -> complete_handshake(state, features)
+      }
+    Ready(_) | Dead(_) -> mark_dead(state, ProtocolViolation(kind: "hello"))
+  }
+}
+
+// Answers the helper's hello, unlinks the fd-3 policy file (proof it was
+// read), and releases anything blocked on `await_ready`.
+fn complete_handshake(state: State, features: List(String)) -> State {
+  // Contract: the broker's hello precedes any other frame it sends. The
+  // helper has proven it read the fd-3 policy, so the temp file can be
+  // unlinked now.
+  let #(state, id) = fresh_id(state)
+  let state =
+    send_frame(
+      state,
+      framing.Frame(
+        id:,
+        body: framing.Hello(
+          proto: framing.protocol_version,
+          peer: "broker",
+          features: [],
+        ),
+      ),
+    )
+  let state = run_cleanup(state)
+  let state = State(..state, phase: Ready(features:))
+  list.each(list.reverse(state.ready_waiters), fn(waiter) {
+    process.send(waiter, Ok(features))
+  })
+  schedule_tick(state)
+  State(..state, ready_waiters: [])
+}
+
+fn handle_exec_out(
+  state: State,
+  id: Int,
+  stream: OutputStream,
+  data: BitArray,
+  bytes: Int,
+  truncated: Bool,
+) -> State {
+  case running_with_id(state, id) {
+    Some(exec) -> {
+      process.send(
+        exec.events,
+        Output(stream:, data:, total_bytes: bytes, truncated:),
+      )
+      state
+    }
+    // Stale output from a settled or unknown execution: dropped.
+    None -> state
+  }
+}
+
+fn handle_exec_exit(state: State, id: Int, result: ExecResult) -> State {
+  case running_with_id(state, id) {
+    Some(exec) -> {
+      cancel_pending_timer(exec)
+      // The enforcement report is ground truth: a degraded run against a
+      // FullEnforcement demand settles as a failure even though the
+      // helper looked healthy at hello. `skip:` entries count as
+      // degradation whatever the bool says — the bool only tracks the
+      // bwrap layer, while a skip marks any layer the policy called for
+      // that was not applied.
+      let event = case
+        exec.demand,
+        degraded_report(result.enforcement, result.degraded)
+      {
+        FullEnforcement, True -> Failed(failure: DegradedExecution(result:))
+        FullEnforcement, False | BestEffort, _ -> Exited(result:)
+      }
+      process.send(exec.events, event)
+      State(..state, exec: None)
+    }
+    None -> state
+  }
+}
+
+fn handle_heartbeat_frame(state: State, id: Int) -> State {
+  case list.key_pop(state.pending_heartbeats, id) {
+    Ok(#(reply, pending_heartbeats)) -> {
+      process.send(reply, Ok(Nil))
+      State(..state, pending_heartbeats:)
+    }
+    // Not a caller probe: it answers the idle tick.
+    Error(Nil) -> State(..state, tick_outstanding: False)
+  }
+}
+
+fn handle_error_frame(
+  state: State,
+  id: Int,
+  code: String,
+  message: String,
+) -> State {
+  case running_with_id(state, id) {
+    Some(exec) -> {
+      cancel_pending_timer(exec)
+      process.send(
+        exec.events,
+        Failed(failure: RefusedByHelper(code:, message:)),
+      )
+      State(..state, exec: None)
+    }
+    // An error we cannot correlate (id 0 usually precedes a close; the
+    // close itself settles things). Dropped.
+    None -> state
   }
 }
 
@@ -1289,25 +1390,30 @@ fn handle_pool(
       process.send(reply, outcome)
       actor.continue(state)
     }
-    Checkin(helper:) -> {
-      let lent = case state.lent > 0 {
-        True -> state.lent - 1
-        False -> 0
-      }
-      case helper_ready(helper) {
-        True ->
-          actor.continue(
-            PoolState(..state, lent:, idle: [helper, ..state.idle]),
-          )
-        False -> {
-          shutdown(helper)
-          actor.continue(PoolState(..state, lent:))
-        }
-      }
-    }
+    Checkin(helper:) -> handle_checkin(state, helper)
     StopPool -> {
       list.each(state.idle, shutdown)
       actor.stop()
+    }
+  }
+}
+
+// Returns a borrowed helper. Dead ones rejoin as `helper_ready` refuses
+// them; live ones fall through to `Checkin`'s ordinary bookkeeping.
+fn handle_checkin(
+  state: PoolState,
+  helper: Helper,
+) -> actor.Next(PoolState, PoolMsg) {
+  let lent = case state.lent > 0 {
+    True -> state.lent - 1
+    False -> 0
+  }
+  case helper_ready(helper) {
+    True ->
+      actor.continue(PoolState(..state, lent:, idle: [helper, ..state.idle]))
+    False -> {
+      shutdown(helper)
+      actor.continue(PoolState(..state, lent:))
     }
   }
 }
@@ -1327,15 +1433,15 @@ fn next_helper(
     [] ->
       case state.lent < state.size {
         False -> #(state, Error(AllBusy(size: state.size)))
-        True ->
-          case state.spawn() {
-            Ok(helper) -> #(
-              PoolState(..state, lent: state.lent + 1),
-              Ok(helper),
-            )
-            Error(error) -> #(state, Error(SpawnFailed(error:)))
-          }
+        True -> spawn_new(state)
       }
+  }
+}
+
+fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
+  case state.spawn() {
+    Ok(helper) -> #(PoolState(..state, lent: state.lent + 1), Ok(helper))
+    Error(error) -> #(state, Error(SpawnFailed(error:)))
   }
 }
 
