@@ -80,6 +80,7 @@ fn settings_under(root: String) -> serve.Settings {
     bind_port: 0,
     token_path: root <> "/session.db.token",
     workspace: root <> "/work",
+    base_policy: serve.base_policy(root <> "/work"),
     // Never spawned: nothing in this test runs a tool, and the pool
     // spawns helpers lazily at first checkout.
     helper_path: "/bin/sh",

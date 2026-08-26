@@ -596,24 +596,34 @@ emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
 
-On the Go side, `handleEvent` (`internal/client/client.go:438`) applies
+On the Go side, `handleEvent` (`internal/client/client.go:445`) applies
 the seq discipline before delivering anything:
 
 ```go
-		switch {
-		case ev.Seq <= last:
-			return // duplicate from catch-up overlap
-		case ev.Seq > last+1 && c.haveSnapshot.Load():
-			c.requestCatchUp(last + 1)
-			return
+	if ev.Seq != 0 && replayableRow(ev.Event) && !c.advance(ev.Seq) {
+		return // duplicate from a resume overlap
+	}
 ```
 
-A duplicate is dropped, a gap triggers exactly one `catch_up` and the
-out-of-order event is *not* applied (the replay redelivers it in order),
-a full snapshot resets the position to `next_seq - 1`, and events with no
-seq — snapshots, stream deltas, errors — never move the position.
-Reconnects resume rather than restart, but only once a full snapshot has
-been applied.
+A duplicate is dropped and everything else is applied. There is
+deliberately no gap detection, and the reason is the seq's provenance: it
+*is* the storage seq of the commit that produced the event
+(`protocol-change/006`), so the stream is legitimately sparse — commits
+that write no client event consume seqs too — and a forward jump carries
+no information at all. An earlier version treated one as a gap and asked
+for a replay; the replay was sparse for the same reason, so against a
+real server nothing after the first event was ever applied. Only the
+immutable rows — `entry` and `usage` — move the position, because
+`op_transition`, `escalation` and `strand_result` are read from registers
+as current state, interleave with the rows, and can arrive ahead of one.
+A full snapshot resets the position to `next_seq - 1`, and events with no
+seq — snapshots, stream deltas, errors — never move it. Reconnects resume
+rather than restart, but only once a full snapshot has been applied.
+
+That bug survived because both ends of the earlier test were fakes: the
+Go fake gateway numbers its events 1, 2, 3, …, so the gap rule never
+fired. `packages/client`'s `tui_e2e_test` — the real binary against the
+real server — is what caught it.
 
 The typed message reaches `Update`, which folds it into the transcript,
 and the loop closes. `docs/architecture/client.md` covers the hub, the
@@ -1199,7 +1209,7 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1266`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1279`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:236`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

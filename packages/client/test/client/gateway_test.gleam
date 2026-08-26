@@ -207,6 +207,41 @@ fn subscribe(harness: Harness) -> Nil {
   Nil
 }
 
+// --- who is attached -------------------------------------------------------
+
+/// The count `client/serve` puts to the escalation seam as "is a human
+/// there?", on every poll of every parked call. It had no test at all,
+/// and every parking test injects the answer directly — so nothing
+/// asserted that attaching or leaving moves it.
+pub fn attached_counts_live_connections_test() {
+  let harness = start_harness()
+  assert gateway.attached(harness.hub) == 1
+    as "the harness's own connection counts"
+
+  let second = gateway.attach(harness.hub, fn(_frame) { Nil })
+  assert gateway.attached(harness.hub) == 2
+  gateway.detach(harness.hub, second)
+  assert gateway.attached(harness.hub) == 1
+    as "a detached connection stops counting"
+
+  // Detaching an id nobody holds is a no-op, not a decrement: a
+  // miscounted hub would park a call for a human who has gone.
+  gateway.detach(harness.hub, 9999)
+  assert gateway.attached(harness.hub) == 1
+
+  gateway.detach(harness.hub, harness.connection)
+  assert gateway.attached(harness.hub) == 0
+    as "the last client leaving makes the session headless"
+}
+
+/// A hub that was never started answers zero rather than exiting the
+/// caller — a server without a gateway is by definition not being
+/// watched, and the only caller is a tool effect process.
+pub fn attached_without_a_hub_is_zero_test() {
+  let name = process.new_name(prefix: "loom_absent_hub")
+  assert gateway.attached(gateway.Gateway(name:)) == 0
+}
+
 // --- envelope conduct ------------------------------------------------------
 
 pub fn malformed_frame_answered_in_band_test() {

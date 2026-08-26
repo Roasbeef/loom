@@ -79,6 +79,12 @@ over one session file. WP-L.
   `LOOM_*` environment.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
+- `test/client/tui_e2e_test` + `test/support/terminal` — the real
+  `loom-tui` binary against a real `serve.boot`, in a real terminal
+  (`tmux` on a private socket, declared geometry, every wait a predicate
+  over pane content with a deadline). The only test in the tree with a
+  fake on *neither* side of the protocol; only the model is scripted.
+  Skips — loudly — when `tmux` or `go` is absent.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
   child_name, is_subagent, frame_message, frame_brief}` — the Agency:
   `tools/agent`'s messaging seam implemented over a live runtime. `seam`
@@ -178,10 +184,17 @@ over one session file. WP-L.
   `client.main` delegates here for the shipment's entrypoint.
 - `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
-  jailed commands run under, the session's composed base policy, and the
+  jailed commands run under, the *default* session base policy, and the
   one question the prompt has no other source for — whether a helper's
   hello advertises `degraded`, asked once at open by borrowing from the
   pool the session will use anyway.
+- `client/serve.Settings.base_policy` — the base every tool call is
+  composed against, and the thing an escalation widens. A field rather
+  than a `base_policy(workspace)` call inside `boot`, so a host may serve
+  a narrower base and let approvals widen it per call; `main` fills it
+  with `base_policy(workspace)`. Under the default nothing can park (see
+  Invariants), which is what made the escalation plane unreachable from
+  an end-to-end until `client/tui_e2e_test`.
 
 ## Relationships
 
@@ -428,6 +441,16 @@ over one session file. WP-L.
   those payloads opaquely. A payload that will not decode is dropped
   rather than faulted on: skipping a grant can only narrow what the call
   receives, and the call still settles in band under whatever remains.
+- **A base that covers every shipped tool can never park.** Composition
+  refuses only when a tool's requirements exceed the base, and
+  `base_policy` grants read of `/`, writes to the workspace, and the four
+  environment names `bash` passes — which is every requirement any
+  shipped tool has, since all of them are static rather than derived from
+  call arguments. So the default posture is one where the escalation
+  plane is real but dormant, and a host that wants approvals to mean
+  something serves a narrower `Settings.base_policy`. This is why the
+  base is a setting: a test cannot otherwise boot a real server into a
+  state where a refusal happens at all.
 - **Every policy refusal raises a durable record; only some park.** The
   two questions are separate on purpose. Raising is unconditional and
   deduplicated by a digest of `{strand, tool, wanted diff}`, so a model

@@ -461,7 +461,7 @@ demonstrated.
 | M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms | done |
 | M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly | partial |
 | M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live | partial |
-| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the TUI leg still drives a fake) |
+| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI binary drives the real server as of issue #7; `H(macOS)` resolved as unscheduled, not delivered) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | not started |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
@@ -531,11 +531,22 @@ green under `make check` on one Linux development container.
   gateway request under the summarization pack, and the demo installs
   those same hooks — it has no compaction hooks of its own, so the
   `CompactionEntry` it asserts on carries text the provider produced.
-  Two criteria remain weaker than the row reads. *The TUI drives a
-  fake*:
-  the two ends are pinned to one fixture corpus and the TUI's own
-  end-to-end runs against a Go fake gateway. `make dev` attaches the real
-  TUI to the real server, but a human drives it; no test does.
+  *The TUI leg is closed* (issue #7): `client/tui_e2e_test` builds the
+  real `loom-tui` binary, runs it in a real terminal under `tmux` against
+  a real `client/serve.boot`, and drives a turn, a fork and an escalation
+  through keystrokes alone — only the model is scripted. It found two
+  bugs no fake-driven test could: the Go client treated the gateway's
+  sparse *storage* seqs as stream gaps and dropped every durable event
+  after the first (the fake numbers its events 1, 2, 3, …), and the
+  bubbletea view was one line taller than the window, which costs the
+  status bar because oversized frames are trimmed from the top. It also
+  reaches what nothing else did — an approval travelling from a keystroke
+  over the websocket into a *parked* call, asserted as `Consumed` rather
+  than `Approved`, since only `client/escalate`'s park loop writes the
+  former. That needed one seam: the session base policy is now a
+  `serve.Settings` field, because under `serve.base_policy` no shipped
+  tool's requirements can exceed the base and nothing can ever park.
+  One criterion remains weaker than the row reads.
   *`H(macOS)` was resolved, not delivered*: Seatbelt is deliberately
   unimplemented, because a generated profile can only be tested against
   the string it was told to emit, which cannot distinguish

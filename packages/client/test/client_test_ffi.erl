@@ -6,7 +6,7 @@
 %% lines are the point, not an accident.
 -module(client_test_ffi).
 
--export([ws_roundtrip/4]).
+-export([ws_roundtrip/4, which/1, run/3]).
 
 %% Returns {ok, Payload} with the first text frame the server sends
 %% after our frame, or {error, Reason} naming the step that failed.
@@ -101,3 +101,40 @@ deliver(Socket, Opcode, Length, Rest) ->
 
 fail(Step, Reason) ->
     {error, iolist_to_binary(io_lib:format("~p: ~p", [Step, Reason]))}.
+
+%% --- running a program -----------------------------------------------------
+%%
+%% `open_port({spawn_executable, ...}, [{args, ...}])` rather than
+%% `os:cmd/1`: the arguments reach execve as a vector, so nothing the
+%% test builds is ever parsed by a shell. That matters here because the
+%% strings being passed are terminal keystrokes.
+
+%% The absolute path of a program on PATH, or `Error(Nil)`.
+which(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> {error, nil};
+        Path -> {ok, list_to_binary(Path)}
+    end.
+
+%% Runs Exe with Args in Dir, returning {ok, {ExitStatus, Output}} with
+%% stdout and stderr interleaved, or {error, Reason} if the program could
+%% not be started or did not exit within the window.
+run(Exe, Args, Dir) ->
+    Options =
+        [{args, [binary_to_list(A) || A <- Args]}, {cd, binary_to_list(Dir)},
+         binary, exit_status, stderr_to_stdout, hide],
+    try erlang:open_port({spawn_executable, binary_to_list(Exe)}, Options) of
+        Port -> collect(Port, <<>>)
+    catch
+        _Class:Reason ->
+            {error, iolist_to_binary(io_lib:format("spawn: ~p", [Reason]))}
+    end.
+
+collect(Port, Acc) ->
+    receive
+        {Port, {data, Data}} -> collect(Port, <<Acc/binary, Data/binary>>);
+        {Port, {exit_status, Status}} -> {ok, {Status, Acc}}
+    after 300000 ->
+        catch erlang:port_close(Port),
+        {error, <<"the program did not exit within five minutes">>}
+    end.

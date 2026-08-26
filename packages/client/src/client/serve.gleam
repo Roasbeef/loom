@@ -217,6 +217,14 @@ pub type Settings {
     token_path: String,
     /// The agent's workspace root.
     workspace: String,
+    /// The session's base policy — the ceiling every tool call is
+    /// composed against, and the thing an escalation widens. `main`
+    /// fills it with `base_policy(workspace)`; it is a field rather than
+    /// a call inside `boot` so that a host — or a test — can serve a
+    /// narrower base without editing this module. Nothing else about the
+    /// boot reads it, so a base that refuses a shipped tool is a
+    /// deliberate, in-band posture rather than a broken server.
+    base_policy: policy.SandboxPolicy,
     /// The `loom-exec` helper binary.
     helper_path: String,
     /// The name clients subscribe with (derived from the session file).
@@ -487,6 +495,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     bind_port:,
     token_path: option.unwrap(flags.token_file, session_path <> ".token"),
     workspace:,
+    base_policy: base_policy(workspace),
     helper_path:,
     session_id: session_id_of(session_path),
     demand: case flags.best_effort {
@@ -790,7 +799,7 @@ fn assemble(
     exec.SpawnConfig(
       helper_path: settings.helper_path,
       shell_path:,
-      base_policy: base_policy(settings.workspace),
+      base_policy: settings.base_policy,
       // The server never opts out of enforcement on the caller's behalf:
       // on a platform with no jail the helper refuses to serve, which is
       // the refusal `--allow-unenforced` exists to make deliberate.
@@ -939,7 +948,7 @@ fn assemble(
       registry: tool_registry,
       workspace: settings.workspace,
       blob_root:,
-      base_policy: base_policy(settings.workspace),
+      base_policy: settings.base_policy,
       escalations: escalate.seam(escalate_config),
       demand: settings.demand,
       env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
@@ -1199,7 +1208,7 @@ fn render_prompt(
       tools:,
       demand: settings.demand,
       degraded: degraded(pool),
-      base_policy: base_policy(settings.workspace),
+      base_policy: settings.base_policy,
       guidance:,
     ),
   ))
@@ -1249,9 +1258,11 @@ pub fn degraded(pool: Pool) -> Bool {
 /// the agent could only discover by writing a broken command.
 pub const shell_path = "/bin/sh"
 
-/// The session base policy: workspace writable, the whole filesystem
-/// readable (interpreters live outside the workspace — spec-gaps WP-I
-/// item 3), network off. Escalations widen it per approval.
+/// The default session base policy: workspace writable, the whole
+/// filesystem readable (interpreters live outside the workspace —
+/// spec-gaps WP-I item 3), network off. Escalations widen it per
+/// approval. This is what `main` puts in `Settings.base_policy`; a host
+/// that supplies its own may serve a narrower one.
 ///
 /// ## Examples
 ///

@@ -758,6 +758,28 @@ the other side.
    records refusals and settles them rather than holding a call open for
    a decision nobody is there to make.
 
+   **The loop is now driven by a real client over the real protocol**
+   (issue #7). Until then every approval in every test was an in-process
+   `api.approve_escalation` and every parking test injected `interactive`
+   as a constant, so nothing had ever watched a decision travel from a
+   keystroke into a call that was waiting for it — and `gateway.attached`
+   itself, the value the whole behaviour now turns on, had no test at
+   all. `client/tui_e2e_test` closes both: it counts the hub's
+   connections going 0 → 1 → 0 as the real `loom-tui` attaches and
+   quits, and it asserts a parked refusal reaches `Consumed`, which only
+   `client/escalate`'s park loop writes — `Approved` alone would mean the
+   frame arrived and nothing was waiting for it.
+
+   Reaching that needed a seam: the session base policy is a
+   `serve.Settings` field rather than a `base_policy(workspace)` call
+   inside `boot`. Under the shipped base no tool can provoke a refusal —
+   it grants read of `/`, writes to the workspace, and the four
+   environment names `bash` passes, which is every requirement any
+   shipped tool has — so a real server could not be booted into a state
+   where anything parks. The field is also an honest posture knob: a
+   cautious operator may serve a narrower base and let escalations widen
+   it per call, which is what the escalation plane is for.
+
    Two bounds on a park, both load-bearing: the configured window, and
    the call's own budget deadline — the broker's ledger refuses a
    reservation past `deadline_ms`, so holding a call past it would trade
