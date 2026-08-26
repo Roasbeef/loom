@@ -164,6 +164,37 @@ func TestEnvAllowlistEnforced(t *testing.T) {
 	}
 }
 
+// #60 case 1: a protected path that does not exist, under a directory
+// the policy leaves read-only, must refuse in Loom's own words before
+// bwrap ever runs — not launch a jail that dies with a bare `Can't mkdir
+// parents for PATH: Read-only file system` and exit 1, indistinguishable
+// from the payload's own command failing. `~/.ssh` is exactly this
+// shape: a default protected path whose parent ($HOME) an ordinary
+// policy does not also grant write under.
+func TestStartRefusesAnUnmaskableProtectedPath(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if feat.BwrapPath == "" {
+		t.Skip("this refusal only applies when bwrap builds the mount plan")
+	}
+	pol := testPolicy(t)
+	// testPolicy's writable root is a fresh temp dir; "missing" is
+	// guaranteed absent under it, and its parent (the temp dir) is not
+	// itself writable — only the temp dir's *subtree* the writable root
+	// names is.
+	missing := pol.WritableRoots[0] + "-sibling/missing"
+	pol.Protected = []string{missing}
+	_, err := jail.Start(jail.Request{
+		Argv: []string{"/bin/sh", "-c", "echo unreachable"},
+		Env:  testEnv, Cwd: "/", Policy: pol,
+	}, feat, testbin.Helper(t), func(string, []byte, uint64, bool) {})
+	if err == nil {
+		t.Fatal("Start succeeded for a protected path bwrap cannot mask")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Fatalf("refusal does not name the path: %v", err)
+	}
+}
+
 func TestOutputTruncation(t *testing.T) {
 	pol := testPolicy(t)
 	pol.Limits.OutputBytes = 4096

@@ -94,6 +94,60 @@ func TestAuditMountsAcceptAReadableRootThePolicyAlsoMakesWritable(t *testing.T) 
 	}
 }
 
+// #60 case 1: a PathMissing protected path whose parent the plan leaves
+// read-only cannot be masked — bwrap needs write access to create the
+// mount point, and refuses the whole jail with a bare `Can't mkdir
+// parents for PATH: Read-only file system` otherwise. `~/.ssh`, a
+// default protected path, hits this on any policy that does not also
+// grant write under $HOME.
+func TestUnmountableProtectedFlagsAReadOnlyParent(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Protected:     []string{"/home/user/.ssh"},
+	}
+	kinds := map[string]PathKind{"/home/user/.ssh": PathMissing}
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
+	if len(bad) != 1 || bad[0] != "/home/user/.ssh" {
+		t.Fatalf("UnmountableProtected = %v, want [/home/user/.ssh]", bad)
+	}
+}
+
+// A missing protected path under a region the policy already grants
+// write to is fine: bwrap can create the mount point there, exactly as
+// PathMissing's own contract (masked so it stays uncreatable) intends.
+func TestUnmountableProtectedAllowsAWritableParent(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Protected:     []string{"/work/.env"},
+	}
+	kinds := map[string]PathKind{"/work/.env": PathMissing}
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
+	if len(bad) != 0 {
+		t.Fatalf("UnmountableProtected = %v, want none: /work is writable", bad)
+	}
+}
+
+// A protected path that already exists needs no mount point created —
+// its mask binds onto it or remounts it — so it is never flagged
+// regardless of what covers its parent.
+func TestUnmountableProtectedIgnoresExistingPaths(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Protected:     []string{"/home/user/.ssh"},
+	}
+	kinds := map[string]PathKind{"/home/user/.ssh": PathDir}
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
+	if len(bad) != 0 {
+		t.Fatalf("UnmountableProtected = %v, want none: the path already exists", bad)
+	}
+}
+
 // statKinds classifies the *target*, not the link. The mask forms differ
 // by inode type, and masking a directory with the file form is a bind of
 // a character device over a directory: ENOTDIR, and no jail at all. That

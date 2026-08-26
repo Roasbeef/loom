@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -200,9 +201,33 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		jailed := req.Policy
 		jailed.Protected = resolveProtected(req.Policy.Protected)
 		kinds := statKinds(jailed.Protected)
+		plan := MountPlan(jailed, kinds)
+
+		// A PathMissing protected path bwrap cannot actually mask —
+		// creating its mount point needs write access to the parent
+		// directory, and the plan leaves that parent read-only — refuses
+		// the whole jail with a bare `Can't mkdir parents for PATH:
+		// Read-only file system` and exit 1, no different from the
+		// payload's own command failing. `~/.ssh`, a default protected
+		// path, hits this on any policy that does not also grant write
+		// under $HOME: the ordinary case, not an edge one (#60). Loom
+		// refuses in its own words, naming the path, before bwrap ever
+		// runs; see UnmountableProtected and the "which path lists
+		// tolerate a missing path" comment in bwrap.go.
+		if bad := UnmountableProtected(kinds, plan); len(bad) > 0 {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: protected path(s) %s do not "+
+				"exist and the region covering their parent directory is "+
+				"not writable, so bwrap cannot create the mask for them; "+
+				"grant write under the parent directory or remove the "+
+				"entry from protected", strings.Join(bad, ", "))
+		}
+
 		// Audited here, reported only if stage 2 later proves the plan
 		// was actually executed. See mounts.go for both halves.
-		mounts = AuditMounts(jailed, MountPlan(jailed, kinds))
+		mounts = AuditMounts(jailed, plan)
 		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds)...)
 		argv = append(argv, stage2...)
 	} else {

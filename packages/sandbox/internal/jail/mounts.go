@@ -55,6 +55,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/roasbeef/loom/sandbox/internal/policy"
@@ -176,6 +177,33 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 	rep.Applied = fmt.Sprintf("mounts:ro=%d,rw=%d,mask=%d,scratch=%s,plan=%s",
 		ro, rw, mask, scratch, planDigest(plan))
 	return rep
+}
+
+// UnmountableProtected reports every PathMissing protected path bwrap
+// cannot actually mask: creating the mount point needs write access to
+// the parent directory, and the plan leaves that parent read-only (the
+// default of everything not otherwise granted). bwrap's own failure for
+// this shape is a bare `Can't mkdir parents for PATH: Read-only file
+// system` and exit 1 — indistinguishable from the payload's own command
+// failing (#60). run.go calls this before ever building the argv, so the
+// caller gets a refusal that names the path instead.
+//
+// A path that already exists needs no mount point created for it — its
+// mask binds onto it (a file) or remounts it (a directory), never
+// creates it — so only PathMissing entries are checked; see PathKind.
+func UnmountableProtected(kinds map[string]PathKind, plan []MountOp) []string {
+	var bad []string
+	for path, kind := range kinds {
+		if kind != PathMissing {
+			continue
+		}
+		parent := filepath.Dir(clean(path))
+		if !effective(plan, parent).writable() {
+			bad = append(bad, path)
+		}
+	}
+	sort.Strings(bad)
+	return bad
 }
 
 // widened renders one skip reason, naming both the path and the

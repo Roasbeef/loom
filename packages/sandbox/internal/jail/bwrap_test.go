@@ -33,7 +33,10 @@ func basePol() policy.Policy {
 //
 //	--ro-bind / /                   the base view, and the least
 //	                                specific readable grant there is
-//	--ro-bind /opt/tools …          a readable root nested inside it
+//	--ro-bind-try /opt/tools …      a readable root nested inside it.
+//	                                "-try": readable_roots may legitimately
+//	                                be absent on a given host (#60), unlike
+//	                                the base view above
 //	--tmpfs /tmp                    the scratch area. A *grant*: it is
 //	                                what provides writable scratch, so
 //	                                it belongs in the grant phase.
@@ -77,7 +80,7 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"--unshare-cgroup-try",
 		"--unshare-net",
 		"--ro-bind", "/", "/",
-		"--ro-bind", "/opt/tools", "/opt/tools",
+		"--ro-bind-try", "/opt/tools", "/opt/tools",
 		"--tmpfs", "/tmp",
 		"--bind", "/work", "/work",
 		"--dev", "/dev",
@@ -195,6 +198,37 @@ func TestBwrapArgsMissingProtectedMasked(t *testing.T) {
 	}
 }
 
+// #60: a readable root may legitimately not exist on a given host (an
+// optional toolchain path, a platform-specific system directory), so it
+// is bound with the "-try" form rather than refusing the whole jail
+// outright — matching the Optional flag llock.Rules already grants the
+// same list at the Landlock layer (see the "which path lists tolerate a
+// missing path" comment above readableRootOp).
+func TestBwrapArgsReadableRootToleratesAbsence(t *testing.T) {
+	p := basePol()
+	p.ReadableRoots = []string{"/opt/maybe-missing"}
+	got := BwrapArgs(p, nil)
+	if !containsSeq(got, []string{"--ro-bind-try", "/opt/maybe-missing", "/opt/maybe-missing"}) {
+		t.Fatalf("readable root not bound with --ro-bind-try: %q", got)
+	}
+	if containsSeq(got, []string{"--ro-bind", "/opt/maybe-missing", "/opt/maybe-missing"}) {
+		t.Fatalf("readable root bound with the non-tolerant form: %q", got)
+	}
+}
+
+// The base view is the one readable grant that is never "-try": "/"
+// always exists, and it is the fallback the whole jail's visibility
+// depends on — silently tolerating its absence would hide a much bigger
+// problem than a missing optional root.
+func TestBwrapArgsBaseViewIsNeverTry(t *testing.T) {
+	p := basePol()
+	p.ReadableRoots = nil
+	got := BwrapArgs(p, nil)
+	if !containsSeq(got, []string{"--ro-bind", "/", "/"}) {
+		t.Fatalf("base view not bound with --ro-bind: %q", got)
+	}
+}
+
 func TestBwrapArgsPathScratch(t *testing.T) {
 	p := basePol()
 	p.Scratch = "/var/scratch"
@@ -273,7 +307,7 @@ func TestBwrapArgsNestedReadableRootStaysReadOnly(t *testing.T) {
 	p.Protected = nil
 	got := BwrapArgs(p, nil)
 	parent := indexOfOp(got, []string{"--bind", "/work", "/work"})
-	child := indexOfOp(got, []string{"--ro-bind", "/work/vendor", "/work/vendor"})
+	child := indexOfOp(got, []string{"--ro-bind-try", "/work/vendor", "/work/vendor"})
 	if parent < 0 || child < 0 {
 		t.Fatalf("argv missing the writable parent or the readable child: %q", got)
 	}
@@ -292,7 +326,8 @@ func TestBwrapArgsWritableBeatsReadableAtTheSamePath(t *testing.T) {
 	p.WritableRoots = []string{"/work"}
 	p.Protected = nil
 	got := BwrapArgs(p, nil)
-	if indexOfOp(got, []string{"--ro-bind", "/work", "/work"}) >= 0 {
+	if indexOfOp(got, []string{"--ro-bind", "/work", "/work"}) >= 0 ||
+		indexOfOp(got, []string{"--ro-bind-try", "/work", "/work"}) >= 0 {
 		t.Fatalf("the losing readable grant is still emitted: %q", got)
 	}
 	if indexOfOp(got, []string{"--bind", "/work", "/work"}) < 0 {
@@ -430,8 +465,8 @@ func TestBwrapArgsRegionsAreCanonical(t *testing.T) {
 	p.WritableRoots = []string{"/work"}
 	p.Protected = []string{"/work/.git/"}
 	got := BwrapArgs(p, map[string]PathKind{"/work/.git/": PathDir})
-	if indexOfOp(got, []string{"--ro-bind", "/work/", "/work/"}) >= 0 ||
-		indexOfOp(got, []string{"--ro-bind", "/work", "/work"}) >= 0 {
+	if indexOfOp(got, []string{"--ro-bind-try", "/work/", "/work/"}) >= 0 ||
+		indexOfOp(got, []string{"--ro-bind-try", "/work", "/work"}) >= 0 {
 		t.Fatalf("the losing readable grant survived a trailing slash: %q", got)
 	}
 	if indexOfOp(got, []string{"--bind", "/work", "/work"}) < 0 {

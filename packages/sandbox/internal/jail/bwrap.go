@@ -229,7 +229,7 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 	// least specific readable grant and nothing more.
 	grant(readableOp("/"))
 	for _, r := range p.ReadableRoots {
-		grant(readableOp(r))
+		grant(readableRootOp(r))
 	}
 	for _, w := range p.WritableRoots {
 		grant(writableOp(w))
@@ -295,11 +295,64 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 	return plan
 }
 
+// readableOp binds path read-only, refusing the jail outright if path
+// does not exist. Used only for the base view ("/"), which is exempt
+// from the tolerance question below by construction — the root always
+// exists.
 func readableOp(path string) MountOp {
 	path = region(path)
 	return MountOp{Class: ClassReadable, Path: path,
 		Argv: []string{"--ro-bind", path, path}}
 }
+
+// readableRootOp binds one of the policy's own readable_roots read-only,
+// tolerating its absence. See "Which path lists tolerate a missing
+// path" below for why this list and no other gets the "-try" form.
+func readableRootOp(path string) MountOp {
+	path = region(path)
+	return MountOp{Class: ClassReadable, Path: path,
+		Argv: []string{"--ro-bind-try", path, path}}
+}
+
+// Which path lists tolerate a missing path (#60)
+//
+// bwrap's non-"-try" bind forms require the source to exist and refuse
+// the whole jail outright when it does not — a bare `Can't bind mount
+// SRC: No such file or directory` and exit 1, no different from the
+// payload's own command failing. Four lists feed the mount plan, and the
+// decision is not the same for all of them:
+//
+//   - **readable_roots tolerates absence** (`--ro-bind-try`, above).
+//     These are broker- or tool-named paths that vary by host — an
+//     optional toolchain root, a system directory only some platforms
+//     carry — and losing one narrows what the jail can read, never what
+//     it can write or leaves unprotected. That is the same judgment
+//     `llock.Rules` already made for this exact list (`Optional: true`,
+//     `IgnoreIfMissing()`), so the two layers now agree rather than one
+//     refusing what the other shrugs at.
+//   - **writable_roots does not** (`writableOp`, `--bind`, below). A
+//     missing writable root silently narrowed would mean a tool believes
+//     it has write access it does not — a correctness hazard worth a
+//     loud failure, not a quiet one. It still fails as a bare bwrap
+//     exit 1 today; giving it the same up-front, path-naming refusal as
+//     `protected` below is a follow-up, not done here.
+//   - **the host-path form of scratch does not**, for the same reason:
+//     an operator who names a real directory as the jail's dedicated
+//     scratch is asking for that directory specifically, and a silent
+//     substitute (or none at all) is not what was asked for. Also an
+//     open follow-up rather than fixed here.
+//   - **protected never tolerates absence, and never silently skips
+//     either** — a mask that got skipped because its target does not
+//     exist yet is the one outcome the feature exists to prevent. So a
+//     `PathMissing` protected path always gets its mask op (`maskOp`,
+//     unchanged); what changed is upstream of bwrap entirely.
+//     `UnmountableProtected` (mounts.go) catches the one shape that mask
+//     cannot itself satisfy — a parent bwrap has no write access to
+//     create the mount point under — and `run.go` refuses the policy
+//     before bwrap ever runs, naming the path and the reason. `~/.ssh`,
+//     a default protected path, hits exactly this on any policy that
+//     does not also grant write under $HOME, which is the ordinary case,
+//     not an edge one.
 
 func writableOp(path string) MountOp {
 	path = region(path)
