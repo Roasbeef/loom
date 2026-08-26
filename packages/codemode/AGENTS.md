@@ -139,6 +139,22 @@ model-influenced code itself (Rule Zero). WP-J.
   escaped `.beam`.** The token file is readable inside the jail by
   necessity. What confines a hostile `.beam` is the kernel jail and the
   broker's per-call policy check. Do not write it the other way round.
+  Both halves of that sentence are now observed rather than argued. The
+  broker's half is in `satellite_test.gleam`: an unauthenticated
+  `cap_call` denied, and the genuine token presented against a
+  policy-forbidden call and refused. The kernel's half is the sandbox
+  self-test's `unvetted beam denied host write, secret, and network`
+  probe — a hand-written Erlang module, never vetted, never built by the
+  compile service, never touching the cap channel, loaded straight into a
+  node inside the jail and calling `file:write_file/2`,
+  `file:read_file/1` and `gen_tcp:connect/4` for itself. Confined it gets
+  `erofs`, `enoent` and `eperm`; with the same three policy mechanisms
+  granted instead of withheld it reaches all three, which is what keeps
+  the first result from being three failures in a row that mean nothing.
+  What is *not* claimed is "reaches nothing on the filesystem": the
+  helper's base view ro-binds the whole host filesystem, so an
+  unprotected host path is still readable from inside the jail
+  (`protocol-change/004-sandbox-policy-explicit-mounts.md`).
 - **Reachability is checked, not assumed.** `SandboxPolicyV1` has no
   "bind this path" verb, so the launcher expresses the socket and token as
   readable roots *and* refuses the two cases the vocabulary cannot state:

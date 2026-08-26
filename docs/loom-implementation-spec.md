@@ -129,7 +129,11 @@ pub type SeqExpectation { Expect(ns: RegisterNs, key: String, seq: Option(Seq)) 
 pub type CommitResult { CommitResult(first_seq: Seq, seqs: List(Seq), ts: Int) }
 pub type CommitError { StaleExpectation(failed: SeqExpectation)
                        Corruption(report: CorruptionReport)
-                       Faulted(reason: String) }
+                       Faulted(reason: String)
+                       LeaseLost(held_by: Option(String)) }
+                       // LeaseLost added by protocol-change/005: the
+                       // single-writer lease was stolen or cleared, so
+                       // reloading changes nothing and only reopening can.
 ```
 
 ### 1.2 Storage behaviour (WP-B implements; C/E consume)
@@ -494,13 +498,18 @@ green under `make check` on one Linux development container.
 - **M2** — the jailed end-to-end and the crash rider run against the real
   `loom-exec`, but under `BestEffort`: no machine the suite has run on
   has had bubblewrap, Landlock, or a delegated cgroup v2 hierarchy, so
-  `make selftest` reports three of its seven probes SKIPPED
-  (write-outside-roots, protected-path write, pids cap) and *nothing has
-  yet proved a kernel confined anything*. Two probes WP-H's exit list
-  names have no implementation at all: a non-allowlisted host under
-  `Proxy` — the egress sidecar is unbuilt, and proxy mode fails closed as
-  network-off — and setsid escape. Escalation is specified in §5.3 and
-  exercised in tests, but no production path raises one (spec-gaps WP-L
+  `make selftest` on such a machine reports every kernel-dependent probe
+  SKIPPED and *nothing there proves a kernel confined anything*. The suite
+  is now nine probes, and the CI `jail-linux` job is the machine that has
+  the layers: it installs bubblewrap, lifts Ubuntu's AppArmor restriction
+  on unprivileged user namespaces, and delegates a cgroup v2 base, and
+  `.github/enforcement-expectations` declares probe by probe which layers
+  that run must actually have applied. One probe WP-H's exit list names
+  still has no implementation at all: a non-allowlisted host under `Proxy`,
+  because the egress sidecar is unbuilt and proxy mode fails closed as
+  network-off. The setsid escape probe and the hostile-`.beam` probe, which
+  that list also names, are both built and both `required`. Escalation is
+  specified in §5.3 and exercised in tests, but no production path raises one (spec-gaps WP-L
   1, WP-J 15).
 - **M3** — the multi-strand demo, fork, navigate, catch-up and the
   escalation round trip all run through the public protocol in
@@ -529,9 +538,16 @@ green under `make check` on one Linux development container.
   test through real vetting, a real offline `gleam build`, and a real
   jailed satellite, and the test asserts the
   race's loser is killed rather than left running. The concurrency suite
-  and the in-process tabletop are green. Outstanding: the tabletop's
-  kernel half (a hostile `.beam` loaded directly reaches nothing) needs a
-  target-tier kernel; the satellite's enforcement report is usually lost
+  and the in-process tabletop are green, and the tabletop's kernel half is
+  no longer reasoning: the `unvetted beam denied host write, secret, and
+  network` self-test probe loads a hand-written, never-vetted Erlang module
+  into a jailed node, and it is `required` of the jail CI job. What that
+  probe claims is narrower than the row's wording — an unvetted `.beam`
+  cannot write outside its writable roots, cannot see a protected path, and
+  cannot reach the network, but an *unprotected* host path is still
+  readable, because the base view ro-binds the whole filesystem
+  (`protocol-change/004-sandbox-policy-explicit-mounts.md`). Outstanding:
+  the satellite's enforcement report is usually lost
   to the abort that races it, so a green run does not prove the jail
   engaged (spec-gaps WP-J 14); and of the nine cap modules vetting
   admits, the shipped router services exactly one, `proc.run` — the rest

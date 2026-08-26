@@ -166,12 +166,15 @@ fn connected_then_finish(ctx: PeerCtx) -> Nil {
 
 // --- escaped-satellite tabletop (WP-J exit criterion, in-process half) ---
 //
-// The kernel-enforced half of the tabletop — that a hostile `.beam` inside
-// the jail reaches *nothing* on the filesystem or network — depends on the
-// real Go sandbox and a target-tier kernel, and is deferred to `make e2e`
-// (consistent with the existing sandbox degraded-mode practice). The two
-// halves proved here are the ones the host owns: an unauthorized `cap_call`
-// is denied, and a satellite that never returns is killed at the deadline.
+// The kernel-enforced half of the tabletop — a hostile `.beam` loaded
+// straight into the node, bypassing vetting and the cap channel entirely —
+// needs the real Go sandbox and a kernel to enforce with, so it lives
+// there: the `unvetted beam denied host write, secret, and network` probe
+// in `packages/sandbox/internal/selftest`, which `make selftest` runs and
+// `.github/enforcement-expectations` declares required of the jail CI job.
+// The two halves proved here are the ones the host owns: an unauthorized
+// `cap_call` is denied, and a satellite that never returns is killed at
+// the deadline.
 
 pub fn cap_calls_without_the_token_are_all_denied_test() {
   let dir = fresh_dir("denied")

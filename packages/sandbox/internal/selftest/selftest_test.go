@@ -78,3 +78,70 @@ func TestForkBombProbeReadsTheCgroupSkipRatherThanBlamingTheJail(t *testing.T) {
 		t.Fatalf("an applied cgroup must not read as skipped: %q", none)
 	}
 }
+
+// The hostile-`.beam` probe reports ENFORCED when three attempts fail —
+// and three attempts failing is also exactly what a broken probe, a
+// module that never loaded, or a mistyped path looks like. So the probe
+// is worth nothing without this: the same adversary, the same argv, and
+// the same jail, run once with the three mechanisms it measures granted
+// rather than withheld. If that run does not reach all three, the
+// confined run's denials are not evidence of anything and this test says
+// so instead of letting the probe stay green.
+//
+// The escape it demonstrates is real but reaches nothing that outlives
+// the test: a writable root the probe created under its own scratch
+// directory, and a loopback listener the probe is holding open.
+func TestTheHostileBeamReachesEverythingWhenTheJailStopsRefusing(t *testing.T) {
+	got, why, err := selftest.RunHostileBeamForTest(testbin.Helper(t), false)
+	if err != nil {
+		t.Fatalf("permissive run: %v", err)
+	}
+	if why != "" {
+		t.Skipf("cannot assemble the adversary here: %s", why)
+	}
+	t.Logf("permissive run: %s", got.Summary)
+	if !got.Loaded || !got.Done {
+		t.Fatalf("the adversary did not run to completion even unconfined, "+
+			"so the probe's denials mean nothing: %s", got.Summary)
+	}
+	for _, reach := range []struct {
+		name string
+		got  bool
+	}{
+		{"read the protected secret", got.SecretRead},
+		{"write outside the writable root", got.OutsideWrite},
+		{"connect to the host listener", got.NetConnect},
+	} {
+		if !reach.got {
+			t.Errorf("with the mechanism granted, the adversary still could "+
+				"not %s — the probe's ENFORCED verdict for it is vacuous: %s",
+				reach.name, got.Summary)
+		}
+	}
+}
+
+// And the other side of the same pair, so the two verdicts sit next to
+// each other in one log: with the policy asking for confinement, the
+// adversary still runs and still performs the effects the policy allows,
+// and reaches none of the three.
+func TestTheHostileBeamReachesNothingWhenTheJailRefuses(t *testing.T) {
+	got, why, err := selftest.RunHostileBeamForTest(testbin.Helper(t), true)
+	if err != nil {
+		t.Fatalf("confined run: %v", err)
+	}
+	if why != "" {
+		t.Skipf("cannot assemble the adversary here: %s", why)
+	}
+	t.Logf("confined run: %s", got.Summary)
+	if !got.Loaded || !got.Done {
+		t.Fatalf("the node never ran to completion in the jail, so nothing "+
+			"was contained: %s", got.Summary)
+	}
+	if !got.ReadOK || !got.WriteOK {
+		t.Fatalf("the adversary could not do what the policy ALLOWS, so its "+
+			"denials are not the jail's doing: %s", got.Summary)
+	}
+	if got.SecretRead || got.OutsideWrite || got.NetConnect {
+		t.Fatalf("the adversary reached past the jail: %s", got.Summary)
+	}
+}

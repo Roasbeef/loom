@@ -70,3 +70,22 @@ required|fork bomb capped by pids limit
 # is honest: the pgroup sweep alone genuinely does not reach a new
 # session.
 required|setsid escape contained by pid namespace
+
+# --- The hostile-satellite tabletop's kernel half.
+#
+# packages/codemode/CLAUDE.md's security argument ends "what confines a
+# hostile `.beam` is the kernel jail and the broker's per-call policy
+# check". The broker's half is proved in-process by the satellite tests.
+# This is the kernel's half, and until now it was reasoning: an Erlang
+# module compiled by hand — never vetted, never built by the compile
+# service, never using the cap channel — loaded straight into a node
+# inside the jail, calling `file:write_file/2`, `file:read_file/1` and
+# `gen_tcp:connect/4` on its own behalf.
+#
+# The jail job has bubblewrap and, from setup-toolchain, an Erlang
+# toolchain to build and load the adversary with, so the layer exists
+# here and must hold. Without bwrap the probe skips (Landlock alone
+# cannot hide a protected path and there is no network namespace);
+# without erl/erlc it skips too, because an adversary that cannot be
+# built was never attempted and its silence is not containment.
+required|unvetted beam denied host write, secret, and network

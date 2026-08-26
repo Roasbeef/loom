@@ -102,6 +102,8 @@ entry opens with what happened to it.
   hostile in-jail `.beam` is confined by policy + jail. The tabletop now
   carries both halves — an unauthenticated `cap_call` denied, *and* the
   genuine token presented against a policy-forbidden call and refused.
+  The kernel half of the same argument has since been built as well: see
+  "What the self-test now proves about a hostile `.beam`" below.
 - **CH-F3 (MED) → FIX. DONE, including (b).** Reachable leak: the
   wall-deadline timer was armed before `launch`, so a launch that
   outlasted the deadline made the host stop and drop the later `Connected`
@@ -205,15 +207,54 @@ in as many words when network-off was not enforced:
 
 - **The build's hermeticity.** It runs offline; that it *could not* have
   reached the network needs seccomp or a network namespace.
-- **Kernel confinement of a malicious `.beam`** — that one loaded
-  directly, bypassing vetting entirely, reaches nothing on the filesystem
-  or the network.
 - **Memory and process-count ceilings**, which need cgroup v2.
 - **`connect(2)` on the cap socket through a bubblewrap `--ro-bind`.**
   Reasoned from `sb_permission` (sockets are exempt from `EROFS`) and
   Landlock's rights model, and never observed, because no run so far has
   had bubblewrap to bind with.
 
-The two items this section used to list that are now covered — real node
-death at the deadline, and the launcher dispatching `erl` under the
-abortable `op_id` — moved into the section above.
+The items this section used to list that are now covered — real node
+death at the deadline, the launcher dispatching `erl` under the abortable
+`op_id`, and kernel confinement of a malicious `.beam` — moved into the
+sections above and below.
+
+## What the self-test now proves about a hostile `.beam`
+
+CH-F4's correction ended with a claim that had no observation behind it:
+that what confines a hostile `.beam` is the kernel jail, not the cap
+token. The broker's half of that had a test; the kernel's half was
+reasoning. It is now the sandbox self-test's `unvetted beam denied host
+write, secret, and network` probe, which the jail CI job declares
+`required` in `.github/enforcement-expectations`.
+
+The adversary is `packages/sandbox/internal/selftest/loom_hostile.erl`:
+Erlang, not Gleam, compiled by `erlc` and dropped straight into a jailed
+node's code path. It never passes vetting (which reads Gleam source),
+never passes the compile service, and never uses the cap channel. It
+calls `file:write_file/2`, `file:read_file/1` and `gen_tcp:connect/4` on
+its own behalf — which is what a Gleam `@external` compiles to anyway.
+Confined, it gets `erofs` on the write outside every writable root,
+`enoent` on the protected path, and `eperm` on the connection to a live
+loopback listener the probe is holding open.
+
+Three denials in a row are also what a module that never loaded looks
+like, so the probe refuses to read containment out of silence. The
+adversary announces that it loaded and that it finished; it performs two
+effects the policy *allows* and reports them, so a run of pure denials is
+a probe failure rather than a pass; and the identical module is run
+unjailed first, with the probe skipping if the escape does not succeed
+even there. The permanent record of the other direction is a test in
+`packages/sandbox/internal/selftest` that runs the same adversary through
+the same jail with those three mechanisms granted instead of withheld,
+and insists it reaches all three.
+
+What is **not** proved, and is deliberately not claimed: "reaches nothing
+on the filesystem". The helper's base view is `--ro-bind / /` and
+Landlock grants `RODirs("/")`, so an unprotected host path is readable
+from inside the jail. `readable_roots` narrows nothing; only `protected`
+removes a path from the view. That is
+`protocol-change/004-sandbox-policy-explicit-mounts.md`'s gap, not this
+probe's, and until it closes the honest sentence is "an unvetted `.beam`
+cannot write outside its writable roots, cannot see a protected path, and
+cannot reach the network" rather than the broader one M4 originally
+wrote.

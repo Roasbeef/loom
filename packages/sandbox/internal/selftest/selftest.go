@@ -69,6 +69,7 @@ func Run(w io.Writer, selfExe string) bool {
 		{"output flood truncated at cap", probeOutputFlood},
 		{"orphaned grandchild reaped via pgroup", probeOrphanReap},
 		{"setsid escape contained by pid namespace", probeSetsidEscape},
+		{"unvetted beam denied host write, secret, and network", probeHostileBeam},
 	}
 
 	ok := true

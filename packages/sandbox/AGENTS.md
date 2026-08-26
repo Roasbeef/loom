@@ -20,12 +20,14 @@ modules, alongside `tui`.
   fd 3, apply Landlock/seccomp/rlimits to self, report on fd 4, execve the
   target); `--self-test` runs the regression probes against the live
   kernel. `--probe-socket` and `--probe-setsid` are the internal
-  network-off and session-escape witnesses. Server mode also takes
-  `--allow-unenforced` (the explicit opt-out of the unsupported-platform
-  refusal) and `--cgroup-base DIR` (the delegated cgroup v2 base, which
-  `LOOM_CGROUP_BASE` also supplies); an unknown server flag is a usage
-  error, never a shrug, because a misspelled `--cgroup-base` would
-  silently drop the ceilings it was meant to grant.
+  network-off and session-escape witnesses. `internal/selftest` also
+  carries `loom_hostile.erl`, the hostile-satellite tabletop's adversary,
+  which the self-test compiles with `erlc` and loads into a jailed node.
+  Server mode also takes `--allow-unenforced` (the explicit opt-out of the
+  unsupported-platform refusal) and `--cgroup-base DIR` (the delegated
+  cgroup v2 base, which `LOOM_CGROUP_BASE` also supplies); an unknown
+  server flag is a usage error, never a shrug, because a misspelled
+  `--cgroup-base` would silently drop the ceilings it was meant to grant.
 - `internal/policy.Policy` — `SandboxPolicyV1` decoded strictly and
   totally.
 - `internal/framing` — the helper side of the wire: `u32_be length ++
@@ -166,6 +168,27 @@ modules, alongside `tui`.
   prints SKIPPED with a reason and never fakes a pass; a probe whose layer
   *is* available must enforce or the run exits nonzero. A green self-test
   in a neutered container cannot be mistaken for a verified sandbox.
+- **A probe that can only fail must prove it can also succeed.** Three
+  denials in a row look identical to a module that never loaded, a node
+  that never booted, and a path that never existed — so the hostile-`.beam`
+  probe never reports containment on silence. The adversary announces that
+  it loaded and that it finished, it performs two effects the policy
+  *allows* (reading a bound-in file, writing inside the writable root) and
+  reports them, and the probe runs the identical module unjailed first: if
+  the escape does not succeed there, the probe skips rather than claiming a
+  jail held something the host never permitted anyway. The other end of
+  that pair lives in the tree too, as a test that runs the same adversary,
+  the same argv and the same jail with those three mechanisms *granted*
+  instead of withheld, and insists it reaches all three.
+- **What the hostile-`.beam` probe claims is narrower than "reaches
+  nothing".** The base view is `--ro-bind / /` and Landlock grants
+  `RODirs("/")`, so an unprotected host path is *readable* from inside the
+  jail; `readable_roots` does not narrow reads, only `protected` removes
+  them. The observed claim is that an unvetted `.beam` cannot write outside
+  the writable roots (`erofs`), cannot see a protected path (`enoent`), and
+  cannot reach the network (`eperm`, from the seccomp filter, behind an
+  empty network namespace). Closing the gap between those two sentences is
+  `protocol-change/004-sandbox-policy-explicit-mounts.md`, not this probe.
 - **A probe's own scratch directory must live outside the scratch mount.**
   A `tmpfs` scratch policy mounts a fresh tmpfs over `jail.ScratchMount`
   (`/tmp`) *after* the writable binds, so a writable root underneath it is
