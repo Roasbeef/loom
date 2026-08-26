@@ -71,6 +71,21 @@ that one instead, which is a race with no property behind it. The DSL
 still expresses it, and the pinned corpus uses it, because the runner
 must stay correct under it; the generator does not draw it.
 
+A `during turn`/`during call` intervention is live-triggered from
+*inside* an effect, but no longer *fires* from one. The effect that
+reaches the trigger only asks whether the script has anything due there
+and, if it does, registers the trigger with the control actor and
+blocks; the runner's own drive loop drains that queue on every pass and
+performs the admission itself, then releases the effect. The block is
+what still makes the steer land before the settlement that follows it —
+the effect does not resume until the runner reports the admission
+durable — but the process actually carrying the admission is now the
+runner's, never the effect's. That distinction is the whole fix: the
+runner is never a target of any fault in the taxonomy, so a
+`RestartStrand` that reaps the effect waiting on the release cannot take
+the admission down with it (see "What this does not cover" below for
+what this closed).
+
 Faults may use ordinals, because a fault need not mean the same thing
 twice — only the outcome must. Commit-indexed faults name a global
 commit ordinal counted across writer restarts, so "kill after commit 7"
@@ -350,27 +365,91 @@ action failed — an admission whose reply was lost may already be durable,
 and the retry paths ask the durable state rather than assuming (this is
 the same ambiguity the steer-drop work records).
 
-**A scripted intervention can be lost to a partial crash.** An
-intervention claims a one-shot and then admits; the admission runs on a
-disposable process so it survives the tree, but the effect process
-awaiting it can be reaped by a `RestartStrand` fault — and once nothing is
-awaiting, nothing enforces the disposable process's own budget either. A
-carrier that is stuck rather than merely slow then never settles, the
-claim is spent, and the faulted run ends one scripted turn short of the
-fault-free one. This is harness damage, not a durability defect, and it is
-the known cause of the `convergence/projection` flake on seeds like 53 and
-63.
+**A scripted intervention's loss used to be silent sometimes, and no
+longer is — though the loss itself is not yet closed.** An intervention
+claims a one-shot and then admits; the admission ran on a disposable
+process spawned *from the effect that reached the live trigger*, so the
+effect process awaiting it could be reaped by a `RestartStrand` fault
+before `control.attempt`'s own `record_attempt` ever ran — meaning some
+of these losses carried no `raised@`/`expired@` tag at all, only the bare
+`intervening@path` the dangling check still caught. That gap is closed:
+a live trigger now only registers itself and blocks (see "Keying, and
+why it is not a counter" above), and the runner's own drive loop — never
+a target of any fault in the taxonomy — is what performs the admission,
+enforces its budget, and therefore always survives to record what
+happened to it. Measured on seed 53 (twelve fault-free/faulted pairs
+against pristine `main`, then the same twelve against this change): the
+baseline showed both shapes — a `raised@intervene` next to the dangling
+entry on some runs, and on others an `intervening@` with no
+`raised@`/`expired@`/`intervened@` at all, the silent case. Every
+faulted run under this change carried the explicit tag.
 
-It is recorded rather than repaired. The claim and its settlement are
-bracketed (`intervening@path` / `intervened@path`), so a run that lost one
-reports `HARNESS LOST A SCRIPTED TURN` and names it, instead of reporting
-a divergence with no cause. Making the runner *wait* for the debt before
-accepting a terminal result was tried and is worse: a stuck carrier never
-settles, so the wait turns a divergence that names its own cause into a
-run that never terminates. Repairing it properly needs the intervention to
-be driven by the runner rather than fired from inside an effect, which
-changes what the seeds mean and so belongs with the injected-scheduler
-work above.
+What this does not do is stop the intervention from being lost. The
+carrier the runner now owns can still find *its own target* mid-restart
+— the strand it is admitting into, not the effect that triggered it —
+and a name the tree has not yet re-registered still raises. That race is
+about timing between the runner's drive pass and the target strand's own
+recovery, not about which process survives, so moving the caller does
+not touch it: `convergence/projection` still fails on seed 53 at
+essentially the same rate observed before this change (measured, not
+assumed — both twelve-run samples above landed close to the seed's
+long-documented ~40%). Retrying the admission after a `Raised` would
+close it for the cases where nothing actually committed, but not safely:
+`perform`'s own comment already warns that firing a claimed intervention
+twice makes a different session than the fault-free one, and unlike
+`admit`'s retry — which asks durable state whether its accept already
+landed before trying again — there is no equivalent durable check here
+for "did this specific steer already land". Building one is a real next
+step, but a different one from this issue, which was to move the
+*decision* to the runner; it does not, by itself, make every retry safe.
+The bracketing (`intervening@path` / `intervened@path`) and the `HARNESS
+LOST A SCRIPTED TURN` report stay in place regardless, because a future
+change could still find a way to leave a claim dangling, and a run that
+did should still say so rather than reporting an unexplained divergence.
+
+**A `terminal/last-result-once` failure can still read `[timing] clean`,
+and the cause is not yet found** (issue #58). Two confirmed instances —
+seed 6657 faulted (`faults: stale@c4 + slow@e1/250`, `escalate`, no
+subagent) and seed 19195 fault-free (`subagent`, `parallel`,
+`threshold@2`) — both wrote `strand.last_result` once fewer than the
+runner recorded operations, with every wall-clock wait, every reply, and
+every intervention accounted for. Neither is explained by anything the
+attribution above knows to look for, which is exactly what makes it
+worth recording rather than shrugging off as "another one of those":
+`[timing] clean` plus `NOT REPRODUCIBLE` is also the shape a genuine race
+in the code under test would take.
+The investigation ruled out what it could reach from this package.
+`machine/planner.finish` is the only site that ever writes
+`strand.last_result`, and it writes the strand register and the
+operation-keyed copy in one unconditional, CAS-guarded transaction, so a
+read of one implies the other landed in the same commit — there is no
+branch where a durable read could see a result the write-counter missed.
+The memory backend is one actor serializing every commit and every read
+through its mailbox, so a reader can never observe a torn transaction,
+and the write-then-count order inside `store.commit_and_check` is
+one process's own call sequence, immune to interleaving with any other
+commit. Both hold regardless of fault or seed.
+What is not yet explained is why the failure requires load to
+surface at all: dedicated reruns of both seeds (400 rounds each, then
+3000 for 19195) found it zero times in an otherwise idle process, but it
+appeared twice while several other simulations competed for the same
+CPU — and instrumenting the suspected call sites with `io.println` was
+by itself enough to stop it reproducing under the same contention that
+had produced it moments before. That is consistent with a real
+interleaving-dependent race and inconsistent with a simple bookkeeping
+mistake, which is normally something a few extra print statements would
+not perturb. It was also checked against issue #57: seed 6657 exercises
+exactly the `DuringCall` intervention path that issue moved to the
+runner, and it fails at the same (zero, in 400 rounds apiece) rate on
+the commit before that change and after it, so this is not something
+#57 introduced.
+`runner.Report` now carries `terminal_writes_main` and
+`terminal_writes_sub` separately rather than pre-summed, and a failure
+here names which strand is short and lists every recorded operation —
+strictly more than a future investigation had before, even though it
+does not close the question. Reproducing it on demand needs either
+sustained soak time under real load or the injected-scheduler work
+already named above; both are bigger than fit in one session.
 
 **One backend, one strand, one session.** Every simulated session is an
 in-memory store with a synthetic lease. The SQLite backend's own

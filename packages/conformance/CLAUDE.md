@@ -45,7 +45,11 @@ them from their own test mains.
   through a monitor, so it costs no wall-clock time), and `Expired` (a
   real millisecond budget ran out). `Raised` and `Expired` are equally
   uninformative about whether the action happened, and callers must
-  treat them alike.
+  treat them alike. It is also the rendezvous a live-triggered
+  intervention uses to hand its decision to the runner:
+  `await_intervention` registers a trigger and blocks, and
+  `take_pending_interventions` is what the drive loop drains on every
+  pass to find something to fire (#57).
 - `conformance/simulation/{store, surface, invariant, wire}` — the
   instrumented session, the scripted effect surface, the named per-run
   checks, and the framing properties.
@@ -184,6 +188,50 @@ them from their own test mains.
   reaper then kills is a scripted turn the run silently loses; when the
   carrier itself is lost the debt is left open and the run reports
   `HARNESS LOST A SCRIPTED TURN` rather than an unexplained divergence.
+- **A live intervention's decision belongs to the runner, never to the
+  effect that reached its trigger** (#57, diagnosed under #44). A
+  `DuringTurn`/`DuringCall` trigger is reached from inside a real effect
+  process, and a `RestartStrand` fault reaping that process before
+  `control.attempt`'s own bookkeeping ran meant some lost admissions
+  carried no `raised@`/`expired@` tag at all — a silent dangling
+  `intervening@path` instead of one with a cause attached. So
+  `surface.intervene` no longer admits: it only asks whether the script
+  has anything due at this trigger and, if so, calls
+  `control.await_intervention` and blocks. The runner's drive loop
+  (`service_interventions` in `runner.gleam`, called from `pump_strand`
+  on every pass) drains `control.take_pending_interventions` and fires
+  each one through `surface.fire_due`, which is the same
+  claim-perform-record logic `apply`/`apply_all` always had. The block is
+  what keeps a live-triggered steer landing before the settlement that
+  follows it: the effect does not resume until the runner reports the
+  admission durable, so the ordering `steer-during-effect` depends on is
+  still by construction, not by luck — only the process carrying the
+  admission moved, from the effect to the runner, which is never a
+  target of any fault in the taxonomy. What this does *not* do is stop
+  the admission's own target strand from racing its own restart — a name
+  the tree has not yet re-registered still raises regardless of who is
+  calling — so `convergence/projection` on seed 53 still flakes at
+  essentially its documented rate; every occurrence now names its cause
+  where some previously named nothing. See "What this does not cover" in
+  `docs/architecture/simulation.md` for the measurement and why a blind
+  retry is not the next step.
+- **`terminal/last-result-once` has an open, load-dependent flake** (#58).
+  Two confirmed instances (seed 6657 faulted, seed 19195 fault-free) both
+  read `[timing] clean` — no wait, no drop, no dangling intervention —
+  and wrote `strand.last_result` once fewer than the runner recorded
+  operations. `machine/planner.finish` is the only writer and is
+  CAS-guarded and atomic across both copies; the memory backend is one
+  actor serializing every read and write; neither reproduced in isolated
+  reruns (400–3000 rounds apiece) but both appeared under real CPU
+  contention, and adding `io.println` at the suspected sites was itself
+  enough to stop it recurring there — evidence for a genuine interleaving
+  race, not a bookkeeping slip, and checked clear of #57 (seed 6657 fails
+  at the same zero-in-400 rate before and after that change).
+  `Report.terminal_writes_main`/`terminal_writes_sub` (split rather than
+  pre-summed) and the operation list in the failure detail are what a
+  future investigation gets for free; closing it needs sustained load or
+  the injected-scheduler work, not a session's worth of static reading.
+  See `docs/architecture/simulation.md`, "What this does not cover".
 - **The perf smoke asserts, it does not merely print.** `storage_suite_test`
   holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
   to the 5 ms M0 target it reports against — shared CI hardware has
