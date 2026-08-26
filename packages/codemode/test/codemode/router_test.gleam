@@ -101,6 +101,7 @@ fn collected(stdout: BitArray, stderr: BitArray) -> tool.Collected {
       degraded: False,
       wall_ms: 1,
       timed_out: False,
+      cancelled: False,
     )),
   )
 }

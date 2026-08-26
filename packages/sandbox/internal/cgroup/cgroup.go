@@ -83,16 +83,37 @@ func Detect() (dir string, reason string) { return DetectBase(BaseFromEnv()) }
 // delegated and the fallback path are reachable from a test.
 //
 // A non-empty configured base is the supported production shape and is
-// checked strictly: it must be a cgroup v2 directory, it must have the
-// memory and pids controllers available to it, and it must contain no
-// processes — the last because cgroup v2 refuses to enable controllers
-// for the children of a cgroup that has members, which is the whole
-// reason the helper's own cgroup cannot serve. When those hold, the
-// controllers are enabled in its `cgroup.subtree_control` (idempotently)
-// so the per-exec children actually get `memory.max` and `pids.max`.
+// checked strictly, in this order:
+//
+//  1. `statfs(2)` says it is on a cgroup v2 filesystem. Everything below
+//     this line an ordinary directory can fake, and #52 is what happened
+//     when nothing asked: three text files under a typo'd
+//     `--cgroup-base` were accepted, `memory.max` and `pids.max` became
+//     ordinary files, and a 32-way fork burst under `pids: 8` ran to
+//     completion while the frame reported `cgroup-v2` applied.
+//  2. It has the memory and pids controllers available to it.
+//  3. It contains no processes, because cgroup v2 refuses to enable
+//     controllers for the children of a cgroup that has members — the
+//     whole reason the helper's own cgroup cannot serve.
+//  4. A child directory can be created in it.
+//  5. A process can actually be migrated into that child: cgroup v2's
+//     delegation containment rule needs write access to the
+//     `cgroup.procs` of the *common ancestor* of the helper's own cgroup
+//     and the destination, so a base the helper lives outside of can
+//     hold ceilings that no process will ever enter. Advertising
+//     `cgroup-v2` in the hello frame for such a base was the second half
+//     of #52: the per-exec skip corrected it and `degraded_features`
+//     reads hello.
+//
+// **Detection does not write.** It is a read-only question — can this
+// host hold the ceilings? — and answering it by writing `+memory +pids`
+// into the operator's `cgroup.subtree_control`, never reverted, was a
+// side effect a probe has no business having. Distributing the
+// controllers is a setup step and belongs to `Setup`, which runs once a
+// base has been validated and an execution actually needs a child.
 //
 // With no configured base the helper falls back to its own cgroup, which
-// satisfies the rule above only in the true root cgroup. Every failure
+// satisfies the rules above only in the true root cgroup. Every failure
 // returns a reason naming the fix rather than a bare "unavailable".
 func DetectBase(configured string) (dir string, reason string) {
 	if configured != "" {
@@ -124,6 +145,9 @@ func ownCgroupPath() (string, bool) {
 // every one of its failures: the operator needs the reason and the
 // remedy in the same sentence.
 func ownCgroupBase() string {
+	if reason := notCgroup2(unifiedRoot); reason != "" {
+		return reason
+	}
 	controllers, err := os.ReadFile(filepath.Join(unifiedRoot, "cgroup.controllers"))
 	if err != nil {
 		return fmt.Sprintf("no cgroup v2 unified hierarchy at %s: %v", unifiedRoot, err)
@@ -147,18 +171,80 @@ const delegationHint = "hand the helper a delegated, process-empty " +
 	"Delegate=yes, plus DelegateSubgroup= on v254+ so the delegated root " +
 	"stays empty)"
 
-// delegatedBase validates an operator-supplied base and enables the
-// controllers its children need.
+// delegatedBase validates an operator-supplied base.
 func delegatedBase(base string) (dir string, reason string) {
+	if reason := notCgroup2(base); reason != "" {
+		return "", reason
+	}
 	if reason := usable(base); reason != "" {
+		return "", reason
+	}
+	if reason := unreachableBase(base); reason != "" {
 		return "", reason
 	}
 	return base, ""
 }
 
+// unreachableBase reports why no process could be migrated into a child
+// of base, or "" when one could.
+//
+// cgroup v2's delegation containment rule (cgroups(7)): moving a process
+// between cgroups requires write access to the `cgroup.procs` of the
+// common ancestor of the source and destination, not merely of the
+// destination. A helper living outside the delegated subtree therefore
+// gets a base it can create children in and never populate — ceilings
+// written into a cgroup that binds nothing, with `cgroup-v2` advertised
+// in the hello frame all the same.
+func unreachableBase(base string) string {
+	own, ok := ownCgroupPath()
+	if !ok {
+		// No unified hierarchy view of ourselves to reason from. Say
+		// nothing rather than invent a reason; the per-exec Enter still
+		// reports honestly if the migration fails.
+		return ""
+	}
+	if under(base, own) {
+		return ""
+	}
+	ancestor := commonAncestor(own, base)
+	if writableProcs(filepath.Join(ancestor, "cgroup.procs")) {
+		return ""
+	}
+	return fmt.Sprintf("cgroup %s is delegated but the helper's own cgroup "+
+		"%s is outside it, and cgroup v2's delegation containment rule "+
+		"needs write access to %s/cgroup.procs (their common ancestor) to "+
+		"migrate a process in; put the helper inside the delegated subtree "+
+		"(systemd v254+: DelegateSubgroup=)", base, own, ancestor)
+}
+
+// under reports whether path is base or a descendant of it.
+func under(base, path string) bool {
+	base, path = filepath.Clean(base), filepath.Clean(path)
+	return base == path || strings.HasPrefix(path, base+"/")
+}
+
+// commonAncestor is the deepest directory that is an ancestor of both.
+func commonAncestor(a, b string) string {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	for !under(a, b) {
+		parent := filepath.Dir(a)
+		if parent == a {
+			return a
+		}
+		a = parent
+	}
+	return a
+}
+
 // usable reports why base cannot host per-exec cgroups, or "" when it
-// can — enabling the memory and pids controllers for its children as a
-// side effect when they are available but not yet distributed.
+// can. It reads and it mkdirs a probe it removes again; it does not
+// distribute controllers, because detection answers a question and does
+// not reconfigure the operator's tree to do so (see DetectBase).
+//
+// It deliberately does not include the filesystem-type check, so the
+// interface-file reasoning stays unit-testable against a directory
+// shaped like a base. `delegatedBase` puts `notCgroup2` in front of it,
+// which is what stops such a directory ever reaching production.
 func usable(base string) string {
 	controllers, err := os.ReadFile(filepath.Join(base, "cgroup.controllers"))
 	if err != nil {
@@ -180,9 +266,6 @@ func usable(base string) string {
 			"no-internal-process rule forbids enabling controllers for its "+
 			"children", base, n)
 	}
-	if reason := enableSubtree(base); reason != "" {
-		return reason
-	}
 	probe := filepath.Join(base, "loom-exec-probe")
 	if err := os.Mkdir(probe, 0o755); err != nil {
 		return fmt.Sprintf("cgroup %s not delegated (mkdir failed: %v)", base, err)
@@ -199,6 +282,11 @@ const unifiedRoot = "/sys/fs/cgroup"
 // children, writing `cgroup.subtree_control` only when something is
 // missing (the write is rejected outright on a populated cgroup, and
 // writing nothing is one fewer way to fail).
+//
+// Called from Setup, not from detection: this is the one write into the
+// operator's tree the helper needs, and it happens when an execution
+// actually needs a child cgroup rather than while answering whether one
+// would be possible.
 func enableSubtree(base string) string {
 	path := filepath.Join(base, "cgroup.subtree_control")
 	current, err := os.ReadFile(path)
@@ -256,11 +344,17 @@ func ownV2Path(procSelfCgroup string) (string, bool) {
 	return "", false
 }
 
-// Setup creates a per-exec cgroup under base, applies the limit writes,
-// and returns its path. The caller moves the child in by writing its pid
+// Setup distributes the memory and pids controllers to base's children,
+// creates a per-exec cgroup under it, applies the limit writes, and
+// returns its path. The subtree_control write lives here rather than in
+// detection because it mutates the operator's tree, and a probe that
+// reads as read-only has no business doing that. The caller moves the child in by writing its pid
 // to cgroup.procs (see Enter); descendants inherit membership, which is
 // exactly what makes pids.max fork-bomb-proof.
 func Setup(base, name string, l LimitsView) (string, error) {
+	if reason := enableSubtree(base); reason != "" {
+		return "", fmt.Errorf("cgroup: %s", reason)
+	}
 	dir := filepath.Join(base, name)
 	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
 		return "", fmt.Errorf("cgroup: mkdir %s: %w", dir, err)
@@ -304,7 +398,28 @@ func ReadPidsEventsMax(dir string) uint64 {
 }
 
 // Cleanup removes the per-exec cgroup; processes must be dead first.
+//
+// rmdir is the only removal a cgroup directory accepts: its interface
+// files are created by the kernel and cannot be unlinked, so RemoveAll
+// would fail on every one of them, and a plain Remove fails on a cgroup
+// that still has children. Child cgroups are the one thing that can be
+// there — a payload with a delegated subtree of its own, or a nested
+// container runtime — so they are removed depth-first and then the
+// directory itself. A leftover `exec-N-PID/` was the visible half of #52
+// (a plain directory the fake base left non-empty); the same recursion
+// is what makes the real case correct.
 func Cleanup(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cgroup: read %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if err := Cleanup(filepath.Join(dir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
 	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("cgroup: remove %s: %w", dir, err)
 	}

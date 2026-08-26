@@ -38,6 +38,12 @@ modules, alongside `tui`.
   execution's description, what the kernel actually offers, the
   enforcement summary stage 2 sends back on fd 4, and the per-stream
   output cap.
+- `internal/jail.{MountPlan, MountOp, MountClass}` — the mount precedence
+  model. `MountPlan` turns a policy into the ordered operations
+  `BwrapArgs` renders; `MountClass` says whether an op widens the jail's
+  view or subtracts from it, and settles which of two ops naming the same
+  path takes it. Pure, and the thing to read before changing any mount
+  behaviour. `PathKind` and `MaskSource` are its protected-path half.
 - `internal/jail.PlatformSupport` (`Platform`, `PlatformFor`, `Refusal`) —
   not a probe of the kernel but a fact about the *build*: whether Loom has
   a jail for the OS it was compiled for. `PlatformFor` is pure and takes
@@ -47,10 +53,29 @@ modules, alongside `tui`.
   ceilings. `DetectBase` takes the base as an argument: a delegated,
   process-empty cgroup v2 directory from the operator, or "" to fall back
   to the helper's own cgroup (which works only in the true root cgroup).
-  It verifies the base is empty, distributes `memory` and `pids` to its
-  children, and reports a reason naming the delegation when it cannot.
-- `internal/jail.{CgroupSkip, CgroupSkipPrefix}` — the enforcement entry
-  emitted when a policy asked for a ceiling and no cgroup held it.
+  It asks the kernel by `statfs(2)` whether the base is on a cgroup v2
+  filesystem, verifies the controllers are delegated and the base is
+  empty, checks that a process could actually be migrated into a child,
+  and reports a reason naming the delegation when it cannot. It does not
+  write: distributing `memory` and `pids` to the base's children is
+  `Setup`'s job, because detection answers a question and must not
+  reconfigure the operator's tree to do so.
+- `internal/jail.{CgroupSkip, CgroupSkipPrefix, CgroupCeilings}` — the
+  enforcement entry emitted when a policy asked for a ceiling and no
+  cgroup held it. `CgroupCeilings` names *which* of `memory.max` and
+  `pids.max` were asked for, so the skip cannot report a ceiling the
+  policy never wanted.
+- `internal/jail.{MountReport, AuditMounts, MountSkipPrefix}` — the mount
+  layer's contribution to the enforcement report. `AuditMounts` replays a
+  `MountPlan` and counts the policy's own paths whose *effective* view is
+  the one asked for; see "The mount layer says what it achieved" below.
+- `internal/jail.{Stage2Skip, Stage2SkipPrefix, BwrapUnwitnessedSkip}` —
+  the entries for a stage 2 that never reported on fd 4, and for the
+  bwrap layer that consequently has no witness.
+- `internal/jail.{ProcEntry, TermTargets}` — who the TERM rung is
+  addressed to, selected by descent from the supervisor rather than by
+  process group. `ProcEntry` is `{Pid, Ppid}`: the parent link is the
+  one relation a payload cannot rearrange.
 - `internal/llock`, `internal/seccompf`, `internal/cgroup` — the three
   in-process restriction layers. `seccompf` and `jail`'s `no_new_privs`
   are split by build tag (`*_linux.go` / `*_other.go`) so the module
@@ -80,16 +105,20 @@ modules, alongside `tui`.
 - **fd 4** — stage 2's enforcement `Report` back to the supervising
   helper, sent just before execve: `Applied` entries are terse layer tags
   (`landlock:abi=5`, `seccomp-net`, `rlimit-cpu`), `Skipped` entries carry
-  reasons.
+  reasons. It is also the helper's **witness that bubblewrap built the
+  jail**: the report cannot arrive from anywhere but a process bwrap
+  exec'd inside the namespace, so `bwrap` and the mount audit are claimed
+  only when it did arrive, and its absence is a `skip:`, never silence.
 - **Environment** — `LOOM_CGROUP_BASE` names the delegated cgroup v2 base
   when the operator supplies one that way; `--cgroup-base` overrides it.
   Erlang ports cannot set a child's environment, so the broker uses the
   argument (`broker/exec.SpawnConfig.helper_args`) and a systemd unit uses
   the variable.
-- **Process signals** — cancel is SIGTERM to the *payload*, SIGKILL to the
-  pgroup after `KillGrace` (2 s), matching the broker's own patience
-  window exactly. The two rungs address different sets on purpose; see
-  "The TERM rung is addressed to the payload" below and `jail/cancel.go`.
+- **Process signals** — cancel is SIGTERM to the *payload and its
+  descendants*, SIGKILL to the pgroup after `KillGrace` (2 s), matching
+  the broker's own patience window exactly. The two rungs address
+  different sets on purpose; see "The TERM rung is addressed to the
+  payload" below and `jail/cancel.go`.
 - **Commits / registers / actors**: none. The helper is stateless between
   executions and persists nothing.
 
@@ -140,14 +169,42 @@ modules, alongside `tui`.
   about cgroup v2: any delegated, process-empty cgroup distributes
   controllers to its children, which is what `Delegate=yes` (and
   `DelegateSubgroup=` on systemd v254+) produces. The operator names one
-  in `LOOM_CGROUP_BASE` or `--cgroup-base`; `Detect` verifies it and
-  enables `memory` and `pids` in its `cgroup.subtree_control`. When there
+  in `LOOM_CGROUP_BASE` or `--cgroup-base`. When there
   is no usable base **and the policy asked for `mem_bytes` or `pids`**,
-  the per-exec `enforcement` list carries `skip:cgroup-v2: …`, which fails
+  the per-exec `enforcement` list carries `skip:cgroup-v2: …`, naming
+  which of `memory.max` and `pids.max` was actually dropped, which fails
   a `FullEnforcement` demand. Emitting nothing — which is what the helper
   used to do — let a policy that demanded both ceilings pass strict
   enforcement with neither in place, on every host that could not
   delegate. A policy that asked for no such ceiling gets no such skip.
+- **Only `statfs(2)` can tell a directory from a cgroup, so it is asked
+  first.** Reading `cgroup.controllers`, reading `cgroup.procs`, writing
+  `cgroup.subtree_control` and creating a child directory are all things
+  an ordinary directory does perfectly well. With nothing asking the
+  kernel, three text files under a typo'd `--cgroup-base` became a
+  "cgroup v2 base": `memory.max` and `pids.max` were written as ordinary
+  files, `Enter` wrote a pid into one and returned nil, a 32-way fork
+  burst under `pids: 8` ran to completion, and the frame reported
+  `cgroup-v2` **applied** (#52). `DetectBase` now checks
+  `CGROUP2_SUPER_MAGIC` before anything else, in a `_linux.go`/`_other.go`
+  pair so the module still vets for darwin. The interface-file reasoning
+  stays unit-testable against a directory shaped like a base, because
+  `usable` is reachable from a test while `DetectBase` is what production
+  calls.
+- **Detection is a question; it does not reconfigure the operator's
+  tree.** Enabling `+memory +pids` in the base's `cgroup.subtree_control`
+  is a write into the operator's cgroups that a probe reading as
+  read-only has no business making, and it was never reverted. It moved
+  to `Setup`, which runs after the base is validated and an execution
+  actually needs a child; a failure there is an ordinary
+  `skip:cgroup-v2:`. `DetectBase` also refuses a base the helper lives
+  *outside* of, since cgroup v2's delegation containment rule needs write
+  access to the `cgroup.procs` of the common ancestor to migrate a
+  process in — advertising `cgroup-v2` in the hello frame for a base no
+  process could ever enter was the other half of #52. `Cleanup` rmdirs
+  child cgroups depth-first before the directory itself: a cgroup's
+  interface files are kernel-created and unremovable, so `RemoveAll` is
+  wrong and a bare `Remove` leaves an `exec-N-PID/` behind.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
@@ -168,37 +225,120 @@ modules, alongside `tui`.
   namespace with it. Measured: a payload with `trap "" TERM` and a
   30-second loop died in 813 µs, by SIGKILL, having never been asked to
   stop — `TERM → grace → KILL` was in practice just `KILL`. So the TERM
-  rung skips the supervisor and any nested namespace init (`jail.TermTargets`,
-  selected from `/proc` by pgid and `NSpid`), and falls back to the whole
-  group when it cannot read the table, because a TERM silently not sent is
-  worse than one sent too widely. KILL still goes to the group, and
-  cleanup keeps its unconditional group-wide sweep, so "no orphaned jails"
-  is unchanged. Sparing the namespace init is belt to the kernel's braces:
-  a signal from an ancestor namespace reaches an init only if it installed
-  a handler (`pid_namespaces(7)`), verified here — TERM to the init alone
-  left both it and the payload running.
+  rung skips the scaffolding, KILL still goes to the group, and cleanup
+  keeps its unconditional group-wide sweep, so "no orphaned jails" is
+  unchanged.
+- **The payload is found by descent, and both exclusions are
+  structural.** `jail.TermTargets` walks parent links from the supervisor
+  and takes everything at depth two or more: depth 0 is the supervisor,
+  depth 1 is bwrap's namespace init, and the rest is the payload and what
+  it spawned. It used to scan the supervisor's *process group* and spare
+  anything whose innermost `/proc/<pid>/status` `NSpid` was `1`. Both
+  were evadable with one unprivileged syscall (#53): `setsid(2)` took the
+  payload out of the group, the selection came back empty, and the caller
+  fell back to signalling the group — the collapse above, on a payload
+  nothing had asked to stop; and `unshare -U -p -f` made a payload look
+  like a namespace init, so it was skipped *by name*. Descent cannot be
+  left, and under `--unshare-pid` the kernel reparents orphans onto the
+  namespace's own init rather than host pid 1, so the walk enumerates the
+  whole jail. The two spared processes are now known by construction —
+  the pid the helper spawned, and that process's own children — so
+  nothing a payload does to itself puts it in the exempt set. A selection
+  that comes back empty still falls back to the whole group, because a
+  TERM silently not sent is worse than one sent too widely.
+- **TERM is complete under bwrap and best-effort without it, and the
+  ladder's documentation says so.** The PID namespace is what makes the
+  descendant walk exhaustive. In degraded mode there is no namespace, the
+  group leader *is* the payload, and a payload that calls `setsid(2)`
+  leaves the group with nothing to put it back. That is one more thing a
+  missing bwrap costs; it is reported as degraded like the rest, and the
+  KILL rung's group sweep is what still bounds it.
+- **A cancelled run says it was cancelled, because nothing else can.**
+  `Result.Cancelled` (and `exec_exit.cancelled`, protocol-change/006) is
+  set from the ladder's own state machine, which keeps the fact after the
+  process exits. The exit status cannot carry it in either direction: a
+  cancelled run whose payload had backgrounded its work reported `code=0
+  signal=0` — a clean success for a forcibly truncated execution, 3 runs
+  out of 3 — and `sh -c 'exit 143'` reports the TERM-killed payload's
+  `code=143` with no cancel involved at all. `TimedOut` separates an
+  explicit cancel from the wall clock, which climbs the same ladder.
 - **A jailed exec reports `signal: 0` even when the payload was
   signalled.** The helper waits on its direct child, which under bwrap is
   the supervisor; the supervisor outlives the payload and relays a
   signalled payload by *exiting* 128+signal rather than dying of it.
   `code` is 143 for a TERM-killed payload jailed or unjailed; `signal` is
   15 only unjailed. Callers must read `code`, never `signal`, for "how did
-  the payload end".
-- **Every mask must follow every bind.** bwrap applies mount operations in
-  argv order, so `--proc /proc` and `--dev /dev` go *after* the readable
-  and writable binds, not with the `--ro-bind / /` base view. A policy
-  naming `/` as a readable root is ordinary — it is what a jailed build
-  asking for the toolchain sends — and it emits a later `--ro-bind / /`
-  that puts the host's procfs and device tree back on top of the masks.
-  That cost two things at once: a confinement gap (82 host pids and the
-  host's `/proc/1/cmdline` readable from inside a jail reporting itself
-  fully enforced, with `/proc/self` resolving to the host pid), and a hang
-  — bwrap binds `MS_NODEV` unless asked for `--dev-bind`, so the
-  re-exposed `/dev` is a view in which no node can be opened, and the BEAM
-  `gleam build` spawns retries `openat("/dev/null", O_WRONLY)` against
-  EACCES forever. `TestBwrapArgsNoBindFollowsTheVirtualMounts` pins the
-  general rule; `TestFreshProcAndDevSurviveAReadableRootOfSlash` pins the
-  behaviour in a real jail.
+  the payload end" — and `cancelled`, never `code`, for "was it allowed
+  to finish".
+- **Mount precedence is decided, not inherited from argv order.** bwrap
+  applies mount operations in argv order, so argv order *is* the
+  precedence between overlapping mounts. `jail.BwrapArgs` therefore does
+  not build that argv by concatenating the four policy path lists. It
+  resolves the policy into an ordered plan of `jail.MountOp`s — a region,
+  a `jail.MountClass` saying what the op does to it, and the argv
+  fragment — and orders the plan by two rules:
+  - **Grants first, masks last, and nothing after a mask.** A readable
+    root, a writable root and the scratch area *widen*; `--proc`, `--dev`
+    and the protected masks *subtract*. A grant after a mask undoes it
+    and fails **open**; a mask after a grant only narrows. So masks are
+    last unconditionally — including after the scratch mount, which is a
+    grant and used to be emitted dead last (#51).
+  - **Inside a phase, the most specific region wins.** Ops sort by path,
+    which puts a parent before every descendant of it, so the nested op
+    lands on top. A readable root inside a writable root comes out
+    read-only; a writable root under the scratch mount survives it.
+  Masks are deliberately exempt from the second rule against grants:
+  `protected` is the policy's only subtractive verb, so no grant at any
+  depth carves a hole in one. Where two entries name the *same* path the
+  higher `MountClass` takes it and the loser is not emitted at all —
+  writable beats readable, because `workspace_default` names the
+  workspace in both lists and means writable; the scratch tmpfs beats a
+  root at exactly `/tmp`, because dropping the scratch the policy asked
+  for is the worse of the two, and the tmpfs is the narrower.
+  `TestBwrapArgsNothingFollowsTheMasks` pins the first rule against the
+  plan rather than against a verb spelling, which matters because two
+  masks are spelled with bind verbs; the `TestJailed…` tests pin every
+  case in a real jail.
+- **What that ordering cost before it was written down.** #37: a policy
+  naming `/` as a readable root — what a jailed build asking for the
+  toolchain sends — emitted a `--ro-bind / /` after `--proc`/`--dev` and
+  put the host's procfs and device tree back. A confinement gap (82 host
+  pids and the host's `/proc/1/cmdline` readable from inside a jail
+  reporting itself fully enforced, `/proc/self` resolving to the host
+  pid) and a hang at once: bwrap binds `MS_NODEV` unless asked for
+  `--dev-bind`, so the re-exposed `/dev` is a view in which no node can
+  be opened, and the BEAM `gleam build` spawns retries
+  `openat("/dev/null", O_WRONLY)` against EACCES forever. #51: the same
+  argv, at the other end — the scratch mount was emitted after the
+  masks, so `scratch: "/"` reproduced the whole of #37 with `--bind`
+  rather than `--ro-bind` (writable), and a protected directory under a
+  scratch path came back readable *and* writable, host file and all.
+  `TestFreshProcAndDevSurviveAReadableRootOfSlash` and
+  `TestJailedScratchOfRootDoesNotRestoreHostProcAndDev` pin the two ends
+  in a real jail.
+- **The scratch mount and the writable roots, stated once.** A `tmpfs`
+  scratch mounts a fresh tmpfs at `jail.ScratchMount` (`/tmp`). It is a
+  grant, so it sorts with the other grants: a writable root *underneath*
+  it is emitted after it and survives (bwrap creates the mountpoint
+  inside the fresh tmpfs and binds the host directory there), and a
+  protected path underneath it is masked afterwards like any other. What
+  does *not* survive is a path under `/tmp` that the policy never named
+  — that is still replaced by empty scratch, which is why
+  `codemode/launch` refuses a cap socket there up front. Before #41 was
+  fixed the writable root did not survive either, and the write
+  evaporated silently.
+- **A protected path is masked once, at its resolved target.** Two
+  bubblewrap facts, both measured, decide the shape of the mask loop. A
+  protected path nested inside another protected path must not get a
+  mask of its own: the ancestor's tmpfs is remounted read-only, so the
+  descendant's mountpoint cannot be created and bwrap refuses to start —
+  `protected: ["~/.ssh", "~/.ssh/id_rsa"]` killed every jail built from
+  it. And a mask lands on whatever its destination *resolves* to, so
+  `jail.PathKind` must describe the resolved target: a symlink to a
+  directory classified `PathFile` emits a file mask against a directory
+  and bwrap refuses; an absolute symlink is worse, since during setup its
+  target resolves inside bwrap's pivot root where it does not exist and
+  every mask form fails with ENOENT.
 - **The helper speaks first.** The spec does not say who does; the helper
   sends its hello so the broker learns features before committing work, and
   requires the broker's hello before any other frame.
@@ -209,6 +349,36 @@ modules, alongside `tui`.
   prints SKIPPED with a reason and never fakes a pass; a probe whose layer
   *is* available must enforce or the run exits nonzero. A green self-test
   in a neutered container cannot be mistaken for a verified sandbox.
+- **The mount layer says what it achieved, not that it ran.** `bwrap`
+  meant "bubblewrap was on PATH and we spawned it"; it never meant "the
+  policy's paths were narrowed as asked", which made every finding in the
+  mount-precedence family invisible to a full-enforcement demand (#54).
+  `jail.AuditMounts` replays the ordered `MountPlan` and emits
+  `mounts:ro=N,rw=M,mask=K,scratch=…,plan=…`. The counts are of the
+  policy's own paths whose **effective** view — after the whole ordered
+  plan, taking the last operation that covers each path — is the one the
+  policy asked for, which is why they catch what a count of requested
+  operations cannot: that number is identical in a healthy plan and in
+  one whose mask a later bind of an ancestor undoes. Such a path drops
+  out of `mask=` and gets a `skip:mounts:` naming it and the operation
+  that re-exposed it. The `plan=` digest is a diffing aid and a golden-test
+  anchor, not a check: it detects *change*, and nobody holds the expected
+  value. The audit proves the plan, not its execution — for that, see the
+  witness rule below. Proving the resulting *view* would mean probing
+  from inside stage 2, and `faccessat` is unreliable for uid 0, which is
+  the common case inside a bwrap user namespace.
+- **A layer that says nothing is not a layer that was applied.** The
+  per-exec report used to be trusted for what it *omitted*: no `skip:`
+  entry meant fully enforced. A stage 2 that died before writing fd 4
+  produced `enforcement: ["bwrap"]` — no skip anywhere — and satisfied a
+  `FullEnforcement` demand with the whole inner report missing (#54). So
+  the helper now claims `bwrap` and the `mounts:` audit **only when stage
+  2 reported**, that report being the one thing that could not have
+  arrived unless bubblewrap built the namespace and exec'd into it; and a
+  silent stage 2 emits `skip:stage2: …` and `skip:bwrap: …` instead of
+  nothing. The broker's half is `exec.required_layers`, which derives the
+  demanded set from the policy and refuses a report that never mentions
+  one of them.
 - **A probe that can only fail must prove it can also succeed.** Three
   denials in a row look identical to a module that never loaded, a node
   that never booted, and a path that never existed — so the hostile-`.beam`
@@ -221,26 +391,77 @@ modules, alongside `tui`.
   that pair lives in the tree too, as a test that runs the same adversary,
   the same argv and the same jail with those three mechanisms *granted*
   instead of withheld, and insists it reaches all three.
+- **A protected path is masked at its inode, not at its name.** bwrap
+  resolves a mount's destination inside the pivot root it is building,
+  where a symlink's target does not exist yet, so masking the link's own
+  name fails outright — measured: `Can't mount tmpfs on …/dot-ssh: No
+  such file or directory`, exit 1, no jail at all, and for an *absolute*
+  symlink every mask form fails. `run.go` therefore rewrites
+  `Protected` through `filepath.EvalSymlinks` before building the plan,
+  and `statKinds` uses `os.Stat` rather than `os.Lstat` so the inode type
+  the mask form is chosen for is the target's. Masking the target covers
+  both names, since the link still resolves into the mask from inside. A
+  path that does not resolve keeps its own name: that is the
+  `PathMissing` case, where masking the name is the whole point.
+- **That rigour applies to every probe, not one.** Two probes asserted
+  only the *absence* of an effect — an untouched secret file, a prompt
+  `Wait` — and nothing having run satisfies both. With a `bwrap` on PATH
+  that is `#!/bin/sh\nexit 1`, eight probes said FAILED and those two said
+  ENFORCED (#54), and `.github/scripts/enforcement_report.sh` reads
+  exactly those per-probe verdicts. Both now carry a witness that the
+  payload executed: `probeProtected` performs an effect the policy
+  *allows* inside the same jail and requires its `ALLOWED-OK`, and
+  `probeOrphanReap` requires the shell to print the orphan's own pid,
+  which it can only do after forking it. `internal/selftest`'s own test
+  puts that shim on `PATH` and fails if any probe reports ENFORCED.
+- **The probe's name says what it checks.** `probeProtected` was
+  "protected path write denied" and asserted only that a protected
+  *file*'s bytes were unchanged. Since #55 resolved `protected` to mean
+  the contents are gone from the jail's view whatever the inode type, it
+  is "protected path masked from reads and writes" and asserts that
+  neither a protected file's contents nor a protected directory's are
+  reachable from inside — the resolution pinned by a test rather than by
+  prose. Renaming a probe changes the probe set, which
+  `.github/scripts/enforcement_report.sh` fails on by design, so the
+  rename and the line in `.github/enforcement-expectations` move
+  together.
 - **What the hostile-`.beam` probe claims is narrower than "reaches
   nothing".** The base view is `--ro-bind / /` and Landlock grants
   `RODirs("/")`, so an unprotected host path is *readable* from inside the
   jail; `readable_roots` does not narrow reads, only `protected` removes
   them. The observed claim is that an unvetted `.beam` cannot write outside
-  the writable roots (`erofs`), cannot see a protected path (`enoent`), and
+  the writable roots (`erofs`), cannot see a protected path, and
   cannot reach the network (`eperm`, from the seccomp filter, behind an
   empty network namespace). Closing the gap between those two sentences is
   `protocol-change/004-sandbox-policy-explicit-mounts.md`, not this probe.
+- **"Cannot see a protected path" means the contents, and it now holds
+  for a file too.** A protected *directory* — and a path that does not
+  exist yet, so a protected `~/.ssh` stays uncreatable — is shadowed by
+  an empty tmpfs remounted read-only: the directory is there and it is
+  empty, so its contents are `enoent`. A protected *file* used to be
+  bind-mounted onto itself read-only, which left it fully **readable**;
+  `protected: ["~/.aws/credentials"]`, the most obvious use of the
+  feature, handed the credentials to the jailed process and only stopped
+  it writing them back (#55). It is now shadowed by a read-only bind of
+  `jail.MaskSource` (`/dev/null`) instead — tmpfs cannot mount over a
+  non-directory, and bwrap binds `MS_NODEV`, so the masked path cannot
+  be opened at all: EACCES on read and on write, not `enoent`. Were nodev
+  ever absent the read would see an empty file and the write would go
+  nowhere near the host, so the mask is safe either way. The design's
+  `protected_paths` comment says "never writable"; the implementation is
+  deliberately stronger than that, and uniformly so, because a read is
+  what an adversary in the jail actually wants from a credential file.
 - **A probe's own scratch directory must live outside the scratch mount.**
-  A `tmpfs` scratch policy mounts a fresh tmpfs over `jail.ScratchMount`
-  (`/tmp`) *after* the writable binds, so a writable root underneath it is
-  shadowed and every write to it fails. `os.MkdirTemp("")` lands exactly
-  there on a host with no `TMPDIR`, which is most CI runners, and so does
-  a helper binary built by `internal/testbin` — with the result that the
-  probes report a broken jail and the jailed Go tests fail for a reason
-  that has nothing to do with confinement. Both now build outside it. The
-  confinement itself is fail-closed either way (the root becomes
-  unwritable, never wider), which is why this went unseen on every host
-  without bubblewrap installed.
+  `os.MkdirTemp("")` lands under `/tmp` on a host with no `TMPDIR`, which
+  is most CI runners, and so does a helper binary built by
+  `internal/testbin`. A probe whose fixtures the jail's own scratch
+  covers reports a broken jail and the jailed Go tests fail for a reason
+  that has nothing to do with confinement; both now build outside it.
+  Since #41 an explicitly granted writable root under `/tmp` survives the
+  scratch mount, so the sharpest version of this hazard is gone — but a
+  probe directory that no policy entry names is still replaced by empty
+  scratch, and a fixture outside `/tmp` is the version that does not
+  depend on remembering which.
 - **A missing platform is not a missing kernel feature, and is never
   reported as one.** Everything else here probes the running kernel and
   calls a gap environmental. A build with no jail for its OS has a gap in

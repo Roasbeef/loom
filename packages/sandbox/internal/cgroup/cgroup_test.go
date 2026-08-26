@@ -74,9 +74,16 @@ func TestOwnV2Path(t *testing.T) {
 }
 
 // fakeBase builds a directory shaped like a delegated cgroup v2 base.
-// Nothing here needs a kernel: DetectBase's whole contract is what it
-// reads out of the three interface files and whether it can mkdir a
-// child, all of which an ordinary directory can present.
+// Nothing here needs a kernel: the interface-file half of the contract
+// is what `usable` reads out of the three files and whether it can mkdir
+// a child, all of which an ordinary directory can present.
+//
+// That it *can* present them is the point of #52, and the reason these
+// tests address `usable` rather than `DetectBase`. `DetectBase` asks the
+// kernel by `statfs(2)` before it asks anything else, so a directory
+// shaped like a base is refused there and never reaches this reasoning
+// — which is exactly what must happen in production and exactly what
+// would make these cases untestable without a real delegated cgroup.
 func fakeBase(t *testing.T, controllers, procs, subtree string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -92,29 +99,45 @@ func fakeBase(t *testing.T, controllers, procs, subtree string) string {
 	return dir
 }
 
-func TestDetectBaseAcceptsADelegatedEmptyBase(t *testing.T) {
+func TestUsableAcceptsADelegatedEmptyBase(t *testing.T) {
 	base := fakeBase(t, "cpu memory pids\n", "", "memory pids\n")
-	dir, reason := DetectBase(base)
-	if reason != "" {
+	if reason := usable(base); reason != "" {
 		t.Fatalf("a delegated, process-empty base must be usable: %s", reason)
 	}
-	if dir != base {
-		t.Fatalf("DetectBase = %q, want %q", dir, base)
+}
+
+// Detection is a question, not a reconfiguration. Writing "+memory
+// +pids" into the operator's cgroup.subtree_control — never reverted —
+// was a side effect of a probe that reads as read-only (#52). The write
+// belongs to Setup, which runs after the base is validated and an
+// execution actually needs a child.
+func TestUsableDoesNotMutateTheBase(t *testing.T) {
+	base := fakeBase(t, "cpu memory pids\n", "", "")
+	if reason := usable(base); reason != "" {
+		t.Fatalf("a delegated, process-empty base must be usable: %s", reason)
+	}
+	got, err := os.ReadFile(filepath.Join(base, "cgroup.subtree_control"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "" {
+		t.Fatalf("detection mutated the operator's cgroup tree: "+
+			"subtree_control = %q", got)
 	}
 }
 
 // The point of taking the base as configuration: the operator's cgroup
 // may be delegated without the controllers yet distributed to its
 // children, and distributing them is exactly what a process-empty base
-// permits and a populated one does not.
-func TestDetectBaseEnablesTheControllersItsChildrenNeed(t *testing.T) {
+// permits and a populated one does not. Setup is where that happens.
+func TestSetupEnablesTheControllersItsChildrenNeed(t *testing.T) {
 	base := fakeBase(t, "cpu memory pids\n", "", "cpu\n")
-	dir, reason := DetectBase(base)
-	if reason != "" {
-		t.Fatalf("controllers should have been enabled, not refused: %s", reason)
+	dir, err := Setup(base, "exec-1-2", LimitsView{Pids: 8})
+	if err != nil {
+		t.Fatalf("controllers should have been enabled, not refused: %v", err)
 	}
-	if dir != base {
-		t.Fatalf("DetectBase = %q, want %q", dir, base)
+	if dir != filepath.Join(base, "exec-1-2") {
+		t.Fatalf("Setup = %q, want a child of %q", dir, base)
 	}
 	got, err := os.ReadFile(filepath.Join(base, "cgroup.subtree_control"))
 	if err != nil {
@@ -125,22 +148,22 @@ func TestDetectBaseEnablesTheControllersItsChildrenNeed(t *testing.T) {
 	}
 }
 
-func TestDetectBaseRefusesAPopulatedBase(t *testing.T) {
+func TestUsableRefusesAPopulatedBase(t *testing.T) {
 	base := fakeBase(t, "memory pids\n", "1701\n", "")
-	dir, reason := DetectBase(base)
-	if dir != "" {
-		t.Fatalf("a populated base must not be used: %q", dir)
+	reason := usable(base)
+	if reason == "" {
+		t.Fatal("a populated base must not be used")
 	}
 	if !strings.Contains(reason, "no-internal-process") {
 		t.Fatalf("the reason must name the rule that forbids it: %q", reason)
 	}
 }
 
-func TestDetectBaseRefusesAnUndelegatedController(t *testing.T) {
+func TestUsableRefusesAnUndelegatedController(t *testing.T) {
 	base := fakeBase(t, "cpu io\n", "", "")
-	dir, reason := DetectBase(base)
-	if dir != "" {
-		t.Fatalf("a base without memory/pids must not be used: %q", dir)
+	reason := usable(base)
+	if reason == "" {
+		t.Fatal("a base without memory/pids must not be used")
 	}
 	if !strings.Contains(reason, "memory and pids") {
 		t.Fatalf("the reason must name what was not delegated: %q", reason)
@@ -152,8 +175,59 @@ func TestDetectBaseRefusesANonCgroupPath(t *testing.T) {
 	if dir != "" {
 		t.Fatalf("an ordinary directory is not a cgroup base: %q", dir)
 	}
-	if !strings.Contains(reason, "not a cgroup v2 directory") {
+	if !strings.Contains(reason, "cgroup v2") {
 		t.Fatalf("unhelpful reason: %q", reason)
+	}
+}
+
+// #52's reproduction, as a test. Three text files in a plain directory
+// answered every question the old DetectBase asked, so a typo'd
+// --cgroup-base became a "cgroup v2 base": memory.max and pids.max were
+// written as ordinary files, Enter wrote a pid into one and returned
+// nil, and the exec_exit frame told the broker `cgroup-v2` applied while
+// a 32-way fork burst under pids=8 ran to completion. Only statfs(2) can
+// tell a directory from a cgroup.
+func TestDetectBaseRefusesADirectoryDressedAsACgroup(t *testing.T) {
+	base := fakeBase(t, "cpuset cpu io memory hugetlb pids rdma misc\n", "", "")
+	dir, reason := DetectBase(base)
+	if dir != "" {
+		t.Fatalf("a plain directory was accepted as a cgroup v2 base: %q", dir)
+	}
+	if !strings.Contains(reason, "cgroup2") {
+		t.Fatalf("the refusal must name the filesystem it wanted: %q", reason)
+	}
+}
+
+// A cgroup directory holds kernel-created interface files that cannot be
+// unlinked and, sometimes, child cgroups. os.Remove alone fails on the
+// second and leaves an exec-N-PID/ behind, which is what #52 observed.
+func TestCleanupRemovesAChildCgroup(t *testing.T) {
+	dir := t.TempDir()
+	child := filepath.Join(dir, "exec-1-99", "nested")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cleanup(filepath.Join(dir, "exec-1-99")); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "exec-1-99")); !os.IsNotExist(err) {
+		t.Fatalf("the per-exec cgroup was left behind: %v", err)
+	}
+}
+
+// commonAncestor is what the delegation-containment check reasons over,
+// and getting it wrong would either invent a refusal or miss a real one.
+func TestCommonAncestor(t *testing.T) {
+	cases := []struct{ a, b, want string }{
+		{"/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a/c", "/sys/fs/cgroup/a"},
+		{"/sys/fs/cgroup/loom", "/sys/fs/cgroup/loom/exec-1", "/sys/fs/cgroup/loom"},
+		{"/sys/fs/cgroup/loom/exec-1", "/sys/fs/cgroup/loom", "/sys/fs/cgroup/loom"},
+		{"/a", "/b", "/"},
+	}
+	for _, c := range cases {
+		if got := commonAncestor(c.a, c.b); got != c.want {
+			t.Fatalf("commonAncestor(%q, %q) = %q, want %q", c.a, c.b, got, c.want)
+		}
 	}
 }
 

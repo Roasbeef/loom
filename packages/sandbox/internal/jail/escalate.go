@@ -44,6 +44,11 @@ type Escalation struct {
 	state  escState
 	termAt time.Time
 	grace  time.Duration
+	// cancelled is sticky: it survives Exited, because "was this run
+	// truncated?" is a question asked after the process is gone. The
+	// state alone cannot answer it — every finished execution is
+	// escExited, whether it was cancelled or ran to completion.
+	cancelled bool
 }
 
 // NewEscalation returns a machine using the given grace window (callers
@@ -60,6 +65,7 @@ func (e *Escalation) Cancel(now time.Time) Sig {
 	}
 	e.state = escTermSent
 	e.termAt = now
+	e.cancelled = true
 	return SigTerm
 }
 
@@ -88,7 +94,10 @@ func (e *Escalation) KillDeadline() (time.Time, bool) {
 // Exited marks the process gone; all further inputs answer SigNone.
 func (e *Escalation) Exited() { e.state = escExited }
 
-// Cancelled reports whether a cancel was ever accepted.
-func (e *Escalation) Cancelled() bool {
-	return e.state == escTermSent || e.state == escKilled
-}
+// Cancelled reports whether a cancel was ever accepted, and keeps
+// reporting it after the process has exited — which is when the caller
+// needs the answer. A cancelled execution was truncated, and its exit
+// status describes only whatever the payload happened to be doing when
+// the ladder reached it (#53: a backgrounded sleep made that `code=0`,
+// a clean success, three runs out of three).
+func (e *Escalation) Cancelled() bool { return e.cancelled }

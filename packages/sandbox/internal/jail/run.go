@@ -2,6 +2,7 @@ package jail
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,18 @@ type Result struct {
 	Degraded        bool
 	WallMs          uint64
 	TimedOut        bool
+	// Cancelled reports that the helper stopped this execution rather
+	// than the execution ending of its own accord — an explicit cancel,
+	// or the wall-clock deadline, which climbs the same ladder (TimedOut
+	// separates the two causes).
+	//
+	// It exists because the exit status cannot carry it. A cancelled run
+	// whose payload had backgrounded its work reported `code=0 signal=0`
+	// — a clean success for an execution that was forcibly truncated —
+	// and `code=143` is no better in the other direction: `sh -c 'exit
+	// 143'` produces it with no cancel involved. Only the helper knows,
+	// and now it says so (#53).
+	Cancelled bool
 	// PidsMaxEvents is the number of forks the cgroup pids controller
 	// denied (0 when no cgroup was attached). Diagnostic; not on the wire.
 	PidsMaxEvents uint64
@@ -68,10 +81,11 @@ type Exec struct {
 	timedOut bool
 	stdinEOF bool
 
-	pumps sync.WaitGroup
-	feat  Features
-	cgDir string
-	cg    cgroupOutcome
+	pumps  sync.WaitGroup
+	feat   Features
+	cgDir  string
+	cg     cgroupOutcome
+	mounts MountReport
 }
 
 // cgroupOutcome records what became of the per-exec cgroup for one
@@ -80,9 +94,37 @@ type Exec struct {
 // missing — why. All three are needed to report honestly, because
 // "no cgroup" means nothing without "and one was asked for".
 type cgroupOutcome struct {
-	wanted   bool
+	// ceilings names which of memory.max and pids.max the policy asked
+	// for. Which, not whether: a skip that names a ceiling the policy
+	// never wanted is a false statement about what was dropped.
+	ceilings CgroupCeilings
 	attached bool
 	reason   string
+}
+
+func (c cgroupOutcome) wanted() bool { return c.ceilings.any() }
+
+// CgroupCeilings names which of the two ceilings only cgroups can hold
+// a policy asked for.
+type CgroupCeilings struct {
+	Mem  bool
+	Pids bool
+}
+
+func (c CgroupCeilings) any() bool { return c.Mem || c.Pids }
+
+// names renders the ceilings for a report entry, in the order
+// FileWrites applies them.
+func (c CgroupCeilings) names() string {
+	switch {
+	case c.Mem && c.Pids:
+		return "memory.max and pids.max"
+	case c.Mem:
+		return "memory.max"
+	case c.Pids:
+		return "pids.max"
+	}
+	return "no cgroup ceiling"
 }
 
 // CgroupSkipPrefix opens every cgroup skip entry, so a reader (and the
@@ -96,12 +138,12 @@ const CgroupSkipPrefix = "cgroup-v2"
 // which fails a full-enforcement demand — the alternative, saying
 // nothing, lets a policy that demanded both ceilings pass strict
 // enforcement with neither in place.
-func CgroupSkip(reason string) string {
+func CgroupSkip(reason string, ceilings CgroupCeilings) string {
 	if reason == "" {
 		reason = "no per-exec cgroup was attached"
 	}
-	return CgroupSkipPrefix + ": " + reason +
-		"; memory.max/pids.max were NOT applied"
+	return CgroupSkipPrefix + ": " + reason + "; " + ceilings.names() +
+		" NOT applied"
 }
 
 // Start launches req under the strongest jail the environment offers.
@@ -151,9 +193,17 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	stage2 = append(stage2, req.Argv...)
 
 	var argv []string
+	var mounts MountReport
 	if feat.BwrapPath != "" {
-		kinds := statKinds(req.Policy.Protected)
-		argv = append([]string{feat.BwrapPath}, BwrapArgs(req.Policy, kinds)...)
+		// The mount plan is built from a policy whose protected paths
+		// have been resolved through their symlinks; see resolveProtected.
+		jailed := req.Policy
+		jailed.Protected = resolveProtected(req.Policy.Protected)
+		kinds := statKinds(jailed.Protected)
+		// Audited here, reported only if stage 2 later proves the plan
+		// was actually executed. See mounts.go for both halves.
+		mounts = AuditMounts(jailed, MountPlan(jailed, kinds))
+		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds)...)
 		argv = append(argv, stage2...)
 	} else {
 		argv = stage2
@@ -223,6 +273,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		stderr:  NewStreamLimiter(req.Policy.Limits.OutputBytes),
 		esc:     NewEscalation(KillGrace),
 		feat:    feat,
+		mounts:  mounts,
 	}
 
 	// Best-effort cgroup membership: the group is configured before the
@@ -231,11 +282,14 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// principle fork in the gap before Enter; phase 1 accepts that race
 	// (the broker learns from Enforcement whether cgroups applied at
 	// all, which is the decision that matters).
-	e.cg.wanted = req.Policy.Limits.MemBytes > 0 || req.Policy.Limits.Pids > 0
-	if e.cg.wanted {
+	e.cg.ceilings = CgroupCeilings{
+		Mem:  req.Policy.Limits.MemBytes > 0,
+		Pids: req.Policy.Limits.Pids > 0,
+	}
+	if e.cg.wanted() {
 		e.cg.reason = feat.CgroupReason
 	}
-	if feat.CgroupDir != "" && e.cg.wanted {
+	if feat.CgroupDir != "" && e.cg.wanted() {
 		name := "exec-" + strconv.FormatUint(req.ID, 10) + "-" + strconv.Itoa(cmd.Process.Pid)
 		dir, err := cgroup.Setup(feat.CgroupDir, name, cgroup.LimitsView{
 			MemBytes: req.Policy.Limits.MemBytes,
@@ -344,13 +398,16 @@ func (e *Exec) Cancel() {
 
 // term delivers the TERM rung. In degraded mode the group leader is the
 // payload itself and the whole group is the right addressee; under bwrap
-// the leader is the supervisor and must be spared. A selection that comes
-// back empty — no procfs, a race, a group of one — falls back to the
-// group, because a TERM that was silently not sent is worse than one sent
-// too widely: the caller would wait out a grace nobody was asked to use.
+// the leader is the supervisor, which must be spared, and the payload is
+// found by descent rather than by process group — a group is something
+// a payload can leave with one syscall, and descent is not (see
+// cancel.go). A selection that comes back empty — no procfs, a race
+// before the payload appeared — falls back to the group, because a TERM
+// that was silently not sent is worse than one sent too widely: the
+// caller would wait out a grace nobody was asked to use.
 func (e *Exec) term() {
 	if e.feat.BwrapPath != "" {
-		if targets := TermTargets(scanProcGroup(e.pgid), e.pgid, e.pgid); len(targets) > 0 {
+		if targets := TermTargets(scanProcesses(), e.pgid); len(targets) > 0 {
 			for _, pid := range targets {
 				_ = syscall.Kill(pid, syscall.SIGTERM)
 			}
@@ -384,12 +441,13 @@ func (e *Exec) Wait() Result {
 		e.killT.Stop()
 	}
 	e.esc.Exited()
+	cancelled := e.esc.Cancelled()
 	timedOut := e.timedOut
 	e.mu.Unlock()
 
 	e.stdinW.Close()
 
-	rep, _ := ReadReport(e.reportR)
+	s2 := readStage2Report(e.reportR)
 	e.reportR.Close()
 
 	var pidsMax uint64
@@ -407,9 +465,10 @@ func (e *Exec) Wait() Result {
 		Degraded:        e.feat.Degraded(),
 		WallMs:          uint64(time.Since(e.started) / time.Millisecond),
 		TimedOut:        timedOut,
+		Cancelled:       cancelled,
 	}
 
-	res.Enforcement = enforcementEntries(e.feat, e.cg, rep)
+	res.Enforcement = enforcementEntries(e.feat, e.cg, e.mounts, s2)
 
 	if err == nil {
 		res.Code = 0
@@ -428,6 +487,63 @@ func (e *Exec) Wait() Result {
 	return res
 }
 
+// stage2Report is what came back on fd 4, and whether anything did.
+//
+// The distinction is the whole point. A stage 2 that dies before writing
+// its report — a bwrap that could not exec it, a missing helper binary,
+// a namespace setup that failed — produced an *empty* report, which the
+// old code folded into "no skips" and a full-enforcement demand
+// therefore accepted. Silence about a layer is not evidence the layer
+// was applied, so it is recorded as its own condition and reported as a
+// skip.
+type stage2Report struct {
+	rep Report
+	// received is true only when stage 2 actually said something. It is
+	// also the helper's only witness that bubblewrap built a namespace
+	// and exec'd into it: the report can arrive from nowhere else.
+	received bool
+	// err carries a report that arrived but could not be read.
+	err string
+}
+
+// readStage2Report drains fd 4 and classifies what it found.
+func readStage2Report(r io.Reader) stage2Report {
+	rep, err := ReadReport(r)
+	switch {
+	case err != nil:
+		return stage2Report{err: err.Error()}
+	case len(rep.Applied) == 0 && len(rep.Skipped) == 0:
+		return stage2Report{}
+	default:
+		return stage2Report{rep: rep, received: true}
+	}
+}
+
+// Stage2SkipPrefix opens the skip entry emitted when stage 2 said
+// nothing, so a reader can recognise the condition without matching a
+// reason that varies by cause.
+const Stage2SkipPrefix = "stage2"
+
+// Stage2Skip is the enforcement entry for a stage 2 that never reported.
+// Everything the inner stage applies — rlimits, Landlock, no_new_privs,
+// the seccomp network filter — is unknown when it is silent, and so is
+// whether bubblewrap ever built the jail around it.
+func Stage2Skip(reason string) string {
+	if reason == "" {
+		reason = "no enforcement report arrived on fd 4 before the " +
+			"execution ended"
+	}
+	return Stage2SkipPrefix + ": " + reason +
+		"; the in-process layers (rlimits, Landlock, no_new_privs, " +
+		"seccomp) cannot be confirmed to have been applied"
+}
+
+// BwrapUnwitnessedSkip is the entry emitted when bubblewrap was on the
+// path and asked to build a jail, but nothing witnessed it doing so.
+const BwrapUnwitnessedSkip = "bwrap: stage 2 sent no enforcement report " +
+	"on fd 4, so neither the namespaces nor the mount plan can be " +
+	"confirmed to have been built"
+
 // enforcementEntries assembles the per-exec enforcement summary the
 // exec_exit frame carries: what the supervising helper applied around the
 // execution, then what stage 2 applied inside it, then everything either
@@ -439,28 +555,55 @@ func (e *Exec) Wait() Result {
 // confinement, and a reader who missed that would take the list for a
 // sandbox report.
 //
-// The cgroup layer is the one the helper itself owns, and it reports on
-// the same terms as every other: applied, or skipped with a reason. A
-// policy that asked for `mem_bytes` or `pids` and got no cgroup has an
-// unenforced ceiling, and saying nothing about it would let exactly that
-// result satisfy a full-enforcement demand.
-func enforcementEntries(feat Features, cg cgroupOutcome, rep Report) []string {
+// Every layer reports on the same terms: applied, or skipped with a
+// reason — and, since #54, **presence is the claim and silence is a
+// skip**. Two rules carry that:
+//
+//   - `bwrap` and the `mounts:` audit are claimed only when stage 2
+//     reported, because that report is the one thing that could not have
+//     arrived unless bubblewrap built the namespace and exec'd into it.
+//     bwrap merely being on PATH proved nothing, and `[bwrap]` on its own
+//     used to satisfy a full-enforcement demand.
+//   - a stage 2 that said nothing yields `skip:stage2: …` rather than an
+//     absent inner report, so the layers it owns are refused rather than
+//     assumed.
+//
+// The cgroup layer is the one the helper itself owns, and it reports the
+// same way. A policy that asked for `mem_bytes` or `pids` and got no
+// cgroup has an unenforced ceiling, and saying nothing about it would let
+// exactly that result satisfy a full-enforcement demand.
+func enforcementEntries(feat Features, cg cgroupOutcome, mounts MountReport, s2 stage2Report) []string {
 	var out []string
 	if !feat.Platform.Implemented {
 		out = append(out, "skip:"+feat.Platform.Reason)
 	}
 	if feat.BwrapPath != "" {
-		out = append(out, "bwrap")
+		if s2.received {
+			out = append(out, "bwrap")
+			if mounts.Applied != "" {
+				out = append(out, mounts.Applied)
+			}
+		} else {
+			out = append(out, "skip:"+BwrapUnwitnessedSkip)
+		}
 	}
 	if cg.attached {
 		out = append(out, "cgroup-v2")
 	}
-	out = append(out, rep.Applied...)
-	if cg.wanted && !cg.attached {
-		out = append(out, "skip:"+CgroupSkip(cg.reason))
+	out = append(out, s2.rep.Applied...)
+	if feat.BwrapPath != "" && s2.received {
+		for _, m := range mounts.Skipped {
+			out = append(out, "skip:"+m)
+		}
 	}
-	for _, s := range rep.Skipped {
+	if cg.wanted() && !cg.attached {
+		out = append(out, "skip:"+CgroupSkip(cg.reason, cg.ceilings))
+	}
+	for _, s := range s2.rep.Skipped {
 		out = append(out, "skip:"+s)
+	}
+	if !s2.received {
+		out = append(out, "skip:"+Stage2Skip(s2.err))
 	}
 	return out
 }
@@ -469,10 +612,20 @@ func enforcementEntries(feat Features, cg cgroupOutcome, rep Report) []string {
 func (e *Exec) Pgid() int { return e.pgid }
 
 // statKinds classifies protected paths for bwrap mask construction.
+//
+// os.Stat, not os.Lstat: the mask forms differ by inode type and the
+// type that matters is the *target's*. A symlink to a directory that
+// Lstat called a file would be masked with the file form — a bind of a
+// character device over a directory, which the kernel refuses with
+// ENOTDIR. That fails closed rather than open (the old file form was
+// `--ro-bind dir dir`, which succeeded and left the directory readable),
+// but a jail that will not start is still a jail nobody gets. Callers
+// pass paths already resolved by resolveProtected, so the stat and the
+// mount see the same inode.
 func statKinds(paths []string) map[string]PathKind {
 	kinds := make(map[string]PathKind, len(paths))
 	for _, p := range paths {
-		fi, err := os.Lstat(filepath.Clean(p))
+		fi, err := os.Stat(filepath.Clean(p))
 		switch {
 		case err != nil:
 			kinds[p] = PathMissing
@@ -483,4 +636,35 @@ func statKinds(paths []string) map[string]PathKind {
 		}
 	}
 	return kinds
+}
+
+// resolveProtected rewrites each protected path through its symlinks, so
+// the mask lands on the inode rather than on the name.
+//
+// bwrap resolves a mount's destination inside the pivot root it is
+// building, where a symlink's target may not exist yet. Measured with
+// real bubblewrap: `--ro-bind link link` on a symlink to a directory
+// fails with "Can't bind mount ...: No such file or directory" and exit
+// 1, the `--tmpfs` form fails identically, and for an *absolute* symlink
+// every mask form fails. Masking the resolved target works — and it
+// covers both names, because the symlink still resolves into the mask
+// from inside the jail. A protected `~/.ssh` that is a symlink is not
+// exotic, and the failure mode is a jail that will not start.
+//
+// A path that does not resolve keeps its cleaned original: that is the
+// PathMissing case, where masking the name is exactly the point — a
+// protected path that does not exist yet must stay uncreatable.
+func resolveProtected(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			resolved = filepath.Clean(p)
+		}
+		out = append(out, resolved)
+	}
+	return out
 }

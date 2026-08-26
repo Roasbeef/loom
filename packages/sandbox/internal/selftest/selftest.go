@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,7 +63,7 @@ func Run(w io.Writer, selfExe string) bool {
 		run  func(feat jail.Features, selfExe string) probeResult
 	}{
 		{"write outside writable_roots denied", probeWriteOutside},
-		{"protected path write denied", probeProtected},
+		{"protected path masked from reads and writes", probeProtected},
 		{"direct socket denied under network off", probeSocketOff},
 		{"env not in allowlist withheld", probeEnvAllowlist},
 		{"fork bomb capped by pids limit", probeForkBomb},
@@ -259,15 +260,40 @@ func probeProtected(feat jail.Features, selfExe string) probeResult {
 	}
 	defer os.RemoveAll(dir)
 
+	// Two markers, one per inode type, each unique enough that finding
+	// it anywhere in the jail's output is unambiguous.
+	const fileMarker = "LOOM-PROBE-FILE-SECRET-BYTES"
+	const dirMarker = "LOOM-PROBE-DIR-SECRET-BYTES"
 	secret := filepath.Join(dir, "secret.env")
-	const original = "TOKEN=hunter2\n"
+	original := "TOKEN=" + fileMarker + "\n"
 	if err := os.WriteFile(secret, []byte(original), 0o600); err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
+	secretDir := filepath.Join(dir, "secrets.d")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	dirEntry := filepath.Join(secretDir, "loom-probe-private-key")
+	dirContents := dirMarker + "\n"
+	if err := os.WriteFile(dirEntry, []byte(dirContents), 0o600); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
 
-	pol := basePolicy(dir) // the protected file sits INSIDE the writable root
-	pol.Protected = []string{secret}
-	script := fmt.Sprintf("echo clobbered > %s && echo WROTE; rm -f %s && echo REMOVED", secret, secret)
+	pol := basePolicy(dir) // the protected paths sit INSIDE the writable root
+	pol.Protected = []string{secret, secretDir}
+	// The witness: an effect the policy *allows*, performed by the same
+	// payload, in the same jail, before the two it forbids. An untouched
+	// secret file is equally consistent with a mask that held and with a
+	// payload that never started — and #54 was reported from exactly the
+	// second case, a `bwrap` that exited 1 before exec'ing anything.
+	// ALLOWED-OK is what tells those apart. It is the discriminator the
+	// hostile-`.beam` probe was built around, applied here.
+	allowed := filepath.Join(dir, "allowed")
+	script := fmt.Sprintf(
+		"echo ok > %s && echo ALLOWED-OK; "+
+			"cat %s; cat %s; ls %s; "+
+			"echo clobbered > %s && echo WROTE; rm -f %s && echo REMOVED",
+		allowed, secret, dirEntry, secretDir, secret, secret)
 	_, out, err := runShell(feat, selfExe, pol, script)
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
@@ -276,6 +302,30 @@ func probeProtected(feat jail.Features, selfExe string) probeResult {
 	if err != nil || string(got) != original {
 		return probeResult{outcome: failed,
 			detail: fmt.Sprintf("protected file modified (jail said: %q)", strings.TrimSpace(out))}
+	}
+	if got, err := os.ReadFile(dirEntry); err != nil || string(got) != dirContents {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("protected directory modified (jail said: %q)",
+				strings.TrimSpace(out))}
+	}
+	// "Protected" means the contents are gone from the jail's view, not
+	// merely unwritable — for a directory and, since #55, for a file
+	// too. A read is what an adversary in the jail actually wants from a
+	// credential file, and `protected: [".aws/credentials"]` handing
+	// those over while refusing the write back is the shape that bug had.
+	if strings.Contains(out, fileMarker) {
+		return probeResult{outcome: failed,
+			detail: "the protected file's contents were readable inside the jail"}
+	}
+	if strings.Contains(out, dirMarker) ||
+		strings.Contains(out, filepath.Base(dirEntry)) {
+		return probeResult{outcome: failed,
+			detail: "the protected directory's contents were readable inside the jail"}
+	}
+	if !strings.Contains(out, "ALLOWED-OK") {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("the payload never announced itself, so the "+
+				"untouched secret is evidence of nothing (out %q)", out)}
 	}
 	return probeResult{outcome: enforced}
 }
@@ -512,17 +562,42 @@ func probeOrphanReap(feat jail.Features, selfExe string) probeResult {
 	// sweep in degraded mode; dying PID namespace under bwrap).
 	pol := basePolicy(dir)
 	start := time.Now()
-	res, _, err := runShell(feat, selfExe, pol, "sleep 30 & echo orphan-started")
+	// The shell prints the orphan's own pid, which it can only do after
+	// forking it — the witness that there was an orphan to reap. A
+	// prompt `Wait` on its own is equally consistent with a reaped
+	// grandchild and with a jail that never started one, and #54 was
+	// reported from the second case.
+	res, out, err := runShell(feat, selfExe, pol, "sleep 30 & echo orphan-started $!")
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
 	}
 	elapsed := time.Since(start)
+	if pid := orphanPid(out); pid <= 0 {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("no orphan was ever forked, so a prompt Wait "+
+				"proves nothing (out %q, exit %d)", out, res.Code)}
+	}
 	if elapsed > 10*time.Second {
 		return probeResult{outcome: failed,
 			detail: fmt.Sprintf("Wait took %s; orphan held the jail open", elapsed)}
 	}
-	_ = res
 	return probeResult{outcome: enforced}
+}
+
+// orphanPid reads the pid the orphan probe's shell announced, or 0 when
+// it announced nothing readable. Inside the jail's PID namespace the
+// number is namespace-local and cannot be signalled from here; it is
+// the *announcement* that is the evidence, not the value.
+func orphanPid(out string) int {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(out), "orphan-started ")
+	if !ok {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // ProbeDirForTest exposes probeDir so the invariant it exists to keep —

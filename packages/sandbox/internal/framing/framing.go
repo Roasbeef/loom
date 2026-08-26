@@ -109,6 +109,13 @@ type ExecExit struct {
 	Degraded        bool     `msgpack:"degraded"`
 	WallMs          uint64   `msgpack:"wall_ms"`
 	TimedOut        bool     `msgpack:"timed_out"`
+	// Cancelled reports that the helper stopped the execution rather
+	// than the execution ending of its own accord. Neither code nor
+	// signal can carry that: a cancelled run whose payload had
+	// backgrounded its work reports code=0, and code=143 is produced by
+	// `sh -c 'exit 143'` with no cancel at all. See
+	// protocol-change/006.
+	Cancelled bool `msgpack:"cancelled"`
 }
 
 // ErrorBody is the body of an error frame.

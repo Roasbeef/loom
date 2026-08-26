@@ -211,14 +211,24 @@ and `unshare`/fork-based namespace assembly in a multithreaded process is
 the tar pit that gave runc its `nsexec.c`. The helper only composes a
 bubblewrap argument list — pure data, golden-tested — and stacks
 in-process restrictions on itself afterward. The argv order is itself
-load-bearing, since bwrap applies mounts in order: the host filesystem
-read-only, then fresh `/proc` and a minimal `/dev`, then explicit
-read-only binds, then writable binds, then protected-path masks (so a
-protected path *inside* a writable root is still masked), then scratch. A
-protected file is bind-mounted onto itself read-only — unwritable but
-still readable; a protected directory, or a path that does not exist yet,
-is shadowed by an empty read-only tmpfs, so it can be neither read nor
-created. Under network-off, bwrap also unshares the network namespace.
+load-bearing, since bwrap applies mounts in order — so the helper does
+not leave that order to how the policy's four path lists happen to be
+concatenated. It resolves the policy into an explicit, ordered mount
+plan under two rules. **Grants first, masks last, and nothing after a
+mask**: the readable and writable binds and the scratch area widen the
+view, while fresh `/proc`, a minimal `/dev` and the protected-path masks
+subtract from it, and a widening emitted after a mask undoes it and fails
+open. **Within a phase, the most specific region wins**: operations sort
+parent-before-child, so a readable root nested inside a writable root
+comes out read-only and a writable root under the scratch mount survives
+it. Masks are exempt from the second rule against grants, because
+`protected` is the only subtractive verb the policy has and nothing may
+carve a hole in it. A protected path is removed from the view whatever
+its inode type: a directory, or a path that does not exist yet, is
+shadowed by an empty read-only tmpfs, and a file by a read-only bind of
+an empty device — neither can be read through, written through, or
+created in. Under network-off, bwrap also unshares the network
+namespace.
 
 **Stage 2 restricts itself and execs.** After changing directory it sets
 `RLIMIT_FSIZE` and `RLIMIT_CPU`, applies a Landlock ruleset derived
@@ -263,25 +273,95 @@ Everything else is plumbing with teeth. The child's environment is
 dropped even when the broker sent it, so the policy alone documents what
 a jail could see. Output is capped per stream, and past the cap the
 helper keeps reading and discarding so the child never blocks on a full
-pipe. Cancellation escalates against the process *group* — `SIGTERM`,
-then `SIGKILL` two seconds later — inside a broker-side helper grace of
-three seconds and the relay's five, each layer outwaiting the one below.
-And `Wait` runs in a deliberate order: reap the direct child, sweep the
-group with `SIGKILL` (killing orphaned grandchildren that still hold the
-output pipes), then join the output pumps — which is why a backgrounded
-`sleep 30` does not hold the execution open.
+pipe. And `Wait` runs in a deliberate order: reap the direct child,
+sweep the group with `SIGKILL` (killing orphaned grandchildren that still
+hold the output pipes), then join the output pumps — which is why a
+backgrounded `sleep 30` does not hold the execution open.
+
+### Cancellation, and who each rung is addressed to
+
+`SIGTERM`, then `SIGKILL` two seconds later, inside a broker-side helper
+grace of three seconds and the relay's five, each layer outwaiting the
+one below. The two rungs have **different addressees**, and that is the
+whole of the design.
+
+Under bwrap the helper's direct child is a *supervisor*, with a second
+bwrap as the new PID namespace's init below it and the payload below
+that. The supervisor is spawned `--die-with-parent`, so TERMing the
+process group kills it, its death `SIGKILL`s the namespace init, and
+killing a PID namespace's init kills every process in that namespace.
+Measured: a payload with `trap "" TERM` died in 813 µs, by `SIGKILL`,
+having never been asked to stop. The grace bought nobody anything.
+
+So TERM is addressed to **the payload and everything it spawned**, and
+only the KILL rung takes the whole group. The payload is found by
+descent, not by process group: the walk starts at the supervisor and
+takes everything at depth two or more, which is exactly "the cage, and
+then what is inside it". A process group is something a process can
+leave with one unprivileged `setsid(2)`, and a selection that scanned the
+group came back empty for such a payload and fell back to signalling the
+group — the collapse above, on a payload nothing had asked to stop. A
+process cannot leave the descent, and under `--unshare-pid` the kernel
+reparents orphans onto the namespace's own init rather than onto host
+pid 1, so the walk enumerates the whole jail. Both exclusions are
+**structural** — the supervisor whose pid the helper holds because it
+spawned it, and that process's own direct children — because the earlier
+rule read `NSpid` out of `/proc` and spared anything that looked like a
+namespace init, a shape `unshare -U -p -f` hands a payload for free.
+
+That makes TERM **complete under bwrap and best-effort without it**. In
+degraded mode there is no namespace, the group leader is the payload
+itself, and a payload that calls `setsid(2)` leaves the group with
+nothing to put it back. One more thing a missing bwrap costs, reported
+as degraded like the rest, and bounded by the KILL rung's group sweep.
+
+The result says whether the ladder was climbed. `exec_exit.cancelled` is
+a field of its own because no other one can carry it: a cancelled run
+whose payload had backgrounded its work reports `code=0 signal=0`, a
+clean success for an execution that was truncated, and `code=143` is
+what `sh -c 'exit 143'` reports with no cancel at all
+(`protocol-change/006`).
 
 ### Enforced versus reported
 
 A helper on a kernel that cannot provide a layer does not pretend. It
 reports what it has in `hello.features` and, per execution, in an
 `enforcement` list and a `degraded` flag: strings like `bwrap`,
-`landlock:abi=5`, `seccomp-net`, `rlimit-cpu`, `skip:landlock: ...`. The
-broker decides what to do about it. `FullEnforcement` refuses a degraded
-helper at dispatch on its hello features *and* fails any execution whose
+`mounts:ro=2,rw=1,mask=3,scratch=tmpfs,plan=…`, `landlock:abi=5`,
+`seccomp-net`, `rlimit-cpu`, `skip:landlock: ...`. The broker decides
+what to do about it. `FullEnforcement` refuses a degraded helper at
+dispatch on its hello features *and* fails any execution whose
 `exec_exit` reports degraded — the ground-truth check, because features
 are a promise and the exit report is a fact. `BestEffort` accepts what is
 available and still hands the report to the caller.
+
+**Presence is the claim, and silence is a skip.** The report is checked
+against the layer set the *policy* calls for — `bwrap`, `mounts`,
+`landlock` and `no-new-privs` always, plus `seccomp-net` under a
+network-off or proxy policy, `cgroup-v2` under a memory or pid ceiling,
+`rlimit-cpu` and `rlimit-fsize` under theirs — and a required layer that
+never appears fails the demand exactly as a `skip:` entry does. The
+earlier test was "no `skip:` entries", which a *silent* helper passes: a
+stage 2 that died before writing fd 4 produced `enforcement: ["bwrap"]`,
+containing no skip, and satisfied a full-enforcement demand with the
+entire inner report missing.
+
+Two rules make the helper's side of that honest. `bwrap` and the
+`mounts:` audit are claimed **only when stage 2 reported**, because that
+report is the one thing that could not have arrived unless bubblewrap
+built the namespace and exec'd into it — bwrap merely being on `PATH`
+proved nothing. And a stage 2 that says nothing yields `skip:stage2: …`
+rather than an absent inner report.
+
+The `mounts:` entry is what gives the mount layer something to say at
+all. Its counts are not of operations requested — those are identical in
+a healthy plan and in one whose mask a later bind undoes — but of the
+policy's own paths whose **effective view, after replaying the whole
+ordered plan, is the one the policy asked for**. A defeated mask drops
+out of `mask=` and emits a `skip:mounts:` naming the path and the
+operation that re-exposed it. The broker holds the policy it sent, so
+those counts are checkable against it; the `plan=` digest is a diffing
+aid, not a check, because nobody holds the expected value.
 
 One gap is deliberately not folded into that vocabulary. A kernel missing
 a layer is an *environmental* gap, and degraded is the honest word for it.

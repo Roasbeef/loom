@@ -5,18 +5,18 @@ import (
 	"testing"
 )
 
-// The jail's host-side shape: supervisor (group leader), namespace init,
-// payload. See cancel.go.
-func jailedGroup(pgid int) []ProcEntry {
+// The jail's host-side shape, by descent: supervisor, bwrap's namespace
+// init below it, the payload below that. See cancel.go.
+func jailedTree(supervisor int) []ProcEntry {
 	return []ProcEntry{
-		{Pid: pgid, Pgid: pgid, NamespaceInit: false},
-		{Pid: pgid + 1, Pgid: pgid, NamespaceInit: true},
-		{Pid: pgid + 3, Pgid: pgid, NamespaceInit: false},
+		{Pid: supervisor, Ppid: 1},
+		{Pid: supervisor + 1, Ppid: supervisor},     // bwrap's ns init
+		{Pid: supervisor + 3, Ppid: supervisor + 1}, // the payload
 	}
 }
 
 func TestTermTargetsSparesTheScaffolding(t *testing.T) {
-	got := TermTargets(jailedGroup(100), 100, 100)
+	got := TermTargets(jailedTree(100), 100)
 	if want := []int{103}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("TermTargets = %v, want %v (payload only)", got, want)
 	}
@@ -25,23 +25,56 @@ func TestTermTargetsSparesTheScaffolding(t *testing.T) {
 // A grandchild the payload forked is inside the jail and is part of what
 // was asked to stop, so it is addressed too.
 func TestTermTargetsIncludesGrandchildren(t *testing.T) {
-	entries := append(jailedGroup(100), ProcEntry{Pid: 104, Pgid: 100})
-	got := TermTargets(entries, 100, 100)
+	entries := append(jailedTree(100), ProcEntry{Pid: 104, Ppid: 103})
+	got := TermTargets(entries, 100)
 	if want := []int{103, 104}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("TermTargets = %v, want %v", got, want)
 	}
 }
 
-// Other groups are none of our business, however the table is ordered.
-func TestTermTargetsIgnoresOtherGroups(t *testing.T) {
-	entries := []ProcEntry{
-		{Pid: 7, Pgid: 7},
-		{Pid: 100, Pgid: 100},
-		{Pid: 101, Pgid: 100, NamespaceInit: true},
-		{Pid: 103, Pgid: 100},
-		{Pid: 900, Pgid: 900},
+// #53, evasion 1: setsid(2) takes a payload out of the process group the
+// old selection scanned, which returned nothing and made the caller fall
+// back to signalling the group — killing the supervisor and collapsing
+// the namespace onto a payload nothing had asked to stop. Leaving the
+// group changes no parent link, so it changes no target.
+func TestTermTargetsFindAPayloadThatLeftTheProcessGroup(t *testing.T) {
+	// Process-group membership is not modelled at all any more; the
+	// escapee is here purely as a descendant.
+	entries := append(jailedTree(100), ProcEntry{Pid: 105, Ppid: 103})
+	got := TermTargets(entries, 100)
+	if want := []int{103, 105}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TermTargets = %v, want %v (the escapee is still a descendant)", got, want)
 	}
-	got := TermTargets(entries, 100, 100)
+}
+
+// #53, evasion 2: the old rule spared any process whose innermost NSpid
+// was 1, which `unshare -U -p -f` gives a payload for free. The
+// exemption is now structural — the supervisor and its own children —
+// so a payload that nests namespaces inherits nothing.
+func TestTermTargetsDoNotExemptAPayloadsOwnNamespaceInit(t *testing.T) {
+	entries := []ProcEntry{
+		{Pid: 100, Ppid: 1},   // supervisor
+		{Pid: 101, Ppid: 100}, // bwrap's ns init
+		{Pid: 103, Ppid: 101}, // unshare
+		{Pid: 104, Ppid: 103}, // the payload: PID 1 of its own namespace
+		{Pid: 105, Ppid: 104}, // its sleep
+	}
+	got := TermTargets(entries, 100)
+	if want := []int{103, 104, 105}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TermTargets = %v, want %v", got, want)
+	}
+}
+
+// Other processes are none of our business, however the table is ordered.
+func TestTermTargetsIgnoreUnrelatedProcesses(t *testing.T) {
+	entries := []ProcEntry{
+		{Pid: 900, Ppid: 7},
+		{Pid: 7, Ppid: 1},
+		{Pid: 100, Ppid: 1},
+		{Pid: 101, Ppid: 100},
+		{Pid: 103, Ppid: 101},
+	}
+	got := TermTargets(entries, 100)
 	if want := []int{103}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("TermTargets = %v, want %v", got, want)
 	}
@@ -55,58 +88,55 @@ func TestTermTargetsIgnoresOtherGroups(t *testing.T) {
 func TestTermTargetsNoOpinion(t *testing.T) {
 	cases := map[string][]ProcEntry{
 		"no process table at all": nil,
-		"group is the supervisor alone (degraded mode)": {
-			{Pid: 100, Pgid: 100},
+		"the supervisor alone (degraded mode)": {
+			{Pid: 100, Ppid: 1},
 		},
 		"payload has not appeared in the table yet": {
-			{Pid: 100, Pgid: 100},
-			{Pid: 101, Pgid: 100, NamespaceInit: true},
+			{Pid: 100, Ppid: 1},
+			{Pid: 101, Ppid: 100},
 		},
 	}
 	for name, entries := range cases {
-		if got := TermTargets(entries, 100, 100); got != nil {
+		if got := TermTargets(entries, 100); got != nil {
 			t.Fatalf("%s: TermTargets = %v, want nil (fall back to the group)", name, got)
 		}
 	}
 }
 
-func TestParseStatPgid(t *testing.T) {
+// A recycled pid claiming an ancestor as its parent must not send the
+// walk round in circles.
+func TestTermTargetsTerminateOnACycle(t *testing.T) {
+	entries := []ProcEntry{
+		{Pid: 100, Ppid: 1},
+		{Pid: 101, Ppid: 100},
+		{Pid: 103, Ppid: 101},
+		{Pid: 104, Ppid: 103},
+		{Pid: 101, Ppid: 104}, // the same pid, now claiming its own descendant
+	}
+	got := TermTargets(entries, 100)
+	if want := []int{103, 104}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TermTargets = %v, want %v", got, want)
+	}
+}
+
+func TestParseStatPpid(t *testing.T) {
 	cases := []struct {
 		name string
 		stat string
 		want int
 		ok   bool
 	}{
-		{"ordinary", "1234 (bwrap) S 1200 1234 1234 0 -1 ...", 1234, true},
+		{"ordinary", "1234 (bwrap) S 1200 1234 1234 0 -1 ...", 1200, true},
 		// A comm containing spaces and parentheses is why the parse
 		// starts after the *last* ')' and not the first.
-		{"hostile comm", `9 (we ) (are) S) S 4 77 77 0`, 77, true},
+		{"hostile comm", `9 (we ) (are) S) S 4 77 77 0`, 4, true},
 		{"truncated", "1234 (bwrap)", 0, false},
 		{"no comm", "garbage", 0, false},
 	}
 	for _, c := range cases {
-		got, ok := parseStatPgid(c.stat)
+		got, ok := parseStatPpid(c.stat)
 		if ok != c.ok || (ok && got != c.want) {
-			t.Fatalf("%s: parseStatPgid = %d,%v want %d,%v", c.name, got, ok, c.want, c.ok)
-		}
-	}
-}
-
-func TestNestedNamespaceInit(t *testing.T) {
-	cases := []struct {
-		name   string
-		status string
-		want   bool
-	}{
-		{"nested init", "Name:\tbwrap\nNSpid:\t4321\t1\nThreads:\t1\n", true},
-		{"nested but not init", "NSpid:\t4322\t2\n", false},
-		{"same namespace as us", "NSpid:\t4321\n", false},
-		{"deeply nested init", "NSpid:\t4321\t7\t1\n", true},
-		{"no NSpid line (kernel without pid namespaces)", "Name:\tsh\n", false},
-	}
-	for _, c := range cases {
-		if got := nestedNamespaceInit(c.status); got != c.want {
-			t.Fatalf("%s: nestedNamespaceInit = %v, want %v", c.name, got, c.want)
+			t.Fatalf("%s: parseStatPpid = %d,%v want %d,%v", c.name, got, ok, c.want, c.ok)
 		}
 	}
 }

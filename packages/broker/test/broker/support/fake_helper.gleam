@@ -54,6 +54,14 @@ pub type Script {
   NoHello
   /// Says hello with an unsupported protocol version.
   WrongProto
+  /// Hello looks healthy and the exec_exit carries no `skip:` at all —
+  /// but the only entry is `bwrap`, because stage 2 died before it
+  /// could report. The layers the policy called for said nothing, and
+  /// silence must not read as applied (#54).
+  SilentStage2
+  /// A report that is complete except for the seccomp network filter a
+  /// network-off policy calls for.
+  NoSeccompEntry
 }
 
 /// Messages driving the fake helper process.
@@ -325,6 +333,8 @@ fn exec_start(
         | Degraded
         | LyingDegraded
         | SkippedLayer
+        | SilentStage2
+        | NoSeccompEntry
         | DeafHeartbeat
         | NoHello
         | WrongProto -> {
@@ -437,12 +447,22 @@ fn exit_body(
   }
   let enforcement = case script {
     Degraded | LyingDegraded -> ["rlimits", "pgroup", "skip:bwrap: not found"]
+    // Stage 2 never spoke: one entry, no skips, nothing applied.
+    SilentStage2 -> ["bwrap"]
+    NoSeccompEntry -> [
+      "bwrap", "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",
+      "landlock:abi=5", "no-new-privs",
+    ]
     // The lying case for the list: healthy bool, skipped layer.
     SkippedLayer -> [
-      "bwrap", "seccomp-net", "rlimits", "pgroup",
+      "bwrap", "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",
+      "no-new-privs", "seccomp-net", "rlimits", "pgroup",
       "skip:landlock: unavailable in this test",
     ]
-    _ -> ["bwrap", "landlock:abi=5", "seccomp-net", "rlimits", "pgroup"]
+    _ -> [
+      "bwrap", "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",
+      "landlock:abi=5", "no-new-privs", "seccomp-net", "rlimits", "pgroup",
+    ]
   }
   framing.ExecExit(
     code: 0,
@@ -455,6 +475,7 @@ fn exit_body(
     degraded:,
     wall_ms: 3,
     timed_out: False,
+    cancelled: signal != 0,
   )
 }
 

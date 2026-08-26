@@ -145,3 +145,32 @@ func TestTheHostileBeamReachesNothingWhenTheJailRefuses(t *testing.T) {
 		t.Fatalf("the adversary reached past the jail: %s", got.Summary)
 	}
 }
+
+// #54: with a `bwrap` on PATH that exits 1 without running anything,
+// every jailed exec dies before the payload starts. Eight probes said
+// FAILED; two said ENFORCED, because their success condition was the
+// *absence* of an effect — an untouched secret file, a prompt `Wait` —
+// and nothing having run satisfies both. A probe must not report
+// containment on silence: the payload has to announce that it ran, the
+// way the hostile-`.beam` probe's controls do.
+func TestNoProbeReportsEnforcedWhenNothingRan(t *testing.T) {
+	shim := t.TempDir()
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(shim, "bwrap"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write bwrap shim: %v", err)
+	}
+	helper := testbin.Helper(t)
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var out strings.Builder
+	if selftest.Run(&out, helper) {
+		t.Fatalf("the suite passed with a bwrap that never ran:\n%s", out.String())
+	}
+	t.Logf("self-test output:\n%s", out.String())
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "ENFORCED") {
+			t.Errorf("probe reported enforcement with a bwrap that exits 1 "+
+				"before the payload runs: %q", strings.TrimSpace(line))
+		}
+	}
+}

@@ -78,9 +78,11 @@ pub type Body {
   /// chunk emitted when the per-stream `output_bytes` cap is hit.
   ExecOut(stream: OutputStream, data: BitArray, bytes: Int, truncated: Bool)
   /// The completed execution. `enforcement` lists what was actually
-  /// applied (e.g. "bwrap", "landlock:abi=5", "skip:landlock: ...") —
-  /// ground truth, checked over hello features. `signal` is 0 on a
-  /// normal exit.
+  /// applied (e.g. "bwrap", "mounts:ro=2,...", "landlock:abi=5",
+  /// "skip:landlock: ...") — ground truth, checked over hello features.
+  /// `signal` is 0 on a normal exit. `cancelled` reports that the helper
+  /// stopped the execution rather than the execution ending of its own
+  /// accord (protocol-change/006); `timed_out` separates the two causes.
   ExecExit(
     code: Int,
     signal: Int,
@@ -92,6 +94,7 @@ pub type Body {
     degraded: Bool,
     wall_ms: Int,
     timed_out: Bool,
+    cancelled: Bool,
   )
   /// A capability RPC from a satellite: `{token, cap, args,
   /// deadline_ms}`. The broker checks the token on every call.
@@ -250,6 +253,7 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
       degraded:,
       wall_ms:,
       timed_out:,
+      cancelled:,
     ) ->
       msgpack.MapValue([
         #(msgpack.StringValue("code"), msgpack.IntValue(code)),
@@ -268,6 +272,7 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
         #(msgpack.StringValue("degraded"), msgpack.BoolValue(degraded)),
         #(msgpack.StringValue("wall_ms"), msgpack.IntValue(wall_ms)),
         #(msgpack.StringValue("timed_out"), msgpack.BoolValue(timed_out)),
+        #(msgpack.StringValue("cancelled"), msgpack.BoolValue(cancelled)),
       ])
     CapCall(token:, cap:, args:, deadline_ms:) ->
       msgpack.MapValue([
@@ -501,6 +506,7 @@ fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
     check_keys(entries, [
       "code", "signal", "stdout_bytes", "stderr_bytes", "stdout_truncated",
       "stderr_truncated", "enforcement", "degraded", "wall_ms", "timed_out",
+      "cancelled",
     ]),
   )
   use code <- result.try(body_int(entries, "exec_exit", "code"))
@@ -525,6 +531,10 @@ fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
   use degraded <- result.try(body_bool(entries, "exec_exit", "degraded"))
   use wall_ms <- result.try(body_int(entries, "exec_exit", "wall_ms"))
   use timed_out <- result.try(body_bool(entries, "exec_exit", "timed_out"))
+  // Required, not optional. A helper that omits it would otherwise read
+  // as "not cancelled", which is the same allow-by-absence #54 is about;
+  // both ends of this wire ship from one tree.
+  use cancelled <- result.try(body_bool(entries, "exec_exit", "cancelled"))
   Ok(ExecExit(
     code:,
     signal:,
@@ -536,6 +546,7 @@ fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
     degraded:,
     wall_ms:,
     timed_out:,
+    cancelled:,
   ))
 }
 
@@ -819,8 +830,13 @@ fn envelope_field(
   entries: Entries,
   key: String,
 ) -> Result(MsgPackValue, FrameError) {
+  // map_error, not replace_error: this runs for every field of every
+  // frame on the decode path, and `replace_error`'s argument is built on
+  // every call whether the key was missing or not (house rule R1).
   find(entries, key)
-  |> result.replace_error(malformed("frame", "required key " <> key, "missing"))
+  |> result.map_error(fn(_) {
+    malformed("frame", "required key " <> key, "missing")
+  })
 }
 
 fn envelope_int(entries: Entries, key: String) -> Result(Int, FrameError) {
@@ -847,8 +863,11 @@ fn body_field(
   kind: String,
   key: String,
 ) -> Result(MsgPackValue, FrameError) {
+  // map_error, not replace_error — see envelope_field (house rule R1).
   find(entries, key)
-  |> result.replace_error(malformed(kind, "required key " <> key, "missing"))
+  |> result.map_error(fn(_) {
+    malformed(kind, "required key " <> key, "missing")
+  })
 }
 
 fn body_int(

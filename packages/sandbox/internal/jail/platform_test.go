@@ -103,7 +103,8 @@ func TestFeaturesListSaysNothingExtraOnLinux(t *testing.T) {
 func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
 	feat := Features{Platform: PlatformFor("darwin")}
 	rep := Report{Applied: []string{"rlimit-cpu"}, Skipped: []string{"landlock: nope"}}
-	got := enforcementEntries(feat, cgroupOutcome{}, rep)
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{},
+		stage2Report{rep: rep, received: true})
 	if len(got) == 0 || !strings.HasPrefix(got[0], "skip:jail: ") {
 		t.Fatalf("the platform skip must lead the summary: %v", got)
 	}
@@ -121,8 +122,14 @@ func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
 func TestEnforcementEntriesUnchangedOnASupportedPlatform(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap"}
 	rep := Report{Applied: []string{"rlimit-cpu", "seccomp-net"}, Skipped: []string{"landlock: nope"}}
-	got := enforcementEntries(feat, cgroupOutcome{wanted: true, attached: true}, rep)
-	want := []string{"bwrap", "cgroup-v2", "rlimit-cpu", "seccomp-net", "skip:landlock: nope"}
+	mounts := MountReport{Applied: "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0011223344556677"}
+	got := enforcementEntries(feat,
+		cgroupOutcome{ceilings: CgroupCeilings{Mem: true}, attached: true},
+		mounts, stage2Report{rep: rep, received: true})
+	want := []string{
+		"bwrap", mounts.Applied, "cgroup-v2", "rlimit-cpu", "seccomp-net",
+		"skip:landlock: nope",
+	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("supported-platform summary changed:\ngot  %v\nwant %v", got, want)
 	}

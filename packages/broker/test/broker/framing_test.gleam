@@ -50,6 +50,7 @@ fn sample_frames() -> List(framing.Frame) {
         degraded: False,
         wall_ms: 12,
         timed_out: False,
+        cancelled: False,
       ),
     ),
     framing.Frame(
@@ -297,6 +298,7 @@ pub fn nil_arrays_tolerated_test() {
         #(msgpack.StringValue("degraded"), msgpack.BoolValue(True)),
         #(msgpack.StringValue("wall_ms"), msgpack.IntValue(1)),
         #(msgpack.StringValue("timed_out"), msgpack.BoolValue(False)),
+        #(msgpack.StringValue("cancelled"), msgpack.BoolValue(False)),
       ]),
     )
   let assert Ok(framing.Frame(

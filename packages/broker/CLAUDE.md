@@ -27,6 +27,9 @@ protocol (spec Part 1.4). WP-G.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
+  `ExecResult.cancelled` says the helper truncated the run;
+  `ExecResult.enforcement` is the ground truth `required_layers` and
+  `unapplied_layers` check the policy's demands against.
 - `broker/exec.{SpawnConfig, HostPlatform}` — how a real helper is
   started, and whether this host has a jail for it to build.
   `SpawnConfig.helper_args` carries the two things the helper can only
@@ -91,13 +94,21 @@ protocol (spec Part 1.4). WP-G.
   an in-band `error` frame and keeps the channel (forward compatibility,
   mirroring the helper). Frame boundaries never depend on transport
   chunking.
-- **Budget is pooled per execution, not per call.** A token is valid for
-  exactly one `{op_id, step_id}`, so that pair *is* the execution identity
-  and the broker holds one `budget.Ledger` per live pair. The first
-  clearance opens the ledger; later clearances reserve against the stored
-  budget, which their own budget field cannot widen. This closes the
-  amplification hole: 10,000 polite parallel reads share one
-  `max_outstanding` cap and one aggregate wall deadline.
+- **Budget is pooled per execution, not per call — a decision, not a
+  default.** A token is valid for exactly one `{op_id, step_id}`, so that
+  pair *is* the execution identity and the broker holds one
+  `budget.Ledger` per live pair. The first clearance opens the ledger;
+  later clearances reserve against the stored budget, which their own
+  budget field cannot widen. This closes the amplification hole: 10,000
+  polite parallel reads share one `max_outstanding` cap and one aggregate
+  wall deadline — which a per-call cap could not do, since 10,000
+  *separate* calls each within its own cap sails straight through it.
+  `docs/adr/005-budget-pooling-granularity.md` records this against the
+  concrete case that put it in question (`grep`'s `Concurrent` tag
+  contradicting a `bash`-sized `max_outstanding: 1`, issue #50): the
+  keying stays `{op_id, step_id}`, the fix was the tool's own declared
+  budget. Read it before threading a new identity through this key
+  (issue #22) or stacking a further cap on top of it (issue #23).
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's relay process dies
   unsettled (every relay is monitored). Releases are generation-checked, so
@@ -131,14 +142,29 @@ protocol (spec Part 1.4). WP-G.
   which keeps "the pgroup" in the cancel contract unambiguous.
 - **The cancel ladder's rungs have different addressees, and the grace is
   real on both sides of the jail.** `cancel` is `TERM` → 2 s grace →
-  `KILL`, but `TERM` is addressed to the payload and spares the jail's
-  supervisor and PID-namespace init; only `KILL` takes the whole pgroup.
-  Signalling the group at the TERM rung kills the bwrap supervisor, and
-  `--die-with-parent` then SIGKILLs the namespace and everything in it —
-  which collapsed the grace to under a millisecond and delivered a SIGKILL
-  to a payload nothing had asked to stop. `cancel_grace_ms` (3 s) must
-  still exceed the helper's 2 s ladder. See
+  `KILL`, but `TERM` is addressed to the payload and everything it
+  spawned, found by descent from the jail's supervisor, and spares that
+  supervisor and bwrap's PID-namespace init; only `KILL` takes the whole
+  pgroup. Signalling the group at the TERM rung kills the bwrap
+  supervisor, and `--die-with-parent` then SIGKILLs the namespace and
+  everything in it — which collapsed the grace to under a millisecond and
+  delivered a SIGKILL to a payload nothing had asked to stop.
+  `cancel_grace_ms` (3 s) must still exceed the helper's 2 s ladder. The
+  reach of the TERM rung is **complete under bwrap and best-effort
+  without it**: the PID namespace is what makes the descendant walk
+  exhaustive, and in degraded mode a payload that calls `setsid(2)` is
+  out of reach until the KILL rung's group sweep. See
   `packages/sandbox/internal/jail/cancel.go`.
+- **A truncated execution is not a `Completed` one, and only the helper
+  can say so.** `ExecResult.cancelled` (protocol-change/006) reports that
+  the helper stopped the execution rather than watching it end. Nothing
+  else in the result carries that: a cancelled run whose payload had
+  backgrounded its work reported `code: 0, signal: 0` — a clean success
+  for a forcibly truncated run, in 3 of 3 measured runs — and `code: 143`
+  is what `sh -c 'exit 143'` reports with no cancel at all, so it is a
+  byte three causes share rather than evidence of a TERM (#53). A test
+  that asserts the *property* asserts `cancelled`; the exit status is a
+  detail of the payload under test.
 - **Read `ExecResult.code`, not `ExecResult.signal`, for how a payload
   ended.** The helper waits on its direct child. Unjailed that is the
   payload, so a TERM-killed payload reports `signal: 15, code: 143`.
@@ -161,14 +187,25 @@ protocol (spec Part 1.4). WP-G.
 - **Helper failure of any kind settles in-band** as an `ExecFailure` — a
   refusal, a channel death, degraded enforcement, cancel escalation — never
   a crash of the caller.
-- **`FullEnforcement` checks ground truth, not just advertisement.** It
-  refuses degraded helpers at dispatch from `hello.features` *and* fails
-  executions whose `exec_exit` reports `degraded` — where "degraded" means
-  the bool *or* any `skip:` entry in the structured `enforcement` list,
-  since the bool tracks only the bwrap layer. That check is only as good
-  as the helper's willingness to emit the entry: a layer the policy asked
-  for and the helper silently omitted passes it. `skip:cgroup-v2` is the
-  entry that used to be missing (see `packages/sandbox/CLAUDE.md`).
+- **`FullEnforcement` demands presence, not the absence of complaints.**
+  It refuses degraded helpers at dispatch from `hello.features` *and*
+  fails executions whose `exec_exit` falls short in any of three ways:
+  the `degraded` bool, any `skip:` entry in the structured `enforcement`
+  list, **or a layer the policy called for that the list never mentions**.
+  The third is the one that was missing. "No `skip:` entries" is a test a
+  *silent* helper passes: a stage 2 that died before writing fd 4
+  produced `enforcement: ["bwrap"]`, which contains no skip and therefore
+  satisfied the demand with the whole inner report absent (#54).
+  `required_layers` derives the demanded set from the policy —
+  `bwrap`, `mounts`, `landlock` and `no-new-privs` unconditionally, plus
+  `seccomp-net` under a network-off or proxy policy, `cgroup-v2` under a
+  memory or pid ceiling, and `rlimit-cpu` / `rlimit-fsize` under theirs —
+  and `unapplied_layers` names what is missing. An entry's layer is its
+  tag up to the first `:` or `=`, so `landlock:abi=5` and
+  `mounts:ro=2,rw=1,…` answer for their layers. With no per-exec policy
+  the execution runs under the helper's fd-3 base, whose conditional
+  layers this actor cannot see, so only the unconditional four are
+  required.
 - **`--allow-unenforced` is for an unsupported platform, never a degraded
   one.** A Linux host missing bwrap or Landlock still enforces something
   and reports what it could not; that report is what `FullEnforcement`

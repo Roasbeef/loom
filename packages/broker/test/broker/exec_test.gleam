@@ -1,5 +1,6 @@
 import broker/exec
 import broker/framing
+import broker/policy
 import broker/support/fake_helper
 import gleam/erlang/process
 import gleam/list
@@ -417,4 +418,113 @@ pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
 // otherwise every real-helper test below silently stopped running.
 pub fn host_platform_here_is_jailed_test() {
   assert exec.host_platform() == exec.JailedHost
+}
+
+pub fn silent_layer_fails_full_enforcement_test() {
+  // #54's meta-finding: stage 2 died before it could report, so the
+  // helper sent `enforcement: ["bwrap"]` — no `skip:` anywhere, and the
+  // old "no skip entries" test therefore accepted it as fully enforced.
+  // A demand for full enforcement is a demand that every layer the
+  // policy calls for says it was applied, so silence must refuse.
+  let helper = fake_helper.start_helper(fake_helper.SilentStage2)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.FullEnforcement), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
+  assert result.degraded == False
+  assert result.enforcement == ["bwrap"]
+  exec.shutdown(helper)
+}
+
+pub fn missing_seccomp_fails_full_enforcement_test() {
+  // The layer set is derived from the policy: a network-off policy calls
+  // for the seccomp network filter, so a report that never mentions it
+  // is refused even though every entry present is an applied one.
+  let helper = fake_helper.start_helper(fake_helper.NoSeccompEntry)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      exec.ExecRequest(
+        ..request(exec.FullEnforcement),
+        policy: Some(network_off_policy()),
+      ),
+      events:,
+      waiting: 1000,
+    )
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
+  assert !list.any(result.enforcement, string.starts_with(_, "skip:"))
+  assert exec.unapplied_layers(
+      result.enforcement,
+      exec.required_layers(Some(network_off_policy())),
+    )
+    == ["seccomp-net"]
+  exec.shutdown(helper)
+}
+
+fn network_off_policy() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    writable_roots: ["/work"],
+    readable_roots: [],
+    protected: [],
+    network: policy.NetworkOff,
+    limits: policy.Limits(
+      cpu_s: 0,
+      wall_s: 0,
+      mem_bytes: 0,
+      pids: 0,
+      fsize_bytes: 0,
+      output_bytes: 0,
+    ),
+    env_allow: ["PATH"],
+    scratch: policy.ScratchTmpfs,
+  )
+}
+
+pub fn presence_refuses_nothing_the_skip_rule_already_refused_test() {
+  // The worry the presence check invites: that demanding `landlock` and
+  // `bwrap` turns every kernel that lacks them into a refusal where a
+  // degraded run used to be legitimate. It does not, and this is the
+  // shape of the argument.
+  //
+  // A host without Landlock reports it *honestly*, as `skip:landlock: …`,
+  // and the skip rule — which predates #54 — already refuses that under
+  // `FullEnforcement`. Presence is a second reason for the same verdict
+  // on such a report, never a first reason for a new one.
+  let honest = [
+    "bwrap", "mounts:ro=1,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",
+    "no-new-privs", "seccomp-net", "rlimits", "pgroup",
+    "skip:landlock: unavailable in this test",
+  ]
+  assert list.any(honest, string.starts_with(_, "skip:"))
+
+  // And the case presence exists for: a report with no skip at all,
+  // which the old rule read as fully enforced because it had nothing to
+  // object to. Here the skip rule is blind and presence is the only
+  // thing that speaks.
+  let silent = ["bwrap"]
+  assert !list.any(silent, string.starts_with(_, "skip:"))
+  assert exec.unapplied_layers(silent, exec.required_layers(None))
+    == ["mounts", "landlock", "no-new-privs"]
+}
+
+pub fn best_effort_still_runs_a_silent_report_test() {
+  // The other half of the same product question. Degraded-mode running
+  // is legitimate and clearly labelled, and it is what the code-mode
+  // path, `make e2e` and a laptop without bubblewrap all use. The
+  // presence check lives entirely inside the `FullEnforcement` arm, so
+  // `BestEffort` accepts even the silent report and hands the caller the
+  // list to judge for itself.
+  let helper = fake_helper.start_helper(fake_helper.SilentStage2)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert result.enforcement == ["bwrap"]
+  exec.shutdown(helper)
 }

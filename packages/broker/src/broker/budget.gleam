@@ -11,6 +11,14 @@
 //// (keyed `{op_id, step_id}`, the identity a token is valid for) and
 //// calls `reserve` before dispatching any effect and `settle` when one
 //// completes, is aborted, or is reclaimed after a relay crash.
+////
+//// **This keying is a decision, not an accident**: `docs/adr/005-budget-
+//// pooling-granularity.md` records why it stays `{op_id, step_id}` — one
+//// ledger per *batch*, never one per call — against the concrete case
+//// that put it in question (`grep`'s `max_outstanding: 1` contradicting
+//// its own `Concurrent` declaration, issue #50). Read it before adding
+//// anything that threads a new identity through this key (issue #22) or
+//// stacks a further cap on top of it (issue #23).
 
 /// The budget attached to one execution's token.
 pub type Budget {

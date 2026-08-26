@@ -169,23 +169,44 @@ pub fn real_helper_cancel_mid_sleep_test() {
   process.sleep(200)
   exec.cancel(helper)
   let assert Ok(#(_stdout, exit)) = collect_exit(events, <<>>, 15_000)
-  // 128 + SIGTERM, and deliberately not `signal != 0`.
+  // The property, not the byte.
   //
-  // Two reasons. The weaker assertion was satisfied by a SIGKILL just as
-  // well as a SIGTERM, so it could not tell "the payload was asked to
-  // stop and did" from "the grace expired and we demolished it" — the
-  // very distinction the cancel ladder exists to make.
+  // `code == 143` was a real tightening over `signal != 0` — that claim
+  // stands — but it is an assertion about a byte that at least three
+  // distinct causes produce: a payload that took the TERM; a jailed
+  // payload whose bwrap supervisor relays 128+15 by exiting it; and
+  // `sh -c 'exit 143'`, with no cancel involved at all. It is also not
+  // the byte a cancelled run always carries: with the payload's work
+  // backgrounded, a forcibly truncated execution reported `code=0
+  // signal=0` — a clean success — in 3 of 3 measured runs (#53).
   //
-  // And `signal` is not a field the broker can read the same way in both
-  // environments. Unjailed, the payload *is* the helper's direct child:
-  // it dies of SIGTERM and the helper reports signal 15, code 143.
-  // Jailed, the helper's direct child is the bwrap supervisor, which
-  // outlives the payload and relays a signalled payload by *exiting*
-  // 128+signal itself — so signal is 0 and code is still 143. The code is
-  // the observable that means the same thing on both sides of the jail
-  // boundary; see `packages/sandbox/internal/jail/cancel.go`.
+  // `cancelled` is the property. The helper is the only party that knows
+  // it stopped the execution rather than watching it end, and since
+  // protocol-change/006 the frame says so. The exit status is still
+  // checked, but as a detail of *this* payload — `/bin/sleep` takes TERM
+  // at its default disposition — rather than as the evidence.
+  assert exit.cancelled == True
   assert exit.code == 143
   assert exit.signal == 0 || exit.signal == 15
+}
+
+// The other half of the same claim: an ordinary run must not report
+// itself cancelled, and a payload that simply *exits* 143 must not be
+// mistaken for one that was TERMed. Without this, asserting `cancelled`
+// above would be satisfied by a helper that sets the flag on everything.
+pub fn real_helper_uncancelled_exit_143_is_not_a_cancel_test() {
+  use helper <- with_real_helper("real_helper_uncancelled_143")
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      request(["/bin/sh", "-c", "exit 143"], 1_048_576),
+      events:,
+      waiting: 3000,
+    )
+  let assert Ok(#(_stdout, exit)) = collect_exit(events, <<>>, 15_000)
+  assert exit.code == 143
+  assert exit.cancelled == False
 }
 
 pub fn real_helper_output_truncation_test() {

@@ -565,10 +565,17 @@ green under `make check` on one Linux development container.
   network` self-test probe loads a hand-written, never-vetted Erlang module
   into a jailed node, and it is `required` of the jail CI job. What that
   probe claims is narrower than the row's wording — an unvetted `.beam`
-  cannot write outside its writable roots, cannot see a protected path, and
-  cannot reach the network, but an *unprotected* host path is still
-  readable, because the base view ro-binds the whole filesystem
-  (`protocol-change/004-sandbox-policy-explicit-mounts.md`). Outstanding:
+  cannot write outside its writable roots, cannot see into a protected
+  path, and cannot reach the network, but an *unprotected* host path is
+  still readable, because the base view ro-binds the whole filesystem
+  (`protocol-change/004-sandbox-policy-explicit-mounts.md`). "Cannot see
+  into" is the contents, and the mechanism differs by inode type: a
+  protected directory is an empty read-only tmpfs, so its entries are
+  `enoent`; a protected file is an empty read-only device mask, so the
+  path is there and cannot be opened at all (EACCES). The file half used
+  to be a read-only bind of the file onto itself and was therefore
+  readable (#55); the probe still exercises only the directory half.
+  Outstanding:
   the satellite's enforcement report is usually lost
   to the abort that races it, so a green run does not prove the jail
   engaged (spec-gaps WP-J 14); and of the nine cap modules vetting

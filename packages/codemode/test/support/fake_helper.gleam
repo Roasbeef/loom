@@ -235,6 +235,7 @@ fn partial_exit(state: FakeState, id: Int, argv: List(String)) -> FakeState {
           degraded: False,
           wall_ms: 1,
           timed_out: False,
+          cancelled: False,
         ),
       ),
     )
@@ -257,6 +258,7 @@ fn exit_body(
     degraded: False,
     wall_ms: 1,
     timed_out: False,
+    cancelled: False,
   )
 }
 

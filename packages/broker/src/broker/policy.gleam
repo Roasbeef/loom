@@ -824,8 +824,10 @@ fn required(
   key: String,
   subject: String,
 ) -> Result(MsgPackValue, CorruptionReport) {
+  // map_error, not replace_error: the reason is a string concatenation
+  // built on every key of every decode, taken or not (house rule R1).
   find(entries, key)
-  |> result.replace_error(fail(subject, "required key " <> key, "missing"))
+  |> result.map_error(fn(_) { fail(subject, "required key " <> key, "missing") })
 }
 
 fn required_int(

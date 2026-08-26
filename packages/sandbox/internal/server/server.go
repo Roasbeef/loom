@@ -173,6 +173,7 @@ func (s *Server) handleExecStart(f framing.Frame) {
 			Degraded:        res.Degraded,
 			WallMs:          res.WallMs,
 			TimedOut:        res.TimedOut,
+			Cancelled:       res.Cancelled,
 		})
 		close(done)
 	}()

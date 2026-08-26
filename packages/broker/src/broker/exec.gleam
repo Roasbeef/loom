@@ -60,6 +60,7 @@ import gleam/erlang/process.{type Pid, type Subject, type Timer}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/pair
 import gleam/result
 import gleam/string
 
@@ -118,6 +119,19 @@ pub type ExecResult {
     degraded: Bool,
     wall_ms: Int,
     timed_out: Bool,
+    /// The helper stopped this execution rather than the execution
+    /// ending of its own accord — the broker's `cancel`, or the policy's
+    /// wall-clock deadline, which climbs the same ladder (`timed_out`
+    /// separates the two causes).
+    ///
+    /// Nothing else in this record can say it. A cancelled run whose
+    /// payload had backgrounded its work reports `code: 0, signal: 0` —
+    /// a clean success for an execution that was truncated — and
+    /// `code: 143` is produced by `sh -c 'exit 143'` with no cancel at
+    /// all, so it is a byte three different causes share rather than
+    /// evidence of a TERM. Only the helper knows, and this is where it
+    /// says so (protocol-change/006).
+    cancelled: Bool,
   )
 }
 
@@ -289,6 +303,11 @@ type RunningExec {
     id: Int,
     events: Subject(ExecEvent),
     demand: EnforcementDemand,
+    /// The layer tags this execution's policy calls for, computed at
+    /// dispatch and checked against the `exec_exit` report. Held here
+    /// because the report arrives long after the request that named
+    /// them, and "what was asked for" is half of the check.
+    required: List(String),
     cancel_timer: Option(Timer),
   )
 }
@@ -727,7 +746,13 @@ fn dispatch_exec(
       ),
     )
   let exec =
-    RunningExec(id:, events:, demand: request.demand, cancel_timer: None)
+    RunningExec(
+      id:,
+      events:,
+      demand: request.demand,
+      required: required_layers(request.policy),
+      cancel_timer: None,
+    )
   let state = State(..state, exec: Some(exec))
   process.send(reply, Ok(Nil))
   send_or_die(state, frame)
@@ -740,13 +765,101 @@ fn degraded_features(features: List(String)) -> Bool {
   list.contains(features, "degraded")
 }
 
-// Whether an exec_exit's enforcement report shows degradation: the
-// helper set the degraded bool (bwrap absent), or any `skip:` entry
-// says a layer the policy called for was not applied. The list, not
-// the bool, is the ground truth a FullEnforcement demand trusts.
-fn degraded_report(enforcement: List(String), degraded: Bool) -> Bool {
+/// The layer tags an execution under `policy` must be able to show as
+/// applied. Exported for the enforcement report the caller renders.
+///
+/// This is the half of the check that #54 was missing. "No `skip:`
+/// entries" is a test a *silent* helper passes: a stage 2 that died
+/// before writing fd 4 produced `enforcement: ["bwrap"]`, which contains
+/// no skip and so satisfied a full-enforcement demand with the whole
+/// inner report — Landlock, seccomp, no_new_privs, the rlimits — absent.
+/// A layer that says nothing is not a layer that was applied.
+///
+/// Four tags are unconditional on a Linux jail, because the helper
+/// applies them for every policy: `bwrap` (the namespace layer),
+/// `mounts` (that layer's audit of what the resolved plan narrowed),
+/// `landlock`, and `no-new-privs`. The rest are asked for by the policy
+/// itself, and are required only when it asks:
+///
+/// | policy                    | tag            |
+/// |---------------------------|----------------|
+/// | `network` off or proxy    | `seccomp-net`  |
+/// | `mem_bytes` or `pids` > 0 | `cgroup-v2`    |
+/// | `cpu_s` > 0               | `rlimit-cpu`   |
+/// | `fsize_bytes` > 0         | `rlimit-fsize` |
+///
+/// With no per-exec policy the execution runs under the helper's fd-3
+/// base, whose conditional layers this actor cannot see; only the
+/// unconditional four are required then.
+pub fn required_layers(policy: Option(SandboxPolicy)) -> List(String) {
+  let base = ["bwrap", "mounts", "landlock", "no-new-privs"]
+  case policy {
+    None -> base
+    Some(policy) ->
+      list.flatten([
+        base,
+        case policy.network {
+          policy.NetworkOff | policy.NetworkProxy(..) -> ["seccomp-net"]
+          policy.NetworkFull -> []
+        },
+        case policy.limits.mem_bytes > 0 || policy.limits.pids > 0 {
+          True -> ["cgroup-v2"]
+          False -> []
+        },
+        case policy.limits.cpu_s > 0 {
+          True -> ["rlimit-cpu"]
+          False -> []
+        },
+        case policy.limits.fsize_bytes > 0 {
+          True -> ["rlimit-fsize"]
+          False -> []
+        },
+      ])
+  }
+}
+
+/// The layers `required` asked for that `enforcement` does not show as
+/// applied. Empty is the only acceptable answer to a `FullEnforcement`
+/// demand; the entries are what a refusal names.
+pub fn unapplied_layers(
+  enforcement: List(String),
+  required: List(String),
+) -> List(String) {
+  let applied =
+    enforcement
+    |> list.filter(fn(entry) { !string.starts_with(entry, "skip:") })
+    |> list.map(layer_tag)
+  list.filter(required, fn(layer) { !list.contains(applied, layer) })
+}
+
+// The layer a report entry speaks for, stripped of its detail: the tag
+// runs to the first ":" or "=", so "landlock:abi=5" is the landlock
+// layer and "mounts:ro=2,rw=1,..." is the mount layer, while a plain
+// "seccomp-net" is its own tag.
+fn layer_tag(entry: String) -> String {
+  let head =
+    string.split_once(entry, ":")
+    |> result.map(pair.first)
+    |> result.unwrap(entry)
+  string.split_once(head, "=")
+  |> result.map(pair.first)
+  |> result.unwrap(head)
+}
+
+// Whether an exec_exit's enforcement report falls short of what the
+// policy called for: the helper set the degraded bool (bwrap absent),
+// any `skip:` entry says a layer was not applied, or a required layer
+// is simply absent from the list. The list, not the bool, is the ground
+// truth a FullEnforcement demand trusts — and absence counts against it
+// exactly as a skip does.
+fn degraded_report(
+  enforcement: List(String),
+  degraded: Bool,
+  required: List(String),
+) -> Bool {
   degraded
   || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
+  || unapplied_layers(enforcement, required) != []
 }
 
 fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
@@ -802,6 +915,7 @@ fn handle_frame(state: State, frame: Frame) -> State {
       degraded:,
       wall_ms:,
       timed_out:,
+      cancelled:,
     ) -> {
       let result =
         ExecResult(
@@ -815,6 +929,7 @@ fn handle_frame(state: State, frame: Frame) -> State {
           degraded:,
           wall_ms:,
           timed_out:,
+          cancelled:,
         )
       handle_exec_exit(state, frame.id, result)
     }
@@ -902,11 +1017,11 @@ fn handle_exec_exit(state: State, id: Int, result: ExecResult) -> State {
       // FullEnforcement demand settles as a failure even though the
       // helper looked healthy at hello. `skip:` entries count as
       // degradation whatever the bool says — the bool only tracks the
-      // bwrap layer, while a skip marks any layer the policy called for
-      // that was not applied.
+      // bwrap layer — and so does a required layer the report never
+      // mentions, which is how a dead stage 2 used to pass (#54).
       let event = case
         exec.demand,
-        degraded_report(result.enforcement, result.degraded)
+        degraded_report(result.enforcement, result.degraded, exec.required)
       {
         FullEnforcement, True -> Failed(failure: DegradedExecution(result:))
         FullEnforcement, False | BestEffort, _ -> Exited(result:)

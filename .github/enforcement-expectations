@@ -37,8 +37,16 @@ required|orphaned grandchild reaped via pgroup
 # --- Kernel layers. The jail job installs bubblewrap and lifts Ubuntu's
 # --- AppArmor restriction on unprivileged user namespaces before running
 # --- the self-test, so these are required of a hosted Linux runner.
+#
+# "protected path masked from reads and writes" was "protected path write
+# denied" until #55 resolved what `protected` means: the path is removed
+# from the jail's view whatever its inode type, not merely made
+# unwritable. The probe now asserts the contents of a protected file *and*
+# of a protected directory are unreachable from inside, so the name says
+# what it checks. Renaming a probe changes the probe set, which this
+# checker fails on by design — the rename and this line move together.
 required|write outside writable_roots denied
-required|protected path write denied
+required|protected path masked from reads and writes
 required|direct socket denied under network off
 
 # --- cgroup v2.
