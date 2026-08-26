@@ -69,6 +69,10 @@ modules, alongside `tui`.
   layer's contribution to the enforcement report. `AuditMounts` replays a
   `MountPlan` and counts the policy's own paths whose *effective* view is
   the one asked for; see "The mount layer says what it achieved" below.
+- `internal/jail.UnmountableProtected` — the pre-dispatch half of #60: it
+  replays a `MountPlan` the same way `AuditMounts` does and names every
+  `PathMissing` protected path whose parent the plan leaves read-only, so
+  `run.go` can refuse before bwrap ever runs instead of a bare `code=1`.
 - `internal/jail.{Stage2Skip, Stage2SkipPrefix, BwrapUnwitnessedSkip}` —
   the entries for a stage 2 that never reported on fd 4, and for the
   bwrap layer that consequently has no witness.
@@ -81,6 +85,9 @@ modules, alongside `tui`.
   are split by build tag (`*_linux.go` / `*_other.go`) so the module
   compiles and vets for `GOOS=darwin`; the non-Linux halves are stubs that
   report the layer unavailable and never pretend to install one.
+  `internal/jail/stage2.go`'s `landlockView` is the one function that
+  turns a decoded policy into `llock.PolicyView`, and is where the
+  layering contract below is actually decided rather than just stated.
 - `internal/selftest` — the probes and the ENFORCED/SKIPPED report.
 
 ## Relationships
@@ -152,10 +159,42 @@ modules, alongside `tui`.
   table and environment, so no network fd can be smuggled in. AF_UNIX stays
   usable and is confined by the filesystem layers; bwrap's network unshare
   is the independent second layer.
-- **Landlock has no deny rules.** A protected path *inside* a writable root
-  cannot be carved out at that layer; masking it is bwrap's job (tmpfs or
-  ro-bind shadowing). Without bwrap the carve-out is unenforceable —
-  reported in the enforcement summary, never hidden.
+- **Landlock has no deny rules, and the layering contract is: strictly
+  weaker than the mounts, never independent of them.** Landlock's grants
+  union — RWDirs and RODirs only ever add access, and nothing in the API
+  can subtract from a region another rule already opened — so a reader
+  must not assume Landlock is a second, independent enforcement point
+  that would still hold if the mount plan were wrong. It is not: a
+  protected path *inside* a writable root cannot be carved out at the
+  Landlock layer, masking it is bwrap's job alone (tmpfs or ro-bind
+  shadowing), and without bwrap the carve-out is unenforceable —
+  reported in the enforcement summary, never hidden. The one place
+  Landlock *is* load-bearing on its own is degraded mode (no bwrap at
+  all), where it is briefly promoted to the only filesystem confinement
+  there is, and even then it can only restrict what the mount layer
+  would also have restricted, never narrow what a mount would have left
+  open. Concretely: `internal/llock.Rules` grants exactly the same three
+  regions bwrap's own grant phase would bind — the readable roots, the
+  writable roots, and (for a host-path scratch only) the scratch — plus
+  the unconditional root-read every jail needs to exec anything. It
+  never sees `protected` at all; that list is bwrap's alone.
+  `internal/jail/stage2.go`'s `landlockView` is where the policy becomes
+  that grant set, and it deliberately omits a tmpfs scratch (issue #59):
+  a `tmpfs` scratch is a directory only bwrap can create for the jail's
+  own exclusive use, so under bwrap the grant was pure redundancy — a
+  rule restating what the mount layer already owns outright — and
+  without bwrap there is no tmpfs to grant write on at all, so a policy
+  asking for one gets none rather than a silent substitute of real host
+  `/tmp` that nothing asked for. `scratch: "/"` is refused even earlier,
+  in `broker/policy.gleam`'s `validate` (`ScratchIsRoot`): a host-path
+  scratch of the literal root would otherwise reach `internal/llock` as
+  `RWDirs("/")`, and because grants union there is no way for any later
+  rule — including every protected-path mask, which Landlock cannot
+  express in the first place — to narrow it back down. Refusing it at
+  the policy boundary, before the policy ever reaches this package,
+  keeps `internal/jail/mounts.go`'s own rule intact: the mount layer
+  binds exactly what the policy says and narrows nothing on its own
+  initiative (4b4983d).
 - **cgroups, not rlimits, for memory and pids.** `RLIMIT_AS` is
   per-process and trivially escaped by forking; `RLIMIT_NPROC` is per-user
   (useless when the jail shares a uid, ignored for root). The construction
@@ -403,6 +442,35 @@ modules, alongside `tui`.
   both names, since the link still resolves into the mask from inside. A
   path that does not resolve keeps its own name: that is the
   `PathMissing` case, where masking the name is the whole point.
+- **A policy bwrap cannot realise fails in Loom's words, not bwrap's**
+  (issue #60). Three shapes made bubblewrap refuse to start with a bare
+  `code=1` and its own chatter on stderr, indistinguishable from the
+  payload's own command failing:
+  - A nested protected path — already handled by 4b4983d's plan model
+    (the redundant descendant is dropped before it ever gets a mask of
+    its own; see the mount-precedence bullets above).
+  - A `PathMissing` protected path whose parent the plan leaves
+    read-only. bwrap needs write access to create the mount point for a
+    path that does not exist yet, and refuses with `Can't mkdir parents
+    for PATH: Read-only file system` when it does not have it. `~/.ssh`
+    — a default protected path — hits this on any policy that does not
+    also grant write under `$HOME`, which is the ordinary case, not an
+    edge one. `internal/jail.UnmountableProtected` (mounts.go) replays
+    the mount plan the same way `AuditMounts` does and flags exactly
+    this shape; `run.go` calls it before building the argv at all and
+    refuses with a message naming the path, so the caller gets a
+    structured `error` frame instead of an opaque spawn failure.
+  - A nonexistent readable root. Unlike the other three path lists,
+    `readable_roots` names paths that may legitimately vary by host — an
+    optional toolchain root, a platform-specific system directory — so
+    it is bound with `--ro-bind-try` rather than refused up front,
+    matching the `Optional`/`IgnoreIfMissing()` treatment
+    `internal/llock.Rules` already gives the same list. The other three
+    lists (`writable_roots`, `protected`, and a host-path `scratch`) do
+    not tolerate absence the same way, and each has its own reason: see
+    "which path lists tolerate a missing path" above `readableRootOp` in
+    bwrap.go for the decision and the two lists (`writable_roots`, a
+    host-path `scratch`) left as an open gap rather than fixed here.
 - **That rigour applies to every probe, not one.** Two probes asserted
   only the *absence* of an effect — an untouched secret file, a prompt
   `Wait` — and nothing having run satisfies both. With a `bwrap` on PATH
