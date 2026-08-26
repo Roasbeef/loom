@@ -29,7 +29,7 @@
 ////
 //// An approval is attributed, never ambient (design §5.3: *one*
 //// re-execution of the denied action, not a session-wide widening). The
-//// record therefore carries the exact call identity the denial was
+//// record therefore carries the exact call identity it is currently
 //// raised for — `{operation, strand, step, source index, call id}` — and
 //// the driver's clearance path spends a grant only on a clearance whose
 //// coordinates match. A record raised without a scope can still be spent
@@ -37,6 +37,18 @@
 //// outside the strand's own clearance, but no tool clearance will ever
 //// load it: an unattributable grant failing to widen anything is the
 //// safe direction.
+////
+//// The scope is the call holding the *claim*, and a claim moves
+//// (`claimed`, committed under CAS by `api.claim_escalation`). It has to:
+//// a record's id is a digest of the want rather than of the call, so a
+//// model that reads an in-band refusal and retries arrives under a call
+//// id the provider has only just minted, and a scope frozen to the first
+//// attempt would name a call nothing can re-clear. What the exactness
+//// buys is unchanged by that — one claimant at a time, one CAS from
+//// `Approved` to `Consumed`, so one approval is one widened execution of
+//// one call — and only a call whose denial digests to the same record id
+//// can ever hold the claim, which is to say the same want, on the same
+//// strand, through the same tool.
 
 import core/corruption.{type CorruptionReport}
 import core/ids.{type OpId}
@@ -63,8 +75,18 @@ pub type Status {
 /// which strand, inside which operation and step. This is the unit an
 /// approval attaches to — a clearance spends a grant only when every
 /// coordinate matches, so an approval granted for one call can never
-/// widen a different one (a different strand's, a different step's, or a
-/// retry the model re-issued under a new call id).
+/// widen a different one (a different strand's, or a different step's).
+///
+/// A record's scope is the call that *currently holds the claim*, not
+/// the call that first raised it. A later call whose denial digests to
+/// the same record id — the same strand, the same tool, the same wanted
+/// diff — takes the claim over (`claimed`, committed CAS-guarded by
+/// `api.claim_escalation`), because a model that reads an in-band
+/// refusal and retries always arrives under a call id the provider has
+/// only just minted, and a scope frozen to a call that will never come
+/// back is an approval nothing can ever spend. What the exactness buys
+/// is still the whole of it: at any instant exactly one call holds the
+/// claim, so exactly one call can consume the approval.
 ///
 /// Constructor invariants: `operation`, `step_id`, and `source_index`
 /// are the planner's coordinates for the planned call (the same triple
@@ -92,7 +114,9 @@ pub type CallScope {
 /// and then holds the approved grant JSON values, a subset of the
 /// denial's wanted diff (enforced by the broker layer that raises and
 /// approves, not re-checked here); `status` moves only Pending →
-/// Approved → Consumed or Pending → Rejected.
+/// Approved → Consumed or Pending → Rejected within one decision cycle,
+/// and a fresh raise for the same want (`claimed`) starts a new cycle
+/// from a decided record.
 pub type Escalation {
   Escalation(
     id: String,
@@ -372,6 +396,46 @@ pub fn raised(
   scope: Option(CallScope),
 ) -> Escalation {
   Escalation(id:, denial:, scope:, grants: [], status: Pending)
+}
+
+/// The record after `scope`'s call raises the same denial against it —
+/// the state transition `api.claim_escalation` commits under a CAS.
+///
+/// One record is one *question*, identified by the digest of the want
+/// (`client/escalate.record_id`), and this is the only thing that moves
+/// a question from one call to another. Which call holds it matters
+/// because a scoped approval is spent by the claimant and nobody else:
+///
+/// - **Pending** — nobody has decided yet, so the claim simply moves and
+///   the stored denial is refreshed to the live call's. One row, one
+///   prompt, and the human reads what the call in hand actually wants.
+/// - **Approved** — a human said yes to this want, on this strand, for
+///   this tool, and the grants they chose are unchanged; the claim moves
+///   so the approval can be spent by a call that exists. It cannot
+///   widen anything beyond what was approved: the grants are the
+///   record's, not the claimant's.
+/// - **Rejected** or **Consumed** — the previous cycle is over. A new
+///   raise re-opens the question as `Pending` with no grants, so one
+///   approval stays worth exactly one execution and one denial stays a
+///   decision about one call rather than a session-lifetime verdict on
+///   the want.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalation.claimed(record, denial, scope).scope == option.Some(scope)
+/// ```
+///
+pub fn claimed(
+  record: Escalation,
+  denial: JsonValue,
+  scope: CallScope,
+) -> Escalation {
+  case record.status {
+    Pending -> Escalation(..record, denial:, scope: Some(scope))
+    Approved -> Escalation(..record, scope: Some(scope))
+    Rejected | Consumed -> raised(record.id, denial, Some(scope))
+  }
 }
 
 /// Whether an escalation's scope names exactly this call. Unscoped

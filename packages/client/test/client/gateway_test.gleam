@@ -242,6 +242,38 @@ pub fn attached_without_a_hub_is_zero_test() {
   assert gateway.attached(gateway.Gateway(name:)) == 0
 }
 
+/// A hub that is alive but does not answer in time counts as nobody
+/// attached. `process.call` exits its *caller* on timeout rather than
+/// returning an error, and the caller here is a parked tool call's own
+/// effect process asking once a second for the length of the park — so a
+/// hub busy behind a long pull would kill the very call it is being
+/// asked about, and the driver would report a death with no stated
+/// reason where the seam's doc promises an in-band policy refusal.
+pub fn attached_is_zero_when_the_hub_does_not_answer_test() {
+  let name = process.new_name(prefix: "loom_silent_hub")
+  let assert Ok(_silent) =
+    actor.new(Nil)
+    |> actor.on_message(fn(state, _message) { actor.continue(state) })
+    |> actor.named(name)
+    |> actor.start
+    as "the silent hub must start"
+  assert gateway.attached(gateway.Gateway(name:)) == 0
+}
+
+/// And a hub that dies while being asked answers zero too, rather than
+/// taking the asker down with it.
+pub fn attached_is_zero_when_the_hub_dies_mid_question_test() {
+  let name = process.new_name(prefix: "loom_dying_hub")
+  let assert Ok(started) =
+    actor.new(Nil)
+    |> actor.on_message(fn(_state, _message) { actor.stop() })
+    |> actor.named(name)
+    |> actor.start
+    as "the dying hub must start"
+  let _pid = started.pid
+  assert gateway.attached(gateway.Gateway(name:)) == 0
+}
+
 // --- envelope conduct ------------------------------------------------------
 
 pub fn malformed_frame_answered_in_band_test() {

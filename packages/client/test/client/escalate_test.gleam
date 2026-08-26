@@ -157,6 +157,28 @@ fn configuration() -> StrandConfiguration {
   )
 }
 
+// Everything a harness varies. Defaults in `setup()`; a test names only
+// the dial it is about.
+type Setup {
+  Setup(
+    interactive: fn() -> Bool,
+    shape: fn(escalate.Config) -> escalate.Config,
+    plane: Bool,
+    base: fn(String) -> policy.SandboxPolicy,
+    seam_step_ms: Int,
+  )
+}
+
+fn setup() -> Setup {
+  Setup(
+    interactive: fn() { False },
+    shape: fn(config) { config },
+    plane: True,
+    base: policy.workspace_default,
+    seam_step_ms: 10,
+  )
+}
+
 // The whole stack over one memory session: a live runtime (so the holder
 // has something to hold), the escalation seam, and a wiring config whose
 // base policy is narrower than `bash` requires.
@@ -164,7 +186,7 @@ fn start_harness(
   interactive: fn() -> Bool,
   shape: fn(escalate.Config) -> escalate.Config,
 ) -> Harness {
-  start_harness_with(interactive, shape, plane: True)
+  start(Setup(..setup(), interactive:, shape:))
 }
 
 /// `plane: False` builds the same session with no holder standing up
@@ -174,11 +196,17 @@ fn start_harness_with(
   shape: fn(escalate.Config) -> escalate.Config,
   plane plane: Bool,
 ) -> Harness {
+  start(Setup(..setup(), interactive:, shape:, plane:))
+}
+
+fn start(setup: Setup) -> Harness {
+  let Setup(interactive:, shape:, plane:, base:, seam_step_ms:) = setup
   let workspace = workspace()
   let #(session_clock, _session_counter) = counting_clock(1_756_000_000_000, 1)
   let assert Ok(opened) = session.open_memory(session_clock)
     as "the memory session must open"
-  let #(seam_clock, _seam_counter) = counting_clock(1_756_000_000_000, 10)
+  let #(seam_clock, _seam_counter) =
+    counting_clock(1_756_000_000_000, seam_step_ms)
   // The park loop's sleep, counted rather than slept: `bump` returns the
   // number of slices taken so far, so a test can assert that a window
   // already closed was never polled at all.
@@ -221,7 +249,7 @@ fn start_harness_with(
       blob_root: workspace <> "/.blobs",
       // Narrower than `bash` requires: it wants the whole filesystem
       // readable, and this grants only the workspace.
-      base_policy: policy.workspace_default(workspace),
+      base_policy: base(workspace),
       escalations: escalate.seam(escalations),
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin:/bin")],
@@ -300,6 +328,30 @@ fn bash_run(call_id: String) -> effects.ToolRun {
   )
 }
 
+// The same call with a model-supplied timeout. `bash` turns it into the
+// `wall_s` it asks the broker for, which is the lever #47 is about.
+fn bash_run_waiting(call_id: String, timeout_ms: Int) -> effects.ToolRun {
+  let run = bash_run(call_id)
+  let arguments =
+    json.Object([
+      #("command", json.String("true")),
+      #("timeout_ms", json.Int(timeout_ms)),
+    ])
+  effects.ToolRun(
+    ..run,
+    arguments:,
+    call: message.ToolCall(..run.call, arguments:),
+  )
+}
+
+// A base whose wall-clock limit is under anything `bash` will ask for,
+// so composition narrows a *model-supplied* number and the wanted diff
+// carries it.
+fn narrow_wall(workspace: String) -> policy.SandboxPolicy {
+  let base = policy.workspace_default(workspace)
+  policy.SandboxPolicy(..base, limits: policy.Limits(..base.limits, wall_s: 10))
+}
+
 fn result_text(outcome: effects.ToolOutcome) -> String {
   let assert effects.ToolCompleted(result:, ..) = outcome
     as "a tool always completes in band"
@@ -313,6 +365,20 @@ fn result_text(outcome: effects.ToolOutcome) -> String {
     }
   })
   |> string.join(with: "\n")
+}
+
+// Runs one call on its own process and reports the settled text, so two
+// calls can genuinely be in flight at once.
+fn run_in_background(
+  config: wiring.Config,
+  run: effects.ToolRun,
+  to: Subject(String),
+) -> Nil {
+  let _pid =
+    process.spawn_unlinked(fn() {
+      process.send(to, result_text(wiring.run_tool(config, run)))
+    })
+  Nil
 }
 
 // An approver that stands in for a human at a client: it waits for a
@@ -483,14 +549,39 @@ pub fn a_park_never_outlives_the_calls_budget_test() {
   assert bump(harness.rests) == 0
 }
 
-// An approval names one call. A *different* call of the same tool
-// wanting the same diff lands on the same record — that is the
-// deduplication working — and must still not spend it, because the
-// scope names the call a human said yes to. Skipping it can only
-// narrow, which is the safe direction.
-pub fn an_approval_is_spent_only_by_the_call_it_names_test() {
+// The ordinary first-run sequence, which is the one #46 says never
+// completes. Nobody is attached when the refusal happens, so it settles
+// in band behind a durable record; a human attaches and approves what
+// the record says; the model retries. Production always retries under a
+// *new* call id — the provider mints one per call — so the retry has to
+// be able to take over the claim the first attempt left behind, or the
+// approval can never be spent by anything and the operator watches an
+// approved record do nothing for the rest of the session.
+pub fn a_retry_under_a_fresh_call_id_spends_the_approval_test() {
   let harness = start_harness(fn() { True }, fn(config) { config })
-  // Raise for `call_1` and approve it, with nobody parked.
+  let headless =
+    escalate.Config(..harness.escalations, interactive: fn() { False })
+  let recording =
+    wiring.Config(..harness.config, escalations: escalate.seam(headless))
+  let first = result_text(wiring.run_tool(recording, bash_run("call_1")))
+  assert string.contains(first, "policy refused")
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "one record must exist"
+  approve_with_the_wanted_diff(harness.runtime)(raised.id)
+  // The retry. A different call id, the same want.
+  let retry = result_text(wiring.run_tool(harness.config, bash_run("call_2")))
+  assert string.contains(retry, "no sandbox helper")
+  assert !string.contains(retry, "policy refused")
+  let assert Ok([spent]) = api.escalations(harness.runtime)
+    as "the record must survive"
+  assert spent.status == escalation.Consumed
+}
+
+// One approval buys one widened execution and no more. The call after
+// the one that spent it finds the record back at `Pending` — a fresh
+// question for a human — rather than a second free pass.
+pub fn an_approval_is_spent_exactly_once_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
   let headless =
     escalate.Config(..harness.escalations, interactive: fn() { False })
   let recording =
@@ -499,18 +590,163 @@ pub fn an_approval_is_spent_only_by_the_call_it_names_test() {
   let assert Ok([raised]) = api.escalations(harness.runtime)
     as "one record must exist"
   approve_with_the_wanted_diff(harness.runtime)(raised.id)
-  // A sibling call finds the approval and leaves it alone.
-  let sibling = result_text(wiring.run_tool(harness.config, bash_run("call_2")))
-  assert string.contains(sibling, "policy refused")
-  let assert Ok([still]) = api.escalations(harness.runtime)
-    as "the record must survive"
-  assert still.status == escalation.Approved
-  // The call it was minted for spends it.
-  let owner = result_text(wiring.run_tool(harness.config, bash_run("call_1")))
-  assert string.contains(owner, "no sandbox helper")
-  let assert Ok([spent]) = api.escalations(harness.runtime)
-    as "the record must survive"
-  assert spent.status == escalation.Consumed
+  let spender = result_text(wiring.run_tool(harness.config, bash_run("call_2")))
+  assert string.contains(spender, "no sandbox helper")
+  // A third call, with nobody to decide, gets the ordinary refusal.
+  let after = result_text(wiring.run_tool(recording, bash_run("call_3")))
+  assert string.contains(after, "policy refused")
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "still exactly one record"
+  assert record.status == escalation.Pending
+  assert record.grants == []
+}
+
+// The scope is still exact equality, and it still refuses. A call that
+// raised, parked, and then lost its claim to another call must not spend
+// the approval the other call is standing at — even though the record it
+// is polling says `Approved` and names the very same want.
+pub fn a_call_that_lost_its_claim_never_spends_the_approval_test() {
+  let harness = start_harness(fn() { False }, fn(config) { config })
+  let runtime = harness.runtime
+  // `interactive` is consulted right after the raise, which is the
+  // instant this call owns the claim. A competitor takes it over there
+  // and a human approves it, so the parked call wakes to an approval
+  // that names somebody else.
+  let stealing =
+    escalate.Config(..harness.escalations, interactive: fn() {
+      case api.escalations(runtime) {
+        Ok([record]) if record.status == escalation.Pending -> {
+          let assert Ok(_claimed) =
+            api.claim_escalation(
+              runtime,
+              record.id,
+              record.denial,
+              scope: escalation.CallScope(
+                operation: bash_run("call_1").operation,
+                strand: "main",
+                step_id: "turn-1:tools",
+                source_index: 0,
+                call_id: "call_99",
+              ),
+            )
+            as "the competitor must take the claim"
+          approve_with_the_wanted_diff(runtime)(record.id)
+          Nil
+        }
+        _ -> Nil
+      }
+      True
+    })
+  let config =
+    wiring.Config(..harness.config, escalations: escalate.seam(stealing))
+  let text = result_text(wiring.run_tool(config, bash_run("call_1")))
+  assert string.contains(text, "policy refused")
+  let assert Ok([record]) = api.escalations(runtime) as "one record must exist"
+  // Untouched: the approval is still there for the call that holds it.
+  assert record.status == escalation.Approved
+}
+
+// An approval reaches exactly the want it was minted for. A call on a
+// different strand digests to a different record, so it raises its own
+// question rather than helping itself to an answer nobody gave about it.
+pub fn an_approval_never_reaches_a_different_want_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  let headless =
+    escalate.Config(..harness.escalations, interactive: fn() { False })
+  let recording =
+    wiring.Config(..harness.config, escalations: escalate.seam(headless))
+  let _first = wiring.run_tool(recording, bash_run("call_1"))
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "one record must exist"
+  approve_with_the_wanted_diff(harness.runtime)(raised.id)
+  // Same tool, same wanted diff, a different strand.
+  let elsewhere = effects.ToolRun(..bash_run("call_2"), strand: "sub:1")
+  let text = result_text(wiring.run_tool(recording, elsewhere))
+  assert string.contains(text, "policy refused")
+  let assert Ok(records) = api.escalations(harness.runtime)
+    as "the records must list"
+  assert list.length(records) == 2
+  let assert Ok(untouched) = list.find(records, fn(r) { r.id == raised.id })
+    as "the approved record must survive"
+  assert untouched.status == escalation.Approved
+}
+
+// #46(c): approving a want once must not make it unaskable forever. The
+// same want arising later re-opens the question rather than finding a
+// spent record and settling silently, which would mean a human is never
+// prompted again for a capability they granted exactly one execution of.
+pub fn a_consumed_want_can_be_asked_again_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  approve_when_pending(
+    harness.runtime,
+    approve_with_the_wanted_diff(harness.runtime),
+  )
+  let first = result_text(wiring.run_tool(harness.config, bash_run("call_1")))
+  assert string.contains(first, "no sandbox helper")
+  approve_when_pending(
+    harness.runtime,
+    approve_with_the_wanted_diff(harness.runtime),
+  )
+  let again = result_text(wiring.run_tool(harness.config, bash_run("call_2")))
+  assert string.contains(again, "no sandbox helper")
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "still exactly one record"
+  assert record.status == escalation.Consumed
+}
+
+// #46(d): a denial is a decision about the call in hand, not a
+// session-lifetime verdict on the want. A later call re-opens the
+// question, so a human who said no can say yes without the session
+// having to be restarted.
+pub fn a_denied_want_can_be_asked_again_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  approve_when_pending(harness.runtime, fn(id) {
+    let assert Ok(Nil) = api.deny_escalation(harness.runtime, id)
+      as "the denial must commit"
+    Nil
+  })
+  let denied = result_text(wiring.run_tool(harness.config, bash_run("call_1")))
+  assert string.contains(denied, "policy refused")
+  approve_when_pending(
+    harness.runtime,
+    approve_with_the_wanted_diff(harness.runtime),
+  )
+  let reconsidered =
+    result_text(wiring.run_tool(harness.config, bash_run("call_2")))
+  assert string.contains(reconsidered, "no sandbox helper")
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "still exactly one record"
+  assert record.status == escalation.Consumed
+}
+
+// Two calls wanting exactly the same thing at the same time — the shape
+// `grep` has, being `Concurrent` with static requirements — share one
+// record and therefore one prompt. One approval is one widened
+// execution, so exactly one of them resumes and the other takes the
+// ordinary in-band refusal; what must not happen is both being refused
+// while an approval for precisely their diff sits unspendable.
+pub fn two_simultaneous_calls_share_one_record_and_one_approval_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  approve_when_pending(
+    harness.runtime,
+    approve_with_the_wanted_diff(harness.runtime),
+  )
+  let outcomes = process.new_subject()
+  run_in_background(harness.config, bash_run("call_a"), outcomes)
+  run_in_background(harness.config, bash_run("call_b"), outcomes)
+  let assert Ok(first) = process.receive(outcomes, 30_000)
+    as "the first call must settle"
+  let assert Ok(second) = process.receive(outcomes, 30_000)
+    as "the second call must settle"
+  let resumed =
+    list.count([first, second], string.contains(_, "no sandbox helper"))
+  assert resumed == 1
+  let refused =
+    list.count([first, second], string.contains(_, "policy refused"))
+  assert refused == 1
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "the two calls must share one record"
+  assert record.status == escalation.Consumed
 }
 
 // --- step 3: the raise policy ---------------------------------------------
@@ -550,11 +786,89 @@ pub fn a_retry_loop_dedupes_onto_one_record_test() {
   let assert Ok(records) = api.escalations(harness.runtime)
     as "the records must list"
   assert list.length(records) == 1
-  // And the surviving record still names the call it was raised for, so
-  // the approval a human gives is spendable by that call and no other.
+  // And the surviving record names the call standing at the door *now*,
+  // not the one that opened it. That is what makes the approval a human
+  // gives spendable at all: the first two attempts are gone, and a scope
+  // frozen to `call_1` would name a call nothing can re-clear.
   let assert [record] = records
   let assert Some(scope) = record.scope as "the record must be scoped"
-  assert scope.call_id == "call_1"
+  assert scope.call_id == "call_3"
+}
+
+// #47: `bash`'s `timeout_ms` is a model-supplied argument, and under a
+// base narrower than it asks for the shortfall carries that number into
+// the wanted diff. If the number reached the dedup digest, a retry loop
+// stepping the timeout would mint a durable record — and, with a client
+// attached, a human prompt — per attempt, which is the approval fatigue
+// the deduplication exists to prevent, driven by the party it exists to
+// constrain.
+pub fn a_model_supplied_timeout_cannot_multiply_records_test() {
+  let harness =
+    start(Setup(..setup(), interactive: fn() { False }, base: narrow_wall))
+  let first =
+    result_text(wiring.run_tool(harness.config, bash_run_waiting("c1", 30_000)))
+  assert string.contains(first, "policy refused")
+  let _second = wiring.run_tool(harness.config, bash_run_waiting("c2", 45_000))
+  let _third = wiring.run_tool(harness.config, bash_run_waiting("c3", 60_000))
+  let assert Ok(records) = api.escalations(harness.runtime)
+    as "the records must list"
+  assert list.length(records) == 1
+}
+
+// And the other half of bounding the set: past the cap, a refusal that
+// would open a *new* record settles in band instead. Two paths that run
+// constantly read the whole `escalation/` prefix — a tool clearance
+// looking for approvals attributed to it, and the gateway's pull turning
+// records into events — so the set has to be a bounded thing rather than
+// one whose size is the model's to choose.
+pub fn the_escalation_set_is_capped_test() {
+  let harness =
+    start(
+      Setup(..setup(), interactive: fn() { False }, shape: fn(config) {
+        escalate.Config(..config, max_records: 1)
+      }),
+    )
+  let _first = wiring.run_tool(harness.config, bash_run("call_1"))
+  let assert Ok([filed]) = api.escalations(harness.runtime)
+    as "the first want files a record"
+  // A *different* want — same tool and diff, another strand — which
+  // would need a row of its own.
+  let text =
+    result_text(wiring.run_tool(
+      harness.config,
+      effects.ToolRun(..bash_run("call_2"), strand: "sub:1"),
+    ))
+  assert string.contains(text, "policy refused")
+  let assert Ok([only]) = api.escalations(harness.runtime)
+    as "the cap holds the set at one"
+  assert only.id == filed.id
+  // The want already filed still escalates: a refusal that costs no row
+  // is never the one the cap turns away.
+  let _again = wiring.run_tool(harness.config, bash_run("call_3"))
+  let assert Ok([still]) = api.escalations(harness.runtime)
+    as "the filed record is still the only one"
+  let assert Some(scope) = still.scope as "the record must be scoped"
+  assert scope.call_id == "call_3"
+}
+
+// The same statement without a session behind it: the *magnitude* of a
+// narrowed limit is not part of the record's identity, while the field
+// it narrows is. The magnitude still reaches the human — it is in the
+// record's stored denial, which is what an approval is granted against.
+pub fn the_record_id_ignores_a_limit_magnitude_test() {
+  let wall = fn(seconds) {
+    escalate.record_id("main", "bash", [
+      policy.GrantLimit(field: policy.WallSeconds, value: seconds),
+    ])
+  }
+  assert wall(30) == wall(45)
+  assert wall(30) == wall(600)
+  // The field is still identity, and so is having a limit grant at all.
+  assert wall(30)
+    != escalate.record_id("main", "bash", [
+      policy.GrantLimit(field: policy.CpuSeconds, value: 30),
+    ])
+  assert wall(30) != escalate.record_id("main", "bash", [])
 }
 
 // The same derivation, stated directly: identical coordinates give the
@@ -592,6 +906,77 @@ pub fn a_headless_session_records_but_never_parks_test() {
   assert string.contains(text, "policy refused")
   let assert Ok([_record]) = api.escalations(harness.runtime)
     as "the record is written anyway"
+}
+
+// --- #48: the budget edge --------------------------------------------------
+
+// A slice admitted just inside the window can still cross the budget
+// deadline before the consuming commit lands, and past that instant the
+// re-clearance cannot reserve — `budget.reserve` refuses. Consuming
+// first would spend the approval on the way to a refusal: the record
+// reads `Consumed`, the model gets a budget error instead of a widened
+// run, and the human's decision bought nothing.
+//
+// The seam clock steps 2 s a read against a 3 s budget, so the poll that
+// admits the slice is inside the deadline and the commit that would
+// spend the approval is outside it.
+pub fn a_park_at_the_budget_edge_never_spends_the_approval_test() {
+  let harness =
+    start(
+      Setup(
+        ..setup(),
+        interactive: fn() { True },
+        seam_step_ms: 2000,
+        shape: fn(config) {
+          escalate.Config(..config, park_timeout_ms: 3_600_000)
+        },
+      ),
+    )
+  // An approval already standing, so the park's first slice reads
+  // `Approved` and goes straight for the consume.
+  let headless =
+    escalate.Config(..harness.escalations, interactive: fn() { False })
+  let recording =
+    wiring.Config(..harness.config, escalations: escalate.seam(headless))
+  let _first = wiring.run_tool(recording, bash_run_waiting("call_1", 3000))
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "one record must exist"
+  approve_with_the_wanted_diff(harness.runtime)(raised.id)
+  // The same call id, so the scope check cannot be what settles this
+  // one: the only thing standing between the approval and a consume is
+  // the budget deadline.
+  let text =
+    result_text(wiring.run_tool(
+      harness.config,
+      bash_run_waiting("call_1", 3000),
+    ))
+  assert string.contains(text, "policy refused")
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "the record must survive"
+  assert record.status == escalation.Approved
+}
+
+// --- #49: a holder that does not answer ------------------------------------
+
+// `process.call` exits its *caller* on timeout rather than returning an
+// error, so a holder that is alive but slow would kill the tool effect
+// process instead of settling the refusal — the driver would report a
+// death with no stated reason where the module doc promises an in-band
+// policy refusal.
+pub fn a_holder_that_never_answers_settles_the_refusal_in_band_test() {
+  let harness =
+    start_harness_with(fn() { True }, fn(config) { config }, plane: False)
+  let assert Ok(_silent) =
+    actor.new(Nil)
+    |> actor.on_message(fn(state, _message) { actor.continue(state) })
+    |> actor.named(harness.escalations.name)
+    |> actor.start
+    as "the silent holder must start"
+  let impatient = escalate.Config(..harness.escalations, holder_timeout_ms: 50)
+  let config =
+    wiring.Config(..harness.config, escalations: escalate.seam(impatient))
+  let text = result_text(wiring.run_tool(config, bash_run("call_1")))
+  assert string.contains(text, "policy refused")
 }
 
 // A seam with no runtime behind it — a host that wired no escalation

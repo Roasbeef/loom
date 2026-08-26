@@ -62,11 +62,15 @@ over one session file. WP-L.
   closes over a process *name* (the Agency's knot, the Agency's answer)
   and `start` puts the runtime behind that name after `api.open`;
   `record_id` is the deterministic `{strand, tool, wanted diff}` digest a
-  retry loop dedupes onto; `none()` is the no-plane seam under which a
-  refusal settles exactly as it did before escalations existed.
+  retry loop dedupes onto, with a limit grant contributing its field and
+  not its model-supplied magnitude; `Config.max_records` caps the
+  distinct wants a session will file; `none()` is the no-plane seam under
+  which a refusal settles exactly as it did before escalations existed.
 - `client/gateway.attached` — how many connections are attached right
   now. The honest answer to "is a human there?", which is what the
-  escalation seam asks before it holds a call open.
+  escalation seam asks before it holds a call open. A hub that is gone,
+  that dies mid-question, or that does not answer inside a second all
+  count as nobody attached rather than exiting the asker.
 - `client/catalog.{Catalog, CatalogModel, Dialect, parse, gateway}` —
   the model catalogue: a total, strict parser for the `loom.toml`
   format (via the `tom` TOML package; `docs/examples/loom.toml` is the
@@ -462,6 +466,39 @@ over one session file. WP-L.
   person stays a client-surface decision: the hub already emits
   escalation events and lists pending ones in its snapshot, so approval
   fatigue is tunable in a UI rather than frozen in a deploy.
+- **A raise *claims* the record; the scope is the call standing at the
+  door now.** The digest deliberately excludes the call id, so under a
+  retry the row is already there when a refusal arrives — and the call
+  that opened it has already settled, because a model that reads an
+  in-band refusal retries under a call id the provider mints fresh. So
+  `api.claim_escalation` moves the scope to the live call under a CAS
+  instead of refusing the duplicate: a pending record moves and refreshes
+  its stored denial, an approved one moves and keeps its grants, and a
+  consumed or rejected one re-opens as a new question with no grants.
+  Without that the ordinary first-run sequence — refusal with nobody
+  attached, a human attaching and approving, the model retrying — leaves
+  an approved record scoped to a call that will never come back, which
+  nothing can ever spend and nothing can ever replace (the register is
+  write-once and there is no delete path). Two consequences are
+  deliberate: two calls wanting the same thing at once share one prompt
+  and therefore one authorization, and approving a want does not make it
+  unaskable — the next call wanting it asks again, because a standing
+  permission is a wider base policy rather than an approval that never
+  expires.
+- **The escalation set is bounded on both axes, because two constantly
+  running paths scan the whole `escalation/` prefix** — a tool clearance
+  looking for approvals attributed to it, and the gateway's pull turning
+  new records into events. *Width*: a limit grant contributes its
+  **field** and not its magnitude to the dedup digest, because `bash`
+  turns a model-supplied `timeout_ms` into the `wall_s` it asks for, and
+  under a narrow base that number reaches the wanted diff — a retry loop
+  stepping it would otherwise mint a record, and a prompt, per attempt.
+  The magnitude still reaches the human: it is in the record's stored
+  denial, which is what an approval is granted against. *Count*:
+  `Config.max_records` caps the distinct wants a session will file, and
+  past the cap a refusal that would open a **new** record settles in
+  band; one that lands on a record already there costs no row and is
+  never turned away.
 - **A park waits on the tool's own effect process, never on the driver.**
   `Hooks.run_end` is not the only thing that must not block `drive_loop`:
   a driver stuck inside a clearance stops serving `Nudge`,
@@ -473,21 +510,44 @@ over one session file. WP-L.
   driver restart kills the parked call and the driver settles it in band
   through the ordinary monitor path.
 - **A park is bounded by the configured window *and* by the call's own
-  budget deadline.** The second bound is not politeness: the broker's
+  budget deadline, and the deadline is re-read immediately before the
+  consuming commit.** The second bound is not politeness: the broker's
   ledger refuses a reservation past `deadline_ms`, so a re-clearance
   after that instant is a `BudgetRefused`, not a resumption, and holding
   a call past it would trade an honest "policy refused" for a confusing
-  "deadline passed". Both bounds are read from the session's own clock,
-  which is why the seam must share it (spec §0.2).
+  "deadline passed". The re-read is the same fact one step further in:
+  the consume is a writer round trip, so a slice admitted just inside the
+  window could otherwise commit `Consumed` on its way to a budget
+  refusal, spending an approval on an execution that never happens. Both
+  bounds are read from the session's own clock, which is why the seam
+  must share it (spec §0.2). What the budget bounds is *admission*, not
+  total elapsed time: a resumed call re-enters `reserve_budget` with its
+  `CallSpec` unchanged and gets the original `wall_s`, so a parked call's
+  lifetime is `park + wall`.
 - **An approval buys exactly one re-clearance, of exactly one call.** The
-  record's `CallScope` is checked before anything is spent, so a record a
-  sibling call deduplicated onto cannot be burned by that sibling; the
-  consume is a CAS that must win *before* the grants compose into a
-  policy; and the resumed call is cleared once, not retried in a loop —
-  if the widened policy still does not satisfy the tool, the second
-  refusal stands in band. A lost CAS, an unattributable record, a decode
-  failure, a denial, a closed window, a disconnected client and a crash
-  all end in the same in-band refusal.
+  record's `CallScope` is checked — exact equality — before anything is
+  spent, so a call that lost the claim to another call cannot burn the
+  approval that other call is standing at; the consume is a CAS that must
+  win *before* the grants compose into a policy; and the resumed call is
+  cleared once, not retried in a loop — if the widened policy still does
+  not satisfy the tool, the second refusal stands in band. Only a call
+  whose denial digests to the record's own id can ever hold the claim, so
+  "one call" is always a call wanting the same thing on the same strand
+  through the same tool, and the grants it spends are the ones a human
+  chose rather than its own. A lost CAS, a lost claim, a decode failure,
+  a denial, a closed window, a passed budget deadline, a disconnected
+  client, an unanswering hub and a crash all end in the same in-band
+  refusal.
+- **Asking another process a question never kills the asker.**
+  `process.call` exits its *caller* on timeout rather than returning an
+  error, and both questions this package asks on a parked call's own
+  effect process — `gateway.attached` once a second for the length of the
+  park, and `escalate.borrow` once per refusal — would therefore turn a
+  merely slow answer into a dead tool call, settled by the driver as a
+  death with no stated reason where the seam's doc promises an in-band
+  policy refusal. Both send and select by hand instead, watching the
+  callee's monitor: absent, dead, dying mid-answer and too slow all
+  degrade to "nobody is there", which un-parks the call and settles it.
 - **Compaction is answered by these seams, and by nothing that supplies
   its own summary.** `compaction_hooks` returns `VerdictGenerate` for
   every structural decision: `VerdictSupplied` exists for a host that

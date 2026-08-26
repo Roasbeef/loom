@@ -330,10 +330,15 @@ pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
 /// poll.
 ///
 /// A hub that is gone answers zero — a server without a gateway is by
-/// definition not being watched — and the residual race (the hub dying
-/// between the liveness check and the reply) exits the *caller*, which
-/// for the only caller there is means a tool effect process whose death
-/// the driver settles in band.
+/// definition not being watched — and so does a hub that does not answer
+/// in a second, or that dies while being asked. That is a deliberate
+/// degradation rather than a lost error: the only caller is an escalation
+/// seam polling once a second from a *parked tool call's* effect process,
+/// and `process.call` exits its caller on timeout rather than returning
+/// one, so a hub busy behind a long pull would kill the very call it is
+/// being asked about. "Nobody answered, so assume nobody is there"
+/// un-parks the call and settles it in band, which is exactly what the
+/// seam's doc promises happens when a client goes away.
 ///
 /// ## Examples
 ///
@@ -345,11 +350,18 @@ pub fn attached(gateway: Gateway) -> Int {
   let subject = process.named_subject(gateway.name)
   case process.subject_owner(subject) {
     Error(Nil) -> 0
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        False -> 0
-        True -> process.call(subject, waiting: 1000, sending: Attached)
-      }
+    Ok(owner) -> {
+      let monitor = process.monitor(owner)
+      let reply_to = process.new_subject()
+      process.send(subject, Attached(reply: reply_to))
+      let answer =
+        process.new_selector()
+        |> process.select(reply_to)
+        |> process.select_specific_monitor(monitor, fn(_down) { 0 })
+        |> process.selector_receive(within: 1000)
+      process.demonitor_process(monitor)
+      result.unwrap(answer, 0)
+    }
   }
 }
 
@@ -3038,6 +3050,10 @@ fn describe_api_error(
     api.EscalationWrongStatus(id:, status:) -> #(
       protocol.code_not_pending,
       "escalation " <> id <> " is " <> escalation_status(status),
+    )
+    api.FactConflict(key:) -> #(
+      protocol.code_conflict,
+      "the fact " <> key <> " moved under the write",
     )
   }
 }

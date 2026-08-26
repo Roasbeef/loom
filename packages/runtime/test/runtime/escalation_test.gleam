@@ -418,3 +418,119 @@ fn put(cell: Holder, runtime: api.Runtime) -> Nil {
 fn get(cell: Holder) -> Option(api.Runtime) {
   process.call_forever(cell, Get)
 }
+
+// --- claiming a record ------------------------------------------------------
+
+// The record id is a digest of the *want*, not of the call, so under a
+// retry loop the row is nearly always already there when a refusal
+// arrives. `claim_escalation` is what a raiser does about that: the row
+// stays one row and the scope follows whichever call is standing at the
+// door, because a scope frozen to the first attempt names a call that
+// has already settled and an approval scoped to it can never be spent.
+//
+// This walks the whole transition table, since which state a claim may
+// take over is the security-relevant part of it.
+pub fn a_claim_moves_a_record_to_the_call_standing_at_the_door_test() {
+  let rt = quiet_runtime()
+  let a = scope_for("call-a")
+  let b = scope_for("call-b")
+
+  // Absent: the claim writes the record, exactly as a raise would.
+  let assert Ok(raised) = api.claim_escalation(rt, "esc-1", denial(), scope: a)
+    as "the first claim must file the record"
+  assert raised.status == escalation.Pending
+  assert raised.scope == Some(a)
+
+  // Pending: the claim moves, and the stored denial is refreshed to the
+  // live call's, so a human reads what the call in hand actually wants.
+  let assert Ok(moved) =
+    api.claim_escalation(rt, "esc-1", other_denial(), scope: b)
+    as "a pending record must move to the new claimant"
+  assert moved.status == escalation.Pending
+  assert moved.scope == Some(b)
+  assert moved.denial == other_denial()
+
+  // Approved: the claim moves and the grants do not. What a human
+  // authorized is unchanged; only who may spend it moves.
+  let assert Ok(Nil) = api.approve_escalation(rt, "esc-1", [grant()])
+    as "the approval must commit"
+  let assert Ok(approved) =
+    api.claim_escalation(rt, "esc-1", denial(), scope: a)
+    as "an approved record must move to the new claimant"
+  assert approved.status == escalation.Approved
+  assert approved.scope == Some(a)
+  assert approved.grants == [grant()]
+
+  // Consumed: a new question, with no grants carried over — which is
+  // what keeps one approval worth exactly one widened execution.
+  let assert Ok([_spent]) = api.consume_escalation(rt, "esc-1")
+    as "the approval must be spendable once"
+  let assert Ok(reopened) =
+    api.claim_escalation(rt, "esc-1", denial(), scope: b)
+    as "a consumed record must re-open"
+  assert reopened.status == escalation.Pending
+  assert reopened.scope == Some(b)
+  assert reopened.grants == []
+
+  // Rejected: likewise a new question, so one "no" is a decision about
+  // one call rather than a verdict the session cannot revisit.
+  let assert Ok(Nil) = api.deny_escalation(rt, "esc-1") as "the denial commits"
+  let assert Ok(asked_again) =
+    api.claim_escalation(rt, "esc-1", denial(), scope: a)
+    as "a rejected record must re-open"
+  assert asked_again.status == escalation.Pending
+  assert asked_again.grants == []
+
+  // Throughout: one row.
+  let assert Ok([_one]) = api.escalations(rt) as "one record, all along"
+
+  // And the write-once door is still write-once: a caller that means
+  // "record this, once" still gets `EscalationExists`.
+  let assert Error(api.EscalationExists(id: "esc-1")) =
+    api.raise_escalation_for(rt, "esc-1", denial(), scope: a)
+    as "raise_escalation_for stays write-once"
+
+  // The cheap, bounded question a raiser asks before opening a new row.
+  let assert Ok(True) = api.escalations_below(rt, 2) as "one record fits"
+  let assert Ok(False) = api.escalations_below(rt, 1) as "one record fills one"
+  process.kill(rt.tree.supervisor)
+}
+
+fn other_denial() -> json.JsonValue {
+  json.Object([
+    #("reason", json.String("wall clock too short")),
+    #("wanted", json.Array([grant()])),
+  ])
+}
+
+fn scope_for(call_id: String) -> escalation.CallScope {
+  escalation.CallScope(
+    operation: alien_op_id(),
+    strand: "main",
+    step_id: "turn-1:tools",
+    source_index: 0,
+    call_id:,
+  )
+}
+
+// A runtime with nothing driving it: this suite's claim coverage is
+// about the durable record, not about a run.
+fn quiet_runtime() -> api.Runtime {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Reply(fake.answer("unused", 1)) },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) = api.open(sess, eff, options())
+    as "the session tree must boot"
+  rt
+}

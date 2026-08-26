@@ -67,6 +67,13 @@ import session/session.{type Session}
 import storage/storage
 import telemetry/log.{type Logger}
 
+/// One blackboard cell as a compare-and-set caller sees it: the stored
+/// value and the seq of the write that put it there, which is what
+/// `put_fact_expecting` asserts against.
+pub type FactCell {
+  FactCell(value: JsonValue, seq: Seq)
+}
+
 /// A live session runtime: the supervision tree plus what the operations
 /// need. `strand` is the strand this handle currently addresses
 /// (`on_strand` rebinds it).
@@ -187,6 +194,11 @@ pub type ApiError {
   EscalationNotFound(id: String)
   /// The escalation's current status does not permit the transition.
   EscalationWrongStatus(id: String, status: escalation.Status)
+  /// A compare-and-set fact write lost: the cell is no longer at the seq
+  /// the caller read it at, so somebody else wrote it in between. The
+  /// remedy is to read again and decide again, which is the whole point
+  /// of having asked.
+  FactConflict(key: String)
 }
 
 /// Opens (or recovers) a session runtime: seeds the primary strand's
@@ -838,11 +850,22 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
 
 // --- the blackboard (design §4.6) ------------------------------------------
 
-/// Writes one `fact.custom` cell — the shared, transactional multi-agent
-/// blackboard. Keys under the reserved prefixes — see
-/// `reserved_fact_key` — are refused, so no fact can forge an approval
-/// record, shadow a terminal result, rewrite a parent edge in the lineage
-/// ledger, or overwrite the pinned system prompt.
+/// Writes one `fact.custom` cell — the shared multi-agent blackboard.
+/// Keys under the reserved prefixes — see `reserved_fact_key` — are
+/// refused, so no fact can forge an approval record, shadow a terminal
+/// result, rewrite a parent edge in the lineage ledger, or overwrite the
+/// pinned system prompt.
+///
+/// **This write is last-write-wins.** The single write is atomic and
+/// journalled like any other, and that is the whole of what it
+/// guarantees: two strands writing the same key overwrite each other
+/// silently, and a read-modify-write — a reviewer appending to a list a
+/// second reviewer is also appending to — loses one of them. It is the
+/// right shape for a cell one writer owns, which is what the `agent/`
+/// namespacing behind `agent_note` makes of it. A caller that needs the
+/// concurrent case wants `fact_cell` and `put_fact_expecting`, which are
+/// the same write with the seq it read asserted.
+///
 /// Registers are durable state, not a communication medium: pair a fact
 /// write with a `send_to_strand` (or rely on the reader's checkpoint)
 /// when the reader must act on it.
@@ -861,6 +884,79 @@ pub fn put_fact(
   case reserved_fact_key(key) {
     True -> Error(ReservedFactKey(key:))
     False -> commit_fact(runtime, key, value)
+  }
+}
+
+/// One `fact.custom` cell with the seq of the write that put it there —
+/// the read half of a compare-and-set. `None` is an absent cell, which
+/// is a legitimate expectation rather than a failure: a writer that
+/// means "only if nobody has written this yet" passes it straight to
+/// `put_fact_expecting`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.fact_cell(runtime, "review/findings")
+/// ```
+///
+pub fn fact_cell(
+  runtime: Runtime,
+  key: String,
+) -> Result(Option(FactCell), ApiError) {
+  case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
+    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Ok(None) -> Ok(None)
+    Ok(Some(storage.Register(value:, seq:))) ->
+      Ok(Some(FactCell(value: value.payload, seq:)))
+  }
+}
+
+/// Writes one `fact.custom` cell only if it is still at the seq the
+/// caller read — the compare-and-set `put_fact` is not, and the only way
+/// a read-modify-write over a shared cell is expressible.
+///
+/// `expected` is what `fact_cell` returned: `Some(seq)` for a cell read
+/// at that seq, `None` for a cell that must still be absent. A cell that
+/// moved in between answers `FactConflict`, and the caller reads again
+/// and decides again — a refusal it can act on, rather than a write it
+/// never learns it lost. On success the new seq comes back, so a caller
+/// holding a cell through several updates never has to re-read to
+/// continue.
+///
+/// Reserved keys are refused here exactly as they are in `put_fact`:
+/// this is the same door with an expectation on it, not a wider one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_fact_expecting(runtime, "review/findings", value, expected: None)
+/// ```
+///
+pub fn put_fact_expecting(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected expected: Option(Seq),
+) -> Result(Seq, ApiError) {
+  use <- bool.guard(
+    when: reserved_fact_key(key),
+    return: Error(ReservedFactKey(key:)),
+  )
+  let plan_tx =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.FactCustom,
+          key:,
+          value: register.value(value),
+        ),
+      ],
+      expected: [tx.Expect(ns: register.FactCustom, key:, seq: expected)],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
+    Error(tx.StaleExpectation(..)) -> Error(FactConflict(key:))
+    Error(error) -> Error(commit_failure(error))
   }
 }
 
@@ -1090,6 +1186,102 @@ pub fn raise_escalation_for(
   commit_raised(runtime, id, escalation.raised(id, denial, Some(scope)))
 }
 
+/// Records a raised escalation *and* attaches this call's claim to it —
+/// the door the parking path (`client/escalate`) raises through.
+///
+/// The difference from `raise_escalation_for` is what happens when the
+/// record is already there, which under a deterministic record id is the
+/// ordinary case rather than the exception. `raise_escalation_for` is
+/// write-once and answers `EscalationExists`; this one takes the claim
+/// over under a CAS, so the record follows the live call:
+///
+/// - a **pending** record moves its scope and refreshes its stored
+///   denial — one row and one prompt for a want however many times it is
+///   asked, showing what the call in hand wants;
+/// - an **approved** record moves its scope and keeps its grants, which
+///   is what makes an approval spendable at all: a model that read an
+///   in-band refusal retries under a call id the provider minted after
+///   the human decided, and a scope frozen to the first attempt names a
+///   call that will never come back;
+/// - a **rejected** or **consumed** record re-opens as pending with no
+///   grants — a new question, needing a new answer, so one approval is
+///   still worth exactly one widened execution and one denial is a
+///   decision about one call rather than a verdict the session cannot
+///   revisit.
+///
+/// What the claim never does is widen the record: the id is a digest of
+/// `{strand, tool, wanted diff}`, so only a call wanting the same thing
+/// on the same strand through the same tool can ever reach it, and the
+/// grants a claimant spends are the ones the human chose, not its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.claim_escalation(runtime, "esc-1", denial_json, scope)
+/// ```
+///
+pub fn claim_escalation(
+  runtime: Runtime,
+  id: String,
+  denial: JsonValue,
+  scope scope: escalation.CallScope,
+) -> Result(Escalation, ApiError) {
+  let key = escalation.register_key(id)
+  retry_admission(4, fn() {
+    use <- attempt
+    use found <- result.try(read_escalation_cell(runtime, id))
+    let #(expected, next) = case found {
+      None -> #(None, escalation.raised(id, denial, Some(scope)))
+      Some(#(seq, record)) -> #(
+        Some(seq),
+        escalation.claimed(record, denial, scope),
+      )
+    }
+    let plan_tx =
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.FactCustom,
+            key:,
+            value: register.value(escalation.encode(next)),
+          ),
+        ],
+        expected: [tx.Expect(ns: register.FactCustom, key:, seq: expected)],
+      )
+    commit_or_retry(
+      writer.commit(writer_subject(runtime), plan_tx),
+      on_ok: next,
+    )
+  })
+}
+
+/// Whether the session holds fewer than `cap` durable escalation
+/// records — asked of the register keys, decoding none of them, and
+/// answered without counting past the bound.
+///
+/// The bounded question behind a bounded escalation set: a raiser asks
+/// it before filing a record it has not filed before, so the set a tool
+/// clearance and a gateway pull each scan cannot grow to the patience of
+/// whoever is provoking the refusals. A *count* would be the wrong
+/// question — it walks every key to answer a comparison that needs only
+/// the first `cap` of them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.escalations_below(runtime, 256) == Ok(True)
+/// ```
+///
+pub fn escalations_below(runtime: Runtime, cap: Int) -> Result(Bool, ApiError) {
+  writer.list_registers(
+    writer_subject(runtime),
+    register.FactCustom,
+    Some(escalation.key_prefix),
+  )
+  |> result.map(fn(cells) { cap > 0 && list.drop(cells, cap - 1) == [] })
+  |> result.map_error(fn(error) { ReadFailed(reason: describe_storage(error)) })
+}
+
 /// Records a raised escalation with no call attribution. Deliberately
 /// narrow: an unscoped approval is *never* loaded by any tool clearance
 /// — nothing in the session widens from it silently — and can only be
@@ -1292,13 +1484,24 @@ fn read_escalation(
   runtime: Runtime,
   id: String,
 ) -> Result(#(Seq, Escalation), ApiError) {
+  use found <- result.try(read_escalation_cell(runtime, id))
+  option.to_result(found, EscalationNotFound(id:))
+}
+
+// The same read for the one caller that treats "no record yet" as a
+// state rather than a fault: a claim writes the record when it is
+// absent and takes it over when it is not.
+fn read_escalation_cell(
+  runtime: Runtime,
+  id: String,
+) -> Result(Option(#(Seq, Escalation)), ApiError) {
   let key = escalation.register_key(id)
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
     Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(None) -> Error(EscalationNotFound(id:))
+    Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
       case escalation.decode(value.payload) {
-        Ok(record) -> Ok(#(seq, record))
+        Ok(record) -> Ok(Some(#(seq, record)))
         Error(report) -> Error(ReadFailed(reason: report.boundary))
       }
   }

@@ -1186,6 +1186,8 @@ fn describe_api(error: api.ApiError) -> String {
     api.EscalationNotFound(id:) -> "no escalation " <> id
     api.EscalationWrongStatus(id:, status: _) ->
       "escalation " <> id <> " is in the wrong state"
+    api.FactConflict(key:) ->
+      "the fact `" <> key <> "` moved under the write; read it again"
   }
 }
 

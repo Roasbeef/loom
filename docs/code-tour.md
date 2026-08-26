@@ -174,7 +174,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1191`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1203`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -196,7 +196,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:251`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:260`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:270`), and its shape is the shape of every admission
 in the system.
@@ -226,7 +226,7 @@ tree-write that moved the leaf refuses the acceptance rather than
 mis-parenting its entries.
 
 The commit itself is a call into one actor. `writer.commit` is
-`process.call_forever` into the StorageWriter (`runtime/writer.gleam:270`),
+`process.call_forever` into the StorageWriter (`runtime/writer.gleam:286`),
 whose mailbox *is* the serialization order for the session — "transactions
 on one session are serialized" is a property of the process topology, not
 a convention someone must remember. On success the writer publishes a
@@ -563,7 +563,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:549`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:562`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -591,7 +591,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1764`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1758`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -760,7 +760,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1229`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1344`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1116,7 +1116,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:809`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:818`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
@@ -1344,15 +1344,23 @@ escalation seam before it becomes a result. `decide`
 (`client/escalate.gleam:290`) files a durable, call-scoped record under an
 id derived from `{strand, tool, wanted diff}` (`record_id`,
 `client/escalate.gleam:272`), so a model that retries lands on the record
-already pending rather than one row per attempt. Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:348`) holds the call —
+already pending rather than one row per attempt — and *claims* it, moving
+the record's scope to the call standing at the door now, because a retry
+always arrives under a call id the provider has just minted and a scope
+frozen to the first attempt would leave an approval nothing can spend.
+Then, *if* the host says
+someone is attached, `park` (`client/escalate.gleam:404`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
-approval is consumed by CAS and the same call is re-cleared once under the
-widened policy; a denial, a closed window, a disconnected client and a
-crash all settle the ordinary in-band refusal instead. The window is the
-smaller of the configured timeout and the call's own budget deadline,
-because the broker's ledger refuses a reservation past that instant.
+approval is consumed by CAS — after a scope check that is still exact
+equality, so a call that lost the claim widens nothing — and the same call
+is re-cleared once under the widened policy; a denial, a closed window, a
+lost claim, a disconnected client, a hub that does not answer and a crash
+all settle the ordinary in-band refusal instead. The window is the smaller
+of the configured timeout and the call's own budget deadline, because the
+broker's ledger refuses a reservation past that instant, and the deadline
+is re-read immediately before the consuming commit so an approval is never
+spent on a re-clearance the budget will refuse.
 
 Two things are deliberately *not* in the runtime. Which raised records
 interrupt a person is a client-surface decision — the hub emits escalation

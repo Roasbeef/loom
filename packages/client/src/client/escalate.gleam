@@ -16,12 +16,10 @@
 ////     deploy.
 ////  2. **Park, when someone is there to decide.** The refused call is
 ////     held open rather than settled, and an approval re-clears *the same
-////     call* under the widened policy. Parking is what makes a scoped
-////     approval spendable at all: the re-clearance carries the same call
-////     id the approval was minted against, so there is no id to match up
-////     and no retry loop to complete the round trip. A model that read an
-////     in-band refusal and retried would arrive under a *new* call id,
-////     which the approval can never match.
+////     call* under the widened policy. Parking is what makes the round
+////     trip a single call's business: the re-clearance is the same call
+////     that was refused, so an approval is spent while the thing it
+////     authorizes is still standing at the door.
 ////  3. **Settle in band, otherwise.** A denial, a decision that never
 ////     comes, a session with nobody attached, a host that wired no
 ////     escalation plane — all of them end in the ordinary in-band refusal
@@ -39,14 +37,48 @@
 //// driver restart or an abort kills the parked call outright and the
 //// driver settles it in band through the ordinary monitor path.
 ////
+//// ## One record per want, and which call holds it
+////
+//// A record's id is a digest of `{strand, tool, wanted diff}` and not of
+//// the call — one row and one prompt however many times a want is
+//// asked. What that costs is that the call which first raised a record
+//// is usually gone by the time anyone answers: a model that reads an
+//// in-band refusal retries under a call id the provider mints fresh. So
+//// a raise does not merely file the record, it *claims* it
+//// (`api.claim_escalation`): the scope moves to the call standing at the
+//// door now, and a decided record — consumed or rejected — re-opens as a
+//// new question. Exactly one call holds the claim at any instant, and
+//// `escalation.scoped_to` is still exact equality, so an approval is
+//// still spent by exactly one call, exactly once.
+////
+//// Two consequences worth stating. Two calls wanting precisely the same
+//// thing at once share one prompt and therefore one authorization —
+//// whichever holds the claim resumes and the other takes the ordinary
+//// in-band refusal. And approving a want does not make it unaskable
+//// forever: the next call wanting it asks again, because one approval is
+//// one execution and a standing permission is a wider base policy, not
+//// an approval that never expires.
+////
 //// ## The two deadlines
 ////
 //// A park is bounded by the smaller of the configured window and *the
-//// call's own budget deadline*. The second bound is not politeness: the
+//// call's own budget deadline*, and the deadline is re-read immediately
+//// before the consuming commit. The second bound is not politeness: the
 //// broker's ledger refuses a reservation past `deadline_ms`, so a
 //// re-clearance after that instant is a `BudgetRefused`, not a
 //// resumption. Holding a call past its own budget would trade an
-//// honest "policy refused" for a confusing "deadline passed".
+//// honest "policy refused" for a confusing "deadline passed" — and
+//// consuming past it would spend the approval on the way to that
+//// refusal, leaving a record marked spent for an execution that never
+//// happened.
+////
+//// What the budget bounds is *admission*, not total elapsed time. The
+//// resumed call re-enters `broker.reserve_budget` with its `CallSpec`
+//// unchanged, so the helper is handed the original `wall_s`: a call that
+//// parked for a hundred seconds of its budget still runs with a full
+//// wall limit afterwards, and a parked call's lifetime is `park + wall`
+//// rather than `wall`. Defensible, and not something an operator sizing
+//// a deadline would guess.
 ////
 //// ## The bootstrap knot
 ////
@@ -68,9 +100,11 @@
 //// is *exercised* the moment the grants compose into a policy, so the
 //// commit that makes it single-use has to win before that moment, not
 //// after it. And the record's `CallScope` is checked against the call in
-//// hand first, so an approval minted for one call can never widen
-//// another. Both directions fail safe: a lost CAS, an unattributable
-//// record, a decode failure and a crash all end in the in-band refusal.
+//// hand first — exact equality, unchanged — so an approval whose claim
+//// another call has taken over widens nothing here. Both directions fail
+//// safe: a lost CAS, a claim lost to another call, a closed budget
+//// window, an unattributable record, a decode failure and a crash all
+//// end in the in-band refusal.
 
 import broker/escalation.{type Denial}
 import broker/policy.{type Grant}
@@ -79,10 +113,12 @@ import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/list
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import runtime/api
 import runtime/escalation as durable
@@ -108,7 +144,10 @@ pub type Message {
 /// a refusal may hold its call, always further clamped by that call's own
 /// budget deadline; `poll_interval_ms` is positive; `rest` is the sleep
 /// the park loop uses, injected so tests run on logical time;
-/// `holder_timeout_ms` bounds the call that borrows the runtime.
+/// `holder_timeout_ms` bounds the call that borrows the runtime, and a
+/// holder that misses it is treated as absent rather than fatal;
+/// `max_records` is the most *distinct* wants a session will ever file,
+/// past which a refusal that would open a new record settles in band.
 pub type Config {
   Config(
     name: Name(Message),
@@ -118,6 +157,7 @@ pub type Config {
     poll_interval_ms: Int,
     rest: fn(Int) -> Nil,
     holder_timeout_ms: Int,
+    max_records: Int,
   )
 }
 
@@ -132,6 +172,12 @@ pub type Config {
 /// who stepped away from a prompt loses a decision they were going to
 /// make. Neither is a safety property — the record survives either way —
 /// so a host that knows its operators may set whatever it likes.
+///
+/// The record cap is a different kind of number: 256 distinct wants in
+/// one session is already far past what a person would work through, and
+/// every record above it costs a decode on every tool clearance and a
+/// scan on every commit hint. Reaching it is a sign something is
+/// generating refusals rather than a sign of a busy session.
 ///
 /// ## Examples
 ///
@@ -148,16 +194,25 @@ pub fn default_config(name: Name(Message), clock: Clock) -> Config {
     poll_interval_ms: 1000,
     rest: process.sleep,
     holder_timeout_ms: 5000,
+    max_records: 256,
   )
 }
 
 /// Starts the holder under `config.name`, after `api.open` has returned
 /// the runtime it holds.
 ///
-/// Deliberately unsupervised, for the same reason the Agency's holder is:
-/// the boot process links it and a death there ends the server rather
-/// than leaving a session that records no escalations and quietly stops
-/// parking.
+/// `client/serve` runs it as a supervised worker in the services
+/// supervisor, alongside the Agency's holder and the gateway hub, and
+/// that is the right tier for it: the holder is addressed by *name*, so
+/// a restart under the same name is the same address and every later
+/// refusal finds it again. A death costs only the refusals that arrive
+/// during the restart window, and those settle in band with **no record
+/// raised at all** — `decide` borrows before it raises, and a borrow
+/// that finds no holder settles without writing anything. That is the
+/// fail-safe direction (a refusal the model is told about, an audit line
+/// missing) rather than the safe-seeming one, and it is the reason the
+/// holder does nothing but hand back a value: the less it can do, the
+/// less there is to die of.
 ///
 /// ## Examples
 ///
@@ -250,18 +305,19 @@ pub fn seam(config: Config) -> Escalations {
 /// The durable id a refusal's record is filed under: a digest of
 /// `{strand, tool, wanted diff}` and nothing else.
 ///
-/// Deriving it rather than minting it is what makes a retry loop cheap.
-/// `api.raise_escalation_for` refuses a duplicate id, so the second
-/// identical denial finds its record already pending instead of adding a
-/// row — and a strand that crashes while parked re-raises onto the same
-/// record when it replans, rather than orphaning the one a human is
-/// looking at. The call id is deliberately *not* in the digest: it is in
-/// the record's scope, which is what an approval is spent against, and
-/// putting it in the id would give a retry loop one record per attempt,
-/// which is the thing the derivation exists to prevent.
+/// Deriving it rather than minting it is what makes a retry loop cheap:
+/// the second identical denial finds the record already there and takes
+/// the claim on it instead of adding a row, and a strand that crashes
+/// while parked re-raises onto the same record when it replans rather
+/// than orphaning the one a human is looking at. The call id is
+/// deliberately *not* in the digest — it is in the record's scope, which
+/// is what an approval is spent against, and putting it in the id would
+/// give a retry loop one record per attempt.
 ///
 /// The wanted diff is order-insensitive: the same set of grants written
-/// two ways is the same want.
+/// two ways is the same want. It is also *magnitude*-insensitive for a
+/// limit grant, because that magnitude can be model-supplied; see
+/// `dedup_key`.
 ///
 /// ## Examples
 ///
@@ -272,7 +328,7 @@ pub fn seam(config: Config) -> Escalations {
 pub fn record_id(strand: String, tool: String, wanted: List(Grant)) -> String {
   let diff =
     wanted
-    |> list.map(fn(grant) { json.to_string(grants.encode(grant)) })
+    |> list.map(dedup_key)
     |> list.sort(string.compare)
     |> string.join(with: "\u{1e}")
   let digest =
@@ -283,6 +339,48 @@ pub fn record_id(strand: String, tool: String, wanted: List(Grant)) -> String {
   // is more than a session's escalation set can collide in and short
   // enough to read in a client.
   "policy-" <> string.slice(digest, at_index: 7, length: 32)
+}
+
+// One wanted grant, as the digest sees it.
+//
+// A limit contributes the *field* it would raise and not the number,
+// because that number can be the model's. `bash` turns its
+// `timeout_ms` argument into the `wall_s` it asks the broker for, so
+// under a base narrower than the tool asks for the shortfall carries a
+// model-chosen integer into the wanted diff; if it reached the digest, a
+// retry loop stepping the timeout would mint a durable record — and,
+// with a client attached, a human prompt — per attempt. That is exactly
+// the approval fatigue the deduplication exists to prevent, driven by
+// the party it exists to constrain. Collapsing the magnitude leaves the
+// space bounded by the six limit fields instead.
+//
+// Nothing is lost to the human: the magnitude is in the record's stored
+// denial, which is what the client renders and what an approval grants
+// against, and a claim refreshes that denial on a pending record. A call
+// that lands on an approval granted for a *different* magnitude of the
+// same field simply gets those grants — never more than a human chose —
+// and if they do not cover it the re-clearance is refused in band, which
+// is where it started.
+//
+// Every other grant keeps its whole encoded form: the rest of a tool's
+// requirements are static, declared in its `call_spec` rather than
+// derived from arguments.
+fn dedup_key(grant: Grant) -> String {
+  case grant {
+    policy.GrantLimit(field:, value: _) -> "limit:" <> limit_field(field)
+    other -> json.to_string(grants.encode(other))
+  }
+}
+
+fn limit_field(field: policy.LimitField) -> String {
+  case field {
+    policy.CpuSeconds -> "cpu_s"
+    policy.WallSeconds -> "wall_s"
+    policy.MemBytes -> "mem_bytes"
+    policy.Pids -> "pids"
+    policy.FsizeBytes -> "fsize_bytes"
+    policy.OutputBytes -> "output_bytes"
+  }
 }
 
 // --- deciding one refusal --------------------------------------------------
@@ -300,36 +398,70 @@ fn decide(config: Config, refused: Refused) -> Decision {
           source_index: refused.source_index,
           call_id: refused.call_id,
         )
-      case raise(runtime, id, refused, scope) && config.interactive() {
+      case raise(config, runtime, id, refused, scope) && config.interactive() {
         False -> Settle
-        True -> park(config, runtime, id, scope, until(config, refused))
+        True ->
+          park(config, runtime, id, scope, refused, until(config, refused))
       }
     }
   }
 }
 
-// Files the record. A duplicate id is the deduplication working, not a
-// failure: the record a human is already looking at is the one this
-// refusal belongs to. Anything else — a commit fault, a lost writer —
-// means there is no durable record to approve, so there is nothing to
-// park on and the refusal settles.
+// Files the record and takes the claim on it — which, under a
+// deterministic record id, is the ordinary case rather than the
+// exception. `api.claim_escalation` writes the record when there is
+// none and otherwise moves the scope to this call under a CAS, so the
+// one row a want ever occupies follows whichever call is currently
+// standing at the door. Without that a retry — and a model that reads
+// an in-band refusal always retries under a freshly minted call id —
+// would park on a record scoped to a call that has gone, an approval
+// scoped to that call could never be spent by anything, and the operator
+// would watch an approved record do nothing for the rest of the session.
+//
+// Anything else — a commit fault, a lost writer, a set already at its
+// cap — means there is no durable record this call can spend, so there
+// is nothing to park on and the refusal settles in band, exactly as it
+// did before any of this existed.
 fn raise(
+  config: Config,
   runtime: api.Runtime,
   id: String,
   refused: Refused,
   scope: durable.CallScope,
 ) -> Bool {
+  use <- bool.guard(when: !within_cap(config, runtime, id), return: False)
   case
-    api.raise_escalation_for(
+    api.claim_escalation(
       runtime,
       id,
       tool.denial_to_json(refused.denial),
       scope: scope,
     )
   {
-    Ok(Nil) -> True
-    Error(api.EscalationExists(id: _)) -> True
-    Error(_other) -> False
+    Ok(_record) -> True
+    Error(_error) -> False
+  }
+}
+
+// Whether one more *distinct* want may be filed. A refusal that lands on
+// a record already there costs no row and is always allowed; a refusal
+// that would open a new one is refused in band once the session is at
+// its cap.
+//
+// The cap is what keeps the escalation set a bounded thing. Two paths
+// that run constantly read the whole `escalation/` prefix — a tool
+// clearance looks for approvals attributed to it, and the gateway's pull
+// turns new records into events — so an unbounded set is a cost on every
+// tool call and every commit hint. The digest already collapses the one
+// model-controlled input (`dedup_key`); this bounds the rest.
+fn within_cap(config: Config, runtime: api.Runtime, id: String) -> Bool {
+  case api.escalation(runtime, id) {
+    Ok(_already_filed) -> True
+    Error(_absent) ->
+      case api.escalations_below(runtime, config.max_records) {
+        Ok(room) -> room
+        Error(_error) -> False
+      }
   }
 }
 
@@ -344,12 +476,14 @@ fn until(config: Config, refused: Refused) -> Int {
 
 // The park loop. Every pass re-asks whether anyone is still attached and
 // re-reads the record, so a disconnect, a denial, a decision by another
-// path, and the window closing all un-park the call at the next slice.
+// path, a claim taken over by another call, and the window closing all
+// un-park the call at the next slice.
 fn park(
   config: Config,
   runtime: api.Runtime,
   id: String,
   scope: durable.CallScope,
+  refused: Refused,
   until: Int,
 ) -> Decision {
   let #(now, _clock) = clock.read(config.clock)
@@ -360,25 +494,34 @@ fn park(
         // The record went away underneath the park (a reset store, a
         // read fault). Nothing to wait for.
         Error(_error) -> Settle
-        Ok(record) -> park_on_record(config, runtime, id, scope, until, record)
+        Ok(record) ->
+          park_on_record(config, runtime, id, scope, refused, until, record)
       }
   }
 }
 
 // The record's own status, once read: settled either way, or (still
 // pending) another slice of the same park.
+//
+// A record that no longer names this call is settled rather than waited
+// on. Another call wanting the same thing has taken the claim, and the
+// decision a human is about to make will be spent by that one — waiting
+// for it here could only end in the scope check refusing, one slice
+// before the window closes.
 fn park_on_record(
   config: Config,
   runtime: api.Runtime,
   id: String,
   scope: durable.CallScope,
+  refused: Refused,
   until: Int,
   record: durable.Escalation,
 ) -> Decision {
+  use <- bool.guard(when: !durable.scoped_to(record, scope), return: Settle)
   case record.status {
-    durable.Approved -> spend(runtime, id, record, scope)
+    durable.Approved -> spend(config, runtime, id, record, scope, refused)
     durable.Rejected | durable.Consumed -> Settle
-    durable.Pending -> park_pending(config, runtime, id, scope, until)
+    durable.Pending -> park_pending(config, runtime, id, scope, refused, until)
   }
 }
 
@@ -387,60 +530,95 @@ fn park_pending(
   runtime: api.Runtime,
   id: String,
   scope: durable.CallScope,
+  refused: Refused,
   until: Int,
 ) -> Decision {
   case config.interactive() {
     False -> Settle
     True -> {
       config.rest(config.poll_interval_ms)
-      park(config, runtime, id, scope, until)
+      park(config, runtime, id, scope, refused, until)
     }
   }
 }
 
-// Consume, then hand over — never the other way round. The scope check
-// comes first: an approval that names a different call must widen
-// nothing, and skipping a record can only narrow what this call
+// Consume, then hand over — never the other way round. Two checks come
+// before the CAS, and the order is the whole of this function.
+//
+// **The scope**, because an approval that names a different call must
+// widen nothing; skipping a record can only narrow what this call
 // receives, which is the safe direction.
+//
+// **The budget deadline**, because the CAS is a writer round trip and
+// the slice that admitted this poll may have been the last one inside
+// the window. `broker.reserve_budget` refuses past `deadline_ms`, so a
+// consume committed after that instant would spend the approval on the
+// way to a `BudgetRefused`: the record would read `Consumed`, the model
+// would get a deadline error rather than the widened run a human
+// authorized, and the decision would have bought nothing. Checking here
+// rather than after makes the ordering match what the module doc claims.
+//
+// A residual window remains — the clock is read before the commit, not
+// during it — and it is now recoverable rather than terminal: a record
+// consumed without an execution re-opens on the next raise of the same
+// want (`escalation.claimed`), so the worst case is one wasted approval
+// and a fresh prompt, not a want the session can never escalate again.
 fn spend(
+  config: Config,
   runtime: api.Runtime,
   id: String,
   record: durable.Escalation,
   scope: durable.CallScope,
+  refused: Refused,
 ) -> Decision {
-  case durable.scoped_to(record, scope) {
-    False -> Settle
-    True ->
-      case api.consume_escalation(runtime, id) {
-        // A concurrent consumer won the CAS: one approval is worth one
-        // widened execution, and it was not this one.
-        Error(_error) -> Settle
-        Ok(payloads) ->
-          case grants.decode_all(payloads) {
-            Error(_report) -> Settle
-            Ok(typed) -> Resume(grants: typed)
-          }
+  use <- bool.guard(when: !durable.scoped_to(record, scope), return: Settle)
+  let #(now, _clock) = clock.read(config.clock)
+  use <- bool.guard(when: now >= refused.deadline_ms, return: Settle)
+  case api.consume_escalation(runtime, id) {
+    // A concurrent consumer won the CAS: one approval is worth one
+    // widened execution, and it was not this one.
+    Error(_error) -> Settle
+    Ok(payloads) ->
+      case grants.decode_all(payloads) {
+        Error(_report) -> Settle
+        Ok(typed) -> Resume(grants: typed)
       }
   }
 }
 
 // --- borrowing the runtime -------------------------------------------------
 
-// The holder is checked alive before it is called, because
-// `process.call` exits the caller when the callee is gone and an
-// unstarted holder is the ordinary case for a host that wired no
-// escalation plane. The residual window — the holder dying between the
-// check and the reply — settles in band anyway: this runs on the tool's
-// own effect process, whose death the driver turns into a synthetic
-// error result rather than a fault.
+// Borrowing never kills the borrower. `process.call` *exits its caller*
+// when no reply arrives in time — it does not return an error — so a
+// holder that is merely slow (restarting under its supervisor, or behind
+// a busy writer) would take the tool's effect process down with it. The
+// driver would settle that as a death with no stated reason where this
+// module's doc promises an in-band policy refusal, and the two are not
+// the same thing to a model: one is a decision it can reason about, the
+// other is an effect that vanished.
+//
+// So the request is sent by hand and the reply waited for with a
+// selector that also watches the holder's monitor: an absent holder, a
+// dead one, one that dies mid-answer, and one that is simply too slow
+// all arrive as `Error(Nil)` and settle in band.
 fn borrow(config: Config) -> Result(api.Runtime, Nil) {
-  let subject = process.named_subject(config.name)
-  case process.subject_owner(subject) {
-    Error(Nil) -> Error(Nil)
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        False -> Error(Nil)
-        True -> Ok(process.call(subject, config.holder_timeout_ms, Borrow))
-      }
-  }
+  ask(process.named_subject(config.name), config.holder_timeout_ms, Borrow)
+}
+
+fn ask(
+  subject: Subject(message),
+  waiting timeout: Int,
+  sending make_request: fn(Subject(reply)) -> message,
+) -> Result(reply, Nil) {
+  use owner <- result.try(process.subject_owner(subject))
+  let monitor = process.monitor(owner)
+  let reply_to = process.new_subject()
+  process.send(subject, make_request(reply_to))
+  let answer =
+    process.new_selector()
+    |> process.select_map(reply_to, Ok)
+    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive(within: timeout)
+  process.demonitor_process(monitor)
+  result.flatten(answer)
 }

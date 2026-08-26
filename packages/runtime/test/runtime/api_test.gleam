@@ -8,7 +8,8 @@ import core/json
 import core/register
 import core/tx.{SetRegister, Tx}
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/list
+import gleam/option.{None, Some}
 import runtime/api
 import runtime/writer
 import session/session
@@ -163,4 +164,118 @@ pub fn await_result_survives_a_later_run_test() {
     as "the first operation's result must survive the second run"
   assert replayed == first
   process.kill(rt.tree.supervisor)
+}
+
+// --- the blackboard's two doors --------------------------------------------
+
+// `put_fact` is last-write-wins and its docstring now says so. This is
+// what that costs, stated as a test rather than left to be discovered:
+// two writers reading the same cell and appending to it lose one of the
+// two appends, silently and with both writes reporting success.
+pub fn put_fact_is_last_write_wins_test() {
+  let rt = fact_runtime()
+  let assert Ok(Nil) = api.put_fact(rt, "review/findings", json.Array([]))
+    as "the cell must seed"
+  // Two readers, both reading before either writes — the ordinary shape
+  // of two agents reporting into one cell.
+  let assert Ok(Some(json.Array(first))) = api.fact(rt, "review/findings")
+  let assert Ok(Some(json.Array(second))) = api.fact(rt, "review/findings")
+  let assert Ok(Nil) =
+    api.put_fact(
+      rt,
+      "review/findings",
+      json.Array(list.append(first, [json.String("auth.gleam:42")])),
+    )
+  let assert Ok(Nil) =
+    api.put_fact(
+      rt,
+      "review/findings",
+      json.Array(list.append(second, [json.String("jail.gleam:7")])),
+    )
+  // One finding, not two. Nothing refused; the first append is simply
+  // gone.
+  let assert Ok(Some(json.Array(kept))) = api.fact(rt, "review/findings")
+  assert kept == [json.String("jail.gleam:7")]
+  process.kill(rt.tree.supervisor)
+}
+
+// And the door that makes the concurrent case expressible: the same
+// write with the seq it was read at asserted, so the loser is told it
+// lost instead of never finding out.
+pub fn put_fact_expecting_refuses_a_stale_write_test() {
+  let rt = fact_runtime()
+  let assert Ok(seeded) =
+    api.put_fact_expecting(
+      rt,
+      "review/findings",
+      json.Array([]),
+      expected: None,
+    )
+    as "an absent cell is a legitimate expectation"
+  // The same cell claimed twice from the same read: the first wins, the
+  // second is refused with the key it lost on.
+  let assert Ok(Some(api.FactCell(value: json.Array(items), seq:))) =
+    api.fact_cell(rt, "review/findings")
+  assert seq == seeded
+  let assert Ok(_next) =
+    api.put_fact_expecting(
+      rt,
+      "review/findings",
+      json.Array(list.append(items, [json.String("auth.gleam:42")])),
+      expected: Some(seq),
+    )
+  let assert Error(api.FactConflict(key: "review/findings")) =
+    api.put_fact_expecting(
+      rt,
+      "review/findings",
+      json.Array(list.append(items, [json.String("jail.gleam:7")])),
+      expected: Some(seq),
+    )
+    as "a write from a stale read must be refused, not silently applied"
+  // Re-read, re-decide, re-write: the whole point of being told.
+  let assert Ok(Some(api.FactCell(value: json.Array(fresh), seq: moved))) =
+    api.fact_cell(rt, "review/findings")
+  let assert Ok(_final) =
+    api.put_fact_expecting(
+      rt,
+      "review/findings",
+      json.Array(list.append(fresh, [json.String("jail.gleam:7")])),
+      expected: Some(moved),
+    )
+  let assert Ok(Some(json.Array(both))) = api.fact(rt, "review/findings")
+  assert both == [json.String("auth.gleam:42"), json.String("jail.gleam:7")]
+  // It is the same door, not a wider one: reserved keys are refused
+  // here exactly as they are to `put_fact`.
+  let assert Error(api.ReservedFactKey(key: "escalation/esc-1")) =
+    api.put_fact_expecting(
+      rt,
+      "escalation/esc-1",
+      json.String("forged"),
+      expected: None,
+    )
+    as "the compare-and-set door is not a way past the reservations"
+  process.kill(rt.tree.supervisor)
+}
+
+// A runtime with nothing driving it: these two are about the durable
+// cell, not about a run.
+fn fact_runtime() -> api.Runtime {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Reply(fake.answer("unused", 1)) },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the session tree must boot"
+  rt
 }
