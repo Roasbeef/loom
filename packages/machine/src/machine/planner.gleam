@@ -2324,9 +2324,8 @@ fn recover_tool(
     Running, ReplaySafe -> replay_still_safe
     _, _ -> False
   }
-  use <- bool.guard(
-    when: replayable,
-    return: Dispatch(
+  use <- bool.lazy_guard(when: replayable, return: fn() {
+    Dispatch(
       intent: ToolReplay(
         operation: op.id,
         step_id: batch.turn_id,
@@ -2343,8 +2342,8 @@ fn recover_tool(
         latest_assistant: latest,
       ),
       tx: op_tx(op, in, []),
-    ),
-  )
+    )
+  })
   use result <- or_fault(interrupted_tool_result(call, checkpoint, in.now))
   stage_result(
     op,

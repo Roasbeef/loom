@@ -635,17 +635,16 @@ fn place_rewritten_entry(
   accumulator: List(Entry),
   count: Int,
 ) -> Result(#(List(Entry), Int), RewriteError) {
-  use <- bool.guard(
-    when: !placement_preserved(entry, new),
-    return: Error(
+  use <- bool.lazy_guard(when: !placement_preserved(entry, new), return: fn() {
+    Error(
       RewriteEntryFailed(report: corruption.report(
         at: "session/repo.rewrite_memory",
         on: ids.entry_id_to_string(entry.id),
         expected: "a rewrite preserving entry id, parent, and kind",
         context: "transform changed entry placement",
       )),
-    ),
-  )
+    )
+  })
   // Keep the stored placement even if the transform touched the
   // placeholder fields.
   let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)
