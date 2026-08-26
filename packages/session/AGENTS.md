@@ -36,7 +36,7 @@ the rewrite exists for. WP-C plus WP-C-full.
   sees. `project` / `project_context` / `project_entries` / `project_scan`
   run it, the last two purely over a branch scan the caller already has.
 - `session/repo.{ForkScope, ForkDestination, ForkError, fork}` — copy one
-  coherent view of a source session (`ForkStrand` / `ForkBranch`) into a
+  coherent view of a source session (`ForkBranch` / `ForkTree`) into a
   fresh destination (`ForkIntoMemory` / `ForkIntoSqlite`), as one atomic
   destination transaction.
 - `session/repo.{EntryRewrite, ValueRewrite, erase_text, erase_value,

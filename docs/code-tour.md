@@ -309,9 +309,9 @@ pub fn next_action(
 ) -> Action {
 ```
 
-`machine/planner.gleam:431`. It reads a durable state and a bundle of
-inputs and returns one of six actions, defined at
-`machine/planner.gleam:403`:
+`next_action` lives at `machine/planner.gleam:546`. It reads a durable
+state and a bundle of inputs and returns one of six actions, defined by
+`Action` (`machine/planner.gleam:464`):
 
 | Action | What the driver does |
 |---|---|
@@ -386,7 +386,7 @@ and both are worth knowing by name. `threshold_checked` records the
 trigger whose compaction check already ran, so a boundary is never
 checked twice; `skip_inbox_once` is set by a drain on the checkpoint it
 produces, so a crash mid-drain cannot turn a one-at-a-time drain into an
-all-item drain (`machine/planner.gleam:595`).
+all-item drain (`checkpoint_action`, `machine/planner.gleam:703`).
 
 Large payloads never live inline in the state. Tool arguments go to
 `op.tool_args/{op}:{step}:{index}`, a summary's frozen input to
@@ -418,7 +418,7 @@ two:
                    in one atomic transaction
 ```
 
-`machine/planner.gleam:1020` mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1134`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:658` commits it and only then
 runs the continuation that starts the effect:
@@ -533,7 +533,7 @@ exactly as it would for a dead provider.
 
 `stream.await_terminal` returns, the effect process sends `ProviderDone`
 to the driver, and the driver turns it into an observation and plans
-again. `settle_assistant` (`machine/planner.gleam:1263`) classifies the
+again. `settle_assistant` (`machine/planner.gleam:1264`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask
@@ -542,7 +542,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`machine/planner.gleam:1384`):
+(`settle_writes`, `machine/planner.gleam:1604`):
 
 ```gleam
   [
@@ -902,8 +902,9 @@ The tool result lands, the batch materializes, and the machine returns to
 a checkpoint. What happens next is the same code with three differences
 worth knowing.
 
-**The checkpoint drains first.** `checkpoint_action`
-(`machine/planner.gleam:595`) runs a fixed order: apply accepted deferred
+**The checkpoint drains first.** The procedure
+`checkpoint_action` (`machine/planner.gleam:703`) runs a fixed order:
+apply accepted deferred
 writes, drain steer input per the run's drain mode, check the compaction
 threshold, and only then start a generation step or, at a `MayFinish`
 boundary, drain follow-ups and consult the run-end hook. So a steer the
