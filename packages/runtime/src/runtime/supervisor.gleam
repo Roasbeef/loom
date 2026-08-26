@@ -51,6 +51,7 @@
 //// by the registry, so the tree's callers hold names, not pids.
 
 import core/register
+import gleam/bool
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/list
 import gleam/option.{None}
@@ -58,6 +59,7 @@ import gleam/otp/actor
 import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
+import gleam/result
 import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
@@ -221,33 +223,31 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// ```
 ///
 pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
-  case process.is_alive(tree.supervisor) {
-    False -> Nil
-    True -> {
-      case ffi_sup.terminate_supervisor(tree.supervisor, grace_ms) {
-        Ok(Nil) -> Nil
-        Error(Nil) -> process.kill(tree.supervisor)
-      }
-      await_death(tree.supervisor, grace_ms)
-    }
+  use <- bool.guard(when: !process.is_alive(tree.supervisor), return: Nil)
+  case ffi_sup.terminate_supervisor(tree.supervisor, grace_ms) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> process.kill(tree.supervisor)
   }
+  await_death(tree.supervisor, grace_ms)
 }
 
 // Waits out a terminating supervisor in 5 ms slices, killing it if the
 // grace is spent. Polling rather than monitoring keeps this callable
 // from any process, including one that is already selecting on its own
 // mailbox.
+//
+// The inner check stays a `case` rather than a `bool.guard`: its `True`
+// arm kills the process, and `bool.guard`'s `return:` is evaluated
+// unconditionally, which would kill the supervisor on every slice
+// instead of only the last one.
 fn await_death(supervisor: Pid, remaining_ms: Int) -> Nil {
-  case process.is_alive(supervisor) {
-    False -> Nil
-    True ->
-      case remaining_ms <= 0 {
-        True -> process.kill(supervisor)
-        False -> {
-          process.sleep(5)
-          await_death(supervisor, remaining_ms - 5)
-        }
-      }
+  use <- bool.guard(when: !process.is_alive(supervisor), return: Nil)
+  case remaining_ms <= 0 {
+    True -> process.kill(supervisor)
+    False -> {
+      process.sleep(5)
+      await_death(supervisor, remaining_ms - 5)
+    }
   }
 }
 
@@ -347,23 +347,21 @@ fn boot_strands(
   subagent: fn(String) -> Bool,
 ) -> Result(Nil, String) {
   let w = process.named_subject(writer_name)
-  case writer.list_registers(w, register.StrandConfig, None) {
-    Error(_error) -> Error("the strand booter could not list strand configs")
-    Ok(cells) ->
-      cells
-      |> list.try_each(fn(cell) {
-        let #(strand_name, _register) = cell
-        let factory_name = case subagent(strand_name) {
-          True -> subagent_strands_name
-          False -> strands_name
-        }
-        case ensure_strand_running(registry_name, factory_name, strand_name) {
-          Ok(Nil) -> Ok(Nil)
-          Error(_error) ->
-            Error("the strand booter could not start strand " <> strand_name)
-        }
-      })
-  }
+  use cells <- result.try(
+    writer.list_registers(w, register.StrandConfig, None)
+    |> result.replace_error("the strand booter could not list strand configs"),
+  )
+  list.try_each(cells, fn(cell) {
+    let #(strand_name, _register) = cell
+    let factory_name = case subagent(strand_name) {
+      True -> subagent_strands_name
+      False -> strands_name
+    }
+    ensure_strand_running(registry_name, factory_name, strand_name)
+    |> result.replace_error(
+      "the strand booter could not start strand " <> strand_name,
+    )
+  })
 }
 
 fn ensure_strand_running(
@@ -375,34 +373,30 @@ fn ensure_strand_running(
 ) -> Result(Nil, actor.StartError) {
   let reg = process.named_subject(registry_name)
   let name = registry.ensure(reg, strand)
-  case alive(name) {
-    True -> Ok(Nil)
-    // Sending into an unregistered name crashes the sender, and this is
-    // called from `api.create_strand` on a tool's effect process: a spawn
-    // racing a factory restart would take that process down and settle as
-    // a synthetic tool failure rather than as a worded refusal. The guard
-    // costs one liveness check and reads far better in the logs.
-    False ->
-      case factory_alive(strands_name) {
-        False ->
-          Error(actor.InitFailed(
-            "the strand factory is restarting; retry the start",
-          ))
-        True ->
-          case
-            factory_supervisor.start_child(
-              factory_supervisor.get_by_name(strands_name),
-              strand,
-            )
-          {
-            Ok(_started) -> Ok(Nil)
-            // A concurrent starter won the race: the strand is running.
-            Error(error) ->
-              case alive(name) {
-                True -> Ok(Nil)
-                False -> Error(error)
-              }
-          }
+  use <- bool.guard(when: alive(name), return: Ok(Nil))
+  // Sending into an unregistered name crashes the sender, and this is
+  // called from `api.create_strand` on a tool's effect process: a spawn
+  // racing a factory restart would take that process down and settle as
+  // a synthetic tool failure rather than as a worded refusal. The guard
+  // costs one liveness check and reads far better in the logs.
+  use <- bool.guard(
+    when: !factory_alive(strands_name),
+    return: Error(actor.InitFailed(
+      "the strand factory is restarting; retry the start",
+    )),
+  )
+  case
+    factory_supervisor.start_child(
+      factory_supervisor.get_by_name(strands_name),
+      strand,
+    )
+  {
+    Ok(_started) -> Ok(Nil)
+    // A concurrent starter won the race: the strand is running.
+    Error(error) ->
+      case alive(name) {
+        True -> Ok(Nil)
+        False -> Error(error)
       }
   }
 }

@@ -17,12 +17,14 @@
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type Seq}
 import events/bus.{type Bus}
+import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
+import gleam/result
 import gleam/string
 import storage/storage.{type SessionStats, type Storage, type StorageError}
 import telemetry/field
@@ -119,35 +121,27 @@ pub fn catch_up(
   state: state,
   after high_water: Seq,
 ) -> Result(#(state, Seq), StorageError) {
-  case frontier(store) {
-    Error(error) -> Error(error)
-    // Nothing owed: the frontier has not moved past the high-water.
-    Ok(frontier) if frontier <= high_water -> Ok(#(state, high_water))
-    Ok(frontier) -> {
-      let from = Some(high_water + 1)
-      let to = Some(frontier)
-      let entries_query =
-        storage.entry_scan()
-        |> storage.entry_seq_range(from, to)
-        |> storage.entry_order(storage.OldestFirst)
-      let usage_query =
-        storage.usage_scan()
-        |> storage.usage_seq_range(from, to)
-        |> storage.usage_order(storage.OldestFirst)
-      case storage.scan_entries(store, entries_query) {
-        Error(error) -> Error(error)
-        Ok(entries) ->
-          case storage.scan_usage(store, usage_query) {
-            Error(error) -> Error(error)
-            Ok(usage) -> {
-              let changes = merge(entries, usage)
-              let state = list.fold(changes, state, projection.apply)
-              Ok(#(state, frontier))
-            }
-          }
-      }
-    }
-  }
+  use frontier_seq <- result.try(frontier(store))
+  // Nothing owed: the frontier has not moved past the high-water.
+  use <- bool.guard(
+    when: frontier_seq <= high_water,
+    return: Ok(#(state, high_water)),
+  )
+  let from = Some(high_water + 1)
+  let to = Some(frontier_seq)
+  let entries_query =
+    storage.entry_scan()
+    |> storage.entry_seq_range(from, to)
+    |> storage.entry_order(storage.OldestFirst)
+  let usage_query =
+    storage.usage_scan()
+    |> storage.usage_seq_range(from, to)
+    |> storage.usage_order(storage.OldestFirst)
+  use entries <- result.try(storage.scan_entries(store, entries_query))
+  use usage <- result.try(storage.scan_usage(store, usage_query))
+  let changes = merge(entries, usage)
+  let state = list.fold(changes, state, projection.apply)
+  Ok(#(state, frontier_seq))
 }
 
 /// The highest committed seq across both write-once streams at (or
@@ -162,24 +156,17 @@ fn frontier(store: Storage(handle)) -> Result(Seq, StorageError) {
     storage.usage_scan()
     |> storage.usage_order(storage.NewestFirst)
     |> storage.usage_limit(1)
-  case storage.scan_entries(store, newest_entry) {
-    Error(error) -> Error(error)
-    Ok(entries) ->
-      case storage.scan_usage(store, newest_usage) {
-        Error(error) -> Error(error)
-        Ok(usage) -> {
-          let entry_seq = case entries {
-            [entry, ..] -> entry.seq
-            [] -> 0
-          }
-          let usage_seq = case usage {
-            [row, ..] -> row.seq
-            [] -> 0
-          }
-          Ok(int.max(entry_seq, usage_seq))
-        }
-      }
+  use entries <- result.try(storage.scan_entries(store, newest_entry))
+  use usage <- result.try(storage.scan_usage(store, newest_usage))
+  let entry_seq = case entries {
+    [entry, ..] -> entry.seq
+    [] -> 0
   }
+  let usage_seq = case usage {
+    [row, ..] -> row.seq
+    [] -> 0
+  }
+  Ok(int.max(entry_seq, usage_seq))
 }
 
 /// Folds the whole session from seq zero on the projection's initial

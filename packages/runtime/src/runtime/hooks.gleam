@@ -58,6 +58,7 @@ import core/entry
 import core/ids.{type OpId}
 import core/json
 import core/message.{type AgentMessage}
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -322,31 +323,38 @@ pub fn uncompacted(messages: List(AgentMessage)) -> Projected {
 ///
 pub fn project(session: Session, strand: String) -> Projected {
   case session.strand_leaf(session, strand) {
-    Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
-      let scan =
-        storage.branch_scan(from: leaf)
-        |> storage.branch_stop_at_kind(storage.Compaction)
-      case storage.scan_branch(session.store, scan) {
-        Error(_unreadable) -> uncompacted([])
-        Ok(newest_first) -> {
-          let messages = session.project_scan(newest_first)
-          // The scan stops *inclusively* at the first compaction, so a
-          // compaction — when there is one — is the oldest entry it
-          // returned, and the projection opens with that entry's summary
-          // followed by its retained tail.
-          case list.last(newest_first) {
-            Ok(entry.CompactionEntry(summary:, retained_tail:, ..)) ->
-              Projected(
-                messages:,
-                carried: 1 + list.length(retained_tail),
-                previous_summary: Some(summary),
-              )
-            _ -> uncompacted(messages)
-          }
-        }
-      }
-    }
+    Ok(Some(session.Cell(value: Some(leaf), ..))) ->
+      project_from_leaf(session, leaf)
+    // A strand with no leaf, or a read that fails, projects as empty —
+    // see the doc comment above for why that is the safe direction.
     _ -> uncompacted([])
+  }
+}
+
+fn project_from_leaf(session: Session, leaf: ids.EntryId) -> Projected {
+  let scan =
+    storage.branch_scan(from: leaf)
+    |> storage.branch_stop_at_kind(storage.Compaction)
+  case storage.scan_branch(session.store, scan) {
+    Error(_unreadable) -> uncompacted([])
+    Ok(newest_first) -> project_from_scan(newest_first)
+  }
+}
+
+fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
+  let messages = session.project_scan(newest_first)
+  // The scan stops *inclusively* at the first compaction, so a
+  // compaction — when there is one — is the oldest entry it returned,
+  // and the projection opens with that entry's summary followed by its
+  // retained tail.
+  case list.last(newest_first) {
+    Ok(entry.CompactionEntry(summary:, retained_tail:, ..)) ->
+      Projected(
+        messages:,
+        carried: 1 + list.length(retained_tail),
+        previous_summary: Some(summary),
+      )
+    _ -> uncompacted(messages)
   }
 }
 
@@ -367,35 +375,38 @@ pub fn project(session: Session, strand: String) -> Projected {
 ///
 pub fn estimate_message(message: AgentMessage) -> Int {
   let characters = case message {
-    message.UserMessage(content:, ..) ->
-      sum(content, fn(block) {
-        case block {
-          message.UserText(text:, ..) -> string.length(text)
-          message.UserImage(..) -> image_characters
-        }
-      })
+    message.UserMessage(content:, ..) -> sum(content, user_block_characters)
     message.AssistantMessage(content:, ..) ->
-      sum(content, fn(block) {
-        case block {
-          message.AssistantText(text:, ..) -> string.length(text)
-          message.AssistantThinking(thinking:, ..) -> string.length(thinking)
-          message.AssistantToolCall(call:) ->
-            string.length(call.name)
-            + string.length(json.to_string(call.arguments))
-        }
-      })
+      sum(content, assistant_block_characters)
     message.ToolResultMessage(content:, tool_name:, ..) ->
-      string.length(tool_name)
-      + sum(content, fn(block) {
-        case block {
-          message.ToolResultText(text:, ..) -> string.length(text)
-          message.ToolResultImage(..) -> image_characters
-        }
-      })
+      string.length(tool_name) + sum(content, tool_result_block_characters)
     message.CustomMessage(schema:, payload:) ->
       string.length(schema) + string.length(json.to_string(payload))
   }
   characters / 4
+}
+
+fn user_block_characters(block: message.UserBlock) -> Int {
+  case block {
+    message.UserText(text:, ..) -> string.length(text)
+    message.UserImage(..) -> image_characters
+  }
+}
+
+fn assistant_block_characters(block: message.AssistantBlock) -> Int {
+  case block {
+    message.AssistantText(text:, ..) -> string.length(text)
+    message.AssistantThinking(thinking:, ..) -> string.length(thinking)
+    message.AssistantToolCall(call:) ->
+      string.length(call.name) + string.length(json.to_string(call.arguments))
+  }
+}
+
+fn tool_result_block_characters(block: message.ToolResultBlock) -> Int {
+  case block {
+    message.ToolResultText(text:, ..) -> string.length(text)
+    message.ToolResultImage(..) -> image_characters
+  }
 }
 
 /// The flat character-equivalent an image block is priced at, chosen so
@@ -573,23 +584,17 @@ pub fn threshold(
   estimate estimate: fn(AgentMessage) -> Int,
 ) -> fn(ThresholdQuery) -> ThresholdStatus {
   fn(query: ThresholdQuery) {
-    case settings.enabled {
-      False -> ThresholdNotExceeded
-      True -> {
-        let projected = projection(query.strand)
-        let total = context_tokens(projected, estimate)
-        case total > 0 && total > context_window - settings.reserve_tokens {
-          False -> ThresholdNotExceeded
-          True ->
-            ThresholdExceeded(outcome: preparation(
-              projected,
-              settings,
-              estimate,
-              tokens_before: total,
-            ))
-        }
-      }
-    }
+    use <- bool.guard(when: !settings.enabled, return: ThresholdNotExceeded)
+    let projected = projection(query.strand)
+    let total = context_tokens(projected, estimate)
+    let exceeded = total > 0 && total > context_window - settings.reserve_tokens
+    use <- bool.guard(when: !exceeded, return: ThresholdNotExceeded)
+    ThresholdExceeded(outcome: preparation(
+      projected,
+      settings,
+      estimate,
+      tokens_before: total,
+    ))
   }
 }
 

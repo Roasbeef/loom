@@ -30,6 +30,7 @@ import core/ids.{type EntryId}
 import core/json.{type JsonValue}
 import core/register
 import core/tx.{type CommitError, InsertEntry, InsertUsage, SetRegister, Tx}
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -153,20 +154,22 @@ fn collect_entries(
         storage.branch_scan(from: at)
           |> storage.branch_order(storage.OldestFirst),
       )
-      |> result.map_error(fn(error) {
-        case error {
-          storage.UnknownEntry(id:) -> ForkPointUnknown(id:)
-          storage.CorruptRow(..)
-          | storage.BackendFault(..)
-          | storage.HandleClosed ->
-            ForkSourceRead(error: session.StoreFailure(error:))
-        }
-      })
+      |> result.map_error(fork_branch_scan_error)
     ForkTree ->
       storage.scan_entries(source.store, storage.entry_scan())
       |> result.map_error(fn(error) {
         ForkSourceRead(error: session.StoreFailure(error:))
       })
+  }
+}
+
+// A missing fork point is reported precisely (`ForkPointUnknown`); every
+// other scan failure is an ordinary source read failure.
+fn fork_branch_scan_error(error: StorageError) -> ForkError {
+  case error {
+    storage.UnknownEntry(id:) -> ForkPointUnknown(id:)
+    storage.CorruptRow(..) | storage.BackendFault(..) | storage.HandleClosed ->
+      ForkSourceRead(error: session.StoreFailure(error:))
   }
 }
 
@@ -187,12 +190,7 @@ fn collect_registers(
       ))
       let strand_writes =
         list.flatten([
-          case configuration {
-            Some(value) -> [
-              SetRegister(ns: register.StrandConfig, key: main_strand, value:),
-            ]
-            None -> []
-          },
+          strand_config_write(configuration),
           [
             SetRegister(
               ns: register.StrandLeaf,
@@ -226,6 +224,19 @@ fn collect_registers(
       use labels <- result.try(copy_namespace(source, register.FactLabel))
       Ok(list.flatten([strand_writes, names, labels]))
     }
+  }
+}
+
+// An unconfigured source strand forks to an unconfigured `main` (seeded
+// on first attachment); a configured one carries its configuration over.
+fn strand_config_write(
+  configuration: Option(register.RegisterValue),
+) -> List(tx.Write) {
+  case configuration {
+    Some(value) -> [
+      SetRegister(ns: register.StrandConfig, key: main_strand, value:),
+    ]
+    None -> []
   }
 }
 
@@ -427,14 +438,16 @@ fn erase_json(
   replacement: String,
 ) -> #(JsonValue, Bool) {
   case value {
-    json.String(text) ->
-      case string.contains(does: text, contain: needle) {
-        True -> #(
-          json.String(string.replace(in: text, each: needle, with: replacement)),
-          True,
-        )
-        False -> #(value, False)
-      }
+    json.String(text) -> {
+      use <- bool.guard(
+        when: !string.contains(does: text, contain: needle),
+        return: #(value, False),
+      )
+      #(
+        json.String(string.replace(in: text, each: needle, with: replacement)),
+        True,
+      )
+    }
     json.Array(items) -> {
       let #(rewritten, changed) =
         list.fold(over: items, from: #([], False), with: fn(step, item) {
@@ -548,29 +561,7 @@ pub fn rewrite_memory(
   )
   use #(rewritten_entries, rewritten) <- result.try(
     list.try_fold(over: entries, from: #([], 0), with: fn(step, entry) {
-      let #(accumulator, count) = step
-      case rewrite(entry) {
-        Ok(None) -> Ok(#([entry, ..accumulator], count))
-        Ok(Some(new)) ->
-          case placement_preserved(entry, new) {
-            True -> {
-              // Keep the stored placement even if the transform touched
-              // the placeholder fields.
-              let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)
-              Ok(#([stamped, ..accumulator], count + 1))
-            }
-            False ->
-              Error(
-                RewriteEntryFailed(report: corruption.report(
-                  at: "session/repo.rewrite_memory",
-                  on: ids.entry_id_to_string(entry.id),
-                  expected: "a rewrite preserving entry id, parent, and kind",
-                  context: "transform changed entry placement",
-                )),
-              )
-          }
-        Error(report) -> Error(RewriteEntryFailed(report:))
-      }
+      apply_entry_rewrite(step, entry, rewrite)
     }),
   )
   use usage_rows <- result.try(
@@ -583,17 +574,7 @@ pub fn rewrite_memory(
   // echoes, request annotations); they go through the value transform on
   // the way into the rebuild, matching the SQLite path's audit scope.
   use usage_rows <- result.try(
-    list.try_map(usage_rows, fn(row) {
-      case row.details {
-        None -> Ok(row)
-        Some(details) ->
-          case rewrite_value(details) {
-            Ok(None) -> Ok(row)
-            Ok(Some(new)) -> Ok(entry.UsageRow(..row, details: Some(new)))
-            Error(report) -> Error(RewriteValueFailed(report:))
-          }
-      }
-    }),
+    list.try_map(usage_rows, fn(row) { rewrite_usage_row(row, rewrite_value) }),
   )
   // Every register cell is retained — a rewrite erases content, not
   // history — but its payload runs through the value transform first:
@@ -601,25 +582,7 @@ pub fn rewrite_memory(
   // where an erased secret also lives.
   use register_writes <- result.try(
     list.try_fold(over: every_namespace(), from: [], with: fn(writes, ns) {
-      use cells <- result.try(
-        storage.list_registers(source.store, ns, None)
-        |> result.map_error(fn(error) {
-          RewriteSourceRead(error: session.StoreFailure(error:))
-        }),
-      )
-      list.try_fold(over: cells, from: writes, with: fn(writes, cell) {
-        let #(key, storage.Register(value:, ..)) = cell
-        let payload = core_codec.encode_register_value(value)
-        use replaced <- result.map(
-          rewrite_value(payload)
-          |> result.map_error(fn(report) { RewriteValueFailed(report:) }),
-        )
-        let value = case replaced {
-          None -> value
-          Some(new) -> register.value(new)
-        }
-        [SetRegister(ns:, key:, value:), ..writes]
-      })
+      rewrite_namespace_registers(source, rewrite_value, writes, ns)
     }),
   )
   use destination <- result.try(
@@ -648,6 +611,106 @@ fn placement_preserved(old: Entry, new: Entry) -> Bool {
   old.id == new.id
   && old.parent == new.parent
   && storage.kind_of(old) == storage.kind_of(new)
+}
+
+// One step of the entry-rewrite fold: an untouched entry passes through,
+// a transformed one is checked and re-stamped, and a transform failure
+// short-circuits the whole rewrite.
+fn apply_entry_rewrite(
+  step: #(List(Entry), Int),
+  entry: Entry,
+  rewrite: EntryRewrite,
+) -> Result(#(List(Entry), Int), RewriteError) {
+  let #(accumulator, count) = step
+  case rewrite(entry) {
+    Ok(None) -> Ok(#([entry, ..accumulator], count))
+    Ok(Some(new)) -> place_rewritten_entry(entry, new, accumulator, count)
+    Error(report) -> Error(RewriteEntryFailed(report:))
+  }
+}
+
+fn place_rewritten_entry(
+  entry: Entry,
+  new: Entry,
+  accumulator: List(Entry),
+  count: Int,
+) -> Result(#(List(Entry), Int), RewriteError) {
+  use <- bool.guard(
+    when: !placement_preserved(entry, new),
+    return: Error(
+      RewriteEntryFailed(report: corruption.report(
+        at: "session/repo.rewrite_memory",
+        on: ids.entry_id_to_string(entry.id),
+        expected: "a rewrite preserving entry id, parent, and kind",
+        context: "transform changed entry placement",
+      )),
+    ),
+  )
+  // Keep the stored placement even if the transform touched the
+  // placeholder fields.
+  let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)
+  Ok(#([stamped, ..accumulator], count + 1))
+}
+
+// Usage details are opaque JSON and can carry the needle (provider
+// echoes, request annotations); they go through the value transform on
+// the way into the rebuild, matching the SQLite path's audit scope.
+fn rewrite_usage_row(
+  row: entry.UsageRow,
+  rewrite_value: ValueRewrite,
+) -> Result(entry.UsageRow, RewriteError) {
+  case row.details {
+    None -> Ok(row)
+    Some(details) ->
+      rewrite_value(details)
+      |> result.map_error(fn(report) { RewriteValueFailed(report:) })
+      |> result.map(fn(replaced) {
+        case replaced {
+          None -> row
+          Some(new) -> entry.UsageRow(..row, details: Some(new))
+        }
+      })
+  }
+}
+
+// Every register cell is retained — a rewrite erases content, not
+// history — but its payload runs through the value transform first:
+// pending messages, tool arguments, and preparation copies are exactly
+// where an erased secret also lives.
+fn rewrite_namespace_registers(
+  source: Session,
+  rewrite_value: ValueRewrite,
+  writes: List(tx.Write),
+  ns: register.RegisterNs,
+) -> Result(List(tx.Write), RewriteError) {
+  use cells <- result.try(
+    storage.list_registers(source.store, ns, None)
+    |> result.map_error(fn(error) {
+      RewriteSourceRead(error: session.StoreFailure(error:))
+    }),
+  )
+  list.try_fold(over: cells, from: writes, with: fn(writes, cell) {
+    rewrite_register_cell(rewrite_value, ns, writes, cell)
+  })
+}
+
+fn rewrite_register_cell(
+  rewrite_value: ValueRewrite,
+  ns: register.RegisterNs,
+  writes: List(tx.Write),
+  cell: #(String, storage.Register),
+) -> Result(List(tx.Write), RewriteError) {
+  let #(key, storage.Register(value:, ..)) = cell
+  let payload = core_codec.encode_register_value(value)
+  use replaced <- result.map(
+    rewrite_value(payload)
+    |> result.map_error(fn(report) { RewriteValueFailed(report:) }),
+  )
+  let value = case replaced {
+    None -> value
+    Some(new) -> register.value(new)
+  }
+  [SetRegister(ns:, key:, value:), ..writes]
 }
 
 fn every_namespace() -> List(register.RegisterNs) {

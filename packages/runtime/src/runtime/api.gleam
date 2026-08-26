@@ -40,6 +40,7 @@ import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
 import core/tx.{type CommitError}
+import gleam/bool
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -206,43 +207,41 @@ pub fn open(
   effects: Effects,
   options: Options,
 ) -> Result(Runtime, String) {
-  case session.ensure_strand(session, options.strand, options.configuration) {
-    Error(error) -> Error(describe_session_error(error))
-    Ok(Nil) -> {
-      let config =
-        supervisor.Config(
-          writer_options: writer.Options(
-            session:,
-            after_commit: options.after_commit,
-            subscribers: options.subscribers,
-          ),
-          strand_options: strand_runtime.Options(
-            // Replaced by supervisor.start with the real writer name.
-            writer: process.new_name(prefix: "loom_writer_placeholder"),
-            strand: options.strand,
-            effects:,
-            stream_options: options.stream_options,
-            retry_policy: options.retry_policy,
-            poll_interval_ms: options.poll_interval_ms,
-            logger: options.logger,
-          ),
-          tolerance: options.tolerance,
-          subagent: options.subagent,
-          subagent_tolerance: options.subagent_tolerance,
-        )
-      case supervisor.start(config) {
-        Ok(tree) ->
-          Ok(Runtime(
-            tree:,
-            session:,
-            effects:,
-            strand: options.strand,
-            settings: options.settings,
-          ))
-        Error(error) -> Error(describe_start_error(error))
-      }
-    }
-  }
+  use Nil <- result.try(
+    session.ensure_strand(session, options.strand, options.configuration)
+    |> result.map_error(describe_session_error),
+  )
+  let config =
+    supervisor.Config(
+      writer_options: writer.Options(
+        session:,
+        after_commit: options.after_commit,
+        subscribers: options.subscribers,
+      ),
+      strand_options: strand_runtime.Options(
+        // Replaced by supervisor.start with the real writer name.
+        writer: process.new_name(prefix: "loom_writer_placeholder"),
+        strand: options.strand,
+        effects:,
+        stream_options: options.stream_options,
+        retry_policy: options.retry_policy,
+        poll_interval_ms: options.poll_interval_ms,
+        logger: options.logger,
+      ),
+      tolerance: options.tolerance,
+      subagent: options.subagent,
+      subagent_tolerance: options.subagent_tolerance,
+    )
+  use tree <- result.try(
+    supervisor.start(config) |> result.map_error(describe_start_error),
+  )
+  Ok(Runtime(
+    tree:,
+    session:,
+    effects:,
+    strand: options.strand,
+    settings: options.settings,
+  ))
 }
 
 /// The same runtime handle addressing a sibling strand: every operation
@@ -312,15 +311,11 @@ pub fn accept_quietly(
         settings: runtime.settings,
         pending:,
       )
-    case acceptance.accept_prompt(AcceptRun(prompts:), ctx) {
-      Error(reason) -> Ok(Done(Error(AcceptRejected(reason:))))
-      Ok(acceptance.AcceptancePlan(operation:, state: _, tx: plan_tx)) ->
-        case writer.commit(w, plan_tx) {
-          Ok(_) -> Ok(Done(Ok(operation.id)))
-          Error(tx.StaleExpectation(..)) -> Ok(Retry)
-          Error(error) -> Ok(Done(Error(commit_failure(error))))
-        }
-    }
+    use acceptance.AcceptancePlan(operation:, state: _, tx: plan_tx) <- or_rejected(
+      acceptance.accept_prompt(AcceptRun(prompts:), ctx),
+      fn(reason) { AcceptRejected(reason:) },
+    )
+    commit_or_retry(writer.commit(w, plan_tx), on_ok: operation.id)
   })
 }
 
@@ -398,24 +393,17 @@ fn enqueue(
           op_id,
         ))
         let #(_now, generator) = mint_context(runtime)
-        case
-          admit(op, op_state, op_state_seq, generator, PendingMessage(message:))
-        {
-          Error(reason) -> Ok(Done(Error(QueueRejected(reason:))))
-          Ok(queue.QueuePlan(entry:, next: _, tx: plan_tx)) ->
-            case writer.commit(w, plan_tx) {
-              Ok(_) -> Ok(Done(Ok(entry)))
-              Error(tx.StaleExpectation(..)) -> Ok(Retry)
-              // Only a lost seq race reloads. Every other refusal —
-              // a stolen lease above all — finishes the admission:
-              // `retry_admission` decrements only on `Retry`, so a
-              // `Done` here is what keeps the ladder from spending its
-              // four attempts against a fence that will refuse all
-              // four and then reporting `RaceLost`, which would name
-              // the wrong cause.
-              Error(error) -> Ok(Done(Error(commit_failure(error))))
-            }
-        }
+        use queue.QueuePlan(entry:, next: _, tx: plan_tx) <- or_rejected(
+          admit(op, op_state, op_state_seq, generator, PendingMessage(message:)),
+          fn(reason) { QueueRejected(reason:) },
+        )
+        // Only a lost seq race reloads. Every other refusal — a stolen
+        // lease above all — finishes the admission: `retry_admission`
+        // decrements only on `Retry`, so a `Done` here is what keeps the
+        // ladder from spending its four attempts against a fence that
+        // will refuse all four and then reporting `RaceLost`, which
+        // would name the wrong cause.
+        commit_or_retry(writer.commit(w, plan_tx), on_ok: entry)
       }
     }
   })
@@ -444,18 +432,13 @@ pub fn nudge(runtime: Runtime) -> Nil {
 fn live_strand_subject(
   runtime: Runtime,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
-  case supervisor.strand_subject(runtime.tree, runtime.strand) {
-    Error(Nil) -> Error(Nil)
-    Ok(subject) ->
-      case process.subject_owner(subject) {
-        Ok(pid) ->
-          case process.is_alive(pid) {
-            True -> Ok(subject)
-            False -> Error(Nil)
-          }
-        Error(Nil) -> Error(Nil)
-      }
-  }
+  use subject <- result.try(supervisor.strand_subject(
+    runtime.tree,
+    runtime.strand,
+  ))
+  use pid <- result.try(process.subject_owner(subject))
+  use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
+  Ok(subject)
 }
 
 /// Requests durable cancellation of the addressed strand's open
@@ -535,13 +518,18 @@ pub fn await_result(
 ) -> Result(LastResult, Nil) {
   case operation_result(runtime, operation) {
     Some(last) -> Ok(last)
+    // The store read is a fallback, not a substitute — an eager unwrap
+    // here would run it even when the operation-keyed fact already
+    // answered, so this stays a `case` rather than an `option.unwrap`.
     None ->
       case session.last_result(runtime.session, runtime.strand) {
-        Ok(Some(session.Cell(value: last, ..))) ->
-          case result_operation(last) == operation {
-            True -> Ok(last)
-            False -> await_result_wait(runtime, operation, timeout_ms)
-          }
+        Ok(Some(session.Cell(value: last, ..))) -> {
+          use <- bool.guard(
+            when: result_operation(last) == operation,
+            return: Ok(last),
+          )
+          await_result_wait(runtime, operation, timeout_ms)
+        }
         _ -> await_result_wait(runtime, operation, timeout_ms)
       }
   }
@@ -688,15 +676,16 @@ fn validate_fork_point(
 ) -> Result(Nil, CreateStrandError) {
   case fork_point {
     None -> Ok(Nil)
-    Some(entry) ->
-      case writer.get_entries(writer_subject(runtime), [entry]) {
-        Error(error) -> Error(SeedFailed(reason: describe_storage(error)))
-        Ok(found) ->
-          case dict.has_key(found, entry) {
-            True -> Ok(Nil)
-            False -> Error(UnknownForkPoint(entry:))
-          }
-      }
+    Some(entry) -> {
+      use found <- result.try(
+        writer.get_entries(writer_subject(runtime), [entry])
+        |> result.map_error(fn(error) {
+          SeedFailed(reason: describe_storage(error))
+        }),
+      )
+      use <- bool.guard(when: dict.has_key(found, entry), return: Ok(Nil))
+      Error(UnknownForkPoint(entry:))
+    }
   }
 }
 
@@ -785,28 +774,25 @@ fn send_attempts(
   message: AgentMessage,
   attempts: Int,
 ) -> Result(Delivery, ApiError) {
-  case attempts <= 0 {
-    True -> Error(RaceLost)
-    False ->
-      case steer_quietly(target, message) {
-        Ok(entry) -> {
+  use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+  case steer_quietly(target, message) {
+    Ok(entry) -> {
+      nudge(target)
+      Ok(Steered(entry:))
+    }
+    Error(QueueRejected(reason: queue.NoActiveRun)) ->
+      case accept_quietly(target, [message]) {
+        Ok(operation) -> {
           nudge(target)
-          Ok(Steered(entry:))
+          Ok(Started(operation:))
         }
-        Error(QueueRejected(reason: queue.NoActiveRun)) ->
-          case accept_quietly(target, [message]) {
-            Ok(operation) -> {
-              nudge(target)
-              Ok(Started(operation:))
-            }
-            // A run opened between the steer refusal and the accept:
-            // try the steer again.
-            Error(AcceptRejected(reason: StrandBusy)) ->
-              send_attempts(target, message, attempts - 1)
-            Error(error) -> Error(error)
-          }
+        // A run opened between the steer refusal and the accept: try
+        // the steer again.
+        Error(AcceptRejected(reason: StrandBusy)) ->
+          send_attempts(target, message, attempts - 1)
         Error(error) -> Error(error)
       }
+    Error(error) -> Error(error)
   }
 }
 
@@ -936,21 +922,19 @@ pub fn facts(
   runtime: Runtime,
   prefix prefix: Option(String),
 ) -> Result(List(#(String, JsonValue)), ApiError) {
-  case
+  use cells <- result.try(
     writer.list_registers(writer_subject(runtime), register.FactCustom, prefix)
-  {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(cells) ->
-      cells
-      |> list.filter_map(fn(pair) {
-        let #(key, storage.Register(value:, ..)) = pair
-        case reserved_fact_key(key) {
-          True -> Error(Nil)
-          False -> Ok(#(key, value.payload))
-        }
-      })
-      |> Ok
-  }
+    |> result.map_error(fn(error) {
+      ReadFailed(reason: describe_storage(error))
+    }),
+  )
+  Ok(
+    list.filter_map(cells, fn(pair) {
+      let #(key, storage.Register(value:, ..)) = pair
+      use <- bool.guard(when: reserved_fact_key(key), return: Error(Nil))
+      Ok(#(key, value.payload))
+    }),
+  )
 }
 
 /// The reserved `fact.custom` key prefix the assembled system prompt is
@@ -1041,26 +1025,26 @@ pub fn reserved_facts(
   runtime: Runtime,
   prefix prefix: String,
 ) -> Result(List(#(String, JsonValue)), ApiError) {
-  case reserved_fact_key(prefix) {
-    False -> Error(UnreservedFactKey(key: prefix))
-    True ->
-      case
-        writer.list_registers(
-          writer_subject(runtime),
-          register.FactCustom,
-          Some(prefix),
-        )
-      {
-        Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-        Ok(cells) ->
-          cells
-          |> list.map(fn(pair) {
-            let #(key, storage.Register(value:, ..)) = pair
-            #(key, value.payload)
-          })
-          |> Ok
-      }
-  }
+  use <- bool.guard(
+    when: !reserved_fact_key(prefix),
+    return: Error(UnreservedFactKey(key: prefix)),
+  )
+  use cells <- result.try(
+    writer.list_registers(
+      writer_subject(runtime),
+      register.FactCustom,
+      Some(prefix),
+    )
+    |> result.map_error(fn(error) {
+      ReadFailed(reason: describe_storage(error))
+    }),
+  )
+  Ok(
+    list.map(cells, fn(pair) {
+      let #(key, storage.Register(value:, ..)) = pair
+      #(key, value.payload)
+    }),
+  )
 }
 
 /// The addressed strand's current leaf entry, or `None` when it sits at
@@ -1160,24 +1144,21 @@ fn commit_raised(
 /// ```
 ///
 pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
-  case
+  use cells <- result.try(
     writer.list_registers(
       writer_subject(runtime),
       register.FactCustom,
       Some(escalation.key_prefix),
     )
-  {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(cells) ->
-      cells
-      |> list.try_map(fn(pair) {
-        let #(_key, storage.Register(value:, ..)) = pair
-        case escalation.decode(value.payload) {
-          Ok(record) -> Ok(record)
-          Error(report) -> Error(ReadFailed(reason: report.boundary))
-        }
-      })
-  }
+    |> result.map_error(fn(error) {
+      ReadFailed(reason: describe_storage(error))
+    }),
+  )
+  list.try_map(cells, fn(pair) {
+    let #(_key, storage.Register(value:, ..)) = pair
+    escalation.decode(value.payload)
+    |> result.map_error(fn(report) { ReadFailed(reason: report.boundary) })
+  })
 }
 
 /// One durable escalation record by id.
@@ -1283,32 +1264,27 @@ fn decide_escalation_value(
   retry_admission(4, fn() {
     use <- attempt
     use #(seq, record) <- result.try(read_escalation(runtime, id))
-    case escalation.may_become(record.status, to) {
-      False ->
-        Ok(Done(Error(EscalationWrongStatus(id:, status: record.status))))
-      True -> {
-        let key = escalation.register_key(id)
-        let next = change(record)
-        let plan_tx =
-          tx.Tx(
-            writes: [
-              tx.SetRegister(
-                ns: register.FactCustom,
-                key:,
-                value: register.value(escalation.encode(next)),
-              ),
-            ],
-            expected: [
-              tx.Expect(ns: register.FactCustom, key:, seq: Some(seq)),
-            ],
-          )
-        case writer.commit(writer_subject(runtime), plan_tx) {
-          Ok(_) -> Ok(Done(Ok(next)))
-          Error(tx.StaleExpectation(..)) -> Ok(Retry)
-          Error(error) -> Ok(Done(Error(commit_failure(error))))
-        }
-      }
-    }
+    use <- bool.guard(
+      when: !escalation.may_become(record.status, to),
+      return: Ok(Done(Error(EscalationWrongStatus(id:, status: record.status)))),
+    )
+    let key = escalation.register_key(id)
+    let next = change(record)
+    let plan_tx =
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.FactCustom,
+            key:,
+            value: register.value(escalation.encode(next)),
+          ),
+        ],
+        expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
+      )
+    commit_or_retry(
+      writer.commit(writer_subject(runtime), plan_tx),
+      on_ok: next,
+    )
   })
 }
 
@@ -1357,13 +1333,10 @@ fn retry_admission(
   attempts: Int,
   attempt: fn() -> Attempt(value),
 ) -> Result(value, ApiError) {
-  case attempts <= 0 {
-    True -> Error(RaceLost)
-    False ->
-      case attempt() {
-        Done(outcome) -> outcome
-        Retry -> retry_admission(attempts - 1, attempt)
-      }
+  use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+  case attempt() {
+    Done(outcome) -> outcome
+    Retry -> retry_admission(attempts - 1, attempt)
   }
 }
 
@@ -1373,6 +1346,41 @@ fn attempt(body: fn() -> Result(Attempt(value), ApiError)) -> Attempt(value) {
   case body() {
     Ok(outcome) -> outcome
     Error(error) -> Done(Error(error))
+  }
+}
+
+// Binds a step whose failure is a domain rejection rather than an
+// admission fault: renders it as a *finished* attempt instead of
+// propagating a bare `Result` error, so the rejection reaches the caller
+// as `Done(Error(..))` rather than aborting the ladder. Mirrors
+// `machine/planner`'s `or_fault` and `tools/tool`'s `or_outcome` for this
+// package's `Attempt`-chained admission bodies.
+fn or_rejected(
+  result: Result(a, e),
+  to_reason: fn(e) -> ApiError,
+  then: fn(a) -> Result(Attempt(value), ApiError),
+) -> Result(Attempt(value), ApiError) {
+  case result {
+    Ok(value) -> then(value)
+    Error(error) -> Ok(Done(Error(to_reason(error))))
+  }
+}
+
+// Maps a plan's commit outcome onto the admission ladder: success
+// finishes the attempt with `on_ok`, a lost seq race
+// (`tx.StaleExpectation`) asks `retry_admission` for another attempt, and
+// any other refusal — a stolen lease above all — also finishes the
+// attempt, because `retry_admission` decrements only on `Retry` and
+// spending the ladder's attempts against a fence that refuses all of
+// them would report `RaceLost` and name the wrong cause.
+fn commit_or_retry(
+  result: Result(tx.CommitResult, CommitError),
+  on_ok on_ok: value,
+) -> Result(Attempt(value), ApiError) {
+  case result {
+    Ok(_) -> Ok(Done(Ok(on_ok)))
+    Error(tx.StaleExpectation(..)) -> Ok(Retry)
+    Error(error) -> Ok(Done(Error(commit_failure(error))))
   }
 }
 
@@ -1431,14 +1439,18 @@ fn read_leaf(
   runtime: Runtime,
 ) -> Result(#(Option(Seq), Option(EntryId)), ApiError) {
   let w = writer_subject(runtime)
-  case writer.get_register(w, register.StrandLeaf, runtime.strand) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(None) -> Ok(#(None, None))
-    Ok(Some(storage.Register(value:, seq:))) ->
-      case register.read_leaf(value) {
-        Ok(leaf) -> Ok(#(Some(seq), leaf))
-        Error(report) -> Error(ReadFailed(reason: report.boundary))
-      }
+  use cell <- result.try(
+    writer.get_register(w, register.StrandLeaf, runtime.strand)
+    |> result.map_error(fn(error) {
+      ReadFailed(reason: describe_storage(error))
+    }),
+  )
+  case cell {
+    None -> Ok(#(None, None))
+    Some(storage.Register(value:, seq:)) ->
+      register.read_leaf(value)
+      |> result.map(fn(leaf) { #(Some(seq), leaf) })
+      |> result.map_error(fn(report) { ReadFailed(reason: report.boundary) })
   }
 }
 
@@ -1446,19 +1458,20 @@ fn read_pending(
   runtime: Runtime,
 ) -> Result(dict.Dict(String, operation.PendingEntry), ApiError) {
   let w = writer_subject(runtime)
-  case writer.list_registers(w, register.PendingEntry, None) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
-    Ok(cells) ->
-      cells
-      |> list.try_map(fn(pair) {
-        let #(key, storage.Register(value:, ..)) = pair
-        case codec.decode_pending_entry(value.payload) {
-          Ok(pending) -> Ok(#(key, pending))
-          Error(report) -> Error(ReadFailed(reason: report.boundary))
-        }
-      })
-      |> result.map(dict.from_list)
-  }
+  use cells <- result.try(
+    writer.list_registers(w, register.PendingEntry, None)
+    |> result.map_error(fn(error) {
+      ReadFailed(reason: describe_storage(error))
+    }),
+  )
+  cells
+  |> list.try_map(fn(pair) {
+    let #(key, storage.Register(value:, ..)) = pair
+    codec.decode_pending_entry(value.payload)
+    |> result.map(fn(pending) { #(key, pending) })
+    |> result.map_error(fn(report) { ReadFailed(reason: report.boundary) })
+  })
+  |> result.map(dict.from_list)
 }
 
 fn read_decoded(
@@ -1468,15 +1481,17 @@ fn read_decoded(
   decode: fn(json.JsonValue) -> Result(payload, corruption_report),
 ) -> Result(Option(#(Int, payload)), String) {
   let w = writer_subject(runtime)
-  case writer.get_register(w, ns, key) {
-    Error(error) -> Error(describe_storage(error))
-    Ok(None) -> Ok(None)
-    Ok(Some(storage.Register(value:, seq:))) ->
-      case decode(value.payload) {
-        Ok(payload) -> Ok(Some(#(seq, payload)))
-        Error(_report) ->
-          Error("a stored register payload failed to decode: " <> key)
-      }
+  use cell <- result.try(
+    writer.get_register(w, ns, key) |> result.map_error(describe_storage),
+  )
+  case cell {
+    None -> Ok(None)
+    Some(storage.Register(value:, seq:)) ->
+      decode(value.payload)
+      |> result.map(fn(payload) { Some(#(seq, payload)) })
+      |> result.replace_error(
+        "a stored register payload failed to decode: " <> key,
+      )
   }
 }
 

@@ -42,6 +42,7 @@ import core/message.{
 }
 import core/register
 import core/tx
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/list
@@ -394,64 +395,88 @@ fn effect_kind(token: EffectToken) -> String {
   }
 }
 
+// The driver's two escape hatches out of a handler, mirroring
+// `machine/planner`'s `or_fault`: a superseded effect (already taken by
+// an earlier drive, or a `Down` racing its own cleanup) is a silent
+// no-op — `or_continue` — while a durable-state read or a decode failure
+// stops the strand — `or_halt`. Both exist because neither `Outcome`
+// alternative is a bare `Result`, so `result.try` cannot serve.
+fn or_continue(
+  option: Option(a),
+  otherwise state: State,
+  then callback: fn(a) -> Outcome,
+) -> Outcome {
+  case option {
+    None -> Continue(state)
+    Some(value) -> callback(value)
+  }
+}
+
+fn or_halt(result: Result(a, String), then: fn(a) -> Outcome) -> Outcome {
+  case result {
+    Error(reason) -> Halt(reason)
+    Ok(value) -> then(value)
+  }
+}
+
 fn provider_done(
   state: State,
   token: EffectToken,
   terminal: stream.StreamEvent,
 ) -> Outcome {
-  case take_live(state, token) {
-    // Not live any more: a superseded effect. Drop it.
-    None -> Continue(state)
-    Some(#(live, state)) -> {
-      log.debug(step_logger(state, token), "effect.settled", [
-        field.text(key: "kind", value: effect_kind(token)),
-        field.text(key: "outcome", value: terminal_name(terminal)),
-      ])
-      // A live entry whose operation is no longer the strand's current
-      // one belongs to an operation that reached its terminal
-      // transaction without needing this outcome (a cancelled
-      // structural or deferred-suspend finish). Feeding it forward
-      // would hand the *next* operation a mismatched observation.
-      case current_operation_owns(state, token) {
-        Error(reason) -> Halt(reason)
-        Ok(False) -> Continue(state)
-        Ok(True) -> {
-          let #(now, state) = read_clock(state)
-          let observed = case token {
-            AssistantEffect(..) ->
-              settled_observation(live, terminal, now, fn(settled) {
-                planner.ObservedAssistantSettled(
-                  settled:,
-                  overflow_preparation: None,
-                )
-              })
-            PollEffect(..) ->
-              settled_observation(live, terminal, now, fn(settled) {
-                planner.ObservedDeferredSettled(settled:)
-              })
-            SummaryEffect(..) ->
-              case terminal {
-                stream.Settled(message: _, usage:) ->
-                  Ok(planner.ObservedSummaryReturned(usage:))
-                stream.Failed(error: _) ->
-                  Ok(
-                    planner.ObservedSummaryReturned(usage: effects.zero_usage()),
-                  )
-                stream.Delta(..) ->
-                  Error(
-                    "provider stream delivered a delta as its terminal event",
-                  )
-              }
-            ToolEffect(..) ->
-              Error("a tool effect delivered a provider terminal event")
-          }
-          case observed {
-            Ok(observation) -> drive(push_observation(state, observation))
-            Error(reason) -> Halt(reason)
-          }
-        }
+  // Not live any more: a superseded effect. Drop it.
+  use #(live, state) <- or_continue(take_live(state, token), otherwise: state)
+  log.debug(step_logger(state, token), "effect.settled", [
+    field.text(key: "kind", value: effect_kind(token)),
+    field.text(key: "outcome", value: terminal_name(terminal)),
+  ])
+  // A live entry whose operation is no longer the strand's current one
+  // belongs to an operation that reached its terminal transaction
+  // without needing this outcome (a cancelled structural or
+  // deferred-suspend finish). Feeding it forward would hand the *next*
+  // operation a mismatched observation.
+  use owns <- or_halt(current_operation_owns(state, token))
+  use <- bool.guard(when: !owns, return: Continue(state))
+  let #(now, state) = read_clock(state)
+  use observation <- or_halt(provider_terminal_observation(
+    token,
+    live,
+    terminal,
+    now,
+  ))
+  drive(push_observation(state, observation))
+}
+
+// The observation a provider terminal event settles into, per effect
+// kind — a settled response for the two that carry the machine's
+// settled-assistant shape, the summary task's own reply for the third,
+// and a fault for the shapes that cannot occur (a tool token, or a delta
+// arriving as a terminal event).
+fn provider_terminal_observation(
+  token: EffectToken,
+  live: Live,
+  terminal: stream.StreamEvent,
+  now: Int,
+) -> Result(Observation, String) {
+  case token {
+    AssistantEffect(..) ->
+      settled_observation(live, terminal, now, fn(settled) {
+        planner.ObservedAssistantSettled(settled:, overflow_preparation: None)
+      })
+    PollEffect(..) ->
+      settled_observation(live, terminal, now, fn(settled) {
+        planner.ObservedDeferredSettled(settled:)
+      })
+    SummaryEffect(..) ->
+      case terminal {
+        stream.Settled(message: _, usage:) ->
+          Ok(planner.ObservedSummaryReturned(usage:))
+        stream.Failed(error: _) ->
+          Ok(planner.ObservedSummaryReturned(usage: effects.zero_usage()))
+        stream.Delta(..) ->
+          Error("provider stream delivered a delta as its terminal event")
       }
-    }
+    ToolEffect(..) -> Error("a tool effect delivered a provider terminal event")
   }
 }
 
@@ -476,17 +501,15 @@ fn current_operation_owns(
     | PollEffect(operation:, ..)
     | SummaryEffect(operation:, ..) -> operation
   }
-  case
-    read_decoded(
-      state,
-      register.StrandState,
-      state.strand,
-      codec.decode_strand_state,
-    )
-  {
-    Error(reason) -> Error(reason)
-    Ok(None) -> Ok(False)
-    Ok(Some(#(_seq, strand_state))) ->
+  use decoded <- result.try(read_decoded(
+    state,
+    register.StrandState,
+    state.strand,
+    codec.decode_strand_state,
+  ))
+  case decoded {
+    None -> Ok(False)
+    Some(#(_seq, strand_state)) ->
       Ok(strand_state.current_operation == Some(operation))
   }
 }
@@ -500,21 +523,16 @@ fn settled_observation(
   now: Int,
   wrap: fn(classification.SettledAssistantMessage) -> Observation,
 ) -> Result(Observation, String) {
-  let message = case terminal {
+  use message <- result.try(case terminal {
     stream.Settled(message: settled, usage: _) -> Ok(stream.message(settled))
     stream.Failed(error:) ->
       Ok(effects.settle_failure(error, live.configuration, now))
     stream.Delta(..) ->
       Error("provider stream delivered a delta as its terminal event")
-  }
-  case message {
-    Error(reason) -> Error(reason)
-    Ok(message) ->
-      case classification.settle(message) {
-        Ok(settled) -> Ok(wrap(settled))
-        Error(report) -> Error(corruption.describe(report))
-      }
-  }
+  })
+  classification.settle(message)
+  |> result.map(wrap)
+  |> result.map_error(corruption.describe)
 }
 
 fn tool_done(
@@ -530,26 +548,37 @@ fn tool_done(
         field.text(key: "outcome", value: tool_outcome_name(outcome)),
       ])
       let #(now, state) = read_clock(state)
-      let observation = case outcome {
-        effects.ToolCompleted(result:, terminate:) ->
-          Ok(planner.ObservedToolSettled(source_index:, result:, terminate:))
-        effects.ToolFailed(reason:) ->
-          case live.call {
-            Some(call) ->
-              Ok(planner.ObservedToolSettled(
-                source_index:,
-                result: synthetic_tool_error(call, reason, now),
-                terminate: False,
-              ))
-            None -> Error("tool effect settled without a recorded source call")
-          }
-      }
-      case observation {
-        Ok(observation) -> drive(push_observation(state, observation))
-        Error(reason) -> Halt(reason)
-      }
+      use observation <- or_halt(tool_observation(
+        live,
+        outcome,
+        source_index,
+        now,
+      ))
+      drive(push_observation(state, observation))
     }
     Some(_), _ -> Halt("tool outcome arrived under a non-tool effect token")
+  }
+}
+
+fn tool_observation(
+  live: Live,
+  outcome: effects.ToolOutcome,
+  source_index: Int,
+  now: Int,
+) -> Result(Observation, String) {
+  case outcome {
+    effects.ToolCompleted(result:, terminate:) ->
+      Ok(planner.ObservedToolSettled(source_index:, result:, terminate:))
+    effects.ToolFailed(reason:) ->
+      case live.call {
+        Some(call) ->
+          Ok(planner.ObservedToolSettled(
+            source_index:,
+            result: synthetic_tool_error(call, reason, now),
+            terminate: False,
+          ))
+        None -> Error("tool effect settled without a recorded source call")
+      }
   }
 }
 
@@ -566,38 +595,39 @@ fn tool_outcome_name(outcome: effects.ToolOutcome) -> String {
 fn effect_exit(state: State, down: process.Down) -> Outcome {
   case down {
     process.PortDown(..) -> Continue(state)
-    process.ProcessDown(pid:, ..) ->
-      case list.find(state.live, fn(live) { live.pid == pid }) {
-        // Unknown pid: the effect already reported (or was cancelled)
-        // and this Down raced the cleanup. Ignore.
-        Error(Nil) -> Continue(state)
-        // The effect process died without reporting: settle in-band
-        // through the ordinary outcome paths. Degraded, not fatal — the
-        // level policy's `warning`.
-        Ok(live) -> {
-          log.warn(step_logger(state, live.token), "effect.exited", [
-            field.text(key: "kind", value: effect_kind(live.token)),
-          ])
-          case live.token {
-            AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
-              provider_done(
-                state,
-                live.token,
-                stream.Failed(error: stream.TransportFailed(
-                  reason: "the effect process exited before settling",
-                )),
-              )
-            ToolEffect(..) ->
-              tool_done(
-                state,
-                live.token,
-                effects.ToolFailed(
-                  reason: "the tool effect process exited before settling",
-                ),
-              )
-          }
-        }
+    process.ProcessDown(pid:, ..) -> {
+      // Unknown pid: the effect already reported (or was cancelled) and
+      // this Down raced the cleanup. Ignore.
+      use live <- or_continue(
+        list.find(state.live, fn(live) { live.pid == pid })
+          |> option.from_result,
+        otherwise: state,
+      )
+      // The effect process died without reporting: settle in-band
+      // through the ordinary outcome paths. Degraded, not fatal — the
+      // level policy's `warning`.
+      log.warn(step_logger(state, live.token), "effect.exited", [
+        field.text(key: "kind", value: effect_kind(live.token)),
+      ])
+      case live.token {
+        AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
+          provider_done(
+            state,
+            live.token,
+            stream.Failed(error: stream.TransportFailed(
+              reason: "the effect process exited before settling",
+            )),
+          )
+        ToolEffect(..) ->
+          tool_done(
+            state,
+            live.token,
+            effects.ToolFailed(
+              reason: "the tool effect process exited before settling",
+            ),
+          )
       }
+    }
   }
 }
 
@@ -645,40 +675,44 @@ type AbortAttempt {
 
 // Commits the cancel_requested marker with a bounded stale-retry loop.
 fn abort_commit(state: State, attempts: Int) -> AbortAttempt {
-  case attempts <= 0 {
-    True -> AbortRaceLost
-    False ->
-      case load(state) {
-        Error(reason) -> AbortFailed(reason)
-        Ok(Idle) -> AbortDurable(state)
-        Ok(Open(loaded)) -> {
-          let #(now, state) = read_clock(state)
-          case
-            queue.request_abort(
-              loaded.op,
-              loaded.op_state,
-              loaded.op_state_seq,
-              now,
-            )
-          {
-            queue.AbortAlreadyRequested(..) -> AbortDurable(state)
-            queue.AbortPlanned(tx: plan_tx, ..) ->
-              case writer.commit(state.writer, plan_tx) {
-                Ok(_) -> AbortDurable(state)
-                Error(tx.StaleExpectation(..)) ->
-                  abort_commit(state, attempts - 1)
-                Error(tx.Corruption(report:)) ->
-                  AbortFailed(corruption.describe(report))
-                Error(tx.Faulted(reason:)) -> AbortFailed(reason)
-                // Fenced out: another writer owns the session, so the
-                // cancellation marker cannot be made durable here and
-                // retrying would meet the same fence.
-                Error(tx.LeaseLost(held_by:)) ->
-                  AbortFailed(tx.describe_lease_loss(held_by))
-              }
-          }
-        }
-      }
+  use <- bool.guard(when: attempts <= 0, return: AbortRaceLost)
+  case load(state) {
+    Error(reason) -> AbortFailed(reason)
+    Ok(Idle) -> AbortDurable(state)
+    Ok(Open(loaded)) -> abort_commit_open(state, loaded, attempts)
+  }
+}
+
+fn abort_commit_open(
+  state: State,
+  loaded: Loaded,
+  attempts: Int,
+) -> AbortAttempt {
+  let #(now, state) = read_clock(state)
+  case
+    queue.request_abort(loaded.op, loaded.op_state, loaded.op_state_seq, now)
+  {
+    queue.AbortAlreadyRequested(..) -> AbortDurable(state)
+    queue.AbortPlanned(tx: plan_tx, ..) ->
+      commit_abort_marker(state, plan_tx, attempts)
+  }
+}
+
+fn commit_abort_marker(
+  state: State,
+  plan_tx: tx.Tx,
+  attempts: Int,
+) -> AbortAttempt {
+  case writer.commit(state.writer, plan_tx) {
+    Ok(_) -> AbortDurable(state)
+    Error(tx.StaleExpectation(..)) -> abort_commit(state, attempts - 1)
+    Error(tx.Corruption(report:)) -> AbortFailed(corruption.describe(report))
+    Error(tx.Faulted(reason:)) -> AbortFailed(reason)
+    // Fenced out: another writer owns the session, so the cancellation
+    // marker cannot be made durable here and retrying would meet the
+    // same fence.
+    Error(tx.LeaseLost(held_by:)) ->
+      AbortFailed(tx.describe_lease_loss(held_by))
   }
 }
 
@@ -703,19 +737,20 @@ fn drive(state: State) -> Outcome {
 }
 
 fn drive_loop(state: State, fuel: Int) -> Outcome {
-  case fuel <= 0 {
-    True -> Halt("the driver made no durable progress within its fuel bound")
-    False ->
-      case load(state) {
-        Error(reason) -> Halt(reason)
-        Ok(Idle) -> Continue(state)
-        Ok(Open(loaded)) -> {
-          let #(observation, state) = pop_observation(state)
-          plan(state, loaded, observation, fuel)
-        }
-      }
+  use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
+  case load(state) {
+    Error(reason) -> Halt(reason)
+    Ok(Idle) -> Continue(state)
+    Ok(Open(loaded)) -> {
+      let #(observation, state) = pop_observation(state)
+      plan(state, loaded, observation, fuel)
+    }
   }
 }
+
+const out_of_fuel = Halt(
+  "the driver made no durable progress within its fuel bound",
+)
 
 fn plan(
   state: State,
@@ -723,66 +758,72 @@ fn plan(
   observation: Observation,
   fuel: Int,
 ) -> Outcome {
-  case fuel <= 0 {
-    True -> Halt("the driver made no durable progress within its fuel bound")
-    False -> {
-      let #(now, state) = read_clock(state)
-      let inputs = build_inputs(state, loaded, observation, now)
-      case planner.next_action(loaded.op, loaded.op_state, inputs) {
-        planner.Fault(report:) ->
-          Halt("planner fault: " <> corruption.describe(report))
-        planner.Wait(until: planner.RetryNotBefore(at:)) ->
-          park_retry(state, at, now)
-        planner.Wait(until: planner.DeferredPollDue(source_entry: _)) ->
-          // The next PollTick grants a permit and re-plans.
-          Continue(state)
-        planner.AwaitEffect(key:) ->
-          case resolve_key(state, loaded, key, observation, now) {
-            KeyHalt(reason) -> Halt(reason)
-            KeyWait ->
-              // Parked on a live effect. An unconsumed real observation
-              // goes back to the front of the queue.
-              case observation {
-                NoObservation -> Continue(state)
-                other -> Continue(push_observation_front(state, other))
-              }
-            KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
-            KeyCleared(observation: refined, cleared:) ->
-              plan(
-                State(..state, cleared: Some(cleared)),
-                loaded,
-                refined,
-                fuel - 1,
-              )
-          }
-        planner.Transition(next: _, tx: plan_tx) ->
-          commit_then(state, plan_tx, observation, fuel, fn(state) {
-            drive_loop(state, fuel - 1)
-          })
-        // The one durable state change worth an `info` line per
-        // operation: the operation reached a terminal result.
-        planner.Finish(result: _, tx: plan_tx) ->
-          commit_then(state, plan_tx, observation, fuel, fn(state) {
-            log.info(
-              log.scoped(
-                state.logger,
-                context.anonymous
-                  |> context.with_op(ids.op_id_to_string(loaded.op.id)),
-              ),
-              "operation.settled",
-              [],
-            )
-            drive_loop(state, fuel - 1)
-          })
-        planner.Dispatch(intent:, next: _, tx: plan_tx) ->
-          commit_then(state, plan_tx, observation, fuel, fn(state) {
-            case start_effect(state, loaded, intent) {
-              Ok(state) -> drive_loop(state, fuel - 1)
-              Error(reason) -> Halt(reason)
-            }
-          })
+  use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
+  let #(now, state) = read_clock(state)
+  let inputs = build_inputs(state, loaded, observation, now)
+  case planner.next_action(loaded.op, loaded.op_state, inputs) {
+    planner.Fault(report:) ->
+      Halt("planner fault: " <> corruption.describe(report))
+    planner.Wait(until: planner.RetryNotBefore(at:)) ->
+      park_retry(state, at, now)
+    planner.Wait(until: planner.DeferredPollDue(source_entry: _)) ->
+      // The next PollTick grants a permit and re-plans.
+      Continue(state)
+    planner.AwaitEffect(key:) ->
+      await_effect_action(state, loaded, key, observation, now, fuel)
+    planner.Transition(next: _, tx: plan_tx) ->
+      commit_then(state, plan_tx, observation, fuel, fn(state) {
+        drive_loop(state, fuel - 1)
+      })
+    // The one durable state change worth an `info` line per operation:
+    // the operation reached a terminal result.
+    planner.Finish(result: _, tx: plan_tx) ->
+      commit_then(state, plan_tx, observation, fuel, fn(state) {
+        log.info(
+          log.scoped(
+            state.logger,
+            context.anonymous
+              |> context.with_op(ids.op_id_to_string(loaded.op.id)),
+          ),
+          "operation.settled",
+          [],
+        )
+        drive_loop(state, fuel - 1)
+      })
+    planner.Dispatch(intent:, next: _, tx: plan_tx) ->
+      commit_then(state, plan_tx, observation, fuel, fn(state) {
+        case start_effect(state, loaded, intent) {
+          Ok(state) -> drive_loop(state, fuel - 1)
+          Error(reason) -> Halt(reason)
+        }
+      })
+  }
+}
+
+// `AwaitEffect`'s resolution: a fault halts, a live wait re-queues an
+// unconsumed real observation, and a resolved key re-enters `plan` with
+// the refined observation (a cleared escalation also carries its grants
+// forward onto `state.cleared` for the dispatch it authorizes).
+fn await_effect_action(
+  state: State,
+  loaded: Loaded,
+  key: planner.EffectKey,
+  observation: Observation,
+  now: Int,
+  fuel: Int,
+) -> Outcome {
+  case resolve_key(state, loaded, key, observation, now) {
+    KeyHalt(reason) -> Halt(reason)
+    KeyWait ->
+      // Parked on a live effect. An unconsumed real observation goes
+      // back to the front of the queue.
+      case observation {
+        NoObservation -> Continue(state)
+        other -> Continue(push_observation_front(state, other))
       }
-    }
+    KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
+    KeyCleared(observation: refined, cleared:) ->
+      plan(State(..state, cleared: Some(cleared)), loaded, refined, fuel - 1)
   }
 }
 
@@ -890,95 +931,42 @@ fn resolve_key(
       KeyObservation(
         planner.ObservedRunEnd(follow_up: hooks.run_end(operation)),
       )
-    planner.AssistantKey(operation:, step_id:, response_entry:) ->
-      case
-        has_live(state, AssistantEffect(operation:, step_id:, response_entry:))
-      {
-        True -> KeyWait
-        False ->
-          // A restored effect_pending with no live continuation: the
-          // request's outcome is unknown (spec §3.1). Loom persists no
-          // frame lists (spec-gaps WP-D item 2), so the reconstructed
-          // partial is always empty.
-          KeyObservation(planner.ObservedAssistantOrphaned(partial: []))
-      }
+    planner.AssistantKey(operation:, step_id:, response_entry:) -> {
+      use <- bool.guard(
+        when: has_live(
+          state,
+          AssistantEffect(operation:, step_id:, response_entry:),
+        ),
+        return: KeyWait,
+      )
+      // A restored effect_pending with no live continuation: the
+      // request's outcome is unknown (spec §3.1). Loom persists no frame
+      // lists (spec-gaps WP-D item 2), so the reconstructed partial is
+      // always empty.
+      KeyObservation(planner.ObservedAssistantOrphaned(partial: []))
+    }
     planner.OverflowPreparationKey(operation:, response_entry: _) ->
-      case observation {
-        planner.ObservedAssistantSettled(settled:, overflow_preparation: _) ->
-          KeyObservation(planner.ObservedAssistantSettled(
-            settled:,
-            overflow_preparation: Some(
-              hooks.overflow_preparation(effects.OverflowQuery(
-                operation:,
-                strand: state.strand,
-              )),
-            ),
-          ))
-        _ ->
-          KeyHalt(
-            "an overflow preparation was requested without a settled response in hand",
-          )
-      }
+      overflow_preparation_key(state, hooks, operation, observation)
     planner.ToolClearanceKey(operation:, step_id:, source_index:) ->
-      case source_call(loaded, source_index) {
-        Error(reason) -> KeyHalt(reason)
-        // Per-tool scheduling (pi §3.8 at per-tool granularity): under
-        // parallel settings the planner asks to clear the next planned
-        // call while earlier effects run; an `Exclusive` tool must not
-        // start beside anything, and nothing starts beside a live
-        // `Exclusive` tool. Parking is safe: only a live tool effect
-        // causes it, and that effect's settlement re-plans.
-        Ok(call) ->
-          case tool_may_start(state, call.name) {
-            False -> KeyWait
-            True ->
-              clear_tool_call(
-                state,
-                loaded,
-                operation,
-                step_id,
-                source_index,
-                call,
-                now,
-              )
-          }
-      }
+      tool_clearance_key(state, loaded, operation, step_id, source_index, now)
     planner.ToolKey(operation:, step_id:, source_index:, result_entry: _) ->
-      case has_live_tool(state, operation, step_id) {
-        // Any pending call's observation satisfies the key.
-        True -> KeyWait
-        False ->
-          case source_call(loaded, source_index) {
-            Error(reason) -> KeyHalt(reason)
-            Ok(call) ->
-              // Loom has no durable tool checkpoints (no list store —
-              // spec-gaps WP-D item 2), so the checkpoint is always
-              // absent.
-              KeyObservation(planner.ObservedToolOrphaned(
-                source_index:,
-                replay_still_safe: state.effects.tools.replay_still_safe(
-                  call.name,
-                ),
-                checkpoint: None,
-              ))
-          }
-      }
+      tool_key(state, loaded, operation, step_id, source_index)
     planner.PollAdmissionKey(operation: _, step_id: _, poll: _) ->
       KeyObservation(
         planner.ObservedResolution(resolution: hooks.resolution(
           loaded.configuration,
         )),
       )
-    planner.PollKey(operation:, step_id:, poll:, response_entry:) ->
-      case
-        has_live(
+    planner.PollKey(operation:, step_id:, poll:, response_entry:) -> {
+      use <- bool.guard(
+        when: has_live(
           state,
           PollEffect(operation:, step_id:, poll:, response_entry:),
-        )
-      {
-        True -> KeyWait
-        False -> KeyObservation(planner.ObservedDeferredOrphaned)
-      }
+        ),
+        return: KeyWait,
+      )
+      KeyObservation(planner.ObservedDeferredOrphaned)
+    }
     planner.DecisionKey(operation:, task_id:) ->
       KeyObservation(
         planner.ObservedStructuralDecision(verdict: hooks.structural_decision(
@@ -987,35 +975,116 @@ fn resolve_key(
         )),
       )
     planner.SummaryKey(operation:, task_id:, attempt:) ->
-      case summary_generation(loaded.op_state) {
-        Some(operation.SummaryEffectPending(request: Some(request), ..)) ->
-          case
-            has_live(
-              state,
-              SummaryEffect(
-                operation:,
-                task_id:,
-                attempt:,
-                index: request.index,
-              ),
-            )
-          {
-            True -> KeyWait
-            False -> KeyObservation(planner.ObservedSummaryOrphaned)
-          }
-        _ ->
-          KeyObservation(
-            planner.ObservedResolution(resolution: hooks.resolution(
-              loaded.configuration,
-            )),
-          )
-      }
+      summary_key(state, loaded, hooks, operation, task_id, attempt)
     planner.SummaryProgressKey(operation:, task_id:, attempt:) ->
       KeyObservation(
         planner.ObservedSummaryProgress(progress: hooks.summary_progress(
           operation,
           task_id,
           attempt,
+        )),
+      )
+  }
+}
+
+// The observation-or-fault shape shared by the key resolvers below: a
+// step that reads a source call can fail only because the durable state
+// it reads is missing what the operation's own transitions guarantee —
+// which is a fault, not a wait.
+fn or_key_halt(
+  result: Result(a, String),
+  then: fn(a) -> KeyResolution,
+) -> KeyResolution {
+  case result {
+    Error(reason) -> KeyHalt(reason)
+    Ok(value) -> then(value)
+  }
+}
+
+fn overflow_preparation_key(
+  state: State,
+  hooks: effects.Hooks,
+  operation: OpId,
+  observation: Observation,
+) -> KeyResolution {
+  case observation {
+    planner.ObservedAssistantSettled(settled:, overflow_preparation: _) ->
+      KeyObservation(planner.ObservedAssistantSettled(
+        settled:,
+        overflow_preparation: Some(
+          hooks.overflow_preparation(effects.OverflowQuery(
+            operation:,
+            strand: state.strand,
+          )),
+        ),
+      ))
+    _ ->
+      KeyHalt(
+        "an overflow preparation was requested without a settled response in hand",
+      )
+  }
+}
+
+fn tool_clearance_key(
+  state: State,
+  loaded: Loaded,
+  operation: OpId,
+  step_id: String,
+  source_index: Int,
+  now: Int,
+) -> KeyResolution {
+  use call <- or_key_halt(source_call(loaded, source_index))
+  // Per-tool scheduling (pi §3.8 at per-tool granularity): under
+  // parallel settings the planner asks to clear the next planned call
+  // while earlier effects run; an `Exclusive` tool must not start beside
+  // anything, and nothing starts beside a live `Exclusive` tool. Parking
+  // is safe: only a live tool effect causes it, and that effect's
+  // settlement re-plans.
+  use <- bool.guard(when: !tool_may_start(state, call.name), return: KeyWait)
+  clear_tool_call(state, loaded, operation, step_id, source_index, call, now)
+}
+
+fn tool_key(
+  state: State,
+  loaded: Loaded,
+  operation: OpId,
+  step_id: String,
+  source_index: Int,
+) -> KeyResolution {
+  // Any pending call's observation satisfies the key.
+  use <- bool.guard(
+    when: has_live_tool(state, operation, step_id),
+    return: KeyWait,
+  )
+  use call <- or_key_halt(source_call(loaded, source_index))
+  // Loom has no durable tool checkpoints (no list store — spec-gaps
+  // WP-D item 2), so the checkpoint is always absent.
+  KeyObservation(planner.ObservedToolOrphaned(
+    source_index:,
+    replay_still_safe: state.effects.tools.replay_still_safe(call.name),
+    checkpoint: None,
+  ))
+}
+
+fn summary_key(
+  state: State,
+  loaded: Loaded,
+  hooks: effects.Hooks,
+  operation: OpId,
+  task_id: String,
+  attempt: Int,
+) -> KeyResolution {
+  case summary_generation(loaded.op_state) {
+    Some(operation.SummaryEffectPending(request: Some(request), ..)) -> {
+      let token =
+        SummaryEffect(operation:, task_id:, attempt:, index: request.index)
+      use <- bool.guard(when: has_live(state, token), return: KeyWait)
+      KeyObservation(planner.ObservedSummaryOrphaned)
+    }
+    _ ->
+      KeyObservation(
+        planner.ObservedResolution(resolution: hooks.resolution(
+          loaded.configuration,
         )),
       )
   }
@@ -1109,31 +1178,29 @@ fn start_effect(
       call:,
       arguments_key:,
       result_entry:,
-    ) ->
-      case read_tool_arguments(state, arguments_key) {
-        Error(reason) -> Error(reason)
-        Ok(arguments) ->
-          Ok(spawn_tool(
-            state,
-            ToolEffect(operation:, step_id:, source_index:, result_entry:),
-            loaded.configuration,
-            effects.ToolRun(
-              operation:,
-              step_id:,
-              source_index:,
-              strand: state.strand,
-              call:,
-              arguments:,
-              replay: operation.ReplaySafe,
-              // A replay is a re-execution of a call whose clearance
-              // belonged to a dead incarnation. Whatever approval that
-              // clearance consumed is already marked spent, so replaying
-              // under it would be the one direction that turns a single
-              // approval into two widened executions.
-              grants: [],
-            ),
-          ))
-      }
+    ) -> {
+      use arguments <- result.try(read_tool_arguments(state, arguments_key))
+      Ok(spawn_tool(
+        state,
+        ToolEffect(operation:, step_id:, source_index:, result_entry:),
+        loaded.configuration,
+        effects.ToolRun(
+          operation:,
+          step_id:,
+          source_index:,
+          strand: state.strand,
+          call:,
+          arguments:,
+          replay: operation.ReplaySafe,
+          // A replay is a re-execution of a call whose clearance
+          // belonged to a dead incarnation. Whatever approval that
+          // clearance consumed is already marked spent, so replaying
+          // under it would be the one direction that turns a single
+          // approval into two widened executions.
+          grants: [],
+        ),
+      ))
+    }
     planner.DeferredFetch(
       operation:,
       step_id:,
@@ -1142,24 +1209,25 @@ fn start_effect(
       configuration:,
       stream_options:,
       ..,
-    ) ->
-      case loaded.deferred_source {
-        None -> Error("a deferred fetch was dispatched without a source handle")
-        Some(handle) ->
-          Ok(spawn_provider(
-            state,
-            PollEffect(operation:, step_id:, poll:, response_entry:),
-            configuration,
-            effects.PollRequest(
-              operation:,
-              step_id:,
-              poll:,
-              handle:,
-              configuration:,
-              stream_options:,
-            ),
-          ))
-      }
+    ) -> {
+      use handle <- result.try(option.to_result(
+        loaded.deferred_source,
+        "a deferred fetch was dispatched without a source handle",
+      ))
+      Ok(spawn_provider(
+        state,
+        PollEffect(operation:, step_id:, poll:, response_entry:),
+        configuration,
+        effects.PollRequest(
+          operation:,
+          step_id:,
+          poll:,
+          handle:,
+          configuration:,
+          stream_options:,
+        ),
+      ))
+    }
     planner.SummaryProviderRequest(
       operation:,
       task_id:,
@@ -1214,11 +1282,13 @@ fn with_projection(
       let q =
         storage.branch_scan(from: start)
         |> storage.branch_stop_at_kind(storage.Compaction)
-      case writer.scan_branch(state.writer, q) {
-        Ok(entries) -> continue(session.project_scan(entries))
-        Error(error) ->
-          Error("context projection failed: " <> describe_read_error(error))
-      }
+      use entries <- result.try(
+        writer.scan_branch(state.writer, q)
+        |> result.map_error(fn(error) {
+          "context projection failed: " <> describe_read_error(error)
+        }),
+      )
+      continue(session.project_scan(entries))
     }
   }
 }
@@ -1478,12 +1548,12 @@ fn load_batch_source(
   op_state: OperationState,
 ) -> Result(Option(AgentMessage), String) {
   case op_state {
-    RunState(phase: Tools(batch:), ..) ->
-      case entry_message(state, batch.assistant_entry) {
-        Ok(Some(message)) -> Ok(Some(message))
-        Ok(None) -> Error("the tool batch's source assistant entry is missing")
-        Error(reason) -> Error(reason)
-      }
+    RunState(phase: Tools(batch:), ..) -> {
+      use message <- result.try(entry_message(state, batch.assistant_entry))
+      message
+      |> option.to_result("the tool batch's source assistant entry is missing")
+      |> result.map(Some)
+    }
     _ -> Ok(None)
   }
 }
@@ -1505,14 +1575,13 @@ fn load_deferred_source(
   }
   case source {
     None -> Ok(None)
-    Some(entry_id) ->
-      case entry_message(state, entry_id) {
-        Ok(Some(AssistantMessage(deferred: Some(handle), ..))) ->
-          Ok(Some(handle))
-        Ok(Some(_)) | Ok(None) ->
-          Error("the deferred source entry carries no handle")
-        Error(reason) -> Error(reason)
+    Some(entry_id) -> {
+      use message <- result.try(entry_message(state, entry_id))
+      case message {
+        Some(AssistantMessage(deferred: Some(handle), ..)) -> Ok(Some(handle))
+        Some(_) | None -> Error("the deferred source entry carries no handle")
       }
+    }
   }
 }
 
@@ -1520,31 +1589,30 @@ fn entry_message(
   state: State,
   id: EntryId,
 ) -> Result(Option(AgentMessage), String) {
-  case writer.get_entries(state.writer, [id]) {
-    Error(error) -> Error(describe_read_error(error))
-    Ok(found) ->
-      case dict.get(found, id) {
-        Error(Nil) -> Ok(None)
-        Ok(entry.MessageEntry(message:, ..)) -> Ok(Some(message))
-        Ok(_) -> Ok(None)
-      }
+  use found <- result.try(
+    writer.get_entries(state.writer, [id])
+    |> result.map_error(describe_read_error),
+  )
+  case dict.get(found, id) {
+    Error(Nil) -> Ok(None)
+    Ok(entry.MessageEntry(message:, ..)) -> Ok(Some(message))
+    Ok(_) -> Ok(None)
   }
 }
 
 fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
-  case writer.list_registers(state.writer, register.PendingEntry, None) {
-    Error(error) -> Error(describe_read_error(error))
-    Ok(cells) ->
-      cells
-      |> list.try_map(fn(pair) {
-        let #(key, storage.Register(value:, ..)) = pair
-        case codec.decode_pending_entry(value.payload) {
-          Ok(pending) -> Ok(#(key, pending))
-          Error(report) -> Error(corruption.describe(report))
-        }
-      })
-      |> result.map(dict.from_list)
-  }
+  use cells <- result.try(
+    writer.list_registers(state.writer, register.PendingEntry, None)
+    |> result.map_error(describe_read_error),
+  )
+  cells
+  |> list.try_map(fn(pair) {
+    let #(key, storage.Register(value:, ..)) = pair
+    codec.decode_pending_entry(value.payload)
+    |> result.map(fn(pending) { #(key, pending) })
+    |> result.map_error(corruption.describe)
+  })
+  |> result.map(dict.from_list)
 }
 
 fn load_preparation(
@@ -1553,16 +1621,19 @@ fn load_preparation(
 ) -> Result(Option(StructuralPreparation), String) {
   case keys {
     [] -> Ok(None)
-    [key, ..] ->
-      case writer.get_register(state.writer, register.OpPreparation, key) {
-        Error(error) -> Error(describe_read_error(error))
-        Ok(None) -> Ok(None)
-        Ok(Some(storage.Register(value:, ..))) ->
-          case codec.decode_preparation(value.payload) {
-            Ok(preparation) -> Ok(Some(preparation))
-            Error(report) -> Error(corruption.describe(report))
-          }
+    [key, ..] -> {
+      use cell <- result.try(
+        writer.get_register(state.writer, register.OpPreparation, key)
+        |> result.map_error(describe_read_error),
+      )
+      case cell {
+        None -> Ok(None)
+        Some(storage.Register(value:, ..)) ->
+          codec.decode_preparation(value.payload)
+          |> result.map(Some)
+          |> result.map_error(corruption.describe)
       }
+    }
   }
 }
 
@@ -1659,52 +1730,45 @@ fn clear_tool_call(
   call: ToolCall,
   now: Int,
 ) -> KeyResolution {
-  case approved_escalations(state) {
-    Error(reason) -> KeyHalt(reason)
-    Ok(approved) -> {
-      let scope =
-        escalation.CallScope(
-          operation:,
-          strand: state.strand,
-          step_id:,
+  use approved <- or_key_halt(approved_escalations(state))
+  let scope =
+    escalation.CallScope(
+      operation:,
+      strand: state.strand,
+      step_id:,
+      source_index:,
+      call_id: call.id,
+    )
+  let matching =
+    list.filter(approved, fn(cell) {
+      let #(_seq, record) = cell
+      escalation.scoped_to(record, scope)
+    })
+  use grants <- or_key_halt(consume_escalations(state, matching))
+  case
+    state.effects.tools.clear(effects.ClearanceQuery(
+      operation:,
+      step_id:,
+      source_index:,
+      call:,
+      configuration: loaded.configuration,
+      grants:,
+    ))
+  {
+    effects.Cleared(effective_arguments:, replay:) ->
+      KeyCleared(
+        observation: planner.ObservedToolCleared(
           source_index:,
-          call_id: call.id,
-        )
-      let matching =
-        list.filter(approved, fn(cell) {
-          let #(_seq, record) = cell
-          escalation.scoped_to(record, scope)
-        })
-      case consume_escalations(state, matching) {
-        Error(reason) -> KeyHalt(reason)
-        Ok(grants) ->
-          case
-            state.effects.tools.clear(effects.ClearanceQuery(
-              operation:,
-              step_id:,
-              source_index:,
-              call:,
-              configuration: loaded.configuration,
-              grants:,
-            ))
-          {
-            effects.Cleared(effective_arguments:, replay:) ->
-              KeyCleared(
-                observation: planner.ObservedToolCleared(
-                  source_index:,
-                  effective_arguments:,
-                  replay:,
-                ),
-                cleared: Cleared(step_id:, source_index:, grants:),
-              )
-            effects.ClearanceRefused(reason:) ->
-              KeyObservation(planner.ObservedToolRefused(
-                source_index:,
-                result: synthetic_tool_error(call, reason, now),
-              ))
-          }
-      }
-    }
+          effective_arguments:,
+          replay:,
+        ),
+        cleared: Cleared(step_id:, source_index:, grants:),
+      )
+    effects.ClearanceRefused(reason:) ->
+      KeyObservation(planner.ObservedToolRefused(
+        source_index:,
+        result: synthetic_tool_error(call, reason, now),
+      ))
   }
 }
 
@@ -1714,30 +1778,27 @@ fn clear_tool_call(
 fn approved_escalations(
   state: State,
 ) -> Result(List(#(Seq, escalation.Escalation)), String) {
-  case
+  use cells <- result.try(
     writer.list_registers(
       state.writer,
       register.FactCustom,
       Some(escalation.key_prefix),
     )
-  {
-    Error(error) -> Error(describe_read_error(error))
-    Ok(cells) ->
-      cells
-      |> list.try_map(fn(pair) {
-        let #(_key, storage.Register(value:, seq:)) = pair
-        case escalation.decode(value.payload) {
-          Ok(record) -> Ok(#(seq, record))
-          Error(report) -> Error(corruption.describe(report))
-        }
-      })
-      |> result.map(
-        list.filter(_, fn(cell) {
-          let #(_seq, record) = cell
-          record.status == escalation.Approved
-        }),
-      )
-  }
+    |> result.map_error(describe_read_error),
+  )
+  cells
+  |> list.try_map(fn(pair) {
+    let #(_key, storage.Register(value:, seq:)) = pair
+    escalation.decode(value.payload)
+    |> result.map(fn(record) { #(seq, record) })
+    |> result.map_error(corruption.describe)
+  })
+  |> result.map(
+    list.filter(_, fn(cell) {
+      let #(_seq, record) = cell
+      record.status == escalation.Approved
+    }),
+  )
 }
 
 // Marks each passed escalation consumed, CAS-guarded by the seq it was

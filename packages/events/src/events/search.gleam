@@ -36,6 +36,7 @@ import core/entry.{type Entry}
 import core/ids
 import core/message.{type AgentMessage}
 import events/sql
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -220,49 +221,78 @@ pub fn sync(
       list.fold(entries, high_water, fn(seen, entry) {
         int.max(seen, entry.seq)
       })
-    let rows =
-      list.filter_map(entries, fn(entry) {
-        let text = entry_text(entry)
-        case text {
-          "" -> Error(Nil)
-          _ -> Ok(#(ids.entry_id_to_string(entry.id), text))
-        }
-      })
+    let rows = list.filter_map(entries, index_row)
     // Nothing new, no invalidation, cursor already recorded: skip the
     // write entirely so hint-driven syncs on idle sessions stay cheap.
     // Now that the read happened under the lock, this is also what a
     // second racing sync converges on once the first commits.
     case stale, rows, new_high_water == high_water, cursor {
       False, [], True, Some(_) -> Ok(Nil)
-      _, _, _, _ -> {
-        use Nil <- result.try(case stale {
-          True -> run_statement(search, sql.delete_session_index(session_id))
-          False -> Ok(Nil)
-        })
-        use Nil <- result.try(
-          list.try_fold(rows, Nil, fn(_nil, row) {
-            let #(entry_id, text) = row
-            run_statement(
-              search,
-              sql.insert_entry_text(
-                session_id: session_id,
-                entry_id: entry_id,
-                text: text,
-              ),
-            )
-          }),
-        )
-        run_statement(
-          search,
-          sql.set_cursor(
-            session_id: session_id,
-            generation: generation,
-            high_water: new_high_water,
-          ),
-        )
-      }
+      _, _, _, _ ->
+        write_index(search, session_id, generation, stale, rows, new_high_water)
     }
   })
+}
+
+/// The text an entry contributes to the index, or `Error(Nil)` for one
+/// that indexes to nothing (its seq still advances the cursor).
+fn index_row(entry: Entry) -> Result(#(String, String), Nil) {
+  let text = entry_text(entry)
+  use <- bool.guard(when: text == "", return: Error(Nil))
+  Ok(#(ids.entry_id_to_string(entry.id), text))
+}
+
+/// The write side of `sync`: drop the session's rows if the cursor was
+/// stale, insert the freshly-scanned rows, and advance the cursor —
+/// three writes inside the caller's transaction, in that order.
+fn write_index(
+  search: Search,
+  session_id: String,
+  generation: Int,
+  stale: Bool,
+  rows: List(#(String, String)),
+  new_high_water: Int,
+) -> Result(Nil, SearchError) {
+  use Nil <- result.try(delete_if_stale(search, session_id, stale))
+  use Nil <- result.try(
+    list.try_fold(rows, Nil, fn(_nil, row) {
+      insert_row(search, session_id, row)
+    }),
+  )
+  run_statement(
+    search,
+    sql.set_cursor(
+      session_id: session_id,
+      generation: generation,
+      high_water: new_high_water,
+    ),
+  )
+}
+
+// `False` is not "no-op eagerly" here: `run_statement` executes a real
+// DELETE, so this stays a `case` rather than a `bool.guard` whose eager
+// `return:` would fire the write unconditionally.
+fn delete_if_stale(
+  search: Search,
+  session_id: String,
+  stale: Bool,
+) -> Result(Nil, SearchError) {
+  case stale {
+    True -> run_statement(search, sql.delete_session_index(session_id))
+    False -> Ok(Nil)
+  }
+}
+
+fn insert_row(
+  search: Search,
+  session_id: String,
+  row: #(String, String),
+) -> Result(Nil, SearchError) {
+  let #(entry_id, text) = row
+  run_statement(
+    search,
+    sql.insert_entry_text(session_id: session_id, entry_id: entry_id, text:),
+  )
 }
 
 /// The notification hint entry point: identical to `sync`, named for
@@ -366,34 +396,35 @@ pub fn entry_text(entry: Entry) -> String {
 fn message_text(message: AgentMessage) -> String {
   case message {
     message.UserMessage(content:, ..) ->
-      content
-      |> list.filter_map(fn(block) {
-        case block {
-          message.UserText(text:, ..) -> Ok(text)
-          message.UserImage(..) -> Error(Nil)
-        }
-      })
-      |> string.join("\n")
+      content |> list.filter_map(user_block_text) |> string.join("\n")
     message.AssistantMessage(content:, ..) ->
-      content
-      |> list.filter_map(fn(block) {
-        case block {
-          message.AssistantText(text:, ..) -> Ok(text)
-          message.AssistantThinking(..) | message.AssistantToolCall(..) ->
-            Error(Nil)
-        }
-      })
-      |> string.join("\n")
+      content |> list.filter_map(assistant_block_text) |> string.join("\n")
     message.ToolResultMessage(content:, ..) ->
-      content
-      |> list.filter_map(fn(block) {
-        case block {
-          message.ToolResultText(text:, ..) -> Ok(text)
-          message.ToolResultImage(..) -> Error(Nil)
-        }
-      })
-      |> string.join("\n")
+      content |> list.filter_map(tool_result_block_text) |> string.join("\n")
     message.CustomMessage(..) -> ""
+  }
+}
+
+fn user_block_text(block: message.UserBlock) -> Result(String, Nil) {
+  case block {
+    message.UserText(text:, ..) -> Ok(text)
+    message.UserImage(..) -> Error(Nil)
+  }
+}
+
+fn assistant_block_text(block: message.AssistantBlock) -> Result(String, Nil) {
+  case block {
+    message.AssistantText(text:, ..) -> Ok(text)
+    message.AssistantThinking(..) | message.AssistantToolCall(..) -> Error(Nil)
+  }
+}
+
+fn tool_result_block_text(
+  block: message.ToolResultBlock,
+) -> Result(String, Nil) {
+  case block {
+    message.ToolResultText(text:, ..) -> Ok(text)
+    message.ToolResultImage(..) -> Error(Nil)
   }
 }
 

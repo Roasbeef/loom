@@ -25,6 +25,7 @@ import core/message.{
 }
 import core/register.{type RegisterNs}
 import core/tx.{Expect, SetRegister, Tx}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -214,59 +215,65 @@ pub fn ensure_strand(
     storage.get_register(session.store, register.StrandConfig, strand_name)
     |> result.map_error(StoreFailure),
   )
-  case existing {
-    Some(_) -> Ok(Nil)
-    None -> {
-      let seed =
-        Tx(
-          writes: [
-            SetRegister(
-              ns: register.StrandConfig,
-              key: strand_name,
-              value: register.value(codec.encode_configuration(configuration)),
+  use <- bool.guard(when: option.is_some(existing), return: Ok(Nil))
+  let seed =
+    Tx(
+      writes: [
+        SetRegister(
+          ns: register.StrandConfig,
+          key: strand_name,
+          value: register.value(codec.encode_configuration(configuration)),
+        ),
+        SetRegister(
+          ns: register.StrandLeaf,
+          key: strand_name,
+          value: register.leaf_value(None),
+        ),
+        SetRegister(
+          ns: register.StrandState,
+          key: strand_name,
+          value: register.value(
+            codec.encode_strand_state(
+              StrandState(current_operation: None, pending_next_run: []),
             ),
-            SetRegister(
-              ns: register.StrandLeaf,
-              key: strand_name,
-              value: register.leaf_value(None),
-            ),
-            SetRegister(
-              ns: register.StrandState,
-              key: strand_name,
-              value: register.value(
-                codec.encode_strand_state(
-                  StrandState(current_operation: None, pending_next_run: []),
-                ),
-              ),
-            ),
-          ],
-          expected: [
-            Expect(ns: register.StrandConfig, key: strand_name, seq: None),
-            Expect(ns: register.StrandLeaf, key: strand_name, seq: None),
-            Expect(ns: register.StrandState, key: strand_name, seq: None),
-          ],
-        )
-      case storage.commit(session.store, seed) {
-        Ok(_) -> Ok(Nil)
-        // A concurrent seeder won; the strand exists.
-        Error(tx.StaleExpectation(..)) -> Ok(Nil)
-        Error(tx.Corruption(report:)) -> Error(SessionCorrupt(report:))
-        Error(tx.Faulted(reason:)) ->
-          Error(StoreFailure(error: storage.BackendFault(reason:)))
-        // Seeding a strand against a session another writer now owns is
-        // a backend failure like any other from here: this layer has no
-        // tree to reopen, and the caller that does gets the reason
-        // spelled out (`protocol-change/005`).
-        Error(tx.LeaseLost(held_by:)) ->
-          Error(
-            StoreFailure(
-              error: storage.BackendFault(reason: tx.describe_lease_loss(
-                held_by,
-              )),
-            ),
-          )
-      }
-    }
+          ),
+        ),
+      ],
+      expected: [
+        Expect(ns: register.StrandConfig, key: strand_name, seq: None),
+        Expect(ns: register.StrandLeaf, key: strand_name, seq: None),
+        Expect(ns: register.StrandState, key: strand_name, seq: None),
+      ],
+    )
+  seed_commit_result(storage.commit(session.store, seed))
+}
+
+/// Maps the seed transaction's commit outcome to `ensure_strand`'s
+/// result: a concurrent seeder's `StaleExpectation` is success (the
+/// strand exists either way), and every other refusal this layer does
+/// not otherwise recognize — `LeaseLost` included — flattens into
+/// `StoreFailure(BackendFault(..))`, because this layer owns no tree to
+/// reopen.
+fn seed_commit_result(
+  result: Result(tx.CommitResult, tx.CommitError),
+) -> Result(Nil, SessionError) {
+  case result {
+    Ok(_) -> Ok(Nil)
+    // A concurrent seeder won; the strand exists.
+    Error(tx.StaleExpectation(..)) -> Ok(Nil)
+    Error(tx.Corruption(report:)) -> Error(SessionCorrupt(report:))
+    Error(tx.Faulted(reason:)) ->
+      Error(StoreFailure(error: storage.BackendFault(reason:)))
+    // Seeding a strand against a session another writer now owns is a
+    // backend failure like any other from here: this layer has no tree
+    // to reopen, and the caller that does gets the reason spelled out
+    // (`protocol-change/005`).
+    Error(tx.LeaseLost(held_by:)) ->
+      Error(
+        StoreFailure(
+          error: storage.BackendFault(reason: tx.describe_lease_loss(held_by)),
+        ),
+      )
   }
 }
 
@@ -498,20 +505,24 @@ pub fn preparation(
   ))
   case keys {
     [] -> Ok(None)
-    [key, ..] -> {
-      use found <- result.try(
-        storage.get_register(session.store, register.OpPreparation, key)
-        |> result.map_error(StoreFailure),
-      )
-      case found {
-        None -> Ok(None)
-        Some(storage.Register(value:, ..)) ->
-          case codec.decode_preparation(value.payload) {
-            Ok(preparation) -> Ok(Some(preparation))
-            Error(report) -> Error(SessionCorrupt(report:))
-          }
-      }
-    }
+    [key, ..] -> decode_preparation_cell(session, key)
+  }
+}
+
+fn decode_preparation_cell(
+  session: Session,
+  key: String,
+) -> Result(Option(operation.StructuralPreparation), SessionError) {
+  use found <- result.try(
+    storage.get_register(session.store, register.OpPreparation, key)
+    |> result.map_error(StoreFailure),
+  )
+  case found {
+    None -> Ok(None)
+    Some(storage.Register(value:, ..)) ->
+      codec.decode_preparation(value.payload)
+      |> result.map(Some)
+      |> result.map_error(fn(report) { SessionCorrupt(report:) })
   }
 }
 
@@ -742,14 +753,13 @@ fn project_entry(
       ),
     ]
     entry.CustomEntry(id:, custom_type:, data:, ts:, ..) ->
-      case dict.get(projectors, custom_type) {
-        Ok(project) ->
-          case project(CustomView(id:, custom_type:, data:, ts:)) {
-            Some(message) -> [message]
-            None -> []
-          }
-        Error(Nil) -> []
-      }
+      dict.get(projectors, custom_type)
+      |> option.from_result
+      |> option.then(fn(project) {
+        project(CustomView(id:, custom_type:, data:, ts:))
+      })
+      |> option.map(fn(message) { [message] })
+      |> option.unwrap([])
   }
 }
 
@@ -777,10 +787,7 @@ fn heal_loop(
             |> list.filter_map(fn(block) {
               case block {
                 AssistantToolCall(call:) ->
-                  case has_result(rest, call.id) {
-                    True -> Error(Nil)
-                    False -> Ok(synthetic_result(call, timestamp))
-                  }
+                  synthetic_result_if_orphan(call, rest, timestamp)
                 message.AssistantText(..) | message.AssistantThinking(..) ->
                   Error(Nil)
               }
@@ -804,6 +811,17 @@ fn has_result(messages: List(AgentMessage), call_id: String) -> Bool {
         False
     }
   })
+}
+
+/// A tool call keeps its slot only when no later message in the branch
+/// carries its result; an orphan gets a synthetic error result instead.
+fn synthetic_result_if_orphan(
+  call: message.ToolCall,
+  later: List(AgentMessage),
+  timestamp: Int,
+) -> Result(AgentMessage, Nil) {
+  use <- bool.guard(when: has_result(later, call.id), return: Error(Nil))
+  Ok(synthetic_result(call, timestamp))
 }
 
 fn synthetic_result(call: message.ToolCall, timestamp: Int) -> AgentMessage {
