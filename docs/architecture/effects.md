@@ -440,6 +440,23 @@ fixture is the check. The environment-variable backend ships now, and OS
 keychain backends slot into the same `fn(name) -> Result(String, Nil)`
 seam without touching a caller.
 
+**And nowhere on a log line.** The same invariant reaches telemetry, and
+it is enforced rather than asked for: every field a log record carries
+passes through `telemetry/field.scrub`, which redacts any field whose
+key names a credential and any token in free text that carries a vendor
+prefix or is an unbroken run of at least 32 credential-alphabet
+characters. The threshold is chosen against what this tree holds — the
+broker's clearance token and the cap channel's token are both 32 random
+bytes, which is 64 hex or 43 base64url characters. The Erlang formatter
+calls back into the same function for lines the harness did not author,
+so an OTP crash report that happened to hold a token is scrubbed too.
+The exemption is typed: `field.ident` opts a value out of the *shape*
+rule alone, never out of the key rule, so every waiver is a deliberate
+and greppable act. The check is a test that plants a provider key, a
+clearance token and a channel token under both a denylisted and an
+innocent key, renders, and greps the bytes
+(`packages/telemetry/test/telemetry/redaction_test.gleam`).
+
 ## What the end-to-end actually proves
 
 The M2 acceptance runs the production wiring: the real provider gateway

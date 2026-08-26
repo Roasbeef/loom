@@ -298,7 +298,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:626`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:714`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -467,7 +467,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:938`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1043`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -1094,7 +1094,7 @@ a sibling — and the determinism is exactly what makes a replayed spawn
 find its own child instead of minting a second one. If the ledger already
 has a cell for the minted name, the same handle comes straight back.
 
-`api.create_strand` (`runtime/api.gleam:606`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:612`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1105,7 +1105,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:810`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:820`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4404`). Keying
@@ -1198,7 +1198,7 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1197`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1266`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:236`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

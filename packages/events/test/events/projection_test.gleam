@@ -12,6 +12,7 @@ import gleam/option.{None}
 import gleam/otp/actor
 import storage/storage
 import support/fixtures
+import telemetry/log
 
 /// Commits `n` single-entry transactions plus a usage row on every
 /// second one; returns the store and the threaded id context (minting
@@ -125,6 +126,7 @@ pub fn lost_events_converge_via_catch_up_test() {
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.FromBus(bus:, session:),
+      logger: log.discard(),
     ))
   let driver = started.data
   let ctx = fixtures.new_ctx()
@@ -162,6 +164,7 @@ pub fn total_event_loss_still_converges_test() {
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.NoHints,
+      logger: log.discard(),
     ))
   let assert Ok(converged) = projection.sync(started.data)
   let assert Ok(maintained) = storage.stats(store)
@@ -179,6 +182,7 @@ pub fn hint_triggers_catch_up_test() {
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.FromBus(bus:, session:),
+      logger: log.discard(),
     ))
   let driver = started.data
   let ctx = fixtures.new_ctx()
@@ -214,6 +218,7 @@ pub fn read_lags_until_poked_test() {
       projection: projection.stats_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.NoHints,
+      logger: log.discard(),
     ))
   let driver = started.data
   assert projection.read(driver).message_count == 0
@@ -251,6 +256,7 @@ pub fn checkpoint_resumes_without_refolding_test() {
       projection: stats,
       checkpoint:,
       hints: projection.NoHints,
+      logger: log.discard(),
     ))
   let driver = started.data
   assert projection.read(driver).message_count == 100
@@ -363,6 +369,7 @@ pub fn rewrite_invalidates_checkpointed_projection_test() {
       projection: text_projection(),
       checkpoint: projection.ephemeral(),
       hints: projection.NoHints,
+      logger: log.discard(),
     ))
   let driver = started.data
   let assert Ok(before) = projection.sync(driver)

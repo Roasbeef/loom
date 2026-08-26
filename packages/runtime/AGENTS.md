@@ -60,6 +60,12 @@ extended by the M3 runtime wave.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
+- `runtime/api.Options.logger` / `runtime/strand_runtime.Options.logger`
+  — the injected `telemetry/log.Logger` every strand of the session
+  logs through (§0.2; `log.discard()` by default, so a runtime nobody
+  configured is silent). `strand_runtime.start` scopes it to the strand
+  it is starting, and each dispatched effect narrows it again to
+  `{op, step}`.
 - `runtime/effects.Effects` — everything the driver does to the world, in
   one injected record: `clock`, `entropy`, `timers`, `provider`
   (`ProviderSurface`), `tools` (`ToolSurface`), `hooks` (`Hooks`).
@@ -107,7 +113,9 @@ extended by the M3 runtime wave.
 - **Depends on**: `core`, `storage`, `session` (`runtime/hooks.project`
   reads a strand's durable projection straight from the session store),
   `machine` (drives
-  `next_action` and reuses its codecs and queue helpers), `provider`
+  `next_action` and reuses its codecs and queue helpers), `telemetry`
+  (the injected logger and the correlation context — a leaf package
+  over `core`, so this edge adds nothing transitively), `provider`
   (`stream.StreamHandle` and `retry.classify` — the spec DAG §0.1 writes
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
   about), `gleam_erlang`, `gleam_otp`.
@@ -356,6 +364,24 @@ extended by the M3 runtime wave.
 - **The names, not the pids, are the addresses.** The writer and each
   strand register under fresh process names so restarts keep them
   addressable.
+- **Log context reaches an effect process because the closure carries
+  it, not because anything is inherited.** `spawn_effect` takes the
+  step-scoped logger as an argument, and the body that runs on the new
+  process closes over it — Erlang `logger` metadata does not survive a
+  spawn, so a driver that relied on inheritance would emit its most
+  interesting lines uncorrelated. The spawned body additionally calls
+  `log.adopt`, which stamps the same `{session, strand, op, step}` into
+  that process's `logger` metadata so an OTP crash report *about* the
+  effect process is correlated too. See `telemetry/context` for why the
+  value is the mechanism and the metadata only the fallback.
+- **What the drive loop logs, and at which level.** `info` for the
+  durable state changes — `strand.started`, `operation.settled`,
+  `operation.aborted`; `warning` for degraded-but-progressing —
+  `retry.armed`, `effect.exited`; `error` only for `strand.halted`,
+  which is the one thing the strand cannot recover from on its own;
+  `debug` for `effect.dispatched` / `effect.settled`, which is per step
+  and off by default. A tool that failed *in band* is a settlement like
+  any other and stays at `debug`: that is the system working.
 
 ## Deep Docs
 

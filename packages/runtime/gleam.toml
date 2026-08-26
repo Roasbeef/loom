@@ -9,6 +9,7 @@ storage = { path = "../storage" }
 session = { path = "../session" }
 machine = { path = "../machine" }
 provider = { path = "../provider" }
+telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 

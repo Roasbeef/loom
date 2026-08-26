@@ -163,6 +163,12 @@ over one session file. WP-L.
   the session lease — and reports `Faulted` afterwards, leaving the exit
   status to the entry point. `relay_sigterm` puts the signal on the same
   subject, so one receive covers both ways the server stops.
+- `client/serve.boot_with(settings, logger:)` — `boot` with an injected
+  `telemetry/log.Logger`, which is what `main` calls once it has
+  installed the JSON handler. The logger is a capability, not a setting
+  (§0.2): it is passed rather than parsed, and `boot` itself delegates
+  here with `log.discard()` so an embedding test boots a whole server
+  without a handler existing at all.
 - `client/serve.{Settings, boot, shutdown, main}` — the server entry
   point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
   shipment): flags/env in, session + helper pool + broker + system
@@ -190,6 +196,8 @@ over one session file. WP-L.
   `codemode` (the vetting policy, the hermetic compile service, the
   production builder and launcher, and the satellite host — the pipeline
   `client/codemode` fills the `tools/codemode` seam with),
+  `telemetry` (the JSON handler this entry point installs, and the
+  logger it injects into `api.Options`),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
   token file, the pack file, and the workspace's `CLAUDE.md`).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
@@ -519,6 +527,22 @@ over one session file. WP-L.
   exits nonzero afterwards. The one case this cannot cover is the
   storage actor's own death, because it is the connection that would
   delete the lease row.
+- **The entry point has two output channels, and the split is
+  deliberate** (§3.4). **stdout** carries the startup banner and nothing
+  else — the ephemeral port, the token path, the prompt digest — because
+  that is this process's contract with whoever launched it and a
+  supervisor script reads it with `head -1`. **The log stream** carries
+  everything about the running system, as JSON, one event per line, all
+  of it correlated to the session. A *usage* error is on neither side of
+  that split: it belongs to the person who mistyped a flag, before there
+  is a session to correlate anything to, so it stays on stderr with the
+  usage text. Everything downstream of a successful flags parse — the
+  boot failure, the SIGTERM stop, a fatal child, an absent code-mode
+  toolchain, a prompt-pack warning — is a log line.
+- **The handler is installed before anything can fail.** `main`'s first
+  act is `handler.install`, so no line of a boot lands on the VM's
+  default text formatter; `LOOM_LOG_LEVEL` sets the threshold and an
+  unrecognised value falls back to `info` rather than refusing to boot.
 - **Only an entry point installs the signal handler.** `wait_for_sigterm`
   replaces the VM's default `erl_signal_handler`, whose answer to
   `SIGTERM` is an immediate `init:stop()`, so `boot` never touches it —

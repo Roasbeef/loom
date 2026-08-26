@@ -67,6 +67,9 @@ import runtime/escalation
 import runtime/writer
 import session/session
 import storage/storage
+import telemetry/context
+import telemetry/field
+import telemetry/log.{type Logger}
 
 /// Driver configuration.
 ///
@@ -74,7 +77,9 @@ import storage/storage
 /// (a name, not a subject, so restarts re-resolve it); `stream_options`
 /// is the runtime-owned opaque options bag snapshotted into generation
 /// steps; `retry_policy` is the normalized policy snapshotted likewise;
-/// `poll_interval_ms` is the checkpoint-poll period (positive).
+/// `poll_interval_ms` is the checkpoint-poll period (positive);
+/// `logger` is injected (§0.2) and need not carry a strand — `start`
+/// scopes it to the strand it is starting.
 pub type Options {
   Options(
     writer: Name(writer.Message),
@@ -83,6 +88,7 @@ pub type Options {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    logger: Logger,
   )
 }
 
@@ -155,6 +161,11 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    /// This driver's logger, already scoped to the strand. Every log
+    /// call narrows *from* this value rather than reading ambient
+    /// state, which is what carries `{session, strand, op, step}` into
+    /// the effect processes spawned below (see `telemetry/context`).
+    logger: Logger,
     /// This incarnation's reaper process: every effect process links to
     /// it at birth, and it kills itself (taking the linked effects with
     /// it) the moment this driver process dies. See `start_reaper`.
@@ -241,6 +252,12 @@ pub fn start(
     options.effects.timers.after(options.poll_interval_ms, fn() {
       wake(subject, PollTick)
     })
+    let logger = log.for_strand(options.logger, options.strand)
+    // Every line this incarnation writes is correlated from here on;
+    // the driver process itself also stamps the context so an OTP crash
+    // report about *this* process is not orphaned.
+    log.adopt(logger)
+    log.info(logger, "strand.started", [])
     actor.initialised(State(
       self: subject,
       writer: process.named_subject(options.writer),
@@ -250,6 +267,7 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
+      logger:,
       reaper: start_reaper(),
       live: [],
       observations: [],
@@ -311,8 +329,9 @@ pub fn request_abort(strand: Subject(Message)) -> Nil {
 // --- message handling -----------------------------------------------------
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  let logger = state.logger
   case message {
-    Nudge -> finish(drive(state))
+    Nudge -> finish(logger, drive(state))
     PollTick -> {
       let self = state.self
       state.effects.timers.after(state.poll_interval_ms, fn() {
@@ -320,23 +339,58 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       })
       let out = drive(State(..state, poll_permit: True))
       case out {
-        Continue(next) -> finish(Continue(State(..next, poll_permit: False)))
-        Halt(reason) -> finish(Halt(reason))
+        Continue(next) ->
+          finish(logger, Continue(State(..next, poll_permit: False)))
+        Halt(reason) -> finish(logger, Halt(reason))
       }
     }
-    RetryDue -> finish(drive(State(..state, retry_wake: None)))
-    RequestAbort -> finish(abort(state))
+    RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
+    RequestAbort -> finish(logger, abort(state))
     ProviderDone(token:, terminal:) ->
-      finish(provider_done(state, token, terminal))
-    ToolDone(token:, outcome:) -> finish(tool_done(state, token, outcome))
-    EffectExit(down:) -> finish(effect_exit(state, down))
+      finish(logger, provider_done(state, token, terminal))
+    ToolDone(token:, outcome:) ->
+      finish(logger, tool_done(state, token, outcome))
+    EffectExit(down:) -> finish(logger, effect_exit(state, down))
   }
 }
 
-fn finish(outcome: Outcome) -> actor.Next(State, Message) {
+// A halt is the one thing the strand cannot recover from on its own —
+// the supervisor restarts it and it re-reads durable state — so it is
+// the level policy's `error`, and the last chance to say why before the
+// process is gone.
+fn finish(logger: Logger, outcome: Outcome) -> actor.Next(State, Message) {
   case outcome {
     Continue(state) -> actor.continue(state)
-    Halt(reason) -> actor.stop_abnormal(reason)
+    Halt(reason) -> {
+      log.error(logger, "strand.halted", [
+        field.text(key: "reason", value: reason),
+      ])
+      actor.stop_abnormal(reason)
+    }
+  }
+}
+
+// The logger for one step of one operation: the scope every effect is
+// dispatched and settled under, and the scope the effect process itself
+// carries once it is spawned.
+fn step_logger(state: State, token: EffectToken) -> Logger {
+  let #(operation, step_id) = case token {
+    AssistantEffect(operation:, step_id:, ..) -> #(operation, step_id)
+    ToolEffect(operation:, step_id:, ..) -> #(operation, step_id)
+    PollEffect(operation:, step_id:, ..) -> #(operation, step_id)
+    SummaryEffect(operation:, task_id:, ..) -> #(operation, task_id)
+  }
+  log.for_step(state.logger, op: ids.op_id_to_string(operation), step: step_id)
+}
+
+// What kind of effect a token names, for the `kind` field. A closed set,
+// so a log consumer can index on it.
+fn effect_kind(token: EffectToken) -> String {
+  case token {
+    AssistantEffect(..) -> "provider"
+    ToolEffect(..) -> "tool"
+    PollEffect(..) -> "poll"
+    SummaryEffect(..) -> "summary"
   }
 }
 
@@ -348,7 +402,11 @@ fn provider_done(
   case take_live(state, token) {
     // Not live any more: a superseded effect. Drop it.
     None -> Continue(state)
-    Some(#(live, state)) ->
+    Some(#(live, state)) -> {
+      log.debug(step_logger(state, token), "effect.settled", [
+        field.text(key: "kind", value: effect_kind(token)),
+        field.text(key: "outcome", value: terminal_name(terminal)),
+      ])
       // A live entry whose operation is no longer the strand's current
       // one belongs to an operation that reached its terminal
       // transaction without needing this outcome (a cancelled
@@ -393,6 +451,16 @@ fn provider_done(
           }
         }
       }
+    }
+  }
+}
+
+// The terminal event's name, for the `outcome` field. A closed set.
+fn terminal_name(terminal: stream.StreamEvent) -> String {
+  case terminal {
+    stream.Settled(..) -> "settled"
+    stream.Failed(..) -> "failed"
+    stream.Delta(..) -> "delta"
   }
 }
 
@@ -457,6 +525,10 @@ fn tool_done(
   case take_live(state, token), token {
     None, _ -> Continue(state)
     Some(#(live, state)), ToolEffect(source_index:, ..) -> {
+      log.debug(step_logger(state, token), "effect.settled", [
+        field.text(key: "kind", value: effect_kind(token)),
+        field.text(key: "outcome", value: tool_outcome_name(outcome)),
+      ])
       let #(now, state) = read_clock(state)
       let observation = case outcome {
         effects.ToolCompleted(result:, terminate:) ->
@@ -481,6 +553,16 @@ fn tool_done(
   }
 }
 
+// The tool outcome's name, for the `outcome` field. A tool that failed
+// and said so is the system working, so this never raises the level:
+// an in-band failure is `debug` like any other settlement.
+fn tool_outcome_name(outcome: effects.ToolOutcome) -> String {
+  case outcome {
+    effects.ToolCompleted(result: _, terminate: _) -> "completed"
+    effects.ToolFailed(reason: _) -> "failed"
+  }
+}
+
 fn effect_exit(state: State, down: process.Down) -> Outcome {
   case down {
     process.PortDown(..) -> Continue(state)
@@ -490,8 +572,12 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
         // and this Down raced the cleanup. Ignore.
         Error(Nil) -> Continue(state)
         // The effect process died without reporting: settle in-band
-        // through the ordinary outcome paths.
-        Ok(live) ->
+        // through the ordinary outcome paths. Degraded, not fatal — the
+        // level policy's `warning`.
+        Ok(live) -> {
+          log.warn(step_logger(state, live.token), "effect.exited", [
+            field.text(key: "kind", value: effect_kind(live.token)),
+          ])
           case live.token {
             AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
               provider_done(
@@ -510,6 +596,7 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
                 ),
               )
           }
+        }
       }
   }
 }
@@ -539,6 +626,7 @@ fn abort(state: State) -> Outcome {
       // its reserved ids as aborted *retaining its reported usage*
       // (ORCH-M3), while one that dies unreported settles through the
       // monitor as a synthetic zero-usage abort.
+      log.info(state.logger, "operation.aborted", [])
       let state = interrupt_live_effects(state)
       drive(state)
     }
@@ -667,9 +755,23 @@ fn plan(
                 fuel - 1,
               )
           }
-        planner.Transition(next: _, tx: plan_tx)
-        | planner.Finish(result: _, tx: plan_tx) ->
+        planner.Transition(next: _, tx: plan_tx) ->
           commit_then(state, plan_tx, observation, fuel, fn(state) {
+            drive_loop(state, fuel - 1)
+          })
+        // The one durable state change worth an `info` line per
+        // operation: the operation reached a terminal result.
+        planner.Finish(result: _, tx: plan_tx) ->
+          commit_then(state, plan_tx, observation, fuel, fn(state) {
+            log.info(
+              log.scoped(
+                state.logger,
+                context.anonymous
+                  |> context.with_op(ids.op_id_to_string(loaded.op.id)),
+              ),
+              "operation.settled",
+              [],
+            )
             drive_loop(state, fuel - 1)
           })
         planner.Dispatch(intent:, next: _, tx: plan_tx) ->
@@ -736,6 +838,9 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
     _ -> {
       let delay = int_max(1, at - now)
       let self = state.self
+      log.warn(state.logger, "retry.armed", [
+        field.count(key: "delay_ms", value: delay),
+      ])
       state.effects.timers.after(delay, fn() { wake(self, RetryDue) })
       Continue(State(..state, retry_wake: Some(at)))
     }
@@ -1186,10 +1291,17 @@ fn reap_when_driver_dies(driver: Pid) -> Nil {
 // incarnation. A refused link means the incarnation is already gone —
 // the effect exits without running, exactly as if the reap had caught it
 // a moment later.
-fn spawn_effect(reaper: Pid, body: fn() -> Nil) -> Pid {
+fn spawn_effect(reaper: Pid, logger: Logger, body: fn() -> Nil) -> Pid {
   process.spawn_unlinked(fn() {
     case process.link(reaper) {
-      True -> body()
+      True -> {
+        // The context travels as a value inside `body`'s closure; this
+        // additionally stamps it onto the new process's `logger`
+        // metadata, so a crash report or a library line from *this*
+        // process is correlated too (see `telemetry/context`).
+        log.adopt(logger)
+        body()
+      }
       False -> Nil
     }
   })
@@ -1203,8 +1315,13 @@ fn spawn_provider(
 ) -> State {
   let parent = state.self
   let surface = state.effects.provider
+  let logger = step_logger(state, token)
+  log.debug(logger, "effect.dispatched", [
+    field.text(key: "kind", value: effect_kind(token)),
+    field.text(key: "model", value: configuration.model.model_id),
+  ])
   let pid =
-    spawn_effect(state.reaper, fn() {
+    spawn_effect(state.reaper, logger, fn() {
       let handle = surface.request(spec)
       let terminal = case
         stream.await_terminal(handle, within: surface.timeout_ms)
@@ -1233,8 +1350,14 @@ fn spawn_tool(
   let parent = state.self
   let runner = state.effects.tools.run
   let call = run.call
+  let logger = step_logger(state, token)
+  log.debug(logger, "effect.dispatched", [
+    field.text(key: "kind", value: effect_kind(token)),
+    field.text(key: "tool", value: run.call.name),
+    field.flag(key: "replay", value: run.replay == operation.ReplaySafe),
+  ])
   let pid =
-    spawn_effect(state.reaper, fn() {
+    spawn_effect(state.reaper, logger, fn() {
       let outcome = runner(run)
       wake(parent, ToolDone(token:, outcome:))
     })

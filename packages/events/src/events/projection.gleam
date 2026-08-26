@@ -19,13 +19,14 @@ import core/ids.{type Seq}
 import events/bus.{type Bus}
 import gleam/erlang/process.{type Subject}
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/string
 import storage/storage.{type SessionStats, type Storage, type StorageError}
+import telemetry/field
+import telemetry/log.{type Logger}
 
 /// One committed change, as fed to a projection's fold in seq order.
 /// Entries and usage rows share the session's seq namespace, so the two
@@ -300,6 +301,9 @@ pub type Options(state, handle) {
     projection: Projection(state),
     checkpoint: Checkpoint(state),
     hints: Hints,
+    /// Where a pull fault with no reply channel is reported. Injected
+    /// (§0.2); `log.discard()` for a driver nobody is watching.
+    logger: Logger,
   )
 }
 
@@ -317,6 +321,7 @@ type DriverState(state, handle) {
     get_generation: fn() -> Int,
     projection: Projection(state),
     checkpoint: Checkpoint(state),
+    logger: Logger,
     state: state,
     high_water: Seq,
     /// The generation `state`/`high_water` were folded under. Compared
@@ -370,6 +375,7 @@ pub fn start(
         get_generation: options.generation,
         projection: options.projection,
         checkpoint: options.checkpoint,
+        logger: options.logger,
         state:,
         high_water:,
         generation:,
@@ -379,7 +385,7 @@ pub fn start(
     let #(driver, result) = pull(driver)
     case result {
       Ok(Nil) -> Nil
-      Error(error) -> surface_pull_fault(error)
+      Error(error) -> surface_pull_fault(options.logger, error)
     }
     actor.initialised(driver)
     |> actor.selecting(selector)
@@ -420,7 +426,7 @@ fn handle_message(
       let #(driver, result) = pull(driver)
       case result {
         Ok(Nil) -> Nil
-        Error(error) -> surface_pull_fault(error)
+        Error(error) -> surface_pull_fault(driver.logger, error)
       }
       actor.continue(driver)
     }
@@ -487,10 +493,12 @@ fn pull(
 /// path, and the driver's own start-time convergence pull). The
 /// checkpointed state is kept either way; this only makes the fault
 /// visible instead of silently swallowed.
-fn surface_pull_fault(error: StorageError) -> Nil {
-  io.println_error(
-    "events/projection: catch-up pull failed: " <> string.inspect(error),
-  )
+fn surface_pull_fault(logger: Logger, error: StorageError) -> Nil {
+  // The level policy's `warning`: the checkpointed state stands and the
+  // next hint retries, so this is degraded rather than fatal.
+  log.warn(logger, "projection.pull_failed", [
+    field.text(key: "reason", value: string.inspect(error)),
+  ])
 }
 
 /// Nudges a driver to catch up, fire-and-forget — what an external hint

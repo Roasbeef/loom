@@ -181,6 +181,10 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import telemetry/context
+import telemetry/field
+import telemetry/handler
+import telemetry/log.{type Logger}
 import tools/agent
 import tools/bash
 import tools/codemode as codemode_tool
@@ -274,7 +278,17 @@ pub type Booted {
 }
 
 /// Parses flags, boots the stack, prints the startup lines, and serves
-/// until `SIGTERM`. Failures print to stderr and exit nonzero.
+/// until `SIGTERM`. Usage failures print to stderr; everything after
+/// the flags parse is logged. Either way a failure exits nonzero.
+///
+/// Two output channels, deliberately (spec §3.4). **stdout** carries the
+/// startup banner and nothing else: it is this process's contract with
+/// whoever launched it — the ephemeral port, the token file, the prompt
+/// digest — and a supervisor script reads it with `head -1`. **The log
+/// stream** carries everything about the running system, as JSON, one
+/// event per line. A usage error is on neither side of that split: it
+/// belongs to the person who mistyped a flag, before there is a session
+/// to correlate anything to, so it stays on stderr with the usage text.
 ///
 /// ## Examples
 ///
@@ -283,46 +297,71 @@ pub type Booted {
 /// ```
 ///
 pub fn main() -> Nil {
-  let outcome =
-    parse(argv.load().arguments)
-    |> result.try(resolve)
-    |> result.try(boot)
-  case outcome {
+  // Installed before anything can fail, so no line of this boot lands on
+  // the VM's default text formatter.
+  let logger =
+    handler.install(
+      threshold: handler.threshold_named(env_text(handler.level_variable)),
+    )
+  case parse(argv.load().arguments) |> result.try(resolve) {
+    // A flag error is a message to a human at a terminal, and it carries
+    // the usage text: stderr, not the log stream.
     Error(reason) -> {
       io.println_error("loom-server: " <> reason)
       ffi_os.halt(1)
     }
-    Ok(booted) -> {
-      announce(booted)
-      // Only an entry point installs the signal handler: doing so
-      // replaces the VM's default, whose answer to `SIGTERM` is an
-      // immediate `init:stop()`. From here both ways the server can stop
-      // arrive on one subject.
-      host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
-      case process.receive_forever(booted.stops) {
-        host.Signalled -> {
-          io.println("loom-server: SIGTERM, closing")
-          shutdown(booted)
-          io.println("loom-server: closed")
-        }
-        // The host already tore the stack down, lease included, before
-        // it said anything. All that is left is to say what died and
-        // exit nonzero so whatever runs `loom-server` restarts it.
-        host.Faulted(child:, reason:) -> {
-          io.println_error(
-            "loom-server: "
-            <> child
-            <> " died ("
-            <> reason
-            <> "); the session was closed and its lease released",
-          )
+    Ok(settings) -> {
+      let logger = log.scoped(logger, context.for_session(settings.session_id))
+      case boot_with(settings, logger:) {
+        Error(reason) -> {
+          log.error(logger, "boot.failed", [
+            field.text(key: "reason", value: reason),
+          ])
           ffi_os.halt(1)
+        }
+        Ok(booted) -> {
+          announce(booted)
+          log.info(logger, "server.listening", [
+            field.count(key: "port", value: booted.served.port),
+            field.ident(key: "prompt_digest", value: booted.prompt.digest),
+          ])
+          // Only an entry point installs the signal handler: doing so
+          // replaces the VM's default, whose answer to `SIGTERM` is an
+          // immediate `init:stop()`. From here both ways the server can
+          // stop arrive on one subject.
+          host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
+          case process.receive_forever(booted.stops) {
+            host.Signalled -> {
+              log.info(logger, "server.stopping", [
+                field.text(key: "cause", value: "sigterm"),
+              ])
+              shutdown(booted)
+              log.info(logger, "server.stopped", [])
+            }
+            // The host already tore the stack down, lease included,
+            // before it said anything. All that is left is to say what
+            // died and exit nonzero so whatever runs `loom-server`
+            // restarts it.
+            host.Faulted(child:, reason:) -> {
+              log.error(logger, "server.faulted", [
+                field.text(key: "child", value: child),
+                field.text(key: "reason", value: reason),
+              ])
+              ffi_os.halt(1)
+            }
+          }
         }
       }
     }
   }
 }
 
+// The banner, and the only thing on stdout. It stays plain text rather
+// than becoming a log line because it is this process's contract with
+// whoever launched it: a supervisor script reads the port and the token
+// path off `head -1`, and a JSON envelope would break every such reader
+// for no diagnostic gain. The log stream gets its own `server.listening`
+// record; the one fact they share is the port.
 fn announce(booted: Booted) -> Nil {
   io.println(
     "loom-server: session "
@@ -666,8 +705,26 @@ fn env_catalog() -> catalog.Catalog {
 /// ```
 ///
 pub fn boot(settings: Settings) -> Result(Booted, String) {
+  boot_with(settings, logger: log.discard())
+}
+
+/// `boot` with an injected logger — what the entry point calls once it
+/// has installed a handler. The logger is a capability, not a setting
+/// (§0.2): it is passed rather than parsed, so a test boots a whole
+/// server and captures its records without a handler existing at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.boot_with(settings, logger: handler.install(level.Info))
+/// ```
+///
+pub fn boot_with(
+  settings: Settings,
+  logger logger: Logger,
+) -> Result(Booted, String) {
   host.adopt(
-    boot: fn(stops) { assemble(settings, stops) },
+    boot: fn(stops) { assemble(settings, logger, stops) },
     fatal: fatal_children,
     teardown: shutdown,
   )
@@ -705,6 +762,7 @@ fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
 
 fn assemble(
   settings: Settings,
+  logger: Logger,
   stops: Subject(host.Stop),
 ) -> Result(Booted, String) {
   let blob_root = settings.workspace <> "/.blobs"
@@ -808,7 +866,9 @@ fn assemble(
         )),
       )
     Error(reason) -> {
-      io.println_error("loom-server: no code_mode tool: " <> reason <> ".")
+      log.warn(logger, "codemode.unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
       None
     }
   }
@@ -827,7 +887,9 @@ fn assemble(
     }),
   )
   list.each(assembled.warnings, fn(warning) {
-    io.println_error("loom-server: " <> warning)
+    log.warn(logger, "prompt.warning", [
+      field.text(key: "detail", value: warning),
+    ])
   })
   // The summarization pack, before the open for the same reason the
   // system prompt is: `wiring.Config` needs the decoded value. Nothing
@@ -839,7 +901,9 @@ fn assemble(
     ),
   )
   list.each(summary_warnings, fn(warning) {
-    io.println_error("loom-server: " <> warning)
+    log.warn(logger, "summary_pack.warning", [
+      field.text(key: "detail", value: warning),
+    ])
   })
   use summary_sink <- result.try(
     summaries.start()
@@ -906,6 +970,10 @@ fn assemble(
           compaction: settings.compaction,
         ),
         subscribers: [process.named_subject(forwarder_name)],
+        // Every strand of this session logs under the session's own
+        // context; the driver narrows it to its strand, and each
+        // dispatched effect narrows it again to `{op, step}`.
+        logger:,
         // Model-spawned strands run under the tree's second strand
         // factory, so a subagent crash loop cannot spend the restart
         // budget protecting `main`.

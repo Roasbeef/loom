@@ -35,7 +35,10 @@ WP-K.
   `stats_projection()` is the shipped example, folding to
   `storage.SessionStats`.
 - `events/projection.{Options, Hints, Message(state), start, poke, read,
-  sync}` — the driver actor. `Options` carries `store` and `generation` as
+  sync}` — the driver actor. `Options.logger` is the injected
+  `telemetry/log.Logger` a pull fault with no reply channel is reported
+  on (§0.2; `log.discard()` for a driver nobody is watching).
+  `Options` carries `store` and `generation` as
   *thunks*, called fresh on every pull rather than captured once, because a
   precise rewrite swaps the store handle and bumps its generation
   underneath a long-lived driver. `Hints` is `FromBus(bus, session)` or
@@ -51,6 +54,7 @@ WP-K.
 
 - **Depends on**: `core` (ids, entries, messages), `storage` (the
   `Storage` record every projection and the search sync scan through),
+  `telemetry` (the injected logger a pull fault surfaces on),
   `sqlight` (the FTS5 database), `parrot` (whose `parrot/dev` the
   generated module imports at runtime), `gleam_erlang` + `gleam_otp`.
   `session` is declared in `gleam.toml` — the spec DAG's `K → A,B,C` — but
@@ -124,6 +128,12 @@ WP-K.
   the caller's typed payload, and `published_payload` is the matching
   unwrap. That pairing is what makes the unchecked `Dynamic -> payload`
   coercion sound.
+- **A pull fault with no reply channel is a `warning`, not a silence and
+  not an error.** The checkpointed state stands and the next hint
+  retries, so the driver is degraded rather than broken — but a driver
+  reading a closed or stale handle would otherwise serve its last good
+  state forever with nothing surfacing the read failure. An explicit
+  `sync` still returns the fault to a caller that is watching.
 - **The hand-written schema DDL must stay identical to `sql/schema.sql`**
   — a test pins the two together. Parrot covers named static queries only;
   DDL and pragmas stay out of codegen (ADR-004).

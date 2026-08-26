@@ -64,6 +64,7 @@ import runtime/supervisor.{type SessionTree, type Tolerance, Tolerance}
 import runtime/writer
 import session/session.{type Session}
 import storage/storage
+import telemetry/log.{type Logger}
 
 /// A live session runtime: the supervision tree plus what the operations
 /// need. `strand` is the strand this handle currently addresses
@@ -102,6 +103,10 @@ pub type Options {
     subagent_tolerance: Tolerance,
     after_commit: fn(Int) -> Nil,
     subscribers: List(Subject(writer.Event)),
+    /// Where this session's strands log. Injected per §0.2 so a test
+    /// captures records instead of emitting them; `log.discard()` is
+    /// the default, so a runtime nobody configured is silent.
+    logger: Logger,
   )
 }
 
@@ -140,6 +145,10 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
     subagent_tolerance: Tolerance(intensity: 5, period: 5),
     after_commit: fn(_) { Nil },
     subscribers: [],
+    // Silent until a host injects a real one. A library that logged by
+    // default would make every embedding test noisy and would install
+    // no handler to render it.
+    logger: log.discard(),
   )
 }
 
@@ -215,6 +224,7 @@ pub fn open(
             stream_options: options.stream_options,
             retry_policy: options.retry_policy,
             poll_interval_ms: options.poll_interval_ms,
+            logger: options.logger,
           ),
           tolerance: options.tolerance,
           subagent: options.subagent,

@@ -13,7 +13,7 @@ work with a home** (real work a milestone or a Part 5 follow-up track
 already owns), or **deferred work with no home** (real work scheduled
 nowhere). The two tables below name the second and third classes. The
 rule for reading them: *an item named in neither table is settled* —
-which is 93 of the 114 items. A recorded option nobody must exercise (a
+which is 99 of the 122 items. A recorded option nobody must exercise (a
 "candidate for hoisting if the duplication grates") stays settled; only
 work someone must do to meet a stated criterion is listed here.
 
@@ -32,9 +32,9 @@ Items are cited as section plus the number as written in the list
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
 
-### Deferred work with no home (12)
+### Deferred work with no home (14)
 
-Twelve items, eleven rows: the canonical session id is recorded
+Fourteen items, thirteen rows: the canonical session id is recorded
 twice. Nothing in the right-hand column is scheduled — it is where the
 work would sit if someone scheduled it, recorded so the choice is made
 rather than drifted into. Part 5.1 of the spec says the same thing from
@@ -53,6 +53,8 @@ the other side.
 | M3 runtime wave 13 | decide a catalogue entry's `thinking`: the default a strand overrides, or refused like `headers` — today it is validated and discarded | M5 |
 | WP-L 2 | `api.compact` and `api.navigate`, so the gateway and the conformance runner stop keeping two copies of acceptance-plan building | no milestone |
 | WP-L 3 | an optional-brief `create_strand`, so protocol fork and create-strand stop seeding registers in the gateway | no milestone |
+| §3.4 6 | an OpenTelemetry exporter behind the `log.Sink` seam; §3.4 marks the export optional and nothing about the path is built or tested | a Part 5 track, alongside WP-F 7 |
+| §3.4 8 | the rest of "context everywhere": `broker`, `provider`, `tools`, `codemode`, `cap` and `session` still log nothing | whichever milestone next touches those packages, one injected `Logger` at a time |
 
 ## From WP-A (`core`)
 
@@ -812,3 +814,81 @@ the other side.
     session-scoped switch (no `strand`) rewrites every strand's
     durable configuration — but re-routing a *role's* fallback chain
     at runtime would need a mutable registry or a reboot.
+
+## From §3.4 (`telemetry`)
+
+Spec §3.4 is one normative sentence with no acceptance row behind it,
+which is why nothing implemented it until issue #35. It asks for four
+things — Erlang `logger` with a JSON handler, `{session, strand, op,
+step}` everywhere, optional OpenTelemetry export, and telemetry as
+observability only. It names no severity ladder, no propagation
+mechanism, and no rule about what a line may carry. Those are the
+interpretations, recorded here so they are decided rather than drifted
+into.
+
+1. **Context travels as a value, not as logger metadata or the process
+   dictionary.** §3.4 says "context everywhere" and leaves the
+   mechanism open. Erlang `logger`'s process metadata is *not*
+   inherited across `spawn`, and the effect sandwich runs every
+   provider request, tool run and parked call on a process the strand
+   driver just spawned — so a metadata-only design would drop the
+   context precisely where interleaved strands make it matter, and drop
+   it silently (the lines still appear, merely uncorrelated). The
+   process dictionary has the same non-inheritance plus invisibility to
+   the type system. So the context rides in the `telemetry/log.Logger`
+   the spawn closure captures, and the compiler enforces the capture.
+   `log.adopt` additionally stamps the same slots into `logger`
+   metadata at the top of a spawned body, for the benefit of lines the
+   harness did not author (OTP crash reports); that is a fallback for
+   foreign output, never the mechanism.
+2. **Four levels, not OTP's eight,** with a stated policy
+   (`telemetry/level`'s module doc): `error` = no automatic recovery
+   remains; `warning` = degraded but progressing; `info` = one line per
+   durable state change; `debug` = per-step effect traffic, off by
+   default. `emergency`/`alert`/`critical`/`notice` draw distinctions a
+   single-session harness has no use for, and an unused rung is a rung
+   people guess at.
+3. **The secret rule is enforced, not asked for.** §3.3.4 says secrets
+   never appear in logs; §3.4 provides no mechanism. `telemetry/field`
+   applies two independent rules to every field — a key denylist and a
+   value-shape scan — because either alone has a known hole, and the
+   Erlang formatter calls back into the same Gleam function for lines
+   the harness did not author. The shape rule's threshold (32 unbroken
+   credential-alphabet characters) is chosen against what this tree
+   actually holds: the broker's clearance token and the cap channel
+   token are both 32 random bytes. Its exemption is typed — `Ident` —
+   so every waiver is a deliberate, greppable act.
+4. **A record carries no timestamp.** §0.2 makes time an injected
+   `Clock`, and `core`'s clock is threaded: a log call that read it
+   would consume steps and shift the ids minted afterwards, so a line
+   written for observation would change what the system durably
+   records. The handler stamps `logger`'s own time instead.
+5. **"JSON handler" is the stock `default` handler with our
+   formatter.** OTP ships no JSON handler, so the choice was a custom
+   handler or a custom formatter on the supervised one. The formatter
+   keeps `logger`'s overload protection and back-pressure, and the JSON
+   itself is built in Gleam (`telemetry/record.render`) so redaction
+   happens in pure, tested code rather than in the shim.
+6. **OpenTelemetry is left as a seam.** §3.4 marks it optional.
+   `log.Sink` is `fn(Record) -> Nil` and `log.tee` composes two, so an
+   exporter attaches without changing the package; nothing about an
+   export path is built, and no configuration surface pretends
+   otherwise. Deferred work with no home — the proposed home is a Part
+   5 track, alongside WP-F 7's keychain backends.
+7. **Not every `io.println` became a log line.** The startup banner
+   (`client/serve.announce`), the demo narrative (`client/demo`) and
+   the seed's ready marker (`codemode/seed`) are the *output* of the
+   programs that print them, read by a human or a script; a usage error
+   is a message to whoever mistyped a flag, before there is a session
+   to correlate to. Those stay on stdout/stderr. Everything about a
+   *running* system — boot failure, SIGTERM, a fatal child, an absent
+   code-mode toolchain, prompt-pack warnings, projection pull faults —
+   is now a log line.
+8. **Coverage is the seam plus three call sites, not the whole tree.**
+   The drive loop, the server entry point, and the projection driver
+   log; `broker`, `provider`, `tools`, `codemode`, `cap` and `session`
+   still log nothing. §3.4 says "everywhere" and this is not yet
+   everywhere. Deferred work with no home; the proposed home is
+   whichever milestone next touches those packages, one injected
+   `Logger` at a time — the seam is the part that had to be decided
+   once.

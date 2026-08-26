@@ -25,6 +25,7 @@ loom/
 │   ├── codemode/    WP-J  vet lint, prelude, satellite proto, compile svc
 │   ├── cap/         WP-J  the cap/* prelude (separate build target)
 │   ├── events/      WP-K  EventBus, projections, search service
+│   ├── telemetry/   §3.4  structured logs, context, redaction (leaf)
 │   ├── client/      WP-L  ClientGateway protocol + server; TUI
 │   ├── ext/         WP-M  ExtensionZone, skill store, promotion
 │   └── conformance/ WP-T  shared test suites, chaos & interleave harness
@@ -41,7 +42,7 @@ plausible candidate), it takes a `loom_`-prefixed name at that point.
 Dependency DAG (→ = depends on):
 
 ```
-A → (nothing)
+A → (nothing)    Tel → A  (§3.4; E, K, L consume it)
 B → A            C → A,B,D        D → A            T → A..(all, test-only)
 E → A,B,C,D,F    F → A            G → A            H → G(protocol only)
 I → G            J → G,I          K → A,B          L → A..K(thin over all)  M → E,G,J
@@ -437,6 +438,8 @@ Projection per pi §2.5 (stop at compaction inclusive; drop error/aborted/deferr
 ### 3.4 Telemetry
 
 Structured logs (Erlang `logger`, JSON handler) with `{session, strand, op, step}` context everywhere; OpenTelemetry export optional; usage events mirrored to the ledger are the billing source of truth (telemetry is observability only).
+
+*As built (issue #35): `packages/telemetry` — a leaf package over `core`, so every impure package may depend on it. The correlation context travels as a **value** carried by an injected `telemetry/log.Logger`, because `logger`'s process metadata does not survive a `spawn` and the effect sandwich is nothing but spawns; metadata is stamped additionally (`log.adopt`) so lines the harness did not author land correlated. Four levels with a stated policy (`telemetry/level`'s module doc). Two enforced redaction rules keep tokens, keys and capability tokens off every line (`telemetry/field`), tested by planting secrets and grepping the rendered bytes. OpenTelemetry is left as a `Sink` seam, unbuilt. Wired at `client/serve` (boot and the entry point), `runtime/strand_runtime` (the drive loop and every effect it spawns), and `events/projection` (pull faults); the remaining packages log nothing yet — `docs/spec-gaps.md` §3.4 items 6 and 8 carry both gaps.*
 
 ### 3.5 Tool timeout ceiling (WP-I + WP-G)
 

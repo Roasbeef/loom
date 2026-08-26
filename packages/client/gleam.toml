@@ -15,6 +15,7 @@ broker = { path = "../broker" }
 provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
+telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
