@@ -253,6 +253,18 @@ pub fn ensure_strand(
         Error(tx.Corruption(report:)) -> Error(SessionCorrupt(report:))
         Error(tx.Faulted(reason:)) ->
           Error(StoreFailure(error: storage.BackendFault(reason:)))
+        // Seeding a strand against a session another writer now owns is
+        // a backend failure like any other from here: this layer has no
+        // tree to reopen, and the caller that does gets the reason
+        // spelled out (`protocol-change/005`).
+        Error(tx.LeaseLost(held_by:)) ->
+          Error(
+            StoreFailure(
+              error: storage.BackendFault(reason: tx.describe_lease_loss(
+                held_by,
+              )),
+            ),
+          )
       }
     }
   }

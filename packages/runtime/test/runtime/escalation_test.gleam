@@ -202,7 +202,7 @@ pub fn scoped_approval_is_consumed_before_its_clearance_test() {
     effects.Effects(
       ..base_effects,
       tools: effects.ToolSurface(..base_effects.tools, clear: fn(query) {
-        clear_with_escalation_dance(rec, cell, query)
+        clear_with_escalation_dance(rec, cell, "esc-c1", query)
       }),
     )
   let assert Ok(rt) = api.open(sess, eff, options())
@@ -236,6 +236,7 @@ pub fn scoped_approval_is_consumed_before_its_clearance_test() {
 fn clear_with_escalation_dance(
   rec: Subject(recorder.Message),
   cell: Holder,
+  id: String,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
   let assert Some(rt) = get(cell) as "the runtime must be published"
@@ -250,9 +251,9 @@ fn clear_with_escalation_dance(
           call_id: query.call.id,
         )
       let assert Ok(Nil) =
-        api.raise_escalation_for(rt, "esc-c1", denial(), scope: scope)
+        api.raise_escalation_for(rt, id, denial(), scope: scope)
         as "raising the scoped escalation must commit"
-      let assert Ok(Nil) = api.approve_escalation(rt, "esc-c1", [grant()])
+      let assert Ok(Nil) = api.approve_escalation(rt, id, [grant()])
         as "approving the scoped escalation must commit"
       // Die before returning: the restart's re-plan re-resolves this
       // clearance from durable state, now with the approval in place.
@@ -275,7 +276,7 @@ fn clear_with_escalation_dance(
       }
       // A concurrent consumer racing this clearance must lose: the CAS
       // was spent by the consumption that preceded this clearance.
-      case api.consume_escalation(rt, "esc-c1") {
+      case api.consume_escalation(rt, id) {
         Error(api.EscalationWrongStatus(..)) ->
           recorder.bump(rec, "double-spend-refused")
         _ -> recorder.bump(rec, "double-spend-allowed")
@@ -286,6 +287,67 @@ fn clear_with_escalation_dance(
       )
     }
   }
+}
+
+// Step 1 of the grants channel, at its far end: an approval consumed at
+// clearance must reach the *execution*. `ClearanceQuery` carried the
+// grants and `ToolRun` dropped them on the floor, so a grant a human
+// approved could be consumed, attributed, and still never reach a policy
+// decision — the whole approval path was theatre below the clearance.
+// The dance here is the same one the scoped test drives; what this test
+// watches is the tool run, not the query.
+pub fn approved_grants_reach_the_tool_run_test() {
+  let rec = recorder.start()
+  let cell = holder()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [#("read", ReplaySafe)],
+      fn(spec) {
+        case fake.turn(spec) {
+          0 -> fake.Reply(fake.tool_use("working", [#("c1", "read")], 4))
+          _ -> fake.Reply(fake.answer("done", 5))
+        }
+      },
+      fn(tool_run: effects.ToolRun) {
+        let _seen =
+          recorder.bump(
+            rec,
+            "run-grants:" <> int.to_string(list.length(tool_run.grants)),
+          )
+        case tool_run.grants == [grant()] {
+          True -> recorder.bump(rec, "run-grant-is-the-approved-one")
+          False -> recorder.bump(rec, "run-grant-is-something-else")
+        }
+        fake.ToolReply(text: "out", is_error: False, terminate: False)
+      },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      tools: effects.ToolSurface(..base_effects.tools, clear: fn(query) {
+        clear_with_escalation_dance(rec, cell, "esc-run", query)
+      }),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options())
+    as "the session tree must boot"
+  put(cell, rt)
+  let assert Ok(op) = api.prompt(rt, [fake.user("dig in")])
+    as "the prompt must be accepted"
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 15_000)
+    as "the run must finish across the scripted driver restart"
+  harness.assert_completed(last)
+  // The execution carried exactly the approved grant, and carried it
+  // exactly once: no run saw an empty grant list after the re-clearance.
+  assert recorder.read(rec, "run-grants:1") == 1
+  assert recorder.read(rec, "run-grants:0") == 0
+  assert recorder.read(rec, "run-grant-is-the-approved-one") == 1
+  assert recorder.read(rec, "run-grant-is-something-else") == 0
+  process.kill(rt.tree.supervisor)
 }
 
 pub fn denied_escalation_grants_nothing_test() {

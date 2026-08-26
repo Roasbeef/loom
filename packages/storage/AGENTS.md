@@ -96,8 +96,15 @@ by WP-C-full.
   session" enforced rather than assumed. `open` acquires expiring fenced
   ownership and may steal an expired lease with a bumped fence; every
   commit renews it; a commit whose `(owner_id, fence)` no longer matches
-  fails `Faulted` and applies nothing; `close` deletes only its own pair,
-  so a stale owner cannot release its replacement.
+  fails `tx.LeaseLost(held_by:)` — naming the thief when the row names
+  one, `None` when the row was cleared — and applies nothing; `close`
+  deletes only its own pair, so a stale owner cannot release its
+  replacement. The condition is a value rather than a `Faulted` reason
+  string precisely because its remedy is opposite to every other commit
+  failure's: reopen, never retry (`protocol-change/005`). The read path
+  still flattens it, since `StorageError` has no lease vocabulary —
+  `renew_lease` reports `BackendFault(tx.describe_lease_loss(..))`, which
+  is what stops the runtime's writer.
 - **Branch reads never fall back to a table scan or parent walk.**
   `scan_branch` drives from `branch_entries` via a `CROSS JOIN` that forces
   the join order and pages segment windows. `scan_branch_plan` exposes

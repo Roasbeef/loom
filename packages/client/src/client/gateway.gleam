@@ -212,6 +212,7 @@ pub fn with_registry(options: Options, registry: Registry) -> Options {
 /// them).
 pub opaque type Message {
   Attach(sink: fn(String) -> Nil, reply: Subject(Int))
+  Attached(reply: Subject(Int))
   Detach(connection: Int)
   FromClient(connection: Int, text: String)
   CommitHint
@@ -316,6 +317,39 @@ pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
     waiting: 5000,
     sending: Attach(sink, _),
   )
+}
+
+/// How many connections are attached right now.
+///
+/// The honest answer to "is a human there?", which is what an escalation
+/// seam needs before it holds a tool call open for a decision: a session
+/// nobody is watching must record a refusal and settle it, not park on a
+/// prompt that will never be answered. It is a question rather than a
+/// flag so a client that disconnects mid-park is noticed at the next
+/// poll.
+///
+/// A hub that is gone answers zero — a server without a gateway is by
+/// definition not being watched — and the residual race (the hub dying
+/// between the liveness check and the reply) exits the *caller*, which
+/// for the only caller there is means a tool effect process whose death
+/// the driver settles in band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.attached(gateway) == 0
+/// ```
+///
+pub fn attached(gateway: Gateway) -> Int {
+  let subject = process.named_subject(gateway.name)
+  case process.subject_owner(subject) {
+    Error(Nil) -> 0
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        False -> 0
+        True -> process.call(subject, waiting: 1000, sending: Attached)
+      }
+  }
 }
 
 /// Removes a connection; a no-op for unknown ids.
@@ -489,6 +523,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           next_connection: id + 1,
         ),
       )
+    }
+    Attached(reply:) -> {
+      process.send(reply, dict.size(state.connections))
+      actor.continue(state)
     }
     Detach(connection:) ->
       actor.continue(
@@ -2804,6 +2842,17 @@ fn describe_api_error(
     api.CommitFailed(error: _) -> #(
       protocol.code_internal,
       "the admission commit failed",
+    )
+    // A conflict, not an internal error: the session is gone from this
+    // process's hands and the caller's remedy is to reopen it, which is
+    // exactly what a conflict code tells a client to consider.
+    api.SessionStolen(held_by: Some(owner)) -> #(
+      protocol.code_conflict,
+      "the session's write lease is now held by " <> owner,
+    )
+    api.SessionStolen(held_by: None) -> #(
+      protocol.code_conflict,
+      "the session's write lease was lost",
     )
     api.RaceLost -> #(
       protocol.code_conflict,

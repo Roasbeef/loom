@@ -46,7 +46,7 @@ import core/register.{type RegisterNs}
 import core/tx.{
   type CommitError, type CommitResult, type SeqExpectation, type Tx,
   CommitResult, Corruption, DeleteRegister, Expect, Faulted, InsertEntry,
-  InsertUsage, SetRegister, StaleExpectation,
+  InsertUsage, LeaseLost, SetRegister, StaleExpectation,
 }
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -231,7 +231,7 @@ type Fail {
   FailSql(error: sqlight.Error)
   FailCorrupt(report: CorruptionReport)
   FailStale(failed: SeqExpectation)
-  FailLease(reason: String)
+  FailLease(held_by: Option(String))
   FailUnknownEntry(id: EntryId)
 }
 
@@ -1655,7 +1655,10 @@ fn fail_to_commit_error(fail: Fail) -> CommitError {
     FailSql(error) -> Faulted(reason: "sqlite: " <> describe_sqlight(error))
     FailCorrupt(report) -> Corruption(report:)
     FailStale(failed) -> StaleExpectation(failed:)
-    FailLease(reason) -> Faulted(reason:)
+    // The one commit failure with its own remedy: this process is not
+    // the writer any more, so no reload and no retry can help
+    // (`protocol-change/005`).
+    FailLease(held_by:) -> LeaseLost(held_by:)
     FailUnknownEntry(id) ->
       Faulted(reason: "unknown entry " <> ids.entry_id_to_string(id))
   }
@@ -1687,11 +1690,13 @@ fn check_and_renew_lease(state: ActorState, now: Int) -> Result(Nil, Fail) {
         decode.dynamic,
       )
       |> result.replace(Nil)
-    [#(owner, _), ..] ->
-      Error(FailLease(
-        reason: "writer lease lost: now held by \"" <> owner <> "\"",
-      ))
-    [] -> Error(FailLease(reason: "writer lease missing"))
+    // Someone else's claim is in the table: the lease was stolen after
+    // it expired, and this writer is fenced out.
+    [#(owner, _), ..] -> Error(FailLease(held_by: Some(owner)))
+    // No claim at all — a precise rewrite clears the table so the
+    // swapped-in file starts unleased. Same conclusion, no owner to
+    // name.
+    [] -> Error(FailLease(held_by: None))
   }
 }
 
@@ -2886,7 +2891,7 @@ fn fail_to_storage_error(fail: Fail) -> StorageError {
       BackendFault(reason: "sqlite: " <> describe_sqlight(error))
     FailCorrupt(report) -> CorruptRow(report:)
     FailStale(_) -> BackendFault(reason: "unexpected stale expectation")
-    FailLease(reason) -> BackendFault(reason:)
+    FailLease(held_by:) -> BackendFault(reason: tx.describe_lease_loss(held_by))
     FailUnknownEntry(id) -> UnknownEntry(id:)
   }
 }

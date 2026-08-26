@@ -23,6 +23,15 @@ extended by the M3 runtime wave.
   `validate` + `seed_strand` + `adopt_strand`; `adopt_strand` is exposed
   on its own because a crash between the seed commit and the brief commit
   leaves a strand nothing else can finish.
+- `runtime/api.ApiError` — why an operation failed, and the two variants
+  worth telling apart are `CommitFailed(error:)` and
+  `SessionStolen(held_by:)`. The second is `tx.LeaseLost` classified at
+  the admission surface (`commit_failure`): another writer owns the
+  session, so nothing this runtime commits can land and the remedy is to
+  reopen, not to retry. The admission ladder finishes on it rather than
+  retrying — `retry_admission` decrements only on `Retry`, so spending
+  four attempts against a fence that refuses all four would report
+  `RaceLost` and name the wrong cause.
 - `runtime/api.{put_reserved_fact, reserved_facts, reserved_fact_key}` —
   the harness-only door to the reserved corners of `fact.custom`, and the
   predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
@@ -59,7 +68,10 @@ extended by the M3 runtime wave.
   and `client/demo` fill them with the real gateway, broker, and registry.
   `ToolRun.strand` carries the dispatching driver's own durable name, so a
   tool can be judged against its lineage rather than against a name a
-  model claims.
+  model claims. `ToolRun.grants` carries what *this call's* clearance
+  consumed — the far end of the channel `ClearanceQuery.grants` opens,
+  and the reason an approval can change a policy decision at all. A
+  replayed call carries none.
 - `runtime/hooks.Registry` — the one seam production wiring, tests, and the
   simulation runner all build their `effects.Hooks` through: safe defaults,
   a pipeable setter per slot, `build` at the end.
@@ -84,6 +96,11 @@ extended by the M3 runtime wave.
   single consumed re-execution. `CallScope` is the exact call identity
   (`{operation, strand, step, source index, call id}`) an approval is
   attributed to; only the clearance whose coordinates match can spend it.
+- `runtime/api.{escalations, escalation, raise_escalation_for,
+  approve_escalation, deny_escalation, consume_escalation}` — the durable
+  escalation surface. `escalation(runtime, id)` is the bounded point
+  lookup a parked call polls on (`client/escalate`), rather than listing
+  and decoding the whole reserved prefix once a second.
 
 ## Relationships
 
@@ -250,7 +267,14 @@ extended by the M3 runtime wave.
   drops that record's grants and the clearance proceeds under the base
   policy; a crash after the consumption spends the approval without an
   execution. Both directions fail safe: one approval is worth at most one
-  widened execution, of exactly the call a human approved.
+  widened execution, of exactly the call a human approved. What the
+  clearance won then travels onto the dispatch it authorized
+  (`ToolRun.grants`), keyed by the call's own `{step, source index}`, so
+  a carry left behind by a clearance whose dispatch never happened — a
+  stale commit that re-plans, a fault — can never widen a different call.
+  A **replay** carries no grants at all: its clearance belonged to a dead
+  incarnation whose approval is already marked consumed, and re-widening
+  from it is the one direction that would turn one approval into two.
 - **Grant and denial payloads cross the runtime opaquely.** They are stored
   as JSON in the broker's escalation vocabulary and returned uninterpreted,
   which is what keeps the spec's `E → A,B,C,D` direction intact — there is
@@ -324,7 +348,11 @@ extended by the M3 runtime wave.
   nothing else.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
-  an idle timer at a third of the TTL.
+  an idle timer at a third of the TTL. A commit that races the renewal
+  loses too, and arrives as `tx.LeaseLost`: `runtime/api` turns it into
+  `SessionStolen`, and `runtime/strand_runtime` halts the strand on it
+  rather than reloading, because reloading reads the same file and meets
+  the same fence.
 - **The names, not the pids, are the addresses.** The writer and each
   strand register under fresh process names so restarts keep them
   addressable.

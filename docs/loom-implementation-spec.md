@@ -130,10 +130,9 @@ pub type CommitResult { CommitResult(first_seq: Seq, seqs: List(Seq), ts: Int) }
 pub type CommitError { StaleExpectation(failed: SeqExpectation)
                        Corruption(report: CorruptionReport)
                        Faulted(reason: String)
-                       LeaseLost(held_by: Option(String)) }
-                       // LeaseLost added by protocol-change/005: the
-                       // single-writer lease was stolen or cleared, so
-                       // reloading changes nothing and only reopening can.
+                       // the writer lease was stolen or cleared, so no
+                       // reload and no retry can get past it
+                       LeaseLost(held_by: Option(String)) }  // (protocol-change/005)
 ```
 
 ### 1.2 Storage behaviour (WP-B implements; C/E consume)
@@ -487,10 +486,16 @@ green under `make check` on one Linux development container.
 
 ### What the rows still owe
 
-- **M0** — done, with one soft edge: the p50 target is *printed* by the
-  SQLite perf smoke test, not asserted (2.6 ms in the development
-  container against a 5 ms target), so a regression would not fail the
-  gate.
+- **M0** — done. The SQLite perf smoke test now *asserts* its p50, not
+  just prints it (issue #6), but against a 15 ms ceiling rather than the
+  5 ms target: the development container measures a p50 near 3 ms and has
+  produced a max above 5 ms in the same twenty runs, so a bound at the
+  target would flake on shared CI. What the gate therefore holds is that
+  the newest-50 branch scan over a 10k-entry chain stays single-digit
+  milliseconds — dropping `ix_be_seq` measures 21 ms and fails it. The
+  5 ms target itself is still unverified; that needs a benchmark on known
+  hardware, and the `EXPLAIN QUERY PLAN` assertions remain the precise
+  guard on which index the scan uses.
 - **M1** — the interleave harness and the 30-turn cold open are green.
   WP-E's chaos tier (random process kills under load, ten-minute soak) is
   unbuilt: `make soak` is the deterministic-simulation seed soak, and
@@ -508,9 +513,12 @@ green under `make check` on one Linux development container.
   still has no implementation at all: a non-allowlisted host under `Proxy`,
   because the egress sidecar is unbuilt and proxy mode fails closed as
   network-off. The setsid escape probe and the hostile-`.beam` probe, which
-  that list also names, are both built and both `required`. Escalation is
-  specified in §5.3 and exercised in tests, but no production path raises one (spec-gaps WP-L
-  1, WP-J 15).
+  that list also names, are both built and both `required`. Escalation now
+  has a production path: `client/escalate` raises a call-scoped record for
+  every broker policy refusal, parks the call when a client is attached,
+  and resumes it under the widened policy on approval — proved jailed by
+  `make e2e`'s `escalation_round_trip_test` (spec-gaps WP-L 1). Code mode
+  is still outside it (spec-gaps WP-J 15).
 - **M3** — the multi-strand demo, fork, navigate, catch-up and the
   escalation round trip all run through the public protocol in
   `make check-client`, and the parent-plus-two-subagents kill/reboot

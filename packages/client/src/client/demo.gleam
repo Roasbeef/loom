@@ -26,6 +26,7 @@
 import broker/broker
 import broker/exec
 import broker/token
+import client/escalate
 import client/gateway
 import client/grants
 import client/protocol
@@ -1007,7 +1008,7 @@ fn compaction_wiring(
       workspace:,
       blob_root: workspace <> "/.blobs",
       base_policy: policy.workspace_default(workspace),
-      grants: [],
+      escalations: escalate.none(),
       demand: exec.BestEffort,
       env: [],
       clock: clock.fixed(at: 0),

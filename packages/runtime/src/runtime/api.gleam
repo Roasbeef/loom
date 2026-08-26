@@ -153,6 +153,16 @@ pub type ApiError {
   ReadFailed(reason: String)
   /// The admission commit failed.
   CommitFailed(error: CommitError)
+  /// Another writer holds this session's write lease, so nothing this
+  /// runtime commits can land. `held_by` names the thief when the
+  /// backend could see it, and is `None` when the lease row was cleared
+  /// out from under the writer instead of taken.
+  ///
+  /// Deliberately not a `CommitFailed`: the remedy is to stop and
+  /// reopen the session (the open path re-acquires or refuses loudly),
+  /// never to retry, and a caller that cannot tell theft from a full
+  /// disk cannot choose between them.
+  SessionStolen(held_by: Option(String))
   /// The admission kept losing its seq race against the strand.
   RaceLost
   /// A fact write named a key under a reserved prefix.
@@ -298,7 +308,7 @@ pub fn accept_quietly(
         case writer.commit(w, plan_tx) {
           Ok(_) -> Ok(Done(Ok(operation.id)))
           Error(tx.StaleExpectation(..)) -> Ok(Retry)
-          Error(error) -> Ok(Done(Error(CommitFailed(error:))))
+          Error(error) -> Ok(Done(Error(commit_failure(error))))
         }
     }
   })
@@ -386,7 +396,14 @@ fn enqueue(
             case writer.commit(w, plan_tx) {
               Ok(_) -> Ok(Done(Ok(entry)))
               Error(tx.StaleExpectation(..)) -> Ok(Retry)
-              Error(error) -> Ok(Done(Error(CommitFailed(error:))))
+              // Only a lost seq race reloads. Every other refusal —
+              // a stolen lease above all — finishes the admission:
+              // `retry_admission` decrements only on `Retry`, so a
+              // `Done` here is what keeps the ladder from spending its
+              // four attempts against a fence that will refuse all
+              // four and then reporting `RaceLost`, which would name
+              // the wrong cause.
+              Error(error) -> Ok(Done(Error(commit_failure(error))))
             }
         }
       }
@@ -713,6 +730,12 @@ fn seed_strand(
     Error(tx.StaleExpectation(..)) -> Error(StrandExists(name:))
     Error(tx.Corruption(report:)) -> Error(SeedFailed(reason: report.boundary))
     Error(tx.Faulted(reason:)) -> Error(SeedFailed(reason:))
+    // `CreateStrandError` already flattens every backend refusal into a
+    // reason, and its one consumer renders it as text; the distinction
+    // that has to survive as a value is the one at the admission
+    // surface, where a caller can act on it.
+    Error(tx.LeaseLost(held_by:)) ->
+      Error(SeedFailed(reason: tx.describe_lease_loss(held_by)))
   }
 }
 
@@ -866,7 +889,7 @@ fn commit_fact(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
-    Error(error) -> Error(CommitFailed(error:))
+    Error(error) -> Error(commit_failure(error))
   }
 }
 
@@ -1114,7 +1137,7 @@ fn commit_raised(
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
     Error(tx.StaleExpectation(..)) -> Error(EscalationExists(id:))
-    Error(error) -> Error(CommitFailed(error:))
+    Error(error) -> Error(commit_failure(error))
   }
 }
 
@@ -1145,6 +1168,26 @@ pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
         }
       })
   }
+}
+
+/// One durable escalation record by id.
+///
+/// The bounded point lookup the parking path polls on: a park re-reads
+/// exactly the record it raised, once per slice, rather than listing and
+/// decoding the whole reserved prefix to find it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.escalation(runtime, "esc-1")
+/// ```
+///
+pub fn escalation(
+  runtime: Runtime,
+  id: String,
+) -> Result(Escalation, ApiError) {
+  read_escalation(runtime, id)
+  |> result.map(fn(found) { found.1 })
 }
 
 /// Approves a pending escalation with exactly these grants (a subset of
@@ -1252,7 +1295,7 @@ fn decide_escalation_value(
         case writer.commit(writer_subject(runtime), plan_tx) {
           Ok(_) -> Ok(Done(Ok(next)))
           Error(tx.StaleExpectation(..)) -> Ok(Retry)
-          Error(error) -> Ok(Done(Error(CommitFailed(error:))))
+          Error(error) -> Ok(Done(Error(commit_failure(error))))
         }
       }
     }
@@ -1282,6 +1325,22 @@ fn read_escalation(
 type Attempt(value) {
   Done(Result(value, ApiError))
   Retry
+}
+
+// Classifies a commit failure for a caller. Only one of them is a
+// condition rather than a fault: a lost lease means another writer owns
+// this session, so nothing this runtime commits can ever land and the
+// remedy is to reopen (or stop), never to reload and retry. Everything
+// else stays an undifferentiated `CommitFailed` on purpose — a caller
+// that cannot act differently on a full disk than on a corrupt page
+// gains nothing from being told which it was, and the reason string is
+// there for the human.
+fn commit_failure(error: CommitError) -> ApiError {
+  case error {
+    tx.LeaseLost(held_by:) -> SessionStolen(held_by:)
+    tx.StaleExpectation(..) | tx.Corruption(..) | tx.Faulted(..) ->
+      CommitFailed(error:)
+  }
 }
 
 fn retry_admission(

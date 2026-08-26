@@ -151,6 +151,7 @@ import broker/token
 import client/agency
 import client/catalog
 import client/codemode as codemode_wiring
+import client/escalate
 import client/gateway as hub
 import client/host
 import client/internal/ffi_os
@@ -778,6 +779,19 @@ fn assemble(
   let agency_name = process.new_name(prefix: "loom_agency")
   let agency_config = agency.default_config(agency_name, clock)
   let agency_seam = agency.seam(agency_config)
+  // The escalation plane has the same knot and the same answer: a name
+  // now, a holder under it after the open. `interactive` is a question
+  // rather than a flag because the answer changes while a call is
+  // parked — a session serves whoever is attached, and a refusal must
+  // not hold a call open for a decision from a client that has gone.
+  // Asking the hub by name (not by handle) keeps that true across a hub
+  // restart.
+  let escalate_name = process.new_name(prefix: "loom_escalate")
+  let escalate_config =
+    escalate.Config(
+      ..escalate.default_config(escalate_name, clock),
+      interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
+    )
   // Code mode needs no such indirection — its seam closes over the
   // broker, which already exists — but it does need a toolchain and a
   // prepared build seed on this host. A host without them says so once
@@ -862,7 +876,7 @@ fn assemble(
       workspace: settings.workspace,
       blob_root:,
       base_policy: base_policy(settings.workspace),
-      grants: [],
+      escalations: escalate.seam(escalate_config),
       demand: settings.demand,
       env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
       clock:,
@@ -929,6 +943,9 @@ fn assemble(
     ))
     |> sup.add(
       supervision.worker(fn() { agency.start(agency_config, runtime) }),
+    )
+    |> sup.add(
+      supervision.worker(fn() { escalate.start(escalate_config, runtime) }),
     )
     |> sup.add(
       supervision.worker(fn() {

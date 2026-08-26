@@ -25,7 +25,11 @@ the rewrite exists for. WP-C plus WP-C-full.
   `open_sqlite` runs `migration_chain()`, the ordered migrate-on-open seam
   every schema bump extends (empty today — storage version 1 is the only
   version that has existed).
-- `session/session.ensure_strand` — idempotent boot seeding.
+- `session/session.ensure_strand` — idempotent boot seeding. It flattens
+  every commit refusal it does not already recognize into
+  `StoreFailure(BackendFault(..))`, `tx.LeaseLost` included: this layer
+  owns no tree to reopen, so the value it could carry has nowhere to go
+  and the reason string (`tx.describe_lease_loss`) is what a caller gets.
 - `session/session.Projection` — an opaque projection policy built with
   `projection()` then `with_projector(custom_type, ...)` and
   `with_transform(...)`; `CustomView` is what a custom-entry projector

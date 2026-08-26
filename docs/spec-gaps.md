@@ -13,7 +13,7 @@ work with a home** (real work a milestone or a Part 5 follow-up track
 already owns), or **deferred work with no home** (real work scheduled
 nowhere). The two tables below name the second and third classes. The
 rule for reading them: *an item named in neither table is settled* —
-which is 92 of the 114 items. A recorded option nobody must exercise (a
+which is 93 of the 114 items. A recorded option nobody must exercise (a
 "candidate for hoisting if the duplication grates") stays settled; only
 work someone must do to meet a stated criterion is listed here.
 
@@ -32,9 +32,9 @@ Items are cited as section plus the number as written in the list
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
 
-### Deferred work with no home (13)
+### Deferred work with no home (12)
 
-Thirteen items, twelve rows: the canonical session id is recorded
+Twelve items, eleven rows: the canonical session id is recorded
 twice. Nothing in the right-hand column is scheduled — it is where the
 work would sit if someone scheduled it, recorded so the choice is made
 rather than drifted into. Part 5.1 of the spec says the same thing from
@@ -42,8 +42,7 @@ the other side.
 
 | Item | The work | Proposed home |
 |---|---|---|
-| WP-L 1 | a production denial-raiser: nothing under `client/serve` raises an escalation at all, and the gateway raises through the unscoped legacy path whose approvals no clearance loads | M3 residue — reopen under M3's row |
-| WP-J 15 | let an approved escalation widen a code-mode execution; every clearance the pipeline makes passes no grants, so approving one changes nothing | M4.5 / WP-N, with WP-L 1 |
+| WP-J 15 | let an approved escalation widen a code-mode execution; every clearance the pipeline makes passes no grants, so approving one changes nothing | M4.5 / WP-N (issue #24), on the seam WP-L 1 now provides |
 | WP-J 16 | one threaded `ExecIdentity`, so one-ledger-per-execution is a property of the types rather than a convention the caller must honor | M4.5 / WP-N |
 | WP-E 8 | the chaos tier of WP-E's own exit criteria — random kills under load, ten-minute soak. `make soak` is the deterministic-simulation seed soak, not a chaos runner | WP-T, and M1 recorded partial until it runs |
 | WP-G 9 | the MCP adapter — in WP-G's scope, deferred post-M2, integrated by no row since | a Part 5 track |
@@ -538,19 +537,38 @@ the other side.
 ## From the planner navigability pass (`machine`, `conformance`)
 
 1. **The simulation drops a steer when the writer lease is stolen.**
-   `conformance/simulation/surface.apply` calls `api.steer_quietly` and
-   discards the `Result`, while `runtime/api.enqueue` retries only
-   `tx.StaleExpectation`. A stolen lease returns `CommitFailed`, the steer
-   is silently dropped, and the faulted transcript diverges by one turn —
-   surfacing as a `convergence/projection` failure, or downstream as
-   `convergence/ledger`. Reproduced on seed 264 against the *pre-refactor*
-   planner, so it is a harness fault rather than a planner one: the steer
-   never reaches the machine. Any fault schedule pairing `steer@turnN`
-   with `leasetheft` can hit it, which makes it a rare red in an otherwise
-   deterministic suite — the worst kind, because it trains a reader to
-   re-run rather than look. Fix belongs in the simulation surface: honor
-   the result, or retry `CommitFailed` in `enqueue` the way
-   `StaleExpectation` is retried.
+   *Closed (issue #6).* `conformance/simulation/surface.apply` discarded
+   the `Result` of `api.steer_quietly`, so a steer that never landed was
+   indistinguishable from one that did and the faulted transcript
+   diverged by one turn — surfacing as a `convergence/projection`
+   failure, or downstream as `convergence/ledger`. Reproduced on seed 264
+   against the *pre-refactor* planner, so it was a harness fault rather
+   than a planner one: the steer never reached the machine.
+
+   `apply` now honors the result. A refused steer or follow-up whose
+   trigger fires from inside a live effect — where a run is open by
+   construction, so refusal cannot be legitimate — is recorded through
+   `control.note`, which the runner collects into `Report.violations` and
+   fails the seed on, naming the refusal instead of letting it resurface
+   one check later as an unexplained divergence. Nothing about the fault
+   schedule changed, so the seed corpus keeps its meaning. Two cases are
+   deliberately *not* violations: an `AtTerminalCommit` steer, where
+   refusal is the documented outcome (the run it would attach to is
+   already closed), and an admission the harness's own 2 s window did not
+   observe, which is not evidence the commit failed — both are marked for
+   coverage instead.
+
+   The `enqueue` half is closed too, and differently from how this entry
+   proposed. Retrying `CommitFailed` the way `StaleExpectation` is
+   retried would spin a bounded ladder against a fence that refuses every
+   attempt and then report `RaceLost`, naming the wrong cause. Instead
+   `core/tx.CommitError` gained `LeaseLost(held_by:)`
+   (`protocol-change/005`), the SQLite backend raises it where it used to
+   flatten the condition into a `Faulted` reason string, and
+   `runtime/api` maps it to `ApiError.SessionStolen(held_by:)` and
+   finishes the admission at once. A caller can now tell "someone else
+   took the session" from "the disk is full", which are not the same
+   problem and do not have the same fix.
 
 2. **A long checkout path breaks the code-mode tests.** The cap socket is
    an AF_UNIX path, capped at 108 bytes by `sun_path`. In an agent
@@ -668,9 +686,11 @@ the other side.
     clearance the pipeline makes passes `grants: []`, so an operator who
     approves a denial for a program's benefit changes nothing. It fails
     closed, which is the right direction, but the design documents do not
-    say it. This compounds with the finding that no production path raises
-    an escalation at all (see WP-L below): a code-mode program cannot
-    request a widening, and could not use one if it were granted.
+    say it. The workspace-tool half of this is now built (WP-L 1 below):
+    a policy refusal there raises, parks, and resumes. Code mode has the
+    same severed channel one seam over — `client/codemode` composes its
+    own policies and passes no grants — and applying the same mechanism
+    there is issue #24.
 
 16. **Identity and budget are specified three times.** `ExecConfig` makes
     a caller build `BuildConfig` and `SatelliteConfig` + `ExecId`
@@ -703,15 +723,53 @@ the other side.
 
 ## From WP-L (`client`)
 
-1. **Escalation records now carry call attribution** (the M3 fix wave):
-   `runtime/escalation.CallScope` records the exact
-   `{operation, strand, step, source index, call id}` a denial was
-   raised for, and only that call's clearance can spend the approval.
-   The gateway still surfaces records without their scope and raises
-   through the unscoped legacy path (`api.raise_escalation`), whose
-   approvals no clearance will ever load — a production denial-raiser
-   should move to `api.raise_escalation_for` and the protocol body can
-   now attribute exactly rather than best-effort.
+1. **The escalation loop is closed end to end** (issue #4, on decision
+   D1 in issue #11). Three seams had to line up and did, in this order:
+
+   - **The grants channel is threaded.** `runtime/effects.ToolRun` grew a
+     `grants` field, the driver carries what its clearance consumed onto
+     the dispatch that clearance authorized, and `client/wiring`
+     decodes them there onto the tool `Ctx.grants` — which `bash`
+     already passed into its `CallSpec`. `wiring.Config` no longer has a
+     session-wide `grants` list at all: an approval that cannot be
+     attributed to the call in hand widens nothing, which is the whole
+     point of `CallScope`.
+   - **A policy refusal parks.** `client/escalate` raises a durable,
+     call-scoped record for every `broker.PolicyRefused`, and — when the
+     host says someone is attached — holds the call open on its own
+     effect process until the record is decided, the window closes, or
+     the client goes away. An approval is consumed by CAS and the *same*
+     call is re-cleared once under the widened policy. Parking is what
+     makes a scoped approval spendable at all: a model that read the
+     in-band refusal and retried would arrive under a new call id the
+     approval could never match.
+   - **The raise policy is "always, deduplicated".** The record id is a
+     digest of `{strand, tool, wanted diff}`, so a retry loop lands on
+     the record already pending instead of one row per attempt, and the
+     in-band error stands alongside the record. Which records interrupt
+     a person is a client-surface decision: the gateway already emits
+     escalation events and lists pending ones in its snapshot.
+
+   The **interactive flag is a runtime concern again**, and it decides
+   *parking only* — never whether a record is written. `client/serve`
+   answers it with `gateway.attached(...) > 0`, so a headless session
+   records refusals and settles them rather than holding a call open for
+   a decision nobody is there to make.
+
+   Two bounds on a park, both load-bearing: the configured window, and
+   the call's own budget deadline — the broker's ledger refuses a
+   reservation past `deadline_ms`, so holding a call past it would trade
+   an honest "policy refused" for a confusing "deadline passed".
+
+   `make e2e`'s `escalation_round_trip_test` is the proof: a jailed
+   session whose base policy is narrower than `bash` needs, a refusal, an
+   approval of exactly the stored wanted diff, and the file the resumed
+   command writes inside the jail.
+
+   Still open here: the gateway surfaces records without their scope
+   (`escalation_attribution` guesses the operation and strand from hub
+   state rather than reading `CallScope`), and the code-mode half is
+   issue #24 / WP-J 15.
 2. **No api entry points for compaction or navigation** — the gateway,
    like the conformance runner, builds acceptance plans itself and
    commits through the writer. Two copies of that pattern argue for

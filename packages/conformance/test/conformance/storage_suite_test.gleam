@@ -8,7 +8,7 @@ import core/clock
 import core/entry.{type Entry, CompactionEntry, MessageEntry}
 import core/ids.{type EntryId}
 import core/message.{UserMessage, UserText}
-import core/tx.{Faulted, InsertEntry, Tx}
+import core/tx.{InsertEntry, LeaseLost, Tx}
 import gleam/dict
 import gleam/int
 import gleam/io
@@ -133,10 +133,10 @@ pub fn sqlite_lease_duel_test() {
   let assert Ok(_) =
     storage.commit(store_b, Tx(writes: [InsertEntry(b1)], expected: []))
 
-  // The fenced-out writer's commit is refused as Faulted and applies
-  // nothing.
+  // The fenced-out writer's commit is refused as a lost lease — naming
+  // the thief, not merely faulting — and applies nothing.
   let #(a2, generator) = message_entry(generator, Some(a1.id), "late a")
-  let assert Error(Faulted(_)) =
+  let assert Error(LeaseLost(held_by: Some("writer-b"))) =
     storage.commit(store_a, Tx(writes: [InsertEntry(a2)], expected: []))
   let assert Ok(found) = storage.get_entries(store_b, [a2.id])
   assert dict.size(found) == 0
@@ -302,6 +302,33 @@ const perf_entries = 10_000
 
 const perf_batch = 100
 
+// The ceiling the p50 is held to, and why it is not the 5 ms M0 target
+// the report cites.
+//
+// This runs on shared CI hardware whose absolute timings are not ours to
+// predict, so a bound at the target would flake: the same container that
+// produces a p50 near 3.1 ms has produced a *max* above 6 ms in the same
+// twenty runs. A check that flakes trains a reader to re-run rather than
+// look, which is the disease this assertion exists to cure, not spread.
+//
+// 15 ms is three times the target and roughly four times the slowest p50
+// measured here across a dozen runs (3.0-3.5 ms, a spread under 20% —
+// the p50 of twenty samples is a far steadier statistic than the max).
+// It is also comfortably under a real regression: dropping `ix_be_seq`
+// and letting the branch scan fall back to a temp b-tree sort measured
+// p50 = 21 ms on this container.
+//
+// State plainly what a green run here does and does not prove. It proves
+// the newest-50 branch scan over a 10k-entry chain still costs
+// single-digit milliseconds on the machine that ran it, so an
+// order-of-magnitude regression cannot pass. It does not prove the 5 ms
+// M0 target — that needs a benchmark on known hardware — and it will not
+// catch a 2x regression, which is inside the spread between plausible
+// runners. The `EXPLAIN QUERY PLAN` assertions above are the precise
+// guard on which index the scan uses; this one guards against staying on
+// the right plan and getting slow anyway.
+const perf_p50_ceiling_us = 15_000
+
 pub fn sqlite_perf_smoke_test() {
   let store = open_sqlite("perf")
   // A 10k-entry single-strand session committed in batches.
@@ -332,8 +359,21 @@ pub fn sqlite_perf_smoke_test() {
     <> us_to_ms(p50)
     <> " ms, max = "
     <> us_to_ms(worst)
-    <> " ms (M0 target: p50 < 5 ms)",
+    <> " ms (M0 target: p50 < 5 ms; asserted ceiling: p50 < "
+    <> us_to_ms(perf_p50_ceiling_us)
+    <> " ms)",
   )
+  // The number is asserted, not merely printed: a check that cannot fail
+  // is not a check. See `perf_p50_ceiling_us` for what this bound is and
+  // is not evidence of.
+  assert p50 < perf_p50_ceiling_us
+    as {
+      "scan_branch(limit 50) p50 regressed to "
+      <> us_to_ms(p50)
+      <> " ms, past the "
+      <> us_to_ms(perf_p50_ceiling_us)
+      <> " ms ceiling"
+    }
   let assert Ok(Nil) = storage.close(store)
 }
 

@@ -196,7 +196,7 @@ pub fn fenced_out_writer_commit_refused_test() {
 
   // The fenced-out writer is refused in-band and leaves no row behind.
   let #(b, _ctx) = fixtures.message_entry(ctx, Some(a.id), "late b")
-  let assert Error(tx.Faulted(_)) =
+  let assert Error(tx.LeaseLost(held_by: Some("w2"))) =
     storage.commit(zombie, Tx(writes: [InsertEntry(b)], expected: []))
   let assert Ok(found) = storage.get_entries(thief, [b.id])
   assert dict.size(found) == 0

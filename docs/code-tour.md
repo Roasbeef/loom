@@ -174,7 +174,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1062`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1100`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -298,7 +298,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:610`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:626`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -467,7 +467,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:894`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:938`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -563,7 +563,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:511`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:549`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -591,7 +591,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1567`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1586`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -675,9 +675,13 @@ whose consumption commit won. A lost race drops those grants and the
 clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
-human approved. All of that machinery is real and tested; what is missing
-above it is the production path that *raises* an escalation in the first
-place — see section 17.
+human approved. What the clearance won then travels onto the dispatch it
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1087`) hands
+`ToolRun.grants` only the carry keyed to this call's own step and source
+index — and `client/wiring.tool_context` decodes it there onto
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1093`). That is the
+whole channel: an approval a human gave for this call, reaching the
+policy composition this call is judged by. It used to stop at the query.
 
 Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
@@ -1090,7 +1094,7 @@ a sibling — and the determinism is exactly what makes a replayed spawn
 find its own child instead of minting a second one. If the ledger already
 has a cell for the minted name, the same handle comes straight back.
 
-`api.create_strand` (`runtime/api.gleam:585`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:606`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1101,7 +1105,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:786`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:810`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4404`). Keying
@@ -1318,15 +1322,33 @@ session. **Nothing publishes to it in production.** `bus.publish`
 (`events/bus.gleam:165`) has no caller outside the package's own tests;
 the hub can accept a `BusHint`, but `gateway.default_options` sets
 `bus: None` and `client/serve` never supplies one, so the writer's
-post-commit publication is production's only hint source. And **no
-production path raises an escalation**. When the broker refuses a call,
-`tool.refusal_outcome` turns the denial into an ordinary in-band
-`is_error` result carrying the wanted grants; the durable escalation
-record that the approve/deny commands act on is written only by
-`client/demo` and the simulation surface today. The approval machinery
-below it — attribution, single consume, structural validation of the
-approved subset — is real and tested; the raiser above it is the missing
-link, and `docs/spec-gaps.md` under "From WP-L" records it.
+post-commit publication is production's only hint source.
+
+Escalation, on the other hand, is now wired end to end, and the shape is
+worth knowing. A tool reaches the broker through `Ctx.clear_call`, and in
+production that closure is not the bare broker runner: `escalating_runner`
+(`client/wiring.gleam:1049`) wraps it, so a `PolicyRefused` — and only a
+policy refusal, the one refusal a human can overturn — goes to the
+escalation seam before it becomes a result. `decide`
+(`client/escalate.gleam:290`) files a durable, call-scoped record under an
+id derived from `{strand, tool, wanted diff}` (`record_id`,
+`client/escalate.gleam:272`), so a model that retries lands on the record
+already pending rather than one row per attempt. Then, *if* the host says
+someone is attached, `park` (`client/escalate.gleam:348`) holds the call —
+on the tool's own effect process, never on the driver, so `Nudge`,
+`RequestAbort` and `PollTick` keep being served while a human decides. An
+approval is consumed by CAS and the same call is re-cleared once under the
+widened policy; a denial, a closed window, a disconnected client and a
+crash all settle the ordinary in-band refusal instead. The window is the
+smaller of the configured timeout and the call's own budget deadline,
+because the broker's ledger refuses a reservation past that instant.
+
+Two things are deliberately *not* in the runtime. Which raised records
+interrupt a person is a client-surface decision — the hub emits escalation
+events and lists pending ones in its snapshot, and what a UI does with
+them is its own business. And code mode is still outside the loop: it
+clears through the broker directly rather than through `Ctx.clear_call`,
+so `docs/spec-gaps.md` under "From WP-J" still records item 15.
 
 ## 18. A reading order
 

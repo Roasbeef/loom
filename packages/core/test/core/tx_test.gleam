@@ -38,4 +38,13 @@ pub fn commit_error_variants_test() {
   let failed = tx.Expect(ns: register.StrandState, key: "main", seq: Some(1))
   assert tx.StaleExpectation(failed:).failed == failed
   assert tx.Faulted(reason: "disk gone").reason == "disk gone"
+  assert tx.LeaseLost(held_by: Some("writer-2")).held_by == Some("writer-2")
+}
+
+// A lost lease is one condition whichever way the backend learned of it,
+// and the wording is shared so no layer invents its own.
+pub fn lease_loss_reads_the_same_everywhere_test() {
+  assert tx.describe_lease_loss(Some("w2"))
+    == "writer lease lost: now held by \"w2\""
+  assert tx.describe_lease_loss(None) == "writer lease missing"
 }

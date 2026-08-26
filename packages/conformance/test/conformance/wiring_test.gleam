@@ -7,6 +7,8 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/escalate
+import client/grants
 import client/summaries
 import client/system_prompt
 import client/wiring
@@ -127,7 +129,7 @@ fn config(base_policy: policy.SandboxPolicy) -> wiring.Config {
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy:,
-    grants: [policy.GrantEnv(name: "LANG")],
+    escalations: escalate.none(),
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin:/bin")],
     clock: clock.fixed(at: 4242),
@@ -402,6 +404,10 @@ pub fn tool_context_construction_test() {
       call: call("fs_read", json.Object([])),
       arguments: json.Object([]),
       replay: machine_operation.ReplaySafe,
+      // Grants ride the *run*, not the config: they are what this call's
+      // own clearance consumed, in the opaque escalation vocabulary the
+      // runtime moves them in.
+      grants: [grants.encode(policy.GrantEnv(name: "LANG"))],
     )
   let ctx = wiring.tool_context(config, run)
   assert ctx.workspace == config.workspace
@@ -444,6 +450,7 @@ pub fn run_tool_wraps_outcome_as_result_message_test() {
         #("content", json.String("mapped")),
       ]),
       replay: machine_operation.ReplaySafe,
+      grants: [],
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(config, run)
@@ -471,6 +478,7 @@ pub fn run_tool_unknown_name_is_in_band_error_test() {
       call: call("ghost", json.Object([])),
       arguments: json.Object([]),
       replay: machine_operation.ReplaySafe,
+      grants: [],
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(config, run)
@@ -492,6 +500,7 @@ pub fn run_tool_policy_refusal_carries_wanted_grants_test() {
       call: call("bash", bash_arguments()),
       arguments: bash_arguments(),
       replay: machine_operation.ReplayNever,
+      grants: [],
     )
   let assert effects.ToolCompleted(result:, terminate: False) =
     wiring.run_tool(narrow, run)

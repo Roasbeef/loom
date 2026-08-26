@@ -56,6 +56,17 @@ over one session file. WP-L.
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
 - `client/grants` — decoding the runtime's opaque escalation JSON back
   into `broker/policy.Grant`, and encoding it again. Pure and total.
+- `client/escalate.{Config, Message, Refused, Decision, Escalations,
+  seam, start, none, record_id, default_config}` — parking: what a
+  production tool call does when the broker refuses it on policy. `seam`
+  closes over a process *name* (the Agency's knot, the Agency's answer)
+  and `start` puts the runtime behind that name after `api.open`;
+  `record_id` is the deterministic `{strand, tool, wanted diff}` digest a
+  retry loop dedupes onto; `none()` is the no-plane seam under which a
+  refusal settles exactly as it did before escalations existed.
+- `client/gateway.attached` — how many connections are attached right
+  now. The honest answer to "is a human there?", which is what the
+  escalation seam asks before it holds a call open.
 - `client/catalog.{Catalog, CatalogModel, Dialect, parse, gateway}` —
   the model catalogue: a total, strict parser for the `loom.toml`
   format (via the `tom` TOML package; `docs/examples/loom.toml` is the
@@ -102,6 +113,10 @@ over one session file. WP-L.
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
+  `Config.escalations` is the escalation seam a policy refusal goes
+  through; there is deliberately **no** session-wide grant list, because
+  a grant that cannot be attributed to the call in hand must widen
+  nothing.
 - `client/wiring.{compaction_hooks, recording_summaries}` — the two
   halves of live compaction, separable so a host with its own provider
   surface can run the real ones. `compaction_hooks` builds the whole
@@ -398,6 +413,50 @@ over one session file. WP-L.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.
+- **A grant reaches a policy decision through the call it was approved
+  for, and by no other route.** `wiring.tool_context` builds `Ctx.grants`
+  from `effects.ToolRun.grants` — what *this call's* clearance consumed —
+  decoded from the escalation vocabulary here, because the runtime moves
+  those payloads opaquely. A payload that will not decode is dropped
+  rather than faulted on: skipping a grant can only narrow what the call
+  receives, and the call still settles in band under whatever remains.
+- **Every policy refusal raises a durable record; only some park.** The
+  two questions are separate on purpose. Raising is unconditional and
+  deduplicated by a digest of `{strand, tool, wanted diff}`, so a model
+  that retries lands on the record already pending instead of one row per
+  attempt, and the in-band error stands alongside it. *Parking* — holding
+  the call open until a human decides — happens only when
+  `Config.interactive` says someone is attached, because a parked call in
+  a headless session is a hang. Which raised records actually interrupt a
+  person stays a client-surface decision: the hub already emits
+  escalation events and lists pending ones in its snapshot, so approval
+  fatigue is tunable in a UI rather than frozen in a deploy.
+- **A park waits on the tool's own effect process, never on the driver.**
+  `Hooks.run_end` is not the only thing that must not block `drive_loop`:
+  a driver stuck inside a clearance stops serving `Nudge`,
+  `RequestAbort` and `PollTick`, so a human who changed their mind could
+  not abort the run they are being asked about. Parking in the broker
+  seam — inside `Ctx.clear_call`, on the process the driver spawned and
+  monitors — also means the wait needs no timer and leaks no process: the
+  effect process is linked to the driver's reaper, so an abort or a
+  driver restart kills the parked call and the driver settles it in band
+  through the ordinary monitor path.
+- **A park is bounded by the configured window *and* by the call's own
+  budget deadline.** The second bound is not politeness: the broker's
+  ledger refuses a reservation past `deadline_ms`, so a re-clearance
+  after that instant is a `BudgetRefused`, not a resumption, and holding
+  a call past it would trade an honest "policy refused" for a confusing
+  "deadline passed". Both bounds are read from the session's own clock,
+  which is why the seam must share it (spec §0.2).
+- **An approval buys exactly one re-clearance, of exactly one call.** The
+  record's `CallScope` is checked before anything is spent, so a record a
+  sibling call deduplicated onto cannot be burned by that sibling; the
+  consume is a CAS that must win *before* the grants compose into a
+  policy; and the resumed call is cleared once, not retried in a loop —
+  if the widened policy still does not satisfy the tool, the second
+  refusal stands in band. A lost CAS, an unattributable record, a decode
+  failure, a denial, a closed window, a disconnected client and a crash
+  all end in the same in-band refusal.
 - **Compaction is answered by these seams, and by nothing that supplies
   its own summary.** `compaction_hooks` returns `VerdictGenerate` for
   every structural decision: `VerdictSupplied` exists for a host that
@@ -442,7 +501,8 @@ over one session file. WP-L.
   settings snapshot.
 - **The server has two supervision tiers, and the line between them is
   reachability.** A child under `Booted.services` — the commit
-  forwarder, the Agency holder, the gateway hub — is addressed by
+  forwarder, the Agency holder, the escalation holder, the gateway hub —
+  is addressed by
   *name*, so a replacement under that name is the same address and a
   crash costs hints and the sockets already attached to the old hub
   rather than the server. The helper pool, the broker, and the summary

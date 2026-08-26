@@ -3,6 +3,7 @@
 //// the production wiring config assembled from a live jail.
 
 import broker/exec
+import client/escalate
 import client/summaries
 import client/system_prompt
 import client/wiring
@@ -106,7 +107,9 @@ pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
     workspace: jail_rig.workspace,
     blob_root: jail_rig.blob_root,
     base_policy: jail_rig.base_policy,
-    grants: [],
+    // No escalation plane in the e2e rig: a policy refusal settles as it
+    // did before escalations existed.
+    escalations: escalate.none(),
     // This container's helper runs degraded (no bwrap/Landlock/cgroup
     // in the dev image), so the demand must accept degraded enforcement
     // and the tests assert on the helper's honest per-exec report

@@ -19,6 +19,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/escalate
 import client/serve
 import client/summaries
 import client/system_prompt
@@ -264,7 +265,7 @@ fn wiring_config(
       workspace:,
       blob_root: workspace <> "/.blobs",
       base_policy: policy.workspace_default(workspace),
-      grants: [],
+      escalations: escalate.none(),
       demand: exec.BestEffort,
       env: [],
       clock: clock.fixed(at: 0),

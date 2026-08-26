@@ -9,7 +9,7 @@ import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type Seq}
 import core/register.{type RegisterNs, type RegisterValue}
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 
 /// One write within a transaction.
 ///
@@ -67,8 +67,10 @@ pub type CommitResult {
 /// Constructor invariants: `StaleExpectation` carries the first expectation
 /// that did not hold — the committer should reload and replan;
 /// `Corruption` means the transaction or stored state failed a total
-/// decode; `Faulted` is a backend fault (I/O error, lost lease) described
-/// for humans, not for dispatch.
+/// decode; `LeaseLost` means this process is no longer the session's
+/// writer, so reloading changes nothing and only reopening can;
+/// `Faulted` is any other backend fault described for humans, not for
+/// dispatch.
 pub type CommitError {
   /// An `expected` entry did not match the cell's current seq.
   StaleExpectation(failed: SeqExpectation)
@@ -76,4 +78,35 @@ pub type CommitError {
   Corruption(report: CorruptionReport)
   /// The backend faulted; the reason is a human-readable description.
   Faulted(reason: String)
+  /// The single-writer lease this process committed under is no longer
+  /// its own: another opener found it expired and stole it with a
+  /// bumped fence, or the lease row was cleared out from under it.
+  ///
+  /// `held_by` names the current owner when the backend could read one,
+  /// and is `None` when the row was gone. Kept apart from `Faulted`
+  /// because the remedy is opposite: a faulted backend may be worth a
+  /// retry, a lost lease never is — every retry meets the same fence
+  /// (`protocol-change/005`).
+  LeaseLost(held_by: Option(String))
+}
+
+/// The human-readable rendering of a lost lease, so every layer that has
+/// to flatten one into prose says the same thing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tx.describe_lease_loss(None) == "writer lease missing"
+/// ```
+///
+/// ```gleam
+/// assert tx.describe_lease_loss(Some("w2"))
+///   == "writer lease lost: now held by \"w2\""
+/// ```
+///
+pub fn describe_lease_loss(held_by: Option(String)) -> String {
+  case held_by {
+    Some(owner) -> "writer lease lost: now held by \"" <> owner <> "\""
+    None -> "writer lease missing"
+  }
 }

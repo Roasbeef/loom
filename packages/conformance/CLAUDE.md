@@ -133,6 +133,26 @@ them from their own test mains.
   Boundary checks run inside the commit path so a violation is caught at
   the transaction that caused it; terminal checks run once the strand is
   idle.
+- **An intervention that does not land is a violation, not a shrug.**
+  `surface.apply` honors the `Result` of `api.steer_quietly` and
+  `api.follow_up`: every `api.ApiError` reaches it having written
+  nothing, so a refusal is a turn the transcript has permanently lost
+  and it is recorded through `control.note` — `Report.violations`, which
+  `sound` fails the seed on. Two refusals are deliberately exempt and
+  marked instead of noted: an `AtTerminalCommit` steer, where the run the
+  item would attach to is already closed and refusal is the documented
+  outcome, and an admission the surface's own 2 s window did not observe,
+  which is not evidence the commit failed. The recording lives on an
+  error path and touches no schedule, so the seed corpus keeps its
+  meaning as a before/after oracle.
+- **The perf smoke asserts, it does not merely print.** `storage_suite_test`
+  holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
+  to the 5 ms M0 target it reports against — shared CI hardware has
+  produced a *max* above 5 ms on a run whose p50 was 3.1 ms. What that
+  bound proves is that the scan still costs single-digit milliseconds on
+  the machine that ran it; what it does not prove is the M0 target, and
+  the `EXPLAIN QUERY PLAN` assertions next to it remain the precise guard
+  on which index the scan uses.
 - **The deframer must be total** and is property-checked as such: chunking
   is irrelevant, damage is reported rather than silently survived, and
   truncation carries the partial bytes for a rest that never comes.

@@ -114,6 +114,21 @@ durably before acting on it, so the transcript shows denial, decision,
 and the single retry. Widening the session base is the caller applying
 approved grants explicitly — never a silent side effect.
 
+**Who drives that machine in production.** `client/escalate` is the seam
+between a broker refusal and a human. It wraps `Ctx.clear_call`, so a
+`PolicyRefused` — and only a policy refusal — files a durable record
+scoped to the exact call (`{operation, strand, step, source index, call
+id}`) under an id derived from `{strand, tool, wanted diff}`, which is
+what makes a retry loop land on the record already pending. If the host
+says a client is attached, the refusal then **parks**: the call is held
+open on its own effect process (never on the strand driver, which must
+keep serving aborts) until the record is decided, the window closes, or
+the client goes away. An approval is consumed by CAS and the same call is
+re-cleared once under the widened policy. The window is the smaller of a
+configured timeout and the call's own budget deadline, because the
+ledger refuses a reservation past that instant. Which raised records
+interrupt a person is a client-surface decision, not a runtime one.
+
 ## The wire
 
 One framing protocol carries every data-plane channel: executors today,
@@ -498,6 +513,7 @@ a degraded execution after the fact.
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
 | `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one. Its module doc is the list of mapping decisions. |
+| `client/escalate.gleam` | Parking: raise on every policy refusal, hold the call while a human decides, consume the approval and re-clear once. |
 | `conformance` test suites `wiring_test.gleam`, `e2e_test.gleam` | The adapter's mappings against fakes, and the M2 jailed acceptance that proves the record end to end. Both live under `packages/conformance/test/conformance/`. |
 | `protocol/msgpack-fixtures/` | Golden frames both languages are pinned against. |
 

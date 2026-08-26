@@ -94,7 +94,13 @@ pub type ProviderSurface {
 /// intent — a runner must not consult the live registry for it; `strand`
 /// is the dispatching driver's own durable strand name, never anything
 /// the model supplied, which is what lets a tool be judged against its own
-/// lineage rather than against a name it claims.
+/// lineage rather than against a name it claims; `grants` are exactly the
+/// grants the clearance that authorized *this* dispatch consumed — the
+/// far end of the channel `ClearanceQuery.grants` opens, and the reason
+/// an approval can change a policy decision at all. A replayed call
+/// carries none: the approval was spent by the incarnation that died, and
+/// re-widening a re-execution from a record already marked consumed is
+/// the one direction that would turn one approval into two.
 pub type ToolRun {
   ToolRun(
     operation: OpId,
@@ -104,6 +110,7 @@ pub type ToolRun {
     call: ToolCall,
     arguments: JsonValue,
     replay: ReplayPolicy,
+    grants: List(JsonValue),
   )
 }
 
@@ -126,7 +133,9 @@ pub type ToolOutcome {
 /// escalation vocabulary — see `runtime/escalation`); the driver loads
 /// them from the durable store at clearance time and marks them consumed
 /// once the clearance passes, so an approval clears exactly one
-/// re-execution. Production wiring maps them onto the tool `Ctx.grants`.
+/// re-execution. The driver carries whatever it consumed onto the
+/// dispatch (`ToolRun.grants`), and production wiring decodes them there
+/// onto the tool `Ctx.grants`.
 pub type ClearanceQuery {
   ClearanceQuery(
     operation: OpId,

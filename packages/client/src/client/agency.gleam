@@ -1152,6 +1152,8 @@ fn describe_api(error: api.ApiError) -> String {
     api.QueueRejected(reason: _) -> "the target's queue refused the admission"
     api.ReadFailed(reason:) -> reason
     api.CommitFailed(error: _) -> "the commit failed"
+    api.SessionStolen(held_by: _) ->
+      "another writer holds this session; reopen it"
     api.RaceLost -> "the admission kept losing its race; try again"
     api.ReservedFactKey(key:) -> "the key `" <> key <> "` is reserved"
     api.UnreservedFactKey(key:) ->

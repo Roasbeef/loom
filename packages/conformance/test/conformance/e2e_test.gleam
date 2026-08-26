@@ -22,6 +22,9 @@
 ////   synthetic interrupted result under its reserved id and the run
 ////   completes with the remaining script.
 
+import broker/policy
+import client/escalate
+import client/grants
 import client/wiring
 import core/clock
 import core/json.{type JsonValue}
@@ -30,9 +33,11 @@ import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleam/string
 import machine/operation
 import runtime/api
+import runtime/escalation as runtime_escalation
 import session/session.{type Session}
 import simplifile
 import storage/storage
@@ -45,6 +50,13 @@ pub fn jailed_end_to_end_test() {
   case jail.build_helper() {
     Error(reason) -> io.println("SKIP jailed_end_to_end: " <> reason)
     Ok(helper_path) -> run_happy(helper_path)
+  }
+}
+
+pub fn escalation_round_trip_test() {
+  case jail.build_helper() {
+    Error(reason) -> io.println("SKIP escalation_round_trip: " <> reason)
+    Ok(helper_path) -> run_escalation(helper_path)
   }
 }
 
@@ -234,6 +246,166 @@ fn run_happy(helper_path: String) -> Nil {
   assert list.map(projected(reopened), fingerprint) == fingerprints
   let assert Ok(Nil) = api.close(runtime2)
   jail.stop(rig_jail)
+}
+
+// --- the escalation round trip (design §5.3, issue #4) --------------------
+
+// The whole approval loop, jailed: a session whose base policy is
+// *narrower* than `bash` requires, a call the broker therefore refuses
+// on policy, a durable record raised against exactly that call, an
+// approval standing in for a human at a client, and the same call
+// resuming under the widened policy — proved by the file the jailed
+// command leaves on disk, which nothing but a real execution under a
+// composed policy carrying the approved grant could put there.
+//
+// Everything here is production code. The only test-shaped parts are
+// the narrowed base policy (the refusal has to be provoked), the
+// scripted provider, and the approver, which reads the stored denial's
+// wanted diff and approves exactly it — the same two steps the gateway
+// takes for a human pressing a button.
+const proof_line = "approved\n"
+
+fn run_escalation(helper_path: String) -> Nil {
+  let rig_jail =
+    jail.start(
+      name: "escalate",
+      helper_path:,
+      pool_size: 2,
+      clock: clock.stepping(from: 1_700_000_000_000, by: 7),
+    )
+  let turns = [
+    script.ToolUseTurn(
+      call_id: "call_bash_e1",
+      tool: "bash",
+      arguments: bash_args("printf 'approved\\n' > proof.txt"),
+      input_tokens: 100,
+      output_tokens: 5,
+    ),
+    script.AnswerTurn(
+      text: "The proof file is written.",
+      input_tokens: 110,
+      output_tokens: 6,
+    ),
+  ]
+  let assert Ok(sess) = open_session(rig_jail.session_path, "e2e-escalate")
+  // The seam's clock must share the wiring clock's era: the park window
+  // is clamped by a budget deadline computed on the tool side, so a
+  // clock from a different era would close every window before it
+  // opened (spec §0.2, "one clock per session"). It advances on every
+  // read so an unapproved park still ends — the safety net under a test
+  // whose approver is supposed to arrive first.
+  let escalate_name = process.new_name(prefix: "loom_e2e_escalate")
+  let escalate_config =
+    escalate.Config(
+      ..escalate.default_config(escalate_name, ticking(1_700_000_010_000, 10)),
+      interactive: fn() { True },
+      park_timeout_ms: 5000,
+      poll_interval_ms: 20,
+    )
+  let config =
+    wiring.Config(
+      ..rig.config(rig_jail, rig.scripted_gateway(turns), sess),
+      // Narrower than `bash` requires, which is what provokes the
+      // refusal: the tool wants the whole filesystem readable and this
+      // grants only the workspace.
+      base_policy: policy.workspace_default(rig_jail.workspace),
+      escalations: escalate.seam(escalate_config),
+    )
+  let effects = wiring.build_effects(config)
+  let options = api.default_options(rig.configuration())
+  let assert Ok(runtime) = api.open(sess, effects, options)
+  let assert Ok(_holder) = escalate.start(escalate_config, runtime)
+    as "the escalation holder must start"
+  let _approver =
+    process.spawn_unlinked(fn() { approve_first_pending(runtime, 600) })
+  let assert Ok(op) = api.prompt(runtime, [user("Write the proof file.")])
+  let assert Ok(outcome) = api.await_result(runtime, op, within_ms: 120_000)
+    as "the escalation run must reach a terminal result"
+  let assert operation.RunLastResult(
+    outcome: operation.RunCompleted(..),
+    final_assistant: Some(_),
+    ..,
+  ) = outcome
+
+  // The jail really ran the command, under a policy that exists only
+  // because a human approved the diff.
+  let assert Ok(content) = simplifile.read(rig_jail.workspace <> "/proof.txt")
+  assert content == proof_line
+
+  // The tool result the model saw is the *successful* one, not the
+  // refusal that preceded it: parking replaced the settlement rather
+  // than adding a second.
+  let assert [
+    message.UserMessage(..),
+    message.AssistantMessage(stop_reason: message.ToolUse, ..),
+    message.ToolResultMessage(
+      tool_name: "bash",
+      tool_call_id: "call_bash_e1",
+      is_error: False,
+      details: Some(bash_details),
+      ..,
+    ),
+    message.AssistantMessage(stop_reason: message.Stop, ..),
+  ] = projected(sess)
+  assert int_field(bash_details, "exit_code") == Ok(0)
+
+  // One record, raised against exactly that call and spent exactly once.
+  let assert Ok([record]) = api.escalations(runtime)
+    as "the escalation must have been recorded"
+  assert record.status == runtime_escalation.Consumed
+  let assert Some(scope) = record.scope as "the record must be scoped"
+  assert scope.call_id == "call_bash_e1"
+  assert scope.strand == "main"
+  let assert Ok(Nil) = api.close(runtime)
+  jail.stop(rig_jail)
+}
+
+// The human at the client: wait for a pending record, decode its stored
+// denial the way `client/gateway` does, and approve exactly the wanted
+// diff. Bounded, so a run that never raises ends the process instead of
+// leaving it spinning for the life of the VM.
+fn approve_first_pending(runtime: api.Runtime, fuel: Int) -> Nil {
+  case fuel <= 0 {
+    True -> Nil
+    False ->
+      case api.escalations(runtime) {
+        Ok([record, ..]) if record.status == runtime_escalation.Pending ->
+          case grants.decode_denial(record.denial) {
+            Error(_report) -> Nil
+            Ok(decoded) -> {
+              let _decided =
+                api.approve_escalation(
+                  runtime,
+                  record.id,
+                  list.map(decoded.wanted, grants.encode),
+                )
+              Nil
+            }
+          }
+        _ -> {
+          process.sleep(10)
+          approve_first_pending(runtime, fuel - 1)
+        }
+      }
+  }
+}
+
+// A clock on the fake era that actually advances, so a park that nobody
+// decides still closes. `clock.stepping` cannot serve: it returns a
+// *new* clock per read and the seam holds one clock value, so it would
+// freeze at its first instant.
+fn ticking(from: Int, by: Int) -> clock.Clock {
+  let assert Ok(counter) =
+    actor.new(from)
+    |> actor.on_message(fn(now, reply: process.Subject(Int)) {
+      process.send(reply, now)
+      actor.continue(now + by)
+    })
+    |> actor.start
+    as "the ticking clock must start"
+  clock.from_function(fn() {
+    process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
+  })
 }
 
 // --- the crash rider (pi §0.5, live) --------------------------------------

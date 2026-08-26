@@ -163,7 +163,23 @@ type State {
     observations: List(Observation),
     poll_permit: Bool,
     retry_wake: Option(Int),
+    /// The grants the most recent tool clearance consumed, held only
+    /// between that clearance and the dispatch it authorizes. It is a
+    /// one-slot carry rather than durable state because that is exactly
+    /// its lifetime: `clear_tool_call` consumes the approvals attributed
+    /// to one call, the very next planning pass turns that clearance into
+    /// a `ToolRequest` intent, and `start_effect` spends the slot. It is
+    /// keyed by the call's coordinates so a slot left behind by a
+    /// clearance whose dispatch never happened (a stale commit that
+    /// re-plans, a fault) can never widen a *different* call.
+    cleared: Option(Cleared),
   )
+}
+
+// The carry between one clearance and the dispatch it authorizes: whose
+// call it belongs to, and what its consumption won.
+type Cleared {
+  Cleared(step_id: String, source_index: Int, grants: List(JsonValue))
 }
 
 // Everything one planning pass reads: the restored projection of spec
@@ -239,6 +255,7 @@ pub fn start(
       observations: [],
       poll_permit: False,
       retry_wake: None,
+      cleared: None,
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
@@ -565,6 +582,11 @@ fn abort_commit(state: State, attempts: Int) -> AbortAttempt {
                 Error(tx.Corruption(report:)) ->
                   AbortFailed(corruption.describe(report))
                 Error(tx.Faulted(reason:)) -> AbortFailed(reason)
+                // Fenced out: another writer owns the session, so the
+                // cancellation marker cannot be made durable here and
+                // retrying would meet the same fence.
+                Error(tx.LeaseLost(held_by:)) ->
+                  AbortFailed(tx.describe_lease_loss(held_by))
               }
           }
         }
@@ -637,6 +659,13 @@ fn plan(
                 other -> Continue(push_observation_front(state, other))
               }
             KeyObservation(refined) -> plan(state, loaded, refined, fuel - 1)
+            KeyCleared(observation: refined, cleared:) ->
+              plan(
+                State(..state, cleared: Some(cleared)),
+                loaded,
+                refined,
+                fuel - 1,
+              )
           }
         planner.Transition(next: _, tx: plan_tx)
         | planner.Finish(result: _, tx: plan_tx) ->
@@ -676,6 +705,10 @@ fn commit_then(
     Error(tx.Corruption(report:)) ->
       Halt("commit corruption: " <> corruption.describe(report))
     Error(tx.Faulted(reason:)) -> Halt("storage faulted: " <> reason)
+    // Not a fault to reload past: this process is no longer the
+    // session's writer, so the strand stops and the tree's reopen path
+    // is the only thing that can resolve it.
+    Error(tx.LeaseLost(held_by:)) -> Halt(tx.describe_lease_loss(held_by))
   }
 }
 
@@ -713,6 +746,12 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
 
 type KeyResolution {
   KeyObservation(Observation)
+  /// A tool clearance passed, carrying whatever grants its consumption
+  /// won. Distinct from `KeyObservation` because the grants must reach
+  /// the dispatch that follows: the observation alone would strand them
+  /// at the query, which is exactly the severed channel this variant
+  /// exists to close.
+  KeyCleared(observation: Observation, cleared: Cleared)
   KeyWait
   KeyHalt(String)
 }
@@ -936,7 +975,12 @@ fn start_effect(
       effective_arguments:,
       replay:,
       result_entry:,
-    ) ->
+    ) -> {
+      // The grants this call's own clearance consumed, and nothing else:
+      // a carry left by any other call is dropped rather than spent
+      // here, which keeps an approval worth exactly the one execution of
+      // exactly the one call a human approved.
+      let #(grants, state) = take_cleared(state, step_id, source_index)
       Ok(spawn_tool(
         state,
         ToolEffect(operation:, step_id:, source_index:, result_entry:),
@@ -949,8 +993,10 @@ fn start_effect(
           call:,
           arguments: effective_arguments,
           replay:,
+          grants:,
         ),
       ))
+    }
     planner.ToolReplay(
       operation:,
       step_id:,
@@ -974,6 +1020,12 @@ fn start_effect(
               call:,
               arguments:,
               replay: operation.ReplaySafe,
+              // A replay is a re-execution of a call whose clearance
+              // belonged to a dead incarnation. Whatever approval that
+              // clearance consumed is already marked spent, so replaying
+              // under it would be the one direction that turns a single
+              // approval into two widened executions.
+              grants: [],
             ),
           ))
       }
@@ -1026,6 +1078,24 @@ fn start_effect(
         ),
       ))
   }
+}
+
+// Takes the clearance carry, if it belongs to this call. Any other
+// carry is discarded with it: a clearance whose dispatch never happened
+// has already had its approval marked consumed, and holding the grants
+// for a later call would spend them somewhere nobody approved.
+fn take_cleared(
+  state: State,
+  step_id: String,
+  source_index: Int,
+) -> #(List(JsonValue), State) {
+  let grants = case state.cleared {
+    Some(Cleared(step_id: held_step, source_index: held_index, grants:))
+      if held_step == step_id && held_index == source_index
+    -> grants
+    _ -> []
+  }
+  #(grants, State(..state, cleared: None))
 }
 
 fn with_projection(
@@ -1496,11 +1566,14 @@ fn clear_tool_call(
             ))
           {
             effects.Cleared(effective_arguments:, replay:) ->
-              KeyObservation(planner.ObservedToolCleared(
-                source_index:,
-                effective_arguments:,
-                replay:,
-              ))
+              KeyCleared(
+                observation: planner.ObservedToolCleared(
+                  source_index:,
+                  effective_arguments:,
+                  replay:,
+                ),
+                cleared: Cleared(step_id:, source_index:, grants:),
+              )
             effects.ClearanceRefused(reason:) ->
               KeyObservation(planner.ObservedToolRefused(
                 source_index:,
@@ -1577,6 +1650,7 @@ fn consume_escalations(
       Error(tx.StaleExpectation(..)) -> Ok(won)
       Error(tx.Corruption(report:)) -> Error(corruption.describe(report))
       Error(tx.Faulted(reason:)) -> Error(reason)
+      Error(tx.LeaseLost(held_by:)) -> Error(tx.describe_lease_loss(held_by))
     }
   })
 }

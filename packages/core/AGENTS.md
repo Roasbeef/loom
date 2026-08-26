@@ -24,7 +24,13 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   `StrandLeaf`'s `Option(EntryId)`.
 - `core/tx.{Write, Tx, SeqExpectation, CommitResult, CommitError}` — the
   unit of durability: an ordered write list applied all-or-none under
-  optimistic seq expectations.
+  optimistic seq expectations. `CommitError` carries four refusals, and
+  the fourth is newer than the frozen sketch: `LeaseLost(held_by:)` says
+  the committer is no longer the session's writer, which is the one
+  refusal no reload and no retry can get past
+  (`protocol-change/005`). `tx.describe_lease_loss` is the single place
+  it is worded for humans, so every layer that has to flatten one into
+  prose says the same thing.
 - `core/json.JsonValue` — a pattern-matchable JSON ADT with a total parser,
   defined here rather than borrowed so pure code can inspect the `Json`
   named in the frozen contracts.

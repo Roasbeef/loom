@@ -28,7 +28,7 @@ complete copy of the retained tail (`core/entry.gleam:53`). Nothing is
 deleted. Every summarized message stays in the tree, navigable,
 forkable, and indexable; what changes is only the *projection*, because
 a context scan stops inclusively at the first compaction it meets
-(`project`, `session/session.gleam:616`). Recovery therefore replays the
+(`project`, `session/session.gleam:625`). Recovery therefore replays the
 same context it had before the crash, since the compaction entry is in
 the log like everything else.
 
@@ -250,7 +250,7 @@ one is configured, falling back to the strand's own captured identity
 otherwise — routing a summary to a cheaper model is why that role exists,
 and unlike a generation there is no durable identity contract to honour,
 since the summary is published as text rather than as a response
-attributed to a model (`summary_target`, `client/wiring.gleam:545`). An
+attributed to a model (`summary_target`, `client/wiring.gleam:552`). An
 operator's manual instructions reach the prompt from the operation's
 durable state rather than from the preparation, because the preparation
 is the frozen *input* the decision hook approved and the instructions are
@@ -306,7 +306,7 @@ than inside it, so a host with its own provider — the scripted demo is
 one — can still run the real hooks over it
 (`recording_summaries`, `client/wiring.gleam:356`). The wrapper owns the
 inner stream and **files the settlement before forwarding the terminal
-event** (`relay_summary`, `client/wiring.gleam:384`). That ordering is
+event** (`relay_summary`, `client/wiring.gleam:391`). That ordering is
 the whole point: by the time the effect process reports the request
 settled and the driver turns around to ask for progress, the text is
 already in the sink, so the hook's read is a question about a record that
@@ -493,7 +493,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2186`). An
+(`compaction_preparation`, `client/gateway.gleam:2224`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
@@ -553,7 +553,7 @@ the whole loop.
 
 **The simulation never fails a summarizer.** Its `summary_progress` hook
 answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:905`), so no seed drives
+(`hooks`, `conformance/simulation/surface.gleam:930`), so no seed drives
 a structural failure and the seeded soak proves the survival rule only by
 *not* regressing around it. Adding a refusing summarizer means a new
 `script.Structural` variant, and drawing it would reshuffle every seed's

@@ -108,13 +108,16 @@
 import broker/broker.{type Broker}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
+import client/escalate.{type Escalations}
+import client/grants
 import client/summaries.{type Summaries}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/message.{type AgentMessage}
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation.{
   type CompactionSettings, type ReplayPolicy, type StructuralPreparation,
@@ -206,8 +209,12 @@ pub type Config {
     blob_root: String,
     /// The session's base sandbox policy.
     base_policy: SandboxPolicy,
-    /// Grants from consumed escalation approvals.
-    grants: List(Grant),
+    /// What a policy refusal does before it settles: raise a durable
+    /// record, and — when someone is attached to decide — hold the call
+    /// open until they do (`client/escalate`). `escalate.none()` is the
+    /// no-plane default, under which a refusal settles exactly as it did
+    /// before escalations existed.
+    escalations: Escalations,
     /// Enforcement strictness for jailed executions. Production demands
     /// `exec.FullEnforcement`; `exec.BestEffort` accepts a degraded
     /// helper and is for development containers and self-tests only.
@@ -992,6 +999,13 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
 /// idempotent. Every one of them comes from the driver, never from the
 /// model.
 ///
+/// `grants` travels the same way, and for the same reason: they are the
+/// grants *this call's* clearance consumed, decoded here from the
+/// broker's escalation vocabulary. There is deliberately no session-wide
+/// grant list to fall back on — a grant that is not attributable to the
+/// call in hand widens nothing (design §5.3: one re-execution of the
+/// denied action, never a silent session widening).
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1006,17 +1020,80 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
     step_id: run.step_id,
     source_index: run.source_index,
     base_policy: config.base_policy,
-    grants: config.grants,
+    grants: run_grants(run),
     demand: config.demand,
     env: config.env,
     clock: config.clock,
     filesystem: fs.real_filesystem(),
     blob_root: config.blob_root,
-    clear_call: tool.broker_runner(
-      broker: config.broker,
-      waiting: config.broker_timeout_ms,
-    ),
+    clear_call: escalating_runner(config, run),
   )
+}
+
+// The broker seam a tool actually gets: the production runner, plus the
+// one thing a tool must not have to know about.
+//
+// A `PolicyRefused` is the only refusal a human can overturn, and it is
+// raised *before* the broker reserves budget or borrows a helper, so a
+// refused call has spent nothing and can be asked again for free. The
+// seam decides what happens — record it, hold it, or settle it — and on
+// an approval the same spec is re-cleared with the approved grants
+// appended. That is the whole "one re-execution under the widened
+// policy" of design §5.3: exactly one retry, of exactly this call, and
+// if the widened policy still does not satisfy the tool the second
+// refusal stands in band.
+//
+// Every other refusal — an invalid policy, a spent budget, a missing
+// helper — passes straight through: none of them is a decision a human
+// is being asked to make.
+fn escalating_runner(
+  config: Config,
+  run: effects.ToolRun,
+) -> fn(broker.CallSpec, Subject(broker.CallEvent)) ->
+  Result(tool.RunningCall, broker.Refusal) {
+  let direct =
+    tool.broker_runner(broker: config.broker, waiting: config.broker_timeout_ms)
+  fn(spec: broker.CallSpec, events) {
+    case direct(spec, events) {
+      Error(broker.PolicyRefused(denial:)) -> {
+        let refused =
+          escalate.Refused(
+            operation: run.operation,
+            strand: run.strand,
+            step_id: run.step_id,
+            source_index: run.source_index,
+            call_id: run.call.id,
+            tool: run.call.name,
+            denial:,
+            deadline_ms: spec.budget.deadline_ms,
+          )
+        case config.escalations.refused(refused) {
+          escalate.Settle -> Error(broker.PolicyRefused(denial:))
+          escalate.Resume(grants: approved) ->
+            direct(
+              broker.CallSpec(
+                ..spec,
+                grants: list.append(spec.grants, approved),
+              ),
+              events,
+            )
+        }
+      }
+      other -> other
+    }
+  }
+}
+
+// The typed grants a run carries, decoded from the opaque escalation
+// vocabulary the runtime moves them in. Total by construction: a payload
+// that will not decode is dropped rather than faulted on, because
+// skipping a grant can only *narrow* what the call receives and the call
+// still settles in band under whatever remains. Faulting instead would
+// turn a corrupt durable byte into a halted strand.
+fn run_grants(run: effects.ToolRun) -> List(Grant) {
+  list.filter_map(run.grants, fn(payload) {
+    grants.decode(payload) |> result.replace_error(Nil)
+  })
 }
 
 /// Whether the named tool's current registration declares safe replay

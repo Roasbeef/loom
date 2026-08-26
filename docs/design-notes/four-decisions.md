@@ -84,8 +84,8 @@ and returns, never touching the query's grants; `tool_context`
 the static session config instead (`config.grants`,
 `packages/client/src/client/wiring.gleam:1010`), which `serve` sets to the
 empty list once at boot (`packages/client/src/client/serve.gleam:743`); and
-`ToolRun` (`packages/runtime/src/runtime/effects.gleam:98`) has no grants
-field at all, so the clearance-time grants *cannot* reach the run-time
+`ToolRun` (`packages/runtime/src/runtime/effects.gleam:104`) had no grants
+field at all, so the clearance-time grants *could not* reach the run-time
 context without changing the runtime-internal effects seam. The seam is not
 Part-1 frozen, so the fix needs no protocol-change proposal — but until it
 lands, any raising policy whatsoever is theater: a raised, approved,
@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1085`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1109`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.
@@ -194,6 +194,28 @@ practice), the host-re-execute path is the honest minimum and (b)'s
 records become audit-only. Both are empirical questions; the first belongs
 to the owner, the second to a transcript grep after a few weeks of real
 use.
+
+### What did change it, and what shipped
+
+The owner answered the first question: v0.1 *does* demo blocking
+human-in-the-loop approval (#11, closed as decided). So the conditional
+above fired and the recommendation inverted. Session widening was **not**
+built. What shipped under #4, in the order the advisory said each step
+was inert without the one before it:
+
+1. The grants channel, as specified here — `ClearanceQuery` grants into
+   `ToolRun.grants` into `Ctx.grants`. `wiring.Config` lost its
+   session-wide grant list entirely, which is the same finding read from
+   the other side: an unattributable grant must widen nothing.
+2. **Parking** (mechanism 1), in `client/escalate`: a policy refusal
+   raises, holds the call on its own effect process, and re-clears it
+   once under the widened policy when the approval lands.
+3. The raiser, with the deterministic `{strand, tool, wanted-diff}` id
+   this note proposed, and (c)'s interactive flag back as a runtime
+   concern deciding *parking only* — never whether a record is written.
+
+The advisory's central finding held: an approval could not be spent, and
+a raiser alone would have accomplished nothing.
 
 ---
 
