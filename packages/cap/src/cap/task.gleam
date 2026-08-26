@@ -212,44 +212,62 @@ fn collect_loop(
           cancel_running(runner.running)
           runner.done
         }
-        Ok(Reported(index:, outcome:)) -> {
-          let runner = retire(runner, index)
-          let stored = case outcome {
-            Ok(value) -> ValueOutcome(value)
-            Error(error) -> ErrorOutcome(error)
-          }
-          let runner =
-            Runner(..runner, done: dict.insert(runner.done, index, stored))
-          case fail_fast && is_error(outcome) {
-            True -> {
-              cancel_running(runner.running)
-              runner.done
-            }
-            False -> collect_loop(fill(runner), fail_fast)
-          }
-        }
-        Ok(WorkerDown(down:)) ->
-          case down_index(runner, down) {
-            // A DOWN for a worker we already retired (its Normal exit
-            // after Reported): ignore.
-            Error(Nil) -> collect_loop(runner, fail_fast)
-            Ok(#(index, reason)) -> {
-              let runner = retire(runner, index)
-              let runner =
-                Runner(
-                  ..runner,
-                  done: dict.insert(runner.done, index, CrashOutcome(reason)),
-                )
-              case fail_fast {
-                True -> {
-                  cancel_running(runner.running)
-                  runner.done
-                }
-                False -> collect_loop(fill(runner), fail_fast)
-              }
-            }
-          }
+        Ok(Reported(index:, outcome:)) ->
+          handle_reported(runner, fail_fast, index, outcome)
+        Ok(WorkerDown(down:)) -> handle_worker_down(runner, fail_fast, down)
       }
+  }
+}
+
+// One task reported its own `Result` back: record the outcome, then
+// either stop everything (fail-fast, and this one failed) or keep
+// collecting.
+fn handle_reported(
+  runner: Runner(b, e),
+  fail_fast: Bool,
+  index: Int,
+  outcome: Result(b, e),
+) -> Dict(Int, Outcome(b, e)) {
+  let runner = retire(runner, index)
+  let stored = case outcome {
+    Ok(value) -> ValueOutcome(value)
+    Error(error) -> ErrorOutcome(error)
+  }
+  let runner = Runner(..runner, done: dict.insert(runner.done, index, stored))
+  case fail_fast && is_error(outcome) {
+    True -> {
+      cancel_running(runner.running)
+      runner.done
+    }
+    False -> collect_loop(fill(runner), fail_fast)
+  }
+}
+
+// A monitored worker died. A DOWN for one already retired (its Normal
+// exit landing after its own `Reported`) is stale and ignored; a live
+// worker's death is recorded as a crash.
+fn handle_worker_down(
+  runner: Runner(b, e),
+  fail_fast: Bool,
+  down: process.Down,
+) -> Dict(Int, Outcome(b, e)) {
+  case down_index(runner, down) {
+    Error(Nil) -> collect_loop(runner, fail_fast)
+    Ok(#(index, reason)) -> {
+      let runner = retire(runner, index)
+      let runner =
+        Runner(
+          ..runner,
+          done: dict.insert(runner.done, index, CrashOutcome(reason)),
+        )
+      case fail_fast {
+        True -> {
+          cancel_running(runner.running)
+          runner.done
+        }
+        False -> collect_loop(fill(runner), fail_fast)
+      }
+    }
   }
 }
 

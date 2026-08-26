@@ -392,27 +392,52 @@ pub fn apply(content: String, plan: Plan) -> Result(String, ApplyError) {
   let total_lines = list.length(split.lines)
   case malformed_reason(plan) {
     [reason, ..] -> Error(MalformedPlan(reason:))
-    [] -> {
-      let annotated = annotate(content)
-      case stale_references(plan, annotated, total_lines) {
-        [_, ..] as stale -> Error(StaleAnchors(stale:))
-        [] ->
-          case digest(content) == plan.digest {
-            False ->
-              Error(StaleContent(
-                digest: digest(content),
-                fresh: touched_regions(plan, annotated, total_lines),
-              ))
-            True -> {
-              let placed = list.map(plan.hunks, place)
-              case overlap(placed) {
-                Ok(line) -> Error(OverlappingHunks(line:))
-                Error(Nil) -> Ok(apply_placed(split, placed))
-              }
-            }
-          }
-      }
-    }
+    [] -> apply_checked(content, plan, split, total_lines)
+  }
+}
+
+// Structural checks passed; verify the anchors the plan referenced are
+// still current before comparing against the whole-file digest.
+fn apply_checked(
+  content: String,
+  plan: Plan,
+  split: Split,
+  total_lines: Int,
+) -> Result(String, ApplyError) {
+  let annotated = annotate(content)
+  case stale_references(plan, annotated, total_lines) {
+    [_, ..] as stale -> Error(StaleAnchors(stale:))
+    [] -> apply_if_current(content, plan, split, annotated, total_lines)
+  }
+}
+
+// Anchors matched; the digest is the coarser check that also catches
+// changes an anchored reference cannot see (a shift outside every
+// hunk's context, for instance).
+fn apply_if_current(
+  content: String,
+  plan: Plan,
+  split: Split,
+  annotated: List(AnchoredLine),
+  total_lines: Int,
+) -> Result(String, ApplyError) {
+  case digest(content) == plan.digest {
+    False ->
+      Error(StaleContent(
+        digest: digest(content),
+        fresh: touched_regions(plan, annotated, total_lines),
+      ))
+    True -> apply_hunks(split, plan)
+  }
+}
+
+// Content is exactly the pre-image the plan was computed against; the
+// last possible rejection is two hunks touching the same line.
+fn apply_hunks(split: Split, plan: Plan) -> Result(String, ApplyError) {
+  let placed = list.map(plan.hunks, place)
+  case overlap(placed) {
+    Ok(line) -> Error(OverlappingHunks(line:))
+    Error(Nil) -> Ok(apply_placed(split, placed))
   }
 }
 

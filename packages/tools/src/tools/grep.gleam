@@ -16,6 +16,7 @@ import broker/exec
 import core/clock
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -86,62 +87,47 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   let globs = option.unwrap(globs, [])
   let context = option.unwrap(context, 0)
   let max_results = option.unwrap(max_results, default_max_results)
-  case context < 0 || max_results < 1 {
-    True ->
-      tool.failure(
-        "invalid arguments: `context` must be >= 0 and `max_results` >= 1",
-      )
-    False ->
-      case search_root(ctx, path) {
-        Error(outcome) -> outcome
-        Ok(root) -> {
-          let #(now, _clock) = clock.read(ctx.clock)
-          let spec = call_spec(ctx, pattern, root, globs, context, now)
-          let events = process.new_subject()
-          case ctx.clear_call(spec, events) {
-            Error(refusal) -> tool.refusal_outcome(refusal)
-            Ok(call) -> {
-              call.stdin(<<>>, True)
-              case
-                tool.collect_events(
-                  events,
-                  waiting: timeout_ms + settle_grace_ms,
-                )
-              {
-                Error(Nil) -> {
-                  call.cancel()
-                  tool.failure(
-                    "the sandbox did not settle the search within its window",
-                  )
-                }
-                Ok(collected) -> settle(ctx, collected, max_results)
-              }
-            }
-          }
-        }
-      }
-  }
+  use <- bool.guard(
+    when: context < 0 || max_results < 1,
+    return: tool.failure(
+      "invalid arguments: `context` must be >= 0 and `max_results` >= 1",
+    ),
+  )
+  use root <- tool.or_outcome(search_root(ctx, path), identity_outcome)
+  let #(now, _clock) = clock.read(ctx.clock)
+  let spec = call_spec(ctx, pattern, root, globs, context, now)
+  let events = process.new_subject()
+  use call <- tool.or_outcome(
+    ctx.clear_call(spec, events),
+    tool.refusal_outcome,
+  )
+  call.stdin(<<>>, True)
+  use collected <- tool.or_outcome(
+    tool.collect_events(events, waiting: timeout_ms + settle_grace_ms),
+    fn(_nil) {
+      call.cancel()
+      tool.failure("the sandbox did not settle the search within its window")
+    },
+  )
+  settle(ctx, collected, max_results)
 }
 
+// `search_root` and `collect_events` (below) already render their
+// failure as a `ToolOutcome`, so chaining them through `tool.or_outcome`
+// needs no mapping.
+fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
+  outcome
+}
+
+// Lexical resolution never inspects the real filesystem; the jailed rg
+// owns symlink containment for this tool, so `fs.resolve_path` (not
+// `resolve_real`) is enough here.
 fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
   case path {
     None -> Ok(ctx.workspace)
     Some(path) ->
-      case fs.resolve_path(workspace: ctx.workspace, path:) {
-        Ok(resolved) -> Ok(resolved)
-        Error(fs.EmptyPath) ->
-          Error(tool.failure("invalid arguments: `path` must not be empty"))
-        Error(fs.EscapesWorkspace(path:)) ->
-          Error(tool.failure(
-            "path `" <> path <> "` resolves outside the workspace root",
-          ))
-        // Lexical resolution never inspects the real filesystem; the
-        // jailed rg owns symlink containment for this tool.
-        Error(fs.Unresolvable(path:, reason:)) ->
-          Error(tool.failure(
-            "path `" <> path <> "` could not be resolved: " <> reason,
-          ))
-      }
+      fs.resolve_path(workspace: ctx.workspace, path:)
+      |> result.map_error(fs.path_outcome)
   }
 }
 
@@ -221,16 +207,7 @@ fn exited(
     Error(Nil) -> ""
   }
   case result.code {
-    0 | 1 ->
-      case bit_array.to_string(collected.stdout) {
-        Error(Nil) -> tool.failure("ripgrep produced non-UTF-8 output")
-        Ok(stdout) -> {
-          let all_matches = parse_matches(stdout)
-          let matches = list.take(all_matches, max_results)
-          let capped = list.length(all_matches) > max_results
-          render(ctx, matches, capped:, truncated: collected.stdout_truncated)
-        }
-      }
+    0 | 1 -> matched_outcome(ctx, collected, max_results)
     // 127: the shell-less exec could not run rg (defensive; the helper
     // usually reports spawn_failed instead).
     127 -> rg_unavailable()
@@ -244,6 +221,25 @@ fn exited(
         },
       )
   }
+}
+
+fn matched_outcome(
+  ctx: Ctx,
+  collected: tool.Collected,
+  max_results: Int,
+) -> ToolOutcome {
+  use stdout <- tool.or_outcome(
+    bit_array.to_string(collected.stdout),
+    non_utf8_stdout,
+  )
+  let all_matches = parse_matches(stdout)
+  let matches = list.take(all_matches, max_results)
+  let capped = list.length(all_matches) > max_results
+  render(ctx, matches, capped:, truncated: collected.stdout_truncated)
+}
+
+fn non_utf8_stdout(_nil: Nil) -> ToolOutcome {
+  tool.failure("ripgrep produced non-UTF-8 output")
 }
 
 fn render(
@@ -268,18 +264,7 @@ fn render(
   }
   let details =
     json.Object([
-      #(
-        "matches",
-        json.Array(
-          list.map(matches, fn(match) {
-            json.Object([
-              #("path", json.String(match.path)),
-              #("line", json.Int(match.line)),
-              #("text", json.String(match.text)),
-            ])
-          }),
-        ),
-      ),
+      #("matches", json.Array(list.map(matches, encode_match))),
       #("match_count", json.Int(list.length(matches))),
       #("capped", json.Bool(capped)),
       #("output_truncated", json.Bool(truncated)),
@@ -298,6 +283,14 @@ fn render(
       ])
       |> blob.with_blob_details(bounded)
   }
+}
+
+fn encode_match(match: Match) -> JsonValue {
+  json.Object([
+    #("path", json.String(match.path)),
+    #("line", json.Int(match.line)),
+    #("text", json.String(match.text)),
+  ])
 }
 
 /// Parses ripgrep `--json` event lines into matches. Unknown or

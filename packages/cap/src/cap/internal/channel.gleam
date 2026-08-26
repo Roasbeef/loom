@@ -260,48 +260,9 @@ fn perform(
 fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
   case msg {
     Perform(cap:, args:, deadline_ms:, caller:, reply:) ->
-      case state.failed {
-        // The reader already declared the channel dead: no result can
-        // ever come back, so refuse now rather than after the deadline.
-        Some(reason) -> {
-          process.send(reply, Error(Unreachable(reason)))
-          actor.continue(state)
-        }
-        None -> {
-          let id = state.next_id
-          case wire.encode_cap_call(id, state.token, cap, args, deadline_ms) {
-            Error(_) -> {
-              process.send(reply, Error(Unreachable("cap_call did not encode")))
-              actor.continue(State(..state, next_id: id + 1))
-            }
-            Ok(bytes) -> {
-              state.send(bytes)
-              let monitor = process.monitor(caller)
-              let inflight =
-                dict.insert(
-                  state.inflight,
-                  id,
-                  InFlight(reply:, monitor:, caller:),
-                )
-              actor.continue(State(..state, next_id: id + 1, inflight:))
-            }
-          }
-        }
-      }
+      handle_perform(state, cap, args, deadline_ms, caller, reply)
 
-    Deliver(id:, outcome:) ->
-      case dict.get(state.inflight, id) {
-        // A result for a call already cancelled or already answered:
-        // drop it. Idempotent by construction.
-        Error(Nil) -> actor.continue(state)
-        Ok(in_flight) -> {
-          process.demonitor_process(in_flight.monitor)
-          process.send(in_flight.reply, outcome_to_result(outcome))
-          actor.continue(
-            State(..state, inflight: dict.delete(state.inflight, id)),
-          )
-        }
-      }
+    Deliver(id:, outcome:) -> handle_deliver(state, id, outcome)
 
     CallerDown(down:) ->
       case down {
@@ -322,6 +283,63 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
     Stop -> {
       settle_inflight(state, "cap channel stopped")
       actor.stop()
+    }
+  }
+}
+
+// A program asked to perform one capability call. An already-failed
+// channel refuses in-band at once; otherwise the call is marshalled and
+// tracked in-flight against a monitor on its caller — the tracking that
+// makes a killed caller's call cancellable.
+fn handle_perform(
+  state: State,
+  cap: String,
+  args: MsgPackValue,
+  deadline_ms: Int,
+  caller: Pid,
+  reply: Subject(Result(MsgPackValue, CallError)),
+) -> actor.Next(State, Msg) {
+  case state.failed {
+    // The reader already declared the channel dead: no result can
+    // ever come back, so refuse now rather than after the deadline.
+    Some(reason) -> {
+      process.send(reply, Error(Unreachable(reason)))
+      actor.continue(state)
+    }
+    None -> {
+      let id = state.next_id
+      case wire.encode_cap_call(id, state.token, cap, args, deadline_ms) {
+        Error(_) -> {
+          process.send(reply, Error(Unreachable("cap_call did not encode")))
+          actor.continue(State(..state, next_id: id + 1))
+        }
+        Ok(bytes) -> {
+          state.send(bytes)
+          let monitor = process.monitor(caller)
+          let inflight =
+            dict.insert(state.inflight, id, InFlight(reply:, monitor:, caller:))
+          actor.continue(State(..state, next_id: id + 1, inflight:))
+        }
+      }
+    }
+  }
+}
+
+// A `cap_result` arrived for `id`. A result for a call already
+// cancelled or already answered is dropped — idempotent by
+// construction, since a stale `Deliver` after the caller's monitor
+// fired finds nothing left in `inflight`.
+fn handle_deliver(
+  state: State,
+  id: Int,
+  outcome: CapOutcome,
+) -> actor.Next(State, Msg) {
+  case dict.get(state.inflight, id) {
+    Error(Nil) -> actor.continue(state)
+    Ok(in_flight) -> {
+      process.demonitor_process(in_flight.monitor)
+      process.send(in_flight.reply, outcome_to_result(outcome))
+      actor.continue(State(..state, inflight: dict.delete(state.inflight, id)))
     }
   }
 }

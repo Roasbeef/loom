@@ -105,45 +105,56 @@ pub fn push(deframer: Deframer, bytes: BitArray) -> Pushed {
 
 fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   case buffer {
-    <<size:size(32), rest:bits>> ->
-      case size > max_frame_bytes {
-        True ->
-          Pushed(
-            deframer: Deframer(buffer:),
-            inbound: list.reverse(seen),
-            fault: Some(Oversized(declared_bytes: size)),
-          )
-        False ->
-          case take_frame(rest, size) {
-            // Not enough bytes yet: carry the whole buffer and wait.
-            Error(Nil) ->
-              Pushed(
-                deframer: Deframer(buffer:),
-                inbound: list.reverse(seen),
-                fault: None,
-              )
-            Ok(#(payload, remainder)) ->
-              case decode_frame(payload) {
-                Ok(frame) -> push_loop(remainder, [frame, ..seen])
-                // A fault ends the scan: the reader closes the channel, so
-                // there is no need to poison the deframer for later pushes.
-                Error(fault) ->
-                  Pushed(
-                    deframer: Deframer(buffer: remainder),
-                    inbound: list.reverse(seen),
-                    fault: Some(fault),
-                  )
-              }
-          }
-      }
+    <<size:size(32), rest:bits>> -> push_sized(buffer, size, rest, seen)
     // Fewer than four bytes buffered: carry.
-    _ ->
-      Pushed(
-        deframer: Deframer(buffer:),
-        inbound: list.reverse(seen),
-        fault: None,
-      )
+    _ -> carry(buffer, seen, None)
   }
+}
+
+// A length prefix was read; either it is already too large to accept,
+// or there is a frame's worth of bytes to look for.
+fn push_sized(
+  buffer: BitArray,
+  size: Int,
+  rest: BitArray,
+  seen: List(Inbound),
+) -> Pushed {
+  case size > max_frame_bytes {
+    True -> carry(buffer, seen, Some(Oversized(declared_bytes: size)))
+    False -> push_frame(buffer, rest, size, seen)
+  }
+}
+
+// The length prefix is acceptable; take exactly `size` bytes if they
+// have arrived yet, then decode them as one frame.
+fn push_frame(
+  buffer: BitArray,
+  rest: BitArray,
+  size: Int,
+  seen: List(Inbound),
+) -> Pushed {
+  case take_frame(rest, size) {
+    // Not enough bytes yet: carry the whole buffer (prefix included)
+    // and wait.
+    Error(Nil) -> carry(buffer, seen, None)
+    Ok(#(payload, remainder)) ->
+      case decode_frame(payload) {
+        Ok(frame) -> push_loop(remainder, [frame, ..seen])
+        // A fault ends the scan: the reader closes the channel, so
+        // there is no need to poison the deframer for later pushes.
+        Error(fault) -> carry(remainder, seen, Some(fault))
+      }
+  }
+}
+
+// One `push` result: `buffer` becomes the carried deframer state,
+// `seen` (accumulated in reverse) becomes the frames in arrival order.
+fn carry(
+  buffer: BitArray,
+  seen: List(Inbound),
+  fault: Option(Fault),
+) -> Pushed {
+  Pushed(deframer: Deframer(buffer:), inbound: list.reverse(seen), fault:)
 }
 
 fn take_frame(
@@ -210,23 +221,35 @@ fn decode_cap_result(
 ) -> Result(Inbound, Fault) {
   case wire.bool_field(body, "ok") {
     Error(reason) -> Error(malformed("cap_result.ok", reason))
-    Ok(True) ->
-      case wire.field(body, "value") {
-        Ok(value) -> Ok(CapResult(id:, outcome: CapOk(value:)))
-        Error(reason) -> Error(malformed("cap_result.value", reason))
-      }
-    Ok(False) ->
-      case wire.field(body, "error") {
-        Error(reason) -> Error(malformed("cap_result.error", reason))
-        Ok(error_value) ->
-          case
-            wire.string_field(error_value, "code"),
-            wire.string_field(error_value, "msg")
-          {
-            Ok(code), Ok(message) ->
-              Ok(CapResult(id:, outcome: CapErr(code:, message:)))
-            _, _ -> Error(malformed("cap_result.error", "code and msg"))
-          }
+    Ok(True) -> decode_result_value(id, body)
+    Ok(False) -> decode_result_error(id, body)
+  }
+}
+
+fn decode_result_value(
+  id: Int,
+  body: msgpack.MsgPackValue,
+) -> Result(Inbound, Fault) {
+  case wire.field(body, "value") {
+    Ok(value) -> Ok(CapResult(id:, outcome: CapOk(value:)))
+    Error(reason) -> Error(malformed("cap_result.value", reason))
+  }
+}
+
+fn decode_result_error(
+  id: Int,
+  body: msgpack.MsgPackValue,
+) -> Result(Inbound, Fault) {
+  case wire.field(body, "error") {
+    Error(reason) -> Error(malformed("cap_result.error", reason))
+    Ok(error_value) ->
+      case
+        wire.string_field(error_value, "code"),
+        wire.string_field(error_value, "msg")
+      {
+        Ok(code), Ok(message) ->
+          Ok(CapResult(id:, outcome: CapErr(code:, message:)))
+        _, _ -> Error(malformed("cap_result.error", "code and msg"))
       }
   }
 }

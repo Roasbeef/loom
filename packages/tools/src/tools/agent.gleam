@@ -86,9 +86,11 @@
 import broker/policy.{type SandboxPolicy}
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
@@ -327,15 +329,27 @@ pub fn handle_to_string(handle: Handle) -> String {
 pub fn parse_handle(text: String) -> Result(Handle, Refusal) {
   case list.reverse(string.split(text, "#")) {
     [operation_text, first, ..rest] ->
-      case ids.parse_op_id(operation_text) {
-        Error(_report) -> Error(MalformedHandle(text:))
-        Ok(operation) ->
-          case string.join(list.reverse([first, ..rest]), "#") {
-            "" -> Error(MalformedHandle(text:))
-            strand -> Ok(Handle(strand:, operation:))
-          }
-      }
+      handle_from_parts(text, operation_text, first, rest)
     _ -> Error(MalformedHandle(text:))
+  }
+}
+
+// The strand half is everything before the last `#`, rejoined — a
+// minted slug never contains one, but an operator-created strand name
+// is not required to avoid it.
+fn handle_from_parts(
+  text: String,
+  operation_text: String,
+  first: String,
+  rest: List(String),
+) -> Result(Handle, Refusal) {
+  use operation <- result.try(
+    ids.parse_op_id(operation_text)
+    |> result.replace_error(MalformedHandle(text:)),
+  )
+  case string.join(list.reverse([first, ..rest]), "#") {
+    "" -> Error(MalformedHandle(text:))
+    strand -> Ok(Handle(strand:, operation:))
   }
 }
 
@@ -682,37 +696,37 @@ fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use texts <- tool.with_arg(tool.optional_string_list(args, "handles"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   let texts = option.unwrap(texts, [])
-  case texts, list.length(texts) > max_handles {
-    [], _ -> tool.failure("invalid arguments: `handles` must not be empty")
-    _, True ->
-      tool.failure(
-        "invalid arguments: at most "
-        <> int.to_string(max_handles)
-        <> " handles per call",
-      )
-    _, False ->
-      case list.try_map(texts, parse_handle) {
-        Error(refusal) -> refusal_outcome(refusal)
-        Ok(handles) ->
-          case
-            agency.wait(
-              caller(ctx),
-              handles,
-              option.unwrap(within_ms, agency.max_wait_ms),
-            )
-          {
-            Error(refusal) -> refusal_outcome(refusal)
-            Ok(waited) ->
-              tool.success(string.join(list.map(waited, waited_text), "\n\n"))
-              |> tool.with_details(
-                json.Object([
-                  #("results", json.Array(list.map(waited, waited_json))),
-                  #("pending", json.Bool(list.any(waited, is_pending))),
-                ]),
-              )
-          }
-      }
-  }
+  use <- bool.guard(
+    when: texts == [],
+    return: tool.failure("invalid arguments: `handles` must not be empty"),
+  )
+  use <- bool.guard(
+    when: list.length(texts) > max_handles,
+    return: tool.failure(
+      "invalid arguments: at most "
+      <> int.to_string(max_handles)
+      <> " handles per call",
+    ),
+  )
+  use handles <- tool.or_outcome(
+    list.try_map(texts, parse_handle),
+    refusal_outcome,
+  )
+  use waited <- tool.or_outcome(
+    agency.wait(
+      caller(ctx),
+      handles,
+      option.unwrap(within_ms, agency.max_wait_ms),
+    ),
+    refusal_outcome,
+  )
+  tool.success(string.join(list.map(waited, waited_text), "\n\n"))
+  |> tool.with_details(
+    json.Object([
+      #("results", json.Array(list.map(waited, waited_json))),
+      #("pending", json.Bool(list.any(waited, is_pending))),
+    ]),
+  )
 }
 
 fn is_pending(waited: Waited) -> Bool {
@@ -736,19 +750,32 @@ fn waited_text(waited: Waited) -> String {
       <> " "
       <> outcome_text(outcome)
       <> "]\n"
-      <> case report {
-        "" -> "(no report: the run ended without a final answer)"
-        text -> text
-      }
-      <> case notes {
-        [] -> ""
-        cells ->
-          "\n[notes] "
-          <> string.join(
-            list.map(cells, fn(cell) { cell.0 <> "=" <> json.to_string(cell.1) }),
-            ", ",
-          )
-      }
+      <> report_text(report)
+      <> notes_suffix(notes)
+  }
+}
+
+// A `Ready` handle's report, or the explanation for having none — a
+// failure, an abort, or a run terminated by its own tools all end
+// without a final answer.
+fn report_text(report: String) -> String {
+  case report {
+    "" -> "(no report: the run ended without a final answer)"
+    text -> text
+  }
+}
+
+// The trailing `[notes] key=value, ...` line, empty when the child
+// wrote none.
+fn notes_suffix(notes: List(#(String, JsonValue))) -> String {
+  case notes {
+    [] -> ""
+    cells ->
+      "\n[notes] "
+      <> string.join(
+        list.map(cells, fn(cell) { cell.0 <> "=" <> json.to_string(cell.1) }),
+        ", ",
+      )
   }
 }
 
@@ -824,25 +851,34 @@ pub fn send_tool(agency: Agency) -> Tool {
 fn run_send(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use to <- tool.with_arg(tool.required_string(args, "to"))
   use message <- tool.with_arg(tool.required_string(args, "message"))
-  case agency.send(caller(ctx), to, message) {
-    Error(refusal) -> refusal_outcome(refusal)
-    Ok(Steered(entry:)) ->
-      tool.success("delivered to `" <> to <> "` on its open run")
-      |> tool.with_details(
-        json.Object([
-          #("delivery", json.String("steered")),
-          #("entry", json.String(ids.entry_id_to_string(entry))),
-        ]),
-      )
-    Ok(Started(operation:)) ->
-      tool.success("delivered to `" <> to <> "`, which started a run on it")
-      |> tool.with_details(
-        json.Object([
-          #("delivery", json.String("started")),
-          #("operation", json.String(ids.op_id_to_string(operation))),
-        ]),
-      )
+  use delivery <- tool.or_outcome(
+    agency.send(caller(ctx), to, message),
+    refusal_outcome,
+  )
+  case delivery {
+    Steered(entry:) -> steered_outcome(to, entry)
+    Started(operation:) -> started_outcome(to, operation)
   }
+}
+
+fn steered_outcome(to: String, entry: EntryId) -> ToolOutcome {
+  tool.success("delivered to `" <> to <> "` on its open run")
+  |> tool.with_details(
+    json.Object([
+      #("delivery", json.String("steered")),
+      #("entry", json.String(ids.entry_id_to_string(entry))),
+    ]),
+  )
+}
+
+fn started_outcome(to: String, operation: OpId) -> ToolOutcome {
+  tool.success("delivered to `" <> to <> "`, which started a run on it")
+  |> tool.with_details(
+    json.Object([
+      #("delivery", json.String("started")),
+      #("operation", json.String(ids.op_id_to_string(operation))),
+    ]),
+  )
 }
 
 /// The `agent_note` tool: write one blackboard cell.
@@ -874,17 +910,12 @@ pub fn note_tool(agency: Agency) -> Tool {
 fn run_note(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use key <- tool.with_arg(tool.required_string(args, "key"))
   use value <- tool.with_arg(tool.optional_value(args, "value"))
-  case value {
-    None -> tool.failure("invalid arguments: `value` is required")
-    Some(value) ->
-      case agency.note(caller(ctx), key, value) {
-        Error(refusal) -> refusal_outcome(refusal)
-        Ok(Nil) ->
-          tool.success(
-            "noted " <> blackboard_prefix <> ctx.strand <> "/" <> key,
-          )
-      }
-  }
+  use value <- tool.with_arg(option.to_result(value, "`value` is required"))
+  use Nil <- tool.or_outcome(
+    agency.note(caller(ctx), key, value),
+    refusal_outcome,
+  )
+  tool.success("noted " <> blackboard_prefix <> ctx.strand <> "/" <> key)
 }
 
 /// The `agent_notes` tool: read blackboard cells by prefix.

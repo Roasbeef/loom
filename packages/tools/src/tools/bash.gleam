@@ -25,6 +25,7 @@ import broker/policy
 import core/clock
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -88,32 +89,29 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use command <- tool.with_arg(tool.required_string(args, "command"))
   use timeout <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   let timeout = option.unwrap(timeout, default_timeout_ms)
-  case timeout < 1 {
-    True -> tool.failure("invalid arguments: `timeout_ms` must be >= 1")
-    False -> {
-      let timeout = int.min(timeout, max_timeout_ms)
-      let #(now, _clock) = clock.read(ctx.clock)
-      let spec = call_spec(ctx, command, now, timeout)
-      let events = process.new_subject()
-      case ctx.clear_call(spec, events) {
-        Error(refusal) -> tool.refusal_outcome(refusal)
-        Ok(call) -> {
-          // The child gets no interactive stdin; close it so pipelines
-          // reading stdin terminate instead of hanging.
-          call.stdin(<<>>, True)
-          case tool.collect_events(events, waiting: timeout + settle_grace_ms) {
-            Error(Nil) -> {
-              call.cancel()
-              tool.failure(
-                "the sandbox did not settle the command within its window",
-              )
-            }
-            Ok(collected) -> settle(ctx, collected)
-          }
-        }
-      }
-    }
-  }
+  use <- bool.guard(
+    when: timeout < 1,
+    return: tool.failure("invalid arguments: `timeout_ms` must be >= 1"),
+  )
+  let timeout = int.min(timeout, max_timeout_ms)
+  let #(now, _clock) = clock.read(ctx.clock)
+  let spec = call_spec(ctx, command, now, timeout)
+  let events = process.new_subject()
+  use call <- tool.or_outcome(
+    ctx.clear_call(spec, events),
+    tool.refusal_outcome,
+  )
+  // The child gets no interactive stdin; close it so pipelines reading
+  // stdin terminate instead of hanging.
+  call.stdin(<<>>, True)
+  use collected <- tool.or_outcome(
+    tool.collect_events(events, waiting: timeout + settle_grace_ms),
+    fn(_nil) {
+      call.cancel()
+      tool.failure("the sandbox did not settle the command within its window")
+    },
+  )
+  settle(ctx, collected)
 }
 
 // The CallSpec for one bash invocation. Requirements add the env names

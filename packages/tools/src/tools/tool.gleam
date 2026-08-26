@@ -411,6 +411,30 @@ pub fn with_arg(
   }
 }
 
+/// Chains a step of a tool's own body with `use`: run `then` on success,
+/// or render the error as a `ToolOutcome` via `to_outcome`. The general
+/// form `with_arg` specializes for argument decoding — this package's
+/// counterpart to `provider`'s `or_fail` and `machine/planner`'s
+/// `or_fault`, for the steps whose error is domain data (a `PathError`,
+/// a `Refusal`) rather than already a `ToolOutcome`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// use resolved <- tool.or_outcome(resolve_path(root, path), path_outcome)
+/// ```
+///
+pub fn or_outcome(
+  result: Result(a, e),
+  to_outcome: fn(e) -> ToolOutcome,
+  then: fn(a) -> ToolOutcome,
+) -> ToolOutcome {
+  case result {
+    Ok(value) -> then(value)
+    Error(error) -> to_outcome(error)
+  }
+}
+
 /// A required string argument.
 ///
 /// ## Examples

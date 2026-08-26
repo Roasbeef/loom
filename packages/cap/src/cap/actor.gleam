@@ -231,43 +231,61 @@ fn run(
   message: In(state, msg),
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
   case message {
-    Admit(item:, ack:) ->
-      case list.length(state.queue) < state.bound {
-        True -> {
-          process.send(ack, Nil)
-          actor.continue(kick(
-            Runner(..state, queue: list.append(state.queue, [item])),
-          ))
-        }
-        // Full: park the sender (do not ack) until a slot frees.
-        False ->
-          actor.continue(
-            Runner(..state, waiting: list.append(state.waiting, [#(item, ack)])),
-          )
-      }
-
-    Drain ->
-      case state.queue {
-        [] -> actor.continue(Runner(..state, draining: False))
-        [item, ..rest] ->
-          case handle_item(state, item) {
-            Error(Nil) -> actor.stop()
-            Ok(user) -> {
-              // One slot freed: admit the oldest parked sender, if any.
-              let #(queue, waiting) = promote(rest, state.waiting, state.bound)
-              let state = Runner(..state, user:, queue:, waiting:)
-              case state.queue {
-                [] -> actor.continue(Runner(..state, draining: False))
-                _ -> {
-                  process.send(state.self, Drain)
-                  actor.continue(state)
-                }
-              }
-            }
-          }
-      }
-
+    Admit(item:, ack:) -> handle_admit(state, item, ack)
+    Drain -> handle_drain(state)
     Halt -> actor.stop()
+  }
+}
+
+fn handle_admit(
+  state: Runner(state, msg),
+  item: Item(state, msg),
+  ack: Subject(Nil),
+) -> actor.Next(Runner(state, msg), In(state, msg)) {
+  case list.length(state.queue) < state.bound {
+    True -> {
+      process.send(ack, Nil)
+      actor.continue(kick(
+        Runner(..state, queue: list.append(state.queue, [item])),
+      ))
+    }
+    // Full: park the sender (do not ack) until a slot frees.
+    False ->
+      actor.continue(
+        Runner(..state, waiting: list.append(state.waiting, [#(item, ack)])),
+      )
+  }
+}
+
+fn handle_drain(
+  state: Runner(state, msg),
+) -> actor.Next(Runner(state, msg), In(state, msg)) {
+  case state.queue {
+    [] -> actor.continue(Runner(..state, draining: False))
+    [item, ..rest] ->
+      case handle_item(state, item) {
+        Error(Nil) -> actor.stop()
+        Ok(user) -> continue_draining(state, user, rest)
+      }
+  }
+}
+
+// One item handled: promote the oldest parked sender (if any) into the
+// slot it freed, then either schedule another drain turn or, if the
+// queue is now empty, stop draining.
+fn continue_draining(
+  state: Runner(state, msg),
+  user: state,
+  rest: List(Item(state, msg)),
+) -> actor.Next(Runner(state, msg), In(state, msg)) {
+  let #(queue, waiting) = promote(rest, state.waiting, state.bound)
+  let state = Runner(..state, user:, queue:, waiting:)
+  case state.queue {
+    [] -> actor.continue(Runner(..state, draining: False))
+    _ -> {
+      process.send(state.self, Drain)
+      actor.continue(state)
+    }
   }
 }
 
