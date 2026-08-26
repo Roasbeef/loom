@@ -29,6 +29,7 @@
 ////   lone surrogates are rejected.
 
 import core/corruption.{type CorruptionReport}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
@@ -99,15 +100,11 @@ pub fn parse(text: String) -> Result(JsonValue, CorruptionReport) {
       ),
       offset: 0,
     )
-  case parse_value(skip_whitespace(cursor), 0) {
-    Ok(#(value, cursor)) -> {
-      let cursor = skip_whitespace(cursor)
-      case cursor.rest {
-        [] -> Ok(value)
-        _ -> Error(fail(cursor, "end of input after the document"))
-      }
-    }
-    Error(report) -> Error(report)
+  use #(value, cursor) <- result.try(parse_value(skip_whitespace(cursor), 0))
+  let cursor = skip_whitespace(cursor)
+  case cursor.rest {
+    [] -> Ok(value)
+    _ -> Error(fail(cursor, "end of input after the document"))
   }
 }
 
@@ -266,11 +263,12 @@ fn parse_value(
         depth: depth + 1,
       )
     }
-    [0x22, ..rest] ->
-      case parse_string_body(advance(cursor, rest, by: 1), []) {
-        Ok(#(text, cursor)) -> Ok(#(String(text), cursor))
-        Error(report) -> Error(report)
-      }
+    [0x22, ..rest] -> {
+      use #(text, cursor) <- result.try(
+        parse_string_body(advance(cursor, rest, by: 1), []),
+      )
+      Ok(#(String(text), cursor))
+    }
     [0x74, 0x72, 0x75, 0x65, ..rest] ->
       Ok(#(Bool(True), advance(cursor, rest, by: 4)))
     [0x66, 0x61, 0x6C, 0x73, 0x65, ..rest] ->
@@ -301,36 +299,39 @@ fn parse_members(
   let cursor = skip_whitespace(cursor)
   case cursor.rest, expect_first {
     [0x7D, ..rest], True -> Ok(#(Object([]), advance(cursor, rest, by: 1)))
-    _, _ ->
-      case parse_member(cursor, depth) {
-        Ok(#(#(name, value), cursor)) -> {
-          use Nil <- result.try(case dict.has_key(seen, name) {
-            False -> Ok(Nil)
-            True ->
-              Error(fail(
-                cursor,
-                "unique object keys (\"" <> name <> "\" repeats)",
-              ))
-          })
-          let fields = [#(name, value), ..fields]
-          let seen = dict.insert(seen, name, Nil)
-          let cursor = skip_whitespace(cursor)
-          case cursor.rest {
-            [0x2C, ..rest] ->
-              parse_members(
-                advance(cursor, rest, by: 1),
-                fields,
-                seen,
-                expect_first: False,
-                depth:,
-              )
-            [0x7D, ..rest] ->
-              Ok(#(Object(list.reverse(fields)), advance(cursor, rest, by: 1)))
-            _ -> Error(fail(cursor, "\",\" or \"}\" in an object"))
-          }
-        }
-        Error(report) -> Error(report)
+    _, _ -> {
+      use #(#(name, value), cursor) <- result.try(parse_member(cursor, depth))
+      use Nil <- result.try(check_unique_key(cursor, seen, name))
+      let fields = [#(name, value), ..fields]
+      let seen = dict.insert(seen, name, Nil)
+      let cursor = skip_whitespace(cursor)
+      case cursor.rest {
+        [0x2C, ..rest] ->
+          parse_members(
+            advance(cursor, rest, by: 1),
+            fields,
+            seen,
+            expect_first: False,
+            depth:,
+          )
+        [0x7D, ..rest] ->
+          Ok(#(Object(list.reverse(fields)), advance(cursor, rest, by: 1)))
+        _ -> Error(fail(cursor, "\",\" or \"}\" in an object"))
       }
+    }
+  }
+}
+
+// Refuses a field name that already appeared earlier in this object.
+fn check_unique_key(
+  cursor: Cursor,
+  seen: Dict(String, Nil),
+  name: String,
+) -> Result(Nil, CorruptionReport) {
+  case dict.has_key(seen, name) {
+    False -> Ok(Nil)
+    True ->
+      Error(fail(cursor, "unique object keys (\"" <> name <> "\" repeats)"))
   }
 }
 
@@ -339,26 +340,22 @@ fn parse_member(
   depth: Int,
 ) -> Result(#(#(String, JsonValue), Cursor), CorruptionReport) {
   case cursor.rest {
-    [0x22, ..rest] ->
-      case parse_string_body(advance(cursor, rest, by: 1), []) {
-        Ok(#(name, cursor)) -> {
-          let cursor = skip_whitespace(cursor)
-          case cursor.rest {
-            [0x3A, ..rest] ->
-              case
-                parse_value(
-                  skip_whitespace(advance(cursor, rest, by: 1)),
-                  depth,
-                )
-              {
-                Ok(#(value, cursor)) -> Ok(#(#(name, value), cursor))
-                Error(report) -> Error(report)
-              }
-            _ -> Error(fail(cursor, "\":\" after an object key"))
-          }
+    [0x22, ..rest] -> {
+      use #(name, cursor) <- result.try(
+        parse_string_body(advance(cursor, rest, by: 1), []),
+      )
+      let cursor = skip_whitespace(cursor)
+      case cursor.rest {
+        [0x3A, ..rest] -> {
+          use #(value, cursor) <- result.try(parse_value(
+            skip_whitespace(advance(cursor, rest, by: 1)),
+            depth,
+          ))
+          Ok(#(#(name, value), cursor))
         }
-        Error(report) -> Error(report)
+        _ -> Error(fail(cursor, "\":\" after an object key"))
       }
+    }
     _ -> Error(fail(cursor, "a string object key"))
   }
 }
@@ -372,26 +369,23 @@ fn parse_items(
   let cursor = skip_whitespace(cursor)
   case cursor.rest, expect_first {
     [0x5D, ..rest], True -> Ok(#(Array([]), advance(cursor, rest, by: 1)))
-    _, _ ->
-      case parse_value(cursor, depth) {
-        Ok(#(item, cursor)) -> {
-          let items = [item, ..items]
-          let cursor = skip_whitespace(cursor)
-          case cursor.rest {
-            [0x2C, ..rest] ->
-              parse_items(
-                advance(cursor, rest, by: 1),
-                items,
-                expect_first: False,
-                depth:,
-              )
-            [0x5D, ..rest] ->
-              Ok(#(Array(list.reverse(items)), advance(cursor, rest, by: 1)))
-            _ -> Error(fail(cursor, "\",\" or \"]\" in an array"))
-          }
-        }
-        Error(report) -> Error(report)
+    _, _ -> {
+      use #(item, cursor) <- result.try(parse_value(cursor, depth))
+      let items = [item, ..items]
+      let cursor = skip_whitespace(cursor)
+      case cursor.rest {
+        [0x2C, ..rest] ->
+          parse_items(
+            advance(cursor, rest, by: 1),
+            items,
+            expect_first: False,
+            depth:,
+          )
+        [0x5D, ..rest] ->
+          Ok(#(Array(list.reverse(items)), advance(cursor, rest, by: 1)))
+        _ -> Error(fail(cursor, "\",\" or \"]\" in an array"))
       }
+    }
   }
 }
 
@@ -421,22 +415,25 @@ fn parse_string_body(
     [0x22, ..rest] ->
       Ok(#(string.concat(list.reverse(chunks)), advance(cursor, rest, by: 1)))
     [0x5C, ..rest] -> parse_escape(advance(cursor, rest, by: 1), chunks)
-    [code, ..rest] ->
-      case code < 0x20 {
-        True ->
-          Error(fail(cursor, "control characters to be escaped in a string"))
-        False ->
-          case string.utf_codepoint(code) {
-            Ok(codepoint) ->
-              parse_string_body(advance(cursor, rest, by: 1), [
-                string.from_utf_codepoints([codepoint]),
-                ..chunks
-              ])
-            // Unreachable in practice: the input came from a valid string,
-            // so every non-surrogate codepoint is valid. Reported totally.
-            Error(Nil) -> Error(fail(cursor, "a valid unicode codepoint"))
-          }
-      }
+    [code, ..rest] -> {
+      use <- bool.guard(
+        when: code < 0x20,
+        return: Error(fail(
+          cursor,
+          "control characters to be escaped in a string",
+        )),
+      )
+      // Unreachable in practice: the input came from a valid string, so
+      // every non-surrogate codepoint is valid. Reported totally.
+      use codepoint <- result.try(result.replace_error(
+        string.utf_codepoint(code),
+        fail(cursor, "a valid unicode codepoint"),
+      ))
+      parse_string_body(advance(cursor, rest, by: 1), [
+        string.from_utf_codepoints([codepoint]),
+        ..chunks
+      ])
+    }
     [] -> Error(fail(cursor, "a closing \" before end of input"))
   }
 }
@@ -471,30 +468,22 @@ fn parse_unicode_escape(
   cursor: Cursor,
   chunks: List(String),
 ) -> Result(#(String, Cursor), CorruptionReport) {
-  case parse_hex_4(cursor) {
-    Ok(#(code, after_first)) ->
-      case code >= 0xD800 && code <= 0xDBFF {
-        // A high surrogate must pair with a following \uXXXX low surrogate.
-        True ->
-          case after_first.rest {
-            [0x5C, 0x75, ..rest] ->
-              case parse_hex_4(advance(after_first, rest, by: 2)) {
-                Ok(#(low, after_second)) ->
-                  case low >= 0xDC00 && low <= 0xDFFF {
-                    True -> {
-                      let combined =
-                        0x10000 + { code - 0xD800 } * 0x400 + { low - 0xDC00 }
-                      append_codepoint(after_second, chunks, combined)
-                    }
-                    False -> Error(fail(after_first, "a low surrogate escape"))
-                  }
-                Error(report) -> Error(report)
-              }
-            _ -> Error(fail(after_first, "a low surrogate escape"))
-          }
-        False -> append_codepoint(after_first, chunks, code)
-      }
-    Error(report) -> Error(report)
+  use #(code, after_first) <- result.try(parse_hex_4(cursor))
+  case code >= 0xD800 && code <= 0xDBFF {
+    // A high surrogate must pair with a following \uXXXX low surrogate.
+    True -> {
+      use #(low, after_second) <- result.try(case after_first.rest {
+        [0x5C, 0x75, ..rest] -> parse_hex_4(advance(after_first, rest, by: 2))
+        _ -> Error(fail(after_first, "a low surrogate escape"))
+      })
+      use <- bool.guard(
+        when: low < 0xDC00 || low > 0xDFFF,
+        return: Error(fail(after_first, "a low surrogate escape")),
+      )
+      let combined = 0x10000 + { code - 0xD800 } * 0x400 + { low - 0xDC00 }
+      append_codepoint(after_second, chunks, combined)
+    }
+    False -> append_codepoint(after_first, chunks, code)
   }
 }
 
@@ -530,18 +519,16 @@ fn parse_hex_4(cursor: Cursor) -> Result(#(Int, Cursor), CorruptionReport) {
 }
 
 fn hex_value(code: Int) -> Result(Int, Nil) {
-  case code >= 0x30 && code <= 0x39 {
-    True -> Ok(code - 0x30)
-    False ->
-      case code >= 0x61 && code <= 0x66 {
-        True -> Ok(code - 0x61 + 10)
-        False ->
-          case code >= 0x41 && code <= 0x46 {
-            True -> Ok(code - 0x41 + 10)
-            False -> Error(Nil)
-          }
-      }
-  }
+  use <- bool.guard(when: code >= 0x30 && code <= 0x39, return: Ok(code - 0x30))
+  use <- bool.guard(
+    when: code >= 0x61 && code <= 0x66,
+    return: Ok(code - 0x61 + 10),
+  )
+  use <- bool.guard(
+    when: code >= 0x41 && code <= 0x46,
+    return: Ok(code - 0x41 + 10),
+  )
+  Error(Nil)
 }
 
 // --- numbers ------------------------------------------------------------
@@ -560,43 +547,29 @@ fn parse_number(
     [0x2D, ..rest] -> #(True, advance(cursor, rest, by: 1))
     _ -> #(False, cursor)
   }
-  case parse_integer_digits(cursor) {
-    Ok(#(int_digits, cursor)) -> {
-      let #(frac_digits, cursor) = case cursor.rest {
-        [0x2E, ..rest] ->
-          case take_digits(advance(cursor, rest, by: 1)) {
-            #([], _) -> #(Error(Nil), cursor)
-            #(digits, cursor) -> #(Ok(digits), cursor)
-          }
-        _ -> #(Ok([]), cursor)
+  use #(int_digits, cursor) <- result.try(parse_integer_digits(cursor))
+  use #(frac_digits, cursor) <- result.try(parse_fraction(cursor))
+  use #(exponent, cursor) <- result.try(parse_exponent(cursor))
+  case frac_digits, exponent {
+    [], "" ->
+      Ok(#(Int(apply_sign(digits_to_int(int_digits), negative)), cursor))
+    _, _ ->
+      finish_float(start, cursor, negative, int_digits, frac_digits, exponent)
+  }
+}
+
+// The fraction part: a "." followed by at least one digit; absent entirely
+// is legal (empty digit list, cursor unmoved).
+fn parse_fraction(
+  cursor: Cursor,
+) -> Result(#(List(Int), Cursor), CorruptionReport) {
+  case cursor.rest {
+    [0x2E, ..rest] ->
+      case take_digits(advance(cursor, rest, by: 1)) {
+        #([], _) -> Error(fail(cursor, "digits after the decimal point"))
+        #(digits, cursor) -> Ok(#(digits, cursor))
       }
-      case frac_digits {
-        Error(Nil) -> Error(fail(cursor, "digits after the decimal point"))
-        Ok(frac_digits) -> {
-          case parse_exponent(cursor) {
-            Ok(#(exponent, cursor)) ->
-              case frac_digits, exponent {
-                [], "" ->
-                  Ok(#(
-                    Int(apply_sign(digits_to_int(int_digits), negative)),
-                    cursor,
-                  ))
-                _, _ ->
-                  finish_float(
-                    start,
-                    cursor,
-                    negative,
-                    int_digits,
-                    frac_digits,
-                    exponent,
-                  )
-              }
-            Error(report) -> Error(report)
-          }
-        }
-      }
-    }
-    Error(report) -> Error(report)
+    _ -> Ok(#([], cursor))
   }
 }
 
@@ -606,22 +579,20 @@ fn parse_integer_digits(
   cursor: Cursor,
 ) -> Result(#(List(Int), Cursor), CorruptionReport) {
   case cursor.rest {
-    [0x30, next, ..] ->
-      case is_digit(next) {
-        True -> Error(fail(cursor, "no leading zero in a number"))
-        False -> {
-          let #(digits, cursor) = take_digits(cursor)
-          Ok(#(digits, cursor))
-        }
-      }
-    [code, ..] ->
-      case is_digit(code) {
-        True -> {
-          let #(digits, cursor) = take_digits(cursor)
-          Ok(#(digits, cursor))
-        }
-        False -> Error(fail(cursor, "a digit"))
-      }
+    [0x30, next, ..] -> {
+      use <- bool.guard(
+        when: is_digit(next),
+        return: Error(fail(cursor, "no leading zero in a number")),
+      )
+      Ok(take_digits(cursor))
+    }
+    [code, ..] -> {
+      use <- bool.guard(
+        when: !is_digit(code),
+        return: Error(fail(cursor, "a digit")),
+      )
+      Ok(take_digits(cursor))
+    }
     [] -> Error(fail(cursor, "a digit"))
   }
 }
