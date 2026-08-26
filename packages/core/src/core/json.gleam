@@ -215,7 +215,9 @@ fn excerpt(rest: List(Int)) -> String {
     |> list.take(24)
     |> list.filter_map(string.utf_codepoint)
     |> string.from_utf_codepoints
-  case list.length(rest) > 24 {
+  // `list.drop` stops at 24; `list.length` would walk the whole tail,
+  // which is what made a report on a hot path cost the rest of the input.
+  case list.drop(rest, 24) != [] {
     True -> shown <> "…"
     False ->
       case rest {
@@ -416,19 +418,16 @@ fn parse_string_body(
       Ok(#(string.concat(list.reverse(chunks)), advance(cursor, rest, by: 1)))
     [0x5C, ..rest] -> parse_escape(advance(cursor, rest, by: 1), chunks)
     [code, ..rest] -> {
-      use <- bool.guard(
-        when: code < 0x20,
-        return: Error(fail(
-          cursor,
-          "control characters to be escaped in a string",
-        )),
-      )
+      use <- bool.lazy_guard(when: code < 0x20, return: fn() {
+        Error(fail(cursor, "control characters to be escaped in a string"))
+      })
       // Unreachable in practice: the input came from a valid string, so
       // every non-surrogate codepoint is valid. Reported totally.
-      use codepoint <- result.try(result.replace_error(
-        string.utf_codepoint(code),
-        fail(cursor, "a valid unicode codepoint"),
-      ))
+      use codepoint <- result.try(
+        result.map_error(string.utf_codepoint(code), fn(_) {
+          fail(cursor, "a valid unicode codepoint")
+        }),
+      )
       parse_string_body(advance(cursor, rest, by: 1), [
         string.from_utf_codepoints([codepoint]),
         ..chunks
@@ -476,10 +475,9 @@ fn parse_unicode_escape(
         [0x5C, 0x75, ..rest] -> parse_hex_4(advance(after_first, rest, by: 2))
         _ -> Error(fail(after_first, "a low surrogate escape"))
       })
-      use <- bool.guard(
-        when: low < 0xDC00 || low > 0xDFFF,
-        return: Error(fail(after_first, "a low surrogate escape")),
-      )
+      use <- bool.lazy_guard(when: low < 0xDC00 || low > 0xDFFF, return: fn() {
+        Error(fail(after_first, "a low surrogate escape"))
+      })
       let combined = 0x10000 + { code - 0xD800 } * 0x400 + { low - 0xDC00 }
       append_codepoint(after_second, chunks, combined)
     }
@@ -580,17 +578,15 @@ fn parse_integer_digits(
 ) -> Result(#(List(Int), Cursor), CorruptionReport) {
   case cursor.rest {
     [0x30, next, ..] -> {
-      use <- bool.guard(
-        when: is_digit(next),
-        return: Error(fail(cursor, "no leading zero in a number")),
-      )
+      use <- bool.lazy_guard(when: is_digit(next), return: fn() {
+        Error(fail(cursor, "no leading zero in a number"))
+      })
       Ok(take_digits(cursor))
     }
     [code, ..] -> {
-      use <- bool.guard(
-        when: !is_digit(code),
-        return: Error(fail(cursor, "a digit")),
-      )
+      use <- bool.lazy_guard(when: !is_digit(code), return: fn() {
+        Error(fail(cursor, "a digit"))
+      })
       Ok(take_digits(cursor))
     }
     [] -> Error(fail(cursor, "a digit"))
