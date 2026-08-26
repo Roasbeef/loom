@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := core storage session machine prompt telemetry runtime provider broker tools cap codemode events client conformance
+PACKAGES := core storage session machine prompt telemetry runtime provider broker tools cap codemode events client conformance lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 
@@ -196,6 +196,14 @@ docs: ## Build HexDocs-style API documentation for every Gleam package
 	@set -e; for p in $(PACKAGES); do \
 		echo "==> $$p"; (cd packages/$$p && gleam docs build); \
 	done
+
+.PHONY: lint
+lint: ## Run Loom's own lint (house rules; warnings only, see scripts/lint.sh)
+	@scripts/lint.sh
+
+.PHONY: lint-%
+lint-%: ## Lint one package's src, e.g. make lint-core
+	@scripts/lint.sh packages/$*/src
 
 .PHONY: doc-check
 doc-check: ## Check the doc graph (coverage, AGENTS.md mirror, staleness, citations)

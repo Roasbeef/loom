@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(core storage session machine prompt telemetry runtime provider broker tools cap codemode events client conformance sandbox tui)
+packages=(core storage session machine prompt telemetry runtime provider broker tools cap codemode events client conformance lint sandbox tui)
 targets=("${@:-${packages[@]}}")
 
 for pkg in "${targets[@]}"; do
@@ -20,4 +20,12 @@ for pkg in "${targets[@]}"; do
     && gleam build --warnings-as-errors \
     && gleam test)
 done
+# Loom's own lint runs last and, for now, only reports: every rule is at
+# warning level while the census settles (packages/lint/CLAUDE.md). It fails
+# the build only for rules promoted with --error.
+if [ $# -eq 0 ]; then
+  echo "==> lint (house rules)"
+  scripts/lint.sh --quiet
+fi
+
 echo "all checks passed"
