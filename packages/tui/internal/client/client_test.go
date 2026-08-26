@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -284,3 +285,76 @@ func TestBadTokenRefused(t *testing.T) {
 
 func fakeID(i int) string   { return "entry-" + string(rune('a'+i/26)) + string(rune('a'+i%26)) }
 func fakeText(i int) string { return "message number " + fakeID(i) }
+
+// TestStorageSeqsAreSparseNotGapped replays the exact envelope sequence a
+// real gateway produced against the real TUI (`client/tui_e2e_test`),
+// captured from an in-process probe on the hub:
+//
+//	snapshot(full, next_seq 1), op_transition 9, entry 6, op_transition
+//	11, 12, 13, entry 14, usage 16, op_transition 17, strand_result 20,
+//	op_transition 22
+//
+// Every event seq is a *storage* seq (protocol-change/006), so the
+// stream is sparse — the commits that produce no client event consume
+// seqs too — and a register-backed event can arrive ahead of the row it
+// belongs to. The fake gateway numbers its events 1, 2, 3, …, so no test
+// that only drove the fake could see any of this: against a real server
+// the old gap rule dropped every event after the first and asked for a
+// replay that was sparse for the same reason.
+func TestStorageSeqsAreSparseNotGapped(t *testing.T) {
+	c := New(Config{Addr: "ws://unused", Session: "s1"})
+	ctx := context.Background()
+
+	c.handleEvent(ctx, raw(t, proto.EventSnapshot, 0,
+		`{"mode":"full","session":"s1","next_seq":1,"strands":[{"id":"main","name":"main"}]}`))
+	for _, seq := range []uint64{9, 11, 12, 13, 17, 22} {
+		c.handleEvent(ctx, raw(t, proto.EventOpTransition, seq,
+			`{"op":"op-1","strand":"main","phase":"assistant"}`))
+	}
+	for _, seq := range []uint64{6, 14} {
+		c.handleEvent(ctx, raw(t, proto.EventEntry, seq,
+			`{"strand":"main","entry":{"id":"e1","type":"message",`+
+				`"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}}`))
+	}
+	c.handleEvent(ctx, raw(t, proto.EventUsage, 16,
+		`{"strand":"main","op":"op-1","usage":{"input":10,"output":6}}`))
+	c.handleEvent(ctx, raw(t, proto.EventStrandResult, 20,
+		`{"strand":"main","op":"op-1","status":"done"}`))
+
+	var entries, transitions, usages, results int
+	for len(c.msgs) > 0 {
+		switch (<-c.msgs).(type) {
+		case EntryMsg:
+			entries++
+		case OpTransitionMsg:
+			transitions++
+		case UsageMsg:
+			usages++
+		case StrandResultMsg:
+			results++
+		}
+	}
+	if entries != 2 || transitions != 6 || usages != 1 || results != 1 {
+		t.Fatalf("sparse storage seqs were treated as gaps: got %d entries, "+
+			"%d transitions, %d usage, %d results; want 2, 6, 1, 1",
+			entries, transitions, usages, results)
+	}
+
+	// The position is the last *row*, not the last event: a register
+	// event with a higher seq must not suppress the row behind it, and a
+	// replayed row must still be deduplicated.
+	if got := c.LastSeq(); got != 16 {
+		t.Fatalf("stream position is %d, want the last replayable row, 16", got)
+	}
+	c.handleEvent(ctx, raw(t, proto.EventEntry, 14,
+		`{"strand":"main","entry":{"id":"e1","type":"message",`+
+			`"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}}`))
+	if len(c.msgs) != 0 {
+		t.Fatal("a replayed row below the position was delivered twice")
+	}
+}
+
+func raw(t *testing.T, event string, seq uint64, body string) proto.Event {
+	t.Helper()
+	return proto.Event{V: proto.Version, Event: event, Seq: seq, Body: json.RawMessage(body)}
+}

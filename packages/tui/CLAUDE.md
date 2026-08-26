@@ -60,19 +60,20 @@ of the tree's two Go modules, alongside `sandbox`.
 
 ## Traffic
 
-- **Wire (websocket)** — commands out: `subscribe`, `catch_up`,
+- **Wire (websocket)** — commands out: `subscribe`,
   `prompt`, `steer`, `follow_up`, `abort`, `approve`, `deny`, `fork`,
   `navigate`, `compact`, `create_strand`, `models`, `set_config`
-  (including the `model_name` key behind the `:models` picker). Events
-  in:
+  (including the `model_name` key behind the `:models` picker).
+  `catch_up` is defined in `proto` and answered by the fake, but this
+  client never sends it: a resume rides `subscribe`'s `from_seq`, and
+  there is no gap for a mid-connection replay to fill (see Invariants).
+  Events in:
   `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`,
   `escalation`, `strand_result`, `error`. Auth is
   `Authorization: Bearer <token>` on the upgrade.
 - **Channels** — `Client.Messages()` is the single typed stream the
   bubbletea program consumes; an outbound queue carries commands to the
-  writer side of the pump. A full outbound queue drops a speculative
-  `catch_up` rather than blocking, because the reconnect path converges
-  anyway.
+  writer side of the pump.
 - **Commits / registers / actors**: none. The TUI holds no durable state
   and persists nothing; every fact it displays came from a snapshot or an
   event.
@@ -83,11 +84,24 @@ of the tree's two Go modules, alongside `sandbox`.
   discriminator must be present; an unknown `cmd`/`event` name is carried
   as its raw body so an old client survives a new server, and unknown
   fields inside known bodies are ignored.
-- **Seq is the only stream position.** An event at or below the last seq
-  is a duplicate from catch-up overlap and is dropped; an event more than
-  one past it (once a snapshot has been applied) triggers exactly one
-  `catch_up` from `last+1` and is not applied. Events with no seq —
-  snapshots, stream deltas, errors — never move the position.
+- **Only the immutable rows carry the stream position, and the stream is
+  legitimately sparse.** An `entry` or `usage` event at or below the last
+  seq is a duplicate from a resume overlap and is dropped; anything above
+  it advances the position. There is deliberately **no gap detection**.
+  The gateway's event seq *is* the storage seq of the commit that
+  produced it (`protocol-change/006`), and commits that write no client
+  event consume seqs too — so a forward jump carries no information, and
+  treating one as a gap made every event after the first unreachable
+  against a real server (the client asked for a replay, the replay was
+  sparse for the same reason, and nothing was ever applied). This is the
+  bug `client/tui_e2e_test` found and no fake-driven test could: the Go
+  fake gateway numbers its events 1, 2, 3, …
+- **`op_transition`, `escalation` and `strand_result` never move the
+  position** even though they carry a seq. They are read from registers
+  as *current state* rather than replayed, and they interleave with the
+  rows and can arrive ahead of one — so letting them advance the position
+  would drop the row behind them. Events with no seq — snapshots, stream
+  deltas, errors — never move it either.
 - **A full snapshot resets the position** to `next_seq - 1`: everything
   below it is already reflected in the snapshot body. A resume snapshot
   resets nothing, because its replay carries the original seqs.

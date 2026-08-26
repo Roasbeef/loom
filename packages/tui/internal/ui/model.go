@@ -230,8 +230,15 @@ func (m Model) onResize(msg tea.WindowSizeMsg) Model {
 
 // chromeHeight is everything except the viewport: status bar, tabs,
 // input, help, and the overlays when showing.
+//
+// The tab row is measured rather than assumed: the active tab carries a
+// bottom border, so it is two lines tall whenever there is a strand and
+// one line tall before the first snapshot. Counting it as one made the
+// whole view one line taller than the terminal, and bubbletea drops
+// lines from the *top* of an oversized frame — which silently cost the
+// status bar on every real terminal that had a strand.
 func (m *Model) chromeHeight() int {
-	h := 1 + 1 + m.input.Height() + 1
+	h := 1 + lipgloss.Height(m.renderTabs()) + m.input.Height() + 1
 	if m.overlayActive() {
 		h += lipgloss.Height(m.renderOverlay())
 	}

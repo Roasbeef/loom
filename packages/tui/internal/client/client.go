@@ -168,9 +168,6 @@ type Client struct {
 	// haveSnapshot flips once a full snapshot has been applied; before
 	// that, reconnects re-subscribe from zero.
 	haveSnapshot atomic.Bool
-	// catchUpFrom is non-zero while a gap-triggered catch_up is in
-	// flight, suppressing duplicate requests.
-	catchUpFrom atomic.Uint64
 }
 
 // New builds a client; Run must be called to connect.
@@ -368,7 +365,6 @@ func (c *Client) serveOnce(ctx context.Context) error {
 	c.mu.Lock()
 	c.failPendingLocked()
 	c.mu.Unlock()
-	c.catchUpFrom.Store(0)
 	return readErr
 }
 
@@ -430,26 +426,25 @@ func (c *Client) resolvePending(ev proto.Event) {
 
 // handleEvent applies seq bookkeeping and delivers the typed message.
 //
-// Seq discipline: durable events must be observed exactly once, in
-// order. Duplicates (catch-up overlap) are dropped by seq; a gap means
-// the server-side bus dropped a hint, so the client asks for a replay
-// with catch_up and drops the out-of-order event — the replay
-// re-delivers it in order.
+// Seq discipline: a replayable row must be observed exactly once, so a
+// seq at or below the position is a duplicate from a resume overlap and
+// is dropped. There is deliberately no gap detection. The gateway's
+// event seq *is* the storage seq of the commit that produced it
+// (protocol-change/006), so the stream is legitimately sparse — the
+// commits that write no client event consume seqs too — and a forward
+// jump carries no information at all. Treating one as a gap made every
+// event after the first unreachable against a real server: the client
+// asked for a replay, the replay was sparse for the same reason, and
+// nothing was ever applied.
+//
+// Only the immutable rows — entry and usage — carry the position.
+// op_transition, escalation and strand_result carry a seq but are read
+// from registers as *current state*, not replayed, and they interleave
+// with the rows and can arrive ahead of one. Letting a register-backed
+// event move the position would drop the row behind it.
 func (c *Client) handleEvent(ctx context.Context, ev proto.Event) {
-	if ev.Seq != 0 {
-		last := c.lastSeq.Load()
-		switch {
-		case ev.Seq <= last:
-			return // duplicate from catch-up overlap
-		case ev.Seq > last+1 && c.haveSnapshot.Load():
-			c.requestCatchUp(last + 1)
-			return
-		default:
-			c.lastSeq.Store(ev.Seq)
-			if from := c.catchUpFrom.Load(); from != 0 && ev.Seq >= from {
-				c.catchUpFrom.Store(0)
-			}
-		}
+	if ev.Seq != 0 && replayableRow(ev.Event) && !c.advance(ev.Seq) {
+		return // duplicate from a resume overlap
 	}
 
 	switch ev.Event {
@@ -533,20 +528,24 @@ func (c *Client) handleEvent(ctx context.Context, ev proto.Event) {
 	}
 }
 
-// requestCatchUp asks for a replay from seq, once per gap.
-func (c *Client) requestCatchUp(from uint64) {
-	if !c.catchUpFrom.CompareAndSwap(0, from) {
-		return
-	}
-	cmd, err := proto.NewCommand(c.nextID.Add(1), proto.CmdCatchUp, proto.CatchUpBody{FromSeq: from})
-	if err != nil {
-		return
-	}
-	select {
-	case c.out <- cmd:
-	default:
-		// Queue full: the reconnect/resubscribe path will converge.
-		c.catchUpFrom.Store(0)
+// replayableRow reports whether an event is one of the immutable rows
+// the gateway rebuilds from a storage scan, and therefore the only kind
+// whose seq is a stream position (see handleEvent).
+func replayableRow(event string) bool {
+	return event == proto.EventEntry || event == proto.EventUsage
+}
+
+// advance moves the stream position to seq, reporting false when that
+// seq has already been observed.
+func (c *Client) advance(seq uint64) bool {
+	for {
+		last := c.lastSeq.Load()
+		if seq <= last {
+			return false
+		}
+		if c.lastSeq.CompareAndSwap(last, seq) {
+			return true
+		}
 	}
 }
 

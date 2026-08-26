@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/roasbeef/loom/tui/internal/client"
 	"github.com/roasbeef/loom/tui/internal/proto"
@@ -628,5 +629,44 @@ func TestEmptyCatalogueNeverOpensPicker(t *testing.T) {
 	}
 	if got := m.View(); !strings.Contains(got, "the model catalogue is empty") {
 		t.Fatalf("empty catalogue not reported:\n%s", got)
+	}
+}
+
+// TestViewFitsTheTerminal is the regression the terminal end-to-end
+// found: bubbletea drops lines from the *top* of a frame taller than the
+// window, so one uncounted line of chrome costs the status bar entirely
+// and nothing in a model test noticed, because View() itself was
+// correct. Every layout the chrome can take must therefore come out at
+// exactly the window height.
+func TestViewFitsTheTerminal(t *testing.T) {
+	const height = 40
+	m, _ := fixture(t)
+	if got := lipgloss.Height(m.View()); got != height {
+		t.Fatalf("view is %d lines in a %d-line window: the status bar "+
+			"scrolls off the top", got, height)
+	}
+
+	// With the approval overlay up, and with the model picker up.
+	withOverlay := apply(t, m, client.EscalationMsg{Body: proto.EscalationBody{
+		EscalationID: "esc-1",
+		Strand:       "main",
+		Status:       proto.EscalationPending,
+		Denial: &proto.Denial{
+			Reason: "policy",
+			Wanted: []proto.Grant{{Type: proto.GrantEnv, Name: "CC"}},
+		},
+	}})
+	if got := lipgloss.Height(withOverlay.View()); got != height {
+		t.Fatalf("view with the approval overlay is %d lines in a %d-line "+
+			"window", got, height)
+	}
+
+	withPicker := apply(t, m, client.SnapshotMsg{Body: proto.SnapshotBody{
+		Mode:   proto.SnapshotModels,
+		Models: []proto.ModelInfo{{Name: "acme", Dialect: "anthropic", ModelID: "loom-1"}},
+	}})
+	if got := lipgloss.Height(withPicker.View()); got != height {
+		t.Fatalf("view with the model picker is %d lines in a %d-line window",
+			got, height)
 	}
 }
