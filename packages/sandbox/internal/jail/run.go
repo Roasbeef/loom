@@ -318,12 +318,19 @@ func (e *Exec) WriteStdin(data []byte, eof bool) error {
 
 // Cancel starts (or re-requests, idempotently) TERM→KILL escalation of
 // the child's process group.
+//
+// The two rungs are addressed differently, and cancel.go is the whole
+// argument for why: TERM goes to the payload and spares the jail's
+// scaffolding, because killing the bwrap supervisor tears the PID
+// namespace down and turns the grace into an instant SIGKILL for
+// everything inside it. KILL goes to the group, because at that point
+// demolishing the cage is the point.
 func (e *Exec) Cancel() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := time.Now()
 	if e.esc.Cancel(now) == SigTerm {
-		_ = syscall.Kill(-e.pgid, syscall.SIGTERM)
+		e.term()
 		deadline, _ := e.esc.KillDeadline()
 		e.killT = time.AfterFunc(deadline.Sub(now), func() {
 			e.mu.Lock()
@@ -333,6 +340,24 @@ func (e *Exec) Cancel() {
 			}
 		})
 	}
+}
+
+// term delivers the TERM rung. In degraded mode the group leader is the
+// payload itself and the whole group is the right addressee; under bwrap
+// the leader is the supervisor and must be spared. A selection that comes
+// back empty — no procfs, a race, a group of one — falls back to the
+// group, because a TERM that was silently not sent is worse than one sent
+// too widely: the caller would wait out a grace nobody was asked to use.
+func (e *Exec) term() {
+	if e.feat.BwrapPath != "" {
+		if targets := TermTargets(scanProcGroup(e.pgid), e.pgid, e.pgid); len(targets) > 0 {
+			for _, pid := range targets {
+				_ = syscall.Kill(pid, syscall.SIGTERM)
+			}
+			return
+		}
+	}
+	_ = syscall.Kill(-e.pgid, syscall.SIGTERM)
 }
 
 // Wait blocks until the direct child exits, then sweeps the process

@@ -86,9 +86,10 @@ modules, alongside `tui`.
   Erlang ports cannot set a child's environment, so the broker uses the
   argument (`broker/exec.SpawnConfig.helper_args`) and a systemd unit uses
   the variable.
-- **Process signals** — cancel is SIGTERM to the child's pgroup, SIGKILL
-  after `KillGrace` (2 s), matching the broker's own patience window
-  exactly.
+- **Process signals** — cancel is SIGTERM to the *payload*, SIGKILL to the
+  pgroup after `KillGrace` (2 s), matching the broker's own patience
+  window exactly. The two rungs address different sets on purpose; see
+  "The TERM rung is addressed to the payload" below and `jail/cancel.go`.
 - **Commits / registers / actors**: none. The helper is stateless between
   executions and persists nothing.
 
@@ -158,6 +159,46 @@ modules, alongside `tui`.
 - **One execution at a time per helper**; a second `exec_start` gets a
   `busy` error. Concurrency lives in the broker's pool, which keeps "the
   pgroup" in the cancel contract unambiguous.
+- **The TERM rung is addressed to the payload; only the KILL rung takes
+  the pgroup.** Under bwrap the helper's direct child is a *supervisor*
+  which is also the group leader, with a second bwrap as the PID
+  namespace's init below it and the payload below that. The supervisor is
+  spawned `--die-with-parent`, so TERMing the group kills the supervisor,
+  whose death SIGKILLs the namespace init and every process in the
+  namespace with it. Measured: a payload with `trap "" TERM` and a
+  30-second loop died in 813 µs, by SIGKILL, having never been asked to
+  stop — `TERM → grace → KILL` was in practice just `KILL`. So the TERM
+  rung skips the supervisor and any nested namespace init (`jail.TermTargets`,
+  selected from `/proc` by pgid and `NSpid`), and falls back to the whole
+  group when it cannot read the table, because a TERM silently not sent is
+  worse than one sent too widely. KILL still goes to the group, and
+  cleanup keeps its unconditional group-wide sweep, so "no orphaned jails"
+  is unchanged. Sparing the namespace init is belt to the kernel's braces:
+  a signal from an ancestor namespace reaches an init only if it installed
+  a handler (`pid_namespaces(7)`), verified here — TERM to the init alone
+  left both it and the payload running.
+- **A jailed exec reports `signal: 0` even when the payload was
+  signalled.** The helper waits on its direct child, which under bwrap is
+  the supervisor; the supervisor outlives the payload and relays a
+  signalled payload by *exiting* 128+signal rather than dying of it.
+  `code` is 143 for a TERM-killed payload jailed or unjailed; `signal` is
+  15 only unjailed. Callers must read `code`, never `signal`, for "how did
+  the payload end".
+- **Every mask must follow every bind.** bwrap applies mount operations in
+  argv order, so `--proc /proc` and `--dev /dev` go *after* the readable
+  and writable binds, not with the `--ro-bind / /` base view. A policy
+  naming `/` as a readable root is ordinary — it is what a jailed build
+  asking for the toolchain sends — and it emits a later `--ro-bind / /`
+  that puts the host's procfs and device tree back on top of the masks.
+  That cost two things at once: a confinement gap (82 host pids and the
+  host's `/proc/1/cmdline` readable from inside a jail reporting itself
+  fully enforced, with `/proc/self` resolving to the host pid), and a hang
+  — bwrap binds `MS_NODEV` unless asked for `--dev-bind`, so the
+  re-exposed `/dev` is a view in which no node can be opened, and the BEAM
+  `gleam build` spawns retries `openat("/dev/null", O_WRONLY)` against
+  EACCES forever. `TestBwrapArgsNoBindFollowsTheVirtualMounts` pins the
+  general rule; `TestFreshProcAndDevSurviveAReadableRootOfSlash` pins the
+  behaviour in a real jail.
 - **The helper speaks first.** The spec does not say who does; the helper
   sends its hello so the broker learns features before committing work, and
   requires the broker's hello before any other frame.

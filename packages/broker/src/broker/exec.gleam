@@ -7,9 +7,11 @@
 //// each helper's channel: it performs the hello handshake, deframes
 //// inbound bytes with the pure `broker/framing` deframer, streams
 //// output events to the caller, heartbeats the helper while idle, and
-//// mirrors the cancel escalation (the helper TERM-then-KILLs its pgroup
-//// within 2s of `cancel`; if no `exec_exit` arrives within the grace
-//// period the actor kills the whole helper — belt and braces).
+//// mirrors the cancel escalation (the helper TERMs the payload and then
+//// KILLs its pgroup within 2s of `cancel`; if no `exec_exit` arrives
+//// within the grace period the actor kills the whole helper — belt and
+//// braces). The two rungs are addressed differently under a jail, and
+//// what the exit reports differs with them: see `cancel` below.
 ////
 //// ## Policy delivery (the fd-3 gap)
 ////
@@ -100,6 +102,13 @@ pub type ExecRequest {
 pub type ExecResult {
   ExecResult(
     code: Int,
+    /// The signal that killed the process the helper waited on, or `0`.
+    ///
+    /// Under a jail that process is the bwrap supervisor, not the
+    /// payload, and it relays a signalled payload by exiting 128+signal
+    /// rather than dying of it — so a jailed exec reports `signal: 0`
+    /// even when the payload was signalled. Read `code` for the
+    /// cross-environment answer; see `cancel`.
     signal: Int,
     stdout_bytes: Int,
     stderr_bytes: Int,
@@ -212,6 +221,10 @@ pub type HelperConfig {
     /// How long after `cancel` to wait for `exec_exit` before killing
     /// the helper outright. The helper's own TERM-to-KILL ladder is 2s;
     /// this must exceed it.
+    ///
+    /// The helper's 2s is a real grace jailed as well as unjailed — a
+    /// payload with `SIG_IGN` on TERM outlives it and is ended by the
+    /// KILL rung. See `cancel` for who each rung is addressed to.
     cancel_grace_ms: Int,
     /// Idle liveness probe interval; `0` disables.
     heartbeat_interval_ms: Int,
@@ -411,10 +424,42 @@ pub fn stdin(helper: Helper, data data: BitArray, eof eof: Bool) -> Nil {
   process.send(helper.commands, Stdin(data:, eof:))
 }
 
-/// Cancels the running execution. Idempotent; the helper TERM-then-KILLs
-/// its pgroup, and if `exec_exit` still does not arrive within the
-/// grace period the actor kills the helper process outright and settles
-/// the execution as `Failed(CancelEscalated)`.
+/// Cancels the running execution. Idempotent. If `exec_exit` still does
+/// not arrive within the grace period the actor kills the helper process
+/// outright and settles the execution as `Failed(CancelEscalated)`.
+///
+/// ## What the ladder actually addresses
+///
+/// `TERM` → grace → `KILL`, but the two rungs are not sent to the same
+/// set of processes, and the difference is what makes the grace mean
+/// anything inside a jail.
+///
+/// `TERM` goes to the **payload** — the command the broker addressed and
+/// whatever it spawned inside the jail — and deliberately spares the
+/// jail's own scaffolding. Under bwrap the helper's direct child is a
+/// supervisor process that is also the process-group leader, and it is
+/// spawned `--die-with-parent`; TERMing the group therefore kills the
+/// supervisor, whose death SIGKILLs the PID namespace's init and every
+/// process in that namespace with it. That collapsed the grace to under a
+/// millisecond and delivered a SIGKILL to a payload nothing had asked to
+/// stop. `KILL` does go to the whole group, because by then demolishing
+/// the cage is the point. See `packages/sandbox/internal/jail/cancel.go`.
+///
+/// ## What the exit reports, and why `signal` is not the field to read
+///
+/// Unjailed, the payload is the helper's direct child: a TERM-compliant
+/// payload dies of the signal and `ExecResult` carries `signal: 15`,
+/// `code: 143`.
+///
+/// Jailed, the helper's direct child is the supervisor, which outlives
+/// the payload and relays a signalled payload by *exiting* 128+signal
+/// itself. `signal` is then `0` — not because nothing was signalled, but
+/// because the process the helper waited on was not the one signalled.
+/// `code` is 143 either way.
+///
+/// So `code` is the field that means the same thing on both sides of the
+/// jail boundary; `signal` distinguishes them and must not be read as
+/// "the payload was/was not signalled".
 pub fn cancel(helper: Helper) -> Nil {
   process.send(helper.commands, CancelExec)
 }

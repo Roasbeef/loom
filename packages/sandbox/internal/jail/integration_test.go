@@ -4,8 +4,10 @@ package jail_test
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -186,6 +188,17 @@ func TestOutputTruncation(t *testing.T) {
 	}
 }
 
+// A TERM-compliant payload must die *of the TERM*: exit status 128+15,
+// not 128+9. That is a real tightening over the "not a clean exit" this
+// used to ask for, which a SIGKILL satisfies just as well.
+//
+// It is deliberately not the test that proves the ladder reaches the
+// payload, and it cannot be. Under bwrap the direct child is the
+// supervisor, which reports a signalled payload by exiting 128+signal
+// itself, so the status the broker sees is the same whether the payload
+// took the TERM or the namespace collapsed around it. Telling those two
+// apart needs a payload that can say what happened to it, which is
+// TestCancelHonoursThePayloadsTermHandler below.
 func TestCancelTermCompliant(t *testing.T) {
 	c := newCollector()
 	ex := start(t, testPolicy(t), []string{"/bin/sleep", "30"}, c.sink)
@@ -199,11 +212,56 @@ func TestCancelTermCompliant(t *testing.T) {
 	if elapsed := time.Since(startT); elapsed > 10*time.Second {
 		t.Fatalf("cancel took %s", elapsed)
 	}
-	if res.Signal == 0 && res.Code == 0 {
-		t.Fatalf("cancelled sleep reported clean exit: %+v", res)
+	if want := 128 + int(syscall.SIGTERM); res.Code != want {
+		t.Fatalf("cancelled sleep exited %d, want %d (128+SIGTERM): %+v",
+			res.Code, want, res)
 	}
 }
 
+// The claim the cancel ladder actually makes: a payload gets its TERM,
+// on its own terms, and what it decides to do about it survives. This is
+// the assertion the jail could not satisfy before cancel.go — the
+// handler ran, printed, and chose to exit 7, and the namespace teardown
+// then destroyed that status and reported "killed by signal" instead.
+//
+// It is also the test that would notice the opposite mistake: if TERM
+// stopped reaching the payload at all, the handler would never run, the
+// grace would expire, and SIGKILL would report a signal rather than 7.
+func TestCancelHonoursThePayloadsTermHandler(t *testing.T) {
+	c := newCollector()
+	ex := start(t, testPolicy(t),
+		[]string{"/bin/sh", "-c", `trap 'exit 7' TERM; echo ready; sleep 30`},
+		c.sink)
+	_ = ex.WriteStdin(nil, true)
+	waitFor(t, 10*time.Second, func() bool { return strings.Contains(c.out(), "ready") })
+	startT := time.Now()
+	ex.Cancel()
+	res := ex.Wait()
+	elapsed := time.Since(startT)
+	if elapsed > jail.KillGrace {
+		t.Fatalf("payload took %s to honour TERM, past the %s grace: %+v",
+			elapsed, jail.KillGrace, res)
+	}
+	if res.Signal != 0 {
+		t.Fatalf("payload reported killed by signal %d; its TERM handler chose to exit 7: %+v",
+			res.Signal, res)
+	}
+	if res.Code != 7 {
+		t.Fatalf("payload exit code = %d, want 7 (the status its own TERM handler chose): %+v",
+			res.Code, res)
+	}
+}
+
+// The other rung: a payload that ignores TERM must outlive the grace and
+// be ended by the KILL, in a jail as much as out of one.
+//
+// The failure this test exists to catch is not "TERM killed it" — a
+// SIG_IGN payload cannot be killed by TERM. It is the jail being
+// demolished around a payload that was never asked to stop: under bwrap
+// the group leader is the supervisor, and killing it SIGKILLs the PID
+// namespace init and everything in the namespace with it. That is what
+// used to happen here, in 766µs, and the escalation the test names was
+// never exercised at all. See cancel.go.
 func TestCancelEscalatesToKill(t *testing.T) {
 	c := newCollector()
 	// The child ignores TERM; only the 2s KILL escalation ends it. It
@@ -220,12 +278,17 @@ func TestCancelEscalatesToKill(t *testing.T) {
 	res := ex.Wait()
 	elapsed := time.Since(startT)
 	if elapsed < jail.KillGrace {
-		t.Fatalf("TERM-ignoring child died in %s, before the %s grace (did TERM kill it?)", elapsed, jail.KillGrace)
+		t.Fatalf("TERM-ignoring child died in %s, before the %s grace; "+
+			"nothing asked it to stop, so something tore the jail down around it: %+v",
+			elapsed, jail.KillGrace, res)
 	}
 	if elapsed > 15*time.Second {
 		t.Fatalf("escalation took %s", elapsed)
 	}
-	_ = res
+	if want := 128 + int(syscall.SIGKILL); res.Code != want {
+		t.Fatalf("TERM-ignoring child exited %d, want %d (128+SIGKILL): %+v",
+			res.Code, want, res)
+	}
 }
 
 func TestWallClockTimeout(t *testing.T) {
@@ -259,6 +322,103 @@ func TestOrphanedGrandchildReaped(t *testing.T) {
 	if res.Code != 0 {
 		t.Fatalf("exit %d", res.Code)
 	}
+}
+
+// A policy that names "/" as a readable root — which is exactly what a
+// jailed build asking for the toolchain sends, and what the code-mode
+// session base sends — must still get the fresh /proc and the minimal
+// /dev the new namespaces need. The base view is `--ro-bind / /`, so the
+// host's procfs and device tree are in the jail until the two mask
+// mounts cover them; a bind of "/" emitted after those masks puts them
+// straight back.
+//
+// Two distinct things go wrong when it does, and this test asserts both
+// because they fail independently.
+//
+// /proc is a confinement gap: every host process, its command line and
+// its environment, readable from inside a jail that reports itself fully
+// enforced, with /proc/self resolving to the host pid.
+//
+// /dev is a functional break, and it is the one that made
+// `make e2e-codemode` look like a timeout. bwrap binds with MS_NODEV
+// unless asked for --dev-bind, so the re-exposed host device tree is a
+// nodev view in which no node can be opened at all. The BEAM that
+// `gleam build` spawns retries openat("/dev/null", O_WRONLY) against the
+// resulting EACCES forever; the build never returns. See issue #37.
+func TestFreshProcAndDevSurviveAReadableRootOfSlash(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if feat.BwrapPath == "" {
+		t.Skip("a private /proc and /dev are bwrap's to mount; no bwrap here")
+	}
+	pol := testPolicy(t)
+	pol.ReadableRoots = []string{"/"}
+	c := newCollector()
+	// Every field is computed before anything is written, and the write
+	// goes to stdout, because in the broken jail /dev/null cannot be
+	// opened and a probe that redirected to it would die before
+	// reporting.
+	ex := start(t, pol, []string{"/bin/sh", "-c",
+		`p=$(ls -d /proc/[0-9]* | wc -l); i=$(tr "\0" " " < /proc/1/cmdline | cut -c1-24); ` +
+			`if echo x > /dev/null; then d=ok; else d=EACCES; fi; ` +
+			`echo "pids=$p devnull=$d init=$i"`},
+		c.sink)
+	_ = ex.WriteStdin(nil, true)
+	res := ex.Wait()
+	if res.Code != 0 {
+		t.Fatalf("probe failed: %+v", res)
+	}
+	out := strings.TrimSpace(c.out())
+
+	// The helper's own pid is a process the jail must not be able to see.
+	// Counting is the readable assertion; this is the sharp one.
+	hostPids := len(hostProcDirs(t))
+	var jailPids int
+	for _, field := range strings.Fields(out) {
+		if n, ok := strings.CutPrefix(field, "pids="); ok {
+			jailPids, _ = strconv.Atoi(n)
+		}
+	}
+	if jailPids == 0 {
+		t.Fatalf("probe produced no pid count: %q", out)
+	}
+	// bwrap's own jail holds the supervisor's init, stage 2 and the
+	// probe's own pipeline: a handful. The host has every process on the
+	// machine. A jail seeing anything close to the host's count is
+	// looking at the host's procfs.
+	if jailPids > 16 || jailPids >= hostPids {
+		t.Fatalf("jail sees %d pids in /proc (host has %d): the fresh procfs was "+
+			"undone by a later bind of \"/\". Output: %q", jailPids, hostPids, out)
+	}
+	// And pid 1 in there is the jail's own init, not the host's.
+	hostInit, err := os.ReadFile("/proc/1/cmdline")
+	if err == nil && len(hostInit) > 4 {
+		head := strings.TrimSpace(strings.ReplaceAll(string(hostInit[:min(24, len(hostInit))]), "\x00", " "))
+		if head != "" && strings.Contains(out, head) {
+			t.Fatalf("jail's /proc/1 is the *host* init (%q): %q", head, out)
+		}
+	}
+	// The sharp one for #37: a device node the jail owns must be
+	// openable. When the host /dev is back, it is not — and nothing in
+	// the jail that wants a null sink will ever make progress again.
+	if !strings.Contains(out, "devnull=ok") {
+		t.Fatalf("jail cannot open /dev/null: the minimal /dev was undone by a "+
+			"later bind of \"/\" and re-exposed the host device tree nodev. Output: %q", out)
+	}
+}
+
+func hostProcDirs(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatalf("read /proc: %v", err)
+	}
+	var pids []string
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err == nil {
+			pids = append(pids, e.Name())
+		}
+	}
+	return pids
 }
 
 // Feature-gated integration probes: enforced when the kernel offers the

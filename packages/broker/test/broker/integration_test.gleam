@@ -163,12 +163,29 @@ pub fn real_helper_cancel_mid_sleep_test() {
       events:,
       waiting: 3000,
     )
-  // Give the child a moment to start, then cancel; the pgroup dies via
-  // TERM (or KILL at the helper's 2s escalation).
+  // Give the child a moment to start, then cancel. `/bin/sleep` takes
+  // TERM at its default disposition, so the first rung of the ladder is
+  // what ends it and the exit must say so.
   process.sleep(200)
   exec.cancel(helper)
   let assert Ok(#(_stdout, exit)) = collect_exit(events, <<>>, 15_000)
-  assert exit.signal != 0
+  // 128 + SIGTERM, and deliberately not `signal != 0`.
+  //
+  // Two reasons. The weaker assertion was satisfied by a SIGKILL just as
+  // well as a SIGTERM, so it could not tell "the payload was asked to
+  // stop and did" from "the grace expired and we demolished it" — the
+  // very distinction the cancel ladder exists to make.
+  //
+  // And `signal` is not a field the broker can read the same way in both
+  // environments. Unjailed, the payload *is* the helper's direct child:
+  // it dies of SIGTERM and the helper reports signal 15, code 143.
+  // Jailed, the helper's direct child is the bwrap supervisor, which
+  // outlives the payload and relays a signalled payload by *exiting*
+  // 128+signal itself — so signal is 0 and code is still 143. The code is
+  // the observable that means the same thing on both sides of the jail
+  // boundary; see `packages/sandbox/internal/jail/cancel.go`.
+  assert exit.code == 143
+  assert exit.signal == 0 || exit.signal == 15
 }
 
 pub fn real_helper_output_truncation_test() {

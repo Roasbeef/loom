@@ -129,6 +129,26 @@ protocol (spec Part 1.4). WP-G.
 - **One helper runs one execution at a time**; a second `exec_start` gets a
   `busy` error. Concurrency lives in the pool by running more helpers,
   which keeps "the pgroup" in the cancel contract unambiguous.
+- **The cancel ladder's rungs have different addressees, and the grace is
+  real on both sides of the jail.** `cancel` is `TERM` → 2 s grace →
+  `KILL`, but `TERM` is addressed to the payload and spares the jail's
+  supervisor and PID-namespace init; only `KILL` takes the whole pgroup.
+  Signalling the group at the TERM rung kills the bwrap supervisor, and
+  `--die-with-parent` then SIGKILLs the namespace and everything in it —
+  which collapsed the grace to under a millisecond and delivered a SIGKILL
+  to a payload nothing had asked to stop. `cancel_grace_ms` (3 s) must
+  still exceed the helper's 2 s ladder. See
+  `packages/sandbox/internal/jail/cancel.go`.
+- **Read `ExecResult.code`, not `ExecResult.signal`, for how a payload
+  ended.** The helper waits on its direct child. Unjailed that is the
+  payload, so a TERM-killed payload reports `signal: 15, code: 143`.
+  Jailed it is the bwrap supervisor, which outlives the payload and relays
+  a signalled payload by exiting 128+signal itself: `signal: 0, code:
+  143`. `signal` therefore distinguishes jailed from unjailed rather than
+  signalled from not, and a test that asserts `signal != 0` after a cancel
+  is asserting "no jail was engaged". `code` means the same thing in both
+  environments, and unlike `signal != 0` it also separates the TERM rung
+  (143) from the KILL rung (137).
 - **The fd-3 policy file is unlinked on every reachable path.** Erlang
   ports cannot map arbitrary descriptors, so the policy is written
   mode-0600 inside a mode-0700 directory and the helper is spawned through
