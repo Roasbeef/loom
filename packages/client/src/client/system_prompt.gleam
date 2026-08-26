@@ -668,6 +668,17 @@ fn unreadable_warning(path: String, error: simplifile.FileError) -> String {
 
 // --- the summarization pack ------------------------------------------------
 
+fn unreadable_summary_pack(
+  path: String,
+  error: simplifile.FileError,
+) -> String {
+  summary_pack_variable
+  <> " names a summarization pack that could not be read: "
+  <> path
+  <> ": "
+  <> string.inspect(error)
+}
+
 /// The summarization pack this boot summarizes with: the file
 /// `LOOM_SUMMARY_PACK` names, or the shipped one. Returns the decoded
 /// pack and whatever `summary.problems` complains about, as warnings.
@@ -685,17 +696,6 @@ fn unreadable_warning(path: String, error: simplifile.FileError) -> String {
 /// // -> Ok(#(decoded, []))
 /// ```
 ///
-fn unreadable_summary_pack(
-  path: String,
-  error: simplifile.FileError,
-) -> String {
-  summary_pack_variable
-  <> " names a summarization pack that could not be read: "
-  <> path
-  <> ": "
-  <> string.inspect(error)
-}
-
 pub fn summary_pack(
   path: Option(String),
 ) -> Result(#(pack.Pack, List(String)), String) {
