@@ -271,6 +271,22 @@ fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   }
 }
 
+fn host_glob(
+  where: String,
+  item: JsonValue,
+) -> Result(String, CorruptionReport) {
+  case item {
+    json.String(host) -> Ok(host)
+    other ->
+      Error(corruption.report(
+        at: where,
+        on: "allow",
+        expected: "string host globs",
+        context: json.to_string(other),
+      ))
+  }
+}
+
 fn decode_network(
   value: JsonValue,
   where: String,
@@ -283,19 +299,7 @@ fn decode_network(
     "proxy" -> {
       use allow <- result.try(case list.key_find(fields, "allow") {
         Error(Nil) -> Ok([])
-        Ok(json.Array(items)) ->
-          list.try_map(items, fn(item) {
-            case item {
-              json.String(host) -> Ok(host)
-              other ->
-                Error(corruption.report(
-                  at: where,
-                  on: "allow",
-                  expected: "string host globs",
-                  context: json.to_string(other),
-                ))
-            }
-          })
+        Ok(json.Array(items)) -> list.try_map(items, host_glob(where, _))
         Ok(other) ->
           Error(corruption.report(
             at: where,

@@ -318,48 +318,55 @@ pub fn main() -> Nil {
       io.println_error("loom-server: " <> reason)
       ffi_os.halt(1)
     }
-    Ok(settings) -> {
-      let logger = log.scoped(logger, context.for_session(settings.session_id))
-      case boot_with(settings, logger:) {
-        Error(reason) -> {
-          log.error(logger, "boot.failed", [
-            field.text(key: "reason", value: reason),
-          ])
-          ffi_os.halt(1)
-        }
-        Ok(booted) -> {
-          announce(booted)
-          log.info(logger, "server.listening", [
-            field.count(key: "port", value: booted.served.port),
-            field.ident(key: "prompt_digest", value: booted.prompt.digest),
-          ])
-          // Only an entry point installs the signal handler: doing so
-          // replaces the VM's default, whose answer to `SIGTERM` is an
-          // immediate `init:stop()`. From here both ways the server can
-          // stop arrive on one subject.
-          host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
-          case process.receive_forever(booted.stops) {
-            host.Signalled -> {
-              log.info(logger, "server.stopping", [
-                field.text(key: "cause", value: "sigterm"),
-              ])
-              shutdown(booted)
-              log.info(logger, "server.stopped", [])
-            }
-            // The host already tore the stack down, lease included,
-            // before it said anything. All that is left is to say what
-            // died and exit nonzero so whatever runs `loom-server`
-            // restarts it.
-            host.Faulted(child:, reason:) -> {
-              log.error(logger, "server.faulted", [
-                field.text(key: "child", value: child),
-                field.text(key: "reason", value: reason),
-              ])
-              ffi_os.halt(1)
-            }
-          }
-        }
-      }
+    Ok(settings) -> run_server(settings, logger)
+  }
+}
+
+// Boots `settings` and, on success, serves until stopped. A boot failure
+// is a log line and a nonzero exit.
+fn run_server(settings: Settings, logger: Logger) -> Nil {
+  let logger = log.scoped(logger, context.for_session(settings.session_id))
+  case boot_with(settings, logger:) {
+    Error(reason) -> {
+      log.error(logger, "boot.failed", [
+        field.text(key: "reason", value: reason),
+      ])
+      ffi_os.halt(1)
+    }
+    Ok(booted) -> serve_until_stopped(logger, booted)
+  }
+}
+
+// The listening line, the signal wait, and either an orderly shutdown or
+// a fatal exit — whichever way `booted.stops` fires.
+fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
+  announce(booted)
+  log.info(logger, "server.listening", [
+    field.count(key: "port", value: booted.served.port),
+    field.ident(key: "prompt_digest", value: booted.prompt.digest),
+  ])
+  // Only an entry point installs the signal handler: doing so replaces
+  // the VM's default, whose answer to `SIGTERM` is an immediate
+  // `init:stop()`. From here both ways the server can stop arrive on one
+  // subject.
+  host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
+  case process.receive_forever(booted.stops) {
+    host.Signalled -> {
+      log.info(logger, "server.stopping", [
+        field.text(key: "cause", value: "sigterm"),
+      ])
+      shutdown(booted)
+      log.info(logger, "server.stopped", [])
+    }
+    // The host already tore the stack down, lease included, before it
+    // said anything. All that is left is to say what died and exit
+    // nonzero so whatever runs `loom-server` restarts it.
+    host.Faulted(child:, reason:) -> {
+      log.error(logger, "server.faulted", [
+        field.text(key: "child", value: child),
+        field.text(key: "reason", value: reason),
+      ])
+      ffi_os.halt(1)
     }
   }
 }

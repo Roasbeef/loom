@@ -360,20 +360,41 @@ fn park(
         // The record went away underneath the park (a reset store, a
         // read fault). Nothing to wait for.
         Error(_error) -> Settle
-        Ok(record) ->
-          case record.status {
-            durable.Approved -> spend(runtime, id, record, scope)
-            durable.Rejected | durable.Consumed -> Settle
-            durable.Pending ->
-              case config.interactive() {
-                False -> Settle
-                True -> {
-                  config.rest(config.poll_interval_ms)
-                  park(config, runtime, id, scope, until)
-                }
-              }
-          }
+        Ok(record) -> park_on_record(config, runtime, id, scope, until, record)
       }
+  }
+}
+
+// The record's own status, once read: settled either way, or (still
+// pending) another slice of the same park.
+fn park_on_record(
+  config: Config,
+  runtime: api.Runtime,
+  id: String,
+  scope: durable.CallScope,
+  until: Int,
+  record: durable.Escalation,
+) -> Decision {
+  case record.status {
+    durable.Approved -> spend(runtime, id, record, scope)
+    durable.Rejected | durable.Consumed -> Settle
+    durable.Pending -> park_pending(config, runtime, id, scope, until)
+  }
+}
+
+fn park_pending(
+  config: Config,
+  runtime: api.Runtime,
+  id: String,
+  scope: durable.CallScope,
+  until: Int,
+) -> Decision {
+  case config.interactive() {
+    False -> Settle
+    True -> {
+      config.rest(config.poll_interval_ms)
+      park(config, runtime, id, scope, until)
+    }
   }
 }
 

@@ -293,16 +293,17 @@ pub fn pack_source(path: Option(String)) -> Result(#(Origin, String), String) {
     Some(path) ->
       case simplifile.read(path) {
         Ok(text) -> Ok(#(PackFile(path:), text))
-        Error(error) ->
-          Error(
-            pack_path_variable
-            <> " names a prompt pack that could not be read: "
-            <> path
-            <> ": "
-            <> string.inspect(error),
-          )
+        Error(error) -> Error(unreadable_pack(path, error))
       }
   }
+}
+
+fn unreadable_pack(path: String, error: simplifile.FileError) -> String {
+  pack_path_variable
+  <> " names a prompt pack that could not be read: "
+  <> path
+  <> ": "
+  <> string.inspect(error)
 }
 
 /// Decodes a pack and renders it against a host. A pack that does not
@@ -631,25 +632,38 @@ pub fn guidance(workspace: String) -> #(Option(String), List(String)) {
   let path = workspace <> "/CLAUDE.md"
   case simplifile.file_info(path) {
     Error(_absent) -> #(None, [])
-    Ok(info) ->
-      case info.size > max_guidance_file_bytes {
-        True -> #(None, [
-          path
-          <> " is larger than "
-          <> int.to_string(max_guidance_file_bytes)
-          <> " bytes and was not read as repository guidance",
-        ])
-        False ->
-          case simplifile.read(path) {
-            Ok(text) -> #(Some(text), [])
-            Error(error) -> #(None, [
-              path
-              <> " is unreadable and was left out of the system prompt: "
-              <> string.inspect(error),
-            ])
-          }
-      }
+    Ok(info) -> guidance_from(path, info)
   }
+}
+
+fn guidance_from(
+  path: String,
+  info: simplifile.FileInfo,
+) -> #(Option(String), List(String)) {
+  case info.size > max_guidance_file_bytes {
+    True -> #(None, [oversize_warning(path)])
+    False -> read_guidance(path)
+  }
+}
+
+fn oversize_warning(path: String) -> String {
+  path
+  <> " is larger than "
+  <> int.to_string(max_guidance_file_bytes)
+  <> " bytes and was not read as repository guidance"
+}
+
+fn read_guidance(path: String) -> #(Option(String), List(String)) {
+  case simplifile.read(path) {
+    Ok(text) -> #(Some(text), [])
+    Error(error) -> #(None, [unreadable_warning(path, error)])
+  }
+}
+
+fn unreadable_warning(path: String, error: simplifile.FileError) -> String {
+  path
+  <> " is unreadable and was left out of the system prompt: "
+  <> string.inspect(error)
 }
 
 // --- the summarization pack ------------------------------------------------
@@ -671,6 +685,17 @@ pub fn guidance(workspace: String) -> #(Option(String), List(String)) {
 /// // -> Ok(#(decoded, []))
 /// ```
 ///
+fn unreadable_summary_pack(
+  path: String,
+  error: simplifile.FileError,
+) -> String {
+  summary_pack_variable
+  <> " names a summarization pack that could not be read: "
+  <> path
+  <> ": "
+  <> string.inspect(error)
+}
+
 pub fn summary_pack(
   path: Option(String),
 ) -> Result(#(pack.Pack, List(String)), String) {
@@ -679,14 +704,7 @@ pub fn summary_pack(
     Some(path) ->
       case simplifile.read(path) {
         Ok(text) -> Ok(#("at " <> path, text))
-        Error(error) ->
-          Error(
-            summary_pack_variable
-            <> " names a summarization pack that could not be read: "
-            <> path
-            <> ": "
-            <> string.inspect(error),
-          )
+        Error(error) -> Error(unreadable_summary_pack(path, error))
       }
   })
   use decoded <- result.try(

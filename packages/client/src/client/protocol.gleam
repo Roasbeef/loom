@@ -1534,50 +1534,59 @@ fn wire_float(number: Float) -> String {
   case string.split_once(text, "e") {
     Error(Nil) -> text
     Ok(#(mantissa, exponent_text)) ->
-      case int.parse(exponent_text) {
-        Error(Nil) -> text
-        Ok(exponent) -> {
-          let #(sign, mantissa) = case mantissa {
-            "-" <> rest -> #("-", rest)
-            other -> #("", other)
-          }
-          let #(whole, fraction) = case string.split_once(mantissa, ".") {
-            Ok(#(whole, fraction)) -> #(whole, fraction)
-            Error(Nil) -> #(mantissa, "")
-          }
-          let digits = whole <> fraction
-          // The decimal point sits after `point` digits of `digits`.
-          let point = string.length(whole) + exponent
-          let total = string.length(digits)
-          case point > -7 && point < 21 {
-            False -> text
-            True ->
-              case point <= 0 {
-                True ->
-                  sign
-                  <> "0."
-                  <> string.repeat("0", int.negate(point))
-                  <> digits
-                False ->
-                  case point >= total {
-                    True ->
-                      sign
-                      <> digits
-                      <> string.repeat("0", point - total)
-                      <> ".0"
-                    False ->
-                      sign
-                      <> string.slice(digits, at_index: 0, length: point)
-                      <> "."
-                      <> string.slice(
-                        digits,
-                        at_index: point,
-                        length: total - point,
-                      )
-                  }
-              }
-          }
-        }
+      expand_scientific(text, mantissa, exponent_text)
+  }
+}
+
+fn expand_scientific(
+  text: String,
+  mantissa: String,
+  exponent_text: String,
+) -> String {
+  case int.parse(exponent_text) {
+    Error(Nil) -> text
+    Ok(exponent) -> positional_float(text, mantissa, exponent)
+  }
+}
+
+fn positional_float(text: String, mantissa: String, exponent: Int) -> String {
+  let #(sign, mantissa) = case mantissa {
+    "-" <> rest -> #("-", rest)
+    other -> #("", other)
+  }
+  let #(whole, fraction) = case string.split_once(mantissa, ".") {
+    Ok(#(whole, fraction)) -> #(whole, fraction)
+    Error(Nil) -> #(mantissa, "")
+  }
+  let digits = whole <> fraction
+  // The decimal point sits after `point` digits of `digits`.
+  let point = string.length(whole) + exponent
+  let total = string.length(digits)
+  case point > -7 && point < 21 {
+    False -> text
+    True -> place_decimal_point(sign, digits, point, total)
+  }
+}
+
+// `point <= 0`: the point sits before every digit, padded with zeros.
+// `point >= total`: the point sits after every digit, padded the other
+// way. Otherwise it falls inside `digits` and splits it in two.
+fn place_decimal_point(
+  sign: String,
+  digits: String,
+  point: Int,
+  total: Int,
+) -> String {
+  case point <= 0 {
+    True -> sign <> "0." <> string.repeat("0", int.negate(point)) <> digits
+    False ->
+      case point >= total {
+        True -> sign <> digits <> string.repeat("0", point - total) <> ".0"
+        False ->
+          sign
+          <> string.slice(digits, at_index: 0, length: point)
+          <> "."
+          <> string.slice(digits, at_index: point, length: total - point)
       }
   }
 }

@@ -94,6 +94,7 @@ import core/message.{type AgentMessage}
 import core/register
 import core/tx
 import events/bus
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -626,33 +627,7 @@ fn new_entries(
   // the strand whose branch they extend.
   let #(cache, claimed) =
     list.fold(strands, #(cache, []), fn(accumulator, strand) {
-      let #(cache, emits) = accumulator
-      case session.strand_leaf(store, strand) {
-        Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-          case
-            storage.scan_branch(
-              store.store,
-              storage.branch_scan(from: leaf)
-                |> storage.branch_order(storage.OldestFirst)
-                |> storage.branch_cursor(hw),
-            )
-          {
-            Ok(rows) ->
-              list.fold(rows, #(cache, emits), fn(accumulator, row) {
-                let #(cache, emits) = accumulator
-                let id = ids.entry_id_to_string(entry_id_of(row))
-                case dict.has_key(cache, id) {
-                  True -> #(cache, emits)
-                  False -> #(dict.insert(cache, id, strand), [
-                    entry_emit(strand, row),
-                    ..emits
-                  ])
-                }
-              })
-            Error(_) -> #(cache, emits)
-          }
-        _ -> #(cache, emits)
-      }
+      claim_branch(store, strand, hw, accumulator)
     })
   // Completeness pass: whatever the leaves missed, attributed through
   // the parent chain (fallback: the first strand).
@@ -670,23 +645,81 @@ fn new_entries(
     Error(_) -> #(cache, claimed)
     Ok(rows) ->
       list.fold(rows, #(cache, claimed), fn(accumulator, row) {
-        let #(cache, emits) = accumulator
-        let id = ids.entry_id_to_string(entry_id_of(row))
-        case dict.has_key(cache, id) {
-          True -> #(cache, emits)
-          False -> {
-            let strand = case entry_parent_of(row) {
-              Some(parent) ->
-                case dict.get(cache, ids.entry_id_to_string(parent)) {
-                  Ok(strand) -> strand
-                  Error(Nil) -> fallback
-                }
-              None -> fallback
-            }
-            #(dict.insert(cache, id, strand), [entry_emit(strand, row), ..emits])
-          }
-        }
+        claim_by_parent(accumulator, row, fallback)
       })
+  }
+}
+
+// One strand's branch scan above the high-water, folded into the
+// running cache/emits pair. A strand with no leaf, or a leaf whose scan
+// fails, contributes nothing.
+fn claim_branch(
+  store: session.Session,
+  strand: String,
+  hw: Int,
+  accumulator: #(Dict(String, String), List(Emit)),
+) -> #(Dict(String, String), List(Emit)) {
+  case session.strand_leaf(store, strand) {
+    Ok(Some(session.Cell(value: Some(leaf), ..))) ->
+      case
+        storage.scan_branch(
+          store.store,
+          storage.branch_scan(from: leaf)
+            |> storage.branch_order(storage.OldestFirst)
+            |> storage.branch_cursor(hw),
+        )
+      {
+        Ok(rows) ->
+          list.fold(rows, accumulator, fn(accumulator, row) {
+            claim_row(accumulator, strand, row)
+          })
+        Error(_) -> accumulator
+      }
+    _ -> accumulator
+  }
+}
+
+// Claims one row for `strand` unless the cache already has it (a row
+// another strand's branch already attributed).
+fn claim_row(
+  accumulator: #(Dict(String, String), List(Emit)),
+  strand: String,
+  row: Entry,
+) -> #(Dict(String, String), List(Emit)) {
+  let #(cache, emits) = accumulator
+  let id = ids.entry_id_to_string(entry_id_of(row))
+  case dict.has_key(cache, id) {
+    True -> #(cache, emits)
+    False -> #(dict.insert(cache, id, strand), [
+      entry_emit(strand, row),
+      ..emits
+    ])
+  }
+}
+
+// Claims one row the branch scans missed, by walking its parent's
+// attribution (or the fallback strand when the parent is unattributed
+// too).
+fn claim_by_parent(
+  accumulator: #(Dict(String, String), List(Emit)),
+  row: Entry,
+  fallback: String,
+) -> #(Dict(String, String), List(Emit)) {
+  let #(cache, emits) = accumulator
+  let id = ids.entry_id_to_string(entry_id_of(row))
+  case dict.has_key(cache, id) {
+    True -> #(cache, emits)
+    False -> {
+      let strand = case entry_parent_of(row) {
+        Some(parent) ->
+          case dict.get(cache, ids.entry_id_to_string(parent)) {
+            Ok(strand) -> strand
+            Error(Nil) -> fallback
+          }
+        None -> fallback
+      }
+      #(dict.insert(cache, id, strand), [entry_emit(strand, row), ..emits])
+    }
   }
 }
 
@@ -754,69 +787,99 @@ fn register_events(
   let store = state.runtime.session
   list.fold(strands, #(state.live, []), fn(accumulator, strand) {
     let #(live, emits) = accumulator
-    let #(current, state_seq) = case session.strand_state(store, strand) {
-      Ok(Some(session.Cell(value:, seq:))) -> #(
-        option.map(value.current_operation, ids.op_id_to_string),
-        seq,
-      )
-      _ -> #(None, 0)
-    }
-    // A terminal result that landed since the last pull. Keyed on the
-    // `strand.last_result` register's own seq — never on the live-op
-    // diff, because a fast operation can open and settle entirely
-    // between two pulls.
-    let emits = case session.last_result(store, strand) {
-      Ok(Some(session.Cell(value:, seq:))) if seq > hw -> {
-        let #(op, status, error) = result_view(value)
-        // The state register clearing the operation is the `done`
-        // display transition (only while no successor operation has
-        // already claimed the register).
-        let emits = case current, state_seq > hw {
-          None, True -> [
-            Emit(
-              seq: state_seq,
-              event: protocol.OpTransitionEvent(op:, strand:, phase: "done"),
-            ),
-            ..emits
-          ]
-          _, _ -> emits
-        }
-        [
+    let #(current, state_seq) = current_operation(store, strand)
+    let emits =
+      terminal_result_emits(store, strand, current, state_seq, hw, emits)
+    open_operation_phase(store, strand, current, live, emits, hw)
+  })
+}
+
+fn current_operation(
+  store: session.Session,
+  strand: String,
+) -> #(Option(String), Int) {
+  case session.strand_state(store, strand) {
+    Ok(Some(session.Cell(value:, seq:))) -> #(
+      option.map(value.current_operation, ids.op_id_to_string),
+      seq,
+    )
+    _ -> #(None, 0)
+  }
+}
+
+// A terminal result that landed since the last pull. Keyed on the
+// `strand.last_result` register's own seq — never on the live-op diff,
+// because a fast operation can open and settle entirely between two
+// pulls.
+fn terminal_result_emits(
+  store: session.Session,
+  strand: String,
+  current: Option(String),
+  state_seq: Int,
+  hw: Int,
+  emits: List(Emit),
+) -> List(Emit) {
+  case session.last_result(store, strand) {
+    Ok(Some(session.Cell(value:, seq:))) if seq > hw -> {
+      let #(op, status, error) = result_view(value)
+      // The state register clearing the operation is the `done` display
+      // transition (only while no successor operation has already
+      // claimed the register).
+      let emits = case current, state_seq > hw {
+        None, True -> [
           Emit(
-            seq:,
-            event: protocol.StrandResultEvent(strand:, op:, status:, error:),
+            seq: state_seq,
+            event: protocol.OpTransitionEvent(op:, strand:, phase: "done"),
           ),
           ..emits
         ]
+        _, _ -> emits
       }
-      _ -> emits
+      [
+        Emit(
+          seq:,
+          event: protocol.StrandResultEvent(strand:, op:, status:, error:),
+        ),
+        ..emits
+      ]
     }
-    // The open operation's current phase.
-    case current {
-      None -> #(dict.delete(live, strand), emits)
-      Some(op_text) -> {
-        let live = dict.insert(live, strand, op_text)
-        case ids.parse_op_id(op_text) {
-          Error(_) -> #(live, emits)
-          Ok(op_id) ->
-            case session.op_state(store, op_id) {
-              Ok(Some(session.Cell(value:, seq:))) if seq > hw -> #(live, [
-                Emit(
-                  seq:,
-                  event: protocol.OpTransitionEvent(
-                    op: op_text,
-                    strand:,
-                    phase: phase_of(value),
-                  ),
+    _ -> emits
+  }
+}
+
+// The open operation's current phase.
+fn open_operation_phase(
+  store: session.Session,
+  strand: String,
+  current: Option(String),
+  live: Dict(String, String),
+  emits: List(Emit),
+  hw: Int,
+) -> #(Dict(String, String), List(Emit)) {
+  case current {
+    None -> #(dict.delete(live, strand), emits)
+    Some(op_text) -> {
+      let live = dict.insert(live, strand, op_text)
+      case ids.parse_op_id(op_text) {
+        Error(_) -> #(live, emits)
+        Ok(op_id) ->
+          case session.op_state(store, op_id) {
+            Ok(Some(session.Cell(value:, seq:))) if seq > hw -> #(live, [
+              Emit(
+                seq:,
+                event: protocol.OpTransitionEvent(
+                  op: op_text,
+                  strand:,
+                  phase: phase_of(value),
                 ),
-                ..emits
-              ])
-              _ -> #(live, emits)
-            }
-        }
+              ),
+              ..emits
+            ])
+            _ -> #(live, emits)
+          }
       }
     }
-  })
+  }
 }
 
 fn escalation_events(state: State, hw: Int) -> List(Emit) {
@@ -936,18 +999,15 @@ fn entry_parent_of(row: Entry) -> Option(EntryId) {
 fn phase_of(state: operation.OperationState) -> String {
   case state {
     operation.RunState(control:, phase:, ..) ->
-      case control {
-        operation.CancelRequested(..) -> "cancel_requested"
-        operation.Running ->
-          case phase {
-            operation.Starting -> "starting"
-            operation.Checkpoint(..) -> "checkpoint"
-            operation.Assistant(..) -> "assistant"
-            operation.Tools(..) -> "tools"
-            operation.Compacting(..) -> "compacting"
-            operation.AwaitingDeferred(..) -> "awaiting_deferred"
-            operation.FailureDrain(..) -> "failure_drain"
-          }
+      case control, phase {
+        operation.CancelRequested(..), _ -> "cancel_requested"
+        operation.Running, operation.Starting -> "starting"
+        operation.Running, operation.Checkpoint(..) -> "checkpoint"
+        operation.Running, operation.Assistant(..) -> "assistant"
+        operation.Running, operation.Tools(..) -> "tools"
+        operation.Running, operation.Compacting(..) -> "compacting"
+        operation.Running, operation.AwaitingDeferred(..) -> "awaiting_deferred"
+        operation.Running, operation.FailureDrain(..) -> "failure_drain"
       }
     operation.CompactionState(control:, ..) ->
       case control {
@@ -1099,6 +1159,35 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
 
 // --- command dispatch ------------------------------------------------------
 
+// The hub's own error-channel combinator: run `then` on success, or send
+// `id` an error frame built from the `(code, message)` failure and leave
+// `state` unchanged. Mirrors `machine/planner`'s `or_fault` and
+// `tools/tool`'s `or_outcome` — the shape a command handler's error arm
+// always was (`reply_error` then return `state`), pulled out so a chain
+// of fallible steps reads as a chain rather than a staircase.
+//
+// ## Examples
+//
+// ```gleam
+// // use record <- or_reply(find_escalation(state, id), state, connection, id)
+// ```
+//
+fn or_reply(
+  result: Result(a, #(String, String)),
+  state: State,
+  connection: Int,
+  id: Int,
+  then: fn(a) -> State,
+) -> State {
+  case result {
+    Ok(value) -> then(value)
+    Error(#(code, message)) -> {
+      reply_error(state, connection, id, code, message)
+      state
+    }
+  }
+}
+
 fn dispatch(state: State, connection: Int, text: String) -> State {
   case protocol.decode_command(text) {
     Error(protocol.MalformedFrame(report:)) -> {
@@ -1230,38 +1319,34 @@ fn subscribe(
   session_name: String,
   from_seq: Option(Int),
 ) -> State {
-  case session_name == state.session_id {
-    False -> {
-      reply_error(
+  use <- bool.lazy_guard(when: session_name != state.session_id, return: fn() {
+    reply_error(
+      state,
+      connection,
+      id,
+      protocol.code_unknown_session,
+      "this gateway serves session " <> state.session_id,
+    )
+    state
+  })
+  let state = pull_and_broadcast(state)
+  let state = mark_subscribed(state, connection)
+  case from_seq {
+    Some(from) if from > 0 && from <= state.high_water + 1 -> {
+      reply(
         state,
         connection,
         id,
-        protocol.code_unknown_session,
-        "this gateway serves session " <> state.session_id,
+        protocol.SnapshotEvent(protocol.ResumeSnapshot(
+          next_seq: state.high_water + 1,
+        )),
       )
+      replay_events(state, connection, from)
       state
     }
-    True -> {
-      let state = pull_and_broadcast(state)
-      let state = mark_subscribed(state, connection)
-      case from_seq {
-        Some(from) if from > 0 && from <= state.high_water + 1 -> {
-          reply(
-            state,
-            connection,
-            id,
-            protocol.SnapshotEvent(protocol.ResumeSnapshot(
-              next_seq: state.high_water + 1,
-            )),
-          )
-          replay_events(state, connection, from)
-          state
-        }
-        _ -> {
-          reply(state, connection, id, full_snapshot(state))
-          state
-        }
-      }
+    _ -> {
+      reply(state, connection, id, full_snapshot(state))
+      state
     }
   }
 }
@@ -1307,9 +1392,35 @@ fn replay_events(state: State, connection: Int, from_seq: Int) -> Nil {
   let store = state.runtime.session
   let strands = strand_names(state)
   let range_top = state.high_water
-  let entry_emits = case
+  let entry_emits = replay_entry_emits(state, strands, from_seq, range_top)
+  let usage_emits = replay_usage_emits(state, strands, from_seq, range_top)
+  let register_emits =
+    replay_register_emits(store, strands, from_seq, range_top)
+  let escalation_emits = replay_escalation_emits(state, from_seq, range_top)
+  [entry_emits, usage_emits, register_emits, escalation_emits]
+  |> list.flatten
+  |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
+  |> dedupe_by_seq
+  |> list.each(fn(emit) {
+    send_to(
+      state,
+      connection,
+      EventEnvelope(reply_to: None, seq: Some(emit.seq), event: emit.event),
+    )
+  })
+}
+
+// Rebuilds entry events in `[from_seq, range_top]`, attributed from the
+// cache when known, otherwise located by branch membership.
+fn replay_entry_emits(
+  state: State,
+  strands: List(String),
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  case
     storage.scan_entries(
-      store.store,
+      state.runtime.session.store,
       storage.entry_scan()
         |> storage.entry_seq_range(Some(from_seq), Some(range_top)),
     )
@@ -1325,77 +1436,120 @@ fn replay_events(state: State, connection: Int, from_seq: Int) -> Nil {
         entry_emit(strand, row)
       })
   }
-  let usage_emits = case
+}
+
+fn replay_usage_emits(
+  state: State,
+  strands: List(String),
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  case
     storage.scan_usage(
-      store.store,
+      state.runtime.session.store,
       storage.usage_scan()
         |> storage.usage_seq_range(Some(from_seq), Some(range_top)),
     )
   {
     Error(_) -> []
-    Ok(rows) ->
-      list.map(rows, fn(row: UsageRow) {
-        let strand = case row.entry_id {
-          Some(entry_id) ->
-            case
-              dict.get(state.entry_strand, ids.entry_id_to_string(entry_id))
-            {
-              Ok(strand) -> strand
-              Error(Nil) -> locate_entry(state, strands, entry_id)
-            }
-          None -> single_live_strand(state)
-        }
-        Emit(
-          seq: row.seq,
-          event: protocol.UsageEvent(strand:, op: None, usage: row.usage),
-        )
-      })
+    Ok(rows) -> list.map(rows, replay_usage_row(state, strands, _))
   }
-  // Register-backed events replay as current state at current seq.
-  let register_emits =
-    list.flat_map(strands, fn(strand) {
-      let op_emit = case session.strand_state(store, strand) {
-        Ok(Some(session.Cell(value:, ..))) ->
-          case value.current_operation {
-            Some(op) ->
-              case session.op_state(store, op) {
-                Ok(Some(session.Cell(value: op_state, seq:)))
-                  if seq >= from_seq && seq <= range_top
-                -> [
-                  Emit(
-                    seq:,
-                    event: protocol.OpTransitionEvent(
-                      op: ids.op_id_to_string(op),
-                      strand:,
-                      phase: phase_of(op_state),
-                    ),
-                  ),
-                ]
-                _ -> []
-              }
-            None -> []
+}
+
+fn replay_usage_row(
+  state: State,
+  strands: List(String),
+  row: UsageRow,
+) -> Emit {
+  let strand = case row.entry_id {
+    Some(entry_id) ->
+      case dict.get(state.entry_strand, ids.entry_id_to_string(entry_id)) {
+        Ok(strand) -> strand
+        Error(Nil) -> locate_entry(state, strands, entry_id)
+      }
+    None -> single_live_strand(state)
+  }
+  Emit(
+    seq: row.seq,
+    event: protocol.UsageEvent(strand:, op: None, usage: row.usage),
+  )
+}
+
+// Register-backed events replay as current state at current seq.
+fn replay_register_emits(
+  store: session.Session,
+  strands: List(String),
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  list.flat_map(strands, fn(strand) {
+    let op_emit = replay_op_transition(store, strand, from_seq, range_top)
+    let result_emit = replay_strand_result(store, strand, from_seq, range_top)
+    list.append(op_emit, result_emit)
+  })
+}
+
+fn replay_op_transition(
+  store: session.Session,
+  strand: String,
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  case session.strand_state(store, strand) {
+    Ok(Some(session.Cell(value:, ..))) ->
+      case value.current_operation {
+        Some(op) ->
+          case session.op_state(store, op) {
+            Ok(Some(session.Cell(value: op_state, seq:)))
+              if seq >= from_seq && seq <= range_top
+            -> [
+              Emit(
+                seq:,
+                event: protocol.OpTransitionEvent(
+                  op: ids.op_id_to_string(op),
+                  strand:,
+                  phase: phase_of(op_state),
+                ),
+              ),
+            ]
+            _ -> []
           }
-        _ -> []
+        None -> []
       }
-      let result_emit = case session.last_result(store, strand) {
-        Ok(Some(session.Cell(value:, seq:)))
-          if seq >= from_seq && seq <= range_top
-        -> {
-          let #(op, status, error) = result_view(value)
-          [
-            Emit(
-              seq:,
-              event: protocol.StrandResultEvent(strand:, op:, status:, error:),
-            ),
-          ]
-        }
-        _ -> []
-      }
-      list.append(op_emit, result_emit)
-    })
-  let escalation_emits = case
+    _ -> []
+  }
+}
+
+fn replay_strand_result(
+  store: session.Session,
+  strand: String,
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  case session.last_result(store, strand) {
+    Ok(Some(session.Cell(value:, seq:)))
+      if seq >= from_seq && seq <= range_top
+    -> {
+      let #(op, status, error) = result_view(value)
+      [
+        Emit(
+          seq:,
+          event: protocol.StrandResultEvent(strand:, op:, status:, error:),
+        ),
+      ]
+    }
+    _ -> []
+  }
+}
+
+fn replay_escalation_emits(
+  state: State,
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
+  case
     storage.list_registers(
-      store.store,
+      state.runtime.session.store,
       register.FactCustom,
       Some(runtime_escalation.key_prefix),
     )
@@ -1415,17 +1569,6 @@ fn replay_events(state: State, connection: Int, from_seq: Int) -> Nil {
         }
       })
   }
-  [entry_emits, usage_emits, register_emits, escalation_emits]
-  |> list.flatten
-  |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
-  |> dedupe_by_seq
-  |> list.each(fn(emit) {
-    send_to(
-      state,
-      connection,
-      EventEnvelope(reply_to: None, seq: Some(emit.seq), event: emit.event),
-    )
-  })
 }
 
 // Attributes an entry outside the cache by branch membership.
@@ -1435,25 +1578,7 @@ fn locate_entry(
   entry_id: EntryId,
 ) -> String {
   let store = state.runtime.session
-  let found =
-    list.find(strands, fn(strand) {
-      case session.strand_leaf(store, strand) {
-        Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-          case
-            storage.scan_branch(
-              store.store,
-              storage.branch_scan(from: leaf)
-                |> storage.branch_stop_at_id(entry_id)
-                |> storage.branch_limit(1),
-            )
-          {
-            Ok([row]) -> entry_id_of(row) == entry_id
-            _ -> False
-          }
-        _ -> False
-      }
-    })
-  case found {
+  case list.find(strands, entry_in_branch(store, _, entry_id)) {
     Ok(strand) -> strand
     Error(Nil) ->
       case strands {
@@ -1463,32 +1588,33 @@ fn locate_entry(
   }
 }
 
+// Whether `entry_id` sits on `strand`'s branch: its leaf's scan, stopped
+// at that id, actually reached it.
+fn entry_in_branch(
+  store: session.Session,
+  strand: String,
+  entry_id: EntryId,
+) -> Bool {
+  case session.strand_leaf(store, strand) {
+    Ok(Some(session.Cell(value: Some(leaf), ..))) ->
+      case
+        storage.scan_branch(
+          store.store,
+          storage.branch_scan(from: leaf)
+            |> storage.branch_stop_at_id(entry_id)
+            |> storage.branch_limit(1),
+        )
+      {
+        Ok([row]) -> entry_id_of(row) == entry_id
+        _ -> False
+      }
+    _ -> False
+  }
+}
+
 fn full_snapshot(state: State) -> WireEvent {
   let store = state.runtime.session
-  let strands =
-    list.map(strand_names(state), fn(strand) {
-      let leaf = case session.strand_leaf(store, strand) {
-        Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-          Some(ids.entry_id_to_string(leaf))
-        _ -> None
-      }
-      let live_op = case session.strand_state(store, strand) {
-        Ok(Some(session.Cell(value:, ..))) ->
-          case value.current_operation {
-            Some(op) -> {
-              let phase = case session.op_state(store, op) {
-                Ok(Some(session.Cell(value: op_state, ..))) ->
-                  phase_of(op_state)
-                _ -> "starting"
-              }
-              Some(LiveOp(op: ids.op_id_to_string(op), phase:))
-            }
-            None -> None
-          }
-        _ -> None
-      }
-      Strand(id: strand, name: Some(strand), leaf:, live_op:)
-    })
+  let strands = list.map(strand_names(state), strand_view(store, _))
   let entries = recent_entries(state)
   let escalations = pending_escalations(state)
   let usage = case storage.stats(store.store) {
@@ -1503,6 +1629,38 @@ fn full_snapshot(state: State) -> WireEvent {
     escalations:,
     usage:,
   ))
+}
+
+// One strand's snapshot row: its leaf (as text) and its live operation,
+// when it has either.
+fn strand_view(store: session.Session, strand: String) -> protocol.Strand {
+  let leaf = case session.strand_leaf(store, strand) {
+    Ok(Some(session.Cell(value: Some(leaf), ..))) ->
+      Some(ids.entry_id_to_string(leaf))
+    _ -> None
+  }
+  let live_op = strand_live_op(store, strand)
+  Strand(id: strand, name: Some(strand), leaf:, live_op:)
+}
+
+fn strand_live_op(
+  store: session.Session,
+  strand: String,
+) -> Option(protocol.LiveOp) {
+  case session.strand_state(store, strand) {
+    Ok(Some(session.Cell(value:, ..))) ->
+      case value.current_operation {
+        Some(op) -> {
+          let phase = case session.op_state(store, op) {
+            Ok(Some(session.Cell(value: op_state, ..))) -> phase_of(op_state)
+            _ -> "starting"
+          }
+          Some(LiveOp(op: ids.op_id_to_string(op), phase:))
+        }
+        None -> None
+      }
+    _ -> None
+  }
 }
 
 fn recent_entries(state: State) -> List(EntryRecord) {
@@ -1576,21 +1734,22 @@ fn prompt(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
-  case api.prompt(target, [user_message(state, text)]) {
-    Error(error) -> {
-      let #(code, message) = describe_api_error(error, strand)
-      reply_error(state, connection, id, code, message)
-      state
+  use _op <- or_reply(
+    result.map_error(
+      api.prompt(target, [user_message(state, text)]),
+      describe_api_error(_, strand),
+    ),
+    state,
+    connection,
+    id,
+  )
+  reply_with_matched(state, connection, id, fn(emit) {
+    case emit.event {
+      protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
+        on == strand && is_user_entry(entry)
+      _ -> False
     }
-    Ok(_op) ->
-      reply_with_matched(state, connection, id, fn(emit) {
-        case emit.event {
-          protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
-            on == strand && is_user_entry(entry)
-          _ -> False
-        }
-      })
-  }
+  })
 }
 
 fn is_user_entry(row: Entry) -> Bool {
@@ -1698,26 +1857,26 @@ fn steer(
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
   let message = user_message(state, text)
-  case api.steer(target, message) {
-    Error(api.QueueRejected(reason: queue.NoActiveRun)) -> {
-      reply_error(
-        state,
-        connection,
-        id,
-        protocol.code_conflict,
-        "strand " <> strand <> " has no live operation to steer",
-      )
-      state
-    }
-    Error(error) -> {
-      let #(code, description) = describe_api_error(error, strand)
-      reply_error(state, connection, id, code, description)
-      state
-    }
-    Ok(entry_id) -> {
-      reply(state, connection, id, queued_entry(strand, entry_id, message))
-      pull_and_broadcast(state)
-    }
+  use entry_id <- or_reply(
+    result.map_error(api.steer(target, message), steer_error(_, strand)),
+    state,
+    connection,
+    id,
+  )
+  reply(state, connection, id, queued_entry(strand, entry_id, message))
+  pull_and_broadcast(state)
+}
+
+// `steer`'s error mapping: a strand with no live run gets a wording of
+// its own (there is nothing to steer), everything else falls through to
+// the shared `describe_api_error` table.
+fn steer_error(error: api.ApiError, strand: String) -> #(String, String) {
+  case error {
+    api.QueueRejected(reason: queue.NoActiveRun) -> #(
+      protocol.code_conflict,
+      "strand " <> strand <> " has no live operation to steer",
+    )
+    _ -> describe_api_error(error, strand)
   }
 }
 
@@ -1822,68 +1981,64 @@ fn approve(
   escalation_id: String,
   approved: Option(List(Grant)),
 ) -> State {
-  case find_escalation(state, escalation_id) {
-    Error(reply_pair) -> {
-      let #(code, message) = reply_pair
-      reply_error(state, connection, id, code, message)
-      state
-    }
-    Ok(record) ->
-      case grants.decode_denial(record.denial) {
-        Error(report) -> {
-          reply_error(
-            state,
-            connection,
-            id,
-            protocol.code_internal,
-            "the stored denial is unreadable: " <> report.expected,
-          )
-          state
-        }
-        Ok(decoded) -> {
-          let wanted = decoded.wanted
-          let chosen = case approved {
-            None -> Ok(wanted)
-            Some(chosen) ->
-              case grants.first_unwanted(chosen, wanted:) {
-                None -> Ok(chosen)
-                Some(_grant) ->
-                  Error(
-                    "approved grants must be a subset of the denial's wanted diff",
-                  )
-              }
-          }
-          case chosen {
-            Error(message) -> {
-              reply_error(
-                state,
-                connection,
-                id,
-                protocol.code_bad_request,
-                message,
-              )
-              state
-            }
-            Ok(chosen) ->
-              case
-                api.approve_escalation(
-                  state.runtime,
-                  escalation_id,
-                  list.map(chosen, grants.encode),
-                )
-              {
-                Error(error) -> {
-                  let #(code, message) = describe_api_error(error, "")
-                  reply_error(state, connection, id, code, message)
-                  state
-                }
-                Ok(Nil) ->
-                  reply_with_matched(state, connection, id, fn(emit) {
-                    escalation_emitted(emit, escalation_id, "approved")
-                  })
-              }
-          }
-        }
+  use record <- or_reply(
+    find_escalation(state, escalation_id),
+    state,
+    connection,
+    id,
+  )
+  use decoded <- or_reply(
+    result.map_error(grants.decode_denial(record.denial), fn(report) {
+      #(
+        protocol.code_internal,
+        "the stored denial is unreadable: " <> report.expected,
+      )
+    }),
+    state,
+    connection,
+    id,
+  )
+  use chosen <- or_reply(
+    result.map_error(chosen_grants(approved, decoded.wanted), fn(message) {
+      #(protocol.code_bad_request, message)
+    }),
+    state,
+    connection,
+    id,
+  )
+  use Nil <- or_reply(
+    result.map_error(
+      api.approve_escalation(
+        state.runtime,
+        escalation_id,
+        list.map(chosen, grants.encode),
+      ),
+      describe_api_error(_, ""),
+    ),
+    state,
+    connection,
+    id,
+  )
+  reply_with_matched(state, connection, id, fn(emit) {
+    escalation_emitted(emit, escalation_id, "approved")
+  })
+}
+
+// The grants an approval actually spends: everything the denial wanted
+// when the client approved wholesale, or the client's own subset —
+// checked against the wanted diff, because a client cannot approve more
+// than was asked.
+fn chosen_grants(
+  approved: Option(List(Grant)),
+  wanted: List(Grant),
+) -> Result(List(Grant), String) {
+  case approved {
+    None -> Ok(wanted)
+    Some(chosen) ->
+      case grants.first_unwanted(chosen, wanted:) {
+        None -> Ok(chosen)
+        Some(_grant) ->
+          Error("approved grants must be a subset of the denial's wanted diff")
       }
   }
 }
@@ -1894,25 +2049,24 @@ fn deny(
   id: Int,
   escalation_id: String,
 ) -> State {
-  case find_escalation(state, escalation_id) {
-    Error(reply_pair) -> {
-      let #(code, message) = reply_pair
-      reply_error(state, connection, id, code, message)
-      state
-    }
-    Ok(_record) ->
-      case api.deny_escalation(state.runtime, escalation_id) {
-        Error(error) -> {
-          let #(code, message) = describe_api_error(error, "")
-          reply_error(state, connection, id, code, message)
-          state
-        }
-        Ok(Nil) ->
-          reply_with_matched(state, connection, id, fn(emit) {
-            escalation_emitted(emit, escalation_id, "rejected")
-          })
-      }
-  }
+  use _record <- or_reply(
+    find_escalation(state, escalation_id),
+    state,
+    connection,
+    id,
+  )
+  use Nil <- or_reply(
+    result.map_error(
+      api.deny_escalation(state.runtime, escalation_id),
+      describe_api_error(_, ""),
+    ),
+    state,
+    connection,
+    id,
+  )
+  reply_with_matched(state, connection, id, fn(emit) {
+    escalation_emitted(emit, escalation_id, "rejected")
+  })
 }
 
 fn escalation_emitted(
@@ -1931,29 +2085,32 @@ fn find_escalation(
   state: State,
   escalation_id: String,
 ) -> Result(runtime_escalation.Escalation, #(String, String)) {
-  case api.escalations(state.runtime) {
-    Error(_) ->
-      Error(#(protocol.code_internal, "the escalation records are unreadable"))
-    Ok(records) ->
-      case list.find(records, fn(record) { record.id == escalation_id }) {
-        Error(Nil) ->
-          Error(#(
-            protocol.code_unknown_escalation,
-            "unknown escalation: " <> escalation_id,
-          ))
-        Ok(record) ->
-          case record.status {
-            runtime_escalation.Pending -> Ok(record)
-            _ ->
-              Error(#(
-                protocol.code_not_pending,
-                "escalation "
-                  <> escalation_id
-                  <> " is "
-                  <> escalation_status(record.status),
-              ))
-          }
-      }
+  use records <- result.try(
+    result.map_error(api.escalations(state.runtime), fn(_error) {
+      #(protocol.code_internal, "the escalation records are unreadable")
+    }),
+  )
+  use record <- result.try(
+    result.map_error(
+      list.find(records, fn(record) { record.id == escalation_id }),
+      fn(_nil) {
+        #(
+          protocol.code_unknown_escalation,
+          "unknown escalation: " <> escalation_id,
+        )
+      },
+    ),
+  )
+  case record.status {
+    runtime_escalation.Pending -> Ok(record)
+    _ ->
+      Error(#(
+        protocol.code_not_pending,
+        "escalation "
+          <> escalation_id
+          <> " is "
+          <> escalation_status(record.status),
+      ))
   }
 }
 
@@ -1976,26 +2133,21 @@ fn fork(
     Ok(Some(session.Cell(value:, ..))) -> value
     _ -> None
   }
-  case configuration {
-    None -> {
-      reply_error(
-        state,
-        connection,
-        id,
-        protocol.code_internal,
-        "the source strand's configuration is unreadable",
-      )
-      state
-    }
-    Some(configuration) -> {
-      let new_name =
-        unique_name(state, case name {
-          Some(name) -> name
-          None -> strand <> "-fork"
-        })
-      seed_and_reply(state, connection, id, new_name, configuration, leaf)
-    }
-  }
+  use configuration <- or_reply(
+    option.to_result(configuration, #(
+      protocol.code_internal,
+      "the source strand's configuration is unreadable",
+    )),
+    state,
+    connection,
+    id,
+  )
+  let new_name =
+    unique_name(state, case name {
+      Some(name) -> name
+      None -> strand <> "-fork"
+    })
+  seed_and_reply(state, connection, id, new_name, configuration, leaf)
 }
 
 fn create_strand(
@@ -2019,26 +2171,21 @@ fn create_strand(
         [] -> None
       }
   }
-  case configuration {
-    None -> {
-      reply_error(
-        state,
-        connection,
-        id,
-        protocol.code_internal,
-        "no existing strand to copy a configuration from",
-      )
-      state
-    }
-    Some(configuration) -> {
-      let new_name =
-        unique_name(state, case name {
-          Some(name) -> name
-          None -> "strand-" <> int.to_string(list.length(strands) + 1)
-        })
-      seed_and_reply(state, connection, id, new_name, configuration, None)
-    }
-  }
+  use configuration <- or_reply(
+    option.to_result(configuration, #(
+      protocol.code_internal,
+      "no existing strand to copy a configuration from",
+    )),
+    state,
+    connection,
+    id,
+  )
+  let new_name =
+    unique_name(state, case name {
+      Some(name) -> name
+      None -> "strand-" <> int.to_string(list.length(strands) + 1)
+    })
+  seed_and_reply(state, connection, id, new_name, configuration, None)
 }
 
 fn unique_name(state: State, wanted: String) -> String {
@@ -2158,56 +2305,43 @@ fn navigate(
   to_entry: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  case ids.parse_entry_id(to_entry) {
-    Error(_) -> {
-      reply_error(
-        state,
-        connection,
-        id,
-        protocol.code_bad_request,
-        "to_entry is not an entry id",
-      )
-      state
-    }
-    Ok(target) -> {
-      let target_known = case
-        storage.get_entries(state.runtime.session.store, [target])
-      {
-        Ok(found) -> dict.has_key(found, target)
-        Error(_) -> False
-      }
-      let request =
-        acceptance.AcceptNavigation(
-          target: Some(target),
-          summarize: False,
-          label: None,
-          custom_instructions: None,
-          preparation: None,
-          target_known:,
-        )
-      case accept_structural(state, strand, request) {
-        Error(reply_pair) -> {
-          let #(code, message) = reply_pair
-          reply_error(state, connection, id, code, message)
-          state
-        }
-        Ok(op) -> {
-          // Unsummarized navigation involves no provider round-trip;
-          // wait briefly so the reply's strand list shows the moved
-          // leaf.
-          let _result =
-            api.await_result(
-              api.on_strand(state.runtime, strand),
-              op,
-              within_ms: 3000,
-            )
-          let state = pull_and_broadcast(state)
-          reply(state, connection, id, strands_snapshot(state))
-          state
-        }
-      }
-    }
+  use target <- or_reply(
+    result.replace_error(ids.parse_entry_id(to_entry), #(
+      protocol.code_bad_request,
+      "to_entry is not an entry id",
+    )),
+    state,
+    connection,
+    id,
+  )
+  let target_known = case
+    storage.get_entries(state.runtime.session.store, [target])
+  {
+    Ok(found) -> dict.has_key(found, target)
+    Error(_) -> False
   }
+  let request =
+    acceptance.AcceptNavigation(
+      target: Some(target),
+      summarize: False,
+      label: None,
+      custom_instructions: None,
+      preparation: None,
+      target_known:,
+    )
+  use op <- or_reply(
+    accept_structural(state, strand, request),
+    state,
+    connection,
+    id,
+  )
+  // Unsummarized navigation involves no provider round-trip; wait
+  // briefly so the reply's strand list shows the moved leaf.
+  let _result =
+    api.await_result(api.on_strand(state.runtime, strand), op, within_ms: 3000)
+  let state = pull_and_broadcast(state)
+  reply(state, connection, id, strands_snapshot(state))
+  state
 }
 
 fn compact(
@@ -2223,22 +2357,19 @@ fn compact(
       custom_instructions: instructions,
       preparation: compaction_preparation(state, strand),
     )
-  case accept_structural(state, strand, request) {
-    Error(reply_pair) -> {
-      let #(code, message) = reply_pair
-      reply_error(state, connection, id, code, message)
-      state
+  use op <- or_reply(
+    accept_structural(state, strand, request),
+    state,
+    connection,
+    id,
+  )
+  let op_text = ids.op_id_to_string(op)
+  reply_with_matched(state, connection, id, fn(emit) {
+    case emit.event {
+      protocol.OpTransitionEvent(op: emitted, ..) -> emitted == op_text
+      _ -> False
     }
-    Ok(op) -> {
-      let op_text = ids.op_id_to_string(op)
-      reply_with_matched(state, connection, id, fn(emit) {
-        case emit.event {
-          protocol.OpTransitionEvent(op: emitted, ..) -> emitted == op_text
-          _ -> False
-        }
-      })
-    }
-  }
+  })
 }
 
 // The compaction preparation a manual `compact` command summarizes
@@ -2290,6 +2421,14 @@ fn accept_structural_loop(
   case session.strand_state(store, strand), session.strand_leaf(store, strand) {
     Ok(Some(state_cell)), Ok(leaf_cell) -> {
       let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      let leaf = case leaf_cell {
+        Some(cell) -> cell.value
+        None -> None
+      }
+      let leaf_seq = case leaf_cell {
+        Some(cell) -> Some(cell.seq)
+        None -> None
+      }
       let plan =
         acceptance.accept_prompt(
           request,
@@ -2302,33 +2441,23 @@ fn accept_structural_loop(
             ),
             strand_state: state_cell.value,
             strand_state_seq: state_cell.seq,
-            leaf: case leaf_cell {
-              Some(cell) -> cell.value
-              None -> None
-            },
-            leaf_seq: case leaf_cell {
-              Some(cell) -> Some(cell.seq)
-              None -> None
-            },
+            leaf:,
+            leaf_seq:,
             settings: state.runtime.settings,
             pending: dict.new(),
           ),
         )
-      case plan {
-        Error(reason) -> Error(describe_reject(reason))
-        Ok(acceptance.AcceptancePlan(operation:, tx: plan_tx, ..)) ->
-          case
-            writer.commit(
-              process.named_subject(state.runtime.tree.writer),
-              plan_tx,
-            )
-          {
-            Ok(_) -> Ok(operation.id)
-            Error(tx.StaleExpectation(..)) ->
-              accept_structural_loop(state, strand, request, attempts - 1)
-            Error(_) ->
-              Error(#(protocol.code_internal, "the acceptance commit failed"))
-          }
+      use acceptance.AcceptancePlan(operation:, tx: plan_tx, ..) <- result.try(
+        result.map_error(plan, describe_reject),
+      )
+      case
+        writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
+      {
+        Ok(_) -> Ok(operation.id)
+        Error(tx.StaleExpectation(..)) ->
+          accept_structural_loop(state, strand, request, attempts - 1)
+        Error(_) ->
+          Error(#(protocol.code_internal, "the acceptance commit failed"))
       }
     }
     _, _ ->
@@ -2428,35 +2557,32 @@ fn set_config(
   strand: Option(String),
   config: JsonValue,
 ) -> State {
+  use fields <- or_reply(config_fields(config), state, connection, id)
+  use state <- or_reply(
+    result.map_error(apply_config(state, strand, fields), fn(message) {
+      #(protocol.code_bad_request, message)
+    }),
+    state,
+    connection,
+    id,
+  )
+  reply(
+    state,
+    connection,
+    id,
+    protocol.SnapshotEvent(
+      protocol.ConfigSnapshot(config: effective_config(state, strand)),
+    ),
+  )
+  state
+}
+
+fn config_fields(
+  config: JsonValue,
+) -> Result(List(#(String, JsonValue)), #(String, String)) {
   case config {
-    json.Object(fields) ->
-      case apply_config(state, strand, fields) {
-        Error(message) -> {
-          reply_error(state, connection, id, protocol.code_bad_request, message)
-          state
-        }
-        Ok(state) -> {
-          reply(
-            state,
-            connection,
-            id,
-            protocol.SnapshotEvent(
-              protocol.ConfigSnapshot(config: effective_config(state, strand)),
-            ),
-          )
-          state
-        }
-      }
-    _ -> {
-      reply_error(
-        state,
-        connection,
-        id,
-        protocol.code_bad_request,
-        "config must be an object",
-      )
-      state
-    }
+    json.Object(fields) -> Ok(fields)
+    _ -> Error(#(protocol.code_bad_request, "config must be an object"))
   }
 }
 
@@ -2504,18 +2630,8 @@ fn validate_config_key(
     "model" ->
       case strand, value {
         None, _ -> Error("model requires a strand")
-        Some(strand), json.Object(model_fields) -> {
-          use provider <- result.try(config_string(model_fields, "provider"))
-          use model_id <- result.try(config_string(model_fields, "model_id"))
-          Ok(
-            update_configuration(_, strand, fn(configuration) {
-              machine_strand.StrandConfiguration(
-                ..configuration,
-                model: machine_strand.ModelIdentity(provider:, model_id:),
-              )
-            }),
-          )
-        }
+        Some(strand), json.Object(model_fields) ->
+          model_change(strand, model_fields)
         Some(_), _ -> Error("model must be an object")
       }
     // The by-name variant of `model`: the catalogue resolves the name
@@ -2524,47 +2640,14 @@ fn validate_config_key(
     // session's model) otherwise.
     "model_name" ->
       case value {
-        json.String(name) ->
-          case state.catalog {
-            None -> Error("no model catalogue is configured")
-            Some(catalogue) ->
-              case catalog.find(catalogue, name) {
-                Error(Nil) -> Error("unknown model name: " <> name)
-                Ok(entry) -> {
-                  let identity =
-                    machine_strand.ModelIdentity(
-                      provider: entry.name,
-                      model_id: entry.model_id,
-                    )
-                  let change = fn(configuration) {
-                    machine_strand.StrandConfiguration(
-                      ..configuration,
-                      model: identity,
-                    )
-                  }
-                  case strand {
-                    Some(strand) -> Ok(update_configuration(_, strand, change))
-                    None -> Ok(update_all_configurations(_, change))
-                  }
-                }
-              }
-          }
+        json.String(name) -> model_name_change(state, strand, name)
         _ -> Error("model_name must be a string (a catalogue model name)")
       }
     "thinking_level" ->
       case strand, value {
         None, _ -> Error("thinking_level requires a strand")
-        Some(strand), json.String(level_text) -> {
-          use level <- result.try(parse_thinking_level(level_text))
-          Ok(
-            update_configuration(_, strand, fn(configuration) {
-              machine_strand.StrandConfiguration(
-                ..configuration,
-                thinking_level: level,
-              )
-            }),
-          )
-        }
+        Some(strand), json.String(level_text) ->
+          thinking_level_change(strand, level_text)
         Some(_), _ -> Error("thinking_level must be a string")
       }
     // Every name is checked against the live registry and the list is
@@ -2572,28 +2655,90 @@ fn validate_config_key(
     "active_tools" ->
       case strand, value {
         None, _ -> Error("active_tools requires a strand")
-        Some(strand), json.Array(items) -> {
-          use names <- result.try(
-            list.try_map(items, fn(item) {
-              case item {
-                json.String(name) -> Ok(name)
-                _ -> Error("active_tools entries must be strings")
-              }
-            }),
-          )
-          use names <- result.try(canonical_tool_names(state, names))
-          Ok(
-            update_configuration(_, strand, fn(configuration) {
-              machine_strand.StrandConfiguration(
-                ..configuration,
-                active_tool_names: names,
-              )
-            }),
-          )
-        }
+        Some(strand), json.Array(items) ->
+          active_tools_change(state, strand, items)
         Some(_), _ -> Error("active_tools must be an array of tool names")
       }
     other -> Error("unknown config key: " <> other)
+  }
+}
+
+fn model_change(
+  strand: String,
+  model_fields: List(#(String, JsonValue)),
+) -> Result(ConfigChange, String) {
+  use provider <- result.try(config_string(model_fields, "provider"))
+  use model_id <- result.try(config_string(model_fields, "model_id"))
+  Ok(
+    update_configuration(_, strand, fn(configuration) {
+      machine_strand.StrandConfiguration(
+        ..configuration,
+        model: machine_strand.ModelIdentity(provider:, model_id:),
+      )
+    }),
+  )
+}
+
+fn thinking_level_change(
+  strand: String,
+  level_text: String,
+) -> Result(ConfigChange, String) {
+  use level <- result.try(parse_thinking_level(level_text))
+  Ok(
+    update_configuration(_, strand, fn(configuration) {
+      machine_strand.StrandConfiguration(..configuration, thinking_level: level)
+    }),
+  )
+}
+
+fn active_tools_change(
+  state: State,
+  strand: String,
+  items: List(JsonValue),
+) -> Result(ConfigChange, String) {
+  use names <- result.try(list.try_map(items, json_string_item))
+  use names <- result.try(canonical_tool_names(state, names))
+  Ok(
+    update_configuration(_, strand, fn(configuration) {
+      machine_strand.StrandConfiguration(
+        ..configuration,
+        active_tool_names: names,
+      )
+    }),
+  )
+}
+
+fn json_string_item(item: JsonValue) -> Result(String, String) {
+  case item {
+    json.String(name) -> Ok(name)
+    _ -> Error("active_tools entries must be strings")
+  }
+}
+
+// `model_name`'s change: the catalogue entry's identity, applied to one
+// strand's configuration when named, or to every strand's otherwise.
+fn model_name_change(
+  state: State,
+  strand: Option(String),
+  name: String,
+) -> Result(ConfigChange, String) {
+  use catalogue <- result.try(option.to_result(
+    state.catalog,
+    "no model catalogue is configured",
+  ))
+  use entry <- result.try(
+    result.map_error(catalog.find(catalogue, name), fn(_nil) {
+      "unknown model name: " <> name
+    }),
+  )
+  let identity =
+    machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
+  let change = fn(configuration) {
+    machine_strand.StrandConfiguration(..configuration, model: identity)
+  }
+  case strand {
+    Some(strand) -> Ok(update_configuration(_, strand, change))
+    None -> Ok(update_all_configurations(_, change))
   }
 }
 
@@ -2740,59 +2885,75 @@ fn parse_thinking_level(
 }
 
 fn effective_config(state: State, strand: Option(String)) -> JsonValue {
-  let settings = state.runtime.settings
-  let base = [
-    #(
-      "queue_mode",
-      json.String(case settings.steering_mode {
-        operation.ConsumeAll -> "consume_all"
-        operation.OneAtATime -> "one_at_a_time"
-      }),
-    ),
-    #(
-      "tool_execution",
-      json.String(case settings.tool_execution {
-        operation.Sequential -> "sequential"
-        operation.Parallel -> "parallel"
-      }),
-    ),
-  ]
+  let base = base_config_fields(state)
   case strand {
     None -> json.Object(base)
     Some(strand) ->
       case session.strand_configuration(state.runtime.session, strand) {
         Ok(Some(session.Cell(value:, ..))) ->
-          json.Object(
-            list.flatten([
-              base,
-              [
-                #(
-                  "model",
-                  json.Object([
-                    #("provider", json.String(value.model.provider)),
-                    #("model_id", json.String(value.model.model_id)),
-                  ]),
-                ),
-              ],
-              // The catalogue name rides along whenever the identity
-              // is one the catalogue knows, so clients can display
-              // and re-select by the same handle they switched with.
-              catalog_name_of(state, value.model),
-              [
-                #(
-                  "thinking_level",
-                  json.String(thinking_level_text(value.thinking_level)),
-                ),
-                #(
-                  "active_tools",
-                  json.Array(list.map(value.active_tool_names, json.String)),
-                ),
-              ],
-            ]),
-          )
+          json.Object(list.flatten([base, strand_config_fields(state, value)]))
         _ -> json.Object(base)
       }
   }
+}
+
+// The session-wide fields: present in every `config` snapshot, strand or
+// none.
+fn base_config_fields(state: State) -> List(#(String, JsonValue)) {
+  let settings = state.runtime.settings
+  [
+    #("queue_mode", json.String(queue_mode_text(settings.steering_mode))),
+    #(
+      "tool_execution",
+      json.String(tool_execution_text(settings.tool_execution)),
+    ),
+  ]
+}
+
+fn queue_mode_text(mode: operation.QueueMode) -> String {
+  case mode {
+    operation.ConsumeAll -> "consume_all"
+    operation.OneAtATime -> "one_at_a_time"
+  }
+}
+
+fn tool_execution_text(mode: operation.ToolExecution) -> String {
+  case mode {
+    operation.Sequential -> "sequential"
+    operation.Parallel -> "parallel"
+  }
+}
+
+// The per-strand fields, spliced onto the session-wide base.
+fn strand_config_fields(
+  state: State,
+  value: machine_strand.StrandConfiguration,
+) -> List(#(String, JsonValue)) {
+  list.flatten([
+    [
+      #(
+        "model",
+        json.Object([
+          #("provider", json.String(value.model.provider)),
+          #("model_id", json.String(value.model.model_id)),
+        ]),
+      ),
+    ],
+    // The catalogue name rides along whenever the identity is one the
+    // catalogue knows, so clients can display and re-select by the same
+    // handle they switched with.
+    catalog_name_of(state, value.model),
+    [
+      #(
+        "thinking_level",
+        json.String(thinking_level_text(value.thinking_level)),
+      ),
+      #(
+        "active_tools",
+        json.Array(list.map(value.active_tool_names, json.String)),
+      ),
+    ],
+  ])
 }
 
 // The catalogue name behind a durable identity, when there is one: the

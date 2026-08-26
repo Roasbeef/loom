@@ -781,17 +781,16 @@ pub fn provider_request(
       // request in band. The fallback keeps this function total and
       // deliberately carries nothing — sending a strand's context under
       // a summarization intent would be worse than sending nothing.
-      case summary_provider_request(config, spec) {
-        Ok(request) -> request
-        Error(_reason) ->
-          ProviderRequest(
-            target: request_target(config, configuration),
-            system: None,
-            messages: [],
-            tools: [],
-            max_output_tokens: None,
-          )
-      }
+      result.unwrap(
+        summary_provider_request(config, spec),
+        ProviderRequest(
+          target: request_target(config, configuration),
+          system: None,
+          messages: [],
+          tools: [],
+          max_output_tokens: None,
+        ),
+      )
     effects.GenerationRequest(configuration:, context:, ..) ->
       generation_request(config, configuration, context)
     effects.PollRequest(configuration:, ..) ->

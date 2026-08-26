@@ -40,6 +40,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message.{type AgentMessage}
+import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
@@ -448,24 +449,29 @@ fn reply_loop(
   step: String,
   budget: Int,
 ) -> Result(Nil, String) {
-  case budget <= 0 {
-    True -> Error(step <> ": no reply arrived")
-    False -> {
-      use envelope <- result.try(next_event(client, step))
-      case envelope.reply_to == Some(id) {
-        False -> reply_loop(client, id, expected, step, budget - 1)
-        True ->
-          case envelope.event {
-            protocol.ErrorEvent(code:, message:, ..) ->
-              Error(step <> " failed: " <> code <> ": " <> message)
-            _ ->
-              case expected(envelope) {
-                True -> Ok(Nil)
-                False -> Error(step <> ": unexpected reply shape")
-              }
-          }
+  use <- bool.lazy_guard(when: budget <= 0, return: fn() {
+    Error(step <> ": no reply arrived")
+  })
+  use envelope <- result.try(next_event(client, step))
+  case envelope.reply_to == Some(id) {
+    False -> reply_loop(client, id, expected, step, budget - 1)
+    True -> reply_outcome(envelope, expected, step)
+  }
+}
+
+fn reply_outcome(
+  envelope: protocol.EventEnvelope,
+  expected: fn(protocol.EventEnvelope) -> Bool,
+  step: String,
+) -> Result(Nil, String) {
+  case envelope.event {
+    protocol.ErrorEvent(code:, message:, ..) ->
+      Error(step <> " failed: " <> code <> ": " <> message)
+    _ ->
+      case expected(envelope) {
+        True -> Ok(Nil)
+        False -> Error(step <> ": unexpected reply shape")
       }
-    }
   }
 }
 
@@ -763,33 +769,48 @@ fn scripted_provider() -> effects.ProviderSurface {
     case spec {
       effects.PollRequest(..) -> settle(events, answer("polled", 1), [])
       effects.SummaryRequest(..) -> settle(events, answer(summary_text, 2), [])
-      effects.GenerationRequest(context:, ..) -> {
-        let newest = newest_user_text(context)
-        case newest == report_text, newest == "verify the fetch layer" {
-          True, _ -> settle(events, answer("acknowledged: verified", 2), [])
-          _, True -> settle(events, answer("verified the fetch layer", 2), [])
-          _, _ ->
-            case assistant_turns(context) {
-              0 ->
-                settle(events, tool_call_response(), [
-                  stream.TextDelta(index: 0, text: "I will wrap the call"),
-                  stream.ToolCallDelta(
-                    index: 1,
-                    call_id: "call-1",
-                    name: "bash",
-                    arguments_json: "{\"command\":\"go te",
-                  ),
-                ])
-              _ ->
-                settle(events, answer("retry added; tests pass", 3), [
-                  stream.TextDelta(index: 0, text: "retry added"),
-                ])
-            }
-        }
-      }
+      effects.GenerationRequest(context:, ..) ->
+        generation_response(events, context)
     }
     stream.StreamHandle(events:)
   })
+}
+
+// The scripted generation turn: the newest user text picks a canned
+// reply, and (for the retry scenario) the assistant count breaks the tie
+// between "open with a tool call" and "answer".
+fn generation_response(
+  events: Subject(stream.StreamEvent),
+  context: List(AgentMessage),
+) -> Nil {
+  let newest = newest_user_text(context)
+  case newest == report_text, newest == "verify the fetch layer" {
+    True, _ -> settle(events, answer("acknowledged: verified", 2), [])
+    _, True -> settle(events, answer("verified the fetch layer", 2), [])
+    _, _ -> retry_turn_response(events, context)
+  }
+}
+
+fn retry_turn_response(
+  events: Subject(stream.StreamEvent),
+  context: List(AgentMessage),
+) -> Nil {
+  case assistant_turns(context) {
+    0 ->
+      settle(events, tool_call_response(), [
+        stream.TextDelta(index: 0, text: "I will wrap the call"),
+        stream.ToolCallDelta(
+          index: 1,
+          call_id: "call-1",
+          name: "bash",
+          arguments_json: "{\"command\":\"go te",
+        ),
+      ])
+    _ ->
+      settle(events, answer("retry added; tests pass", 3), [
+        stream.TextDelta(index: 0, text: "retry added"),
+      ])
+  }
 }
 
 fn settle(

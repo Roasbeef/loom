@@ -464,27 +464,9 @@ fn reconcile(
       )
     }
     // The registers are seeded but the brief run was never accepted, or
-    // was accepted and has already finished. The middle two arms recover
-    // the operation id; the last one is the state a crash between the
-    // seed commit and the brief commit leaves behind, which nothing else
-    // can recover — re-seeding is refused as `StrandExists`, and without
-    // this arm the name stays claimed forever on a strand the booter
-    // restarts on every reboot and which never does anything.
-    Some(state) ->
-      case state.current_operation {
-        Some(operation) -> Ok(operation)
-        None ->
-          case read_last_result(runtime, name) {
-            Some(last) -> Ok(api.result_operation(last))
-            None ->
-              api.adopt_strand(runtime, named: name, brief: [
-                brief_message(config, caller, request.brief),
-              ])
-              |> result.map_error(fn(error) {
-                agent.PlaneFailed(reason: describe_create(error))
-              })
-          }
-      }
+    // was accepted and has already finished. The last arm recovers by
+    // adopting a brief.
+    Some(state) -> recover_brief(config, runtime, caller, request, name, state)
   })
   let #(now, _clock) = clock.read(config.clock)
   let cell =
@@ -509,6 +491,37 @@ fn reconcile(
     strand: name,
     tools:,
   ))
+}
+
+// The registers are seeded but the brief run was never accepted, or was
+// accepted and has already finished. The first two arms recover the
+// operation id; the last one is the state a crash between the seed
+// commit and the brief commit leaves behind, which nothing else can
+// recover — re-seeding is refused as `StrandExists`, and without this
+// arm the name stays claimed forever on a strand the booter restarts on
+// every reboot and which never does anything.
+fn recover_brief(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  request: agent.SpawnRequest,
+  name: String,
+  state: machine_strand.StrandState,
+) -> Result(OpId, Refusal) {
+  case state.current_operation {
+    Some(operation) -> Ok(operation)
+    None ->
+      case read_last_result(runtime, name) {
+        Some(last) -> Ok(api.result_operation(last))
+        None ->
+          api.adopt_strand(runtime, named: name, brief: [
+            brief_message(config, caller, request.brief),
+          ])
+          |> result.map_error(fn(error) {
+            agent.PlaneFailed(reason: describe_create(error))
+          })
+      }
+  }
 }
 
 fn create(
@@ -683,6 +696,31 @@ fn wait(
 // is bounded by one slice plus one read instead of growing with every
 // iteration; the slice backs off, which cuts a join's store traffic from
 // a hundred reads a second to roughly four.
+// One handle's non-blocking settlement check, folded into the running
+// `found` map: already-settled handles are left alone, an unsettled one
+// is polled once more.
+fn settle_handle(
+  runtime: api.Runtime,
+  found: Dict(String, LastResult),
+  handle: Handle,
+) -> Dict(String, LastResult) {
+  case dict.has_key(found, agent.handle_to_string(handle)) {
+    True -> found
+    False ->
+      case
+        api.await_strand_result(
+          runtime,
+          strand: handle.strand,
+          operation: handle.operation,
+          within_ms: 0,
+        )
+      {
+        Ok(last) -> dict.insert(found, agent.handle_to_string(handle), last)
+        Error(Nil) -> found
+      }
+  }
+}
+
 fn wait_loop(
   config: Config,
   runtime: api.Runtime,
@@ -694,21 +732,7 @@ fn wait_loop(
 ) -> List(Waited) {
   let settled =
     list.fold(handles, settled, fn(found, handle) {
-      case dict.has_key(found, agent.handle_to_string(handle)) {
-        True -> found
-        False ->
-          case
-            api.await_strand_result(
-              runtime,
-              strand: handle.strand,
-              operation: handle.operation,
-              within_ms: 0,
-            )
-          {
-            Ok(last) -> dict.insert(found, agent.handle_to_string(handle), last)
-            Error(Nil) -> found
-          }
-      }
+      settle_handle(runtime, found, handle)
     })
   let #(now, _clock) = clock.read(config.clock)
   case dict.size(settled) == list.length(handles) || now >= deadline {
