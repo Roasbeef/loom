@@ -86,21 +86,7 @@ func RunStage2(cfg Stage2Config) error {
 
 	// Landlock: second filesystem layer (first, in degraded mode).
 	if abi, reason := llock.ABIVersion(); abi > 0 {
-		view := llock.PolicyView{
-			WritableRoots: pol.WritableRoots,
-			ReadableRoots: pol.ReadableRoots,
-		}
-		if !pol.ScratchIsTmpfs() {
-			view.ScratchPath = pol.Scratch
-		} else {
-			// The tmpfs scratch is mounted at ScratchMount by bwrap;
-			// grant write there so the mount is actually usable. In
-			// degraded mode there is no tmpfs — granting RW on the
-			// mount point is then still correct (it is the designated
-			// scratch), just backed by the host tmp.
-			view.ScratchPath = ScratchMount
-		}
-		if err := llock.Apply(llock.Rules(view)); err != nil {
+		if err := llock.Apply(llock.Rules(landlockView(pol))); err != nil {
 			return fmt.Errorf("stage2: landlock: %w", err)
 		}
 		rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
@@ -158,4 +144,33 @@ func RunStage2(cfg Stage2Config) error {
 		return fmt.Errorf("stage2: exec %q: %w", path, err)
 	}
 	return nil // unreachable
+}
+
+// landlockView derives the Landlock grant set from the decoded policy.
+// Pure and total, unlike the rest of RunStage2, so the one decision that
+// matters here — what ScratchPath becomes — is unit-testable without a
+// kernel that speaks Landlock at all (see stage2_test.go).
+//
+// A tmpfs scratch is a directory only bwrap can create, for the jail's
+// own exclusive use — see llock.PolicyView's ScratchPath doc, which
+// already promised this and which stage 2 used to contradict by granting
+// write at ScratchMount unconditionally, tmpfs or not (#59). There is
+// nothing there for Landlock to grant: under bwrap the mount is a fresh
+// tmpfs the jail owns outright, and the grant was pure redundancy;
+// without bwrap there is no tmpfs at all, "in degraded mode there is no
+// scratch mount" per that same doc, and a policy asking for one gets
+// none rather than a silent substitute of real host storage nothing
+// asked for. A host-path scratch is real storage bwrap merely binds in,
+// so it keeps its explicit grant — the one case where Landlock is doing
+// load-bearing work rather than restating what the mount layer already
+// settled.
+func landlockView(pol policy.Policy) llock.PolicyView {
+	view := llock.PolicyView{
+		WritableRoots: pol.WritableRoots,
+		ReadableRoots: pol.ReadableRoots,
+	}
+	if !pol.ScratchIsTmpfs() {
+		view.ScratchPath = pol.Scratch
+	}
+	return view
 }
