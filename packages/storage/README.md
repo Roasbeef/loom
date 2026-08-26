@@ -346,7 +346,7 @@ Paths are relative to `packages/storage/src/` — `storage/sqlite` is
 
 ## Reading further
 
-- [`AGENTS.md`](AGENTS.md) — the reference doc for changing this code: key
+- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code: key
   types, real dependency edges, actor and wire traffic, and the invariants
   that break things when violated. Read it before editing.
 - [`docs/architecture/durability.md`](../../docs/architecture/durability.md)
