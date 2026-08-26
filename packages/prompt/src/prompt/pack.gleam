@@ -252,15 +252,18 @@ pub fn environment(
       other -> other
     },
     protected_paths: normalize(protected_paths),
-    repository_guidance: case repository_guidance {
-      Some(text) ->
-        case string.trim(text) {
-          "" -> None
-          _ -> Some(text)
-        }
-      None -> None
-    },
+    repository_guidance: option.then(repository_guidance, non_blank),
   )
+}
+
+// `Some("")` and `Some("   ")` both mean "nothing was really supplied";
+// normalizing them to `None` here is what keeps `guidance_text` from
+// having to re-ask the question.
+fn non_blank(text: String) -> Option(String) {
+  case string.trim(text) {
+    "" -> None
+    _ -> Some(text)
+  }
 }
 
 /// The environment's normalized tool names. Exposed because it is the

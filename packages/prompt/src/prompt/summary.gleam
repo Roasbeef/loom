@@ -179,17 +179,22 @@ pub fn instruction(pack: Pack, input: Input) -> String {
 // A fragment filled with its own literal binding, or the empty string
 // when the input does not select it (or the pack does not carry it).
 fn selected(pack: Pack, fragment: String, value: Option(String)) -> String {
-  case value {
+  case option.then(value, non_blank) {
     None -> ""
-    Some(text) ->
-      case string.trim(text) {
-        "" -> ""
-        trimmed ->
-          pack.fill(body(pack, fragment), [
-            #("previous_summary_text", trimmed),
-            #("custom_instructions_text", trimmed),
-          ])
-      }
+    Some(trimmed) ->
+      pack.fill(body(pack, fragment), [
+        #("previous_summary_text", trimmed),
+        #("custom_instructions_text", trimmed),
+      ])
+  }
+}
+
+// `Some("")` and `Some("   ")` both mean "the input carried nothing worth
+// selecting the fragment for".
+fn non_blank(text: String) -> Option(String) {
+  case string.trim(text) {
+    "" -> None
+    trimmed -> Some(trimmed)
   }
 }
 

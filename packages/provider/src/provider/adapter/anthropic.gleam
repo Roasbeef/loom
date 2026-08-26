@@ -50,8 +50,10 @@ import core/message.{
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
 import gleam/bit_array
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
 import provider/internal/wire
@@ -594,9 +596,9 @@ fn on_chunk(
   acc: Accumulator,
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
-  case acc.done, acc.status {
-    True, _ -> #(acc, [])
-    False, 200 -> {
+  use <- bool.guard(when: acc.done, return: #(acc, []))
+  case acc.status {
+    200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
       let acc = Accumulator(..acc, sse:)
       list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
@@ -607,7 +609,7 @@ fn on_chunk(
     }
     // Error statuses stream their body too; collect it for the error
     // report at end-of-body.
-    False, _ -> #(
+    _ -> #(
       Accumulator(..acc, error_body: bit_array.append(acc.error_body, chunk)),
       [],
     )
@@ -630,29 +632,20 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 // into a redacted HttpError; an unparsable body degrades to a bounded
 // text excerpt.
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
-  let body_text = case bit_array.to_string(acc.error_body) {
-    Ok(text) -> text
-    Error(Nil) -> ""
-  }
-  case json.parse(body_text) {
-    Ok(document) ->
-      case wire.field(document, "error") {
-        Ok(error) ->
-          HttpError(
-            status:,
-            api_error_type: wire.string_field_or(error, "type", or: ""),
-            message: wire.string_field_or(error, "message", or: ""),
-            retry_after_ms: acc.retry_after_ms,
-          )
-        Error(Nil) ->
-          HttpError(
-            status:,
-            api_error_type: "",
-            message: excerpt(body_text),
-            retry_after_ms: acc.retry_after_ms,
-          )
-      }
-    Error(_report) ->
+  let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
+  let error_field =
+    json.parse(body_text)
+    |> result.replace_error(Nil)
+    |> result.try(wire.field(_, "error"))
+  case error_field {
+    Ok(error) ->
+      HttpError(
+        status:,
+        api_error_type: wire.string_field_or(error, "type", or: ""),
+        message: wire.string_field_or(error, "message", or: ""),
+        retry_after_ms: acc.retry_after_ms,
+      )
+    Error(Nil) ->
       HttpError(
         status:,
         api_error_type: "",
@@ -676,16 +669,14 @@ fn handle_sse(
   case event {
     SseMalformed(reason:) ->
       fail(acc, MalformedStream(corruption_report("a utf-8 sse line", reason)))
-    SseMessage(event: _, data:) ->
-      case json.parse(data) {
-        Error(report) -> fail(acc, MalformedStream(report))
-        Ok(document) ->
-          handle_message(
-            acc,
-            wire.string_field_or(document, "type", or: ""),
-            document,
-          )
-      }
+    SseMessage(event: _, data:) -> {
+      use document <- or_fail(json.parse(data), acc, MalformedStream)
+      handle_message(
+        acc,
+        wire.string_field_or(document, "type", or: ""),
+        document,
+      )
+    }
   }
 }
 
@@ -712,10 +703,7 @@ fn handle_message(
     "message_delta" -> handle_message_delta(acc, document)
     "message_stop" -> settle(acc)
     "error" -> {
-      let error = case wire.field(document, "error") {
-        Ok(error) -> error
-        Error(Nil) -> document
-      }
+      let error = result.unwrap(wire.field(document, "error"), document)
       fail(
         acc,
         StreamError(
@@ -737,43 +725,56 @@ fn handle_message(
 fn handle_message_start(acc: Accumulator, document: JsonValue) -> Accumulator {
   case wire.field(document, "message") {
     Error(Nil) -> acc
-    Ok(started) -> {
-      let usage = case wire.field(started, "usage") {
-        Ok(usage) -> usage
-        Error(Nil) -> json.Object([])
-      }
-      Accumulator(
-        ..acc,
-        response_id: option.or(
-          option.from_result(wire.string_field(started, "id")),
-          acc.response_id,
-        ),
-        response_model: option.or(
-          option.from_result(wire.string_field(started, "model")),
-          acc.response_model,
-        ),
-        input: wire.count_field_or(usage, "input_tokens", or: acc.input),
-        output: wire.count_field_or(usage, "output_tokens", or: acc.output),
-        cache_read: wire.count_field_or(
-          usage,
-          "cache_read_input_tokens",
-          or: acc.cache_read,
-        ),
-        cache_write: wire.count_field_or(
-          usage,
-          "cache_creation_input_tokens",
-          or: acc.cache_write,
-        ),
-        cache_write_1h: case wire.field(usage, "cache_creation") {
-          Ok(creation) ->
-            option.or(
-              wire.optional_count_field(creation, "ephemeral_1h_input_tokens"),
-              acc.cache_write_1h,
-            )
-          Error(Nil) -> acc.cache_write_1h
-        },
-      )
-    }
+    Ok(started) -> apply_message_start(acc, started)
+  }
+}
+
+fn apply_message_start(acc: Accumulator, started: JsonValue) -> Accumulator {
+  let usage = result.unwrap(wire.field(started, "usage"), json.Object([]))
+  Accumulator(
+    ..acc,
+    response_id: option.or(
+      option.from_result(wire.string_field(started, "id")),
+      acc.response_id,
+    ),
+    response_model: option.or(
+      option.from_result(wire.string_field(started, "model")),
+      acc.response_model,
+    ),
+    input: wire.count_field_or(usage, "input_tokens", or: acc.input),
+    output: wire.count_field_or(usage, "output_tokens", or: acc.output),
+    cache_read: wire.count_field_or(
+      usage,
+      "cache_read_input_tokens",
+      or: acc.cache_read,
+    ),
+    cache_write: wire.count_field_or(
+      usage,
+      "cache_creation_input_tokens",
+      or: acc.cache_write,
+    ),
+    cache_write_1h: nested_optional_count(
+      usage,
+      "cache_creation",
+      "ephemeral_1h_input_tokens",
+      acc.cache_write_1h,
+    ),
+  )
+}
+
+// Reads an optional counter nested one object down (`usage.cache_creation.
+// ephemeral_1h_input_tokens`, `usage.output_tokens_details.
+// thinking_tokens`): absent at either level keeps `previous`, exactly as
+// the flat counters default to the accumulator rather than to zero.
+fn nested_optional_count(
+  document: JsonValue,
+  field: String,
+  key: String,
+  previous: Option(Int),
+) -> Option(Int) {
+  case wire.field(document, field) {
+    Ok(nested) -> option.or(wire.optional_count_field(nested, key), previous)
+    Error(Nil) -> previous
   }
 }
 
@@ -784,56 +785,87 @@ fn handle_block_start(
   let index = wire.int_field_or(document, "index", or: 0)
   case wire.field(document, "content_block") {
     Error(Nil) -> #(acc, [])
-    Ok(block) ->
-      case wire.string_field_or(block, "type", or: "") {
-        "text" -> {
-          let text = wire.string_field_or(block, "text", or: "")
-          let acc =
-            Accumulator(..acc, blocks: [TextAcc(index:, text:), ..acc.blocks])
-          case text {
-            "" -> #(acc, [])
-            _ -> #(acc, [Delta(TextDelta(index:, text:))])
-          }
-        }
-        "thinking" -> #(
-          Accumulator(..acc, blocks: [
-            ThinkingAcc(
-              index:,
-              thinking: wire.string_field_or(block, "thinking", or: ""),
-              signature: wire.string_field_or(block, "signature", or: ""),
-              redacted: False,
-            ),
-            ..acc.blocks
-          ]),
-          [],
-        )
-        "redacted_thinking" -> #(
-          Accumulator(..acc, blocks: [
-            ThinkingAcc(
-              index:,
-              thinking: "[reasoning redacted]",
-              signature: wire.string_field_or(block, "data", or: ""),
-              redacted: True,
-            ),
-            ..acc.blocks
-          ]),
-          [],
-        )
-        "tool_use" -> {
-          let call_id = wire.string_field_or(block, "id", or: "")
-          let name = wire.string_field_or(block, "name", or: "")
-          #(
-            Accumulator(..acc, blocks: [
-              ToolAcc(index:, call_id:, name:, arguments_json: ""),
-              ..acc.blocks
-            ]),
-            [Delta(ToolCallDelta(index:, call_id:, name:, arguments_json: ""))],
-          )
-        }
-        // Unknown block types are ignored for forward compatibility.
-        _ -> #(acc, [])
-      }
+    Ok(block) -> start_block(acc, index, block)
   }
+}
+
+fn start_block(
+  acc: Accumulator,
+  index: Int,
+  block: JsonValue,
+) -> #(Accumulator, List(StreamEvent)) {
+  case wire.string_field_or(block, "type", or: "") {
+    "text" ->
+      start_text_block(acc, index, wire.string_field_or(block, "text", or: ""))
+    "thinking" ->
+      start_thinking_block(
+        acc,
+        index,
+        thinking: wire.string_field_or(block, "thinking", or: ""),
+        signature: wire.string_field_or(block, "signature", or: ""),
+        redacted: False,
+      )
+    "redacted_thinking" ->
+      start_thinking_block(
+        acc,
+        index,
+        thinking: "[reasoning redacted]",
+        signature: wire.string_field_or(block, "data", or: ""),
+        redacted: True,
+      )
+    "tool_use" ->
+      start_tool_block(
+        acc,
+        index,
+        wire.string_field_or(block, "id", or: ""),
+        wire.string_field_or(block, "name", or: ""),
+      )
+    // Unknown block types are ignored for forward compatibility.
+    _ -> #(acc, [])
+  }
+}
+
+fn start_text_block(
+  acc: Accumulator,
+  index: Int,
+  text: String,
+) -> #(Accumulator, List(StreamEvent)) {
+  let acc = Accumulator(..acc, blocks: [TextAcc(index:, text:), ..acc.blocks])
+  case text {
+    "" -> #(acc, [])
+    _ -> #(acc, [Delta(TextDelta(index:, text:))])
+  }
+}
+
+fn start_thinking_block(
+  acc: Accumulator,
+  index: Int,
+  thinking thinking: String,
+  signature signature: String,
+  redacted redacted: Bool,
+) -> #(Accumulator, List(StreamEvent)) {
+  #(
+    Accumulator(..acc, blocks: [
+      ThinkingAcc(index:, thinking:, signature:, redacted:),
+      ..acc.blocks
+    ]),
+    [],
+  )
+}
+
+fn start_tool_block(
+  acc: Accumulator,
+  index: Int,
+  call_id: String,
+  name: String,
+) -> #(Accumulator, List(StreamEvent)) {
+  #(
+    Accumulator(..acc, blocks: [
+      ToolAcc(index:, call_id:, name:, arguments_json: ""),
+      ..acc.blocks
+    ]),
+    [Delta(ToolCallDelta(index:, call_id:, name:, arguments_json: ""))],
+  )
 }
 
 fn handle_block_delta(
@@ -843,81 +875,101 @@ fn handle_block_delta(
   let index = wire.int_field_or(document, "index", or: 0)
   case wire.field(document, "delta") {
     Error(Nil) -> #(acc, [])
-    Ok(delta) ->
-      case wire.string_field_or(delta, "type", or: "") {
-        "text_delta" -> {
-          let text = wire.string_field_or(delta, "text", or: "")
-          append_to_block(acc, index, fn(block) {
-            case block {
-              TextAcc(index: i, text: so_far) -> #(
-                TextAcc(index: i, text: so_far <> text),
-                [Delta(TextDelta(index:, text:))],
-              )
-              other -> #(other, [])
-            }
-          })
-        }
-        "thinking_delta" -> {
-          let thinking = wire.string_field_or(delta, "thinking", or: "")
-          append_to_block(acc, index, fn(block) {
-            case block {
-              ThinkingAcc(index: i, thinking: so_far, signature:, redacted:) -> #(
-                ThinkingAcc(
-                  index: i,
-                  thinking: so_far <> thinking,
-                  signature:,
-                  redacted:,
-                ),
-                [Delta(ThinkingDelta(index:, thinking:))],
-              )
-              other -> #(other, [])
-            }
-          })
-        }
-        "input_json_delta" -> {
-          let fragment = wire.string_field_or(delta, "partial_json", or: "")
-          append_to_block(acc, index, fn(block) {
-            case block {
-              ToolAcc(index: i, call_id:, name:, arguments_json:) -> #(
-                ToolAcc(
-                  index: i,
-                  call_id:,
-                  name:,
-                  arguments_json: arguments_json <> fragment,
-                ),
-                [
-                  Delta(ToolCallDelta(
-                    index:,
-                    call_id:,
-                    name:,
-                    arguments_json: fragment,
-                  )),
-                ],
-              )
-              other -> #(other, [])
-            }
-          })
-        }
-        "signature_delta" -> {
-          let fragment = wire.string_field_or(delta, "signature", or: "")
-          append_to_block(acc, index, fn(block) {
-            case block {
-              ThinkingAcc(index: i, thinking:, signature:, redacted:) -> #(
-                ThinkingAcc(
-                  index: i,
-                  thinking:,
-                  signature: signature <> fragment,
-                  redacted:,
-                ),
-                [],
-              )
-              other -> #(other, [])
-            }
-          })
-        }
-        // Unknown delta types are ignored for forward compatibility.
-        _ -> #(acc, [])
-      }
+    Ok(delta) -> apply_block_delta(acc, index, delta)
+  }
+}
+
+fn apply_block_delta(
+  acc: Accumulator,
+  index: Int,
+  delta: JsonValue,
+) -> #(Accumulator, List(StreamEvent)) {
+  case wire.string_field_or(delta, "type", or: "") {
+    "text_delta" -> {
+      let text = wire.string_field_or(delta, "text", or: "")
+      append_to_block(acc, index, text_delta_update(_, index, text))
+    }
+    "thinking_delta" -> {
+      let thinking = wire.string_field_or(delta, "thinking", or: "")
+      append_to_block(acc, index, thinking_delta_update(_, index, thinking))
+    }
+    "input_json_delta" -> {
+      let fragment = wire.string_field_or(delta, "partial_json", or: "")
+      append_to_block(acc, index, tool_delta_update(_, index, fragment))
+    }
+    "signature_delta" -> {
+      let fragment = wire.string_field_or(delta, "signature", or: "")
+      append_to_block(acc, index, signature_delta_update(_, fragment))
+    }
+    // Unknown delta types are ignored for forward compatibility.
+    _ -> #(acc, [])
+  }
+}
+
+fn text_delta_update(
+  block: BlockAcc,
+  index: Int,
+  text: String,
+) -> #(BlockAcc, List(StreamEvent)) {
+  case block {
+    TextAcc(index: i, text: so_far) -> #(
+      TextAcc(index: i, text: so_far <> text),
+      [Delta(TextDelta(index:, text:))],
+    )
+    other -> #(other, [])
+  }
+}
+
+fn thinking_delta_update(
+  block: BlockAcc,
+  index: Int,
+  thinking: String,
+) -> #(BlockAcc, List(StreamEvent)) {
+  case block {
+    ThinkingAcc(index: i, thinking: so_far, signature:, redacted:) -> #(
+      ThinkingAcc(index: i, thinking: so_far <> thinking, signature:, redacted:),
+      [Delta(ThinkingDelta(index:, thinking:))],
+    )
+    other -> #(other, [])
+  }
+}
+
+fn tool_delta_update(
+  block: BlockAcc,
+  index: Int,
+  fragment: String,
+) -> #(BlockAcc, List(StreamEvent)) {
+  case block {
+    ToolAcc(index: i, call_id:, name:, arguments_json:) -> #(
+      ToolAcc(
+        index: i,
+        call_id:,
+        name:,
+        arguments_json: arguments_json <> fragment,
+      ),
+      [Delta(ToolCallDelta(index:, call_id:, name:, arguments_json: fragment))],
+    )
+    other -> #(other, [])
+  }
+}
+
+// The signature is a replay artifact, never displayed live, so it has no
+// corresponding `Delta` — unlike the other three deltas above.
+fn signature_delta_update(
+  block: BlockAcc,
+  fragment: String,
+) -> #(BlockAcc, List(StreamEvent)) {
+  case block {
+    ThinkingAcc(index: i, thinking:, signature:, redacted:) -> #(
+      ThinkingAcc(
+        index: i,
+        thinking:,
+        signature: signature <> fragment,
+        redacted:,
+      ),
+      [],
+    )
+    other -> #(other, [])
   }
 }
 
@@ -959,62 +1011,73 @@ fn handle_message_delta(
 ) -> #(Accumulator, List(StreamEvent)) {
   let acc = case wire.field(document, "usage") {
     Error(Nil) -> acc
-    Ok(usage) ->
-      Accumulator(
-        ..acc,
-        input: wire.count_field_or(usage, "input_tokens", or: acc.input),
-        output: wire.count_field_or(usage, "output_tokens", or: acc.output),
-        cache_read: wire.count_field_or(
-          usage,
-          "cache_read_input_tokens",
-          or: acc.cache_read,
-        ),
-        cache_write: wire.count_field_or(
-          usage,
-          "cache_creation_input_tokens",
-          or: acc.cache_write,
-        ),
-        // The per-TTL breakdown rides on either usage-bearing event; now
-        // that the head is written with a one-hour lifetime it is a real
-        // number rather than a always-absent field, so it is read here as
-        // well as at `message_start`.
-        cache_write_1h: case wire.field(usage, "cache_creation") {
-          Ok(creation) ->
-            option.or(
-              wire.optional_count_field(creation, "ephemeral_1h_input_tokens"),
-              acc.cache_write_1h,
-            )
-          Error(Nil) -> acc.cache_write_1h
-        },
-        reasoning: case wire.field(usage, "output_tokens_details") {
-          Ok(details) ->
-            option.or(
-              wire.optional_count_field(details, "thinking_tokens"),
-              acc.reasoning,
-            )
-          Error(Nil) -> acc.reasoning
-        },
-      )
+    Ok(usage) -> merge_delta_usage(acc, usage)
   }
   case wire.field(document, "delta") {
     Error(Nil) -> #(acc, [])
-    Ok(delta) ->
-      case wire.string_field(delta, "stop_reason") {
-        Error(Nil) -> #(acc, [])
-        Ok(raw) ->
-          case map_stop_reason(raw) {
-            Ok(#(stop, error_message)) -> #(
-              Accumulator(
-                ..acc,
-                stop: Some(stop),
-                raw_stop: Some(raw),
-                error_message: option.or(error_message, acc.error_message),
-              ),
-              [],
-            )
-            Error(Nil) -> fail(acc, UnmappedStopReason(raw:))
-          }
-      }
+    Ok(delta) -> apply_stop_reason(acc, delta)
+  }
+}
+
+fn merge_delta_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
+  Accumulator(
+    ..acc,
+    input: wire.count_field_or(usage, "input_tokens", or: acc.input),
+    output: wire.count_field_or(usage, "output_tokens", or: acc.output),
+    cache_read: wire.count_field_or(
+      usage,
+      "cache_read_input_tokens",
+      or: acc.cache_read,
+    ),
+    cache_write: wire.count_field_or(
+      usage,
+      "cache_creation_input_tokens",
+      or: acc.cache_write,
+    ),
+    // The per-TTL breakdown rides on either usage-bearing event; now that
+    // the head is written with a one-hour lifetime it is a real number
+    // rather than an always-absent field, so it is read here as well as
+    // at `message_start`.
+    cache_write_1h: nested_optional_count(
+      usage,
+      "cache_creation",
+      "ephemeral_1h_input_tokens",
+      acc.cache_write_1h,
+    ),
+    reasoning: nested_optional_count(
+      usage,
+      "output_tokens_details",
+      "thinking_tokens",
+      acc.reasoning,
+    ),
+  )
+}
+
+fn apply_stop_reason(
+  acc: Accumulator,
+  delta: JsonValue,
+) -> #(Accumulator, List(StreamEvent)) {
+  case wire.string_field(delta, "stop_reason") {
+    Error(Nil) -> #(acc, [])
+    Ok(raw) -> apply_mapped_stop_reason(acc, raw)
+  }
+}
+
+fn apply_mapped_stop_reason(
+  acc: Accumulator,
+  raw: String,
+) -> #(Accumulator, List(StreamEvent)) {
+  case map_stop_reason(raw) {
+    Ok(#(stop, error_message)) -> #(
+      Accumulator(
+        ..acc,
+        stop: Some(stop),
+        raw_stop: Some(raw),
+        error_message: option.or(error_message, acc.error_message),
+      ),
+      [],
+    )
+    Error(Nil) -> fail(acc, UnmappedStopReason(raw:))
   }
 }
 
@@ -1029,71 +1092,86 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
           context: "message_stop arrived without a stop reason",
         ),
       )
-    Some(stop) ->
-      case build_blocks(list.reverse(acc.blocks), []) {
-        Error(report) -> fail(acc, MalformedStream(report))
-        Ok(content) -> {
-          let usage = build_usage(acc)
-          // Adapter-computed overflow (spec §1.5): the request did not
-          // fit and nothing substantive came back, so the response
-          // settles as `error` with the canonical overflow message. The
-          // raw stop reason is preserved for diagnostics.
-          // Spec §1.5 words this as input plus cache-read, from before
-          // this adapter declared cache breakpoints. The quantity it
-          // names is the whole prompt — the Messages API reports it as
-          // `input_tokens + cache_read_input_tokens +
-          // cache_creation_input_tokens` — so the write half belongs in
-          // the sum. Leaving it out would shrink the apparent prompt by
-          // exactly the tokens caching just wrote, and an oversized
-          // request would retry unchanged instead of compacting.
-          let input_tokens = acc.input + acc.cache_read + acc.cache_write
-          let overflowed =
-            input_tokens > acc.resolved.context_window
-            && acc.output <= negligible_output_tokens
-          let #(stop, error_message) = case overflowed {
-            True -> #(
-              Errored,
-              Some(retry.overflow_message(
-                input_tokens:,
-                context_window: acc.resolved.context_window,
-              )),
-            )
-            False -> #(stop, acc.error_message)
-          }
-          let assistant =
-            AssistantMessage(
-              content:,
-              api: api_name,
-              provider: acc.resolved.provider,
-              model: acc.resolved.model_id,
-              response_model: acc.response_model,
-              response_id: acc.response_id,
-              diagnostics: None,
-              usage:,
-              stop_reason: stop,
-              deferred: None,
-              error_message:,
-              raw_stop_reason: acc.raw_stop,
-              end_turn: option.map(acc.raw_stop, fn(raw) { raw == "end_turn" }),
-              timestamp: acc.now,
-            )
-          case stream.settle(assistant) {
-            Ok(settled) -> #(Accumulator(..acc, done: True), [
-              Settled(message: settled, usage:),
-            ])
-            // Unreachable by construction (the stop reason above is never
-            // Pending), reported totally rather than asserted.
-            Error(Nil) ->
-              fail(
-                acc,
-                MalformedStream(corruption_report(
-                  "a settled assistant message",
-                  "stop reason pending at message_stop",
-                )),
-              )
-          }
-        }
-      }
+    Some(stop) -> settle_with_stop(acc, stop)
+  }
+}
+
+fn settle_with_stop(
+  acc: Accumulator,
+  stop: StopReason,
+) -> #(Accumulator, List(StreamEvent)) {
+  use content <- or_fail(
+    build_blocks(list.reverse(acc.blocks), []),
+    acc,
+    MalformedStream,
+  )
+  let usage = build_usage(acc)
+  // Adapter-computed overflow (spec §1.5): the request did not fit and
+  // nothing substantive came back, so the response settles as `error`
+  // with the canonical overflow message. The raw stop reason is
+  // preserved for diagnostics.
+  // Spec §1.5 words this as input plus cache-read, from before this
+  // adapter declared cache breakpoints. The quantity it names is the
+  // whole prompt — the Messages API reports it as `input_tokens +
+  // cache_read_input_tokens + cache_creation_input_tokens` — so the
+  // write half belongs in the sum. Leaving it out would shrink the
+  // apparent prompt by exactly the tokens caching just wrote, and an
+  // oversized request would retry unchanged instead of compacting.
+  let input_tokens = acc.input + acc.cache_read + acc.cache_write
+  let overflowed =
+    input_tokens > acc.resolved.context_window
+    && acc.output <= negligible_output_tokens
+  let #(stop, error_message) = case overflowed {
+    True -> #(
+      Errored,
+      Some(retry.overflow_message(
+        input_tokens:,
+        context_window: acc.resolved.context_window,
+      )),
+    )
+    False -> #(stop, acc.error_message)
+  }
+  let assistant =
+    AssistantMessage(
+      content:,
+      api: api_name,
+      provider: acc.resolved.provider,
+      model: acc.resolved.model_id,
+      response_model: acc.response_model,
+      response_id: acc.response_id,
+      diagnostics: None,
+      usage:,
+      stop_reason: stop,
+      deferred: None,
+      error_message:,
+      raw_stop_reason: acc.raw_stop,
+      end_turn: option.map(acc.raw_stop, fn(raw) { raw == "end_turn" }),
+      timestamp: acc.now,
+    )
+  // Unreachable by construction (the stop reason above is never
+  // Pending), reported totally rather than asserted.
+  use settled <- or_fail(stream.settle(assistant), acc, fn(_nil) {
+    MalformedStream(corruption_report(
+      "a settled assistant message",
+      "stop reason pending at message_stop",
+    ))
+  })
+  #(Accumulator(..acc, done: True), [Settled(message: settled, usage:)])
+}
+
+// The settlement combinator: run `then` on success, or fail the stream
+// with `to_error(err)` — the adapter's counterpart to `machine/planner`'s
+// `or_fault`, for the handful of settlement steps that must end the
+// stream in-band rather than propagate a bare `Result`.
+fn or_fail(
+  result: Result(a, e),
+  acc: Accumulator,
+  to_error: fn(e) -> stream.ProviderError,
+  then: fn(a) -> #(Accumulator, List(StreamEvent)),
+) -> #(Accumulator, List(StreamEvent)) {
+  case result {
+    Error(err) -> fail(acc, to_error(err))
+    Ok(value) -> then(value)
   }
 }
 
@@ -1122,20 +1200,17 @@ fn build_blocks(
         "" -> Ok(json.Object([]))
         _ -> json.parse(arguments_json)
       }
-      case parsed {
-        Error(report) -> Error(report)
-        Ok(arguments) ->
-          build_blocks(rest, [
-            AssistantToolCall(call: ToolCall(
-              id: call_id,
-              name:,
-              arguments:,
-              thought_signature: None,
-              namespace: None,
-            )),
-            ..built
-          ])
-      }
+      use arguments <- result.try(parsed)
+      build_blocks(rest, [
+        AssistantToolCall(call: ToolCall(
+          id: call_id,
+          name:,
+          arguments:,
+          thought_signature: None,
+          namespace: None,
+        )),
+        ..built
+      ])
     }
   }
 }

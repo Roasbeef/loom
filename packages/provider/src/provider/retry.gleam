@@ -67,20 +67,17 @@ pub fn classify(error: ProviderError) -> RetryClass {
   case error {
     TransportFailed(reason: _) -> Retryable(backoff_hint_ms: None)
     StreamDisconnected(context: _) -> Retryable(backoff_hint_ms: None)
-    HttpError(status:, api_error_type:, message:, retry_after_ms:) ->
-      case is_overflow_message(message) {
+    HttpError(status:, api_error_type:, message:, retry_after_ms:) -> {
+      let transient_status =
+        status == 408
+        || status == 429
+        || status >= 500
+        || is_transient_error_type(api_error_type)
+      case is_overflow_message(message) || !transient_status {
         True -> Terminal
-        False ->
-          case
-            status == 408
-            || status == 429
-            || status >= 500
-            || is_transient_error_type(api_error_type)
-          {
-            True -> Retryable(backoff_hint_ms: retry_after_ms)
-            False -> Terminal
-          }
+        False -> Retryable(backoff_hint_ms: retry_after_ms)
       }
+    }
     StreamError(api_error_type:, message:) ->
       case
         !is_overflow_message(message) && is_transient_error_type(api_error_type)

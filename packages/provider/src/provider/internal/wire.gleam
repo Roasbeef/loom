@@ -134,20 +134,21 @@ pub fn array_field(
 /// transport normalizes them.
 pub fn retry_after_ms(headers: List(#(String, String))) -> Option(Int) {
   case list.key_find(headers, "retry-after-ms") {
+    // A present but unparsable `retry-after-ms` does not fall back to
+    // `retry-after`: the header was given and malformed, which is a
+    // different fact than the header being absent.
+    Ok(text) -> option.from_result(parse_int(text))
+    Error(Nil) -> retry_after_seconds_ms(headers)
+  }
+}
+
+fn retry_after_seconds_ms(headers: List(#(String, String))) -> Option(Int) {
+  case list.key_find(headers, "retry-after") {
     Ok(text) ->
-      case parse_int(text) {
-        Ok(ms) -> Some(ms)
-        Error(Nil) -> None
-      }
-    Error(Nil) ->
-      case list.key_find(headers, "retry-after") {
-        Ok(text) ->
-          case parse_int(text) {
-            Ok(seconds) -> Some(seconds * 1000)
-            Error(Nil) -> None
-          }
-        Error(Nil) -> None
-      }
+      option.map(option.from_result(parse_int(text)), fn(seconds) {
+        seconds * 1000
+      })
+    Error(Nil) -> None
   }
 }
 

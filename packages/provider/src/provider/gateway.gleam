@@ -243,15 +243,25 @@ fn pump(
 ) -> Nil {
   case request.target {
     ForResolved(resolved:) -> attempt(gateway, request, now, [resolved], events)
-    ForRole(role:) ->
-      case usable_chain(gateway, role) {
-        [] ->
-          process.send(
-            events,
-            Failed(NoIdentity(role: model.role_to_string(role))),
-          )
-        chain -> attempt(gateway, request, now, chain, events)
-      }
+    ForRole(role:) -> dispatch_role(gateway, request, now, role, events)
+  }
+}
+
+// A role dispatches against the usable prefix of its configured chain — a
+// role naming no registered provider at all is the empty chain, handled
+// here rather than by `attempt` so the reported failure names the role,
+// not a generic exhaustion.
+fn dispatch_role(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
+  role: Role,
+  events: process.Subject(StreamEvent),
+) -> Nil {
+  case usable_chain(gateway, role) {
+    [] ->
+      process.send(events, Failed(NoIdentity(role: model.role_to_string(role))))
+    chain -> attempt(gateway, request, now, chain, events)
   }
 }
 
@@ -271,16 +281,30 @@ fn attempt(
       process.send(events, Failed(NoIdentity(role: "exhausted chain")))
     [target, ..rest] -> {
       let terminal = attempt_one(gateway, request, now, target, events)
-      case terminal, rest {
-        Failed(error:), [_, ..] ->
-          case retry.classify(error) {
-            Retryable(backoff_hint_ms: _) ->
-              attempt(gateway, request, now, rest, events)
-            Terminal -> process.send(events, terminal)
-          }
-        _, _ -> process.send(events, terminal)
-      }
+      continue_or_deliver(gateway, request, now, terminal, rest, events)
     }
+  }
+}
+
+// The one terminal event a fallback walk ever has to decide about: retry
+// the remaining chain on a retryable failure, otherwise deliver whatever
+// came back (a settlement, or a terminal failure) as-is.
+fn continue_or_deliver(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
+  terminal: StreamEvent,
+  rest: List(ResolvedModel),
+  events: process.Subject(StreamEvent),
+) -> Nil {
+  case terminal, rest {
+    Failed(error:), [_, ..] ->
+      case retry.classify(error) {
+        Retryable(backoff_hint_ms: _) ->
+          attempt(gateway, request, now, rest, events)
+        Terminal -> process.send(events, terminal)
+      }
+    _, _ -> process.send(events, terminal)
   }
 }
 
@@ -294,44 +318,46 @@ fn attempt_one(
   events: process.Subject(StreamEvent),
 ) -> StreamEvent {
   let deliver = fn(delta) { process.send(events, Delta(delta:)) }
-  case find_provider(gateway, target.provider) {
-    Error(Nil) -> Failed(UnknownProvider(provider: target.provider))
-    Ok(config) ->
-      case secret.lookup(gateway.secrets, config.api_key_secret) {
-        Error(Nil) ->
-          Failed(NoSecret(
-            provider: config.name,
-            secret_name: config.api_key_secret,
-          ))
-        Ok(api_key) ->
-          case config {
-            AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
-              stream.run(
-                gateway.transport,
-                anthropic.build_request(
-                  base_url:,
-                  api_key:,
-                  resolved: target,
-                  request:,
-                ),
-                anthropic.response_machine(target, now:),
-                deliver,
-                within: gateway.attempt_timeout_ms,
-              )
-            OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
-              stream.run(
-                gateway.transport,
-                openai.build_request(
-                  base_url:,
-                  api_key:,
-                  resolved: target,
-                  request:,
-                ),
-                openai.response_machine(target, now:),
-                deliver,
-                within: gateway.attempt_timeout_ms,
-              )
-          }
-      }
+  use config <- or_failure(find_provider(gateway, target.provider), fn() {
+    Failed(UnknownProvider(provider: target.provider))
+  })
+  use api_key <- or_failure(
+    secret.lookup(gateway.secrets, config.api_key_secret),
+    fn() {
+      Failed(NoSecret(provider: config.name, secret_name: config.api_key_secret))
+    },
+  )
+  case config {
+    AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
+      stream.run(
+        gateway.transport,
+        anthropic.build_request(base_url:, api_key:, resolved: target, request:),
+        anthropic.response_machine(target, now:),
+        deliver,
+        within: gateway.attempt_timeout_ms,
+      )
+    OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
+      stream.run(
+        gateway.transport,
+        openai.build_request(base_url:, api_key:, resolved: target, request:),
+        openai.response_machine(target, now:),
+        deliver,
+        within: gateway.attempt_timeout_ms,
+      )
+  }
+}
+
+// Unwraps a `Result(a, Nil)` into a `StreamEvent`-returning continuation,
+// or the given terminal failure on `Error` — the gateway's counterpart to
+// `machine/planner`'s `or_fault`, for the one place here a lookup failure
+// must become an in-band `Failed` rather than a corruption report.
+fn or_failure(
+  result: Result(a, Nil),
+  on_error: fn() -> StreamEvent,
+  then: fn(a) -> StreamEvent,
+) -> StreamEvent {
+  case result {
+    Error(Nil) -> on_error()
+    Ok(value) -> then(value)
   }
 }
