@@ -25,25 +25,45 @@ pub type Raw {
   Raw(rule: Rule, offset: Int, function: String, detail: String)
 }
 
-/// Local names in scope: what a qualifier resolves to, and what an
-/// unqualified value was imported from.
+/// Local names in scope: what a qualifier resolves to, what an unqualified
+/// value was imported from, and — for R1's structural half — every function
+/// this module defines for itself, so a bare call to one of them resolves
+/// to `#(own_path, name)` the same way an imported one resolves to
+/// `#(module, name)`. Nothing else in the walk needs to know a call is
+/// local; it is just another entry the eager-combinator lookup can match.
 type Names {
   Names(
     qualifiers: Dict(String, String),
     values: Dict(String, #(String, String)),
+    local_functions: Dict(String, Nil),
+    own_path: String,
   )
 }
 
 type Ctx {
-  Ctx(names: Names, policy: Policy, function: String)
+  Ctx(names: Names, policy: Policy, function: String, locals: List(Eager))
 }
 
 /// Every violation in a parsed module, in no particular order.
-pub fn module(module: glance.Module, policy: Policy) -> List(Raw) {
-  let names = names_of(module)
+///
+/// `own_path` is this file's own module path (`tools/fs`, not the
+/// filesystem path) — the same shape `policy.eager_combinators`' `module`
+/// field uses for an imported one. It is what lets a call to a
+/// locally-defined combinator resolve at all (`resolve` has no import to
+/// consult for a function the file defines for itself) and what a
+/// structurally-detected local combinator's synthesized `Eager` rows are
+/// keyed under, so they only ever match calls inside the file that defines
+/// them.
+pub fn module(
+  module: glance.Module,
+  policy: Policy,
+  own_path: String,
+) -> List(Raw) {
+  let names = names_of(module, own_path)
+  let locals = local_eager_rows(module, own_path)
   list.flat_map(module.functions, fn(definition) {
     let function = definition.definition
-    let ctx = Ctx(names:, policy:, function: function.name)
+    let ctx = Ctx(names:, policy:, function: function.name, locals:)
     list.reverse(statements(function.body, ctx, nesting(function, ctx)))
   })
 }
@@ -70,8 +90,19 @@ fn nesting(function: glance.Function, ctx: Ctx) -> List(Raw) {
 
 // --- name resolution --------------------------------------------------------
 
-fn names_of(module: glance.Module) -> Names {
-  list.fold(module.imports, Names(dict.new(), dict.new()), fn(names, imported) {
+fn names_of(module: glance.Module, own_path: String) -> Names {
+  let local_functions =
+    list.fold(module.functions, dict.new(), fn(locals, definition) {
+      dict.insert(locals, definition.definition.name, Nil)
+    })
+  let base =
+    Names(
+      qualifiers: dict.new(),
+      values: dict.new(),
+      local_functions:,
+      own_path:,
+    )
+  list.fold(module.imports, base, fn(names, imported) {
     let import_ = imported.definition
     let qualifiers = case import_.alias {
       Some(glance.Named(alias)) ->
@@ -92,7 +123,7 @@ fn names_of(module: glance.Module) -> Names {
         }
         dict.insert(values, local, #(import_.module, value.name))
       })
-    Names(qualifiers:, values:)
+    Names(..names, qualifiers:, values:)
   })
 }
 
@@ -123,19 +154,132 @@ fn resolve(
     glance.Variable(name:, ..) ->
       case dict.get(names.values, name) {
         Ok(resolved) -> Some(resolved)
-        Error(Nil) -> None
+        Error(Nil) ->
+          // Not imported — but a bare call to one of this file's own
+          // functions is exactly as legal Gleam, and just as reachable a
+          // combinator, as an imported one. Resolve it under this file's
+          // own path so the eager-combinator lookup can match it.
+          case dict.has_key(names.local_functions, name) {
+            True -> Some(#(names.own_path, name))
+            False -> None
+          }
       }
     _ -> None
   }
 }
 
-fn eager_spec(path: String, name: String) -> Option(Eager) {
-  list.fold(policy.eager_combinators(), None, fn(found, spec) {
-    case found, spec.module == path && spec.function == name {
-      None, True -> Some(spec)
-      _, _ -> found
-    }
+/// Every eager-combinator row that matches a call to `path.name` — the
+/// hand-curated table plus this file's own structurally-detected local
+/// combinators. Usually zero or one; a local combinator with more than one
+/// eager parameter contributes one row per parameter, so all of them fire
+/// off a single call site.
+fn eager_specs(ctx: Ctx, path: String, name: String) -> List(Eager) {
+  let matches = fn(spec: Eager) { spec.module == path && spec.function == name }
+  list.append(
+    list.filter(policy.eager_combinators(), matches),
+    list.filter(ctx.locals, matches),
+  )
+}
+
+// --- R1's other half: use-compatible combinators this file defines ---------
+//
+// `bool.guard`, `result.unwrap` and the rest of `policy.eager_combinators`
+// are known by *name*: someone hand-curated the table. The
+// `or_fault → or_fail → or_outcome → or_reply → or_continue` lineage
+// (gleam-style Part III, "Short-circuit combinators") is the same hazard on
+// roughly seventy locally-defined functions the table has never heard of —
+// and the style guide now actively recommends writing more of them. This
+// finds them by *signature* instead: the house pattern is "the fallible
+// subject first, the continuation last" (verbatim from the guide), so a
+// function whose last parameter is `fn(…)` and whose other parameters are
+// not is `use`-compatible the same way `bool.guard` is, whoever wrote it.
+//
+// The subject at position 0 is deliberately left alone — it is meant to be
+// computed unconditionally (`or_fault(plan_batch(…), then)`'s subject is
+// real work, not a discarded fallback) — so only the parameters *between*
+// the subject and the continuation are eager in R1's sense. A two-parameter
+// combinator (`or_fault`, `or_halt`, `or_key_halt`: just a subject and a
+// continuation) contributes nothing to check, which is why this rule adds
+// findings without flooding the report across the whole lineage.
+//
+// It still over-reports, the same way R3 does and for the same root cause:
+// deciding whether a *middle* parameter is genuinely wasted when the
+// continuation is skipped, versus merely used unconditionally by the
+// combinator's own body (`claimed_effect`'s `key:` drives the claim check
+// itself, not a fallback the check discards), needs the callee's control
+// flow, and `glance` gives this walk no dataflow to read it from. A
+// structural match is reported regardless — a false positive here is a
+// parameter that happens to sit between the subject and the continuation
+// without being a discarded fallback, not a fabricated call site — and,
+// exactly as R3 does, it stays a warning rather than pretending the
+// distinction does not exist.
+
+/// One synthesized `Eager` row per checkable parameter of every
+/// `use`-compatible function this module defines. Keyed under `own_path`,
+/// so a row here can only ever match a call inside the file that defines
+/// it — there is no cross-file combinator call to resolve in the first
+/// place (a private `fn` is not visible outside its module).
+fn local_eager_rows(module: glance.Module, own_path: String) -> List(Eager) {
+  list.flat_map(module.functions, fn(definition) {
+    combinator_rows(definition.definition, own_path)
   })
+}
+
+fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
+  case list.reverse(function.parameters) {
+    [last, ..reversed_rest] ->
+      case
+        is_function_type(last.type_),
+        list.any(reversed_rest, fn(param) { is_function_type(param.type_) })
+      {
+        // Last parameter is `fn(…)`, and it is the only one — this is a
+        // candidate. Anything else with a second function-typed parameter
+        // (`or_fail`'s `to_error`, say) is a different shape and left alone.
+        True, False ->
+          list.reverse(reversed_rest)
+          |> list.index_map(fn(param, index) { #(param, index) })
+          |> list.filter(fn(pair) { pair.1 > 0 })
+          |> list.map(fn(pair) {
+            eager_row(function.name, own_path, pair.0, pair.1)
+          })
+        _, _ -> []
+      }
+    [] -> []
+  }
+}
+
+fn eager_row(
+  function: String,
+  own_path: String,
+  parameter: glance.FunctionParameter,
+  position: Int,
+) -> Eager {
+  policy.Eager(
+    module: own_path,
+    function:,
+    label: parameter_label(parameter),
+    position:,
+    lazy: "a thunk — this parameter is built on every call, taken or not, "
+      <> "the same hazard `bool.guard`'s `return:` has",
+  )
+}
+
+fn parameter_label(parameter: glance.FunctionParameter) -> String {
+  case parameter.label {
+    Some(label) -> label
+    None ->
+      case parameter.name {
+        glance.Named(name) -> name
+        glance.Discarded(name) -> name
+      }
+  }
+}
+
+fn is_function_type(type_: Option(glance.Type)) -> Bool {
+  case type_ {
+    Some(glance.FunctionType(..)) -> True
+    _ -> False
+  }
 }
 
 fn is_length(target: Option(#(String, String))) -> Bool {
@@ -290,10 +434,9 @@ fn call(
 ) -> List(Raw) {
   let acc = case resolve(ctx.names, function) {
     Some(#(path, name)) ->
-      case eager_spec(path, name) {
-        Some(spec) -> eager(spec, function, arguments, piped, ctx, acc)
-        None -> acc
-      }
+      list.fold(eager_specs(ctx, path, name), acc, fn(acc, spec) {
+        eager(spec, function, arguments, piped, ctx, acc)
+      })
     None -> acc
   }
   fields(arguments, ctx, expression(function, ctx, acc))

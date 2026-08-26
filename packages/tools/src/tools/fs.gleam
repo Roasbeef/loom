@@ -770,10 +770,11 @@ fn decode_ref(value: JsonValue, key: String) -> Result(hashline.Ref, String) {
   case object_field(value, key) {
     Error(Nil) -> Error("`" <> key <> "` is required for this hunk op")
     Ok(ref_value) -> {
-      use line <- result.try(require(
-        tool.optional_int(ref_value, "line"),
-        when_absent: "`" <> key <> ".line` is required",
-      ))
+      use line <- result.try(
+        require(tool.optional_int(ref_value, "line"), when_absent: fn() {
+          "`" <> key <> ".line` is required"
+        }),
+      )
       use anchor <- result.try(tool.required_string(ref_value, "anchor"))
       Ok(hashline.Ref(line:, anchor:))
     }
@@ -781,22 +782,28 @@ fn decode_ref(value: JsonValue, key: String) -> Result(hashline.Ref, String) {
 }
 
 fn required_lines(value: JsonValue) -> Result(List(String), String) {
-  require(
-    tool.optional_string_list(value, "lines"),
-    when_absent: "`lines` is required for this hunk op",
-  )
+  require(tool.optional_string_list(value, "lines"), when_absent: fn() {
+    "`lines` is required for this hunk op"
+  })
 }
 
 // Turns "optional, and possibly malformed" into "required, for this
 // hunk op" — the shape every `tool.optional_*` decoder returns, and
 // the one `decode_ref`'s line field and `required_lines` both need.
+//
+// `when_absent` is a thunk, not a bare `String`: `decode_ref` calls this
+// once per hunk-ref of every `fs_edit`, and an eager `String` would build
+// its message on every one of those calls whether the field turned out to
+// be absent or not (issue #56, the same hazard R1's `bool.guard`/
+// `result.unwrap` table already knows by name). Called only from the one
+// branch that needs it.
 fn require(
   optional: Result(Option(a), String),
-  when_absent when_absent: String,
+  when_absent when_absent: fn() -> String,
 ) -> Result(a, String) {
   case optional {
     Ok(Some(value)) -> Ok(value)
-    Ok(None) -> Error(when_absent)
+    Ok(None) -> Error(when_absent())
     Error(reason) -> Error(reason)
   }
 }

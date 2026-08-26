@@ -31,6 +31,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
+import runtime/internal/ffi_sup
 import session/session.{type Session}
 import storage/storage.{type StorageError}
 
@@ -151,18 +152,33 @@ pub fn supervised(
 // §3.6), so a hint with nowhere to go is a non-event — but a subscriber
 // held as a *named* subject is an unregistered name while its owner
 // restarts, and sending into an unregistered name crashes the sender.
-// Without this guard the writer would be the process that dies for a
-// hint, taking the whole rest-for-one tree below it; with it, a
-// subscriber may be supervised and restartable (`client/gateway`'s
-// commit forwarder is) without putting the commit path at risk.
+// Without a guard the writer would be the process that dies for a hint,
+// taking the whole rest-for-one tree below it; with one, a subscriber
+// may be supervised and restartable (`client/gateway`'s commit forwarder
+// is) without putting the commit path at risk.
+//
+// A plain, pid-backed subject never needs any of this: `process.send`
+// sends straight to the pid it already carries, no lookup involved, so
+// it is used unchanged. A *named* subject is where "resolve, then send"
+// used to be two separate resolutions — `process.subject_owner` looked
+// the name up here, and `process.send` looked it up again internally,
+// and a name that unregistered in the gap between the two crashed the
+// writer for a hint nobody needed (issue #43). The fix resolves the name
+// exactly once, with `process.named`, and sends straight to that pid
+// through `ffi_sup.send_to_pid` — building the same `#(name, event)`
+// envelope `process.send` would have built, so the subscriber's own
+// `process.receive(subscriber, ..)` matches it exactly the same way.
+// Erlang's `!` to a pid that has already exited is a silent no-op, so
+// nothing past the name lookup can crash the caller and no aliveness
+// check is needed on either path.
 fn publish(subscriber: Subject(Event), event: Event) -> Nil {
-  case process.subject_owner(subscriber) {
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        True -> process.send(subscriber, event)
-        False -> Nil
+  case process.subject_name(subscriber) {
+    Error(Nil) -> process.send(subscriber, event)
+    Ok(name) ->
+      case process.named(name) {
+        Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, event))
+        Error(Nil) -> Nil
       }
-    Error(Nil) -> Nil
   }
 }
 

@@ -1,4 +1,5 @@
 import broker/broker
+import broker/budget
 import broker/exec
 import core/json
 import core/message
@@ -238,4 +239,30 @@ pub fn grep_flags_test() {
   assert grep_tool.name == "grep"
   assert grep_tool.replay == tool.Safe
   assert grep_tool.execution_mode == tool.Concurrent
+}
+
+// --- issue #50: a Concurrent tool must not declare a budget that can
+// only ever admit one caller ------------------------------------------
+
+/// The broker pools budget per `{op_id, step_id}` — the whole batch, not
+/// any one call's fan-out (`broker/budget`'s module doc, ADR-005) — so
+/// two genuinely concurrent `grep` calls in one batch share the ledger
+/// the *first* one opens. Reproduces that sharing directly against the
+/// real `broker/budget` ledger, under exactly the budget `grep.tool()`
+/// declares, rather than asserting the constant's value in isolation:
+/// the second reservation is what a second concurrent call in the same
+/// batch would actually need to succeed.
+pub fn grep_budget_admits_two_concurrent_calls_in_one_batch_test() {
+  let opened =
+    budget.open(budget.Budget(
+      max_outstanding: grep.max_concurrent_searches,
+      deadline_ms: now + grep.timeout_ms,
+    ))
+  let assert Ok(after_first) = budget.reserve(opened, now:)
+    as "the first concurrent grep call in the batch must be admitted"
+  let assert Ok(_after_second) = budget.reserve(after_first, now:)
+    as {
+      "a second, genuinely concurrent grep call in the same batch must "
+      <> "not be refused OutstandingCapReached just for being second"
+    }
 }

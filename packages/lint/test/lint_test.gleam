@@ -163,6 +163,182 @@ pub fn r1_ignores_the_lazy_position_test() {
   |> should.be_false
 }
 
+// --- R1's other half: locally-defined `use`-compatible combinators ---------
+//
+// Issue #56: R1 knew six stdlib combinators by name and nothing about the
+// `or_fault` lineage this tree writes for itself — so `machine/planner`'s
+// `or_fault_unless` and `tools/fs`'s `require` both built an eager argument
+// on every call, on the exact hazard's happy path, with the census
+// reporting the packages clean. These pin both shapes, structurally: the
+// first by the "last parameter is `fn(…)`, others are not" signature (any
+// locally-defined function of that shape, not `or_fault_unless` by name),
+// the second by the hand-curated table row `require` needed because it
+// takes no continuation at all.
+
+/// The exact shape `machine/planner.gleam:2377` was: a report built on
+/// every staged tool result, whether the fault fires or not.
+pub fn r1_flags_a_local_use_combinator_by_signature_test() {
+  "fn or_fault_unless(condition: Bool, report: Report, then: fn() -> Action) -> Action {
+  case condition {
+    True -> then()
+    False -> Fault(report:)
+  }
+}
+
+fn stage_result(ok: Bool, cursor: Cursor) -> Action {
+  use <- or_fault_unless(ok, build_report(cursor))
+  Continue
+}
+"
+  |> fired(finding.EagerFallback)
+  |> should.be_true
+}
+
+/// The house pattern itself — subject first, continuation last, nothing
+/// between — must never flag: `or_fault`, `or_halt` and `or_key_halt` are
+/// exactly this shape everywhere they appear, and their subject is real
+/// work the combinator is *supposed* to run, not a discarded fallback.
+pub fn r1_leaves_a_two_parameter_local_combinator_alone_test() {
+  "fn or_fault(result: Result(a, Report), then: fn(a) -> Action) -> Action {
+  case result {
+    Error(report) -> Fault(report:)
+    Ok(value) -> then(value)
+  }
+}
+
+fn stage_result(compute_result: fn(Int, Int) -> Result(Int, Report)) -> Action {
+  use value <- or_fault(compute_result(1, 2))
+  Continue(value)
+}
+"
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// A local combinator's middle parameter is exactly as cheap-exempt as a
+/// stdlib one's — only the shape differs, not the cheapness test.
+pub fn r1_leaves_a_cheap_local_combinator_argument_alone_test() {
+  "fn or_fault_unless(condition: Bool, report: Report, then: fn() -> Action) -> Action {
+  case condition {
+    True -> then()
+    False -> Fault(report:)
+  }
+}
+
+fn stage_result(ok: Bool, report: Report) -> Action {
+  use <- or_fault_unless(ok, report)
+  Continue
+}
+"
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// A second function-typed parameter disqualifies the shape entirely —
+/// `or_fail`'s `to_error: fn(e) -> ProviderError` is not the continuation,
+/// and nothing about this signature says which non-last parameter (if
+/// either) is the eager one.
+pub fn r1_leaves_two_function_parameters_alone_test() {
+  "fn or_fail(
+  result: Result(a, e),
+  to_error: fn(e) -> ProviderError,
+  then: fn(a) -> Outcome,
+) -> Outcome {
+  case result {
+    Error(err) -> fail(to_error(err))
+    Ok(value) -> then(value)
+  }
+}
+
+fn f(compute_result: fn() -> Result(Int, Err), describe: fn(Err) -> ProviderError) -> Outcome {
+  use value <- or_fail(compute_result(), describe)
+  Continue(value)
+}
+"
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// The exact shape `tools/fs.gleam:773` was, pinned at the path R1's
+/// hand-curated `require` row is keyed under — `require` takes no
+/// continuation at all, so this is the table half of the fix, not the
+/// structural half above.
+pub fn r1_flags_the_require_regression_test() {
+  lint.check(
+    "packages/tools/src/tools/fs.gleam",
+    "fn require(optional, when_absent) {
+  case optional {
+    Ok(Some(value)) -> Ok(value)
+    Ok(None) -> Error(when_absent)
+    Error(reason) -> Error(reason)
+  }
+}
+
+fn decode_ref(value, key) {
+  require(optional_int(value, \"line\"), when_absent: \"`\" <> key <> \".line` is required\")
+}
+",
+    policy.default(),
+  )
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.EagerFallback)
+  |> should.be_true
+}
+
+/// The same `require` row must not fire once the call is lazy — and must
+/// not fire at all for a same-named, same-shaped function in a *different*
+/// file, since the row is keyed by path as well as by name.
+pub fn r1_require_row_is_lazy_and_path_scoped_test() {
+  let lazy =
+    lint.check(
+      "packages/tools/src/tools/fs.gleam",
+      "fn require(optional, when_absent) {
+  case optional {
+    Ok(Some(value)) -> Ok(value)
+    Ok(None) -> Error(when_absent())
+    Error(reason) -> Error(reason)
+  }
+}
+
+fn decode_ref(value, key) {
+  require(optional_int(value, \"line\"), when_absent: fn() {
+    \"`\" <> key <> \".line` is required\"
+  })
+}
+",
+      policy.default(),
+    )
+  lazy
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+
+  let elsewhere =
+    lint.check(
+      "packages/runtime/src/runtime/escalation.gleam",
+      "fn require(optional, when_absent) {
+  case optional {
+    Ok(Some(value)) -> Ok(value)
+    Ok(None) -> Error(when_absent)
+    Error(reason) -> Error(reason)
+  }
+}
+
+fn f(value, key) {
+  require(optional_int(value, \"line\"), when_absent: \"`\" <> key <> \"` is required\")
+}
+",
+      policy.default(),
+    )
+  elsewhere
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
 // --- R2: nesting depth ------------------------------------------------------
 
 pub fn r2_flags_a_pyramid_test() {

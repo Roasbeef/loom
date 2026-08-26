@@ -33,6 +33,23 @@ pub const default_max_results = 100
 /// Wall-clock timeout for one search.
 pub const timeout_ms = 60_000
 
+/// The outstanding-effect cap this tool's budget declares.
+///
+/// The broker pools budget per `{op_id, step_id}` — the whole batch under
+/// one turn, not any single call's own fan-out (`broker/budget`'s module
+/// doc, ADR-005) — so this bounds how many `grep` calls one batch may run
+/// at once, not how many any one call may start. `Concurrent` and `1`
+/// contradicted each other: a second genuinely concurrent `grep` in the
+/// same batch shared this tool's own first-opened ledger and was refused
+/// `OutstandingCapReached` (issue #50), which every test missed because
+/// the only other concurrent-capable tool in the suite is `bash`, and
+/// `bash` is `Exclusive`. `16` is a real ceiling — comfortably above the
+/// handful of searches one turn plausibly asks for, and nowhere near the
+/// "10,000 polite parallel reads" the pooling exists to refuse — not an
+/// attempt to size it exactly; #23's per-execution spawn ceiling is where
+/// that gets decided properly.
+pub const max_concurrent_searches = 16
+
 /// Slack added to the receive window beyond the execution deadline.
 const settle_grace_ms = 10_000
 
@@ -160,7 +177,10 @@ fn call_spec(
     argv:,
     env: ctx.env,
     cwd: ctx.workspace,
-    budget: budget.Budget(max_outstanding: 1, deadline_ms: now + timeout_ms),
+    budget: budget.Budget(
+      max_outstanding: max_concurrent_searches,
+      deadline_ms: now + timeout_ms,
+    ),
   )
 }
 
@@ -234,7 +254,10 @@ fn matched_outcome(
   )
   let all_matches = parse_matches(stdout)
   let matches = list.take(all_matches, max_results)
-  let capped = list.length(all_matches) > max_results
+  // `list.take` above already stopped at `max_results`; asking whether
+  // there is anything left needs only `max_results` steps of `drop`, not
+  // a walk of the whole (unbounded) match list `list.length` would do.
+  let capped = list.drop(all_matches, max_results) != []
   render(ctx, matches, capped:, truncated: collected.stdout_truncated)
 }
 

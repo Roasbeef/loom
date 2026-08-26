@@ -4,7 +4,7 @@
 %% file owns the how.
 -module(runtime_ffi).
 
--export([terminate_supervisor/2]).
+-export([terminate_supervisor/2, send_to_pid/2]).
 
 %% sys:terminate/3 against a running OTP supervisor: the only graceful
 %% external stop a supervisor offers, and the one gleam_otp's
@@ -21,3 +21,12 @@ terminate_supervisor(Pid, TimeoutMs) ->
     catch
         _:_ -> {error, nil}
     end.
+
+%% `!` to a pid, once, with no name resolution anywhere in it. `Pid ! Msg`
+%% is a silent no-op when Pid has already exited -- Erlang never crashes
+%% the sender over a dead pid, only over an unregistered *name* -- so
+%% there is nothing here to guard: the one thing that could fail already
+%% happened, in whatever resolved Pid before this was called.
+send_to_pid(Pid, Message) ->
+    Pid ! Message,
+    nil.

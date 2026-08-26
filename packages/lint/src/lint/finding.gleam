@@ -16,11 +16,17 @@ pub type Rule {
   /// linter could say nothing about this file, so a parse failure is never
   /// silence.
   Unparseable
-  /// R1. An eager combinator (`bool.guard`, `result.replace_error`,
-  /// `result.unwrap`, `option.unwrap`, `result.or`, `option.or`) whose
-  /// eagerly-evaluated argument is not a trivially cheap value. Gleam
-  /// evaluates call arguments unconditionally, so that argument is built on
-  /// every call whether the fallback is taken or not.
+  /// R1. An eager combinator whose eagerly-evaluated argument is not a
+  /// trivially cheap value. Gleam evaluates call arguments unconditionally,
+  /// so that argument is built on every call whether the fallback is taken
+  /// or not. Two ways a call qualifies: it names one of six hand-curated
+  /// stdlib combinators (`bool.guard`, `result.replace_error`,
+  /// `result.unwrap`, `option.unwrap`, `result.or`, `option.or`, plus the
+  /// occasional locally-defined one the structural check below cannot
+  /// reach), or it calls a locally-defined function whose *signature* makes
+  /// it `use`-compatible the same way — last parameter `fn(…)`, every other
+  /// parameter not — which is what finds the `or_fault` lineage by shape
+  /// rather than by name.
   EagerFallback
   /// R2. A function whose `case` expressions nest deeper than the policy
   /// threshold. Measured on the AST, so a wide literal that the formatter

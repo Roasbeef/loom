@@ -23,12 +23,22 @@ pub type Eager {
   )
 }
 
-/// The eager combinators the linter knows.
+/// The eager combinators the linter knows by name.
 ///
 /// Each of these is an ordinary function, so the named argument is built on
 /// every call, taken or not. That is a correctness hazard when the argument
 /// recurses and a performance hazard when it is merely expensive — the
 /// `core/json` regression at `08cdbce` was the second kind.
+///
+/// This is the hand-curated half of R1: the stdlib combinators, plus the
+/// occasional locally-defined one whose hazard is real but whose shape
+/// `scan`'s structural detection cannot reach on its own (see that module's
+/// doc comment for why — `tools/fs.require` is the one example today, and
+/// the row stays a permanent regression guard even after it is fixed,
+/// exactly like any other entry here). Every *use*-compatible local
+/// combinator — the `or_fault` lineage, last parameter `fn(…)`, found by
+/// signature rather than by name — is detected structurally instead, in
+/// `scan.local_eager_rows`, and never needs an entry here at all.
 pub fn eager_combinators() -> List(Eager) {
   [
     Eager("gleam/bool", "guard", "return", 1, "bool.lazy_guard"),
@@ -37,6 +47,19 @@ pub fn eager_combinators() -> List(Eager) {
     Eager("gleam/option", "unwrap", "or", 1, "option.lazy_unwrap"),
     Eager("gleam/result", "or", "second", 1, "result.lazy_or"),
     Eager("gleam/option", "or", "second", 1, "option.lazy_or"),
+    // `require`'s `when_absent` is exactly `option.unwrap`'s `or`: built on
+    // every call, discarded whenever `optional` is `Ok(Some(_))`. It is not
+    // reachable structurally because `require` takes no continuation at
+    // all — it is a two-argument helper, not a `use`-compatible combinator
+    // — so it is curated here the same way the six stdlib rows above are.
+    Eager(
+      "tools/fs",
+      "require",
+      "when_absent",
+      1,
+      "a thunk: change `when_absent` to `fn() -> String` and call it only "
+        <> "in the `Ok(None)` branch",
+    ),
   ]
 }
 

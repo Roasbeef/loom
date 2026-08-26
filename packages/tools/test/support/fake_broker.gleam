@@ -134,6 +134,7 @@ pub fn exited(code code: Int, stdout_bytes stdout_bytes: Int) -> CallEvent {
       degraded: False,
       wall_ms: 5,
       timed_out: False,
+      cancelled: False,
     )),
   )
 }

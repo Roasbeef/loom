@@ -30,6 +30,7 @@ import broker/exec
 import broker/framing
 import broker/policy.{type Grant, type SandboxPolicy}
 import core/clock.{type Clock}
+import core/corruption
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message
@@ -801,6 +802,12 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
       "the execution ran without the demanded enforcement"
     exec.RefusedByHelper(code:, message:) ->
       "the sandbox helper refused (" <> code <> "): " <> message
+    // The report names the field that failed to decode, which is the
+    // difference between "something is wrong with the helper" and
+    // "this helper predates a required frame field" — a diagnosis a
+    // reader should not have to reconstruct by bisecting binaries.
+    exec.ChannelFault(fault: framing.CorruptFrame(report:)) ->
+      "the sandbox channel broke protocol: " <> corruption.describe(report)
     exec.ChannelFault(fault: _) -> "the sandbox channel broke protocol"
     exec.ChannelClosed(status:) ->
       "the sandbox helper exited with status " <> int.to_string(status)

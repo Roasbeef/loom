@@ -700,8 +700,11 @@ fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     when: texts == [],
     return: tool.failure("invalid arguments: `handles` must not be empty"),
   )
+  // `texts` is model-supplied and not otherwise bounded, so a caller
+  // that lists far more than `max_handles` handles must not force a walk
+  // of the whole array just to say so — `list.drop` stops at the bound.
   use <- bool.guard(
-    when: list.length(texts) > max_handles,
+    when: list.drop(texts, max_handles) != [],
     return: tool.failure(
       "invalid arguments: at most "
       <> int.to_string(max_handles)

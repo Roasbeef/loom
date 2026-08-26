@@ -114,10 +114,45 @@ type Runner(state, msg) {
     behaviour: fn(state, msg) -> Next(state),
     bound: Int,
     self: Subject(In(state, msg)),
-    queue: List(Item(state, msg)),
+    queue: Queue(Item(state, msg)),
     waiting: List(#(Item(state, msg), Subject(Nil))),
     draining: Bool,
   )
+}
+
+// A FIFO queue of O(1) push and amortised O(1) pop, with its length
+// tracked rather than recomputed. `front` is popped from directly; `back`
+// accumulates pushes in reverse and is only reversed onto `front` once
+// the latter runs dry. `len` answers "how many, against the bound" in
+// one field read, which is the point: `handle_admit` asks that question
+// on every message, and `list.length` beside a `list.append` made
+// filling a bounded queue to its bound cost O(bound²) (issue #45).
+type Queue(a) {
+  Queue(front: List(a), back: List(a), len: Int)
+}
+
+fn queue_new() -> Queue(a) {
+  Queue(front: [], back: [], len: 0)
+}
+
+fn queue_push(queue: Queue(a), item: a) -> Queue(a) {
+  Queue(..queue, back: [item, ..queue.back], len: queue.len + 1)
+}
+
+// Pops the oldest item, if any. Reversing `back` onto an empty `front` is
+// the one O(n) step this structure ever pays, and it is amortised: each
+// item is reversed at most once across its whole lifetime in the queue.
+fn queue_pop(queue: Queue(a)) -> Result(#(a, Queue(a)), Nil) {
+  case queue.front {
+    [item, ..rest] ->
+      Ok(#(item, Queue(..queue, front: rest, len: queue.len - 1)))
+    [] ->
+      case list.reverse(queue.back) {
+        [] -> Error(Nil)
+        [item, ..rest] ->
+          Ok(#(item, Queue(front: rest, back: [], len: queue.len - 1)))
+      }
+  }
 }
 
 /// Spawns an actor with a default mailbox bound.
@@ -149,7 +184,7 @@ pub fn spawn_bounded(
         behaviour: handler,
         bound:,
         self: subject,
-        queue: [],
+        queue: queue_new(),
         waiting: [],
         draining: False,
       )
@@ -242,12 +277,11 @@ fn handle_admit(
   item: Item(state, msg),
   ack: Subject(Nil),
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
-  case list.length(state.queue) < state.bound {
+  case state.queue.len < state.bound {
     True -> {
       process.send(ack, Nil)
-      actor.continue(kick(
-        Runner(..state, queue: list.append(state.queue, [item])),
-      ))
+      let admitted = Runner(..state, queue: queue_push(state.queue, item))
+      actor.continue(kick(admitted))
     }
     // Full: park the sender (do not ack) until a slot frees.
     False ->
@@ -260,9 +294,9 @@ fn handle_admit(
 fn handle_drain(
   state: Runner(state, msg),
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
-  case state.queue {
-    [] -> actor.continue(Runner(..state, draining: False))
-    [item, ..rest] ->
+  case queue_pop(state.queue) {
+    Error(Nil) -> actor.continue(Runner(..state, draining: False))
+    Ok(#(item, rest)) ->
       case handle_item(state, item) {
         Error(Nil) -> actor.stop()
         Ok(user) -> continue_draining(state, user, rest)
@@ -276,12 +310,12 @@ fn handle_drain(
 fn continue_draining(
   state: Runner(state, msg),
   user: state,
-  rest: List(Item(state, msg)),
+  rest: Queue(Item(state, msg)),
 ) -> actor.Next(Runner(state, msg), In(state, msg)) {
   let #(queue, waiting) = promote(rest, state.waiting, state.bound)
   let state = Runner(..state, user:, queue:, waiting:)
-  case state.queue {
-    [] -> actor.continue(Runner(..state, draining: False))
+  case state.queue.len {
+    0 -> actor.continue(Runner(..state, draining: False))
     _ -> {
       process.send(state.self, Drain)
       actor.continue(state)
@@ -321,14 +355,14 @@ fn kick(state: Runner(state, msg)) -> Runner(state, msg) {
 // Move parked senders into the queue (FIFO) while there is room, acking
 // each as it is admitted.
 fn promote(
-  queue: List(Item(state, msg)),
+  queue: Queue(Item(state, msg)),
   waiting: List(#(Item(state, msg), Subject(Nil))),
   bound: Int,
-) -> #(List(Item(state, msg)), List(#(Item(state, msg), Subject(Nil)))) {
-  case waiting, list.length(queue) < bound {
+) -> #(Queue(Item(state, msg)), List(#(Item(state, msg), Subject(Nil)))) {
+  case waiting, queue.len < bound {
     [#(item, ack), ..rest], True -> {
       process.send(ack, Nil)
-      promote(list.append(queue, [item]), rest, bound)
+      promote(queue_push(queue, item), rest, bound)
     }
     _, _ -> #(queue, waiting)
   }

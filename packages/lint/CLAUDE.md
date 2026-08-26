@@ -34,13 +34,22 @@ wrote ourselves. Nothing here is a security control.
 - `lint/policy.{Policy, default, for_tests, Eager, eager_combinators}` —
   what the rules are tuned with: the R2 nesting threshold (3), whether
   `panic` is allowed (it is, in `test/`), and whether R3 looks at
-  multi-subject `case`s (it does not). `eager_combinators` is R1's table
-  — module, function, the *label* of the eagerly evaluated argument, its
-  positional index, and the lazy counterpart to suggest.
+  multi-subject `case`s (it does not). `eager_combinators` is R1's
+  hand-curated table — module, function, the *label* of the eagerly
+  evaluated argument, its positional index, and the lazy counterpart to
+  suggest — for the six stdlib combinators plus the rare locally-defined
+  one the structural check below cannot reach on its own (`tools/fs`'s
+  `require`, which takes no continuation at all).
 - `lint/scan.{Raw, module, cheap}` — the AST walk. `Raw` is a finding
   before it has a line: a rule, a **byte offset**, a function name and a
   detail. `cheap` is R1's trivially-cheap predicate, public because it is
   the single judgement the rule rests on and it must be testable alone.
+  `module` also takes the file's own module path now (`lint.module_path`
+  derives it from the source path), which is what lets a call to a
+  locally-defined combinator resolve at all and what R1's structural
+  half — `scan.local_eager_rows` — keys a file's own synthesized `Eager`
+  rows under, so they can only ever match calls inside the file that
+  defines them.
 - `lint/source.{line_starts, lines_of, line_of, keyword_offsets,
   Keywords}` — byte offsets to lines, and the token scan behind R4's
   backstop.
@@ -75,20 +84,42 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 
 ## The rules
 
-- **R1 `eager-fallback`** — `bool.guard`, `result.replace_error`,
-  `result.unwrap`, `option.unwrap`, `result.or`, `option.or` whose
-  eagerly evaluated argument is not *trivially cheap*. Gleam evaluates
-  call arguments unconditionally, so an eager guard's `return:` is
-  constructed on every call, taken or not. This is a correctness hazard
-  when the argument recurses and a performance hazard when it is merely
-  expensive; `core/json` was the second kind, and the cost was paid
-  entirely on the happy path, which is why every test stayed green.
-  Trivially cheap means a literal, a bare variable (also how a nullary
-  constructor is spelled), a record-field read, a tuple index, a closure,
-  or a constructor applied only to those. A call, a `<>`, a pipeline, a
-  block, a `case` — all flag. Arithmetic and comparison over cheap
-  operands stay cheap; `<>` does not, because it allocates in proportion
-  to its operands.
+- **R1 `eager-fallback`** — an eager combinator whose eagerly evaluated
+  argument is not *trivially cheap*. Gleam evaluates call arguments
+  unconditionally, so an eager guard's `return:` is constructed on every
+  call, taken or not. This is a correctness hazard when the argument
+  recurses and a performance hazard when it is merely expensive;
+  `core/json` was the second kind, and the cost was paid entirely on the
+  happy path, which is why every test stayed green. Trivially cheap means
+  a literal, a bare variable (also how a nullary constructor is spelled),
+  a record-field read, a tuple index, a closure, or a constructor applied
+  only to those. A call, a `<>`, a pipeline, a block, a `case` — all flag.
+  Arithmetic and comparison over cheap operands stay cheap; `<>` does
+  not, because it allocates in proportion to its operands.
+
+  A call qualifies two ways. The **hand-curated** half is
+  `bool.guard`, `result.replace_error`, `result.unwrap`, `option.unwrap`,
+  `result.or`, `option.or` plus the odd locally-defined row
+  (`policy.eager_combinators`) — known by name. The **structural** half
+  (`scan.local_eager_rows`) finds this tree's own `or_fault` lineage —
+  `or_fault`, `or_fault_unless`, `or_fail`, `or_outcome`, `or_reply`,
+  `or_continue`, `or_halt`, `or_key_halt`, and whatever the next file
+  adds — by *signature* rather than by name: a locally-defined function
+  whose last parameter is `fn(…)` and whose other parameters are not is
+  `use`-compatible the same way `bool.guard` is, per the style guide's
+  own house pattern ("the fallible subject first, the continuation
+  last"). The subject at position 0 is exempt — it is meant to run
+  unconditionally, not a discarded fallback — so only a parameter
+  *between* the subject and the continuation is checked, which is why a
+  two-parameter combinator (`or_fault`, `or_halt`, `or_key_halt`) never
+  flags and the report does not flood across the whole lineage. It still
+  over-reports the way R3 does, and for the same reason: telling a
+  genuinely-wasted-on-success fallback apart from a parameter the
+  combinator's own body uses unconditionally (`claimed_effect`'s `key:`
+  drives the claim check itself) needs dataflow `glance` does not give
+  this walk, so a structural match is reported regardless of which one it
+  is — a false positive here is a parameter that merely sits between the
+  subject and the continuation, not a fabricated call site.
 - **R2 `nesting-depth`** — a function whose `case` expressions nest
   deeper than the threshold. Measured on the AST, never on indentation:
   `client/protocol.gleam` and `machine/codec.gleam` look deep to a column
@@ -123,16 +154,17 @@ error tier by producing a census that is stable, decidable, and argued —
 not by being written. A lint that fails correct code gets disabled.
 
 Promotion is per rule and costs one flag: `scripts/lint.sh --error=R4`.
-The first census over `packages/*/src` reads:
+The census over `packages/*/src` reads (after R1's structural half and
+R5's three real fixes; see `git log` for the census this superseded):
 
 | rule | findings | disposition |
 | --- | --- | --- |
 | R0 unparseable | 0 | `glance` 7 parses the whole tree |
-| R1 eager-fallback | 28 | precise; promote after the 28 are triaged |
+| R1 eager-fallback | 33 | precise; promote after they are triaged |
 | R2 nesting-depth | 0 at threshold 3 | promotable today as a regression guard (37 functions sit at exactly 3) |
 | R3 catch-all | 135 | **stays a warning**; undecidable without types |
 | R4 panic-in-src | 90, all in `conformance/src` | promotable once `conformance` is exempted; 0 elsewhere |
-| R5 bounded-length | 11 | precise; ~6 worth fixing, the rest bounded and harmless |
+| R5 bounded-length | 6 | precise; the rest bounded and harmless (a fixed-width hex string, a list already capped by a fetch limit) |
 
 R3 is the doc-check `symbol absent from file` case: deciding whether an
 arm *could* have been exhaustive needs the subject's type, and `glance`
@@ -162,7 +194,11 @@ An undecidable finding stays a warning forever, and says why.
 - **Every rule has a positive and a negative test.** A rule that cannot
   fail is worse than no rule — it reads as coverage and provides none.
   `test/lint_test.gleam` also carries the `core/json` regression shape
-  verbatim, so R1 is pinned to the bug that motivated it.
+  verbatim, so R1 is pinned to the bug that motivated it — and, for R1's
+  structural half, the `or_fault_unless`/`require` shapes issue #56 found
+  invisible, one pinned by signature and one by the hand-curated table
+  row, each with a negative case proving the row is lazy and path-scoped
+  rather than merely absent.
 - **The walk never reports a line.** `lint/scan` emits byte offsets;
   `lint` converts them in one merged pass over the file's line index.
   Keeping the conversion out of the walk is what keeps the walk pure of

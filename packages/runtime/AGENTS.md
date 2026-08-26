@@ -97,16 +97,29 @@ extended by the M3 runtime wave.
   names the strand for the same reason `ThresholdQuery` does: a
   preparation is built from a *strand's* durable projection, and one
   `Effects` record serves every strand of a session.
-- `runtime/escalation.{Escalation, CallScope, Status}` — the durable
-  record of a broker denial awaiting a decision, its decision, and its
-  single consumed re-execution. `CallScope` is the exact call identity
-  (`{operation, strand, step, source index, call id}`) an approval is
-  attributed to; only the clearance whose coordinates match can spend it.
-- `runtime/api.{escalations, escalation, raise_escalation_for,
-  approve_escalation, deny_escalation, consume_escalation}` — the durable
-  escalation surface. `escalation(runtime, id)` is the bounded point
-  lookup a parked call polls on (`client/escalate`), rather than listing
-  and decoding the whole reserved prefix once a second.
+- `runtime/escalation.{Escalation, CallScope, Status, claimed}` — the
+  durable record of a broker denial awaiting a decision, its decision,
+  and its single consumed re-execution. `CallScope` is the exact call
+  identity (`{operation, strand, step, source index, call id}`) an
+  approval is attributed to; only the clearance whose coordinates match
+  can spend it. `claimed` is the transition that moves a record to a
+  *later* call raising the same want: pending moves and refreshes its
+  denial, approved moves and keeps its grants, decided re-opens as a
+  fresh pending question with none.
+- `runtime/api.{escalations, escalation, escalations_below,
+  raise_escalation_for, claim_escalation, approve_escalation,
+  deny_escalation, consume_escalation}` — the durable escalation surface.
+  `escalation(runtime, id)` is the bounded point lookup a parked call
+  polls on (`client/escalate`), rather than listing and decoding the
+  whole reserved prefix once a second; `escalations_below` is the
+  bounded count question a capped raiser asks; `claim_escalation` is the
+  raise-or-take-over door parking uses, where `raise_escalation_for`
+  stays write-once for callers that mean "record this, once".
+- `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
+  compare-and-set half of the blackboard: read a cell with the seq of
+  the write that put it there, then write only if it has not moved. The
+  only way a read-modify-write over a shared cell is expressible;
+  `put_fact` remains last-write-wins and now says so.
 
 ## Relationships
 
@@ -122,10 +135,14 @@ extended by the M3 runtime wave.
 - **Depended on by**: `client` (the gateway dispatches protocol commands
   onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
-- **FFI**: one declaration, in `runtime/internal/ffi_sup` over
-  `runtime_ffi.erl` — `sys:terminate/3`, the only graceful stop an OTP
-  supervisor offers a process that is not its parent, and the one thing
-  `gleam/otp/static_supervisor` does not wrap. Nothing else: time,
+- **FFI**: two declarations, both in `runtime/internal/ffi_sup` over
+  `runtime_ffi.erl`. `terminate_supervisor` is `sys:terminate/3`, the only
+  graceful stop an OTP supervisor offers a process that is not its
+  parent, and the one thing `gleam/otp/static_supervisor` does not wrap.
+  `send_to_pid` is a bare `!` to an already-resolved `Pid` — what
+  `writer.publish` uses so a named subscriber's name is looked up exactly
+  once (issue #43); no wrapped `Subject`-taking function in `gleam_erlang`
+  reaches a specific pid without re-resolving it. Nothing else: time,
   entropy, and timers arrive through `Effects`, and everything effectful
   is injected, which is why the whole plane runs under a logical clock in
   simulation.
@@ -166,7 +183,9 @@ extended by the M3 runtime wave.
   `fact.custom`, and `runtime/escalation` and `runtime/lineage` store
   their records in `fact.custom` under the reserved `escalation/` and
   `lineage/` key prefixes — escalations guarded by the register's own
-  seq, lineage cells last-write-wins.
+  seq, lineage cells last-write-wins. `put_fact` is last-write-wins too;
+  `put_fact_expecting` is the same write with the caller's read seq
+  asserted, which is what makes a shared cell safely updatable.
 - **Wire**: consumes `provider/stream.StreamEvent` — zero or more `Delta`
   then exactly one `Settled` or `Failed` — from a `StreamHandle`, and
   `effects.ToolOutcome` from the tool surface.
@@ -267,7 +286,7 @@ extended by the M3 runtime wave.
   reparent the conversation. Status transitions are CAS-guarded through
   the writer, so a lost race is a refused commit, never a double consume.
 - **An approval is attributed, and consumed before its grants are used.**
-  The record carries the exact `CallScope` its denial was raised for; a
+  The record carries the exact `CallScope` it is currently raised for; a
   clearance loads only the approvals scoped to the call it is clearing
   (unscoped records match nothing — an unattributable grant must not
   widen anything), consumes them by CAS *first*, and passes into
@@ -283,6 +302,20 @@ extended by the M3 runtime wave.
   A **replay** carries no grants at all: its clearance belonged to a dead
   incarnation whose approval is already marked consumed, and re-widening
   from it is the one direction that would turn one approval into two.
+- **A record's scope is the call holding the claim, and a claim moves.**
+  The id a raiser files under is a digest of the *want*, not of the call
+  (`client/escalate.record_id`), so under a retry the row is already
+  there — and the call that opened it has settled, because a model that
+  reads an in-band refusal retries under a freshly minted call id. So
+  `claim_escalation` takes the record over under a CAS rather than
+  refusing the duplicate; a scope frozen to the first attempt would name
+  a call nothing can re-clear, leaving an approval nothing can spend and
+  a write-once register nothing can replace. The exactness of
+  `scoped_to` is untouched and is what still holds the line: one
+  claimant at a time, one CAS from `Approved` to `Consumed`, and only a
+  call whose denial digests to the same id can ever hold the claim —
+  same want, same strand, same tool. A decided record re-opens with no
+  grants, so a new cycle needs a new decision.
 - **Grant and denial payloads cross the runtime opaquely.** They are stored
   as JSON in the broker's escalation vocabulary and returned uninterpreted,
   which is what keeps the spec's `E → A,B,C,D` direction intact — there is
@@ -349,11 +382,18 @@ extended by the M3 runtime wave.
 - **A hint with nowhere to go is a non-event, and never the writer's
   death.** Post-commit publication skips a subscriber whose owner is
   gone. Sending into an *unregistered name* crashes the sender, so
-  without the guard a supervised, restartable subscriber held by name
-  would make the writer — and the whole rest-for-one tree beneath it —
-  hostage to that subscriber's restart window. Events are hints and
-  pulls are truth (design §3.6), so dropping one costs latency and
-  nothing else.
+  without a guard a supervised, restartable subscriber held by name would
+  make the writer — and the whole rest-for-one tree beneath it — hostage
+  to that subscriber's restart window. Events are hints and pulls are
+  truth (design §3.6), so dropping one costs latency and nothing else.
+  `publish` resolves a named subscriber's pid **exactly once** — via
+  `process.named`, straight into `ffi_sup.send_to_pid` — rather than
+  resolving it a second time inside an ordinary `process.send`, which is
+  what `process.send` does internally for a `NamedSubject` on every call.
+  Before issue #43 those were two separate resolutions, and a name that
+  unregistered in the gap between them still crashed the writer for a
+  hint nobody needed; a plain, pid-backed subject never had this problem
+  at all; `process.send` on it never re-resolves anything.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
   an idle timer at a third of the TTL. A commit that races the renewal

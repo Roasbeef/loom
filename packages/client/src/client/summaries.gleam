@@ -155,7 +155,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 }
 
 fn evict(state: State) -> State {
-  case list.length(state.order) > capacity {
+  // `list.drop(xs, capacity) != []` answers "more than capacity" in
+  // `capacity` steps instead of walking the whole order list.
+  case list.drop(state.order, capacity) != [] {
     False -> state
     True ->
       case state.order {

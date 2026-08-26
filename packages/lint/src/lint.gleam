@@ -45,7 +45,10 @@ import lint/policy.{type Policy}
 import lint/scan.{type Raw, Raw}
 import lint/source
 
-/// Lint one source. `path` is used only to label findings.
+/// Lint one source. `path` labels findings, and also — via `module_path`
+/// below — gives R1's structural half something to key a locally-defined
+/// combinator's synthesized rows under, so a call resolves to `#(own_path,
+/// name)` exactly as an imported one resolves to `#(module, name)`.
 ///
 /// ## Examples
 ///
@@ -64,7 +67,7 @@ pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
   case glance.module(code) {
     Error(error) -> [parse_finding(path, code, error)]
     Ok(module) -> {
-      let found = scan.module(module, policy)
+      let found = scan.module(module, policy, module_path(path))
       let all = list.append(found, backstop(found, code, policy))
       let ordered = list.sort(all, fn(a, b) { int.compare(a.offset, b.offset) })
       let lines =
@@ -125,6 +128,23 @@ fn backstop(found: List(Raw), code: String, policy: Policy) -> List(Raw) {
           })
       }
     }
+  }
+}
+
+/// A source path's own module path — `tools/fs` for anything ending
+/// `.../src/tools/fs.gleam`, whatever came before `src/` — the same shape
+/// `policy.eager_combinators`' `module` field names an imported module
+/// with. Falls back to the path as given when it holds no `src/` segment
+/// (a bare filename in a doctest, a `test/` source, which R1's structural
+/// half has no local combinators to key under anyway).
+fn module_path(path: String) -> String {
+  let after_src = case string.split_once(path, "/src/") {
+    Ok(#(_, rest)) -> rest
+    Error(Nil) -> path
+  }
+  case string.ends_with(after_src, ".gleam") {
+    True -> string.drop_end(after_src, 6)
+    False -> after_src
   }
 }
 

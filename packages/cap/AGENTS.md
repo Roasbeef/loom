@@ -124,6 +124,15 @@ it can one day be published on its own. WP-J.
   handling is asynchronous, so a fast producer meets backpressure rather
   than growing the heap. Parked senders are bounded by how many processes
   push at once, never by message rate.
+- **Filling the bounded queue to its bound costs O(bound), not
+  O(bound²).** The internal queue is the two-list technique — push onto
+  `back`, pop from `front`, reverse `back` onto `front` only when the
+  latter runs dry — with its length tracked in a counter rather than
+  recomputed, so `handle_admit`'s bound check and the push it gates are
+  both O(1). Before issue #45 both were `list.length`/`list.append` over
+  a single list, which made admitting a mailbox's worth of messages cost
+  the square of the bound; the fix removed the factor rather than moving
+  it, the same lesson `08cdbce` drew from `core/json`'s excerpt.
 - **Deny-by-default for `cap/net` is a broker property.** Nothing in
   `cap/net` refuses anything; it marshals and dispatches exactly as
   `cap/fs.read` does and only labels the broker's refusal. The design's

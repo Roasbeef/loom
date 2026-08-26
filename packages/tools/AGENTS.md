@@ -148,7 +148,14 @@ reported failure into something a model can repair from.
   digest-bound edit respectively.
 - **`execution_mode` is a scheduling constraint**: `Exclusive` for bash,
   write, and edit (they may mutate the workspace); `Concurrent` for read
-  and grep.
+  and grep. A `Concurrent` tool's own declared budget must agree with
+  that tag: the broker pools `max_outstanding` per `{op_id, step_id}` —
+  the whole batch, not one call's fan-out (`docs/adr/005-budget-pooling-
+  granularity.md`) — so a `Concurrent` tool sharing a batch with itself
+  needs headroom above `1` in that same ledger, or a second concurrent
+  call is refused `OutstandingCapReached` for no reason a caller can see
+  (issue #50; `grep.max_concurrent_searches` is the one declared to
+  date).
 - **Blob writes are idempotent by construction.** Content addressing
   (SHA-256) puts the same bytes at the same ref, so replaying a `Safe` tool
   or re-running an identical command never duplicates storage. Output past
