@@ -18,6 +18,7 @@ import core/corruption.{type CorruptionReport}
 import core/ids.{type EntryId, type Seq}
 import core/message.{type AgentMessage}
 import core/tx.{type Tx, type Write, Tx}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -127,31 +128,31 @@ pub fn accept_prompt(
   request: AcceptRequest,
   ctx: AcceptCtx,
 ) -> Result(AcceptancePlan, RejectReason) {
-  case ctx.strand_state.current_operation {
-    Some(_) -> Error(StrandBusy)
-    None ->
-      case request {
-        AcceptRun(prompts:) -> accept_run(prompts, ctx)
-        AcceptCompaction(custom_instructions:, preparation:) ->
-          accept_compaction(custom_instructions, preparation, ctx)
-        AcceptNavigation(
-          target:,
-          summarize:,
-          label:,
-          custom_instructions:,
-          preparation:,
-          target_known:,
-        ) ->
-          accept_navigation(
-            target,
-            summarize,
-            label,
-            custom_instructions,
-            preparation,
-            target_known,
-            ctx,
-          )
-      }
+  use <- bool.guard(
+    when: option.is_some(ctx.strand_state.current_operation),
+    return: Error(StrandBusy),
+  )
+  case request {
+    AcceptRun(prompts:) -> accept_run(prompts, ctx)
+    AcceptCompaction(custom_instructions:, preparation:) ->
+      accept_compaction(custom_instructions, preparation, ctx)
+    AcceptNavigation(
+      target:,
+      summarize:,
+      label:,
+      custom_instructions:,
+      preparation:,
+      target_known:,
+    ) ->
+      accept_navigation(
+        target,
+        summarize,
+        label,
+        custom_instructions,
+        preparation,
+        target_known,
+        ctx,
+      )
   }
 }
 
@@ -160,78 +161,70 @@ fn accept_run(
   ctx: AcceptCtx,
 ) -> Result(AcceptancePlan, RejectReason) {
   let captured = ctx.strand_state.pending_next_run
-  case prompts, captured {
-    [], [] ->
-      Error(InvalidMessage(reason: "acceptance would append zero entries"))
-    _, _ -> {
-      // Captured next-run items place first, from their pending payloads;
-      // request prompt entries follow, minted fresh.
-      use #(captured_writes, after_captured) <- result.try(place_captured(
-        ctx,
-        ctx.leaf,
-        captured,
-      ))
-      let #(operation_id, generator) = ids.mint_op(ctx.generator)
-      let #(prompt_writes, prompt_ids, newest, _generator) =
-        list.fold(
-          prompts,
-          #([], [], after_captured, generator),
-          fn(acc, prompt) {
-            let #(writes, prompt_ids, parent, generator) = acc
-            let #(id, generator) = ids.mint_entry(generator)
-            #(
-              list.append(writes, [
-                build.message_entry(id, parent, prompt, False),
-              ]),
-              list.append(prompt_ids, [id]),
-              Some(id),
-              generator,
-            )
-          },
-        )
-      let operation =
-        Operation(
-          id: operation_id,
-          strand: ctx.strand,
-          source_leaf: ctx.leaf,
-          started_at: ctx.now,
-          intent: RunIntent(prompt_entries: prompt_ids),
-        )
-      let state =
-        RunState(
-          control: Running,
-          settings: ctx.settings,
-          phase: Starting,
-          inbox: Inbox(steer: [], follow_up: [], writes: []),
-          latest_assistant: None,
-        )
-      let leaf = case newest {
-        Some(id) -> Some(id)
-        None -> ctx.leaf
-      }
-      Ok(plan(
-        ctx,
-        operation,
-        state,
-        list.flatten([
-          captured_writes,
-          prompt_writes,
-          [
-            build.set_leaf(ctx.strand, leaf),
-            build.set_op_meta(operation),
-            build.set_op_state(operation_id, state),
-            build.set_strand_state(
-              ctx.strand,
-              StrandState(
-                current_operation: Some(operation_id),
-                pending_next_run: [],
-              ),
-            ),
-          ],
-        ]),
-      ))
-    }
+  use <- bool.guard(
+    when: prompts == [] && captured == [],
+    return: Error(InvalidMessage(reason: "acceptance would append zero entries")),
+  )
+  // Captured next-run items place first, from their pending payloads;
+  // request prompt entries follow, minted fresh.
+  use #(captured_writes, after_captured) <- result.try(place_captured(
+    ctx,
+    ctx.leaf,
+    captured,
+  ))
+  let #(operation_id, generator) = ids.mint_op(ctx.generator)
+  let #(prompt_writes, prompt_ids, newest, _generator) =
+    list.fold(prompts, #([], [], after_captured, generator), fn(acc, prompt) {
+      let #(writes, prompt_ids, parent, generator) = acc
+      let #(id, generator) = ids.mint_entry(generator)
+      #(
+        list.append(writes, [build.message_entry(id, parent, prompt, False)]),
+        list.append(prompt_ids, [id]),
+        Some(id),
+        generator,
+      )
+    })
+  let operation =
+    Operation(
+      id: operation_id,
+      strand: ctx.strand,
+      source_leaf: ctx.leaf,
+      started_at: ctx.now,
+      intent: RunIntent(prompt_entries: prompt_ids),
+    )
+  let state =
+    RunState(
+      control: Running,
+      settings: ctx.settings,
+      phase: Starting,
+      inbox: Inbox(steer: [], follow_up: [], writes: []),
+      latest_assistant: None,
+    )
+  let leaf = case newest {
+    Some(id) -> Some(id)
+    None -> ctx.leaf
   }
+  Ok(plan(
+    ctx,
+    operation,
+    state,
+    list.flatten([
+      captured_writes,
+      prompt_writes,
+      [
+        build.set_leaf(ctx.strand, leaf),
+        build.set_op_meta(operation),
+        build.set_op_state(operation_id, state),
+        build.set_strand_state(
+          ctx.strand,
+          StrandState(
+            current_operation: Some(operation_id),
+            pending_next_run: [],
+          ),
+        ),
+      ],
+    ]),
+  ))
 }
 
 fn accept_compaction(
@@ -286,28 +279,26 @@ fn accept_navigation(
   target_known: Bool,
   ctx: AcceptCtx,
 ) -> Result(AcceptancePlan, RejectReason) {
-  use _ <- result.try(case target == ctx.leaf {
-    True -> Error(InvalidNavigation(reason: "target is the current leaf"))
-    False -> Ok(Nil)
-  })
-  use _ <- result.try(case target, label {
-    None, Some(_) ->
-      Error(InvalidNavigation(reason: "label on the root target"))
-    _, _ -> Ok(Nil)
-  })
-  use _ <- result.try(case summarize, target {
-    True, None ->
-      Error(InvalidNavigation(reason: "summarize with a null target"))
-    _, _ -> Ok(Nil)
-  })
-  use _ <- result.try(case summarize, ctx.leaf {
-    True, None -> Error(InvalidNavigation(reason: "summarize from the root"))
-    _, _ -> Ok(Nil)
-  })
-  use _ <- result.try(case target, target_known {
-    Some(_), False -> Error(UnknownTarget)
-    _, _ -> Ok(Nil)
-  })
+  use <- bool.guard(
+    when: target == ctx.leaf,
+    return: Error(InvalidNavigation(reason: "target is the current leaf")),
+  )
+  use <- bool.guard(
+    when: target == None && label != None,
+    return: Error(InvalidNavigation(reason: "label on the root target")),
+  )
+  use <- bool.guard(
+    when: summarize && target == None,
+    return: Error(InvalidNavigation(reason: "summarize with a null target")),
+  )
+  use <- bool.guard(
+    when: summarize && ctx.leaf == None,
+    return: Error(InvalidNavigation(reason: "summarize from the root")),
+  )
+  use <- bool.guard(
+    when: option.is_some(target) && !target_known,
+    return: Error(UnknownTarget),
+  )
   let #(operation_id, generator) = ids.mint_op(ctx.generator)
   let operation =
     Operation(
@@ -322,60 +313,92 @@ fn accept_navigation(
         custom_instructions:,
       ),
     )
-  case summarize, target {
-    True, Some(target) ->
-      case preparation {
-        None -> Error(InvalidNavigation(reason: "empty summary preparation"))
-        Some(preparation) -> {
-          let #(task_entry, _generator) = ids.mint_entry(generator)
-          let task_id = ids.entry_id_to_string(task_entry)
-          let state =
-            NavigationState(
-              control: Running,
-              navigation: SummarizedNavigation(
-                target:,
-                label:,
-                custom_instructions:,
-                structural: Deciding(task_id:),
-              ),
-            )
-          Ok(
-            plan(ctx, operation, state, [
-              build.set_preparation(operation_id, task_id, preparation),
-              build.set_op_meta(operation),
-              build.set_op_state(operation_id, state),
-              build.set_strand_state(
-                ctx.strand,
-                StrandState(
-                  ..ctx.strand_state,
-                  current_operation: Some(operation_id),
-                ),
-              ),
-            ]),
-          )
-        }
-      }
-    _, _ -> {
-      let state =
-        NavigationState(
-          control: Running,
-          navigation: UnsummarizedNavigation(target:, label:),
-        )
-      Ok(
-        plan(ctx, operation, state, [
-          build.set_op_meta(operation),
-          build.set_op_state(operation_id, state),
-          build.set_strand_state(
-            ctx.strand,
-            StrandState(
-              ..ctx.strand_state,
-              current_operation: Some(operation_id),
-            ),
-          ),
-        ]),
+  case summarize, target, preparation {
+    True, Some(_), None ->
+      Error(InvalidNavigation(reason: "empty summary preparation"))
+    True, Some(target), Some(preparation) ->
+      accept_summarized_navigation(
+        ctx,
+        operation,
+        operation_id,
+        generator,
+        target,
+        label,
+        custom_instructions,
+        preparation,
       )
-    }
+    _, _, _ ->
+      accept_unsummarized_navigation(
+        ctx,
+        operation,
+        operation_id,
+        target,
+        label,
+      )
   }
+}
+
+/// A summarized navigation with a preparation: the summary task starts
+/// deciding, and the transaction reserves its preparation register.
+fn accept_summarized_navigation(
+  ctx: AcceptCtx,
+  operation: Operation,
+  operation_id: ids.OpId,
+  generator: ids.Generator,
+  target: EntryId,
+  label: Option(String),
+  custom_instructions: Option(String),
+  preparation: StructuralPreparation,
+) -> Result(AcceptancePlan, RejectReason) {
+  let #(task_entry, _generator) = ids.mint_entry(generator)
+  let task_id = ids.entry_id_to_string(task_entry)
+  let state =
+    NavigationState(
+      control: Running,
+      navigation: SummarizedNavigation(
+        target:,
+        label:,
+        custom_instructions:,
+        structural: Deciding(task_id:),
+      ),
+    )
+  Ok(
+    plan(ctx, operation, state, [
+      build.set_preparation(operation_id, task_id, preparation),
+      build.set_op_meta(operation),
+      build.set_op_state(operation_id, state),
+      build.set_strand_state(
+        ctx.strand,
+        StrandState(..ctx.strand_state, current_operation: Some(operation_id)),
+      ),
+    ]),
+  )
+}
+
+/// A bare leaf move, or a summarized request declining to summarize
+/// (root target, no preparation): the leaf simply moves.
+fn accept_unsummarized_navigation(
+  ctx: AcceptCtx,
+  operation: Operation,
+  operation_id: ids.OpId,
+  target: Option(EntryId),
+  label: Option(String),
+) -> Result(AcceptancePlan, RejectReason) {
+  let state =
+    NavigationState(
+      control: Running,
+      navigation: UnsummarizedNavigation(target:, label:),
+    )
+  Ok(
+    plan(ctx, operation, state, [
+      build.set_op_meta(operation),
+      build.set_op_state(operation_id, state),
+      build.set_strand_state(
+        ctx.strand,
+        StrandState(..ctx.strand_state, current_operation: Some(operation_id)),
+      ),
+    ]),
+  )
 }
 
 /// Builds the placement writes for captured next-run items: entry insert

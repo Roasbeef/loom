@@ -155,34 +155,35 @@ pub fn classify(
       deferred:,
       ..,
     ) ->
-      case ctx.control {
-        CancelRequested(..) -> CancelledClassification
-        Running ->
-          case stop_reason {
-            Aborted ->
-              CorruptClassification(report: corruption.report(
-                at: "machine/classification.classify",
-                on: "stop reason",
-                expected: "aborted only under cancel_requested control",
-                context: "aborted with running control",
-              ))
-            _ ->
-              // Rung 2 checked before dispatch into the ordinary rungs
-              // below: an oversized request must compact rather than
-              // retrying unchanged, so overflow pre-empts even a
-              // retryable-error verdict `classify_running` would
-              // otherwise reach for the same `Errored` stop reason.
-              case is_overflow(stop_reason, error_message, usage.output, ctx) {
-                True -> OverflowClassification
-                False ->
-                  classify_running(
-                    stop_reason,
-                    content,
-                    error_message,
-                    deferred,
-                    ctx,
-                  )
-              }
+      // Rung 1 first, over both subjects at once: cancelled control wins
+      // regardless of stop reason. Under running control, `aborted` is
+      // normalized at commit only from cancelled control, so reaching it
+      // here is unreachable by construction (pi invariant 19).
+      case ctx.control, stop_reason {
+        CancelRequested(..), _ -> CancelledClassification
+        Running, Aborted ->
+          CorruptClassification(report: corruption.report(
+            at: "machine/classification.classify",
+            on: "stop reason",
+            expected: "aborted only under cancel_requested control",
+            context: "aborted with running control",
+          ))
+        Running, _ ->
+          // Rung 2 checked before dispatch into the ordinary rungs
+          // below: an oversized request must compact rather than
+          // retrying unchanged, so overflow pre-empts even a
+          // retryable-error verdict `classify_running` would
+          // otherwise reach for the same `Errored` stop reason.
+          case is_overflow(stop_reason, error_message, usage.output, ctx) {
+            True -> OverflowClassification
+            False ->
+              classify_running(
+                stop_reason,
+                content,
+                error_message,
+                deferred,
+                ctx,
+              )
           }
       }
     // Unreachable by the `settle` invariant; reported totally anyway.

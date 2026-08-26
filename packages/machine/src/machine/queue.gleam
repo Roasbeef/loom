@@ -9,6 +9,7 @@
 
 import core/ids.{type EntryId, type Seq}
 import core/tx.{type Tx, Tx}
+import gleam/bool
 import gleam/list
 import machine/internal/build
 import machine/operation.{
@@ -210,36 +211,27 @@ pub fn cancel_queued(
         list.contains(inbox.steer, entry)
         || list.contains(inbox.follow_up, entry)
         || list.contains(inbox.writes, entry)
-      case in_queue {
-        False -> NotPending
-        True -> {
-          let without = fn(items) {
-            list.filter(items, fn(item) { item != entry })
-          }
-          let next =
-            RunState(
-              control:,
-              settings:,
-              phase:,
-              inbox: Inbox(
-                steer: without(inbox.steer),
-                follow_up: without(inbox.follow_up),
-                writes: without(inbox.writes),
-              ),
-              latest_assistant:,
-            )
-          CancelledQueued(
-            next:,
-            tx: Tx(
-              writes: [
-                build.set_op_state(op.id, next),
-                build.delete_pending(entry),
-              ],
-              expected: [build.expect_op_state(op.id, op_state_seq)],
-            ),
-          )
-        }
-      }
+      use <- bool.guard(when: !in_queue, return: NotPending)
+      let without = fn(items) { list.filter(items, fn(item) { item != entry }) }
+      let next =
+        RunState(
+          control:,
+          settings:,
+          phase:,
+          inbox: Inbox(
+            steer: without(inbox.steer),
+            follow_up: without(inbox.follow_up),
+            writes: without(inbox.writes),
+          ),
+          latest_assistant:,
+        )
+      CancelledQueued(
+        next:,
+        tx: Tx(
+          writes: [build.set_op_state(op.id, next), build.delete_pending(entry)],
+          expected: [build.expect_op_state(op.id, op_state_seq)],
+        ),
+      )
     }
     CompactionState(..) | NavigationState(..) -> NotPending
   }
@@ -326,65 +318,70 @@ pub fn request_abort(
   op_state_seq: Seq,
   now: Int,
 ) -> AbortOutcome {
+  // `control` shares name, position, and type across every operation-state
+  // variant, so it reads without first matching the variant — one
+  // already-requested check for all three, instead of one per variant.
+  case state.control {
+    CancelRequested(drained_steer:, drained_follow_up:, ..) ->
+      AbortAlreadyRequested(drained_steer:, drained_follow_up:)
+    Running -> abort_running(op, state, op_state_seq, now)
+  }
+}
+
+/// The first abort for each operation kind: a run's abort captures its
+/// still-queued steer and follow-up ids into the marker (they survive the
+/// drain; only the terminal transaction deletes them); a standalone
+/// compaction or navigation drains nothing of its own.
+fn abort_running(
+  op: Operation,
+  state: OperationState,
+  op_state_seq: Seq,
+  now: Int,
+) -> AbortOutcome {
   case state {
-    RunState(control:, settings:, phase:, inbox:, latest_assistant:) ->
-      case control {
-        CancelRequested(drained_steer:, drained_follow_up:, ..) ->
-          AbortAlreadyRequested(drained_steer:, drained_follow_up:)
-        Running -> {
-          let next =
-            RunState(
-              control: CancelRequested(
-                requested_at: now,
-                drained_steer: inbox.steer,
-                drained_follow_up: inbox.follow_up,
-              ),
-              settings:,
-              phase:,
-              inbox: Inbox(..inbox, steer: [], follow_up: []),
-              latest_assistant:,
-            )
-          AbortPlanned(
-            next:,
-            tx: abort_tx(op, op_state_seq, next),
+    RunState(settings:, phase:, inbox:, latest_assistant:, ..) -> {
+      let next =
+        RunState(
+          control: CancelRequested(
+            requested_at: now,
             drained_steer: inbox.steer,
             drained_follow_up: inbox.follow_up,
-          )
-        }
-      }
-    CompactionState(control:, custom_instructions:, structural:) ->
-      case control {
-        CancelRequested(drained_steer:, drained_follow_up:, ..) ->
-          AbortAlreadyRequested(drained_steer:, drained_follow_up:)
-        Running -> {
-          let next =
-            CompactionState(
-              control: cancelled(now),
-              custom_instructions:,
-              structural:,
-            )
-          AbortPlanned(
-            next:,
-            tx: abort_tx(op, op_state_seq, next),
-            drained_steer: [],
-            drained_follow_up: [],
-          )
-        }
-      }
-    NavigationState(control:, navigation:) ->
-      case control {
-        CancelRequested(drained_steer:, drained_follow_up:, ..) ->
-          AbortAlreadyRequested(drained_steer:, drained_follow_up:)
-        Running -> {
-          let next = NavigationState(control: cancelled(now), navigation:)
-          AbortPlanned(
-            next:,
-            tx: abort_tx(op, op_state_seq, next),
-            drained_steer: [],
-            drained_follow_up: [],
-          )
-        }
-      }
+          ),
+          settings:,
+          phase:,
+          inbox: Inbox(..inbox, steer: [], follow_up: []),
+          latest_assistant:,
+        )
+      AbortPlanned(
+        next:,
+        tx: abort_tx(op, op_state_seq, next),
+        drained_steer: inbox.steer,
+        drained_follow_up: inbox.follow_up,
+      )
+    }
+    CompactionState(custom_instructions:, structural:, ..) -> {
+      let next =
+        CompactionState(
+          control: cancelled(now),
+          custom_instructions:,
+          structural:,
+        )
+      AbortPlanned(
+        next:,
+        tx: abort_tx(op, op_state_seq, next),
+        drained_steer: [],
+        drained_follow_up: [],
+      )
+    }
+    NavigationState(navigation:, ..) -> {
+      let next = NavigationState(control: cancelled(now), navigation:)
+      AbortPlanned(
+        next:,
+        tx: abort_tx(op, op_state_seq, next),
+        drained_steer: [],
+        drained_follow_up: [],
+      )
+    }
   }
 }
 

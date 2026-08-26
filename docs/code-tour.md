@@ -418,7 +418,7 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1134`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1158`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:658` commits it and only then
 runs the continuation that starts the effect:
@@ -533,7 +533,7 @@ exactly as it would for a dead provider.
 
 `stream.await_terminal` returns, the effect process sends `ProviderDone`
 to the driver, and the driver turns it into an observation and plans
-again. `settle_assistant` (`machine/planner.gleam:1264`) classifies the
+again. `settle_assistant` (`machine/planner.gleam:1248`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask
@@ -1119,7 +1119,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:820`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:4404`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
