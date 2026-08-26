@@ -910,6 +910,11 @@ fn policy_error_text(error: policy.PolicyError) -> String {
       <> limit_field_text(field)
       <> "="
       <> int.to_string(value)
+    // Naming the layer is the useful part: a caller who asked for a
+    // scratch of "/" is reading a refusal from the *policy*, not from
+    // the jail, and the reason is Landlock's rather than bubblewrap's.
+    policy.ScratchIsRoot ->
+      "scratch names the host root, which Landlock cannot narrow"
   }
 }
 

@@ -124,6 +124,14 @@ pub type PolicyError {
   RelativePath(path: String)
   /// A limit field is negative.
   NegativeLimit(field: LimitField, value: Int)
+  /// Scratch names the literal host root. Landlock has no deny rules
+  /// (its grants union, and never subtract), so a host-path scratch of
+  /// "/" grants read-write over the entire filesystem at that layer
+  /// regardless of what the mount layer does — narrowing belongs here,
+  /// before the policy ever reaches the wire, not in the mount layer
+  /// (which is right to bind exactly what the policy says; see 4b4983d
+  /// and packages/sandbox/CLAUDE.md's Landlock layering note).
+  ScratchIsRoot
 }
 
 /// One explicit widening of a policy, granted by an approval. Grants are
@@ -192,7 +200,9 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
 }
 
 /// Checks the invariants the wire shape demands: absolute paths
-/// everywhere and non-negative limits.
+/// everywhere, non-negative limits, and a scratch that is not the
+/// literal host root (`ScratchIsRoot` — issue #59; see the module doc's
+/// layering note in `packages/sandbox/CLAUDE.md`).
 ///
 /// ## Examples
 ///
@@ -201,6 +211,7 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
 /// ```
 ///
 pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
+  use _ <- result.try(refuse_scratch_root(policy.scratch))
   let paths =
     list.flatten([
       policy.writable_roots,
@@ -226,6 +237,20 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
       False -> Ok(Nil)
     }
   })
+}
+
+// A scratch of the literal host root would make Landlock grant
+// read-write over the whole filesystem (issue #59): Landlock has no
+// deny rules, so nothing at that layer can carve a hole back out of
+// "/". Refusing it here — at the one place every policy passes through
+// before dispatch — keeps the mount layer free to go on binding exactly
+// what the policy names, which is its own job (4b4983d), and makes sure
+// the policy never names this.
+fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
+  case scratch {
+    ScratchPath(path: "/") -> Error(ScratchIsRoot)
+    ScratchPath(_) | ScratchTmpfs -> Ok(Nil)
+  }
 }
 
 // --- composition --------------------------------------------------------

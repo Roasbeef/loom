@@ -264,6 +264,22 @@ pub fn validate_rejects_negative_limit_test() {
     == Error(policy.NegativeLimit(field: policy.Pids, value: -1))
 }
 
+// #59: a scratch of the literal host root grants Landlock read-write
+// over the whole filesystem (Landlock has no deny rules to carve a hole
+// back out of "/"), so it is refused here rather than reaching the
+// mount layer at all.
+pub fn validate_rejects_scratch_of_root_test() {
+  let bad = policy.SandboxPolicy(..base(), scratch: policy.ScratchPath("/"))
+  assert policy.validate(bad) == Error(policy.ScratchIsRoot)
+}
+
+// A scratch nested under root, however shallow, is an ordinary absolute
+// path and stays accepted — only the literal root is refused.
+pub fn validate_accepts_scratch_under_root_test() {
+  let ok = policy.SandboxPolicy(..base(), scratch: policy.ScratchPath("/x"))
+  assert policy.validate(ok) == Ok(Nil)
+}
+
 // --- phase-1 unenforceable narrowing ------------------------------------
 
 pub fn narrow_unenforceable_downgrades_proxy_test() {

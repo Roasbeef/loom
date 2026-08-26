@@ -128,6 +128,17 @@ protocol (spec Part 1.4). WP-G.
   naming the unenforceable grant; under `ProceedNarrowed` the execution
   runs with no network at all. Nothing ever claims a proxy allowlist was
   enforced.
+- **`validate` refuses a scratch of the literal host root** (issue #59,
+  `PolicyError.ScratchIsRoot`). Landlock has no deny rules — its grants
+  only ever union — so a host-path `scratch: "/"` would reach the Go
+  helper's `internal/llock` as `RWDirs("/")` with nothing able to carve a
+  hole back out of it, whatever the mount layer does. `broker.gleam`
+  calls `validate` on every composed policy right before dispatch
+  (`authorize`), which is also therefore the one place that shuts this
+  off before any policy carrying it ever reaches the wire. See
+  `packages/sandbox/CLAUDE.md`'s Landlock layering note for the other
+  half: the mount layer stays free to bind exactly what the policy says
+  (4b4983d) because the policy itself can no longer say this.
 - **Composition is most-restrictive-wins except explicit grants.** Roots
   compose prefix-aware (`/work` covers `/work/sub`); env allowlists
   intersect as exact strings; proxy-vs-proxy meets intersect allowlists and
