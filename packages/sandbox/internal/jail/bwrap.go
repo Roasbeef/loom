@@ -10,12 +10,24 @@
 package jail
 
 import (
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/roasbeef/loom/sandbox/internal/policy"
 )
 
 // PathKind classifies a protected path for masking purposes.
+//
+// It must describe the path's *resolved* target, not the link itself.
+// bwrap resolves the destination of a mount, so a mask aimed at a
+// symlink lands on whatever the symlink points at: classifying a
+// symlink-to-directory as PathFile emits a file mask against a
+// directory and bwrap refuses to start. An absolute symlink is worse
+// still — during setup its target resolves inside bwrap's pivot root,
+// where it does not exist, and *every* mask form fails with ENOENT.
+// Both measured with bubblewrap 0.9.0. So callers stat through symlinks
+// and mask the resolved path; `~/.ssh` being a symlink is not exotic.
 type PathKind int
 
 const (
@@ -23,7 +35,7 @@ const (
 	// read-only tmpfs) so the jailed process cannot *create* it — a
 	// protected ~/.ssh that does not exist yet must stay uncreatable.
 	PathMissing PathKind = iota
-	// PathFile: an existing regular file.
+	// PathFile: an existing regular file, or any other non-directory.
 	PathFile
 	// PathDir: an existing directory.
 	PathDir
@@ -31,6 +43,17 @@ const (
 
 // ScratchMount is where a "tmpfs" scratch policy mounts inside the jail.
 const ScratchMount = "/tmp"
+
+// MaskSource is the host path bound over a protected file. tmpfs cannot
+// mount over a non-directory, so a protected file is shadowed by a
+// read-only bind of an empty device instead. bwrap binds MS_NODEV
+// unless asked for --dev-bind, so inside the jail the masked path
+// cannot be opened at all — EACCES on read and on write, measured with
+// bubblewrap 0.9.0. And were nodev ever absent, a read would still see
+// an empty file and a write would still go nowhere near the host. Both
+// readings are safe, which is why the mask does not have to know which
+// one applies.
+const MaskSource = "/dev/null"
 
 // BlocksDirectNetwork reports whether a network mode requires the jail
 // to deny direct socket access. NetworkOff blocks by definition.
@@ -53,20 +76,73 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 // BwrapArgs computes the bubblewrap argument list (excluding the bwrap
 // executable itself and the command to run) for a policy.
 //
-// Ordering is load-bearing: bwrap applies mount operations in argv
-// order, so every mask must come after the binds that would otherwise
-// re-expose what it hides — protected-path masks after the writable
-// binds, the fresh /proc and minimal /dev after any bind of one of their
-// ancestors (`/` as a readable root is the ordinary case, not a corner
-// one), and the scratch tmpfs after the read-only root it punches
-// through. `kinds` classifies each protected path (callers stat outside
-// this function to keep it pure).
+// # The precedence model
 //
-// Masking choices: an existing protected *file* is bind-mounted onto
-// itself read-only — unwritable, still readable (design §5.2 defaults
-// keep e.g. .git internals readable). A protected *directory* (or a
-// missing path) is shadowed with an empty read-only tmpfs — its contents
-// are neither readable nor writable, and nothing can be created there.
+// bwrap applies mount operations in argv order, so argv order *is* the
+// precedence between overlapping mounts. Leaving that to the order the
+// four policy path lists happen to be concatenated in is what produced
+// #37, #41 and #51: the code asserted a rule in a comment and the loops
+// below it did something else. So the argv is not built by
+// concatenation here. It is built as an explicit plan of MountOps —
+// each carrying the region it governs and a MountClass saying what it
+// does to that region — and the plan is ordered by two rules.
+//
+// **Rule 1: grants first, masks last, and nothing whatsoever after a
+// mask.** A grant (a readable root, a writable root, the scratch area)
+// widens the jail's view; a mask (`/proc`, `/dev`, a protected path)
+// subtracts from it. A grant emitted after a mask undoes it and fails
+// *open* — that is the whole of #37 and #51. A mask emitted after a
+// grant merely narrows it. So masks go last, unconditionally, including
+// after the scratch mount, which is a grant and used to be emitted dead
+// last.
+//
+// **Rule 2: inside a phase, the most specific region wins.** Ops are
+// sorted by path, which for absolute paths puts a parent before every
+// descendant of it — a descendant carries the parent's path as a prefix
+// and is longer than it — so a nested op lands on top of the enclosing
+// one. That is what makes a readable root nested inside a writable root
+// come out read-only, and what lets a writable root the policy asked
+// for survive the scratch tmpfs above it (#41) instead of silently
+// evaporating.
+//
+// Masks are deliberately *not* subject to rule 2 against grants.
+// `protected` is the only subtractive verb the policy has, so no grant
+// at any depth may carve a hole in one: a writable root inside a
+// protected directory stays masked.
+//
+// Two regions may also be named at the *same* path, where rule 2 has
+// nothing to say. MountClass is ordered so the higher class takes the
+// region and the loser is dropped rather than emitted and overwritten;
+// the argv then says which one applies, exactly once:
+//
+//   - **Writable beats readable.** `policy.workspace_default` names the
+//     workspace in `readable_roots` *and* in `writable_roots`, so this
+//     tie is load-bearing and must resolve to writable. No narrowing is
+//     lost by that: `readable_roots` does not restrict reads at all,
+//     since the base view is the whole host filesystem read-only, so an
+//     entry that is also writable is redundant rather than a
+//     restriction (protocol-change/004).
+//   - **The scratch tmpfs beats a root at exactly ScratchMount.**
+//     Taking the bind instead would drop the scratch area the policy
+//     asked for, and the fresh tmpfs is the narrower of the two anyway
+//     — it carries no host content — so this tie resolves fail-closed.
+//
+// The base view, the entire host filesystem read-only, is simply the
+// least specific readable grant: `/`. It obeys both rules like anything
+// else.
+//
+// `kinds` classifies each protected path; callers stat outside this
+// function to keep it pure, and must classify the path's resolved
+// target (see PathKind).
+//
+// # Masking
+//
+// A protected path is removed from the jail's view whatever its inode
+// type. A directory — and a path that does not exist yet, so a
+// protected ~/.ssh cannot be *created* — is shadowed by an empty tmpfs
+// remounted read-only. A file is shadowed by a read-only bind of
+// MaskSource. Neither can be read through, written through, or created
+// in.
 func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 	args := []string{
 		// Tie the jail's lifetime to the helper: if the helper dies, the
@@ -89,73 +165,185 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 		// fails closed to no direct network (see BlocksDirectNetwork).
 		args = append(args, "--unshare-net")
 	}
-
-	// The base view: the entire host filesystem, read-only.
-	args = append(args, "--ro-bind", "/", "/")
-
-	// Explicit read-only binds. Usually redundant with the ro root, but
-	// kept explicit so a readable root nested inside a writable root is
-	// re-masked read-only (binds are applied in argv order).
-	for _, r := range sortedPaths(p.ReadableRoots) {
-		args = append(args, "--ro-bind", r, r)
+	for _, op := range MountPlan(p, kinds) {
+		args = append(args, op.Argv...)
 	}
-	for _, w := range sortedPaths(p.WritableRoots) {
-		args = append(args, "--bind", w, w)
-	}
-
-	// A fresh /proc and a minimal /dev for the new namespaces — and they
-	// go *after* every bind above, because they are masks, not binds.
-	// `--ro-bind / /` brings the host's /proc and /dev along with
-	// everything else, so a bind of any ancestor of these two paths
-	// emitted later puts the host's versions back on top of the masks.
-	//
-	// A policy naming "/" as a readable root is not exotic: it is what a
-	// jailed build that needs the toolchain asks for, and it is what the
-	// code-mode session base sends. While these two lines came first,
-	// that policy silently got:
-	//
-	//   - the host's /proc. Every process on the machine listed inside a
-	//     jail that reports itself fully enforced, with its cmdline and
-	//     its environ, and /proc/self resolving to the *host* pid rather
-	//     than the namespace one. Measured on this tree: 82 pids visible
-	//     and /proc/1/cmdline reading the host's init.
-	//   - the host's /dev, and this one also *breaks* the jail rather
-	//     than merely widening it. bwrap binds with MS_NODEV unless
-	//     asked for --dev-bind, so the re-exposed device tree is a nodev
-	//     view: every node is visible and none can be opened. The BEAM
-	//     that `gleam build` spawns to compile Erlang retries
-	//     openat("/dev/null", O_WRONLY) forever against the resulting
-	//     EACCES — 145k syscalls in twelve seconds, a build that never
-	//     returns, and the timeout behind issue #37.
-	//
-	// Masks last, always.
-	args = append(args, "--proc", "/proc", "--dev", "/dev")
-
-	// Protected masks come after the writable binds so a protected path
-	// inside a writable root is still masked, and after /proc and /dev
-	// so a protected path under either survives them.
-	for _, prot := range sortedPaths(p.Protected) {
-		if kinds[prot] == PathFile {
-			args = append(args, "--ro-bind", prot, prot)
-		} else {
-			// Directory or missing: empty tmpfs, then remounted
-			// read-only so nothing can be written into the shadow
-			// either.
-			args = append(args, "--tmpfs", prot, "--remount-ro", prot)
-		}
-	}
-
-	if p.ScratchIsTmpfs() {
-		args = append(args, "--tmpfs", ScratchMount)
-	} else {
-		args = append(args, "--bind", p.Scratch, p.Scratch)
-	}
-
 	return args
 }
 
+// MountClass says what a mount operation does to the region it names.
+// The constants are ordered by precedence at an *identical* path: the
+// higher class takes the region. Everything from ClassProc upwards is a
+// mask, and no operation of any class may follow one. See BwrapArgs for
+// why each tie resolves the way it does.
+type MountClass int
+
+const (
+	// ClassReadable binds a region read-only.
+	ClassReadable MountClass = iota
+	// ClassWritable binds a region read-write. A host-path scratch is
+	// this and nothing more: an ordinary writable bind that happens to
+	// be named by `scratch` rather than by `writable_roots`.
+	ClassWritable
+	// ClassScratchTmpfs mounts the fresh tmpfs scratch at ScratchMount.
+	ClassScratchTmpfs
+	// ClassProc is the fresh procfs the new PID namespace needs.
+	ClassProc
+	// ClassDev is the minimal device tree.
+	ClassDev
+	// ClassProtected is a protected-path mask.
+	ClassProtected
+)
+
+// IsMask reports whether operations of this class subtract from the
+// jail's view rather than widen it. Nothing may be emitted after one.
+func (c MountClass) IsMask() bool { return c >= ClassProc }
+
+// MountOp is one entry of the ordered mount plan: the region it
+// governs, what it does to that region, and the argv fragment that
+// expresses it.
+type MountOp struct {
+	Class MountClass
+	Path  string
+	Argv  []string
+}
+
+// MountPlan resolves a policy into the ordered mount operations
+// BwrapArgs renders. It is the precedence model in executable form:
+// overlaps between the four path lists are decided here, once, instead
+// of falling out of the order the lists are appended in.
+func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
+	// Grants, keyed by region, so two grants naming the same path
+	// resolve by class instead of being emitted twice and overwritten.
+	grants := make(map[string]MountOp)
+	grant := func(op MountOp) {
+		if op.Path == "" {
+			return
+		}
+		if prev, seen := grants[op.Path]; seen && prev.Class >= op.Class {
+			return
+		}
+		grants[op.Path] = op
+	}
+	// The base view: the entire host filesystem, read-only. It is the
+	// least specific readable grant and nothing more.
+	grant(readableOp("/"))
+	for _, r := range p.ReadableRoots {
+		grant(readableOp(r))
+	}
+	for _, w := range p.WritableRoots {
+		grant(writableOp(w))
+	}
+	if p.ScratchIsTmpfs() {
+		grant(MountOp{Class: ClassScratchTmpfs, Path: ScratchMount,
+			Argv: []string{"--tmpfs", ScratchMount}})
+	} else {
+		grant(writableOp(p.Scratch))
+	}
+
+	plan := make([]MountOp, 0, len(grants)+2+len(p.Protected))
+	for _, op := range grants {
+		plan = append(plan, op)
+	}
+
+	// The masks. A fresh /proc and a minimal /dev are here rather than
+	// beside the base view because that is what they are: `--ro-bind /
+	// /` brings the host's process table and device tree in with
+	// everything else, and these two cover them.
+	plan = append(plan,
+		MountOp{Class: ClassProc, Path: "/proc", Argv: []string{"--proc", "/proc"}},
+		MountOp{Class: ClassDev, Path: "/dev", Argv: []string{"--dev", "/dev"}},
+	)
+	// kinds is keyed by the policy's own spelling of each path, and
+	// sortedPaths canonicalises; look the kind up under both.
+	kindOf := func(path string) PathKind {
+		if k, ok := kinds[path]; ok {
+			return k
+		}
+		for raw, k := range kinds {
+			if region(raw) == path {
+				return k
+			}
+		}
+		return PathMissing
+	}
+	var masked []string
+	for _, prot := range sortedPaths(p.Protected) {
+		// A protected path inside another protected path is already
+		// gone, and masking it a second time makes bwrap refuse to
+		// start: the ancestor's tmpfs is remounted read-only, so the
+		// mountpoint for the descendant cannot be created there.
+		// Dropping it weakens nothing — the ancestor's mask covers it.
+		if coveredBy(masked, prot) {
+			continue
+		}
+		masked = append(masked, prot)
+		plan = append(plan, maskOp(prot, kindOf(prot)))
+	}
+
+	// Rule 1 then rule 2: masks after grants, and within each phase a
+	// parent before every descendant of it.
+	sort.SliceStable(plan, func(i, j int) bool {
+		if a, b := plan[i].Class.IsMask(), plan[j].Class.IsMask(); a != b {
+			return b
+		}
+		if plan[i].Path != plan[j].Path {
+			return plan[i].Path < plan[j].Path
+		}
+		return plan[i].Class < plan[j].Class
+	})
+	return plan
+}
+
+func readableOp(path string) MountOp {
+	path = region(path)
+	return MountOp{Class: ClassReadable, Path: path,
+		Argv: []string{"--ro-bind", path, path}}
+}
+
+func writableOp(path string) MountOp {
+	path = region(path)
+	return MountOp{Class: ClassWritable, Path: path,
+		Argv: []string{"--bind", path, path}}
+}
+
+// region is the canonical name of the area a mount op governs. Both
+// precedence rules compare regions as strings — the tie rule for
+// equality, the specificity rule for the prefix relation — so "/work"
+// and "/work/" have to be the same region or a policy that spells the
+// workspace both ways gets two grants and the wrong one wins.
+func region(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
+}
+
+// maskOp shadows one protected path. See BwrapArgs, "Masking".
+func maskOp(path string, kind PathKind) MountOp {
+	if kind == PathFile {
+		return MountOp{Class: ClassProtected, Path: path,
+			Argv: []string{"--ro-bind", MaskSource, path}}
+	}
+	return MountOp{Class: ClassProtected, Path: path,
+		Argv: []string{"--tmpfs", path, "--remount-ro", path}}
+}
+
+// coveredBy reports whether path lies at or inside one of roots.
+func coveredBy(roots []string, path string) bool {
+	for _, root := range roots {
+		if path == root || strings.HasPrefix(path, strings.TrimSuffix(root, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func sortedPaths(in []string) []string {
-	out := append([]string(nil), in...)
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		out = append(out, region(p))
+	}
 	sort.Strings(out)
 	return out
 }
