@@ -49,6 +49,7 @@ import core/tx.{
   InsertUsage, LeaseLost, SetRegister, StaleExpectation,
 }
 import gleam/bit_array
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/erlang/process.{type Subject}
@@ -518,42 +519,48 @@ fn migrate(
   from: Int,
   migrations: List(Migration),
 ) -> Result(Nil, OpenError) {
-  case from == storage_version {
-    True -> Ok(Nil)
-    False ->
-      case list.find(migrations, fn(step) { step.from_version == from }) {
-        Error(Nil) ->
-          Error(UnsupportedVersion(found: from, supported: storage_version))
-        Ok(Migration(statements:, ..)) -> {
-          let stepped = {
-            use Nil <- result.try(begin_immediate(conn))
-            let body = {
-              use Nil <- result.try(
-                sqlight.exec(statements, on: conn) |> result.map_error(FailSql),
-              )
-              use _ <- result.try(run(
-                conn,
-                "UPDATE session SET storage_version = ?1",
-                [sqlight.int(from + 1)],
-                decode.dynamic,
-              ))
-              commit_sql(conn)
-            }
-            case body {
-              Ok(Nil) -> Ok(Nil)
-              Error(fail) -> {
-                let _ = rollback(conn)
-                Error(fail)
-              }
-            }
-          }
-          case stepped {
-            Ok(Nil) -> migrate(conn, from + 1, migrations)
-            Error(fail) -> Error(open_failed(fail))
-          }
-        }
+  use <- bool.guard(when: from == storage_version, return: Ok(Nil))
+  use Migration(statements:, ..) <- result.try(
+    list.find(migrations, fn(step) { step.from_version == from })
+    |> result.replace_error(UnsupportedVersion(
+      found: from,
+      supported: storage_version,
+    )),
+  )
+  use Nil <- result.try(run_migration_step(conn, from, statements))
+  migrate(conn, from + 1, migrations)
+}
+
+// One step's statements plus its version bump, inside one transaction:
+// rolls back and translates the failure on error, otherwise commits.
+fn run_migration_step(
+  conn: Connection,
+  from: Int,
+  statements: String,
+) -> Result(Nil, OpenError) {
+  let stepped = {
+    use Nil <- result.try(begin_immediate(conn))
+    let body = {
+      use Nil <- result.try(
+        sqlight.exec(statements, on: conn) |> result.map_error(FailSql),
+      )
+      use _ <- result.try(run(
+        conn,
+        "UPDATE session SET storage_version = ?1",
+        [sqlight.int(from + 1)],
+        decode.dynamic,
+      ))
+      commit_sql(conn)
+    }
+    case body {
+      Ok(Nil) -> Ok(Nil)
+      Error(fail) -> {
+        let _ = rollback(conn)
+        Error(fail)
       }
+    }
   }
+  result.map_error(stepped, open_failed)
 }
 
 // Claims the writer lease inside the caller's admission transaction: a
@@ -1172,21 +1179,19 @@ fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
     |> result.map_error(rewrite_fail),
   )
   case versions {
-    [version] ->
-      case version == storage_version {
-        True -> Ok(Nil)
-        False ->
-          Error(
-            RewriteCorrupt(report: corruption.report(
-              at: "storage/sqlite.rewrite_into",
-              on: "session.storage_version",
-              expected: "version "
-                <> int.to_string(storage_version)
-                <> " (open the file once to migrate it first)",
-              context: int.to_string(version),
-            )),
-          )
-      }
+    [version] -> {
+      use <- bool.guard(when: version == storage_version, return: Ok(Nil))
+      Error(
+        RewriteCorrupt(report: corruption.report(
+          at: "storage/sqlite.rewrite_into",
+          on: "session.storage_version",
+          expected: "version "
+            <> int.to_string(storage_version)
+            <> " (open the file once to migrate it first)",
+          context: int.to_string(version),
+        )),
+      )
+    }
     [] | [_, ..] ->
       Error(
         RewriteCorrupt(report: corruption.report(
@@ -1216,52 +1221,59 @@ fn rewrite_copy(
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
     Ok(conn) -> {
-      let outcome = {
-        use Nil <- result.try(
-          begin_immediate(conn) |> result.map_error(rewrite_fail),
-        )
-        let row_decoder = {
-          use id_text <- decode.field(0, decode.string)
-          use payload <- decode.field(1, decode.bit_array)
-          decode.success(#(id_text, payload))
-        }
-        let body = {
-          use rows <- result.try(
-            run(conn, "SELECT id, payload FROM entries", [], row_decoder)
-            |> result.map_error(rewrite_fail),
-          )
-          use rewritten <- result.try(
-            list.try_fold(over: rows, from: 0, with: fn(count, row) {
-              rewrite_row(conn, row, rewrite, count)
-            }),
-          )
-          use Nil <- result.try(rewrite_registers(conn, rewrite_value))
-          use Nil <- result.try(rewrite_usage_details(conn, rewrite_value))
-          // The lease this rewrite holds lives in the *original* and dies
-          // with it at the swap; the copy must not carry it over.
-          use _ <- result.try(
-            run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
-            |> result.map_error(rewrite_fail),
-          )
-          use generation <- result.try(bump_generation(conn))
-          use Nil <- result.map(
-            commit_sql(conn) |> result.map_error(rewrite_fail),
-          )
-          Rewrite(generation:, entries_rewritten: rewritten)
-        }
-        case body {
-          Ok(outcome) ->
-            run(conn, "VACUUM", [], decode.dynamic)
-            |> result.map_error(rewrite_fail)
-            |> result.replace(outcome)
-          Error(error) -> {
-            let _ = rollback(conn)
-            Error(error)
-          }
-        }
-      }
+      let outcome = rewrite_copy_transaction(conn, rewrite, rewrite_value)
       let _ = sqlight.close(conn)
       outcome
+    }
+  }
+}
+
+// The whole rewrite transaction over the copy: both transforms, then the
+// lease-table clear and generation bump, committed together; on any
+// failure the transaction rolls back before the error is reported. Only
+// a committed rewrite is vacuumed, so the replaced bytes never survive in
+// free pages of an aborted attempt.
+fn rewrite_copy_transaction(
+  conn: Connection,
+  rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
+  rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
+) -> Result(Rewrite, RewriteError) {
+  use Nil <- result.try(begin_immediate(conn) |> result.map_error(rewrite_fail))
+  let row_decoder = {
+    use id_text <- decode.field(0, decode.string)
+    use payload <- decode.field(1, decode.bit_array)
+    decode.success(#(id_text, payload))
+  }
+  let body = {
+    use rows <- result.try(
+      run(conn, "SELECT id, payload FROM entries", [], row_decoder)
+      |> result.map_error(rewrite_fail),
+    )
+    use rewritten <- result.try(
+      list.try_fold(over: rows, from: 0, with: fn(count, row) {
+        rewrite_row(conn, row, rewrite, count)
+      }),
+    )
+    use Nil <- result.try(rewrite_registers(conn, rewrite_value))
+    use Nil <- result.try(rewrite_usage_details(conn, rewrite_value))
+    // The lease this rewrite holds lives in the *original* and dies
+    // with it at the swap; the copy must not carry it over.
+    use _ <- result.try(
+      run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
+      |> result.map_error(rewrite_fail),
+    )
+    use generation <- result.try(bump_generation(conn))
+    use Nil <- result.map(commit_sql(conn) |> result.map_error(rewrite_fail))
+    Rewrite(generation:, entries_rewritten: rewritten)
+  }
+  case body {
+    Ok(outcome) ->
+      run(conn, "VACUUM", [], decode.dynamic)
+      |> result.map_error(rewrite_fail)
+      |> result.replace(outcome)
+    Error(error) -> {
+      let _ = rollback(conn)
+      Error(error)
     }
   }
 }
@@ -1432,33 +1444,7 @@ fn read_generation(
   )
   case rows {
     [None] -> Ok(#([], 0))
-    [Some(blob)] -> {
-      let parsed = {
-        use value <- result.try(json_of_blob(blob, "session.metadata"))
-        case value {
-          json.Object(fields) ->
-            case list.key_find(fields, "generation") {
-              Ok(json.Int(generation)) -> Ok(#(fields, generation))
-              Error(Nil) -> Ok(#(fields, 0))
-              Ok(other) ->
-                Error(corruption.report(
-                  at: "storage/sqlite.rewrite_into",
-                  on: "session.metadata generation",
-                  expected: "an integer",
-                  context: json.to_string(other),
-                ))
-            }
-          other ->
-            Error(corruption.report(
-              at: "storage/sqlite.rewrite_into",
-              on: "session.metadata",
-              expected: "a json object",
-              context: json.to_string(other),
-            ))
-        }
-      }
-      parsed |> result.map_error(fn(report) { RewriteCorrupt(report:) })
-    }
+    [Some(blob)] -> parse_generation_metadata(blob)
     [] | [_, ..] ->
       Error(
         RewriteCorrupt(report: corruption.report(
@@ -1468,6 +1454,43 @@ fn read_generation(
           context: int.to_string(list.length(rows)) <> " rows",
         )),
       )
+  }
+}
+
+// Parses the session metadata blob into its other fields plus the
+// generation counter (a missing "generation" field means generation 0).
+fn parse_generation_metadata(
+  blob: BitArray,
+) -> Result(#(List(#(String, JsonValue)), Int), RewriteError) {
+  let parsed = {
+    use value <- result.try(json_of_blob(blob, "session.metadata"))
+    case value {
+      json.Object(fields) -> parse_generation_field(fields)
+      other ->
+        Error(corruption.report(
+          at: "storage/sqlite.rewrite_into",
+          on: "session.metadata",
+          expected: "a json object",
+          context: json.to_string(other),
+        ))
+    }
+  }
+  result.map_error(parsed, fn(report) { RewriteCorrupt(report:) })
+}
+
+fn parse_generation_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(#(List(#(String, JsonValue)), Int), CorruptionReport) {
+  case list.key_find(fields, "generation") {
+    Ok(json.Int(generation)) -> Ok(#(fields, generation))
+    Error(Nil) -> Ok(#(fields, 0))
+    Ok(other) ->
+      Error(corruption.report(
+        at: "storage/sqlite.rewrite_into",
+        on: "session.metadata generation",
+        expected: "an integer",
+        context: json.to_string(other),
+      ))
   }
 }
 
@@ -1963,65 +1986,94 @@ fn index_entry(conn: Connection, entry: Entry, seq: Seq) -> Result(Nil, Fail) {
   let kind_text = storage.kind_to_string(storage.kind_of(entry))
   case entry.parent {
     // A root entry starts a fresh segment with no base.
-    None -> {
-      let branch_id = "b" <> int.to_string(seq)
-      use Nil <- result.try(insert_index_row(
-        conn,
-        branch_id,
-        id_text,
-        seq,
-        kind_text,
-      ))
-      run(
-        conn,
-        "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
-           base_branch_id, base_seq) VALUES (?1, ?2, ?3, NULL, NULL)",
-        [sqlight.text(branch_id), sqlight.text(id_text), sqlight.int(seq)],
-        decode.dynamic,
-      )
-      |> result.replace(Nil)
-    }
-    Some(parent) -> {
-      let parent_text = ids.entry_id_to_string(parent)
-      use tips <- result.try(run(
-        conn,
-        "SELECT branch_id FROM branch_meta WHERE tip_entry_id = ?1",
-        [sqlight.text(parent_text)],
-        decode.at([0], decode.string),
-      ))
-      case tips {
-        // Appending at a tip: one new row, move the tip.
-        [branch_id] -> {
-          use Nil <- result.try(insert_index_row(
-            conn,
-            branch_id,
-            id_text,
-            seq,
-            kind_text,
-          ))
-          run(
-            conn,
-            "UPDATE branch_meta SET tip_entry_id = ?1, tip_seq = ?2
-             WHERE branch_id = ?3",
-            [sqlight.text(id_text), sqlight.int(seq), sqlight.text(branch_id)],
-            decode.dynamic,
-          )
-          |> result.replace(Nil)
-        }
-        // Diverging append: build a new segment covering the parent.
-        [] -> diverge(conn, entry, parent_text, seq, id_text, kind_text)
-        [_, ..] ->
-          Error(
-            FailCorrupt(report: corruption.report(
-              at: "storage/sqlite.branch_index",
-              on: parent_text,
-              expected: "at most one branch tip per entry (ix_bm_tip)",
-              context: "multiple branch_meta tips",
-            )),
-          )
-      }
-    }
+    None -> index_root_entry(conn, id_text, seq, kind_text)
+    Some(parent) ->
+      index_child_entry(conn, entry, parent, id_text, seq, kind_text)
   }
+}
+
+// A root entry starts a fresh segment with no base.
+fn index_root_entry(
+  conn: Connection,
+  id_text: String,
+  seq: Seq,
+  kind_text: String,
+) -> Result(Nil, Fail) {
+  let branch_id = "b" <> int.to_string(seq)
+  use Nil <- result.try(insert_index_row(
+    conn,
+    branch_id,
+    id_text,
+    seq,
+    kind_text,
+  ))
+  run(
+    conn,
+    "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
+       base_branch_id, base_seq) VALUES (?1, ?2, ?3, NULL, NULL)",
+    [sqlight.text(branch_id), sqlight.text(id_text), sqlight.int(seq)],
+    decode.dynamic,
+  )
+  |> result.replace(Nil)
+}
+
+// A non-root entry either extends its parent's segment (appending at the
+// tip) or, when the parent is not a tip, starts a new segment that
+// diverges from it (`diverge`).
+fn index_child_entry(
+  conn: Connection,
+  entry: Entry,
+  parent: EntryId,
+  id_text: String,
+  seq: Seq,
+  kind_text: String,
+) -> Result(Nil, Fail) {
+  let parent_text = ids.entry_id_to_string(parent)
+  use tips <- result.try(run(
+    conn,
+    "SELECT branch_id FROM branch_meta WHERE tip_entry_id = ?1",
+    [sqlight.text(parent_text)],
+    decode.at([0], decode.string),
+  ))
+  case tips {
+    // Appending at a tip: one new row, move the tip.
+    [branch_id] -> append_at_tip(conn, branch_id, id_text, seq, kind_text)
+    // Diverging append: build a new segment covering the parent.
+    [] -> diverge(conn, entry, parent_text, seq, id_text, kind_text)
+    [_, ..] ->
+      Error(
+        FailCorrupt(report: corruption.report(
+          at: "storage/sqlite.branch_index",
+          on: parent_text,
+          expected: "at most one branch tip per entry (ix_bm_tip)",
+          context: "multiple branch_meta tips",
+        )),
+      )
+  }
+}
+
+fn append_at_tip(
+  conn: Connection,
+  branch_id: String,
+  id_text: String,
+  seq: Seq,
+  kind_text: String,
+) -> Result(Nil, Fail) {
+  use Nil <- result.try(insert_index_row(
+    conn,
+    branch_id,
+    id_text,
+    seq,
+    kind_text,
+  ))
+  run(
+    conn,
+    "UPDATE branch_meta SET tip_entry_id = ?1, tip_seq = ?2
+     WHERE branch_id = ?3",
+    [sqlight.text(id_text), sqlight.int(seq), sqlight.text(branch_id)],
+    decode.dynamic,
+  )
+  |> result.replace(Nil)
 }
 
 fn diverge(
@@ -2061,56 +2113,86 @@ fn diverge(
             <> " has no branch_entries row",
         )),
       )
-    [#(cover_id, parent_seq), ..] -> {
-      use windows <- result.try(
-        chain_windows(conn, cover_id, parent_seq, [], []),
-      )
-      // Mandatory rule 2: search for the newest compaction at or below
-      // the parent through the complete segment chain, not just the
-      // newest physical segment.
-      use boundary <- result.try(newest_compaction(conn, windows))
-      let branch_id = "b" <> int.to_string(seq)
-      let floor = case boundary {
-        Some(compaction_seq) -> compaction_seq
-        None -> 0
-      }
-      // Copy only rows after the compaction through the parent; the
-      // older prefix is reachable through the base link instead.
-      use Nil <- result.try(copy_windows(conn, branch_id, windows, floor))
-      use Nil <- result.try(insert_index_row(
+    [#(cover_id, parent_seq), ..] ->
+      build_diverged_segment(
         conn,
-        branch_id,
-        id_text,
+        cover_id,
+        parent_seq,
         seq,
+        id_text,
         kind_text,
-      ))
-      case boundary {
-        Some(compaction_seq) ->
-          run(
-            conn,
-            "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
-               base_branch_id, base_seq) VALUES (?1, ?2, ?3, ?4, ?5)",
-            [
-              sqlight.text(branch_id),
-              sqlight.text(id_text),
-              sqlight.int(seq),
-              sqlight.text(cover_id),
-              sqlight.int(compaction_seq),
-            ],
-            decode.dynamic,
-          )
-          |> result.replace(Nil)
-        None ->
-          run(
-            conn,
-            "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
-               base_branch_id, base_seq) VALUES (?1, ?2, ?3, NULL, NULL)",
-            [sqlight.text(branch_id), sqlight.text(id_text), sqlight.int(seq)],
-            decode.dynamic,
-          )
-          |> result.replace(Nil)
-      }
-    }
+      )
+  }
+}
+
+// Builds the new segment covering the parent: copies the post-compaction
+// suffix of the chained path into a fresh branch (mandatory rule 2's
+// result decides the floor and the new segment's base), then indexes the
+// diverging entry at its tip.
+fn build_diverged_segment(
+  conn: Connection,
+  cover_id: String,
+  parent_seq: Seq,
+  seq: Seq,
+  id_text: String,
+  kind_text: String,
+) -> Result(Nil, Fail) {
+  use windows <- result.try(chain_windows(conn, cover_id, parent_seq, [], []))
+  // Mandatory rule 2: search for the newest compaction at or below
+  // the parent through the complete segment chain, not just the
+  // newest physical segment.
+  use boundary <- result.try(newest_compaction(conn, windows))
+  let branch_id = "b" <> int.to_string(seq)
+  let floor = case boundary {
+    Some(compaction_seq) -> compaction_seq
+    None -> 0
+  }
+  // Copy only rows after the compaction through the parent; the
+  // older prefix is reachable through the base link instead.
+  use Nil <- result.try(copy_windows(conn, branch_id, windows, floor))
+  use Nil <- result.try(insert_index_row(
+    conn,
+    branch_id,
+    id_text,
+    seq,
+    kind_text,
+  ))
+  insert_diverged_meta(conn, branch_id, id_text, seq, cover_id, boundary)
+}
+
+fn insert_diverged_meta(
+  conn: Connection,
+  branch_id: String,
+  id_text: String,
+  seq: Seq,
+  cover_id: String,
+  boundary: Option(Seq),
+) -> Result(Nil, Fail) {
+  case boundary {
+    Some(compaction_seq) ->
+      run(
+        conn,
+        "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
+           base_branch_id, base_seq) VALUES (?1, ?2, ?3, ?4, ?5)",
+        [
+          sqlight.text(branch_id),
+          sqlight.text(id_text),
+          sqlight.int(seq),
+          sqlight.text(cover_id),
+          sqlight.int(compaction_seq),
+        ],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
+    None ->
+      run(
+        conn,
+        "INSERT INTO branch_meta(branch_id, tip_entry_id, tip_seq,
+           base_branch_id, base_seq) VALUES (?1, ?2, ?3, NULL, NULL)",
+        [sqlight.text(branch_id), sqlight.text(id_text), sqlight.int(seq)],
+        decode.dynamic,
+      )
+      |> result.replace(Nil)
   }
 }
 
