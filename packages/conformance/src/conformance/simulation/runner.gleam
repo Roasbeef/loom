@@ -84,8 +84,13 @@ pub type Report {
     crashed: Bool,
     /// Whether the run ran out of drive budget without terminating.
     stalled: Bool,
-    /// How many terminal transactions wrote `strand.last_result`.
-    terminal_writes: Int,
+    /// How many terminal transactions wrote `strand.last_result` on the
+    /// main strand and on the subagent strand, kept separate (rather
+    /// than pre-summed) so a `terminal/last-result-once` failure can name
+    /// which strand is short instead of only the combined total — issue
+    /// #58, where the harness report was otherwise clean.
+    terminal_writes_main: Int,
+    terminal_writes_sub: Int,
     /// Every named path this run reached.
     coverage: List(String),
     /// Effects dispatched, counted across restarts.
@@ -640,22 +645,35 @@ fn check_replay_once(which: String, report: Report) -> Result(Nil, Failure) {
   }
 }
 
+// A failure here has landed clean of every other explanation this suite
+// knows how to give (issue #58: the run touches no wall clock, drops no
+// reply, leaves no intervention dangling, and still ends one write
+// short). What is known — which strand the shortfall is on, and against
+// how many operations the runner believes each strand ran — is reported
+// rather than only the pre-summed total, so a future investigation does
+// not have to re-instrument from scratch to learn even that much.
 fn check_terminal_writes_once(
   which: String,
   report: Report,
 ) -> Result(Nil, Failure) {
+  let total = report.terminal_writes_main + report.terminal_writes_sub
   use <- bool.guard(
-    when: report.terminal_writes == list.length(report.outcomes),
+    when: total == list.length(report.outcomes),
     return: Ok(Nil),
   )
   Error(Failure(
     check: "terminal/last-result-once",
     detail: which
       <> " run wrote strand.last_result "
-      <> int.to_string(report.terminal_writes)
-      <> " times for "
+      <> int.to_string(total)
+      <> " times ("
+      <> int.to_string(report.terminal_writes_main)
+      <> " main, "
+      <> int.to_string(report.terminal_writes_sub)
+      <> " sub) for "
       <> int.to_string(list.length(report.outcomes))
-      <> " operations",
+      <> " operations: "
+      <> string.join(report.outcomes, ", "),
   ))
 }
 
@@ -863,8 +881,8 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       ),
       crashed: control.crashed(ctl),
       stalled:,
-      terminal_writes: control.read(ctl, "last_result:" <> strand)
-        + control.read(ctl, "last_result:" <> sub_strand),
+      terminal_writes_main: control.read(ctl, "last_result:" <> strand),
+      terminal_writes_sub: control.read(ctl, "last_result:" <> sub_strand),
       coverage: control.marks(ctl),
       effects: control.read(ctl, "effect"),
       waits: control.waits(ctl),
