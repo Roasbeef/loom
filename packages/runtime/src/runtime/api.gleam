@@ -48,12 +48,16 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
-import machine/acceptance.{type RejectReason, AcceptCtx, AcceptRun, StrandBusy}
+import machine/acceptance.{
+  type RejectReason, AcceptCompaction, AcceptCtx, AcceptNavigation, AcceptRun,
+  StrandBusy,
+}
 import machine/codec
 import machine/operation.{
   type LastResult, type NormalizedRetryPolicy, type Operation,
-  type OperationState, type RunSettings, CompactionSettings, ConsumeAll,
-  NormalizedRetryPolicy, PendingMessage, RunSettings, Sequential,
+  type OperationState, type RunSettings, type StructuralPreparation,
+  CompactionSettings, ConsumeAll, NormalizedRetryPolicy, PendingMessage,
+  RunSettings, Sequential,
 }
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
@@ -302,6 +306,73 @@ pub fn accept_quietly(
   runtime: Runtime,
   prompts: List(AgentMessage),
 ) -> Result(OpId, ApiError) {
+  accept_request(runtime, AcceptRun(prompts:))
+}
+
+/// Accepts a standalone compaction and rings the doorbell. `preparation`
+/// is the same builder the threshold and overflow hooks use
+/// (`runtime/hooks.preparation`), run against the strand's current
+/// projection, so a manual compaction cuts exactly where an automatic
+/// one would.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.compact(runtime, custom_instructions: None, preparation: prep)
+/// ```
+///
+pub fn compact(
+  runtime: Runtime,
+  custom_instructions custom_instructions: Option(String),
+  preparation preparation: Option(StructuralPreparation),
+) -> Result(OpId, ApiError) {
+  accept_request(runtime, AcceptCompaction(custom_instructions:, preparation:))
+}
+
+/// Accepts a navigation request and rings the doorbell: moves the
+/// strand's leaf to `to` (the root when `None`), optionally summarizing
+/// the span the move skips over. Whether `to` names a real entry is
+/// answered here — `machine/acceptance` cannot read the tree — so no
+/// caller needs its own tree lookup to build the request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.navigate(runtime, to: Some(target), summarize: False, label: None,
+/// //   custom_instructions: None, preparation: None)
+/// ```
+///
+pub fn navigate(
+  runtime: Runtime,
+  to to: Option(EntryId),
+  summarize summarize: Bool,
+  label label: Option(String),
+  custom_instructions custom_instructions: Option(String),
+  preparation preparation: Option(StructuralPreparation),
+) -> Result(OpId, ApiError) {
+  use target_known <- result.try(target_exists(runtime, to))
+  accept_request(
+    runtime,
+    AcceptNavigation(
+      target: to,
+      summarize:,
+      label:,
+      custom_instructions:,
+      preparation:,
+      target_known:,
+    ),
+  )
+}
+
+// The retry-admission body shared by every acceptance: read the
+// serialization line (strand state, leaf, pending queue), build the
+// request's plan against it, commit, and reload-and-retry on nothing but
+// a lost seq race. `accept_quietly`, `compact`, and `navigate` differ
+// only in which `AcceptRequest` they hand this.
+fn accept_request(
+  runtime: Runtime,
+  request: acceptance.AcceptRequest,
+) -> Result(OpId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
     let w = writer_subject(runtime)
@@ -324,11 +395,29 @@ pub fn accept_quietly(
         pending:,
       )
     use acceptance.AcceptancePlan(operation:, state: _, tx: plan_tx) <- or_rejected(
-      acceptance.accept_prompt(AcceptRun(prompts:), ctx),
+      acceptance.accept_prompt(request, ctx),
       fn(reason) { AcceptRejected(reason:) },
     )
     commit_or_retry(writer.commit(w, plan_tx), on_ok: operation.id)
   })
+}
+
+// Whether a non-null navigation target exists in the tree. `None` (the
+// root) is always known — `accept_navigation` only consults `target_known`
+// when `target` is `Some` — so this never has to ask the store for it.
+fn target_exists(
+  runtime: Runtime,
+  target: Option(EntryId),
+) -> Result(Bool, ApiError) {
+  case target {
+    None -> Ok(True)
+    Some(entry) ->
+      writer.get_entries(writer_subject(runtime), [entry])
+      |> result.map(dict.has_key(_, entry))
+      |> result.map_error(fn(error) {
+        ReadFailed(reason: describe_storage(error))
+      })
+  }
 }
 
 /// Enqueues a steer item onto the open run and rings the doorbell.
@@ -625,6 +714,34 @@ pub fn create_strand(
   adopt_strand(runtime, named: name, brief:)
 }
 
+/// Seeds a named strand's three registers and starts its driver, exactly
+/// as `create_strand` does, but accepts no brief: the strand exists and
+/// sits idle until something prompts it. The `fork`/`create_strand`
+/// protocol commands make strands this way — a human names or forks a
+/// strand and prompts it afterward, on its own schedule.
+///
+/// Because no run is accepted here, `BriefRejected` can never be this
+/// call's error; it still appears in `CreateStrandError` because the type
+/// is shared with `create_strand`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.create_idle_strand(runtime, named: "sub:1", configuration: config,
+/// //   at: Some(fork_point))
+/// ```
+///
+pub fn create_idle_strand(
+  runtime: Runtime,
+  named name: String,
+  configuration configuration: StrandConfiguration,
+  at fork_point: Option(EntryId),
+) -> Result(Nil, CreateStrandError) {
+  use Nil <- result.try(validate_fork_point(runtime, fork_point))
+  use Nil <- result.try(seed_strand(runtime, name, configuration, fork_point))
+  start_driver(runtime, name)
+}
+
 /// Starts the driver for an **already-seeded** strand and accepts `brief`
 /// as a run on it — the second half of `create_strand`, on its own.
 ///
@@ -650,12 +767,7 @@ pub fn adopt_strand(
   named name: String,
   brief brief: List(AgentMessage),
 ) -> Result(OpId, CreateStrandError) {
-  use Nil <- result.try(
-    supervisor.start_strand(runtime.tree, name)
-    |> result.map_error(fn(error) {
-      StartFailed(reason: describe_start_error(error))
-    }),
-  )
+  use Nil <- result.try(start_driver(runtime, name))
   let subagent = on_strand(runtime, name)
   case accept_quietly(subagent, brief) {
     Error(error) -> Error(BriefRejected(error:))
@@ -664,6 +776,19 @@ pub fn adopt_strand(
       Ok(operation)
     }
   }
+}
+
+// The driver-start half `adopt_strand` and `create_idle_strand` share:
+// start (or find already alive) the named strand's driver under the
+// existing StrandSupervisor.
+fn start_driver(
+  runtime: Runtime,
+  name: String,
+) -> Result(Nil, CreateStrandError) {
+  supervisor.start_strand(runtime.tree, name)
+  |> result.map_error(fn(error) {
+    StartFailed(reason: describe_start_error(error))
+  })
 }
 
 /// The operation a terminal result belongs to.

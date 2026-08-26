@@ -115,7 +115,6 @@ import runtime/api
 import runtime/effects
 import runtime/escalation as runtime_escalation
 import runtime/hooks
-import runtime/supervisor
 import runtime/writer
 import session/session
 import storage/storage
@@ -2217,9 +2216,10 @@ fn unique_name_loop(existing: List(String), base: String, n: Int) -> String {
 }
 
 // Seeds a briefless strand (the api's `create_strand` always accepts a
-// task-brief run; protocol fork/create_strand make idle strands) the
-// way the api seeds one: three registers in one CAS-guarded commit
-// through the session's writer, then the driver via the factory.
+// task-brief run; protocol fork/create_strand make idle strands) through
+// `api.create_idle_strand`: the same three-register CAS-guarded commit
+// the api's own `create_strand` seeds with, then the driver via the
+// factory — just without a brief run accepted on top.
 fn seed_and_reply(
   state: State,
   connection: Int,
@@ -2228,43 +2228,10 @@ fn seed_and_reply(
   configuration: machine_strand.StrandConfiguration,
   leaf: Option(EntryId),
 ) -> State {
-  let seed =
-    tx.Tx(
-      writes: [
-        tx.SetRegister(
-          ns: register.StrandConfig,
-          key: name,
-          value: register.value(machine_codec.encode_configuration(
-            configuration,
-          )),
-        ),
-        tx.SetRegister(
-          ns: register.StrandLeaf,
-          key: name,
-          value: register.leaf_value(leaf),
-        ),
-        tx.SetRegister(
-          ns: register.StrandState,
-          key: name,
-          value: register.value(
-            machine_codec.encode_strand_state(
-              machine_strand.StrandState(
-                current_operation: None,
-                pending_next_run: [],
-              ),
-            ),
-          ),
-        ),
-      ],
-      expected: [
-        tx.Expect(ns: register.StrandConfig, key: name, seq: None),
-        tx.Expect(ns: register.StrandLeaf, key: name, seq: None),
-        tx.Expect(ns: register.StrandState, key: name, seq: None),
-      ],
-    )
-  let writer_subject = process.named_subject(state.runtime.tree.writer)
-  case writer.commit(writer_subject, seed) {
-    Error(tx.StaleExpectation(..)) -> {
+  case
+    api.create_idle_strand(state.runtime, named: name, configuration:, at: leaf)
+  {
+    Error(api.StrandExists(name:)) -> {
       reply_error(
         state,
         connection,
@@ -2274,7 +2241,9 @@ fn seed_and_reply(
       )
       state
     }
-    Error(_) -> {
+    Error(api.UnknownForkPoint(..))
+    | Error(api.SeedFailed(..))
+    | Error(api.BriefRejected(..)) -> {
       reply_error(
         state,
         connection,
@@ -2284,14 +2253,12 @@ fn seed_and_reply(
       )
       state
     }
-    Ok(_) -> {
-      case supervisor.start_strand(state.runtime.tree, name) {
-        Ok(Nil) -> Nil
-        // The registers are durable; the booter starts the driver on
-        // the next tree boot. Report nothing in-band — the strand
-        // exists.
-        Error(_) -> Nil
-      }
+    // The registers are durable; the booter starts the driver on the
+    // next tree boot even if `start_driver` could not right now. Report
+    // nothing in-band — the strand exists (mirrors `create_strand`'s own
+    // seed-then-start split: a start failure never unwinds a seed that
+    // already landed).
+    Ok(Nil) | Error(api.StartFailed(..)) -> {
       let state = pull_and_broadcast(state)
       reply(state, connection, id, strands_snapshot(state))
       state
@@ -2326,23 +2293,18 @@ fn navigate(
     connection,
     id,
   )
-  let target_known = case
-    storage.get_entries(state.runtime.session.store, [target])
-  {
-    Ok(found) -> dict.has_key(found, target)
-    Error(_) -> False
-  }
-  let request =
-    acceptance.AcceptNavigation(
-      target: Some(target),
-      summarize: False,
-      label: None,
-      custom_instructions: None,
-      preparation: None,
-      target_known:,
-    )
   use op <- or_reply(
-    accept_structural(state, strand, request),
+    result.map_error(
+      api.navigate(
+        api.on_strand(state.runtime, strand),
+        to: Some(target),
+        summarize: False,
+        label: None,
+        custom_instructions: None,
+        preparation: None,
+      ),
+      describe_api_error(_, strand),
+    ),
     state,
     connection,
     id,
@@ -2364,13 +2326,15 @@ fn compact(
   instructions: Option(String),
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  let request =
-    acceptance.AcceptCompaction(
-      custom_instructions: instructions,
-      preparation: compaction_preparation(state, strand),
-    )
   use op <- or_reply(
-    accept_structural(state, strand, request),
+    result.map_error(
+      api.compact(
+        api.on_strand(state.runtime, strand),
+        custom_instructions: instructions,
+        preparation: compaction_preparation(state, strand),
+      ),
+      describe_api_error(_, strand),
+    ),
     state,
     connection,
     id,
@@ -2409,85 +2373,9 @@ fn compaction_preparation(
   }
 }
 
-// Compaction and navigation have no `runtime/api` entry point yet, so
-// the gateway builds their acceptance the way the api builds a run's
-// and commits it through the same writer (the conformance simulation
-// runner's pattern). Nothing is bypassed: the plan comes from
-// `machine/acceptance`, the commit from the session's one committer.
-fn accept_structural(
-  state: State,
-  strand: String,
-  request: acceptance.AcceptRequest,
-) -> Result(OpId, #(String, String)) {
-  accept_structural_loop(state, strand, request, 4)
-}
-
-fn accept_structural_loop(
-  state: State,
-  strand: String,
-  request: acceptance.AcceptRequest,
-  attempts: Int,
-) -> Result(OpId, #(String, String)) {
-  use <- lazy_guard_attempts(attempts)
-  let store = state.runtime.session
-  case session.strand_state(store, strand), session.strand_leaf(store, strand) {
-    Ok(Some(state_cell)), Ok(leaf_cell) -> {
-      let #(now, _clock) = clock.read(state.runtime.effects.clock)
-      let leaf = case leaf_cell {
-        Some(cell) -> cell.value
-        None -> None
-      }
-      let leaf_seq = case leaf_cell {
-        Some(cell) -> Some(cell.seq)
-        None -> None
-      }
-      let plan =
-        acceptance.accept_prompt(
-          request,
-          acceptance.AcceptCtx(
-            strand:,
-            now:,
-            generator: ids.generator(
-              clock.fixed(at: now),
-              seed: state.runtime.effects.entropy(),
-            ),
-            strand_state: state_cell.value,
-            strand_state_seq: state_cell.seq,
-            leaf:,
-            leaf_seq:,
-            settings: state.runtime.settings,
-            pending: dict.new(),
-          ),
-        )
-      use acceptance.AcceptancePlan(operation:, tx: plan_tx, ..) <- result.try(
-        result.map_error(plan, describe_reject),
-      )
-      case
-        writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
-      {
-        Ok(_) -> Ok(operation.id)
-        Error(tx.StaleExpectation(..)) ->
-          accept_structural_loop(state, strand, request, attempts - 1)
-        Error(_) ->
-          Error(#(protocol.code_internal, "the acceptance commit failed"))
-      }
-    }
-    _, _ ->
-      Error(#(protocol.code_internal, "the strand registers are unreadable"))
-  }
-}
-
-fn lazy_guard_attempts(
-  attempts: Int,
-  continue: fn() -> Result(OpId, #(String, String)),
-) -> Result(OpId, #(String, String)) {
-  case attempts <= 0 {
-    True ->
-      Error(#(protocol.code_conflict, "the admission kept losing its seq race"))
-    False -> continue()
-  }
-}
-
+// Shared with `describe_api_error`: an `AcceptRejected` carries one of
+// these, whether it came from `api.compact`, `api.navigate`, or a run
+// acceptance.
 fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
   case reason {
     acceptance.StrandBusy -> #(
