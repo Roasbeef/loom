@@ -812,29 +812,106 @@ pub fn apply(
   case control.runtime(ctl) {
     None -> Nil
     Some(runtime) -> {
+      // Each admission reports whether it landed, and a refusal that
+      // should not have happened is recorded rather than dropped. Every
+      // `api.ApiError` reaches the caller having written nothing, so a
+      // refused steer is a turn the transcript has permanently lost:
+      // from there the faulted run is a different conversation from the
+      // fault-free one, and the runner would report it one check later
+      // as an unexplained one-turn divergence rather than as the
+      // harness fault it is.
+      //
+      // The note goes to `control.note`, which the runner collects into
+      // `Report.violations` and fails the seed on. Recording the drop
+      // rather than rescheduling around it is deliberate: seeds are
+      // drawn against the fault schedule, so adding a step to it would
+      // renumber every commit-indexed fault and retire the pinned
+      // corpus as a before/after oracle. A note changes no schedule,
+      // and on a green run this path does not fire at all.
       let act = fn() {
         case intervention {
           script.Steer(text:, ..) ->
-            discard(api.steer_quietly(runtime, user(text)))
+            landed("steer", api.steer_quietly(runtime, user(text)))
           script.FollowUp(text:, ..) ->
-            discard(api.follow_up(runtime, user(text)))
-          script.Abort(..) -> api.abort(runtime)
+            landed("follow-up", api.follow_up(runtime, user(text)))
+          // Abort is fire-and-forget by design (api §4.6): it returns
+          // nothing to honor, and the runner already treats an aborted
+          // run's transcript as a race rather than a convergence claim.
+          script.Abort(..) -> {
+            api.abort(runtime)
+            Ok(Nil)
+          }
+        }
+      }
+      let record = fn(verdict) {
+        case verdict, landing(intervention) {
+          Ok(Nil), _ -> Nil
+          Error(dropped), MustLand -> control.note(ctl, dropped)
+          // A refusal this trigger is entitled to. Marked so the run
+          // still reports that it happened, since a mark costs a
+          // coverage line and a note costs the seed.
+          Error(_dropped), MayBeRefused ->
+            control.mark(ctl, "admission-refused-late")
         }
       }
       case awaited {
-        True -> {
-          let _outcome = control.attempt(act, within_ms: 2000)
-          Nil
-        }
-        False -> control.detached(act)
+        True ->
+          case control.attempt(act, within_ms: 2000) {
+            Some(verdict) -> record(verdict)
+            // The admission did not answer inside the window, or the
+            // disposable process carrying it died addressing a tree
+            // that was mid-restart. Neither says the commit failed — it
+            // may have landed with only the reply lost — so this is
+            // marked, not noted: faulting the seed here would fail it
+            // for something the harness cannot prove. A steer that
+            // truly vanished still fails, one check later, on the
+            // line-for-line projection comparison.
+            None -> control.mark(ctl, "admission-unobserved")
+          }
+        False -> control.detached(fn() { record(act()) })
       }
     }
   }
 }
 
-fn discard(outcome: Result(a, b)) -> Nil {
+// What an intervention's trigger entitles its admission to.
+type Landing {
+  /// The queue must accept it; a refusal is a harness fault.
+  MustLand
+  /// A refusal is the documented outcome, not a drop.
+  MayBeRefused
+}
+
+// A live trigger fires from inside an effect that belongs to an open
+// run, so the queue is there to accept it. `AtTerminalCommit` fires
+// after the terminal transaction is already durable, where the
+// operation the item would attach to no longer exists — and whether a
+// later operation catches the item instead is a race with no property
+// behind it (see the note on `script.live_trigger`).
+fn landing(intervention: script.Intervention) -> Landing {
+  case script.trigger_of(intervention) {
+    script.DuringTurn(..) | script.DuringCall(..) -> MustLand
+    script.AtTerminalCommit -> MayBeRefused
+  }
+}
+
+// One admission's verdict, worded as the note the runner would print.
+// Every `api.ApiError` reaches here having written nothing, so a refusal
+// is always a wholly lost turn and never a partial one.
+fn landed(
+  what: String,
+  outcome: Result(a, api.ApiError),
+) -> Result(Nil, String) {
   case outcome {
-    Ok(_) | Error(_) -> Nil
+    Ok(_) -> Ok(Nil)
+    Error(error) ->
+      Error(
+        "admission/"
+        <> what
+        <> ": refused with "
+        <> string.inspect(error)
+        <> ", so the transcript lost a turn",
+      )
   }
 }
 
