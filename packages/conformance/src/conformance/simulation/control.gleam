@@ -18,10 +18,25 @@
 //// left, why it cannot be made logical, and how a run that touched it
 //// says so — `Report.waits` in the runner is fed from here.
 ////
+//// And it is the rendezvous `await_intervention`/`take_pending_
+//// interventions` use to move a scripted intervention's *decision* out
+//// of the effect it used to fire from. A `DuringTurn`/`DuringCall`
+//// trigger is reached from inside a real effect process — one a
+//// `RestartStrand` fault can reap mid-flight — and an effect that fired
+//// the intervention itself, via `attempt`, was the thing meant to
+//// observe and record what became of it; reaping that effect before
+//// `attempt` returned meant the observation never happened; even the
+//// bare `intervening@path` the claim opened could go unexplained. The
+//// runner never sits inside the tree a fault schedule can reach, so it
+//// is the one thing safe to hand the admission to; the effect merely
+//// registers that it has reached a live trigger and blocks until the
+//// runner has fired whatever the script placed there and let it go.
+////
 //// This module is test infrastructure: `let assert` appears here (as in
 //// `conformance/storage_suite`) because a runner whose control actor
 //// will not start has nothing to say.
 
+import conformance/simulation/script.{type Trigger}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
@@ -52,6 +67,8 @@ pub opaque type Message {
   Waits(reply: Subject(List(String)))
   ClaimIntervention(key: String, path: String, reply: Subject(Bool))
   Intervened(path: String)
+  AwaitIntervention(trigger: Trigger, reply: Subject(Nil))
+  TakePendingInterventions(reply: Subject(List(#(Trigger, Subject(Nil)))))
   Mark(path: String)
   Marks(reply: Subject(List(String)))
   Shutdown
@@ -70,6 +87,7 @@ type State {
     notes: List(String),
     waits: List(String),
     marks: Set(String),
+    pending_interventions: List(#(Trigger, Subject(Nil))),
   )
 }
 
@@ -88,19 +106,22 @@ pub type Control {
 ///
 pub fn start() -> Control {
   let assert Ok(started) =
-    actor.new(State(
-      counters: dict.new(),
-      claimed: set.new(),
-      commits: 0,
-      events: 0,
-      runtime: None,
-      armed: False,
-      seam_open: False,
-      crashed: False,
-      notes: [],
-      waits: [],
-      marks: set.new(),
-    ))
+    actor.new(
+      State(
+        counters: dict.new(),
+        claimed: set.new(),
+        commits: 0,
+        events: 0,
+        runtime: None,
+        armed: False,
+        seam_open: False,
+        crashed: False,
+        notes: [],
+        waits: [],
+        marks: set.new(),
+        pending_interventions: [],
+      ),
+    )
     |> actor.on_message(handle)
     |> actor.start
     as "the simulation control actor must start"
@@ -220,6 +241,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(
         State(..state, waits: ["intervened@" <> path, ..state.waits]),
       )
+    // Registering the wait and handing out the reply subject are the
+    // same actor step as everything else here, which is what lets the
+    // runner discover "an effect is waiting on this trigger" with
+    // nothing lost between the effect asking and the runner looking.
+    AwaitIntervention(trigger:, reply:) ->
+      actor.continue(
+        State(..state, pending_interventions: [
+          #(trigger, reply),
+          ..state.pending_interventions
+        ]),
+      )
+    // Taking the queue clears it in the same step, so a trigger the
+    // runner has just serviced cannot be handed out to it (or to a
+    // corroboration re-run's own control actor, which starts fresh
+    // anyway) a second time.
+    TakePendingInterventions(reply:) -> {
+      process.send(reply, list.reverse(state.pending_interventions))
+      actor.continue(State(..state, pending_interventions: []))
+    }
     Mark(path:) ->
       actor.continue(State(..state, marks: set.insert(state.marks, path)))
     Marks(reply:) -> {
@@ -532,6 +572,64 @@ pub fn claim_intervention(ctl: Control, key: String, path: String) -> Bool {
 ///
 pub fn intervened(ctl: Control, path: String) -> Nil {
   process.send(ctl.subject, Intervened(path:))
+}
+
+/// Registers that a running effect has reached `trigger` and blocks
+/// until the runner has fired every scripted intervention due there and
+/// released it.
+///
+/// This is the handoff #57 exists for. Firing an intervention from
+/// inside the effect that reached its trigger ties the admission's fate
+/// to that effect's own process, and a `RestartStrand` fault reaps
+/// exactly that process — taking the claim and the carrier down before
+/// the admission ever lands, with nothing else positioned to retry it.
+/// The runner's own process is never a target of any fault in the
+/// taxonomy, so handing the decision to it (via `take_pending_
+/// interventions`, serviced from the drive loop) is what makes a reap
+/// survivable: the caller here only has to survive long enough to be
+/// released, not to carry the admission itself.
+///
+/// The wait is bounded because it is still real milliseconds — the
+/// runner's poll cadence, not a promise — and a caller that gives up
+/// proceeds rather than hangs, exactly like `attempt`'s own deadlock
+/// backstop. In ordinary operation the runner services the queue on
+/// every drive pass, so this returns within a poll or two; reaching the
+/// bound is recorded, not silently absorbed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.await_intervention(ctl, script.DuringTurn(turn: 1), within_ms: 3000)
+/// ```
+///
+pub fn await_intervention(
+  ctl: Control,
+  trigger: Trigger,
+  within_ms within_ms: Int,
+) -> Nil {
+  let reply: Subject(Nil) = process.new_subject()
+  process.send(ctl.subject, AwaitIntervention(trigger, reply))
+  case process.receive(reply, within_ms) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> note_wait(ctl, "expired@await-intervention")
+  }
+}
+
+/// Takes every trigger currently awaiting the runner's attention,
+/// clearing the queue in the same step. The runner's drive loop calls
+/// this on every pass; each entry's reply subject is how it releases the
+/// effect that is blocked on `await_intervention`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.take_pending_interventions(ctl)
+/// ```
+///
+pub fn take_pending_interventions(
+  ctl: Control,
+) -> List(#(Trigger, Subject(Nil))) {
+  process.call_forever(ctl.subject, TakePendingInterventions)
 }
 
 /// Records that an `attempt` did not observe its reply, and how. The

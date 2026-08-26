@@ -1464,6 +1464,27 @@ fn pump(ctx: Context, op_id: OpId, remaining: Int) -> Result(LastResult, Nil) {
   pump_strand(ctx, strand, op_id, remaining)
 }
 
+// A scripted intervention's decision belongs here, not to whichever
+// effect happened to reach its trigger (issue #57). `surface.intervene`
+// registers the trigger and blocks; this drains that queue on every pass
+// through the drive loop and fires each one through `surface.fire_due`,
+// which is what actually admits it. The runner's own process is never a
+// target of any fault in the taxonomy, so a `RestartStrand` that reaps
+// the effect waiting on the release cannot also take the admission with
+// it — the admission already ran, on a carrier this call owns, before
+// that effect is ever resumed.
+fn service_interventions(ctx: Context) -> Nil {
+  case control.take_pending_interventions(ctx.ctl) {
+    [] -> Nil
+    due ->
+      list.each(due, fn(waiting) {
+        let #(trigger, reply) = waiting
+        surface.fire_due(ctx.ctl, ctx.script, trigger)
+        process.send(reply, Nil)
+      })
+  }
+}
+
 fn pump_strand(
   ctx: Context,
   strand_name: String,
@@ -1471,6 +1492,7 @@ fn pump_strand(
   remaining: Int,
 ) -> Result(LastResult, Nil) {
   use <- bool.guard(when: remaining <= 0, return: Error(Nil))
+  service_interventions(ctx)
   case terminal_on(ctx.raw, strand_name, op_id) {
     // A terminal result is visible before the writer has run the
     // post-commit seam for the transaction that wrote it, so taking

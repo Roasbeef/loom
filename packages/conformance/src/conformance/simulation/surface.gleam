@@ -749,36 +749,71 @@ fn kill_strand(ctl: Control, strand: String) -> Nil {
 
 // --- interventions --------------------------------------------------------
 
-// Everything this trigger is due fires together, on one disposable
-// process, in script order.
+// A live trigger no longer fires its intervention itself. It used to —
+// and that was the bug (issue #57, diagnosed under #44): the effect
+// process reaching a `DuringTurn`/`DuringCall` trigger is exactly the
+// process a `RestartStrand` fault reaps, and firing from inside it meant
+// the claim and the carrier could die together, with nothing else ever
+// positioned to retry the scripted turn. So this only asks whether the
+// script has anything due here — a pure, cheap check that keeps every
+// ordinary effect (the overwhelming majority, scripted with nothing
+// concurrent at all) from paying for a round trip — and, when it does,
+// hands the trigger to the runner and blocks. The runner is never inside
+// the tree a schedule can reach, so it is what actually fires the
+// intervention, in `fire_due`, from its own drive loop.
 //
-// A steer and a follow-up scripted at the same turn are two halves of
-// one scripted moment, and the trigger that names them is a *phase* —
-// once the first of them commits, the projection has moved and that
-// phase never comes round again. Firing them one process at a time
-// leaves the gap between them exposed to the dying strand incarnation's
-// reaper: it lands in the gap, takes the effect process down before the
-// second admission is even attempted, and the second turn is gone for
-// the rest of the run. One unlinked carrier makes the group
-// all-or-nothing with respect to that.
-//
-// Measured honestly, closing this window did not move the observed rate
-// of the divergence it was suspected of causing (issue #44, seed 53):
-// the dominant cause is a carrier that is itself lost, which no
-// arrangement of the callers can prevent and which the run records
-// instead. The window was real, so it is closed; it was not the bug.
+// The block is still what makes `steer-during-effect` mean anything: the
+// caller does not resume — and so does not send its settlement — until
+// the runner reports the intervention landed, which is what lets the
+// settlement lose its seq race to the steer by construction rather than
+// by luck.
 fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
   case trigger {
     None -> Nil
     Some(trigger) ->
-      case
-        list.filter(script.interventions, fn(intervention) {
-          script.trigger_of(intervention) == trigger
-        })
-      {
+      case interventions_due(script, trigger) {
         [] -> Nil
-        [_, ..] as due -> apply_all(ctl, due, awaited: True)
+        [_, ..] -> control.await_intervention(ctl, trigger, within_ms: 3000)
       }
+  }
+}
+
+fn interventions_due(
+  script: Script,
+  trigger: Trigger,
+) -> List(script.Intervention) {
+  list.filter(script.interventions, fn(intervention) {
+    script.trigger_of(intervention) == trigger
+  })
+}
+
+/// Fires every intervention scripted at `trigger`, together. Called from
+/// the runner's drive loop once it has taken a pending trigger off
+/// `control.take_pending_interventions` — never from inside an effect;
+/// see `intervene`'s comment for why that distinction is the whole
+/// point.
+///
+/// Everything due at one trigger fires on one disposable process, in
+/// script order. A steer and a follow-up scripted at the same turn are
+/// two halves of one scripted moment, and the trigger that names them is
+/// a *phase* — once the first of them commits, the projection has moved
+/// and that phase never comes round again. Firing them one process at a
+/// time would leave the gap between them exposed to the dying strand
+/// incarnation's reaper: it lands in the gap, takes the carrier down
+/// before the second admission is even attempted, and the second turn is
+/// gone for the rest of the run. One unlinked carrier makes the group
+/// all-or-nothing with respect to that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.fire_due(ctl, script, script.DuringTurn(turn: 1))
+/// ```
+///
+pub fn fire_due(ctl: Control, script: Script, trigger: Trigger) -> Nil {
+  case interventions_due(script, trigger) {
+    [] -> Nil
+    [_, ..] as due -> apply_all(ctl, due, awaited: True)
   }
 }
 
