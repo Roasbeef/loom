@@ -1815,11 +1815,14 @@ fn read_decoded(
   case cell {
     None -> Ok(None)
     Some(storage.Register(value:, seq:)) ->
+      // The message is built only on the decode failure. Concatenating
+      // it eagerly would run on every successful register read, and
+      // this is the drive loop's read path.
       decode(value.payload)
       |> result.map(fn(payload) { Some(#(seq, payload)) })
-      |> result.replace_error(
-        "a stored register payload failed to decode: " <> key,
-      )
+      |> result.map_error(fn(_) {
+        "a stored register payload failed to decode: " <> key
+      })
   }
 }
 

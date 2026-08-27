@@ -781,16 +781,18 @@ pub fn provider_request(
       // request in band. The fallback keeps this function total and
       // deliberately carries nothing — sending a strand's context under
       // a summarization intent would be worse than sending nothing.
-      result.unwrap(
-        summary_provider_request(config, spec),
+      // Lazily: `request_target` resolves the model catalogue, and an
+      // eager fallback would run that resolution on every summary
+      // request only to discard it on the path that always succeeds.
+      result.lazy_unwrap(summary_provider_request(config, spec), fn() {
         ProviderRequest(
           target: request_target(config, configuration),
           system: None,
           messages: [],
           tools: [],
           max_output_tokens: None,
-        ),
-      )
+        )
+      })
     effects.GenerationRequest(configuration:, context:, ..) ->
       generation_request(config, configuration, context)
     effects.PollRequest(configuration:, ..) ->
