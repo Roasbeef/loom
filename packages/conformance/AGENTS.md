@@ -25,9 +25,12 @@ them from their own test mains.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
   semantic half: what the session is *asked* to do. `Script.subagent` is
   the multi-strand coda: an optional brief that spawns a subagent strand
-  and sends its findings back to main. `Script.parallel` runs tool
-  batches under `tool_execution: Parallel` (a parallel script always
-  carries a two-call batch, so the overlapping frontier is real);
+  and sends its findings back to main. `Script.parallel` *chooses* the
+  batch mode — `Parallel` when set (a parallel script always carries a
+  two-call batch, so the overlapping frontier is real), `Sequential`
+  when not. It names both rather than inheriting `api.default_options`,
+  which now ships `Parallel`; inheriting would make every seed a
+  parallel seed and lose half the oracle's coverage.
   `Script.escalate` drives the durable escalation machinery — the first
   clearance raises an escalation scoped to exactly that call, approves
   it, and restarts the strand driver so the same durable coordinates

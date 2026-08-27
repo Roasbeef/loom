@@ -131,10 +131,13 @@ pub type Script {
     /// completion sent back to the main strand as a durable
     /// cross-strand message that starts one more run there.
     subagent: Option(String),
-    /// Run tool batches under `tool_execution: Parallel`, so multi-call
-    /// batches overlap their effects and the per-call clearance frontier
-    /// is exercised (a parallel script always carries at least one
-    /// two-call batch).
+    /// Which batch mode to run tool batches under: `Parallel` when set,
+    /// so multi-call batches overlap their effects and the per-call
+    /// clearance frontier is exercised (a parallel script always carries
+    /// at least one two-call batch), and `Sequential` when not. The
+    /// runner names both modes rather than inheriting the shipped
+    /// default, which is `Parallel` — inheriting it would make every
+    /// seed a parallel seed.
     parallel: Bool,
     /// Drive the durable escalation machinery: the first tool clearance
     /// raises an escalation scoped to exactly that call, approves it,
