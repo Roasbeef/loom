@@ -437,3 +437,134 @@ pub fn off_mode_unaffected_by_proxy_downgrade_test() {
     process.receive(events, 1000)
   broker.stop(started)
 }
+
+// --- a full pool is congestion, not a refusal ----------------------------
+
+// A broker over a real pool of `size` fake helpers, so exhaustion is the
+// pool's own `AllBusy` rather than a seam that pretends.
+fn broker_over_pool(
+  script: fake_helper.Script,
+  size size: Int,
+) -> #(broker.Broker, exec.Pool) {
+  let assert Ok(pool) =
+    exec.start_pool(size:, spawn: fn() { Ok(fake_helper.start_helper(script)) })
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { exec.checkout(pool, waiting: 2000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+  #(started, pool)
+}
+
+// Clears a call from a process of its own and reports the verdict, so a
+// caller that waits for pool capacity can be observed waiting.
+fn clear_elsewhere(
+  started: broker.Broker,
+  spec: broker.CallSpec,
+  waiting timeout: Int,
+) -> Subject(Result(broker.CallHandle, broker.Refusal)) {
+  let verdicts = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let events = process.new_subject()
+    process.send(
+      verdicts,
+      broker.clear_call(started, spec, events:, waiting: timeout),
+    )
+  })
+  verdicts
+}
+
+/// A second call against a one-helper pool waits for the first to settle
+/// instead of coming back `NoHelper` — the batch-wider-than-the-pool
+/// case, which is the whole reason a parallel batch is not capped by the
+/// pool's size. It is also the deadlock proof: the wait can only end
+/// because the broker went on processing the settlement of the very call
+/// whose helper is being waited for.
+pub fn a_full_pool_waits_for_a_settlement_test() {
+  let #(started, pool) = broker_over_pool(fake_helper.SleepUntilCancel, size: 1)
+  let events = process.new_subject()
+  let assert Ok(first) =
+    broker.clear_call(started, spec(op()), events:, waiting: 5000)
+  // The only helper is lent out. The second call is *waiting*: no
+  // verdict of any kind has been handed back.
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 5000)
+  assert process.receive(verdicts, 300) == Error(Nil)
+  // Settling the first call frees the helper, and the waiter takes it.
+  broker.cancel(started, first)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 3000)
+  let assert Ok(Ok(_second)) = process.receive(verdicts, 3000)
+  broker.stop(started)
+  exec.stop_pool(pool)
+}
+
+/// The wait is bounded, not indefinite: a caller that gives clearance a
+/// short budget still gets its answer, and the answer still names the
+/// pool. This is what keeps a nested borrower degrading into today's
+/// refusal rather than into a stall.
+pub fn a_full_pool_still_refuses_once_the_budget_is_spent_test() {
+  let #(started, pool) = broker_over_pool(fake_helper.SleepUntilCancel, size: 1)
+  let events = process.new_subject()
+  let assert Ok(_first) =
+    broker.clear_call(started, spec(op()), events:, waiting: 5000)
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 120)
+  let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 1)))) =
+    process.receive(verdicts, 3000)
+  broker.stop(started)
+  exec.stop_pool(pool)
+}
+
+/// A pool that lends nothing is not congested — nothing is running, so
+/// nothing will be checked back in — and waiting on one would only spend
+/// the caller's whole clearance budget to reach the same answer. The
+/// refusal comes straight back.
+pub fn a_pool_that_lends_nothing_refuses_at_once_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { Error(exec.AllBusy(size: 0)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  // The clearance budget is five seconds; the verdict must not take it.
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 5000)
+  let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 0)))) =
+    process.receive(verdicts, 500)
+  broker.stop(started)
+}
+
+/// Waiting for a helper holds nothing. The broker's checkout-failure
+/// path hands the reserved budget slot back and revokes the minted token
+/// before it answers, so a caller parked on a full pool is not silently
+/// spending the execution's pooled `max_outstanding` while it waits.
+/// The probe is a third call under a ledger capped at two: if the parked
+/// caller still held a slot it would be refused by the *budget*, and
+/// instead it gets all the way to the pool.
+pub fn a_waiting_call_holds_no_budget_slot_test() {
+  let #(started, pool) = broker_over_pool(fake_helper.SleepUntilCancel, size: 1)
+  let op_id = op()
+  let two_at_a_time = capped_spec(op_id, 2)
+  let events = process.new_subject()
+  let assert Ok(first) =
+    broker.clear_call(started, two_at_a_time, events:, waiting: 5000)
+  let parked = clear_elsewhere(started, two_at_a_time, waiting: 5000)
+  assert process.receive(parked, 300) == Error(Nil)
+  // The ledger's second slot is free, so the probe reaches the pool and
+  // is turned away by *it* — the parked caller is holding neither.
+  let probe = clear_elsewhere(started, two_at_a_time, waiting: 120)
+  let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 1)))) =
+    process.receive(probe, 3000)
+  // And the parked caller still gets its helper when one comes back.
+  broker.cancel(started, first)
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(events, 3000)
+  let assert Ok(Ok(_second)) = process.receive(parked, 3000)
+  broker.stop(started)
+  exec.stop_pool(pool)
+}

@@ -779,6 +779,9 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
       failure("execution budget refused the call: " <> budget_text(refusal))
     broker.MintRefused(error: _) ->
       failure("the broker could not mint a capability token")
+    // Reaching the model at all means the clearance already waited out
+    // its whole budget on a full pool (`broker.clear_call`), so this is
+    // sustained saturation rather than an ordinary wide batch.
     broker.NoHelper(error:) ->
       failure("no sandbox helper available: " <> checkout_text(error))
     broker.BrokerUnavailable -> failure("the tool broker is unavailable")

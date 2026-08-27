@@ -30,6 +30,19 @@
 //// before an abort never frees budget of a later ledger under the same
 //// key.
 ////
+//// ## A full pool is congestion, not a refusal
+////
+//// The pool is a real resource ceiling — every helper is an OS process
+//// running bwrap and a jail — and a parallel tool batch can easily be
+//// wider than it. `clear_call` therefore waits out a full pool in the
+//// *caller's* process and retries, within the caller's own `waiting`
+//// budget, rather than handing the model a resource error for the
+//// third call of a batch of five. The wait cannot be moved inside the
+//// broker: the broker checks helpers out synchronously inside its own
+//// message handler and checks them back in from `Settle`, so a broker
+//// that parked on a checkout would be waiting for something only its
+//// own message loop could release. See `clear_awaiting_helper`.
+////
 //// ## Network proxy mode fails closed (phase 1)
 ////
 //// The egress proxy sidecar is unimplemented, so a composed policy
@@ -57,6 +70,7 @@ import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -144,7 +158,10 @@ pub type Refusal {
   BudgetRefused(refusal: budget.Refusal)
   /// Token minting failed (entropy fault).
   MintRefused(error: token.MintError)
-  /// No helper could be borrowed.
+  /// No helper could be borrowed. For a full pool this arrives only
+  /// after `clear_call` spent the caller's whole `waiting` budget on the
+  /// congestion — the ordinary batch-wider-than-the-pool case waits and
+  /// then runs rather than reaching here.
   NoHelper(error: exec.CheckoutError)
   /// The broker's internal relay could not start.
   BrokerUnavailable
@@ -276,16 +293,93 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
 /// `CallSettled(CallFailed(_))`, e.g. a degraded helper against a
 /// `FullEnforcement` demand). On `Error` nothing was dispatched and no
 /// event will arrive.
+///
+/// `waiting` bounds two different things, deliberately: each exchange
+/// with the broker actor, and — as one budget, not per attempt — the
+/// total time this call may spend waiting out a full helper pool. A
+/// batch wider than the pool is congestion, not a verdict about any
+/// call in it, so it waits here rather than coming back as a resource
+/// error the model has to read (see `clear_awaiting_helper`).
 pub fn clear_call(
   broker: Broker,
   spec: CallSpec,
   events events: Subject(CallEvent),
   waiting timeout: Int,
 ) -> Result(CallHandle, Refusal) {
-  process.call(broker.subject, waiting: timeout, sending: fn(reply) {
-    ClearCall(spec:, events:, reply:)
-  })
+  clear_awaiting_helper(broker, spec, events, timeout, timeout)
 }
+
+// Clears, and on a full pool waits for a slot instead of refusing.
+//
+// **The wait happens here, in the borrower's own process, and that is
+// the whole design.** The broker calls its `checkout` seam
+// synchronously inside its own message handler, and the only thing that
+// ever returns a helper is `checkin`, which the broker reaches from
+// `Settle` and `RelayDown` — messages it can only process while it is
+// not blocked. A pool that deferred its checkout reply, or a broker
+// that parked on one, would therefore be waiting for a resource that
+// only its own message loop can release: a deadlock by construction.
+// Retrying from outside the broker cannot hit that, because the broker
+// stays free to settle the very calls whose helpers this one is waiting
+// for.
+//
+// Nothing is held across the wait. The broker's helper-checkout failure
+// path already hands back the reserved budget slot and revokes the
+// minted token before it answers, so a waiting caller owns no ledger
+// slot, no token and no helper — progress depends only on the running
+// executions ending, which their own wall deadlines guarantee.
+//
+// The wait is bounded rather than indefinite, which is what keeps a
+// nested borrower (a code-mode satellite holding one helper while its
+// capability calls ask for another) degrading into the same refusal it
+// gets today instead of into a stall. Waiters are not queued, so a
+// contended pool hands slots out in no particular order; every waiter
+// still leaves within its own budget.
+fn clear_awaiting_helper(
+  broker: Broker,
+  spec: CallSpec,
+  events: Subject(CallEvent),
+  timeout: Int,
+  remaining: Int,
+) -> Result(CallHandle, Refusal) {
+  let outcome =
+    process.call(broker.subject, waiting: timeout, sending: fn(reply) {
+      ClearCall(spec:, events:, reply:)
+    })
+  use <- bool.guard(
+    when: remaining <= 0 || !congested(outcome),
+    return: outcome,
+  )
+  let nap = int.min(remaining, helper_wait_interval_ms)
+  process.sleep(nap)
+  clear_awaiting_helper(broker, spec, events, timeout, remaining - nap)
+}
+
+// Whether a clearance came back because the pool is momentarily full,
+// as opposed to because something decided this call may not run. Only
+// `AllBusy` on a pool that has slots at all qualifies: a pool sized
+// zero lends nothing and is checked nothing back in, so waiting on one
+// would stall the caller for its whole budget to reach the same answer
+// (which is exactly the seam tests wire when they want a broker that
+// always refuses).
+fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
+  case outcome {
+    Error(NoHelper(error: exec.AllBusy(size:))) -> size > 0
+    Error(NoHelper(error: exec.SpawnFailed(error: _)))
+    | Error(PolicyRefused(denial: _))
+    | Error(InvalidPolicy(error: _))
+    | Error(BudgetRefused(refusal: _))
+    | Error(MintRefused(error: _))
+    | Error(BrokerUnavailable)
+    | Ok(_) -> False
+  }
+}
+
+// How long a caller naps between attempts while every helper slot is
+// lent out. Short against the lifetime of a jailed execution, so a
+// freed helper is picked up promptly; long enough that a waiter costs a
+// few dozen wakeups a second rather than a spin.
+const helper_wait_interval_ms = 25
 
 /// Streams stdin to a cleared call; `eof: True` closes the child's
 /// stdin after `data`. No-op once the call settled.
