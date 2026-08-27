@@ -96,14 +96,16 @@ over one session file. WP-L.
   fake on *neither* side of the protocol; only the model is scripted.
   Skips — loudly — when `tmux` or `go` is absent.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
-  child_name, is_subagent, frame_message, frame_brief}` — the Agency:
+  child_name, is_subagent, frame_message, frame_brief, result_contract,
+  result_schema_prefix}` — the Agency:
   `tools/agent`'s messaging seam implemented over a live runtime. `seam`
   closes over a process *name* so it can be built before `api.open`;
   `start` puts the returned runtime behind that name. Everything with
   teeth lives here — the descendant-only addressing rule, the depth and
   fan-out caps, the multi-handle wait loop, the lineage ledger's four
-  reconciliation branches, the lazy deadline reap, and the framing that
-  marks another agent's text as data.
+  reconciliation branches, the lazy deadline reap, the result contract a
+  spawn's `result_schema` writes and the child is judged against, and the
+  framing that marks another agent's text as data.
 - `client/codemode.{Config, Toolchain, seam, discover, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
@@ -393,6 +395,22 @@ over one session file. WP-L.
   `agent/{caller}/`; `agent_notes` with no prefix reads `agent/` and not
   the whole non-reserved fact namespace, which is what
   `api.facts(prefix: None)` would hand back.
+- **A result contract is enforced on the child's write, not on the
+  parent's read.** A spawn's `result_schema` is stored at
+  `result-schema/{child}` — written *before* the lineage cell, so a crash
+  between the two can leave a schema with no child and never a child
+  whose contract vanished — and quoted into the child's brief. The check
+  then runs inside `note`, on the child's own `agent_note` call, because
+  the child is the party that can repair the value and the moment it can
+  repair it cheaply is the run that produced it; checking only at the
+  join would tell the one party that cannot act. `wait` validates again
+  on the way out, not as a second authorization but because the cell
+  comes back out of the durable store and a value crossing that boundary
+  is decoded rather than trusted. The contract cell sits outside
+  `agent/`, which is the whole of what keeps it out of a model's reach:
+  `agent_note` prepends `agent/{caller}/` and `agent_notes` lists under
+  `agent/` alone, so a child can neither rewrite what it is judged
+  against nor read what its siblings were asked for.
 - **A report into a *finished* parent is refused.** `api.send_to_strand`
   accepts a fresh run when the target is idle, which would wake a
   finished parent with no human present — the exact property auto-

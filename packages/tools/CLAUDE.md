@@ -50,6 +50,15 @@ reported failure into something a model can repair from.
   crossing that seam. `Delivery` mirrors `runtime/api.Delivery` (which
   `tools` cannot import) the way `effects.ToolOutcome` mirrors the
   broker's `CallOutcome`.
+- `tools/agent.{ResultSchema, ResultField, FieldType, Mismatch,
+  TerminalResult}` plus `{parse_result_schema, render_result_schema,
+  result_fields, validate_result, describe_mismatch, type_name,
+  field_type_name}` — the result contract: the shape a parent may demand
+  of a child, and the verdict a join hands back beside the prose report.
+  A schema is the subset of JSON Schema `tool.object_schema` already
+  emits — an object of named properties with one closed-set type each —
+  and nothing wider; `parse_result_schema` is total and refuses what this
+  harness cannot enforce rather than accepting it and ignoring it.
 - `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
   parse back from `{strand}#{operation}`.
@@ -211,6 +220,23 @@ reported failure into something a model can repair from.
   span where one exists, and the allowlist it was judged against;
   compiler diagnostics cross verbatim. One round trip per rule is
   exactly what in-band repair exists to avoid.
+- **A result contract is a lower bound, refused loudly at both ends.** A
+  spawn may carry a `result_schema`; the child records the matching value
+  as an ordinary `agent_note` under `result_note_key`, and `Waited.Ready`
+  carries the verdict as a `TerminalResult` beside the prose `report` —
+  never instead of it, because prose is what a human and a reading model
+  want and typed JSON is what a program branching on `found.files` wants.
+  Three properties are load-bearing. A malformed schema is refused in the
+  shell, before the Agency is called, so the parent learns about its own
+  mistake in the turn it made it rather than after joining a child that
+  could never satisfy it. A mismatch always names both sides — the
+  schema in full and what actually arrived — because a refusal that says
+  only "did not match" costs the reader a round trip to learn what it
+  could have been told. And `NoResultAsked` is its own variant rather
+  than an empty `Result`, so a spawn that named no schema renders exactly
+  the text and exactly the details object it rendered before contracts
+  existed. Surplus fields in a result are not a failure: the contract
+  says what the child owes, not all it may say.
 - **`agent_send` is `ReplayNever`; the rest are `ReplaySafe`.** A send
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay
