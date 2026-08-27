@@ -3,9 +3,9 @@
 ////
 //// # Why this module exists
 ////
-//// The broker keys its pooled budget ledger by `{op_id, step_id}` — that
-//// pair *is* the execution identity a token is valid for, and one ledger
-//// is opened per live pair (`broker/budget`, and
+//// The broker keys its pooled budget ledger by `{op_id, step_id}` — the
+//// *batch* identity a token is valid for, and one ledger is opened per
+//// live pair (`broker/budget`, and
 //// `docs/adr/005-budget-pooling-granularity.md`, which fixes that keying
 //// as a decision rather than a default). A caller who mints a second
 //// identity therefore gets a second ledger: twice the `max_outstanding`
@@ -56,6 +56,30 @@
 //// its own copy of the identity fields, filled in by a caller who had no
 //// way to see that a sibling configuration had already been filled in
 //// differently.
+////
+//// # Two identities, and why only one of them is here
+////
+//// `{op_id, step_id}` is the **batch** identity the broker pools on;
+//// `{op_id, step_id, source_index}` is the **execution** identity.
+//// `code_mode` is `tool.Exclusive`, which forbids a concurrent start and
+//// nothing more, so one batch may hold two `code_mode` calls that run
+//// back to back sharing a pair. Everything that names a *path* therefore
+//// keys on the triple — `client/codemode.exec_root` digests it, and the
+//// cap socket and the token file derive from that root — while the ledger
+//// keys on the pair, deliberately (`docs/adr/005-budget-pooling-
+//// granularity.md`, "Two programs in one batch").
+////
+//// The source index is deliberately **not** a fourth field here, and the
+//// reason is the whole point of this module. What an `ExecIdentity`
+//// exports feeds exactly two things: ledger keys and `broker.CallSpec`s.
+//// ADR-005 requires a per-call coordinate to exist "without becoming a
+//// second axis of the budget key", and `ledger_keys` is one field-read
+//// away from whatever this value carries — so a source index stored here
+//// would sit beside the trigger, waiting for the next refactor to
+//// "complete" the key with the obviously-available third field and mint
+//// one ledger per call in a batch. That is an amplification the model
+//// controls, because the model authors the batch. A coordinate that
+//// names paths belongs where the paths are named.
 ////
 //// # The widening, and why it lives here
 ////

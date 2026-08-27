@@ -16,8 +16,12 @@
 //// Design §6.5 pools broker-side limits "per execution, not per call":
 //// one token backs many in-flight effects, and a token is valid for
 //// exactly one `{op_id, step_id}` (spec Part 1.4) — so that pair *is*
-//// the execution identity, and the broker holds one `budget.Ledger`
-//// per live `{op_id, step_id}`. Every clearance reserves against the
+//// the batch identity the broker pools on, and it holds one
+//// `budget.Ledger` per live `{op_id, step_id}`. (A batch may hold two
+//// `code_mode` calls, whose execution identity is
+//// `{op_id, step_id, source_index}`; that finer coordinate names paths
+//// and must never reach this key — ADR-005, "Two programs in one
+//// batch".) Every clearance reserves against the
 //// stored ledger (the first clearance for a key opens it with that
 //// call's budget; later clearances under the same key reserve against
 //// the stored budget, which their own budget field cannot widen), so

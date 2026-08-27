@@ -1284,7 +1284,7 @@ provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam:1454`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:504`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:514`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it

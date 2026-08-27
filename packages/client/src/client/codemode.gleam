@@ -51,13 +51,21 @@
 //// Everything a code-mode call does — the hermetic `gleam build`, the
 //// jailed `erl`, and every capability call the running program makes —
 //// is dispatched under the calling strand's own `{op_id, step_id}`. That
-//// pair *is* the execution identity the broker pools budget under
+//// pair is the *batch* identity the broker pools budget on
 //// (`packages/broker/CLAUDE.md`, "Budget is pooled per execution"), so
 //// using it rather than a minted one has three consequences worth stating
 //// plainly: the compile and the run draw on one ledger and one wall
 //// deadline instead of two, `broker.abort` on the operation reaches the
 //// build and the node alike, and a program that fans out buys parallelism
 //// rather than extra resources.
+////
+//// The pair is not unique per execution and nothing here should assume it
+//// is: `code_mode` is `tool.Exclusive`, which forbids a concurrent start
+//// and nothing more, so one batch may hold two `code_mode` calls at
+//// different source indices. `{op_id, step_id, source_index}` is the
+//// execution identity; `exec_root` digests that triple, and the ledger
+//// keys on the pair deliberately (`docs/adr/005-budget-pooling-
+//// granularity.md`, "Two programs in one batch").
 ////
 //// The pooled cap must be at least two — the satellite node itself holds
 //// one outstanding effect for its whole life, so a cap of one would starve
@@ -154,14 +162,16 @@
 ////
 //// ## Where an execution's files live
 ////
-//// Under `work_root`, one directory per `{op_id, step_id}` — named by a
-//// short digest of that pair, for reasons `exec_root` explains — holding
+//// Under `work_root`, one directory per `{op_id, step_id, source_index}`
+//// — named by a short digest of that triple, for reasons `exec_root`
+//// explains — holding
 //// the cloned build seed, the compiled `.beam` set, the cap socket, and
 //// the private token file. Two properties fall out of the placement. It
 //// is inside the workspace, so the session base already makes it writable
 //// and no policy has to be widened to build there; and it is unique per
-//// execution, so two strands running code mode at the same time cannot
-//// share a build root. The directory is removed once the execution
+//// execution, so neither two strands running code mode at the same time
+//// nor two `code_mode` calls in one batch can share a build root. The
+//// directory is removed once the execution
 //// settles — the seed clone is large and every build clones it fresh
 //// anyway.
 
@@ -1015,19 +1025,39 @@ fn check_socket_path(root: String) -> Result(Nil, String) {
 /// This execution's own directory: the build root, the `.beam` set, the
 /// cap socket, and the private token file all live under it.
 ///
-/// The name is a 64-bit FNV-1a digest of `{op_id, step_id}` rendered as
-/// sixteen hex characters, and its shortness is the point rather than an
-/// aesthetic. The cap socket lives inside this directory and an AF_UNIX
-/// path is capped at about 108 bytes by the kernel, so a directory named
-/// for a full operation id and a step id spends forty-odd of them before
-/// the workspace prefix is counted; a workspace a couple of levels deeper
-/// then fails at `listen` with `einval`, which is a poor way to learn
-/// about a path limit. A digest is unique per execution — all this name
-/// has to be, since two strands running code mode at once must not share
-/// a build root — and it cannot carry a separator, a dot segment or a
-/// space out of the work root the way a step id could. The directory is
-/// removed when the execution settles, and the artifact's `manifest_hash`
-/// remains the durable fingerprint of what ran.
+/// The name is a 64-bit FNV-1a digest of `{op_id, step_id, source_index}`
+/// rendered as sixteen hex characters, and its shortness is the point
+/// rather than an aesthetic. The cap socket lives inside this directory
+/// and an AF_UNIX path is capped at about 108 bytes by the kernel, so a
+/// directory named for a full operation id and a step id spends forty-odd
+/// of them before the workspace prefix is counted; a workspace a couple of
+/// levels deeper then fails at `listen` with `einval`, which is a poor way
+/// to learn about a path limit. The digest cannot carry a separator, a dot
+/// segment or a space out of the work root the way a step id could. The
+/// directory is removed when the execution settles, and the artifact's
+/// `manifest_hash` remains the durable fingerprint of what ran.
+///
+/// ## Why the source index is in the key
+///
+/// `{op_id, step_id}` is the **batch** identity the broker pools budget
+/// on; `{op_id, step_id, source_index}` is the **execution** identity.
+/// `code_mode` is `tool.Exclusive`, which forbids a concurrent *start* and
+/// nothing more, so one batch may hold two `code_mode` calls at different
+/// source indices that run back to back under one operation and one step.
+/// Keyed on the pair, both would build in this same directory, bind this
+/// same socket, and write this same token file — and the launcher's
+/// janitor is an unlinked process that runs teardown *after* the host
+/// dies, on ordinary exits too, so the first execution's cleanup could
+/// unlink the second execution's live socket and token. `prepare_root`
+/// begins with a recursive delete, which races the same janitor from the
+/// other direction. The third field ends both races by construction.
+///
+/// `request.source_index` is filled from the dispatching `tool.Ctx` and
+/// never from the model's arguments, so it is a coordinate the program
+/// cannot state. No length prefixing is needed here (unlike
+/// `agent.call_site_digest`): there are exactly three fields, in a fixed
+/// order, and the last is an integer rendering that cannot contain the
+/// separator.
 ///
 /// ## Examples
 ///
@@ -1038,7 +1068,13 @@ fn check_socket_path(root: String) -> Result(Nil, String) {
 pub fn exec_root(config: Config, request: codemode_tool.Request) -> String {
   config.work_root
   <> "/"
-  <> digest(ids.op_id_to_string(request.op_id) <> "\n" <> request.step_id)
+  <> digest(
+    ids.op_id_to_string(request.op_id)
+    <> "\n"
+    <> request.step_id
+    <> "\n"
+    <> int.to_string(request.source_index),
+  )
 }
 
 /// The cap-channel socket for an execution rooted at `root`. One
@@ -1065,8 +1101,8 @@ pub const max_socket_path_bytes = 100
 // FNV-1a 64 over the key's codepoints, rendered as sixteen lowercase hex
 // characters. A path-naming digest, not a security primitive: nothing is
 // authenticated by it, and a collision would only mean two executions
-// sharing a directory — which is why the key is the pair that is already
-// unique per execution.
+// sharing a directory — which is why the key is the triple that is
+// already unique per execution.
 fn digest(key: String) -> String {
   key
   |> string.to_utf_codepoints
@@ -1199,12 +1235,15 @@ fn surface_router(
 // The lifetime admission ceilings the execution runs under. The workspace
 // seam declares none: its capabilities perform effects the pooled budget
 // and the wall deadline already bound, and none of them *mints* anything
-// that outlives the execution. `strand.spawn` does, which is the whole
-// reason the orchestration seam needs one (`satellite.CapCeiling`).
+// that outlives the execution. Four of the orchestration seam's six do —
+// a child strand, a durable message that can start a run, a durable
+// register, and the scan that reads them — which is the whole reason it
+// needs ceilings (`satellite.CapCeiling`, `orchestration.ceilings`).
 //
 // Read off the surface beside the router, and for the same reason: the
-// ceiling belongs to the router that can mint strands, so the two can
-// never be chosen apart.
+// ceilings belong to the router whose calls mint things, so the two can
+// never be chosen apart. Only the spawn number is a surface setting; the
+// other three are the seam's own constants.
 fn surface_ceilings(
   surface: Surface,
   request: codemode_tool.Request,

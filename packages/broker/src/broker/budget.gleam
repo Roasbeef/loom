@@ -23,7 +23,10 @@
 //// and run phases from one opaque `ExecIdentity` rather than letting a
 //// caller assemble either, so an execution resolves to one ledger — or
 //// two where its hermetic build is deliberately accounted apart — and
-//// never to one per call (issue #22).
+//// never to one per call (issue #22). Two `code_mode` programs in one
+//// batch are one batch and share this key on purpose; the per-execution
+//// coordinate that tells them apart names their paths and must never
+//// become a second axis of it (ADR-005, "Two programs in one batch").
 
 /// The budget attached to one execution's token.
 pub type Budget {

@@ -96,6 +96,15 @@ fn request_for(step: String) -> codemode_tool.Request {
   request_on(codemode_tool.WorkspaceSeam, step)
 }
 
+// A request at a *real* source index, which is what tells one `code_mode`
+// call apart from another in the same batch. The fixtures above hardcode
+// zero, and a suite that only ever sees zero cannot observe the
+// difference — which is exactly how the naming half of this shipped
+// broken (issue #87, commit 063d9d5).
+fn request_at(step: String, source_index: Int) -> codemode_tool.Request {
+  codemode_tool.Request(..request_for(step), source_index:)
+}
+
 fn request_on(seam: codemode_tool.Seam, step: String) -> codemode_tool.Request {
   request_widened(seam, step, [])
 }
@@ -334,6 +343,30 @@ pub fn an_execution_gets_its_own_directory_inside_the_workspace_test() {
   // Distinct per execution, so two strands running code mode at once
   // cannot share a build root.
   assert first != second
+  broker.stop(broker_actor)
+}
+
+pub fn two_code_mode_calls_in_one_step_get_their_own_roots_test() {
+  // `code_mode` is `tool.Exclusive`, which forbids a concurrent *start*
+  // and nothing more: one batch may hold two `code_mode` calls that run
+  // back to back under one operation and one step, differing only in
+  // their source index. Keyed on the pair they would share a build root,
+  // a cap socket and a token file — two hermetic builds writing one
+  // directory, and a janitor from the first execution unlinking the
+  // second's live socket. The third field is what ends that.
+  let broker_actor = idle_broker()
+  let config = config_for(broker_actor)
+  let step = "turn-1:tools"
+  let first = codemode.exec_root(config, request_at(step, 0))
+  let second = codemode.exec_root(config, request_at(step, 1))
+  assert first != second
+  // Everything an execution owns hangs off the root, so one assertion
+  // covers the socket and the token file too.
+  assert codemode.socket_path(first) != codemode.socket_path(second)
+  // Still a function of the coordinates and nothing else: the same call
+  // names the same directory, which is what makes a re-execution under an
+  // approval land where the first one did.
+  assert codemode.exec_root(config, request_at(step, 1)) == second
   broker.stop(broker_actor)
 }
 
@@ -688,11 +721,12 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   broker.stop(broker_actor)
 }
 
-pub fn only_the_orchestration_surface_carries_a_spawn_ceiling_test() {
-  // `agent_spawn` is throttled by turn cost and a loop pays nothing, so
-  // the seam that replaces the turn with a loop is the one that needs an
-  // explicit ceiling. The workspace seam mints nothing that outlives its
-  // execution and declares none.
+pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
+  // A call is throttled by turn cost and a loop pays nothing, so the seam
+  // that replaces the turn with a loop is the one that needs explicit
+  // ceilings — on every call that mints something outliving the
+  // execution, which is four of its six. The workspace seam mints nothing
+  // that outlives its execution and declares none.
   let broker_actor = idle_broker()
   let request = request_for("turn-9:tools")
   let orchestrated =

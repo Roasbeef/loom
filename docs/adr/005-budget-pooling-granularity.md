@@ -2,7 +2,8 @@
 
 **Status**: accepted · **Date**: 2026-08-26 · **Supersedes**: nothing ·
 **Relates to**: issue #50, #22 (identity threading through this keying),
-#23 (per-execution spawn ceiling)
+#23 (per-execution spawn ceiling), #87 (two programs in one batch — see
+the addendum)
 
 ## The question
 
@@ -52,7 +53,9 @@ design already answers it, on the record, twice over:
   step_id}`... so that pair *is* the execution identity, and the broker
   holds one `budget.Ledger` per live `{op_id, step_id}`... so 10,000
   polite parallel reads under one execution share one `max_outstanding`
-  cap and one aggregate wall deadline."*
+  cap and one aggregate wall deadline."* (That doc now says *batch*
+  identity where it said *execution* identity; the addendum below is why,
+  and the pooling claim it makes is unchanged.)
 - **`code_mode` already builds to this reading and nothing else does.**
   Its budget (`client/codemode.pooled_budget`) is deliberately configurable
   (`default_outstanding = 6`, not a literal `1` or `2`) precisely because
@@ -103,7 +106,8 @@ should exist; neither substitutes for the other; and #23 should key its
 own accounting the same way this ADR keys the ledger — per `{op_id,
 step_id}` — for the identical reason: a spawn ceiling keyed finer than
 the execution has the same amplification hole this issue found, one
-level up.
+level up. *(That last recommendation is the one thing here the build
+departs from; the addendum says why.)*
 
 ## What is not settled here
 
@@ -116,3 +120,71 @@ whatever an `Exclusive` neighbor used). That is a policy question worth
 its own pass once more `Concurrent` tools exist to generalize from —
 today `grep` is the only one clearing through the broker, so there is
 one data point, not a pattern.
+
+## Addendum — two programs in one batch (issue #87)
+
+*Added 2026-08-27. The decision above is unchanged; this records what it
+answers for a case it did not name.*
+
+Issue #87 found a second reading of "one ledger per batch". `code_mode`
+is `tool.Exclusive`, which forbids a concurrent *start* and nothing more,
+so one batch may hold two `code_mode` calls at different source indices
+that run back to back under one `op_id` and one `step_id`. They share a
+ledger. Is that the pooling working, or the keying being too coarse?
+
+**It is the pooling working, and the key does not move.** Two programs in
+one batch *are* one batch, and a pooled cap bounding that batch's
+concurrent effects is this ADR verbatim. The alternative — a ledger per
+`code_mode` call — is reading 1 arriving by a different door: K calls in
+one batch would buy K × `max_outstanding` and K wall deadlines, and the
+model authors the batch, so the amplification factor would be the model's
+to choose. That is the hole the pooling exists to refuse.
+
+The sharing is also close to vacuous in practice, and it is worth saying
+why rather than resting on the principle alone. `broker.release_slot`
+deletes a ledger whose outstanding count reaches zero, so **a ledger with
+nothing outstanding leaves the table**. `Exclusive` means the first
+execution's effects have settled before the second starts, so the second
+opens a *fresh* ledger under the same key, with its own budget and its own
+deadline. The only window in which the two genuinely share one is a
+straggling settlement from the first, and releases are generation-checked
+already, so a stale settlement cannot free a successor's budget. The
+shared key is a transient overlap, not a standing condition.
+
+What #87 *did* need was a per-execution coordinate, and it got one — in
+paths, not here. `client/codemode.exec_root` digests
+`{op_id, step_id, source_index}`, so each execution's build root, cap
+socket and token file are its own; two hermetic builds sharing a directory
+and two satellites reachable at one socket path were the real defects.
+`{op_id, step_id}` is the batch identity the broker pools on;
+`{op_id, step_id, source_index}` is the execution identity; the root
+digests the latter and the ledger keys on the former, deliberately.
+
+**On #23's unit, where this ADR guessed and the build differs.** The
+"What this settles" section above suggested the spawn ceiling key itself
+per `{op_id, step_id}` for the same anti-amplification reason the ledger
+does. What shipped is per *execution*, and the difference is deliberate
+rather than an oversight (issue #88). The ledger's argument does not carry
+across: what the turn cost throttled was zero-marginal-cost **iteration**,
+not turns, and inside one execution a program's loop is free — that is the
+whole defect a ceiling answers. A *second* `code_mode` call is not free.
+It costs an authored program, a hermetic build, a node launch and its own
+wall deadline, so its marginal cost is spawn-shaped and the economics that
+bound a model's own `agent_spawn` are back. Nor would per-batch be a
+security boundary on its own: a model that can put K executions in one
+message can put K in K messages, and nothing bounds messages. If a
+per-batch lifetime spawn count is ever wanted anyway, it is a fold over
+the durable lineage ledger — which already records
+`minted_by: CallSite(operation, step_id, source_index)` per child and is
+already read on the spawn path — rather than a coordinate threaded through
+this key.
+
+**The constraint this puts on future work** is the one already stated for
+#22, now with a name: the source index must not reach the budget key. It
+is deliberately absent from `codemode/identity.ExecIdentity`, whose
+exports feed exactly two things — ledger keys and `broker.CallSpec`s —
+because `identity.ledger_key` is one field-read away from whatever that
+value carries, and a refactor that "completes" the key with an
+obviously-available third field would mint one ledger per call without
+anyone intending it. A per-call coordinate that names paths lives where
+the paths are named.
