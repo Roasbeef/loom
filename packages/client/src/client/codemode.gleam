@@ -64,6 +64,21 @@
 //// every `cap_call` the program makes; `launch` refuses such a budget in
 //// band rather than hanging.
 ////
+//// ## What an approved escalation widens
+////
+//// The same threaded identity carries the grants an approval attributed
+//// to this execution (`identity.widened_by`), and the pipeline composes
+//// them at the *run* phase alone: the satellite node's clearance and
+//// every capability call the program makes. The hermetic build is never
+//// widened — see `codemode/identity`, "The widening, and why it lives
+//// here" — and there is no session-wide grant list anywhere below, so an
+//// approval that cannot be attributed to one execution widens nothing.
+////
+//// One link of that chain is still missing above this module, and
+//// `approved_grants` reads `Request.grants`, which `tools/codemode.request`
+//// fills from `tool.Ctx.grants` — so an approval consumed for this call
+//// reaches the run phase, and only the run phase.
+////
 //// ## The two env names, and why they are added here
 ////
 //// The boot runtime inside the satellite finds its socket and its token
@@ -98,7 +113,7 @@
 
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
-import broker/policy.{type SandboxPolicy}
+import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/internal/ffi_os
 import codemode/build
@@ -590,7 +605,13 @@ pub fn execute(
       let execution =
         pipeline.execute(
           request.source,
-          exec_config(config, request, root, deadline_ms),
+          exec_config(
+            config,
+            request,
+            root,
+            deadline_ms,
+            widened_by: approved_grants(request),
+          ),
         )
       // The whole execution is over: the node is destroyed, the socket and
       // token are unlinked by the host's own teardown, and nothing but the
@@ -603,6 +624,35 @@ pub fn execute(
       )
     }
   }
+}
+
+// The grants an approved escalation attributed to *this* `code_mode`
+// call, which is what an execution re-run under an approval is allowed to
+// compose with.
+//
+// It is empty today, and the emptiness is a missing field rather than a
+// decision: `tool.Ctx.grants` already carries the grants this call's
+// clearance consumed — the runtime decodes them out of the durable record
+// and the workspace tool path spends them through `wiring.tool_context` —
+// but `tools/codemode.Request`, the only channel between the dispatching
+// `Ctx` and this module, has no field to carry them across. Adding
+// `grants: List(Grant)` to that record and filling it from `ctx.grants`
+// in `tools/codemode.request` is the whole of what is owed; this function
+// is then one line and the seam below is unchanged.
+//
+// Deliberately *not* worked around. The two available shortcuts are both
+// the anti-pattern design §5.3 names: a grant list on `Config` would be a
+// session-wide widening no call is attributable to, and folding grants
+// into `request.base_policy` before composition would be a second
+// widening path that also reaches the hermetic build. An approval that
+// cannot be attributed to one execution widens nothing, and until the
+// field exists there is nothing here to attribute.
+// The grants an approval attributed to *this* call. They ride the
+// request rather than the surface because an approval widens one
+// re-execution of one action, never a session: a grant list configured
+// on the seam would outlive the call that was consented to.
+fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
+  request.grants
 }
 
 // Nothing started, and the reason names both the seam that was asked for
@@ -753,6 +803,14 @@ const mask_64 = 18_446_744_073_709_551_615
 /// type rather than a change: `with_own_build_ledger` is the e2e's
 /// deliberate split, not the default.
 ///
+/// `widened_by` is the approval this execution carries, and it goes onto
+/// the same identity for the same reason the budget does — one threaded
+/// value, phases derived from it, nowhere for a caller to write a second.
+/// The run phase composes them; the hermetic build never sees them
+/// (`codemode/identity`, "The widening, and why it lives here"). Passing
+/// `[]` is an unapproved execution and is exactly as wide as this
+/// pipeline has always been.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -765,6 +823,7 @@ pub fn exec_config(
   request: codemode_tool.Request,
   root: String,
   deadline_ms: Int,
+  widened_by grants: List(Grant),
 ) -> pipeline.ExecConfig {
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
@@ -780,7 +839,8 @@ pub fn exec_config(
       op_id: request.op_id,
       step_id: request.step_id,
       budget: pooled,
-    ),
+    )
+      |> identity.widened_by(grants:),
     satellite: satellite.SatelliteConfig(
       base_policy:,
       demand: request.demand,

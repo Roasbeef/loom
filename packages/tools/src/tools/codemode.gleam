@@ -65,7 +65,7 @@
 //// that was not applied.
 
 import broker/exec.{type EnforcementDemand}
-import broker/policy.{type SandboxPolicy}
+import broker/policy.{type Grant, type SandboxPolicy}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
@@ -197,6 +197,13 @@ pub type Request {
     env: List(#(String, String)),
     /// The whole execution's wall budget, in milliseconds.
     within_ms: Int,
+    /// Grants from escalation approvals consumed for *this* call, if
+    /// any. Carried per-request rather than configured on the surface
+    /// because an approval is attributable to one call: a grant list on
+    /// the seam would be a session-wide widening nobody consented to,
+    /// and folding grants into `base_policy` would be a second widening
+    /// path that also reaches the hermetic build.
+    grants: List(Grant),
   )
 }
 
@@ -785,6 +792,7 @@ pub fn request(
     base_policy: ctx.base_policy,
     demand: ctx.demand,
     env: ctx.env,
+    grants: ctx.grants,
     within_ms: int.clamp(
       option.unwrap(within_ms, mode.default_within_ms),
       min: 1,
