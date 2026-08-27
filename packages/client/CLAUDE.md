@@ -192,6 +192,14 @@ over one session file. WP-L.
   one question the prompt has no other source for — whether a helper's
   hello advertises `degraded`, asked once at open by borrowing from the
   pool the session will use anyway.
+- `client/serve.Settings.helper_pool_size` — how many `loom-exec`
+  helpers may run at once, and therefore the real ceiling on how wide a
+  parallel tool batch runs. `resolve` fills it from `LOOM_HELPER_POOL`
+  or `exec.default_pool_size()` (schedulers online, clamped to
+  `[4, 16]`), never a literal; a batch wider than it waits for a slot
+  inside `broker.clear_call` rather than coming back as a resource
+  error. Distinct from the broker's pooled `max_outstanding`, which
+  refuses amplification rather than describing what the host affords.
 - `client/serve.Settings.base_policy` — the base every tool call is
   composed against, and the thing an escalation widens. A field rather
   than a `base_policy(workspace)` call inside `boot`, so a host may serve

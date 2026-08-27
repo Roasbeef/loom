@@ -24,6 +24,9 @@ protocol (spec Part 1.4). WP-G.
   `{op_id, step_id, policy, deadline}`, checked in constant time.
 - `broker/budget.{Budget, Ledger}` — pure pooled accounting, one ledger per
   live `{op_id, step_id}`.
+- `broker/exec.{default_pool_size, pool_size_for, min_pool_size,
+  max_pool_size}` — the default helper-pool ceiling and the pure
+  derivation behind it (schedulers online, clamped).
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
@@ -53,6 +56,8 @@ protocol (spec Part 1.4). WP-G.
   `clear_call`), `conformance` (wiring and the jailed e2e).
 - **FFI**: `broker/internal/ffi_crypto` — `crypto:strong_rand_bytes` and
   `crypto:hash_equals` for token entropy and constant-time comparison.
+  `broker/internal/ffi_os` — `os:type/0` for the host platform and
+  `erlang:system_info(schedulers_online)` for the default pool size.
   `broker/internal/ffi_port` — port open/send/close, OS pid lookup and
   kill, and private-file writes for fd-3 policy delivery. Both are backed
   by `broker_ffi.erl`; the rest of the package takes them as injected
@@ -73,6 +78,8 @@ protocol (spec Part 1.4). WP-G.
     `CancelDeadline(exec_id)`, `HandshakeDeadline`, `HeartbeatTick`,
     `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`.
   - `exec.PoolMsg` — `Checkout(reply)`, `Checkin(helper)`, `StopPool`.
+    `Checkout` answers immediately, `AllBusy` included: it never defers a
+    reply, because its one run-time borrower is the broker actor.
   - Outbound to callers: `broker.CallEvent` (`CallOutput`, `CallSettled`)
     and `exec.ExecEvent` (`Output`, `Exited`, `Failed`).
 - **Commits / registers**: none. The broker persists nothing; durability of
@@ -109,6 +116,27 @@ protocol (spec Part 1.4). WP-G.
   keying stays `{op_id, step_id}`, the fix was the tool's own declared
   budget. Read it before threading a new identity through this key
   (issue #22) or stacking a further cap on top of it (issue #23).
+- **A full pool is congestion, and the wait for one happens in the
+  borrower's process.** `clear_call` retries a `NoHelper(AllBusy(..))`
+  clearance within the caller's own `waiting` budget instead of handing
+  it back, so a tool batch wider than the pool queues rather than
+  failing. The wait cannot move inside the broker: the broker calls its
+  `checkout` seam synchronously inside its own message handler and only
+  reaches `checkin` from `Settle` / `RelayDown`, so a broker (or a
+  queueing pool it blocks on) would be waiting for a resource that only
+  its own message loop can release. Nothing is held across the wait —
+  the checkout-failure path releases the budget slot and revokes the
+  token before answering — so progress depends only on running
+  executions ending, which their wall deadlines guarantee. `AllBusy(size:
+  0)` is not congestion and never waits: a pool that lends nothing has
+  nothing to check back in.
+- **The pool size is a resource budget, not a policy dial.** Every
+  helper is an OS process running bwrap and a jail.
+  `exec.pool_size_for` clamps the node's scheduler count to `[4, 16]`
+  and `client/serve` lets `LOOM_HELPER_POOL` override it; the pool is
+  the ceiling on real parallelism, while the pooled `max_outstanding`
+  below is the anti-amplification cap. They answer different questions
+  and neither substitutes for the other.
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's relay process dies
   unsettled (every relay is monitored). Releases are generation-checked, so
