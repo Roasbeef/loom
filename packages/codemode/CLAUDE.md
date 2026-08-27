@@ -23,27 +23,41 @@ strand roots, and can reach neither the disk, the network, nor a process.
 
 - `codemode/codemode.{Execution, ExecOutcome, ExecConfig}` — `execute`
   threads source through vet → compile → run, short-circuiting at the
-  first refusal, and returns an `Execution`: the outcome plus what the
-  kernel enforced on both jailed stages. Every stage's failure is a
+  first refusal, and returns an `Execution`: the outcome, what the
+  kernel enforced on both jailed stages, and what an approved escalation
+  widened. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
   `Ran(source, artifact, outcome)`. `ExecConfig.identity` is the one
-  place in the pipeline an operation, a step or a budget can be written.
+  place in the pipeline an operation, a step, a budget *or an approval's
+  grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
-  for_execution, with_own_build_ledger, under_budget, build_phase,
-  run_phase, ledger_keys}` — the identity one execution runs under, and
-  the phases derived from it. Both types are opaque: `for_execution` is
+  for_execution, with_own_build_ledger, under_budget, widened_by,
+  build_phase, run_phase, grants, ledger_keys}` — the identity one
+  execution runs under, the approval that widens it, and
+  the phases derived from both. Both types are opaque: `for_execution` is
   the only way to mint an `ExecIdentity`, and `build_phase` / `run_phase`
   — which take one — are the only ways to obtain a `PhaseIdentity`.
   `BuildLedger` (`BuildSharesLedger` | `BuildHasOwnLedger`) is the whole
   of the choice an execution has about its ledger count, and
   `ledger_keys` reads that count off the identity value before anything
-  runs.
-- `codemode/enforcement.{Report, Enforcement, of_call, of_result, layers}`
-  — what a jailed stage's helper reported, or why no report exists.
+  runs. `widened_by` attaches an approved escalation's grants and
+  `grants` reads back what a phase carries — the run phase's, and empty
+  for a build phase whatever the execution holds.
+- `codemode/enforcement.{Report, Enforcement, Widening, of_call,
+  of_result, layers, widened, unspent, grant_label}`
+  — what a jailed stage's helper reported, or why no report exists, and
+  what an approval relaxed before it was asked to.
   `Reported(entries, degraded)` is `exec_exit`'s ground truth with the
   broker's own degraded rule applied (any `skip:` entry counts);
   `Unreported(reason)` is never a claim of confinement. `layers` splits
   applied layers from skipped ones so no renderer can confuse them.
+  `Widening` is a peer of `Enforcement` rather than a field in it —
+  `Reported.entries` is the helper's verbatim ground truth, and folding a
+  harness-side decision into it would put a claim about what Loom did
+  where a reader expects one about what the kernel did. Two states and no
+  third: `Widened(grants)` for a run phase that composed them,
+  `NotWidened(reason)` for both of the ways that does not happen.
+  `grant_label` renders one grant as a diff line an operator can read.
 - `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.{VetPolicy,
   Seam, for_seam, default, orchestration}` — the pure import/`@external`
   lint and the two allowlists it is parameterized by. `Vetted` is opaque,
@@ -71,8 +85,8 @@ strand roots, and can reach neither the disk, the network, nor a process.
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
   --warnings-as-errors` inside a network-off jail, then the flattened
-  `.beam` set and its content address. Carries no operation, step or
-  budget.
+  `.beam` set and its content address. Carries no operation, step,
+  budget or grants.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`.
@@ -244,6 +258,38 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `CallSpec` in the broker, which has callers outside this package. What
   is closed is the case that happened: a *configuration* carrying its own
   copy of the identity fields.
+- **An approval widens the run phase and never the hermetic build.** An
+  approved escalation's grants ride the same threaded `ExecIdentity`
+  (`identity.widened_by`), for the same reason the budget does: four
+  configuration records able to hold a widening is four places a caller
+  could write a *different* one. `run_phase` carries them and
+  `build_phase` **drops** them, so the four clearances that used to pass
+  `grants: []` now all read `identity.grants(phase)` and the build's is
+  empty by construction rather than by remembering. That asymmetry is a
+  decision, not a convenience: `policy.compose` applies grants *after*
+  the meet, so a `GrantNetwork` reaching the build call would put the
+  network back on inside a build whose whole security property is that it
+  is pinned and offline — and nothing a submitted program says changes
+  what the build asks for anyway, so a build refused on policy is an
+  operator's misconfiguration rather than a decision about this program.
+  Grants move no ledger key, so an approval buys a widening and never a
+  second pooled cap. `codemode.Execution.widening` says which grants a
+  run composed, or which of the two ways it composed none — an approval
+  that is spent, and one that is carried and never reached, are different
+  facts and an operator auditing approvals needs both (issue #24,
+  spec-gaps WP-J 15, design §5.3).
+- **The grants an execution carries are attributed to it, or there are
+  none.** There is no session-wide grant list anywhere below
+  `ExecConfig` — the same absence `client/wiring` keeps for the tool
+  path — so an approval that cannot be attributed to one execution
+  widens nothing. Composition is the only place grants act, and it is
+  still `base ⊕ requirements ⊕ grants`: a grant that does not cover a
+  shortfall leaves the refusal exactly where it was, which is what keeps
+  a yes given for one want from being spendable on another. What binds
+  an approval to *this* program is upstream of this package — the action
+  digest of the `code_mode` call's effective arguments, which include
+  the submitted source (issue #65) — and this package must not have a
+  second door that skips it.
 - **The node runs under the host's own `{op_id, step_id}`.** That is what
   makes `broker.abort` at the deadline actually kill it, and what pools
   the budget across the whole execution — fan-out buys parallelism, not
@@ -281,6 +327,22 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `{op_id, step_id}` it hands the Agency come off the threaded
   `PhaseIdentity`; the one thing it derives is the call site's `Minter`,
   and that never becomes a ledger key.
+  It follows that **a grant has nothing to widen on this seam**, and that
+  is the answer rather than an omission. A grant is a `policy.Grant`; it
+  composes into a `SandboxPolicy`; a `ServedHere` plan builds no policy,
+  reserves no budget and enters no jail. What bounds an orchestration
+  call instead is the Agency's own authorization — the descendant-only
+  addressing rule, `depth_cap`, `fan_out`, `session_strands` — plus this
+  package's spawn ceiling, and **none of those is widenable by an
+  approval**. They are structural bounds on a lineage rather than
+  per-call sandbox policy an operator would authorize one re-execution
+  of, and routing grants at them would be a second widening path beside
+  composition. The satellite *node* on this seam is still a jailed
+  clearance under the run phase, so an orchestration execution is
+  widened exactly where a workspace one is and nowhere else. The
+  affordance that would change this is "approve similar for this
+  session" (§5.3, filed as #79), which is a session-policy change and
+  not a grant.
 - **The default router refuses what it does not service.** `proc.run` is
   the only capability it maps today; every other `cap` name comes back
   `unsupported_cap` until the harness-side tool bridge lands, and a caller
