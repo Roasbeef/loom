@@ -60,9 +60,9 @@ pub fn try_call(
     |> process.select_map(reply_subject, Ok)
     |> process.select_specific_monitor(monitor, fn(_down) { Error(CalleeGone) })
     |> process.selector_receive(timeout)
-  // Demonitoring also flushes a `DOWN` that arrived while we were not
-  // looking, so the caller's mailbox keeps nothing from this exchange
-  // except a reply that beat neither the timeout nor the deadline.
+  // Demonitoring flushes a `DOWN` that arrived after the timeout, so the
+  // only thing this exchange can leave behind is a late reply — see the
+  // module doc on why that is a bounded term rather than a leak.
   process.demonitor_process(monitor)
   result.unwrap(answer, Error(NoReply))
 }
