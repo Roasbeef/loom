@@ -392,7 +392,7 @@ two tracks composed rather than two separate projects.
 
 **6. Snapshot-boot warm pools.** Track 3's own words, and the mechanism
 that would let the helper pool grow past the `size: 2` production wires
-today (`start_pool`, `packages/client/src/client/serve.gleam:820`).
+today (`start_pool`, `packages/client/src/client/serve.gleam:861`).
 Snapshot restore is fast enough that a warm pool's checkout can beat a
 cold process spawn. This is a performance benefit, and it is ranked last
 deliberately.
