@@ -320,21 +320,13 @@ fn accept_navigation(
       accept_summarized_navigation(
         ctx,
         operation,
-        operation_id,
         generator,
         target,
         label,
         custom_instructions,
         preparation,
       )
-    _, _, _ ->
-      accept_unsummarized_navigation(
-        ctx,
-        operation,
-        operation_id,
-        target,
-        label,
-      )
+    _, _, _ -> accept_unsummarized_navigation(ctx, operation, target, label)
   }
 }
 
@@ -343,7 +335,6 @@ fn accept_navigation(
 fn accept_summarized_navigation(
   ctx: AcceptCtx,
   operation: Operation,
-  operation_id: ids.OpId,
   generator: ids.Generator,
   target: EntryId,
   label: Option(String),
@@ -364,12 +355,12 @@ fn accept_summarized_navigation(
     )
   Ok(
     plan(ctx, operation, state, [
-      build.set_preparation(operation_id, task_id, preparation),
+      build.set_preparation(operation.id, task_id, preparation),
       build.set_op_meta(operation),
-      build.set_op_state(operation_id, state),
+      build.set_op_state(operation.id, state),
       build.set_strand_state(
         ctx.strand,
-        StrandState(..ctx.strand_state, current_operation: Some(operation_id)),
+        StrandState(..ctx.strand_state, current_operation: Some(operation.id)),
       ),
     ]),
   )
@@ -380,7 +371,6 @@ fn accept_summarized_navigation(
 fn accept_unsummarized_navigation(
   ctx: AcceptCtx,
   operation: Operation,
-  operation_id: ids.OpId,
   target: Option(EntryId),
   label: Option(String),
 ) -> Result(AcceptancePlan, RejectReason) {
@@ -392,10 +382,10 @@ fn accept_unsummarized_navigation(
   Ok(
     plan(ctx, operation, state, [
       build.set_op_meta(operation),
-      build.set_op_state(operation_id, state),
+      build.set_op_state(operation.id, state),
       build.set_strand_state(
         ctx.strand,
-        StrandState(..ctx.strand_state, current_operation: Some(operation_id)),
+        StrandState(..ctx.strand_state, current_operation: Some(operation.id)),
       ),
     ]),
   )
