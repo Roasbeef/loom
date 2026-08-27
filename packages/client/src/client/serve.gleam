@@ -32,6 +32,14 @@
 ////   of the three says so once on stderr and registers no `code_mode`
 ////   tool at all, rather than shipping a definition in the provider's
 ////   cached prefix that can only ever refuse.
+//// - `LOOM_HELPER_POOL` — how many `loom-exec` helpers may run at
+////   once (not a flag: it is a property of the host, not of the
+////   session). Default `exec.default_pool_size()`, the node's
+////   scheduler count clamped to `[4, 16]`. This is the real ceiling on
+////   how wide a parallel tool batch runs: helpers are OS processes
+////   running bwrap and a jail, and a batch wider than the pool waits
+////   for a slot rather than failing. Lower it on a memory-tight host;
+////   the floor is one.
 //// - `--best-effort` — accept a degraded sandbox helper (development
 ////   kernels without bwrap/Landlock). The default demands full
 ////   enforcement, under which a degraded helper is refused at dispatch
@@ -227,6 +235,15 @@ pub type Settings {
     base_policy: policy.SandboxPolicy,
     /// The `loom-exec` helper binary.
     helper_path: String,
+    /// How many `loom-exec` helpers may run at once. This is the real
+    /// ceiling on parallel tool execution: every helper is an OS process
+    /// running bwrap and a jail, so the number is a resource budget, not
+    /// a policy dial — and it is distinct from the broker's pooled
+    /// `max_outstanding`, which exists to refuse amplification rather
+    /// than to describe what the host can afford. `resolve` fills it
+    /// from `LOOM_HELPER_POOL` or `exec.default_pool_size()`; a host
+    /// embedding the server may name its own.
+    helper_pool_size: Int,
     /// The name clients subscribe with (derived from the session file).
     session_id: String,
     /// Sandbox enforcement demanded of the helper.
@@ -487,6 +504,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       })
   })
   use helper_path <- result.try(find_helper(flags.helper))
+  // A pool of one still runs every tool, one at a time; a pool of zero
+  // could only refuse, so the floor is one whatever the environment says.
+  let helper_pool_size =
+    int.max(1, env_int_or("LOOM_HELPER_POOL", exec.default_pool_size()))
   use catalogue <- result.try(load_catalog(flags.config))
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -504,6 +525,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     base_policy: base_policy(workspace),
     helper_path:,
+    helper_pool_size:,
     session_id: session_id_of(session_path),
     demand: case flags.best_effort {
       True -> exec.BestEffort
@@ -817,7 +839,9 @@ fn assemble(
       heartbeat_interval_ms: 0,
     )
   use pool <- result.try(
-    exec.start_pool(size: 2, spawn: fn() { exec.spawn_helper(spawn_config) })
+    exec.start_pool(size: settings.helper_pool_size, spawn: fn() {
+      exec.spawn_helper(spawn_config)
+    })
     |> result.map_error(fn(error) {
       "the helper pool did not start: " <> string.inspect(error)
     }),
