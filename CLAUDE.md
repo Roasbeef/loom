@@ -32,6 +32,18 @@ Before writing any code, read these in order:
   `protocol-change/NNN.md` proposal, never silent drift.
 - Pure packages (`core`, `machine`) perform no I/O. Every
   durability/wire boundary uses total decoders.
+- `core`, `machine` and `prompt` additionally hold no `@external` — of any
+  target — and no `gleam_erlang` or `gleam_otp`, in source or in
+  `gleam.toml`. That is a rule rather than a coincidence, and lint R6 gates
+  on it at error level. Two properties rest on it: the operation state space
+  stays property-testable without spawning processes, and those three stay
+  compilable to the JavaScript target. One external closes both, however
+  deterministic the function behind it is. Portable there means *decide but
+  not act* — replay a conversation tree, validate a transcript with the
+  server's own total decoders, run `next_action` over fetched state — and
+  never the harness in a browser: `gleam_otp` has no JavaScript target, Rule
+  Zero is kernel-enforced, and the two-channel doctrine needs processes on
+  both sides. `docs/gleam-style.md` Part IV §5 has the whole argument.
 - Chain fallible steps with `use` + `result.try`, or a small `or_*`
   combinator where the two sides are not both `Result`; `case` is for
   ADT dispatch, never for stacking `Result`s — and never buy a shallower
