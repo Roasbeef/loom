@@ -685,6 +685,114 @@ pub fn a_waiter_outliving_the_broker_refuses_rather_than_panicking_test() {
   assert process.receive(verdicts, 3000) == Ok(Error(broker.BrokerUnavailable))
 }
 
+// --- the broker outlives what it borrows from ---------------------------
+
+// A broker over a real pool whose helpers take `spawning` milliseconds
+// to start, borrowing with a `waiting` window of its own. Both knobs
+// exist to make the pool miss that window on purpose.
+fn broker_over_slow_pool(
+  spawning spawn_ms: Int,
+  waiting checkout_ms: Int,
+) -> #(broker.Broker, exec.Pool) {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      process.sleep(spawn_ms)
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { exec.checkout(pool, waiting: checkout_ms) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+  #(started, pool)
+}
+
+/// A pool that has stopped is a refusal, not the broker's death. The
+/// broker calls its checkout seam synchronously inside its own message
+/// handler, so the panic `process.call` used to raise there did not
+/// cost one clearance — it cost every in-flight strand's verdict, each
+/// of which settles as a synthetic zero-usage abort when its effect
+/// process dies with the broker.
+///
+/// Surviving is the assertion: an error value proves nothing on its own
+/// if the process that produced it is gone, so the broker's own pid is
+/// checked, and then asked for a second verdict.
+pub fn a_broker_outlives_a_pool_that_stopped_test() {
+  let #(started, pool) = broker_over_slow_pool(spawning: 0, waiting: 1000)
+  exec.stop_pool(pool)
+  // Let the pool actor actually go before the broker borrows from it.
+  process.sleep(100)
+  let events = process.new_subject()
+  assert broker.clear_call(started, spec(op()), events:, waiting: 2000)
+    == Error(broker.NoHelper(error: exec.PoolUnavailable))
+  let assert Ok(broker_pid) = broker.pid(started)
+  assert process.is_alive(broker_pid)
+  // Still a broker, not merely a live process.
+  assert broker.clear_call(started, spec(op()), events:, waiting: 2000)
+    == Error(broker.NoHelper(error: exec.PoolUnavailable))
+  broker.stop(started)
+}
+
+/// A pool that is alive and answering nothing reaches the same place.
+/// Spawning runs inside the pool actor, so a helper slower to start
+/// than the broker's borrowing window leaves the broker with no reply
+/// at all — the timeout half of `process.call`'s panic, and the half a
+/// live-but-wedged pool actually produces.
+///
+/// The timing is the second assertion. A wedged pool is not a full one:
+/// congestion clears as running executions end and is worth waiting
+/// out, while re-asking an unanswering pool spends the caller's whole
+/// clearance budget to arrive at the same refusal. The verdict must
+/// come back in a fraction of the five seconds this caller was willing
+/// to wait.
+pub fn a_broker_outlives_a_pool_that_will_not_answer_test() {
+  let #(started, pool) = broker_over_slow_pool(spawning: 3000, waiting: 150)
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 5000)
+  let assert Ok(Error(broker.NoHelper(error: exec.PoolUnavailable))) =
+    process.receive(verdicts, 800)
+  let assert Ok(broker_pid) = broker.pid(started)
+  assert process.is_alive(broker_pid)
+  broker.stop(started)
+  exec.stop_pool(pool)
+}
+
+/// The borrow and the dispatch are two exchanges, and the helper is
+/// free to die between them: the pool lends what it last probed, and
+/// the broker dispatches to it a few microseconds later from inside the
+/// same handler. That gap used to be fatal to the broker. It settles in
+/// band now — one `CallSettled` carrying the dispatch failure, exactly
+/// as a helper's own refusal would.
+pub fn a_broker_outlives_a_helper_that_died_before_dispatch_test() {
+  let #(started, helper, _checkins) =
+    broker_with(fake_helper.EchoArgv, at: 1000)
+  exec.shutdown(helper)
+  await_departed(exec.pid(helper))
+  let events = process.new_subject()
+  let assert Ok(_handle) =
+    broker.clear_call(started, spec(op()), events:, waiting: 2000)
+  let assert Ok(broker.CallSettled(broker.CallFailed(exec.HelperUnresponsive))) =
+    process.receive(events, 2000)
+  let assert Ok(broker_pid) = broker.pid(started)
+  assert process.is_alive(broker_pid)
+  broker.stop(started)
+}
+
+// Waits until a shut-down helper actor has actually exited, so a test
+// that means "the callee is gone" is not racing the shutdown.
+fn await_departed(pid: process.Pid) -> Nil {
+  case process.is_alive(pid) {
+    False -> Nil
+    True -> {
+      process.sleep(20)
+      await_departed(pid)
+    }
+  }
+}
+
 /// A clearance begun *after* an abort is an ordinary clearance. `abort`
 /// is a scoped cancel rather than a terminal verdict on the operation —
 /// code mode aborts the strand's own operation on every teardown, the

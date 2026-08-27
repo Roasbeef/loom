@@ -355,6 +355,108 @@ pub fn pool_retires_a_wedged_helper_rather_than_faulting_test() {
   exec.stop_pool(pool)
 }
 
+/// A pool that has stopped answers its borrower rather than killing
+/// it. The borrower this is written for is the broker, which calls the
+/// checkout seam from inside its own message handler: `process.call`
+/// panics on a dead callee, so a pool that went away used to take the
+/// broker — and every in-flight strand's verdict — with it.
+pub fn checkout_from_a_stopped_pool_refuses_rather_than_faulting_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  exec.stop_pool(pool)
+  // Let the actor actually go before asking it for a helper.
+  process.sleep(100)
+  assert exec.checkout(pool, waiting: 1000) == Error(exec.PoolUnavailable)
+}
+
+/// A pool that is alive but busy elsewhere is the other half: spawning
+/// runs inside the pool actor, so a helper that takes longer to start
+/// than the borrower's window leaves the borrower with no reply at all.
+/// That is `PoolUnavailable`, not a fault.
+///
+/// The late reply is the documented cost of not crashing, and this
+/// pins it: the pool finishes the spawn, sends `Ok(helper)` to a reply
+/// subject nobody is selecting on, and counts that helper as lent —
+/// which is why the next checkout is `AllBusy` and why the leak is
+/// bounded by the pool's size rather than by how often it happens.
+pub fn checkout_from_a_blocked_pool_refuses_rather_than_faulting_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      process.sleep(600)
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+  assert exec.checkout(pool, waiting: 150) == Error(exec.PoolUnavailable)
+  // The spawn completes into a borrower that is no longer listening.
+  process.sleep(900)
+  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(size: 1))
+  exec.stop_pool(pool)
+}
+
+/// A question about a helper's health is never answered with the
+/// questioner's death. A helper actor that is gone reports
+/// `StatusUnresponsive`, which is the absence of a position rather than
+/// a position the helper reported.
+pub fn status_of_a_departed_helper_is_unresponsive_test() {
+  let helper = fake_helper.start_helper(fake_helper.EchoArgv)
+  exec.shutdown(helper)
+  await_departed(exec.pid(helper))
+  assert exec.status(helper, waiting: 1000) == exec.StatusUnresponsive
+}
+
+/// The same for a helper that is alive and answering nothing, which is
+/// what a wedged helper looks like from outside: the pid says yes, the
+/// mailbox grows, and no reply arrives. This is the case the pool's
+/// readiness probe exists to catch, and it now catches it through the
+/// public `status` rather than a private probe of its own.
+pub fn status_of_a_wedged_helper_is_unresponsive_test() {
+  let #(wedged, wedge) = fake_helper.start_wedgeable_helper(blocking_for: 4000)
+  fake_helper.close_wedge(wedge)
+  process.sleep(200)
+  assert exec.status(wedged, waiting: 300) == exec.StatusUnresponsive
+}
+
+/// A dispatch to an actor that is not there settles in band. The broker
+/// borrows a helper and dispatches to it from inside its own message
+/// handler, microseconds apart but not atomically, so the helper is
+/// free to die in between — and the dispatch must come back as a
+/// failure the call can settle with, not as the broker's death.
+pub fn dispatch_to_a_departed_helper_is_unresponsive_test() {
+  let helper = fake_helper.start_helper(fake_helper.EchoArgv)
+  exec.shutdown(helper)
+  await_departed(exec.pid(helper))
+  let events = process.new_subject()
+  assert exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
+    == Error(exec.HelperUnresponsive)
+}
+
+/// The two remaining exchanges with the helper actor answer the same
+/// way. `await_ready` is asked by `client/serve.degraded` in order to
+/// *report* on the host's enforcement, and `heartbeat` asks whether the
+/// helper is alive; a probe whose answer to "no" is the caller's death
+/// has answered nothing.
+pub fn probes_of_a_departed_helper_are_unresponsive_test() {
+  let helper = fake_helper.start_helper(fake_helper.EchoArgv)
+  exec.shutdown(helper)
+  await_departed(exec.pid(helper))
+  assert exec.await_ready(helper, waiting: 1000)
+    == Error(exec.HelperUnresponsive)
+  assert exec.heartbeat(helper, waiting: 1000) == Error(exec.HelperUnresponsive)
+}
+
+// Waits until a shut-down helper actor has actually exited, so a test
+// that means "the callee is gone" is not racing the shutdown.
+fn await_departed(pid: process.Pid) -> Nil {
+  case process.is_alive(pid) {
+    False -> Nil
+    True -> {
+      process.sleep(20)
+      await_departed(pid)
+    }
+  }
+}
+
 type LatchMsg {
   Take(reply: process.Subject(Bool))
 }

@@ -886,6 +886,7 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
     exec.CancelEscalated ->
       "the execution did not stop on cancel and was killed"
     exec.HeartbeatMissed -> "the sandbox helper stopped responding"
+    exec.HelperUnresponsive -> "the sandbox helper did not answer"
   }
 }
 
@@ -1001,5 +1002,6 @@ fn checkout_text(error: exec.CheckoutError) -> String {
     exec.AllBusy(size:) ->
       "all " <> int.to_string(size) <> " helpers are lent out"
     exec.SpawnFailed(error: _) -> "spawning a helper failed"
+    exec.PoolUnavailable -> "the sandbox helper pool did not answer"
   }
 }

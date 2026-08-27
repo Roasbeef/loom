@@ -441,7 +441,14 @@ fn or_unavailable(
 fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
   case outcome {
     Error(NoHelper(error: exec.AllBusy(size:))) -> size > 0
-    Error(NoHelper(error: exec.SpawnFailed(error: _)))
+    // A pool that did not answer is not a pool that is full. Waiting
+    // is the answer to contention, and this is the pool being unable
+    // to say anything at all — a caller that napped on it would spend
+    // its whole budget re-asking a question nobody is answering, and
+    // arrive at the same refusal with the strand's clearance window
+    // gone.
+    Error(NoHelper(error: exec.PoolUnavailable))
+    | Error(NoHelper(error: exec.SpawnFailed(error: _)))
     | Error(PolicyRefused(denial: _))
     | Error(InvalidPolicy(error: _))
     | Error(BudgetRefused(refusal: _))
@@ -508,6 +515,17 @@ pub fn abort(broker: Broker, op_id: OpId) -> Nil {
 /// Stops the broker actor. Callers should abort operations first.
 pub fn stop(broker: Broker) -> Nil {
   process.send(broker.subject, StopBroker)
+}
+
+/// The broker actor's own pid. Exists so tests can assert that the
+/// broker outlived a peer that faulted underneath it — a refusal is
+/// only evidence of survival if the thing that issued it is still
+/// there, and every one of those tests is about a `process.call` that
+/// used to take the broker down with its callee. Not part of the
+/// broker's API.
+@internal
+pub fn pid(broker: Broker) -> Result(Pid, Nil) {
+  process.subject_owner(broker.subject)
 }
 
 /// The pid of a cleared call's relay process, or `Error(Nil)` once the

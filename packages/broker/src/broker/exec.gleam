@@ -189,6 +189,12 @@ pub type ExecFailure {
   CancelEscalated
   /// The idle heartbeat went unanswered; the helper was declared dead.
   HeartbeatMissed
+  /// The helper *actor* did not answer within the caller's window, or
+  /// was not alive to be asked. Distinct from every failure above,
+  /// which are things the actor told us: this is the actor itself out
+  /// of reach, so nothing is known about the helper process behind it
+  /// and no execution was dispatched.
+  HelperUnresponsive
 }
 
 /// A helper's observable lifecycle position.
@@ -200,6 +206,9 @@ pub type HelperStatus {
   /// The channel is gone; the actor answers every request with this
   /// failure until shut down.
   StatusDead(failure: ExecFailure)
+  /// The actor did not answer the question, or was not alive to be
+  /// asked. Not a position the helper reported — the absence of one.
+  StatusUnresponsive
 }
 
 /// How to reach one helper process. A seam: production uses
@@ -425,35 +434,64 @@ fn port_wire_event(message: Dynamic) -> WireEvent {
 }
 
 /// Blocks until the handshake settles, returning the helper's hello
-/// features. Bounded by the config's handshake timeout.
+/// features. Bounded by the config's handshake timeout — and by
+/// `timeout` for the actor's answer, which an actor wedged in a channel
+/// write can miss even though its own deadline fired: that is
+/// `HelperUnresponsive` rather than a dead caller, because the one
+/// production caller is asking this in order to *report* on the helper
+/// (`client/serve.degraded`), and a probe that answers with its
+/// caller's death has answered nothing.
 pub fn await_ready(
   helper: Helper,
   waiting timeout: Int,
 ) -> Result(List(String), ExecFailure) {
-  process.call(helper.commands, waiting: timeout, sending: AwaitReady)
+  or_unresponsive(call.try_call(
+    helper.commands,
+    waiting: timeout,
+    sending: AwaitReady,
+  ))
 }
 
-/// The helper's current lifecycle position. Panics if the helper does
-/// not answer within `timeout` or has already died — `process.call`'s
-/// contract, and the right one for a caller whose next step needs the
-/// answer. The pool's own readiness probe deliberately does not use
-/// this: see `helper_ready`.
+/// The helper's current lifecycle position, or `StatusUnresponsive`
+/// when the actor does not answer within `timeout` or is not alive to
+/// be asked.
+///
+/// This used to be an ordinary `process.call`, which panics on both.
+/// The contract was defensible for a caller whose next step needs the
+/// answer, and indefensible for the callers this actually has: every
+/// one of them is asking whether a helper is fit to use, and the pool
+/// had to grow a private `try_call` probe of its own rather than call
+/// it, because inside the pool actor that panic is not a retired helper
+/// but a dead pool — and a dead pool takes the broker with it. There is
+/// now one probe, and `helper_ready` is a policy on top of it.
 pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
-  process.call(helper.commands, waiting: timeout, sending: QueryStatus)
+  case call.try_call(helper.commands, waiting: timeout, sending: QueryStatus) {
+    Ok(position) -> position
+    Error(call.NoReply) | Error(call.CalleeGone) -> StatusUnresponsive
+  }
 }
 
 /// Dispatches an execution. On `Ok`, events stream to `events` and end
 /// with exactly one `Exited` or `Failed`; an `Error` is a dispatch-time
 /// refusal and nothing was sent to the helper.
+///
+/// An actor that does not answer the dispatch is `HelperUnresponsive`,
+/// not a fault: the broker calls this from inside its own message
+/// handler, on a helper it borrowed a few microseconds earlier and
+/// which is free to have died in between, and a dispatch that killed
+/// the broker would take every other strand's verdict with it. The
+/// refusal settles in band like any other dispatch-stage failure.
 pub fn run(
   helper: Helper,
   request: ExecRequest,
   events events: Subject(ExecEvent),
   waiting timeout: Int,
 ) -> Result(Nil, ExecFailure) {
-  process.call(helper.commands, waiting: timeout, sending: fn(reply) {
-    Run(request:, events:, reply:)
-  })
+  or_unresponsive(
+    call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
+      Run(request:, events:, reply:)
+    }),
+  )
 }
 
 /// Sends a chunk of stdin to the running execution; `eof: True` closes
@@ -503,12 +541,31 @@ pub fn cancel(helper: Helper) -> Nil {
 }
 
 /// A protocol-level liveness probe: sends `heartbeat` and waits for the
-/// echo.
+/// echo. An actor that does not answer is `HelperUnresponsive` — the
+/// answer to "is this helper alive?" is never the questioner's death.
 pub fn heartbeat(
   helper: Helper,
   waiting timeout: Int,
 ) -> Result(Nil, ExecFailure) {
-  process.call(helper.commands, waiting: timeout, sending: Heartbeat)
+  or_unresponsive(call.try_call(
+    helper.commands,
+    waiting: timeout,
+    sending: Heartbeat,
+  ))
+}
+
+// An exchange with the helper actor that produced no reply is a helper
+// failure like any the actor could have reported, and every caller of
+// these three settles one in band. The distinction the fault carries —
+// timed out versus never alive — is not one any of them can act on:
+// the actor is out of reach either way and nothing was dispatched.
+fn or_unresponsive(
+  attempt: Result(Result(a, ExecFailure), call.CallFault),
+) -> Result(a, ExecFailure) {
+  case attempt {
+    Ok(answer) -> answer
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(HelperUnresponsive)
+  }
 }
 
 /// Stops the helper actor, closing the channel (which orders the helper
@@ -1452,6 +1509,13 @@ pub type CheckoutError {
   AllBusy(size: Int)
   /// A fresh helper could not be spawned.
   SpawnFailed(error: SpawnError)
+  /// The pool itself did not answer, or was not alive to be asked. It
+  /// is deliberately not `AllBusy`: a full pool is congestion that
+  /// clears as running executions end, and waiting is the right
+  /// response to it, while this clears only if the pool recovers and
+  /// waiting on it spends a caller's whole budget to learn nothing. A
+  /// borrower that cannot tell the two apart cannot choose.
+  PoolUnavailable
 }
 
 type PoolState {
@@ -1530,11 +1594,30 @@ pub fn start_pool(
 
 /// Borrows a ready helper, spawning one if the pool is under capacity.
 /// The borrower must `checkin` when done, whatever happened.
+///
+/// A pool that does not answer within `timeout`, or is not alive to be
+/// asked, is `PoolUnavailable` rather than a fault. The borrower this
+/// exists for is the broker, calling it from inside its own message
+/// handler, so a panic here is not one failed clearance but every
+/// in-flight strand's verdict — the very failure the pool's readiness
+/// probe was moved onto `try_call` to avoid, one level up.
+///
+/// The cost is real and worth naming: a pool that answers *after* the
+/// window sends `Ok(helper)` to a reply subject nobody is selecting on,
+/// and that helper stays counted as lent with no borrower to check it
+/// in. It is bounded by the pool's own size — once `lent` reaches
+/// `size` every later checkout is `AllBusy` — and it needs a pool that
+/// was blocked past a borrower's whole window and then recovered.
+/// Against it stands a dead broker, which strands those same helpers
+/// and loses everything else besides.
 pub fn checkout(
   pool: Pool,
   waiting timeout: Int,
 ) -> Result(Helper, CheckoutError) {
-  process.call(pool.subject, waiting: timeout, sending: Checkout)
+  case call.try_call(pool.subject, waiting: timeout, sending: Checkout) {
+    Ok(outcome) -> outcome
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(PoolUnavailable)
+  }
 }
 
 /// Returns a borrowed helper. Dead helpers are retired (their slot
@@ -1627,28 +1710,20 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
 // to make a larger pool cheaper would trade that for retiring healthy
 // helpers under load, which is the worse failure.
 //
-// That accounting is only true because the probe is a `try_call`. The
-// public `status` is an ordinary `process.call`, which panics on a
-// timeout — inside the pool actor that is not a retired helper, it is a
-// dead pool, and a dead pool kills the broker with it, since the broker
-// borrows through a `process.call` of its own. A question about one
-// helper's health must not be answerable with the pool's death.
+// That accounting is only true because the probe cannot fault. It once
+// had to be a private `try_call` to get that, because the public
+// `status` panicked on a timeout — inside the pool actor that is not a
+// retired helper, it is a dead pool, and a dead pool kills the broker
+// with it. `status` now answers `StatusUnresponsive` instead, so the
+// probe is the ordinary public question plus this function's policy on
+// the answer: only a helper that says it is ready gets lent.
 fn helper_ready(helper: Helper) -> Bool {
   case process.is_alive(helper.pid) {
     False -> False
     True ->
-      case
-        call.try_call(
-          helper.commands,
-          waiting: ready_probe_ms,
-          sending: QueryStatus,
-        )
-      {
-        Ok(StatusReady(_)) -> True
-        Ok(StatusStarting)
-        | Ok(StatusDead(_))
-        | Error(call.NoReply)
-        | Error(call.CalleeGone) -> False
+      case status(helper, waiting: ready_probe_ms) {
+        StatusReady(_) -> True
+        StatusStarting | StatusDead(_) | StatusUnresponsive -> False
       }
   }
 }
