@@ -69,13 +69,18 @@ fmt-check: ## Verify formatting without writing (what CI enforces)
 # Everything runnable lands in bin/: the Go binaries directly, the Gleam
 # server as an erlang shipment in build/erlang-shipment behind a thin
 # bin/loom-server launcher (shipments bundle compiled BEAM files, not the
-# runtime system, so running one needs an installed Erlang/OTP).
+# runtime system, so running one needs an installed Erlang/OTP). For a
+# server that carries the runtime system with it, see `make release`.
+#
+# Every Go build in the tree goes through scripts/go-build.sh so the flags
+# cannot drift between them: the helper `make selftest` probes and the
+# helper `make dist` ships are then the same bytes, which is the only way
+# the self-test's verdict says anything about the artifact.
 
 .PHONY: binaries
 binaries: ## Build the Go binaries into bin/ (loom-exec, loom-tui)
-	@mkdir -p bin
-	@cd $(GO_PKG) && go build -o ../../bin/loom-exec ./cmd/loom-exec
-	@cd packages/tui && go build -o ../../bin/loom-tui ./cmd/loom-tui
+	@scripts/go-build.sh $(GO_PKG) ./cmd/loom-exec bin/loom-exec
+	@scripts/go-build.sh packages/tui ./cmd/loom-tui bin/loom-tui
 	@echo "built bin/loom-exec and bin/loom-tui"
 
 .PHONY: server-shipment
@@ -92,6 +97,34 @@ server-shipment: ## Package the server: build/erlang-shipment + bin/loom-server 
 		> bin/loom-server
 	@chmod +x bin/loom-server
 	@echo "built build/erlang-shipment and bin/loom-server"
+
+# ------------------------------------------------------------- distribution
+# The downloadable server: an OTP release with `include_erts`, so the
+# machine that runs it needs no Erlang. rebar3/relx assembles it over the
+# same erlang-shipment `server-shipment` exports, because Gleam has no
+# release story of its own and the shipment is the one artifact that
+# already has every dependency's ebin and priv in one place.
+#
+# A release is per-platform and cannot be otherwise: the copied ERTS and
+# esqlite's `esqlite3_nif.so` are both native to the build host. `make
+# release` refuses a GOOS/GOARCH that is not the host rather than
+# producing a tree whose name lies about it. docs/distribution.md is the
+# argument in full — mechanism, what it costs, and why the helper ships
+# beside the release instead of inside it.
+#
+# To build: gleam, rebar3, erl, go, strip. To run what comes out: nothing.
+
+.PHONY: release
+release: ## Build the self-contained server into build/release/loom (needs rebar3)
+	@scripts/release.sh
+
+.PHONY: release-smoke
+release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves
+	@scripts/release.sh --smoke
+
+.PHONY: dist
+dist: release release-smoke ## Package dist/: the server tarball, loom-tui, SHA256SUMS
+	@scripts/dist.sh
 
 # ------------------------------------------------------------------- running
 
@@ -125,7 +158,7 @@ dev: ## Build, start a server on a scratch session, attach the TUI (interactive)
 
 .PHONY: sandbox
 sandbox: ## Build the loom-exec sandbox helper binary
-	@cd $(GO_PKG) && go build -o loom-exec ./cmd/loom-exec
+	@scripts/go-build.sh $(GO_PKG) ./cmd/loom-exec $(HELPER)
 	@echo "built $(HELPER)"
 
 .PHONY: sandbox-test
@@ -191,6 +224,15 @@ deps: ## Download dependencies for every package
 gen-sql: ## Regenerate parrot-generated SQL modules (needs sqlite3; ADR-004)
 	@scripts/gen-sql.sh
 
+.PHONY: gen-prelude
+gen-prelude: ## Regenerate tools/prelude from packages/cap (needs gleam, python3)
+	@scripts/gen-prelude.sh
+
+.PHONY: prelude-check
+prelude-check: ## Check tools/prelude against packages/cap (no toolchain needed)
+	@scripts/gen-prelude.sh --check
+	@scripts/gen-prelude.sh --self-test
+
 .PHONY: docs
 docs: ## Build HexDocs-style API documentation for every Gleam package
 	@set -e; for p in $(PACKAGES); do \
@@ -198,7 +240,7 @@ docs: ## Build HexDocs-style API documentation for every Gleam package
 	done
 
 .PHONY: lint
-lint: ## Run Loom's own lint (house rules; warnings only, see scripts/lint.sh)
+lint: ## Run Loom's own lint (house rules; R0/R2/R4/R6 gate, see scripts/lint.sh)
 	@scripts/lint.sh
 
 .PHONY: lint-%
@@ -211,7 +253,7 @@ doc-check: ## Check the doc graph (coverage, AGENTS.md mirror, staleness, citati
 
 .PHONY: clean
 clean: ## Remove build artifacts
-	@rm -rf packages/*/build $(HELPER) bin build
+	@rm -rf packages/*/build $(HELPER) bin build dist
 	@echo "cleaned"
 
 .PHONY: loc

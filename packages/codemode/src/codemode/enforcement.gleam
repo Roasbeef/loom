@@ -23,9 +23,29 @@
 //// node's, and `codemode.Execution` carries both. Nothing can produce an
 //// outcome without also producing the two reports, which is what makes
 //// honest reporting structural rather than probable.
+////
+//// # The other half: what an approval relaxed
+////
+//// A report of the layers a kernel applied answers "what confined this",
+//// but only against the policy that was composed. An execution re-run
+//// under an approved escalation composed a *wider* policy than the one
+//// its session base would have given it, and an operator reading the
+//// record has to be able to see that — a widening nobody can find in the
+//// record is a widening nobody reviews.
+////
+//// `Widening` is that fact, and it is deliberately a peer of
+//// `Enforcement` rather than a field inside it. `Reported.entries` is the
+//// helper's ground truth, verbatim; folding a harness-side decision into
+//// that list would put a claim about what Loom did where a reader expects
+//// a claim about what the kernel did, which is the exact confusion the
+//// applied/skipped split exists to prevent. Two facts, side by side on
+//// `codemode.Execution`: what the kernel enforced, and what an approval
+//// relaxed before it was asked to.
 
 import broker/broker
 import broker/exec.{type ExecResult}
+import broker/policy.{type Grant}
+import gleam/int
 import gleam/list
 import gleam/string
 import tools/tool
@@ -50,6 +70,130 @@ pub type Report {
 /// other is exactly the failure this type exists to prevent.
 pub type Enforcement {
   Enforcement(build: Report, node: Report)
+}
+
+/// What an approved escalation widened about one execution, or why it
+/// widened nothing.
+///
+/// Two states and no third: either a set of grants composed into the
+/// policy some stage of this execution actually ran under, or they did
+/// not, with the reason said out loud. There is no silence for a reader
+/// to fill in, which is the same discipline `Report` keeps about a stage
+/// that made no report.
+pub type Widening {
+  /// Nothing about this execution was widened. `reason` distinguishes the
+  /// two ways that happens — no approval was attributed to it at all, or
+  /// one was and no stage ever reached the point of composing it — because
+  /// an operator reviewing an approval needs to know whether it was spent.
+  NotWidened(reason: String)
+  /// The run phase composed these grants: the satellite node's own
+  /// clearance and every capability call the program made were cleared
+  /// under `base ⊕ requirements ⊕ grants` rather than under the meet
+  /// alone.
+  ///
+  /// The hermetic build is never among them — `codemode/identity` drops
+  /// the grants when it derives the build phase — so this is always a
+  /// statement about the program's execution and never about the build
+  /// that produced it.
+  Widened(grants: List(Grant))
+}
+
+/// The widening a phase that ran composed, from the grants it carried.
+///
+/// An empty list is `NotWidened`, not `Widened([])`: claiming a widening
+/// over no grants would put a line in the record for every ordinary
+/// execution and teach a reader to skip it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // enforcement.widened(by: []) == enforcement.NotWidened(reason: "...")
+/// ```
+///
+pub fn widened(by grants: List(Grant)) -> Widening {
+  case grants {
+    [] -> NotWidened(reason: nothing_attributed)
+    _granted -> Widened(grants:)
+  }
+}
+
+/// The widening an execution carried but never got to spend: grants were
+/// attributed to it, and it settled before any stage composed them.
+///
+/// `because` is a clause naming what settled it, so the record reads as
+/// one sentence. Carrying nothing reads exactly like any other unwidened
+/// execution — there is no approval whose fate a reader would be chasing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // enforcement.unspent(carrying: grants, because: "the program did not compile")
+/// ```
+///
+pub fn unspent(
+  carrying grants: List(Grant),
+  because reason: String,
+) -> Widening {
+  case grants {
+    [] -> NotWidened(reason: nothing_attributed)
+    _granted ->
+      NotWidened(
+        reason: "an approved escalation was attributed to this execution, but "
+        <> reason,
+      )
+  }
+}
+
+// Said the same way wherever it is true, so the two paths that reach it
+// cannot drift into two different sentences for one fact.
+const nothing_attributed = "no approved escalation was attributed to this execution"
+
+/// One grant as a short line an operator can read: what it widened, and
+/// to what.
+///
+/// Rendering lives beside the report rather than in `broker/policy`
+/// because a `Grant` is an instruction to a composer, and what a person
+/// needs from it here is a diff line. Kept total and kept small — every
+/// variant renders, so a new one cannot go unmentioned in a record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert enforcement.grant_label(policy.GrantEnv(name: "CC")) == "env=CC"
+/// ```
+///
+pub fn grant_label(grant: Grant) -> String {
+  case grant {
+    policy.GrantWritableRoot(path:) -> "writable-root=" <> path
+    policy.GrantReadableRoot(path:) -> "readable-root=" <> path
+    policy.GrantNetwork(network:) -> "network=" <> network_label(network)
+    policy.GrantEnv(name:) -> "env=" <> name
+    policy.GrantLimit(field:, value:) ->
+      "limit:" <> limit_label(field) <> "=" <> int.to_string(value)
+    policy.GrantScratch(scratch: policy.ScratchTmpfs) -> "scratch=tmpfs"
+    policy.GrantScratch(scratch: policy.ScratchPath(path:)) ->
+      "scratch=" <> path
+  }
+}
+
+fn network_label(network: policy.NetworkPolicy) -> String {
+  case network {
+    policy.NetworkOff -> "off"
+    policy.NetworkFull -> "full"
+    policy.NetworkProxy(allow:, proxy: _) ->
+      "proxy(" <> string.join(allow, ",") <> ")"
+  }
+}
+
+fn limit_label(field: policy.LimitField) -> String {
+  case field {
+    policy.CpuSeconds -> "cpu_s"
+    policy.WallSeconds -> "wall_s"
+    policy.MemBytes -> "mem_bytes"
+    policy.Pids -> "pids"
+    policy.FsizeBytes -> "fsize_bytes"
+    policy.OutputBytes -> "output_bytes"
+  }
 }
 
 /// The report a settled clearance carries.

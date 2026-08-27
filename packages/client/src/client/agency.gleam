@@ -71,6 +71,37 @@
 //// fix: every other caller of `api.await_strand_result` still has the
 //// floor, and `docs/notebook.md`'s item stays open.
 ////
+//// ## Where a result contract is enforced, and why there
+////
+//// A spawn may carry a `result_schema`. Two places could check it, and
+//// they are not equivalent. Checking it here, in the parent's `wait`,
+//// lets the child finish successfully and then tells the parent its
+//// child was useless — a verdict delivered to the one party that cannot
+//// act on it, one context window away from the model that wrote the
+//// value, after the run that could have fixed it has ended. Checking it
+//// on the child's own `agent_note` call refuses the write to the model
+//// that made it, in the turn it made it, with the tools and the context
+//// still in hand; the child sees what was expected, what it sent, and
+//// tries again. So the enforcement point is the child, and the whole of
+//// the reason is attributability: a failure belongs to whoever can
+//// repair it.
+////
+//// The parent's `wait` still validates, and that is not a second
+//// authorization. The cell is read back out of the durable store, and
+//// the house rule for a value crossing that boundary is that it is
+//// decoded rather than trusted — a schema rewritten between the write
+//// and the read, or a cell seeded before a contract existed, has to
+//// come back as `ResultUnusable` naming the schema rather than as a
+//// value a program will branch on.
+////
+//// The schema itself lives in its own fact cell, `result-schema/{child}`,
+//// written before the lineage cell so a crash between the two can only
+//// leave a schema with no child, never a child whose contract vanished.
+//// It sits outside `agent/` on purpose: `agent_note` prepends
+//// `agent/{caller}/` to every key a model supplies and `agent_notes`
+//// reads under `agent/` alone, so a child can neither rewrite the
+//// contract it is judged against nor discover its siblings'.
+////
 //// And `send` upward into a parent that has *finished* is refused rather
 //// than delivered, because `api.send_to_strand` falls back to accepting a
 //// fresh run when the target is idle — which would wake a finished parent
@@ -87,6 +118,7 @@ import core/entry
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -99,13 +131,13 @@ import machine/operation.{type LastResult}
 import machine/strand as machine_strand
 import runtime/api
 import runtime/effects
-import runtime/lineage.{type Lineage, CallSite, Lineage}
+import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
 import runtime/writer
 import session/session
 import tools/agent.{
   type Agency, type Caller, type Delivery, type Handle, type Outcome, type Peer,
-  type Refusal, type Spawned, type Waited, Aborted, Completed, Failed, Handle,
-  Pending, Ready, Spawned,
+  type Refusal, type ResultSchema, type Spawned, type TerminalResult,
+  type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
 
 /// The name prefix every minted subagent strand carries. It is what
@@ -113,6 +145,19 @@ import tools/agent.{
 /// the tree's second strand factory, so a subagent crash loop cannot
 /// spend the restart budget protecting the strand a human is talking to.
 pub const subagent_prefix = "sub:"
+
+/// Where a child's result contract lives: one `fact.custom` cell per
+/// child with a schema, at `result-schema/{child strand}`.
+///
+/// Deliberately outside `agent/`. `agent_note` forces every model-supplied
+/// key under `agent/{caller}/` and `agent_notes` lists under `agent/`
+/// alone, so this corner is unreachable from the model's own tools in
+/// both directions: a child cannot rewrite the contract it is held to,
+/// and cannot read what its siblings were asked for. It is not one of the
+/// runtime's four *reserved* prefixes, which would be a change to
+/// `runtime/api` rather than to this seam; what keeps it safe is that
+/// nothing a model can reach ever addresses it.
+pub const result_schema_prefix = "result-schema/"
 
 /// How far a descendant walk will climb before giving up. A cycle would
 /// require a strand name to have been claimed twice, and `seed_strand`
@@ -370,27 +415,89 @@ fn spawn(
   })
   use name <- result.try(child_name(caller, request.purpose))
   case cell_of(ledger, name) {
-    // The first execution completed: hand back the same handle. This is
-    // what makes `agent_spawn` replay-safe.
-    Some(existing) ->
-      Ok(Spawned(
-        handle: Handle(strand: existing.strand, operation: existing.brief),
-        strand: existing.strand,
-        tools: existing.tools,
-      ))
+    Some(existing) -> adopt(caller, existing)
     None -> reconcile(config, runtime, ledger, caller, request, name, depth)
   }
 }
 
+// A child already sits under the derived name. That is the ordinary
+// replay path — the first execution completed and the same handle is
+// handed back, which is the whole of what makes `agent_spawn`
+// `ReplaySafe` — but only when the ledger agrees this caller is the one
+// that minted it.
+//
+// A name match on its own is not an ownership proof, and treating it as
+// one is an ownership *transfer*: the adopting caller's brief, tools,
+// `within_ms`, `detach` and `result_schema` are all silently dropped —
+// `write_result_schema` runs on the other branch — and `check_capacity`
+// is skipped, so the adopted child costs its new parent nothing against
+// `fan_out`. The caller then waits on a strand doing something else and
+// reports its answer as the answer to a question it never asked.
+//
+// So the ledger, not the name, decides. `minted_by` is the call site the
+// name was derived from, and `agent.minting_step` is what makes "the same
+// caller" mean the same operation, the same step, the same planned call
+// *and* the same minter inside it — a program's ordinal included, since
+// `CallSite` has no field of its own for it. Anything else is refused.
+// The check is cheap and the name derivation already makes reaching it
+// hard; it is here because a name is derived and a ledger cell is
+// recorded, and only one of those two is evidence.
+fn adopt(caller: Caller, existing: Lineage) -> Result(Spawned, Refusal) {
+  use <- bool.guard(
+    when: existing.minted_by != call_site(caller),
+    return: Error(agent.NameAlreadyMinted(strand: existing.strand)),
+  )
+  Ok(Spawned(
+    handle: Handle(strand: existing.strand, operation: existing.brief),
+    strand: existing.strand,
+    tools: existing.tools,
+  ))
+}
+
+// The call site a spawn is recorded under and reconciled against. One
+// function, so the cell that is written and the cell that is compared can
+// never drift apart.
+fn call_site(caller: Caller) -> CallSite {
+  CallSite(
+    operation: caller.operation,
+    step_id: agent.minting_step(caller),
+    source_index: caller.source_index,
+  )
+}
+
 /// The name a spawn mints for a child, derived only from state that is
 /// durable in the intent: the caller's strand, the purpose it slugged,
-/// and the `{step, source index}` coordinates a replayed call arrives
-/// under.
+/// and `agent.call_site_digest` over the coordinates a replayed call
+/// arrives under — operation, minting step, and source index.
 ///
 /// The model never supplies a name, so it cannot claim `main`, cannot
 /// shadow an operator's convention, and cannot collide with a sibling —
 /// and the determinism is exactly what lets a replayed spawn find its own
 /// child instead of minting a second one.
+///
+/// ## Two halves, and why only one of them may be truncated
+///
+/// The slug is the model's half and is decoration: it is bounded at
+/// `agent.max_slug_length` so a pasted paragraph cannot become a register
+/// key, and nothing about who owns the child rests on it. The digest is
+/// the harness's half and is the whole of the identity: sixteen hex
+/// characters, constant width, no model input.
+///
+/// The two properties that division buys are the two the previous shape
+/// lacked, and it lacked them together. It ended `-{step-slug}-{index}`,
+/// where the step was slugged by the *purpose* slugger and so truncated
+/// at twenty-four characters — and a production step id is a
+/// thirty-six-character UUID, so every discriminator a caller appended to
+/// the step was cut off before it reached the name. A constant-width
+/// field has no cap left to be truncated against. And because the digest
+/// takes no model-supplied input, a chosen purpose moves the decoration
+/// and nothing else; there is no string a model can pick that makes two
+/// call sites derive one name.
+///
+/// The step and index are not lost, only moved: they are recorded whole
+/// in the child's lineage cell, under `minted_by`, which is where an
+/// operator asking "where did this strand come from" should look and is
+/// what a reconciliation is checked against.
 ///
 /// Exposed because it is the coordinate function the idempotence
 /// argument rests on, and a claim like that should be checkable from
@@ -400,7 +507,7 @@ fn spawn(
 ///
 /// ```gleam
 /// // agency.child_name(caller, "review the auth code")
-/// // -> Ok("sub:main/review-the-auth-code-turn-1-tools-0")
+/// // -> Ok("sub:main/review-the-auth-code-7b1c0a4e2d95f318")
 /// ```
 ///
 pub fn child_name(caller: Caller, purpose: String) -> Result(String, Refusal) {
@@ -410,16 +517,13 @@ pub fn child_name(caller: Caller, purpose: String) -> Result(String, Refusal) {
       reason: "`purpose` must contain at least one letter or digit",
     )),
   )
-  let step = result.unwrap(agent.slug(caller.step_id), "step")
   Ok(
     subagent_prefix
     <> caller.strand
     <> "/"
     <> slug
     <> "-"
-    <> step
-    <> "-"
-    <> int.to_string(caller.source_index),
+    <> agent.call_site_digest(caller),
   )
 }
 
@@ -474,23 +578,68 @@ fn reconcile(
       strand: name,
       parent: caller.strand,
       depth:,
-      minted_by: CallSite(
-        operation: caller.operation,
-        step_id: caller.step_id,
-        source_index: caller.source_index,
-      ),
+      minted_by: call_site(caller),
       brief:,
       tools:,
       deadline: deadline_of(config, now, request.within_ms),
       detached: request.detach,
       reaped: False,
     )
+  // Before the lineage cell, not after: the replay path keys on the
+  // lineage cell and returns early when it finds one, so a crash between
+  // these two commits must be able to leave a schema with no child and
+  // never a child whose contract went missing.
+  use Nil <- result.try(write_result_schema(
+    runtime,
+    name,
+    request.result_schema,
+  ))
   use Nil <- result.try(write_cell(runtime, cell))
   Ok(Spawned(
     handle: Handle(strand: name, operation: brief),
     strand: name,
     tools:,
   ))
+}
+
+fn write_result_schema(
+  runtime: api.Runtime,
+  strand: String,
+  schema: Option(ResultSchema),
+) -> Result(Nil, Refusal) {
+  case schema {
+    None -> Ok(Nil)
+    Some(schema) ->
+      api.put_fact(
+        runtime,
+        result_schema_prefix <> strand,
+        agent.render_result_schema(schema),
+      )
+      |> result.map_error(fn(error) {
+        agent.PlaneFailed(reason: describe_api(error))
+      })
+  }
+}
+
+// The contract, read back. `render_result_schema` is the canonical form
+// and `parse_result_schema` is total over it, so a cell that will not
+// decode — corrupt, or hand-written by an operator — degrades into "no
+// contract" rather than faulting a join nobody inside the session could
+// repair. Failing open is safe *here* in a way it is not in the lineage
+// ledger, and the difference is worth stating: a missing lineage fact
+// would grant an addressing right, while a missing contract grants
+// nothing. It costs a join that reports `NoResultAsked` when a schema
+// was in fact asked for — a wrong answer, but a legible one that names
+// no authority the caller did not have.
+fn read_result_schema(
+  runtime: api.Runtime,
+  strand: String,
+) -> Option(ResultSchema) {
+  case api.fact(runtime, result_schema_prefix <> strand) {
+    Error(_error) -> None
+    Ok(None) -> None
+    Ok(Some(payload)) -> option.from_result(agent.parse_result_schema(payload))
+  }
 }
 
 // The registers are seeded but the brief run was never accepted, or was
@@ -515,7 +664,7 @@ fn recover_brief(
         Some(last) -> Ok(api.result_operation(last))
         None ->
           api.adopt_strand(runtime, named: name, brief: [
-            brief_message(config, caller, request.brief),
+            brief_message(config, caller, request),
           ])
           |> result.map_error(fn(error) {
             agent.PlaneFailed(reason: describe_create(error))
@@ -549,7 +698,7 @@ fn create(
       active_tool_names: tools,
     ),
     at: fork_point,
-    brief: [brief_message(config, caller, request.brief)],
+    brief: [brief_message(config, caller, request)],
   )
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_create(error))
@@ -607,19 +756,39 @@ fn check_capacity(
   let live =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
   let mine = list.filter(live, fn(cell) { cell.parent == caller.strand })
-  case list.length(mine) >= config.fan_out {
-    True ->
-      Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
-    False ->
-      case list.length(live) >= config.session_strands {
-        True ->
-          Error(agent.FanOutCapReached(
-            live: list.length(live),
-            cap: config.session_strands,
-          ))
-        False -> Ok(Nil)
-      }
-  }
+  // Both guards are lazy, and that is not a flourish: the count in the
+  // refusal is the one thing here that genuinely has to walk the list,
+  // and an eager `return:` would walk it on every admitted spawn to
+  // build a message nobody reads. The refusal path pays for its own
+  // number; the admission path pays for nothing.
+  use <- bool.lazy_guard(when: at_least(mine, config.fan_out), return: fn() {
+    Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
+  })
+  use <- bool.lazy_guard(
+    when: at_least(live, config.session_strands),
+    return: fn() {
+      Error(agent.FanOutCapReached(
+        live: list.length(live),
+        cap: config.session_strands,
+      ))
+    },
+  )
+  Ok(Nil)
+}
+
+// Whether `values` holds at least `bound` elements, answered at the bound
+// instead of by counting: `list.drop` stops as soon as it has dropped
+// that many, so a session holding a hundred live strands costs a check
+// the same as one holding `bound` of them.
+//
+// The `bound <= 0` arm is the arithmetic, not a defensive crumple zone.
+// "At least none" is true of every list, the empty one included, and the
+// drop spelling gets that case wrong twice over: `bound - 1` is negative,
+// and `list.drop` hands a negative count the whole list back, so an empty
+// ledger would read as *not* at a cap of zero. A host that sets `fan_out`
+// to zero means no spawns at all, and this is the line that says so.
+fn at_least(values: List(a), bound: Int) -> Bool {
+  bound <= 0 || list.drop(values, bound - 1) != []
 }
 
 fn deadline_of(
@@ -641,18 +810,56 @@ fn deadline_of(
 fn brief_message(
   config: Config,
   caller: Caller,
-  brief: String,
+  request: agent.SpawnRequest,
 ) -> AgentMessage {
   let #(now, _clock) = clock.read(config.clock)
   message.UserMessage(
     content: [
       message.UserText(
-        text: frame_brief(from: caller.strand, body: brief),
+        text: frame_brief(from: caller.strand, body: request.brief)
+          <> result_contract(request.result_schema),
         text_signature: None,
       ),
     ],
     timestamp: now,
   )
+}
+
+/// The child's half of the result contract, in the harness's own voice.
+///
+/// It sits *after* the brief's closing marker rather than inside it, and
+/// the placement is the point: the brief is model-authored text framed
+/// as data, while this is the harness telling the child what its run
+/// owes. Putting the instruction inside the quoted region would file it
+/// under the sender's authority, which is the authority the framing
+/// exists to withhold.
+///
+/// The schema is quoted from `render_result_schema` rather than from
+/// whatever the parent typed, so what the child reads is exactly what
+/// its notes will be judged against, and a parent cannot smuggle prose
+/// through a schema field: names are alphabet-checked at spawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.result_contract(option.Some(schema))
+/// ```
+///
+pub fn result_contract(schema: Option(ResultSchema)) -> String {
+  case schema {
+    None -> ""
+    Some(schema) ->
+      "\n[result contract, from the harness and not from the sender]\n"
+      <> "Before you finish, record your result with agent_note under the "
+      <> "key `"
+      <> agent.result_note_key
+      <> "`, matching this schema exactly:\n"
+      <> json.to_string(agent.render_result_schema(schema))
+      <> "\nA note that does not match is refused and tells you why, so "
+      <> "write it while you still have the work in hand. Write your "
+      <> "prose answer as well: the schema is what your parent branches "
+      <> "on, the prose is what a human reads.\n[end result contract]"
+  }
 }
 
 // --- wait ------------------------------------------------------------------
@@ -735,7 +942,16 @@ fn wait_loop(
       settle_handle(runtime, found, handle)
     })
   let #(now, _clock) = clock.read(config.clock)
-  case dict.size(settled) == list.length(handles) || now >= deadline {
+  // "Everything has settled" asked at the bound rather than by counting.
+  // Every key in `settled` is one of *these* handles' own — the fold
+  // above inserts under `handle_to_string` and nothing else puts a key in
+  // — so the dict can never outgrow the list, and "as many settled as
+  // there are handles" is the same question as "no handle sits past the
+  // ones that have settled". `dict.size` is a constant-time read of the
+  // map's own counter; `list.drop` stops at it. The alternative walked
+  // the handle list on every slice of every wait, which is the one loop
+  // in this module that runs on a timer.
+  case list.drop(handles, dict.size(settled)) == [] || now >= deadline {
     True ->
       list.map(handles, fn(handle) {
         case dict.get(settled, agent.handle_to_string(handle)) {
@@ -759,12 +975,45 @@ fn wait_loop(
 }
 
 fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
+  let notes =
+    notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/")
   Ready(
     handle:,
     outcome: outcome_of(last),
     report: report_of(runtime, last),
-    notes: notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/"),
+    // The notes are already in hand, so the contract costs one point read
+    // for the schema and no second listing: the result cell *is* a note,
+    // which is the whole reason the blackboard was the right place to put
+    // it rather than a channel of its own.
+    result: terminal_result(runtime, handle.strand, notes),
+    notes:,
   )
+}
+
+fn terminal_result(
+  runtime: api.Runtime,
+  strand: String,
+  notes: List(#(String, JsonValue)),
+) -> TerminalResult {
+  case read_result_schema(runtime, strand) {
+    None -> agent.NoResultAsked
+    Some(schema) ->
+      case list.key_find(notes, result_key(strand)) {
+        Error(Nil) -> agent.ResultAbsent(schema:)
+        Ok(value) -> judged(schema, value)
+      }
+  }
+}
+
+fn judged(schema: ResultSchema, value: JsonValue) -> TerminalResult {
+  case agent.validate_result(schema, value) {
+    Ok(Nil) -> agent.ResultGiven(value:)
+    Error(mismatch) -> agent.ResultUnusable(schema:, received: value, mismatch:)
+  }
+}
+
+fn result_key(strand: String) -> String {
+  agent.blackboard_prefix <> strand <> "/" <> agent.result_note_key
 }
 
 fn outcome_of(last: LastResult) -> Outcome {
@@ -931,6 +1180,7 @@ fn note(
 ) -> Result(Nil, Refusal) {
   use runtime <- result.try(borrow(config))
   use key <- result.try(validate_key(key))
+  use Nil <- result.try(check_result_contract(runtime, caller, key, value))
   // The prefix is built here and the key is only ever appended to it, so
   // no argument can escape the namespace. `put_fact` refuses every
   // reserved prefix underneath, so forging a lineage cell or an approval
@@ -940,6 +1190,27 @@ fn note(
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_api(error))
   })
+}
+
+// The enforcement point for a result contract — see the module doc for
+// why it is the child's own write and not the parent's read. The schema
+// is looked up only for the one key that owes one, so an ordinary note
+// pays nothing for the feature.
+fn check_result_contract(
+  runtime: api.Runtime,
+  caller: Caller,
+  key: String,
+  value: JsonValue,
+) -> Result(Nil, Refusal) {
+  use <- bool.guard(when: key != agent.result_note_key, return: Ok(Nil))
+  case read_result_schema(runtime, caller.strand) {
+    None -> Ok(Nil)
+    Some(schema) ->
+      agent.validate_result(schema, value)
+      |> result.map_error(fn(mismatch) {
+        agent.ResultSchemaUnmet(schema:, received: value, mismatch:)
+      })
+  }
 }
 
 fn notes(

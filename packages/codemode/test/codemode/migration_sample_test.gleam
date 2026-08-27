@@ -59,6 +59,7 @@ import codemode/build
 import codemode/codemode
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import codemode/vet/policy as vet_policy
@@ -235,13 +236,10 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       dependencies: compile.default_dependencies(),
       build: build.builder(build.BuildConfig(
         broker: live.broker,
-        op_id: op,
-        step_id: "migration-sample-build",
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
         toolchain_roots: ["/"],
-        budget: pooled,
         demand: exec.BestEffort,
         env: [#("PATH", path)],
         dependencies: compile.default_dependencies(),
@@ -249,10 +247,17 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       )),
     ),
     broker: live.broker,
-    exec_id: satellite.ExecId(op_id: op, step_id: "migration-sample"),
+    // The build is accounted separately, under the derived
+    // `migration-sample-build` sub-step; the node and every capability
+    // call the program makes share the execution's own ledger.
+    identity: identity.for_execution(
+      op_id: op,
+      step_id: "migration-sample",
+      budget: pooled,
+    )
+      |> identity.with_own_build_ledger,
     satellite: satellite.SatelliteConfig(
       base_policy: live.base_policy,
-      budget: pooled,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
@@ -262,6 +267,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       write_token_file: satellite.private_token_writer(live.token_dir),
       unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
+      ceilings: [],
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(

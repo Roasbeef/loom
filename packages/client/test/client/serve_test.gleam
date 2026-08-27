@@ -9,6 +9,7 @@
 
 import broker/exec
 import client/catalog
+import client/codemode
 import client/host
 import client/protocol
 import client/serve
@@ -102,6 +103,7 @@ fn settings_under(root: String) -> serve.Settings {
     // No seed here: the boot smoke must not go looking for a toolchain,
     // and a host without one registers no `code_mode` tool.
     codemode_seed: root <> "/no-such-seed",
+    codemode_seams: codemode.WorkspaceOnly,
   )
 }
 

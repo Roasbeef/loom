@@ -78,6 +78,13 @@ pub type FactCell {
   FactCell(value: JsonValue, seq: Seq)
 }
 
+/// One durable escalation record as a compare-and-set caller sees it:
+/// the decoded record and the seq of the write that put it there, which
+/// is what `consume_escalation_at` asserts against.
+pub type EscalationCell {
+  EscalationCell(record: Escalation, seq: Seq)
+}
+
 /// A live session runtime: the supervision tree plus what the operations
 /// need. `strand` is the strand this handle currently addresses
 /// (`on_strand` rebinds it).
@@ -1307,6 +1314,12 @@ pub fn leaf(runtime: Runtime) -> Result(Option(EntryId), ApiError) {
 /// The record must be durable before the denial is surfaced for
 /// decision; the gateway (WP-L) drives approve/deny.
 ///
+/// The record names no *action*, so nothing inherits its approval on a
+/// later claim and `client/escalate` will not spend it: a caller that
+/// means "one re-execution of this exact call" wants `claim_escalation`,
+/// which carries what the call would run. This door stays for hosts that
+/// re-execute the denied action themselves, having never left it.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1319,7 +1332,11 @@ pub fn raise_escalation_for(
   denial: JsonValue,
   scope scope: escalation.CallScope,
 ) -> Result(Nil, ApiError) {
-  commit_raised(runtime, id, escalation.raised(id, denial, Some(scope)))
+  commit_raised(
+    runtime,
+    id,
+    escalation.raised(id, denial, action: None, scope: Some(scope)),
+  )
 }
 
 /// Records a raised escalation *and* attaches this call's claim to it —
@@ -1332,62 +1349,97 @@ pub fn raise_escalation_for(
 /// over under a CAS, so the record follows the live call:
 ///
 /// - a **pending** record moves its scope and refreshes its stored
-///   denial — one row and one prompt for a want however many times it is
-///   asked, showing what the call in hand wants;
-/// - an **approved** record moves its scope and keeps its grants, which
-///   is what makes an approval spendable at all: a model that read an
-///   in-band refusal retries under a call id the provider minted after
-///   the human decided, and a scope frozen to the first attempt names a
-///   call that will never come back;
+///   denial, action and preview — one row and one prompt for a want
+///   however many times it is asked, showing what the call in hand wants
+///   and what it would run;
+/// - an **approved** record whose bound action is the claimant's moves
+///   its scope and keeps its grants, which is what makes an approval
+///   spendable at all: a model that read an in-band refusal retries
+///   under a call id the provider minted after the human decided, and a
+///   scope frozen to the first attempt names a call that will never come
+///   back;
+/// - an **approved** record bound to a *different* action re-opens as a
+///   fresh pending question with no grants (#65). One record is one
+///   want, and a want is not an action: the same strand, tool and policy
+///   diff digest identically whatever command is behind them, so
+///   inheriting on the id alone would spend a human's yes about one
+///   command on another. Design §5.3 grants one re-execution of the
+///   *denied action*;
 /// - a **rejected** or **consumed** record re-opens as pending with no
 ///   grants — a new question, needing a new answer, so one approval is
 ///   still worth exactly one widened execution and one denial is a
 ///   decision about one call rather than a verdict the session cannot
 ///   revisit.
 ///
+/// Every re-opening costs a human an answer, so `max_asks` bounds how
+/// many questions one row may ever put. Past it the claim comes back
+/// `Exhausted` with nothing written and the record left terminal, and
+/// the caller settles in band — which is what the model would have seen
+/// anyway.
+///
 /// What the claim never does is widen the record: the id is a digest of
 /// `{strand, tool, wanted diff}`, so only a call wanting the same thing
-/// on the same strand through the same tool can ever reach it, and the
-/// grants a claimant spends are the ones the human chose, not its own.
+/// on the same strand through the same tool can ever reach it; the
+/// action must match on top of that for an approval to be inherited; and
+/// the grants a claimant spends are the ones the human chose, not its
+/// own. The action itself is opaque here — the runtime stores and
+/// compares the string the client computed, never a tool's arguments.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // api.claim_escalation(runtime, "esc-1", denial_json, scope)
+/// // api.claim_escalation(rt, "esc-1", denial, action, scope, max_asks: 3)
 /// ```
 ///
 pub fn claim_escalation(
   runtime: Runtime,
   id: String,
   denial: JsonValue,
+  action action: escalation.Action,
   scope scope: escalation.CallScope,
-) -> Result(Escalation, ApiError) {
+  max_asks max_asks: Int,
+) -> Result(escalation.Claim, ApiError) {
   let key = escalation.register_key(id)
   retry_admission(4, fn() {
     use <- attempt
     use found <- result.try(read_escalation_cell(runtime, id))
-    let #(expected, next) = case found {
-      None -> #(None, escalation.raised(id, denial, Some(scope)))
+    let #(expected, claim) = case found {
+      None -> #(
+        None,
+        escalation.Claimed(escalation.raised(
+          id,
+          denial,
+          action: Some(action),
+          scope: Some(scope),
+        )),
+      )
       Some(#(seq, record)) -> #(
         Some(seq),
-        escalation.claimed(record, denial, scope),
+        escalation.claimed(record, denial, action, scope, max_asks:),
       )
     }
-    let plan_tx =
-      tx.Tx(
-        writes: [
-          tx.SetRegister(
-            ns: register.FactCustom,
-            key:,
-            value: register.value(escalation.encode(next)),
-          ),
-        ],
-        expected: [tx.Expect(ns: register.FactCustom, key:, seq: expected)],
-      )
-    commit_or_retry(
-      writer.commit(writer_subject(runtime), plan_tx),
-      on_ok: next,
-    )
+    case claim {
+      // Nothing to commit: the row keeps the state it is in, and the
+      // absence of a write is the whole of the refusal.
+      escalation.Exhausted(_record) -> Ok(Done(Ok(claim)))
+      escalation.Claimed(next) -> {
+        let plan_tx =
+          tx.Tx(
+            writes: [
+              tx.SetRegister(
+                ns: register.FactCustom,
+                key:,
+                value: register.value(escalation.encode(next)),
+              ),
+            ],
+            expected: [tx.Expect(ns: register.FactCustom, key:, seq: expected)],
+          )
+        commit_or_retry(
+          writer.commit(writer_subject(runtime), plan_tx),
+          on_ok: claim,
+        )
+      }
+    }
   })
 }
 
@@ -1436,7 +1488,11 @@ pub fn raise_escalation(
   id: String,
   denial: JsonValue,
 ) -> Result(Nil, ApiError) {
-  commit_raised(runtime, id, escalation.raised(id, denial, None))
+  commit_raised(
+    runtime,
+    id,
+    escalation.raised(id, denial, action: None, scope: None),
+  )
 }
 
 fn commit_raised(
@@ -1509,6 +1565,34 @@ pub fn escalation(
   |> result.map(fn(found) { found.1 })
 }
 
+/// One durable escalation record with the seq of the write that put it
+/// there — the read half of a compare-and-set, exactly as `fact_cell`
+/// is for the blackboard.
+///
+/// A caller that *decides something* from a record it read must consume
+/// at the seq it read, or its decision is about a record that may have
+/// moved. That is the whole of #68: the parking path checks the scope
+/// and the bound action against the record in hand, so a claim landing
+/// between that check and the consume has to lose the commit rather than
+/// pass unseen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.escalation_cell(runtime, "esc-1")
+/// ```
+///
+pub fn escalation_cell(
+  runtime: Runtime,
+  id: String,
+) -> Result(EscalationCell, ApiError) {
+  read_escalation(runtime, id)
+  |> result.map(fn(found) {
+    let #(seq, record) = found
+    EscalationCell(record:, seq:)
+  })
+}
+
 /// Approves a pending escalation with exactly these grants (a subset of
 /// the denial's wanted diff — validated by the broker layer that raised
 /// it). The clearance of the exact call the escalation was raised for —
@@ -1554,6 +1638,14 @@ pub fn deny_escalation(runtime: Runtime, id: String) -> Result(Nil, ApiError) {
 /// the clearance of exactly the call it was raised for, before the
 /// grants are used.
 ///
+/// This door reads the record fresh and consumes whatever it finds
+/// approved, which is right for a host that holds no earlier read to
+/// guard: there is no seq it could assert. A caller that decided
+/// *anything* from a record it read — that its scope names this call,
+/// that its action is the one in hand — must consume through
+/// `consume_escalation_at` instead, so a claim landing in between loses
+/// the commit rather than passing unseen.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1571,6 +1663,56 @@ pub fn consume_escalation(
     escalation.consume,
   ))
   Ok(record.grants)
+}
+
+/// Consumes exactly the approved escalation the caller read, CAS-guarded
+/// by the seq it read it at, returning its grants (#68).
+///
+/// `escalate.spend` checks a record's scope and its bound action before
+/// it commits, and those checks are statements about the record in the
+/// cell — so the commit has to be one too. A record that moved in
+/// between answers `EscalationWrongStatus` or loses the seq race and
+/// finishes as `RaceLost`; either way the caller settles the call in
+/// band rather than running under grants a check no longer covers. It is
+/// the shape `strand_runtime.consume_escalations` has always had at the
+/// driver's own clearance.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.consume_escalation_at(runtime, cell)
+/// ```
+///
+pub fn consume_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+) -> Result(List(JsonValue), ApiError) {
+  let EscalationCell(record:, seq:) = cell
+  let id = record.id
+  use <- bool.guard(
+    when: !escalation.may_become(record.status, escalation.Consumed),
+    return: Error(EscalationWrongStatus(id:, status: record.status)),
+  )
+  let key = escalation.register_key(id)
+  let consumed = escalation.consume(record)
+  let plan_tx =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.FactCustom,
+          key:,
+          value: register.value(escalation.encode(consumed)),
+        ),
+      ],
+      expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(consumed.grants)
+    // The record moved under the decision that named it. Not a retry:
+    // re-reading would consume a record the caller never checked.
+    Error(tx.StaleExpectation(..)) -> Error(RaceLost)
+    Error(error) -> Error(commit_failure(error))
+  }
 }
 
 fn decide_escalation(

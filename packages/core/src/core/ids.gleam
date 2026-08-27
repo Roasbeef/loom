@@ -28,7 +28,6 @@
 import core/clock.{type Clock}
 import core/corruption.{type CorruptionReport}
 import gleam/int
-import gleam/list
 import gleam/string
 
 /// A storage-assigned sequence number: strictly increasing per session,
@@ -423,19 +422,30 @@ fn parse_uuid(text: String) -> Result(Uuid, CorruptionReport) {
 // Parses exactly `width` hexadecimal digits. Stricter than
 // `int.base_parse`, which would accept signs and mixed lengths.
 fn parse_hex(text: String, width: Int) -> Result(Int, Nil) {
-  let digits = string.to_graphemes(text)
-  case list.length(digits) == width {
-    True -> parse_hex_loop(digits, 0)
-    False -> Error(Nil)
-  }
+  parse_hex_loop(string.to_graphemes(text), width, 0)
 }
 
-fn parse_hex_loop(digits: List(String), accumulator: Int) -> Result(Int, Nil) {
-  case digits {
-    [] -> Ok(accumulator)
-    [digit, ..rest] ->
+// The width is counted down through the digits rather than measured
+// first. `list.length` walks the whole string to answer a question about
+// its first `width` characters, and this runs per parsed id; counting
+// down settles both ways of being wrong — a place missing, or a digit
+// past the width — at the bound itself.
+fn parse_hex_loop(
+  digits: List(String),
+  remaining: Int,
+  accumulator: Int,
+) -> Result(Int, Nil) {
+  case digits, remaining {
+    [], 0 -> Ok(accumulator)
+    // Short: the text ran out with places still owed.
+    [], _ -> Error(Nil)
+    // Long: a digit sits past the width, which the length check caught
+    // and a bare fold would have silently consumed.
+    [_, ..], 0 -> Error(Nil)
+    [digit, ..rest], _ ->
       case hex_digit_value(digit) {
-        Ok(value) -> parse_hex_loop(rest, accumulator * 16 + value)
+        Ok(value) ->
+          parse_hex_loop(rest, remaining - 1, accumulator * 16 + value)
         Error(Nil) -> Error(Nil)
       }
   }

@@ -13,6 +13,7 @@ import broker/policy
 import broker/token
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import core/clock
@@ -28,6 +29,11 @@ import support/rig
 const t = 1_700_000_000_000
 
 const deadline = 1_700_000_030_000
+
+fn run_phase(budget: budget.Budget) -> identity.PhaseIdentity {
+  identity.for_execution(op_id: op_id(), step_id: "step-1", budget:)
+  |> identity.run_phase
+}
 
 fn op_id() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: t), seed: 11)
@@ -67,10 +73,8 @@ fn spec(dir: String, wire: Subject(satellite.WireIn)) -> satellite.LaunchSpec {
     artifact: artifact(dir),
     token_path: dir <> "/token/cap-token",
     cap_socket_path: dir <> "/sock/cap.sock",
-    op_id: op_id(),
-    step_id: "step-1",
+    identity: run_phase(budget.Budget(max_outstanding: 4, deadline_ms: deadline)),
     base_policy: base_policy(dir),
-    budget: budget.Budget(max_outstanding: 4, deadline_ms: deadline),
     env: [#("PATH", "/usr/bin")],
     cwd: dir,
     wire:,
@@ -281,7 +285,10 @@ pub fn a_starved_budget_refuses_the_launch_test() {
   let starved =
     satellite.LaunchSpec(
       ..spec(dir, wire),
-      budget: budget.Budget(max_outstanding: 1, deadline_ms: deadline),
+      identity: run_phase(budget.Budget(
+        max_outstanding: 1,
+        deadline_ms: deadline,
+      )),
     )
   let assert Error(reason) = launch.launcher(config(broker_actor))(starved)
   assert string.contains(reason, "at least 2")

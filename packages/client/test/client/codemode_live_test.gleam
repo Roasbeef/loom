@@ -21,6 +21,7 @@
 //// `make check` stays hermetic and fast.
 
 import broker/broker
+import broker/escalation
 import broker/exec
 import broker/policy
 import broker/token
@@ -30,6 +31,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/option
@@ -166,6 +168,125 @@ fn sandbox_line(text: String) -> String {
     [line, ..] -> line
     [] -> "no sandbox line in the result"
   }
+}
+
+// --- minting an escalation from a real refusal (#97) ------------------------
+
+// The environment name the session base does not allow. The node's
+// requirements name every variable the launcher will set — the two cap
+// handles plus whatever the caller's `env` holds — so a name in `env`
+// that the base does not allow is a shortfall the *node* has and the
+// hermetic build does not: the build is passed `PATH` alone. That
+// asymmetry is what makes this a run-phase refusal rather than a build
+// one, which is the whole distinction the seam turns on.
+const unallowed_env = "LOOM_ESCALATION_PROBE"
+
+pub fn a_narrowed_base_mints_an_approval_the_retry_spends_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println(
+        "SKIP a_narrowed_base_mints_an_approval_the_retry_spends: " <> reason,
+      )
+    Ok(ready) -> run_escalating(ready)
+  }
+}
+
+// The whole loop against the real pipeline: a real vet, a real hermetic
+// build, a real satellite launch refused on a real narrowed base, the
+// structured diff that refusal reports outward, and — once the host
+// answers with exactly that diff — a real jailed program that runs.
+//
+// Before #97 the first half of that sentence ended in prose. The pipeline
+// flattens every refusal to a reason string on its way to the model, so
+// the `wanted` an approval is granted against did not exist anywhere
+// above the composition that computed it, and nothing could mint a
+// record for a human to answer. The assertion on `raised.denial.wanted`
+// is the one that was impossible.
+fn run_escalating(ready: Ready) -> Nil {
+  let root = ready.root <> "-escalation"
+  let workspace = root <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the live rig must have a workspace"
+  let base_policy = base_policy(root)
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      exec.spawn_helper(exec.SpawnConfig(
+        helper_path: ready.helper_path,
+        shell_path: "/bin/sh",
+        base_policy:,
+        helper_args: [],
+        tmp_dir: workspace <> "/tmp",
+        handshake_timeout_ms: 5000,
+        cancel_grace_ms: 3000,
+        heartbeat_interval_ms: 0,
+      ))
+    })
+    as "the helper pool must start"
+  let assert Ok(broker_actor) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: broker_entropy(),
+        clock: wall_clock(),
+        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    as "the broker must start"
+  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
+    as "the toolchain must be located"
+  let seam =
+    codemode.seam(codemode.default_config(
+      broker: broker_actor,
+      clock: wall_clock(),
+      workspace:,
+      toolchain:,
+    ))
+  // The host, standing in for `client/wiring` plus a human at a client:
+  // it records what it was asked and answers with exactly the diff the
+  // refusal named. Approving the *reported* wanted set rather than a
+  // hand-written one is the point — a diff that satisfies nothing would
+  // let this test pass while a human's yes bought nothing.
+  let asked = process.new_subject()
+  let ctx =
+    tool.Ctx(
+      ..live_ctx(workspace, base_policy, wall_clock()),
+      env: [
+        #("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        #(unallowed_env, "probe"),
+      ],
+      raise_refusal: fn(refusal: tool.RaisedRefusal) {
+        process.send(asked, refusal)
+        tool.Resume(grants: refusal.denial.wanted)
+      },
+    )
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      ctx,
+      json.Object([
+        #("program", json.String(program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  // Exactly one question, about the whole submission.
+  let assert Ok(raised) = process.receive(asked, within: 0)
+    as "the refused launch must reach the host exactly once"
+  assert process.receive(asked, within: 0) == Error(Nil)
+  // And it names the grant that actually opens the door, derived from
+  // composition's own narrowings rather than written down here.
+  assert raised.denial.wanted == [policy.GrantEnv(name: unallowed_env)]
+  assert raised.denial.source == escalation.PolicyDenial
+  assert string.contains(raised.denial.reason, unallowed_env)
+  // The re-execution ran under what the host granted, and the program
+  // reached a real jailed process through the cap channel.
+  assert !outcome.is_error
+  assert string.contains(rendered_text(outcome), echoed <> " exit=0")
+  io.println(
+    "code-mode tool e2e: a narrowed base minted [env="
+    <> unallowed_env
+    <> "]; the approved re-execution ran",
+  )
+  broker.stop(broker_actor)
+  exec.stop_pool(pool)
 }
 
 // --- the rig ---------------------------------------------------------------
@@ -366,6 +487,7 @@ fn live_ctx(
     filesystem: no_filesystem(),
     blob_root: workspace <> "/.blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    raise_refusal: tool.no_raise(),
   )
 }
 

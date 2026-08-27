@@ -38,9 +38,13 @@ SERVER_PID=$!
 teardown() {
   kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
   # Give the server's SIGTERM handler time to close the runtime and
-  # release the session lease before we stop waiting on it.
+  # release the session lease before we stop waiting on it. The witness is
+  # the `server.stopped` structured log line, emitted once the listener is
+  # closed and the lease released; it replaced a plain `loom-server:
+  # closed` println when the server's logging became structured (5abe62f),
+  # and this script kept grepping for a line nothing printed any more.
   for _ in $(seq 1 50); do
-    grep -q '^loom-server: closed$' "$LOG" 2>/dev/null && break
+    grep -q '"event":"server.stopped"' "$LOG" 2>/dev/null && break
     sleep 0.2
   done
   wait "$SERVER_PID" 2>/dev/null || true
@@ -81,7 +85,7 @@ if [ "$SMOKE" = 1 ]; then
   fi
   teardown
   trap - EXIT
-  if ! grep -q '^loom-server: closed$' "$LOG"; then
+  if ! grep -q '"event":"server.stopped"' "$LOG"; then
     echo "dev.sh: the server did not close cleanly on SIGTERM:" >&2
     cat "$LOG" >&2
     exit 1

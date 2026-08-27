@@ -64,9 +64,10 @@
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
-import broker/policy.{type Narrowing, type SandboxPolicy}
+import broker/policy.{type Grant, type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
+import codemode/identity
 import codemode/internal/ffi_unix.{type Listener, type Socket}
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
@@ -167,10 +168,14 @@ fn launch(
   config: LaunchConfig,
   spec: LaunchSpec,
 ) -> Result(CapConnection, String) {
-  use _ <- result.try(check_budget(spec.budget))
+  use _ <- result.try(check_budget(identity.pooled_budget(spec.identity)))
   let #(now, _clock) = clock.read(config.clock)
   let requirements = node_requirements(spec, now)
-  use effective <- result.try(composed_policy(spec.base_policy, requirements))
+  use effective <- result.try(composed_policy(
+    spec.base_policy,
+    requirements,
+    identity.grants(spec.identity),
+  ))
   use _ <- result.try(path_reachable(
     effective,
     spec.cap_socket_path,
@@ -270,7 +275,7 @@ fn destroy(
   outbox: Subject(Out),
   settlement: Subject(Settlement),
 ) -> Report {
-  broker.abort(config.broker, spec.op_id)
+  broker.abort(config.broker, identity.op_id(spec.identity))
   let report = await_report(settlement)
   process.send(outbox, Shutdown)
   unlink(spec.cap_socket_path)
@@ -624,7 +629,8 @@ fn spawn_node(
   now: Int,
 ) -> Nil {
   let call = node_call(config, spec, requirements)
-  let waiting = int.max(spec.budget.deadline_ms - now, 0) + settle_margin_ms
+  let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
+  let waiting = int.max(deadline_ms - now, 0) + settle_margin_ms
   process.spawn_unlinked(fn() {
     run_node(config, call, exits, settlement, waiting)
   })
@@ -692,18 +698,27 @@ fn collect_node_result(
 }
 
 /// The clearance that launches the node: the same `{op_id, step_id}` the
-/// host services cap calls under, so `broker.abort` reaches it.
+/// host services cap calls under, so `broker.abort` reaches it, and the
+/// same approved grants `launch` already composed the effective policy
+/// with.
+///
+/// Both come off the run phase's identity. Reading them from one place
+/// is what keeps this call and the composition check below in agreement:
+/// a node cleared under grants the pre-check did not apply would be
+/// running in a jail nobody checked, and one cleared without grants the
+/// pre-check did apply would be refused by the broker for a shortfall the
+/// launch had already satisfied.
 pub fn node_call(
   config: LaunchConfig,
   spec: LaunchSpec,
   requirements: SandboxPolicy,
 ) -> CallSpec {
   broker.CallSpec(
-    op_id: spec.op_id,
-    step_id: spec.step_id,
+    op_id: identity.op_id(spec.identity),
+    step_id: identity.step_id(spec.identity),
     base_policy: spec.base_policy,
     requirements:,
-    grants: [],
+    grants: identity.grants(spec.identity),
     // The launch already composed and checked this policy; refusing a
     // narrowing here means the broker disagreed, and a satellite in a
     // weaker jail than the one that was checked must not run.
@@ -712,7 +727,7 @@ pub fn node_call(
     argv: node_argv(config.erl_path, spec.artifact),
     env: node_env(spec),
     cwd: spec.cwd,
-    budget: spec.budget,
+    budget: identity.pooled_budget(spec.identity),
   )
 }
 
@@ -790,7 +805,8 @@ pub fn node_requirements(spec: LaunchSpec, now_ms: Int) -> SandboxPolicy {
 // zero means "no limit" on the wire, which is the opposite of what an
 // exhausted deadline should say.
 fn remaining_seconds(spec: LaunchSpec, now_ms: Int) -> Int {
-  int.max({ int.max(spec.budget.deadline_ms - now_ms, 0) + 999 } / 1000, 1)
+  let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
+  int.max({ int.max(deadline_ms - now_ms, 0) + 999 } / 1000, 1)
 }
 
 // A base wall of zero is "no limit", so the deadline is the only bound;
@@ -818,12 +834,27 @@ fn check_budget(pooled: Budget) -> Result(Nil, String) {
   }
 }
 
+// The effective policy the node will actually run under, or the reason
+// the session base cannot host one.
+//
+// This is the launch policy composition — the site an approval has to
+// reach for a widened re-run to mean anything. `base ⊕ requirements ⊕
+// grants` is the broker's own rule; running it here first is a pre-check,
+// so that a base which cannot host a node is refused in band with the
+// exact shortfall named rather than dying somewhere inside a jail. The
+// grants are therefore not decoration: without them the pre-check would
+// refuse a launch the broker would then have cleared, and the approval
+// would be spent on a call this function had already turned away.
+//
+// Grants only ever widen, so the reachability checks that run on the
+// result of this stay sound: a path the unwidened policy covered is still
+// covered, and one it did not may now be, which is the whole point.
 fn composed_policy(
   base: SandboxPolicy,
   requirements: SandboxPolicy,
+  grants: List(Grant),
 ) -> Result(SandboxPolicy, String) {
-  let #(effective, narrowings) =
-    policy.compose(base:, requirements:, grants: [])
+  let #(effective, narrowings) = policy.compose(base:, requirements:, grants:)
   case narrowings {
     [] -> Ok(effective)
     shortfalls ->

@@ -48,6 +48,10 @@ type Harness {
 type Provider {
   Settles(text: String)
   Hangs
+  /// Answers like `Settles` and reports the context it was handed, so a
+  /// test can assert on what actually reached a child's model rather than
+  /// on the string the harness meant to put there.
+  Watches(text: String, into: Subject(List(message.AgentMessage)))
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -122,10 +126,9 @@ fn start_harness_with(
         clock: session_clock,
         entropy:,
         timers: effects.real_timers(),
-        provider: effects.ProviderSurface(
-          timeout_ms: 60_000,
-          request: fn(_spec) { scripted_stream(provider) },
-        ),
+        provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(spec) {
+          scripted_stream(provider, spec)
+        }),
         tools: effects.ToolSurface(
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no tools in this harness")
@@ -144,53 +147,114 @@ fn start_harness_with(
   Harness(runtime:, seam:, config:)
 }
 
-fn scripted_stream(provider: Provider) -> stream.StreamHandle {
+fn scripted_stream(
+  provider: Provider,
+  spec: effects.RequestSpec,
+) -> stream.StreamHandle {
   let events = process.new_subject()
   case provider {
     Hangs -> Nil
-    Settles(text:) -> {
-      let response =
-        message.AssistantMessage(
-          content: [message.AssistantText(text:, text_signature: None)],
-          api: "test",
-          provider: "acme",
-          model: "loom-1",
-          response_model: None,
-          response_id: None,
-          diagnostics: None,
-          usage: effects.zero_usage(),
-          stop_reason: message.Stop,
-          deferred: None,
-          error_message: None,
-          raw_stop_reason: None,
-          end_turn: Some(True),
-          timestamp: 0,
-        )
-      let assert Ok(settled) = stream.settle(response)
-        as "the scripted response must settle"
-      process.send(
-        events,
-        stream.Settled(message: settled, usage: effects.zero_usage()),
-      )
+    Watches(text:, into:) -> {
+      report_context(into, spec)
+      settle_into(events, text)
     }
+    Settles(text:) -> settle_into(events, text)
   }
   stream.StreamHandle(events:)
+}
+
+fn report_context(
+  into: Subject(List(message.AgentMessage)),
+  spec: effects.RequestSpec,
+) -> Nil {
+  case spec {
+    effects.GenerationRequest(context:, ..) -> process.send(into, context)
+    effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+  }
+}
+
+fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
+  {
+    let response =
+      message.AssistantMessage(
+        content: [message.AssistantText(text:, text_signature: None)],
+        api: "test",
+        provider: "acme",
+        model: "loom-1",
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: effects.zero_usage(),
+        stop_reason: message.Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: Some(True),
+        timestamp: 0,
+      )
+    let assert Ok(settled) = stream.settle(response)
+      as "the scripted response must settle"
+    process.send(
+      events,
+      stream.Settled(message: settled, usage: effects.zero_usage()),
+    )
+  }
 }
 
 // The operation id is derived from the whole coordinate triple, not just
 // the index: two callers that differ only in their step must not share an
 // operation, or a test about "another run's children" would silently be
 // testing the same run.
-fn caller_on(strand: String, step: String, index: Int) -> Caller {
-  let seed =
-    list.fold(
-      string.to_utf_codepoints(strand <> "|" <> step),
-      31 + index,
-      fn(total, point) { total * 31 + string.utf_codepoint_to_int(point) },
-    )
+//
+// `label` is not the step id. It names the step for a reader, and
+// `a_step` turns it into a real minted `EntryId` — see there for why no
+// test in this suite is allowed a short literal step.
+fn caller_on(strand: String, label: String, index: Int) -> Caller {
+  caller_minted_by(strand, label, index, agent.ToolCall)
+}
+
+// The same caller, minting as something other than the planned tool call
+// itself: a code-mode program on its `ordinal`-th spawn.
+fn caller_minted_by(
+  strand: String,
+  label: String,
+  index: Int,
+  minter: agent.Minter,
+) -> Caller {
+  let seed = seed_of(strand <> "|" <> label, index)
   let #(operation, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 1000), seed:))
-  Caller(strand:, operation:, step_id: step, source_index: index)
+  Caller(
+    strand:,
+    operation:,
+    step_id: a_step(label),
+    source_index: index,
+    minter:,
+  )
+}
+
+// A step id, in the shape the planner actually mints one: a canonical
+// thirty-six character UUIDv7 (`machine/planner`'s `mint_entry`), derived
+// deterministically from a readable label.
+//
+// No test here may use a short literal, and the reason is the bug this
+// fixture was rewritten for. `"turn-1:tools"` is twelve characters and
+// survives every slug cap in the tree intact, so a suite built on it
+// cannot see a truncation at all — while a production step id is
+// thirty-six characters, of which a twenty-four character cap keeps the
+// timestamp and half the randomness and drops everything appended after.
+// A fixture that cannot express the production shape hides exactly the
+// class of bug that lives in the part it cannot express.
+fn a_step(label: String) -> String {
+  let #(entry, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1000), seed: seed_of(label, 7)))
+  ids.entry_id_to_string(entry)
+}
+
+fn seed_of(text: String, salt: Int) -> Int {
+  list.fold(string.to_utf_codepoints(text), 31 + salt, fn(total, point) {
+    total * 31 + string.utf_codepoint_to_int(point)
+  })
 }
 
 fn a_spawn(purpose: String) -> agent.SpawnRequest {
@@ -199,9 +263,65 @@ fn a_spawn(purpose: String) -> agent.SpawnRequest {
     brief: "read the file and report",
     tools: None,
     within_ms: None,
+    result_schema: None,
     context: agent.Fresh,
     detach: False,
   )
+}
+
+// `{files: [string] (required), count: integer}` — the running example
+// for every result-contract test below.
+fn a_schema() -> agent.ResultSchema {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #(
+              "files",
+              json.Object([
+                #("type", json.String("array")),
+                #("items", json.Object([#("type", json.String("string"))])),
+              ]),
+            ),
+            #("count", json.Object([#("type", json.String("integer"))])),
+          ]),
+        ),
+        #("required", json.Array([json.String("files")])),
+      ]),
+    )
+    as "the running example must parse"
+  schema
+}
+
+fn a_spawn_wanting(purpose: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..a_spawn(purpose), result_schema: Some(a_schema()))
+}
+
+// Waits for a child's brief run to settle, then joins it. Every result
+// test needs the same two steps and neither is what the test is about.
+fn joined(harness: Harness, caller: Caller, handle: Handle) -> agent.Waited {
+  assert until(
+    fn() {
+      case
+        api.await_strand_result(
+          harness.runtime,
+          strand: handle.strand,
+          operation: handle.operation,
+          within_ms: 0,
+        )
+      {
+        Ok(_settled) -> True
+        Error(Nil) -> False
+      }
+    },
+    200,
+  )
+  let assert Ok([waited]) = harness.seam.wait(caller, [handle], 200)
+    as "the join must answer"
+  waited
 }
 
 fn cell_for(harness: Harness, strand: String) -> Option(lineage.Lineage) {
@@ -254,8 +374,14 @@ pub fn a_spawn_seeds_a_child_and_writes_its_lineage_test() {
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Ok(spawned) = harness.seam.spawn(caller, a_spawn("review auth"))
     as "the spawn must be accepted"
-  // The name is minted, not supplied.
-  assert spawned.strand == "sub:main/review-auth-turn-1-tools-0"
+  // The name is minted, not supplied: the parent, the slugged purpose,
+  // and sixteen fixed hex characters of call-site digest. Asserted as a
+  // shape rather than as a literal because the digest is over a minted
+  // operation and a minted step, and a literal would only be pinning
+  // this fixture's seeds.
+  assert string.starts_with(spawned.strand, "sub:main/review-auth-")
+  assert string.length(spawned.strand)
+    == string.length("sub:main/review-auth-") + 16
   assert agency.child_name(caller, "review auth") == Ok(spawned.strand)
   // The child is a real strand in the same session.
   let assert Ok(strands) = api.strands(harness.runtime)
@@ -266,7 +392,7 @@ pub fn a_spawn_seeds_a_child_and_writes_its_lineage_test() {
   assert cell.parent == "main"
   assert cell.depth == 1
   assert cell.minted_by.operation == caller.operation
-  assert cell.minted_by.step_id == "turn-1:tools"
+  assert cell.minted_by.step_id == a_step("turn-1:tools")
   assert cell.minted_by.source_index == 0
   assert cell.brief == spawned.handle.operation
   close(harness)
@@ -341,6 +467,64 @@ pub fn the_fan_out_cap_counts_live_children_test() {
   let assert Error(agent.FanOutCapReached(cap: 1, ..)) =
     harness.seam.spawn(caller_on("main", "turn-1:tools", 1), a_spawn("two"))
     as "the second child must be refused"
+  close(harness)
+}
+
+// The capacity check answers a bounded question at the bound rather than
+// by counting the ledger, and an off-by-one in a capacity check is a real
+// bug rather than a slow one — so the arithmetic is pinned below the
+// bound, at it, and above it.
+//
+// The mutation that would go unnoticed without this is a single
+// character: `list.drop(live, bound)` in place of `list.drop(live, bound
+// - 1)` admits one child too many at every cap.
+pub fn the_fan_out_cap_admits_up_to_the_bound_and_no_further_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) { agency.Config(..config, fan_out: 2) })
+  // Below the bound, and at the last admission the bound allows.
+  let assert Ok(_first) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "the first child is below the cap"
+  let assert Ok(_second) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 1), a_spawn("two"))
+    as "the second child brings the caller *to* the cap"
+  // At the bound: the third is refused, and the refusal reports the count
+  // the caller actually holds rather than the cap it hit.
+  let assert Error(agent.FanOutCapReached(live: 2, cap: 2)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 2), a_spawn("three"))
+    as "the third child must be refused at a cap of two"
+  close(harness)
+}
+
+pub fn a_fan_out_cap_of_zero_admits_nothing_test() {
+  // The edge the drop spelling gets wrong if it is written without the
+  // guard: "at least none" is true of every list including the empty one,
+  // and `list.drop(xs, -1)` hands the whole list back — so an empty
+  // ledger would read as *not* at a cap of zero and the first spawn would
+  // be admitted. A host that sets `fan_out` to nothing means no spawns.
+  let harness =
+    start_harness_with(Hangs, fn(config) { agency.Config(..config, fan_out: 0) })
+  let assert Error(agent.FanOutCapReached(live: 0, cap: 0)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "a cap of zero must refuse the first child"
+  close(harness)
+}
+
+pub fn the_session_cap_is_reached_at_its_own_bound_test() {
+  // The second bound in the same check, which a fix to the first can
+  // silently break: `session_strands` counts every live spawned strand
+  // rather than one caller's own, so it has to be asked separately and at
+  // its own number.
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, fan_out: 8, session_strands: 1)
+    })
+  let assert Ok(_first) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "the first child is below the session cap"
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 1), a_spawn("two"))
+    as "the second child must hit the session cap, not the fan-out cap"
   close(harness)
 }
 
@@ -436,6 +620,12 @@ pub fn a_join_answers_every_handle_against_one_deadline_test() {
   let assert [first, second] = waited
   assert handle_of(first) == spawned.handle
   assert handle_of(second) == never
+  // The loop's exit condition is "as many settled as there are handles",
+  // asked at the bound (`list.drop(handles, dict.size(settled)) == []`)
+  // rather than by counting the list. This is the case that pins it: one
+  // handle settles and one never does, so a loop that stopped early would
+  // report the settled child, and a loop that never stopped would answer
+  // nothing at all.
   let assert agent.Pending(..) = second
   // The settled one carries the child's own final assistant text.
   let assert agent.Ready(outcome: agent.Completed, report:, ..) = first
@@ -774,6 +964,183 @@ pub fn minted_names_route_to_the_subagent_factory_test() {
   assert !agency.is_subagent("main")
 }
 
+pub fn a_step_slug_cannot_carry_a_discriminator_test() {
+  // Why the discriminator is not a suffix on the step, stated as the
+  // arithmetic rather than as an opinion. A production step id is a
+  // canonical thirty-six character UUID and `agent.slug` caps a slug at
+  // twenty-four, so *every* string appended to a step id before slugging
+  // it is cut off before it can reach a name. Anything that has to
+  // survive into a name therefore cannot be a suffix on a slugged field.
+  let step = a_step("turn-9:tools")
+  assert string.length(step) == 36
+  assert agent.slug(step) == agent.slug(step <> "-program")
+  assert agent.slug(step) == agent.slug(step <> "-anything-at-all")
+}
+
+pub fn a_purpose_cannot_steer_the_half_that_decides_ownership_test() {
+  // The other half of the same argument. Lengthening the cap would only
+  // move the boundary, because the slug is model text: a purpose is
+  // chosen, and a chosen purpose must not be able to reach into the part
+  // of the name that says whose child this is. Two callers that differ
+  // only in their coordinates keep differing however the purpose moves.
+  let one = caller_on("main", "turn-9:tools", 0)
+  let two = caller_on("main", "turn-9:tools", 1)
+  assert list.all(
+    ["review", "review-the-auth-code-and-then-some-more-of-it", "x", "9"],
+    fn(purpose) {
+      agency.child_name(one, purpose) != agency.child_name(two, purpose)
+    },
+  )
+  // And the digest itself moves with the coordinates and with nothing
+  // else: same caller, any purpose, same sixteen characters.
+  assert string.length(agent.call_site_digest(one)) == 16
+  assert agent.call_site_digest(one) != agent.call_site_digest(two)
+}
+
+pub fn a_program_and_an_agent_spawn_in_one_step_mint_two_names_test() {
+  // Sequence 1. `tool.Exclusive` forbids only a *concurrent* start, so
+  // one batch may hold an `agent_spawn` at source index 0 and a
+  // `code_mode` call at index 1 back to back, sharing one step id. Give
+  // the program's first spawn the model's own purpose and the two callers
+  // agree on everything a name used to be derived from.
+  let step = "turn-9:tools"
+  let model = caller_on("main", step, 0)
+  let program = caller_minted_by("main", step, 1, agent.Program(ordinal: 0))
+  assert model.step_id == program.step_id
+  assert agency.child_name(model, "review core")
+    != agency.child_name(program, "review core")
+}
+
+pub fn two_programs_in_one_step_mint_two_names_test() {
+  // Sequence 2. Two `code_mode` calls in one batch share an operation and
+  // a step, and each satellite host starts its own ordinal tally at zero,
+  // so neither the step nor the ordinal tells them apart. The dispatching
+  // call's source index is the only durable coordinate that does, which
+  // is why the caller keeps it rather than spending it on the ordinal.
+  let step = "turn-9:tools"
+  let first = caller_minted_by("main", step, 0, agent.Program(ordinal: 0))
+  let second = caller_minted_by("main", step, 1, agent.Program(ordinal: 0))
+  assert first.step_id == second.step_id
+  assert first.minter == second.minter
+  assert agency.child_name(first, "review core")
+    != agency.child_name(second, "review core")
+}
+
+pub fn a_chosen_ordinal_reaches_no_other_minters_child_test() {
+  // Sequence 3. A program controls its own ordinal — it can spawn
+  // throwaways until the tally reaches whatever number it likes — so the
+  // test is not "index 0 is safe" but "no index is reachable". The
+  // ordinal lives in `Minter` and an `agent_spawn` has none, so the whole
+  // set a program can pay its way to is disjoint from the set the model's
+  // own spawns occupy, at every index, for one purpose held fixed.
+  let step = "turn-9:tools"
+  let indices = [0, 1, 2, 3, 5, 8, 13, 31]
+  let padded =
+    list.map(indices, fn(ordinal) {
+      agency.child_name(
+        caller_minted_by("main", step, 0, agent.Program(ordinal:)),
+        "review core",
+      )
+    })
+  let by_the_model =
+    list.map(indices, fn(index) {
+      agency.child_name(caller_on("main", step, index), "review core")
+    })
+  assert list.all(padded, fn(name) { !list.contains(by_the_model, name) })
+  // Padding does not collide the program with itself either.
+  assert list.length(list.unique(padded)) == list.length(indices)
+}
+
+// --- reconciliation is checked against the ledger, not against the name ----
+
+pub fn a_replayed_spawn_reconciles_onto_its_own_child_test() {
+  // The property the whole derivation exists to serve, and the one the
+  // ownership check must not cost: the same call site, replayed, finds
+  // the child it minted and hands back the same handle rather than
+  // minting a second one.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(first) = harness.seam.spawn(caller, a_spawn("review auth"))
+    as "the first spawn must be accepted"
+  let assert Ok(second) = harness.seam.spawn(caller, a_spawn("review auth"))
+    as "the replayed spawn must reconcile"
+  assert second == first
+  close(harness)
+}
+
+pub fn a_name_minted_by_another_call_site_is_refused_not_adopted_test() {
+  // The second half of the fix, tested where the first half cannot reach
+  // it. A digest collision is not constructible by hand, so the ledger is
+  // put into the state a collision would produce — a cell under this
+  // caller's derived name, recording a *different* call site — and the
+  // spawn is made against it.
+  //
+  // Adoption here would be an ownership transfer: this spawn's brief,
+  // tools, `within_ms`, `detach` and `result_schema` are all discarded on
+  // that path, `check_capacity` is skipped, and the caller would go on to
+  // wait on a strand doing somebody else's work and report its answer as
+  // the answer to a question it never asked. So it refuses.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(name) = agency.child_name(caller, "review")
+    as "the name must mint"
+  let squatter =
+    lineage.Lineage(
+      strand: name,
+      parent: "main",
+      depth: 1,
+      minted_by: lineage.CallSite(
+        operation: caller.operation,
+        step_id: caller.step_id <> "#program/0",
+        source_index: caller.source_index,
+      ),
+      brief: caller_on("elsewhere", "turn-2:tools", 4).operation,
+      tools: ["fs_read"],
+      deadline: None,
+      detached: False,
+      reaped: False,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      lineage.register_key(name),
+      lineage.encode(squatter),
+    )
+    as "the ledger must accept a cell written by the harness"
+  assert harness.seam.spawn(caller, a_spawn("review"))
+    == Error(agent.NameAlreadyMinted(strand: name))
+  // Nothing was started and nothing was taken over: the cell still
+  // records the minter it recorded before.
+  let assert Some(cell) = cell_for(harness, name)
+  assert cell.minted_by == squatter.minted_by
+  assert cell.brief == squatter.brief
+  close(harness)
+}
+
+pub fn a_program_after_an_agent_spawn_gets_its_own_child_test() {
+  // The two halves together, over a live Agency. An `agent_spawn` at
+  // source index 0 mints a child; a program dispatched at index 1 in the
+  // same step asks for the same purpose on its first spawn. It must get a
+  // child of its own — carrying its own brief — rather than a handle to
+  // the model's.
+  let harness = start_harness(Settles("done"))
+  let step = "turn-1:tools"
+  let model = caller_on("main", step, 0)
+  let program = caller_minted_by("main", step, 1, agent.Program(ordinal: 0))
+  let assert Ok(theirs) = harness.seam.spawn(model, a_spawn("review auth"))
+    as "the model's own spawn must be accepted"
+  let assert Ok(ours) = harness.seam.spawn(program, a_spawn("review auth"))
+    as "the program's spawn must be accepted"
+  assert ours.strand != theirs.strand
+  // Two children, two lineage cells, two call sites — and the program's
+  // records the minter it was, so its own replay can find it again.
+  let assert Some(cell) = cell_for(harness, ours.strand)
+  assert cell.minted_by.source_index == 1
+  assert cell.minted_by.step_id == a_step(step) <> "#program/0"
+  assert agency.child_name(program, "review auth") == Ok(ours.strand)
+  close(harness)
+}
+
 // --- registration ----------------------------------------------------------
 
 pub fn agent_tools_are_registered_only_where_a_plane_exists_test() {
@@ -820,5 +1187,230 @@ pub fn the_default_tool_set_drops_the_spawn_tool_on_its_own_test() {
     )
     as "an explicit request at an allowed depth must be honoured"
   assert list.contains(asked.tools, "agent_spawn")
+  close(harness)
+}
+
+// --- the result contract ---------------------------------------------------
+
+pub fn a_matching_result_comes_back_as_json_not_prose_test() {
+  // The whole point of the feature: the parent branches on `files`
+  // rather than regexing a sentence about files.
+  let harness = start_harness(Settles("I read three files"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let value =
+    json.Object([
+      #("files", json.Array([json.String("auth.gleam")])),
+      #("count", json.Int(1)),
+    ])
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      value,
+    )
+    as "a matching result must be accepted"
+  let assert agent.Ready(report:, result:, ..) =
+    joined(harness, caller, child.handle)
+  assert result == agent.ResultGiven(value:)
+  // The prose survives beside it. Neither audience is traded for the
+  // other: a human reads the report, a program reads the result.
+  assert report == "I read three files"
+  close(harness)
+}
+
+pub fn a_result_that_misses_the_schema_is_refused_to_the_child_test() {
+  // Refused to the child, on the child's own write, in the run that
+  // produced the value — the one party that can repair it, at the one
+  // moment repairing it is cheap.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let wrong = json.Object([#("count", json.Int(1))])
+  let assert Error(refusal) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      wrong,
+    )
+    as "a result that misses the schema must be refused"
+  let assert agent.ResultSchemaUnmet(schema:, received:, ..) = refusal
+  assert schema == a_schema()
+  assert received == wrong
+  // Named, not anonymous: what was wanted, and what arrived.
+  let said = agent.describe(refusal)
+  assert string.contains(said, "`files` is required")
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(schema)),
+  )
+  assert string.contains(said, "{\"count\":1}")
+  // And nothing was written, so a retry is a plain retry.
+  assert api.fact(
+      harness.runtime,
+      agent.blackboard_prefix <> child.strand <> "/" <> agent.result_note_key,
+    )
+    == Ok(None)
+  close(harness)
+}
+
+pub fn a_child_with_no_contract_may_still_note_a_result_test() {
+  // The key is only special where a schema asked for it. A child spawned
+  // without one writes `result` like any other cell.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the child must spawn"
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      json.String("whatever I like"),
+    )
+    as "an uncontracted result note must write"
+  close(harness)
+}
+
+pub fn a_child_that_owed_a_result_and_recorded_none_is_named_test() {
+  let harness = start_harness(Settles("I forgot the note"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let assert agent.Ready(outcome:, result:, ..) =
+    joined(harness, caller, child.handle)
+  assert result == agent.ResultAbsent(schema: a_schema())
+  // The run itself completed, and the outcome says so. Folding the
+  // contract verdict into it would make the field a waiter reads to ask
+  // "did this crash" answer a different question.
+  assert outcome == agent.Completed
+  close(harness)
+}
+
+pub fn an_unusable_cell_is_caught_on_the_way_back_out_test() {
+  // The write is checked, and the read is checked too — not as a second
+  // authorization but because the value crossed the durable store, and a
+  // value crossing that boundary is decoded rather than trusted. Written
+  // here past the note path, which is what a cell seeded before the
+  // contract existed would look like.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let junk = json.Object([#("files", json.String("auth.gleam"))])
+  let assert Ok(Nil) =
+    api.put_fact(
+      harness.runtime,
+      agent.blackboard_prefix <> child.strand <> "/" <> agent.result_note_key,
+      junk,
+    )
+    as "the raw cell must write"
+  let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
+  let assert agent.ResultUnusable(schema:, received:, mismatch:) = result
+  assert schema == a_schema()
+  assert received == junk
+  assert string.contains(
+    agent.describe_mismatch(mismatch),
+    "must be `array of string`",
+  )
+  close(harness)
+}
+
+pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
+  // The compatibility floor. No contract cell, nothing appended to the
+  // brief, and a join that reports no verdict at all rather than an
+  // invented empty one.
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the child must spawn"
+  assert api.fact(harness.runtime, agency.result_schema_prefix <> child.strand)
+    == Ok(None)
+  let assert Ok(context) = process.receive(seen, within: 2000)
+    as "the child's model must be called"
+  assert !string.contains(context_text(context), "result contract")
+  let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
+  assert result == agent.NoResultAsked
+  assert agency.result_contract(None) == ""
+  close(harness)
+}
+
+pub fn the_schema_reaches_the_childs_own_context_test() {
+  // "Carried into the child's brief" has to mean the child can read it,
+  // not that the harness meant to say it — so this asserts on the
+  // context the provider was actually handed.
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let assert Ok(context) = process.receive(seen, within: 2000)
+    as "the child's model must be called"
+  let said = context_text(context)
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(a_schema())),
+  )
+  assert string.contains(said, agent.result_note_key)
+  // In the harness's voice, after the sender's text is closed off: the
+  // brief is model-authored data, this is the run's own obligation.
+  assert string.contains(said, "[end brief.")
+  assert string.contains(said, "from the harness and not from the sender")
+  close(harness)
+}
+
+fn context_text(context: List(message.AgentMessage)) -> String {
+  context
+  |> list.flat_map(fn(entry) {
+    case entry {
+      message.UserMessage(content:, ..) ->
+        list.filter_map(content, fn(block) {
+          case block {
+            message.UserText(text:, ..) -> Ok(text)
+            message.UserImage(..) -> Error(Nil)
+          }
+        })
+      message.AssistantMessage(..)
+      | message.ToolResultMessage(..)
+      | message.CustomMessage(..) -> []
+    }
+  })
+  |> string.join("\n")
+}
+
+pub fn a_child_cannot_reach_the_contract_it_is_judged_against_test() {
+  // The contract lives outside `agent/`, and `agent_note` prepends
+  // `agent/{caller}/` to every key a model supplies, so a traversal-
+  // shaped key lands inside the namespace with a silly name and the
+  // contract is untouched.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let forged =
+    json.Object([
+      #("type", json.String("object")),
+      #("properties", json.Object([#("anything", json.Object([]))])),
+    ])
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      "../../" <> agency.result_schema_prefix <> child.strand,
+      forged,
+    )
+    as "the odd key still writes inside the namespace"
+  let assert Ok(Some(held)) =
+    api.fact(harness.runtime, agency.result_schema_prefix <> child.strand)
+    as "the contract must still be there"
+  assert held == agent.render_result_schema(a_schema())
+  // And the contract is invisible to the blackboard read, so a child
+  // cannot discover what its siblings were asked for either.
+  let assert Ok(cells) =
+    harness.seam.notes(caller_on(child.strand, "turn-1:tools", 0), None)
+    as "the blackboard read must answer"
+  assert list.key_find(cells, agency.result_schema_prefix <> child.strand)
+    == Error(Nil)
   close(harness)
 }

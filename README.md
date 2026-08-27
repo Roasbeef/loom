@@ -39,9 +39,13 @@ step, and guarantees the caller exactly one settlement whatever happens
 downstream. The sandbox policy is a typed, versioned value stored durably
 with the execution intent, so the transcript records which jail each
 command ran in. A denial surfaces as a structured escalation carrying the
-exact policy difference — "wants: network to registry.npmjs.org" — and an
-approval buys one re-execution, recorded. Prompts are a user interface,
-never a control.
+exact policy difference — "wants: network to registry.npmjs.org" — the
+tool that asked, and a bounded preview of the arguments it asked with, so
+the person answering reads the command rather than only the appetite. The
+approval is bound to that action by a digest over those arguments: a call
+that would do something else can neither claim it nor spend it, and one
+approval buys exactly one re-execution, recorded. Prompts are a user
+interface, never a control.
 
 ## The three planes
 
@@ -79,15 +83,20 @@ touches the world.
 | `storage` | durability | The storage interface, the in-memory and SQLite backends, the fenced lease. |
 | `session` | durability | The session and repository layer, tree views, the branch index, forks. |
 | `machine` | orchestration | Operation types, `next_action`, classification order. Pure; no I/O, no state between calls. |
+| `prompt` | orchestration | The system-prompt pack: named sections, a total decoder, rendered against an environment. Pure. |
 | `runtime` | orchestration | The storage writer, the strand supervisor, the driver loop, recovery, the multi-strand surface. |
 | `events` | orchestration | The event bus (OTP `pg` process groups), rebuildable projections, full-text search across a repository's sessions. |
 | `provider` | effect | Typed provider clients, streaming, retries, role-based routing with fallback chains. |
 | `broker` | effect | The ToolBroker: policies, capability tokens, budgets, escalation. |
 | `sandbox` | effect | The `loom-exec` helper binary and platform drivers. Go. |
-| `tools` | effect | bash, hash-anchored filesystem reads and edits, grep. |
+| `tools` | effect | bash, hash-anchored filesystem reads and edits, grep, the `agent_*` family, and the `code_mode` door. |
+| `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
+| `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
 | `tui` | client | A terminal client over the gateway protocol, runnable against a fake with `--demo`. Go. |
 | `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loom-server` entry point. |
+| `telemetry` | cross-cutting | Structured logs whose correlation context travels as a value, and two enforced redaction rules. A leaf over `core`, so every impure package may depend on it. |
 | `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
+| `lint` | tooling | Loom's own house-rule lint over Gleam source; four of its seven rules gate at error level. |
 
 Two commits bracket every effect, and the gap between them is the
 session's only non-durable window.
@@ -128,7 +137,10 @@ to recovery, believed delivered.
 Four patterns fall out of that rule, and the runtime exposes each:
 
 - **Request/reply** — a parent creates a subagent strand with a task
-  brief, then consumes the child's terminal result as an entry.
+  brief, then consumes the child's terminal result as an entry. The
+  spawn may also state the *shape* it wants back, and the harness holds
+  the child to that schema on its own terminal write, so a parent that
+  fans out reduces typed values instead of regexing prose.
 - **Peer to peer** — two strands steer each other, and every turn of the
   conversation is a commit.
 - **Blackboard** — `fact.*` registers hold shared, transactional session
@@ -160,14 +172,37 @@ dynamic module lookup, and no macros, so every effect must enter through
 an import. Vetting is therefore a compiler-adjacent lint: reject
 `@external` in submitted source, reject imports outside the allowlist, pin
 the rest to the harness capability prelude. That prelude *is* the
-capability system — `cap/fs`, `cap/proc`, `cap/net`, `cap/lsp`, `cap/git`,
-`cap/task`, `cap/actor`, `cap/report` — typed modules whose
-implementations are broker calls carrying the execution's token. The type
-checker becomes the tool-argument validator, so malformed tool use fails
-at compile time, a cheaper loop than a runtime tool error.
+capability system — typed modules whose implementations are broker calls
+carrying the execution's token. The type checker becomes the
+tool-argument validator, so malformed tool use fails at compile time, a
+cheaper loop than a runtime tool error.
 
-The programming model is specified; the prelude lands with the satellite
-runtime. What an agent writes looks like this:
+There are two preludes, and a submission is judged against exactly one of
+them, because *which capabilities travel together* is the point. The
+**workspace seam** — `cap/fs`, `cap/proc`, `cap/net`, `cap/git`,
+`cap/lsp`, `cap/task`, `cap/actor`, `cap/kv`, `cap/report` — is a program
+that orchestrates effects. The **orchestration seam** — `cap/strand` and
+`cap/report`, and nothing else — is a program that orchestrates agents:
+it spawns child strands, joins them on one shared deadline, messages
+them and reads their notes, and it can touch neither the disk, nor the
+network, nor a process. An orchestrator that could also write files is a
+materially worse thing to hand a model than one that cannot, so the two
+sets share no module carrying authority of its own, and a test pins that
+disjointness rather than trusting two lists to stay apart. The server
+serves the workspace seam alone by default; `--codemode-seams` widens
+that, and where both are served the submission names the seam it wants
+judging against and a refusal names it back.
+
+A model writing a program authors blind — no autocomplete, no hover, only
+a submission — so for as long as the tool described the prelude by module
+*name*, the compiler was the only oracle for a signature and it was
+reachable only by being wrong first. The `code_mode` description now
+carries the full public surface of every module the offered seams admit,
+generated out of `packages/cap` by `make gen-prelude` and held to a digest
+inside `make check`, so drift is a build failure rather than a model told
+about functions that no longer exist.
+
+What an agent writes on the workspace seam looks like this:
 
 ```gleam
 import cap/fs
@@ -203,6 +238,26 @@ pub fn main() -> report.Report {
 }
 ```
 
+That is the shape of the thing rather than a demonstration of it. Of the
+nine modules the workspace seam admits, the shipped capability router
+services exactly one call, `proc.run`; every other capability vets,
+compiles, marshals its arguments, and comes back refused in band as
+`unsupported_cap`. That is a routing table still being filled in
+(issue #16), not a security property. `cap/task` and `cap/actor` are
+different in kind — they run inside the satellite itself and compose
+whatever the router does service — so the race, the cancellation, and the
+order-preserving fan-out above are real today, over jailed processes.
+
+Two worked programs are read verbatim by their own tests and put through
+real vetting, a real offline `gleam build` in a jail, and a real
+satellite: `docs/examples/stale_symbol_sweep.gleam` on the workspace seam
+and `docs/examples/fan_out_review.gleam` on the orchestration seam. The
+second one brings a rule the first does not need. `agent_spawn` is
+throttled by turn cost — a model pays a provider round trip per spawn —
+and a loop pays nothing, so an implicit throttle removed has to become an
+explicit one: a hard ceiling on spawn admissions per execution, refused in
+band *at* the ceiling and naming it.
+
 Vetting is strong, and the design does not bet on it alone. Programs run
 in a **satellite node**: a disposable `erl` process launched inside the
 executor sandbox with distribution disabled, the network off except for
@@ -228,6 +283,11 @@ touches the harness VM, and even there the harness compiles the source
 itself — it never loads a `.beam` it did not build. Nothing self-promotes,
 every rung is revocable, and the trusted computing base — storage, state
 machine, broker, sandbox drivers — is not runtime-extensible at all.
+
+L0 is the rung that exists. There is no skill store, no candidate
+pipeline, no extension zone, and no hot code loading in the tree: the
+ladder above L0 is design, and the rules stated for it are constraints its
+implementation will be held to rather than behaviour you can run.
 
 ## Beyond one machine
 
@@ -260,6 +320,14 @@ protocol, subscribing to the event stream with catch-up by sequence number
 and sending commands back — so a local client against a local harness and
 a remote client against a hosted one differ only in the socket.
 
+None of that section has code behind it yet. Every channel Loom opens
+today is data plane and single-node: the broker's channel to the helper,
+the satellite's capability channel, and the websocket to a client. There
+is no remote executor pool, no remote satellite, and no control plane —
+the event bus is one node's `pg` scope — and the only thin client that
+exists is `loom-tui`. What the two-channel doctrine buys today is the
+rule about what may *not* be built, which is the half worth having first.
+
 ## How it is tested
 
 - **Storage conformance.** One suite, parameterized over a backend
@@ -269,8 +337,12 @@ a remote client against a hosted one differ only in the socket.
   that re-scans every entry ever written after every commit. Three checks
   are SQLite-only: the writer-lease duel, `EXPLAIN QUERY PLAN` assertions,
   and branch-index invariants. A 10,000-entry session scans its newest 50
-  entries in a median of about 2 ms in the development container, against
-  a target of 5 ms.
+  entries with a p50 near 3 ms in the development container. The suite
+  asserts a 15 ms ceiling rather than the design's 5 ms target, because a
+  bound at the target would flake on shared hardware; dropping the branch
+  index measures 21 ms and fails it. So what the gate holds is that the
+  scan stays single-digit milliseconds, and the 5 ms target itself is
+  still unverified.
 - **Crash exploration by enumeration.** The storage writer exposes a seam
   that runs after a commit is durable but before the committer learns of
   it — precisely the state a crash leaves behind. Five scenarios run once
@@ -298,54 +370,130 @@ a remote client against a hosted one differ only in the socket.
   real executor pool, and the freshly built Go helper against a real
   workspace: prompt, tool calls, sandboxed bash and edits, byte-exact
   file, exact ledger, and a crash rider over the integrated stack.
+- **Code mode against a live toolchain.** `make e2e-codemode` takes a
+  model-written program through real vetting, a real hermetic `gleam
+  build` in a network-off jail, and a real `erl` satellite making a real
+  capability call back over a real AF_UNIX socket: the happy path, a
+  transitive import the build refuses, a runaway program dying at its
+  deadline, a type error coming back in band, and an approved escalation
+  reaching a capability its unwidened twin is refused. Both documented
+  samples are read from `docs/examples/` verbatim by their own suites, so
+  the file a reader learns from and the file that runs cannot drift, and
+  each is asserted on an instrumented fixture rather than on its outcome
+  line: real concurrency, real order preservation and a race that really
+  kills for the migration sample; three distinct children, one join over
+  three handles and typed integers in the program's own order for the
+  orchestration one. Every run prints the helper's enforcement report for
+  both stages and says whether network-off was *enforced*, because the
+  hermeticity claim rests entirely on that.
 - **A sandbox self-test that reports what the kernel actually gave it.**
-  `loom-exec --self-test` runs seven probes through the real jail path:
-  writing outside the writable roots, writing to a protected path, opening
-  a socket under network-off, reading a non-allowlisted environment
-  variable, a fork bomb against the process cap, an output flood, and an
-  orphaned grandchild. A probe whose layer the environment cannot provide
-  prints `SKIPPED` with the reason; a probe whose layer is available must
-  enforce or the run fails. Enforced and skipped are summarized
-  separately, so a green self-test in a neutered container cannot be
-  mistaken for a verified sandbox. The development container enforces four
-  of the seven; bubblewrap, Landlock, and delegated cgroups need a fuller
-  kernel. The Linux jail is also the only one that exists — macOS Seatbelt
-  and the Windows sandbox are designed and unbuilt. The helper builds on
+  `loom-exec --self-test` runs nine probes through the real jail path:
+  writing outside the writable roots, reading or writing a protected path,
+  opening a socket under network-off, reading a non-allowlisted
+  environment variable, a fork bomb against the process cap, an output
+  flood, an orphaned grandchild, a `setsid` escape from the process group,
+  and a hand-written, never-vetted Erlang module loaded straight into a
+  jailed node. A probe whose layer the environment cannot provide prints
+  `SKIPPED` with the reason; a probe whose layer is available must enforce
+  or the run fails. Enforced and skipped are summarized separately, so a
+  green self-test in a neutered container cannot be mistaken for a
+  verified sandbox. **The development container enforces four of the
+  nine** — the three Loom-side layers that hold anywhere plus the seccomp
+  network filter — and skips the five that need bubblewrap, Landlock, or a
+  delegated cgroup v2 base.
+  `.github/enforcement-expectations` is the reviewed answer to which
+  layers a CI machine must really have applied, probe by probe, and it
+  fails the job in *either* direction: a required probe that did not
+  enforce, and a known-gap probe that suddenly did.
+
+  One layer is asserted rather than demonstrated. **Landlock has never
+  executed in any environment this repository has run in** (issue #62):
+  every development container and every runner so far answers `ENOSYS`
+  to the ABI probe, so the branch that applies a ruleset has never been
+  taken, and every claim about what Landlock does here is read from its
+  documentation rather than measured. That matters most in degraded mode,
+  where Landlock is promoted from second filesystem layer to the only
+  one. The Linux jail is also the only jail that exists — macOS Seatbelt
+  and the Windows sandbox are specified and unbuilt. The helper builds on
   those platforms and *refuses to serve* on them (`--allow-unenforced`
   overrides), rather than running with nothing enforcing the policy.
 
-## Building and running
+## What is not built
 
-You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or newer
-for the sandbox helper and the terminal client. Nothing is published to
-Hex; the packages are monorepo-internal and are built where they sit.
+The architecture above is described as designed; this is where it and the
+tree part company. Each line names the issue that tracks it, so a reader
+can check whether it is still true.
+
+- **Eight of the nine workspace prelude modules reach no effect.** Vetting
+  admits nine; the router services one call, `proc.run`. The rest vet,
+  compile, and refuse in band (#16). `cap/task` and `cap/actor` are the
+  exception in kind: they run inside the satellite and compose whatever
+  the router does service.
+- **`Proxy(allowlist)` egress fails closed rather than enforcing.** The
+  egress proxy sidecar was never built, so the broker narrows proxy mode
+  to network-off and *reports* the narrowing. Nothing ever claims an
+  allowlist was enforced, and nothing enforces one.
+- **Landlock has never executed here.** Every environment this repository
+  has run in answers `ENOSYS` (#62), so the second filesystem layer is
+  asserted from documentation rather than demonstrated.
+- **Code mode can spend an approval but nothing mints one.** A widened
+  policy reaches a code-mode execution, proved by `make e2e-codemode`;
+  but code mode clears through the broker directly rather than through
+  the tool context, so a policy refusal inside it raises no escalation
+  record for a human to approve (#97).
+- **There is no jail on macOS or Windows.** Both are specified. The
+  helper compiles on them, reports itself unsupported rather than
+  degraded, and refuses to serve without `--allow-unenforced`.
+- **`lsp_*` and `dap_*` do not exist**, and neither does triggered-rule
+  injection or hindsight memory — all of M5. The tool set a model actually
+  sees today is bash, hash-anchored read/write/edit, grep, the `agent_*`
+  family, and `code_mode`.
+- **There is no MCP adapter.** The design places MCP servers in the jail
+  like any other executor and the broker's `clear_call` path is where one
+  would land; none is written.
+- **Nothing self-improves.** No skill store, no extension candidate
+  pipeline, no extension zone, no hot code loading: the promotion ladder
+  from L1 upward is design, not code.
+- **The chaos runner is unbuilt.** `make soak` is the deterministic
+  seed soak; random process kills under load are not tested.
+- **CI is configured and has never completed a run.** `.github/workflows/`
+  carries a Linux gate, a macOS gate, a jail job that installs the kernel
+  layers the self-test needs, and a nightly soak — but every run to date
+  has failed at job startup, so every claim of green in this repository
+  still means green under `make check` on one Linux development container.
+
+## Running Loom
+
+Two downloads, per platform: the **server**, which is a tarball carrying
+the BEAM runtime system and the sandbox helper, and the **client**, which
+is a single Go binary. Nothing else has to be installed — in particular
+not Erlang, which the server bundles.
+
+Nothing is published yet. `make dist` builds both, and the sizes below
+are what it produced on a Linux x86_64 development container:
 
 ```
-make check            # the full gate: format check, warning-free build, all tests
-make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
-make server-shipment  # the server: build/erlang-shipment + bin/loom-server
-make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
-make e2e              # the jailed end-to-end against a freshly built helper
-make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
-make help             # everything else
+dist/loom-0.1.0-linux-x86_64.tar.gz    11 MB   the server (29 MB unpacked)
+dist/loom-tui-0.1.0-linux-x86_64       16 MB   the terminal client
+dist/SHA256SUMS
 ```
 
-`make check` is exactly what CI runs, and `make check-<package>` narrows
-it to one package. Run `make selftest` on the kernel you actually intend
-to run agents on: the sandbox is only as strong as the layers that machine
-provides, and the self-test is how you find out which ones those are.
+The server tarball unpacks to a directory holding `bin/loom` (the
+launcher), `bin/loom-exec` (the sandbox helper, a file beside it — Loom
+never extracts an executable at run time), the runtime system, the
+compiled applications, and a `SHA256SUMS` over every executable in the
+tree that `sha256sum -c` will check.
 
-Three binaries come out of a build. `bin/loom-exec` is the Go sandbox
-helper the broker spawns into jails. `bin/loom-tui` is the Go terminal
-client; it depends on nothing but the wire protocol, and `bin/loom-tui
---demo` runs it against an in-process fake with a canned session — no
-server, no network, a fine first thing to try. `bin/loom-server` is the
-session server: `make server-shipment` exports the Gleam `client` package
-as an Erlang shipment into `build/erlang-shipment` and writes the
-launcher. A shipment bundles compiled BEAM files, not the runtime system,
-so running it needs an Erlang/OTP installation on the machine — where
-that is unwanted, `make run-server` runs the same server from source
-through Gleam instead.
+A release is built for one platform and cannot be otherwise: it carries
+this machine's runtime system and `esqlite3_nif.so`, which is compiled C.
+`make release` refuses a `GOOS`/`GOARCH` that is not the host rather than
+producing a tree whose name lies about what is in it. Only the Linux
+x86_64 artifact has been built and smoke-tested; the macOS one would ship
+a helper with no jail, which refuses to serve without
+`--allow-unenforced`, so packaging is not what is missing there.
+`docs/distribution.md` is the whole argument — the mechanism, what was
+rejected, why the helper ships beside the server rather than inside it,
+and every size above with how it was measured.
 
 ### Running a session
 
@@ -358,12 +506,13 @@ terminals:
 
 ```
 # terminal 1 — the server owns the session
-bin/loom-server --session ~/sessions/myproj.db --workspace ~/src/myproj
+loom-0.1.0-linux-x86_64/bin/loom \
+  --session ~/sessions/myproj.db --workspace ~/src/myproj
 # prints: loom-server: session myproj listening on ws://127.0.0.1:44123/v1/ws
 #         (token file ~/sessions/myproj.db.token)
 
 # terminal 2 — a client attaches
-bin/loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
+loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
   --token "$(cat ~/sessions/myproj.db.token)"
 ```
 
@@ -371,38 +520,49 @@ The session file is created if absent; the session name clients subscribe
 with is the file's base name. The bearer token is minted at startup into
 a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
-over their own transport. `make run-server SESSION=path` and
-`make run-tui ADDR=... SESSION=...` wrap the two halves; `make dev` does
-the whole loop in one command — builds the binaries, starts a server on a
-scratch session (or `$SESSION`), waits for the port line, attaches the
-TUI, and tears the server down when the TUI exits. `make dev` is
-interactive and wants a real terminal; `scripts/dev.sh --smoke` is the
-non-interactive variant that boots, probes the endpoints, and verifies a
-clean shutdown.
+over their own transport.
 
-What the server needs: the `loom-exec` helper (found on `PATH` or in
-`./bin`, or named with `--helper`), an Erlang/OTP installation if run
-from the shipment, and — optionally — a provider key. `ANTHROPIC_API_KEY`
-is read from the environment at dispatch time; without it the server
-boots and serves normally and generation requests fail in-band, which is
-enough to inspect a session, replay history, or develop a client. By
-default the server demands full sandbox enforcement, under which a
-kernel that cannot provide the jail layers gets its tool calls refused;
-`--best-effort` accepts a degraded helper for development machines, and
-`make selftest` tells you honestly which of the two postures your kernel
-can back.
+`loom-tui --demo` runs the client against an in-process fake with a
+canned session — no server, no network, a fine first thing to try.
+
+What the server needs beyond itself: optionally a provider key.
+`ANTHROPIC_API_KEY` is read from the environment at dispatch time;
+without it the server boots and serves normally and generation requests
+fail in-band, which is enough to inspect a session, replay history, or
+develop a client. The `loom-exec` helper is found beside the launcher; a
+different one can be named with `--helper`.
+
+Run `loom-exec --self-test` on the kernel you actually intend to run
+agents on. The sandbox is only as strong as the layers that machine
+provides, and the self-test is how you find out which ones those are —
+it prints ENFORCED or SKIPPED per probe and summarizes the two
+separately, so a green run in a neutered container cannot be mistaken for
+a verified sandbox. By default the server demands full enforcement, under
+which a kernel that cannot provide the jail layers gets its tool calls
+refused; `--best-effort` accepts a degraded helper for development
+machines.
 
 The server's full configuration surface, flags first:
 
 ```
---session <path>      the sqlite session file (required; created if absent)
---bind host:port      listen address (default 127.0.0.1:0 — port printed)
---token-file <path>   bearer token file (default <session>.token, mode 0600)
---workspace <dir>     the jail's writable root (default: current directory)
---helper <path>       loom-exec location (default: PATH, then ./bin)
---config <loom.toml>  model catalogue file (default: the LOOM_* env vars)
---best-effort         accept a degraded jail (dev kernels); default refuses
+--session <path>       the sqlite session file (required; created if absent)
+--bind host:port       listen address (default 127.0.0.1:0 — port printed)
+--token-file <path>    bearer token file (default <session>.token, mode 0600)
+--workspace <dir>      the jail's writable root (default: current directory)
+--helper <path>        loom-exec location (default: beside the launcher)
+--config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
+--codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed)
+--codemode-seams <s>   workspace, orchestration, or both (default workspace)
+--best-effort          accept a degraded jail (dev kernels); default refuses
 ```
+
+`code_mode` is registered only when this host has `gleam` and `erl` on
+`PATH` *and* a build seed whose dependency table matches the one the
+compile service generates. A machine running a release has none of those,
+so it prints the reason once and ships no `code_mode` definition at all,
+rather than one that always refuses: a tool definition renders ahead of
+the system prompt and is paid for on every request of every strand for
+the life of the session. Every other tool works normally.
 
 Environment: `ANTHROPIC_API_KEY` (optional, read at dispatch),
 `LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
@@ -421,6 +581,65 @@ API keys never live in the file — each entry's `api_key_env` names the
 environment variable to read at dispatch. The TUI lists the catalogue
 with `:models` and switches the active strand's model by name.
 
+## Working on Loom
+
+You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or
+newer for the sandbox helper and the terminal client. `make release`
+additionally needs `rebar3` and `strip`; nothing else does. Nothing is
+published to Hex — the packages are monorepo-internal and are built where
+they sit.
+
+```
+make check            # the full gate: format check, warning-free build, tests, lint
+make lint             # the house rules on their own (lint-<package> narrows it)
+make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
+make dev              # build, start a server on a scratch session, attach the TUI
+make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
+make e2e              # the jailed end-to-end against a freshly built helper
+make codemode-seed    # the offline package cache a code-mode build clones
+make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
+make release          # the self-contained server into build/release/loom (needs rebar3)
+make dist             # dist/: the server tarball, the client, SHA256SUMS
+make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
+make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
+make help             # everything else
+```
+
+`make check` is exactly what CI runs, and `make check-<package>` narrows
+it to one package. It ends with `make lint` — Loom's own house-rule lint,
+seven rules of which R0 (unparseable source), R2 (`case` nesting depth),
+R4 (`panic` and `let assert` outside tests) and R6 (the portable subset
+`core`, `machine` and `prompt` are held to) fail the build; R1, R3 and R5
+report a census that is still settling and cost nothing. A rule earns the
+error tier by a census that is zero and argued, not by taste.
+
+Two generated artifacts have gates rather than regeneration steps in the
+build. `make gen-prelude` re-renders the capability prelude's public
+surface into `packages/tools/src/tools/prelude.gleam` — the signatures the
+`code_mode` description carries — and needs `gleam` and `python3`;
+`make prelude-check` is the digest comparison `make check` runs, which
+needs neither. `make gen-sql` is the same arrangement for the generated
+SQL modules, and needs `sqlite3`.
+
+`make dev` is the one-command loop: it builds the binaries, starts a
+server on a scratch session (or `$SESSION`), waits for the port line,
+attaches the TUI, and tears the server down when the TUI exits. It is
+interactive and wants a real terminal; `scripts/dev.sh --smoke` is the
+non-interactive variant that boots, probes the endpoints, and verifies a
+clean shutdown. `make run-server SESSION=path` runs the server from
+source through Gleam, and `make run-tui ADDR=... SESSION=...` attaches to
+it. `make server-shipment` exports the `client` package as an Erlang
+shipment into `build/erlang-shipment` behind a thin `bin/loom-server`
+launcher — a shipment bundles compiled BEAM files and not the runtime
+system, so it needs an Erlang/OTP installation to run, which is exactly
+the gap `make release` closes.
+
+Every Go build in the tree goes through `scripts/go-build.sh` with the
+same flags, so `bin/loom-exec`, `packages/sandbox/loom-exec` and the
+helper inside a release are byte-identical. That is what lets `make
+selftest`'s verdict say something about the artifact rather than about a
+development build of it.
+
 ## Reading further
 
 - `docs/architecture/` — the system as built, one document at a time.
@@ -431,14 +650,31 @@ with `:models` and switches the active strand's model by name.
   mailbox, `events.md` for projections and search over the log,
   `client.md` for the hub, the websocket, and the frozen JSON protocol,
   `models.md` for the model catalogue an operator writes in TOML,
+  `compaction.md` for what a session does when the context runs out,
   `code-mode.md` for writing a program instead of one tool call per
   round trip, and `simulation.md` for the crash-exploration runner.
   Start here to understand the code that exists.
 - `docs/loom-design.md` — the intent: why the BEAM, the three planes, Rule
   Zero, the two-channel doctrine, code mode, and the staged trust pipeline.
 - `docs/loom-implementation-spec.md` — the work packages, the frozen
-  interface contracts, and the acceptance criteria. Changing a frozen
-  interface takes a proposal in `protocol-change/`, never silent drift.
+  interface contracts, and the acceptance criteria, with a milestone table
+  whose statuses are read against the acceptance column and nothing else.
+  Changing a frozen interface takes a numbered proposal in
+  `protocol-change/`, never silent drift; there are seven, and 001 and 006
+  are the format precedent.
+- `docs/code-tour.md` — one request followed from a key press to an answer
+  on screen, with a file and a line for every step. The cheapest way to
+  learn where things live.
+- `docs/distribution.md` — how the downloadable server is built and why:
+  the release mechanism and what was rejected, why the sandbox helper is
+  a file beside the server instead of a blob inside it, why the terminal
+  client is a separate download, and every size in this README with how
+  it was measured.
+- Every package carries a `README.md` — what it is for and where to start
+  reading it — beside a `CLAUDE.md` that is denser and more current than
+  any top-level document about that package: its key types, its real
+  dependency edges, its actor and register traffic, and the invariants
+  that break things when violated.
 - `docs/gleam-style.md` — a language tour and the house style. Gleam is
   young enough that habits from other languages mislead; read this before
   contributing.

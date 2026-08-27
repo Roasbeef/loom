@@ -14,12 +14,17 @@
 ////
 //// # Staging
 ////
-//// Every rule ships at **warning** level. A lint that fails correct code
-//// gets disabled, and the false-positive rate of these five rules on this
-//// corpus is a thing to measure before gating on it — the same staging
-//// `scripts/doc_check.sh` went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). Promotion is per rule, via
-//// `lint/cli`'s `--error`, and the census is the argument for or against.
+//// A rule ships at **warning** level until its census argues it onto the
+//// error tier: zero findings, decidable without types, and a reason
+//// promotion protects something. A lint that fails correct code gets
+//// disabled, so the false-positive rate on this corpus is a thing to
+//// measure before gating on it — the same staging `scripts/doc_check.sh`
+//// went through, and for the same reason
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4 and R6 have made
+//// that argument and gate; R1 and R5 have a census to clear first; R3
+//// over-reports by construction and warns forever. The decision is data,
+//// in `finding.error_by_default`, which is where each argument is written
+//// down; `lint/cli`'s `--error` promotes one for a single run.
 ////
 //// # Totality
 ////
@@ -38,10 +43,12 @@
 import glance
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
 import lint/policy.{type Policy}
+import lint/portable
 import lint/scan.{type Raw, Raw}
 import lint/source
 
@@ -64,27 +71,87 @@ import lint/source
 /// ```
 ///
 pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
+  let package = package_of(path)
+  // R4 asks whether a file is a test by asking where it sits, and one
+  // package's `src/` is a test harness that has to compile as a library.
+  // `policy.for_package` is where that exemption is named, and applying it
+  // here rather than in `lint/cli` is what makes it the library's answer
+  // about a path rather than the command line's.
+  let policy = policy.for_package(policy, package)
+  // R6's `@external` half is lexed rather than parsed, so it survives a file
+  // `glance` cannot read: a policy rule that goes quiet on a parse failure is
+  // a hole in the policy, not a missed suggestion (`lint/portable`).
+  let foreign = portable.externals(package, source.external_offsets(code))
   case glance.module(code) {
-    Error(error) -> [parse_finding(path, code, error)]
+    Error(error) -> [
+      parse_finding(path, code, error),
+      ..locate(path, code, foreign)
+    ]
     Ok(module) -> {
       let found = scan.module(module, policy, module_path(path))
-      let all = list.append(found, backstop(found, code, policy))
-      let ordered = list.sort(all, fn(a, b) { int.compare(a.offset, b.offset) })
-      let lines =
-        source.lines_of(
-          source.line_starts(code),
-          list.map(ordered, fn(raw) { raw.offset }),
-        )
-      list.map2(ordered, lines, fn(raw, line) {
-        Finding(
-          rule: raw.rule,
-          path:,
-          line:,
-          function: raw.function,
-          detail: raw.detail,
-        )
-      })
+      let all =
+        found
+        |> list.append(backstop(found, code, policy))
+        |> list.append(foreign)
+        |> list.append(portable.imports(package, module))
+      locate(path, code, all)
     }
+  }
+}
+
+/// Lint a package manifest. R6 is the only rule with anything to say about
+/// one, and only for the packages `policy.portable_packages` names; every
+/// other manifest yields nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let toml = "[dependencies]\ngleam_otp = \">= 1.0.0\"\n"
+/// let assert [found] = lint.check_manifest("packages/core/gleam.toml", toml)
+/// assert found.line == 2
+/// ```
+///
+pub fn check_manifest(path: String, code: String) -> List(Finding) {
+  locate(path, code, portable.manifest(package_of(path), code))
+}
+
+/// Turn offset-carrying violations into findings, in offset order.
+///
+/// One merged pass over the file's line index: the cost is the file, not the
+/// file once per finding, which is why the walk never learns what a line is.
+fn locate(path: String, code: String, raw: List(Raw)) -> List(Finding) {
+  let ordered = list.sort(raw, fn(a, b) { int.compare(a.offset, b.offset) })
+  let lines =
+    source.lines_of(
+      source.line_starts(code),
+      list.map(ordered, fn(raw) { raw.offset }),
+    )
+  list.map2(ordered, lines, fn(raw, line) {
+    Finding(
+      rule: raw.rule,
+      path:,
+      line:,
+      function: raw.function,
+      detail: raw.detail,
+    )
+  })
+}
+
+/// The package a path belongs to — `core` for anything under
+/// `packages/core/`, manifest or source. `None` when the path names no
+/// package: a doctest snippet, a scratch file, anything outside the tree's
+/// layout.
+pub fn package_of(path: String) -> Option(String) {
+  case string.split_once(path, "packages/") {
+    Error(Nil) -> None
+    Ok(#(_, rest)) -> first_segment(rest)
+  }
+}
+
+fn first_segment(rest: String) -> Option(String) {
+  case string.split(rest, "/") {
+    [name, _, ..] -> Some(name)
+    _ -> None
   }
 }
 

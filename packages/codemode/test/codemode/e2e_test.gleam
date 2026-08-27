@@ -22,11 +22,13 @@
 
 import broker/budget
 import broker/exec
+import broker/policy
 import broker/token
 import codemode/build
 import codemode/codemode
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import codemode/vet
@@ -170,6 +172,18 @@ pub fn a_runaway_program_dies_at_its_deadline_test_() -> EunitTest {
       Error(reason) ->
         io.println("SKIP a_runaway_program_dies_at_its_deadline: " <> reason)
       Ok(prerequisites) -> run_deadline(prerequisites)
+    }
+  })
+}
+
+pub fn an_approved_escalation_widens_an_execution_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println(
+          "SKIP an_approved_escalation_widens_an_execution: " <> reason,
+        )
+      Ok(prerequisites) -> run_widened(prerequisites)
     }
   })
 }
@@ -319,16 +333,21 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
   // rather than on the build.
   let assert vet.Passed(vetted) = vet.vet(source, config.vet_policy)
     as "the spinning program must vet"
-  let assert Ok(artifact) = compile.compile(vetted, config.compile).result
+  let assert Ok(artifact) =
+    compile.compile(
+      vetted,
+      config.compile,
+      identity.build_phase(config.identity),
+    ).result
     as "the spinning program must compile"
   let #(started, _clock) = clock.read(rig.wall_clock())
   let short = budget.Budget(max_outstanding: 4, deadline_ms: started + 6000)
   let ran =
     satellite.run(
       artifact,
-      config.exec_id,
+      identity.run_phase(identity.under_budget(config.identity, budget: short)),
       live.broker,
-      satellite.SatelliteConfig(..config.satellite, budget: short),
+      config.satellite,
       config.launch,
     )
   let #(ended, _clock) = clock.read(rig.wall_clock())
@@ -388,6 +407,98 @@ fn gone_loop(path: String, attempts: Int) -> Bool {
   }
 }
 
+// --- an approved escalation, spent -----------------------------------------
+
+// The acceptance of issue #24, over a real jail: the same program, the
+// same narrowed session base, run twice — once with nothing approved and
+// once carrying the grant a human would have been asked for — and the
+// only difference between them is that the second one runs.
+//
+// The narrowing is `LOOM_CAP_SOCK`, dropped from the base's environment
+// allowlist, and it is chosen because it makes the widening impossible to
+// fake. Policy composition takes the meet, so a base that does not *name*
+// that variable composes it away and the jailed node comes up unable to
+// find the cap socket at all; the launch refuses in band rather than
+// starting one. Restoring it takes a grant, grants compose only at the
+// run phase, and the program then has to make a genuine capability call
+// back over that socket for its outcome to arrive. So the widened run
+// producing `expected_outcome` is evidence that the grant reached the
+// kernel-facing policy, not just that a list was copied from one record
+// into another.
+fn run_widened(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "widened", prerequisites:, pool_size: 3)
+  let narrowed = narrowed_config(live, prerequisites, "widen")
+
+  // Nothing approved. The base cannot host a satellite and says which
+  // name is missing; the node never existed, and the record claims no
+  // widening rather than staying silent about one.
+  let refused = codemode.execute(program_source(), narrowed)
+  let assert codemode.RunFailed(satellite.LaunchRejected(reason:)) =
+    refused.outcome
+    as "a base that cannot name the cap socket must refuse the launch"
+  assert string.contains(reason, "cannot host a satellite")
+  assert string.contains(reason, launch.sock_env)
+  let assert enforcement.NotWidened(reason: unwidened) = refused.widening
+    as "an execution nobody approved must not read as widened"
+  assert string.contains(unwidened, "no approved escalation")
+  // The build still ran, in its own jail, and reported — a refusal at the
+  // launch is not a claim about the stage before it.
+  let assert enforcement.Reported(..) = refused.enforcement.build
+    as "the hermetic build runs whatever the node's policy says"
+  let assert enforcement.Unreported(_) = refused.enforcement.node
+    as "no node was launched, so there is nothing for it to report"
+
+  // The same execution under the approval. One grant, attached to the one
+  // threaded identity, composed at the launch policy and at the node's own
+  // clearance.
+  let grants = [policy.GrantEnv(name: launch.sock_env)]
+  let widened =
+    codemode.execute(
+      program_source(),
+      codemode.ExecConfig(
+        ..narrowed,
+        identity: identity.widened_by(narrowed.identity, grants:),
+      ),
+    )
+  let assert codemode.Ran(outcome:, ..) = widened.outcome
+    as "the approved grant must let the satellite run"
+  let assert satellite.Completed(msgpack.StringValue(text)) = outcome
+    as "the widened program must complete with a text outcome"
+  // Through the cap channel the grant made reachable, into a second jail,
+  // and back.
+  assert text == expected_outcome
+  assert widened.widening == enforcement.Widened(grants:)
+  assert_both_stages_reported(widened.enforcement)
+  io.println(
+    "code-mode e2e: widened by ["
+    <> string.join(list.map(grants, enforcement.grant_label), ", ")
+    <> "] — the same base refused this execution unapproved",
+  )
+  rig.stop(live)
+}
+
+// The e2e configuration with one dimension of the session base taken
+// away from the *node* alone: the build keeps the rig's own base, so a
+// difference between the two runs cannot be a difference in the build.
+fn narrowed_config(
+  live: Rig,
+  prerequisites: Prerequisites,
+  step_id: String,
+) -> codemode.ExecConfig {
+  let full = exec_config(live, prerequisites, step_id)
+  let base =
+    policy.SandboxPolicy(
+      ..live.base_policy,
+      env_allow: list.filter(live.base_policy.env_allow, fn(name) {
+        name != launch.sock_env
+      }),
+    )
+  codemode.ExecConfig(
+    ..full,
+    satellite: satellite.SatelliteConfig(..full.satellite, base_policy: base),
+  )
+}
+
 // --- the type checker as argument validator -------------------------------
 
 fn run_type_error(prerequisites: Prerequisites) -> Nil {
@@ -430,13 +541,10 @@ fn exec_config(
       dependencies: compile.default_dependencies(),
       build: build.builder(build.BuildConfig(
         broker: live.broker,
-        op_id: op_id(now),
-        step_id: step_id <> "-build",
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
         toolchain_roots: ["/"],
-        budget: pooled,
         demand: exec.BestEffort,
         env: [#("PATH", path)],
         dependencies: compile.default_dependencies(),
@@ -444,10 +552,19 @@ fn exec_config(
       )),
     ),
     broker: live.broker,
-    exec_id: satellite.ExecId(op_id: op_id(now), step_id:),
+    // One identity for the whole execution, with the hermetic build
+    // accounted separately: a different jail under a different policy,
+    // finished before the node starts, so the two pooled caps are never
+    // live at once. `-build` is the derived sub-step, not a second
+    // identity the caller wrote.
+    identity: identity.for_execution(
+      op_id: op_id(now),
+      step_id:,
+      budget: pooled,
+    )
+      |> identity.with_own_build_ledger,
     satellite: satellite.SatelliteConfig(
       base_policy: live.base_policy,
-      budget: pooled,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
@@ -457,6 +574,7 @@ fn exec_config(
       write_token_file: satellite.private_token_writer(live.token_dir),
       unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
+      ceilings: [],
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(

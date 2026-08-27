@@ -62,13 +62,11 @@
 //// - `strand_result` is emitted for every operation kind — runs,
 ////   compactions, navigations — because all three publish
 ////   `strand.last_result`.
-//// - Escalation `op`/`strand` attribution is best-effort. The durable
-////   record does carry a `CallScope` — the operation, strand, step,
-////   source index, and call id the denial was raised for — but the hub
-////   does not read it. It names instead the strand whose live
-////   operation was open when the record surfaced, so an escalation
-////   surfacing while no strand has an operation open — or while
-////   several do — reaches the client with both fields empty.
+//// - Escalation `op`/`strand` come off the record's own `CallScope` —
+////   the operation, strand, step, source index, and call id the denial
+////   was raised for. A record raised through a door that names no call
+////   reaches the client with both fields empty; nothing is inferred
+////   from which strand happens to be busy.
 ////
 //// ## Stream deltas
 ////
@@ -911,41 +909,60 @@ fn escalation_events(state: State, hw: Int) -> List(Emit) {
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) ->
-                Ok(Emit(seq:, event: escalation_event(state, record)))
+              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record)))
             }
         }
       })
   }
 }
 
-fn escalation_event(
-  state: State,
+fn escalation_event(record: runtime_escalation.Escalation) -> WireEvent {
+  protocol.EscalationEvent(record: escalation_view(record))
+}
+
+// One durable record as the protocol carries it — the single place the
+// two shapes are bridged, so an event, a snapshot row, and the record a
+// refused approval hands back can never disagree about the same record.
+//
+// The denial rides only on a pending record: on any other status there
+// is nothing left to decide, and a client that showed the diff again
+// would be inviting an answer to a closed question.
+fn escalation_view(
   record: runtime_escalation.Escalation,
-) -> WireEvent {
-  let #(op, strand) = escalation_attribution(state)
-  protocol.EscalationEvent(
-    record: protocol.EscalationRecord(
-      escalation_id: record.id,
-      op:,
-      strand:,
-      status: escalation_status(record.status),
-      denial: case record.status {
-        runtime_escalation.Pending -> denial_view(record.denial)
-        _ -> None
-      },
-    ),
+) -> protocol.EscalationRecord {
+  let #(op, strand) = escalation_attribution(record)
+  protocol.EscalationRecord(
+    escalation_id: record.id,
+    op:,
+    strand:,
+    status: escalation_status(record.status),
+    tool: option.unwrap(record.tool, ""),
+    action: option.unwrap(record.action, ""),
+    preview: option.unwrap(record.preview, ""),
+    asked: record.asked,
+    denial: case record.status {
+      runtime_escalation.Pending -> denial_view(record.denial)
+      runtime_escalation.Approved
+      | runtime_escalation.Rejected
+      | runtime_escalation.Consumed -> None
+    },
   )
 }
 
-// Best-effort attribution from the live map. The record's own
-// `CallScope` names the operation and strand exactly; this does not
-// consult it (see the module doc), so zero live operations, or
-// several, yield two empty strings.
-fn escalation_attribution(state: State) -> #(String, String) {
-  case dict.to_list(state.live) {
-    [#(strand, op)] -> #(op, strand)
-    _ -> #("", "")
+// The operation and strand a record names, off its own `CallScope`.
+//
+// This used to guess from the hub's live map, which returned whichever
+// single operation was open for *every* record and two empty strings
+// otherwise — so in a two-strand session a refusal raised on `sub:1`
+// was presented as `main`'s (#67). The scope has been on the record
+// since it started carrying one, and a record that names no call is
+// the only thing that answers empty now.
+fn escalation_attribution(
+  record: runtime_escalation.Escalation,
+) -> #(String, String) {
+  case record.scope {
+    None -> #("", "")
+    Some(scope) -> #(ids.op_id_to_string(scope.operation), scope.strand)
   }
 }
 
@@ -1303,8 +1320,8 @@ fn run_command(
     protocol.FollowUp(strand:, text:), True ->
       follow_up(state, connection, id, strand, text)
     protocol.Abort(strand:), True -> abort(state, connection, id, strand)
-    protocol.Approve(escalation_id:, grants: approved), True ->
-      approve(state, connection, id, escalation_id, approved)
+    protocol.Approve(escalation_id:, grants:, action:), True ->
+      approve(state, connection, id, escalation_id, grants, action)
     protocol.Deny(escalation_id:), True ->
       deny(state, connection, id, escalation_id)
     protocol.Fork(strand:, scope: _, name:), True ->
@@ -1574,8 +1591,7 @@ fn replay_escalation_emits(
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) ->
-                Ok(Emit(seq:, event: escalation_event(state, record)))
+              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record)))
             }
         }
       })
@@ -1706,16 +1722,7 @@ fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
     Ok(records) ->
       records
       |> list.filter(fn(record) { record.status == runtime_escalation.Pending })
-      |> list.map(fn(record) {
-        let #(op, strand) = escalation_attribution(state)
-        protocol.EscalationRecord(
-          escalation_id: record.id,
-          op:,
-          strand:,
-          status: "pending",
-          denial: denial_view(record.denial),
-        )
-      })
+      |> list.map(escalation_view)
   }
 }
 
@@ -1985,47 +1992,49 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
 
 // --- escalations -----------------------------------------------------------
 
+// One approval, decided against one read.
+//
+// An approval used to be a statement about a record id: `grants: None`
+// meant "whatever this record wants", resolved when the commit ran
+// (#72). A claim refreshes a pending record's denial from the call
+// that took the claim, so between the diff a human read and the diff
+// that got committed there was a mutable value and no check — a human
+// answering `wants: wall_s 60` could commit `wants: wall_s 600`.
+//
+// So the client now says what it rendered, and this reads the record
+// **once** — the cell, carrying the seq of the write that put it there
+// — checks the echoed diff and the echoed action digest against that
+// value, and commits the approval CAS-guarded at that same seq. The
+// shared read is the whole mechanism, not a tidiness: a claim is
+// exactly the event that changes what a record wants, it bumps the
+// register seq when it lands, and a claim landing between the check
+// and the commit therefore loses the commit instead of passing unseen.
+// Read twice and the check would be about a record the commit never
+// touched.
 fn approve(
   state: State,
   connection: Int,
   id: Int,
   escalation_id: String,
-  approved: Option(List(Grant)),
+  echoed: List(Grant),
+  action: String,
 ) -> State {
-  use record <- or_reply(
-    find_escalation(state, escalation_id),
+  use cell <- or_refuse(
+    pending_escalation_cell(state, escalation_id),
     state,
     connection,
     id,
   )
-  use decoded <- or_reply(
-    result.map_error(grants.decode_denial(record.denial), fn(report) {
-      #(
-        protocol.code_internal,
-        "the stored denial is unreadable: " <> report.expected,
-      )
-    }),
+  let api.EscalationCell(record:, seq:) = cell
+  use wanted <- or_refuse(wanted_diff(record), state, connection, id)
+  use Nil <- or_refuse(
+    echo_matches(record, wanted, echoed, action),
     state,
     connection,
     id,
   )
-  use chosen <- or_reply(
-    result.map_error(chosen_grants(approved, decoded.wanted), fn(message) {
-      #(protocol.code_bad_request, message)
-    }),
-    state,
-    connection,
-    id,
-  )
-  use Nil <- or_reply(
-    result.map_error(
-      api.approve_escalation(
-        state.runtime,
-        escalation_id,
-        list.map(chosen, grants.encode),
-      ),
-      describe_api_error(_, ""),
-    ),
+  use Nil <- or_refuse(
+    commit_approval(state, record, seq, echoed),
     state,
     connection,
     id,
@@ -2035,22 +2044,178 @@ fn approve(
   })
 }
 
-// The grants an approval actually spends: everything the denial wanted
-// when the client approved wholesale, or the client's own subset —
-// checked against the wanted diff, because a client cannot approve more
-// than was asked.
-fn chosen_grants(
-  approved: Option(List(Grant)),
+// The record and the seq it was read at, refused unless it is still
+// pending. The point read, not the listing `deny` uses: the seq of
+// *this* record is what the commit has to assert, and a listing throws
+// every seq away.
+fn pending_escalation_cell(
+  state: State,
+  escalation_id: String,
+) -> Result(api.EscalationCell, WireEvent) {
+  use cell <- result.try(
+    api.escalation_cell(state.runtime, escalation_id)
+    |> result.map_error(fn(_error) {
+      refusal(
+        protocol.code_unknown_escalation,
+        "unknown escalation: " <> escalation_id,
+      )
+    }),
+  )
+  use <- bool.lazy_guard(
+    when: cell.record.status != runtime_escalation.Pending,
+    return: fn() {
+      Error(refusal(
+        protocol.code_not_pending,
+        "escalation "
+          <> escalation_id
+          <> " is "
+          <> escalation_status(cell.record.status),
+      ))
+    },
+  )
+  Ok(cell)
+}
+
+fn wanted_diff(
+  record: runtime_escalation.Escalation,
+) -> Result(List(Grant), WireEvent) {
+  grants.decode_denial(record.denial)
+  |> result.map(fn(decoded) { decoded.wanted })
+  |> result.map_error(fn(report) {
+    refusal(
+      protocol.code_internal,
+      "the stored denial is unreadable: " <> report.expected,
+    )
+  })
+}
+
+// Whether the answer is about the record in hand.
+//
+// Two echoes, two different jobs. The action digest is the link this
+// series was missing: a spend-time check binds execution to what the
+// record held at approval, and this binds the record at approval to
+// what the human was shown. The diff is the older rule — a client may
+// narrow an approval below what was asked for and never widen it past
+// it — and it is a check on staleness for free, because a refreshed
+// denial names magnitudes the rendered one did not.
+//
+// The narrowing direction stays legal on purpose: a record that has
+// come to want *more* than was rendered still approves, for exactly
+// the grants the human read and no others.
+fn echo_matches(
+  record: runtime_escalation.Escalation,
   wanted: List(Grant),
-) -> Result(List(Grant), String) {
-  case approved {
-    None -> Ok(wanted)
-    Some(chosen) ->
-      case grants.first_unwanted(chosen, wanted:) {
-        None -> Ok(chosen)
-        Some(_grant) ->
-          Error("approved grants must be a subset of the denial's wanted diff")
-      }
+  echoed: List(Grant),
+  action: String,
+) -> Result(Nil, WireEvent) {
+  use <- bool.lazy_guard(
+    when: option.unwrap(record.action, "") != action,
+    return: fn() {
+      Error(stale_approval(
+        record,
+        "the action this approval names is not the one the record now "
+          <> "carries; the request changed between the prompt and the answer",
+      ))
+    },
+  )
+  case grants.first_unwanted(echoed, wanted:) {
+    None -> Ok(Nil)
+    Some(_grant) ->
+      Error(stale_approval(
+        record,
+        "the approved grants are not a subset of the denial's wanted diff",
+      ))
+  }
+}
+
+// The approval itself: written straight through the session's one
+// writer rather than through `api.approve_escalation`, which reads the
+// record again for itself and would leave the checks above standing on
+// a value the commit never saw.
+fn commit_approval(
+  state: State,
+  record: runtime_escalation.Escalation,
+  seq: Int,
+  echoed: List(Grant),
+) -> Result(Nil, WireEvent) {
+  let key = runtime_escalation.register_key(record.id)
+  let approved =
+    runtime_escalation.approve(record, list.map(echoed, grants.encode))
+  let plan_tx =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          ns: register.FactCustom,
+          key:,
+          value: register.value(runtime_escalation.encode(approved)),
+        ),
+      ],
+      expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
+    )
+  case
+    writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
+  {
+    Ok(_) -> Ok(Nil)
+    // The record moved under the answer that named it. Not a retry:
+    // committing against a re-read would approve a record nobody read.
+    Error(tx.StaleExpectation(..)) ->
+      Error(moved_under_the_answer(state, record.id))
+    Error(_other) ->
+      Error(refusal(protocol.code_internal, "the approval commit was refused"))
+  }
+}
+
+fn refusal(code: String, message: String) -> WireEvent {
+  protocol.ErrorEvent(code:, message:, details: None)
+}
+
+// A refusal that hands the record back, so the client re-renders the
+// prompt from the answer to its own command instead of waiting for a
+// pull to catch up.
+fn stale_approval(
+  record: runtime_escalation.Escalation,
+  message: String,
+) -> WireEvent {
+  protocol.ErrorEvent(
+    code: protocol.code_stale_approval,
+    message:,
+    details: Some(protocol.stale_approval_details(escalation_view(record))),
+  )
+}
+
+// The same refusal after a lost compare-and-set, where the record in
+// hand is by definition the stale one and the fresh copy has to be
+// read again. A failed re-read leaves the client the code alone, which
+// still says the answer had no effect.
+fn moved_under_the_answer(state: State, escalation_id: String) -> WireEvent {
+  let message =
+    "the escalation record changed while this approval was being committed"
+  case api.escalation(state.runtime, escalation_id) {
+    Ok(record) -> stale_approval(record, message)
+    Error(_error) -> refusal(protocol.code_stale_approval, message)
+  }
+}
+
+// `or_reply`'s sibling for the escalation door, where a refusal may
+// carry the record it is about: the error side is a whole event rather
+// than a code and a message.
+//
+// ```gleam
+// use cell <- or_refuse(pending_escalation_cell(..), state, conn, id)
+// ```
+fn or_refuse(
+  result: Result(a, WireEvent),
+  state: State,
+  connection: Int,
+  id: Int,
+  then: fn(a) -> State,
+) -> State {
+  case result {
+    Ok(value) -> then(value)
+    Error(event) -> {
+      reply(state, connection, id, event)
+      state
+    }
   }
 }
 

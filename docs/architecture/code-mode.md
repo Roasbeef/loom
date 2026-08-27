@@ -144,6 +144,19 @@ however it is spaced, since whitespace and comments are discarded before
 the scan: `@ external`, and an `@` with a comment before the name, both
 lex to the same two tokens.
 
+The same fact — that vetting's parser is not the compiler's — costs
+something in the other direction, and a submitter should hear about it
+where it bites. `glance` 1.1 does not accept **label shorthand**: neither
+`f(value:)` in a call nor `Pending(handle:, waited_ms:)` in a pattern,
+both of which `gleam build` compiles happily. So a submitted program is
+held to a slightly narrower language than the one that would compile it,
+and the difference surfaces as an `Unparseable` rejection at a byte offset
+for syntax that is perfectly legal Gleam. The `code_mode` tool says so in
+the parse rejection itself (`tools/codemode.parser_note`) rather than in
+its description: the description is the byte prefix of the provider's
+cached region and is paid on every request of every strand, while the
+rejection is paid only by the submission that tripped it.
+
 Three adversaries motivate the rules, and each is a real entry in the
 vetting corpus:
 
@@ -226,6 +239,160 @@ composed and returned by the broker, and the module only labels it. The
 property the design wants still holds, because there is no policy field
 for a program to flip and so no way for a program to widen its own network
 access — but it holds in the broker, not in the prelude.
+
+## Two seams, and why the sets are disjoint
+
+There is not one prelude but two, and a submission is vetted against
+exactly one of them (`codemode/vet/policy.Seam`).
+
+The **workspace seam** is the nine modules above: a program that
+orchestrates *effects*. The **orchestration seam** is `cap/strand` and
+`cap/report`, and nothing else: a program that orchestrates *agents*.
+`cap/strand` gives `spawn`, `wait` — a list of handles against one shared
+deadline — `send`, `note`/`notes` and `roster`, and every one of them is
+serviced by the same `client/agency` closures the model's own `agent_*`
+tools call, judged against the same `Caller`. The authorization model is
+reused rather than invented: descendant-only addressing, the depth and
+fan-out caps, the lineage ledger, and the refusal names are the tools'.
+
+Why a second allowlist rather than a tenth capability: **which
+capabilities travel together is the point.** An orchestrator that could
+also write files, run a process, or reach the network is a materially
+worse thing to hand a model than one that cannot. A compromised
+orchestration program can spawn and message within the lineage its own
+strand roots, and can touch neither the disk, the network, nor a process.
+That holds only while the two capability sets stay disjoint, which is why
+they share no module but `cap/report` — which carries no authority of its
+own — and why a test pins the disjointness rather than trusting the two
+lists to stay apart.
+
+Why a capability rather than an interpreter: Rule Zero. A trusted
+orchestration interpreter living in the harness VM *is* model-influenced
+execution in the harness VM, which is the one thing the architecture
+forbids. So the script runs outside, which means it needs a channel back
+to the broker, and that channel is `cap/strand`. Rule Zero forbids running
+the orchestrator in the harness; it does not forbid model-influenced code
+from *causing* a harness commit, which every tool call already does.
+
+The seam brings one rule that is genuinely new. `agent_spawn` is throttled
+by turn cost — the model pays a provider round trip per spawn, so the
+economics bound the fan-out without the harness having to. A loop pays
+nothing. Replacing the turn with a loop therefore removes an implicit
+throttle, and an implicit throttle removed has to become an explicit one:
+a **hard ceiling on spawn admissions per execution**, refused in band *at*
+the ceiling and naming it. It is a lifetime bound on admissions, distinct
+from the pooled outstanding-effect cap and from the Agency's live
+`fan_out`/`session_strands` caps — which a program that spawns, joins and
+spawns again passes forever. It is enforced by the satellite host, because
+one host is stood up per execution holding the one `PhaseIdentity` a
+caller may mint, so the tally is keyed to that identity by construction.
+
+### Who chooses the seam
+
+The host chooses which seams it *serves* (`client/codemode.Surface`, and
+`--codemode-seams` on the shipped server, which defaults to the workspace
+seam alone). Where it serves both, the **submission** chooses between them:
+`code_mode` takes a `seam` argument and a program is judged against
+exactly the one it names, defaulting to the workspace seam when it names
+none. Nothing infers the seam from a program's imports — classifying a
+submission by reading it would make the tool description a claim about a
+decision the harness had already taken, and a model that meant to
+orchestrate would learn it had been vetted as a workspace program only
+from a refusal it could not act on.
+
+Two properties keep that reachability from widening anything. The
+**allowlist follows the submission**, so the seam a program is refused
+against is the seam it asked for, and the refusal names it. The **router
+follows the host**, so a surface serving one seam hands out that seam's
+router whatever a request says, and no submission can reach a capability
+the operator did not wire. A seam a host does not serve is refused before
+anything is dispatched, in the tool shell and again in the wiring.
+
+The argument and the schema grow only where there is a choice: a host
+serving one seam renders neither the `seam` property nor a second import
+list, and where both are served the shared standard-library subset is
+stated once rather than duplicated into two lists the model would have to
+diff. Both are the same arithmetic as tool registration itself — the tool
+array renders ahead of the system prompt and is the byte prefix of the
+cached region, so anything in it is paid on every request of the session.
+
+### What the description tells a model about the prelude
+
+A model writing a program authors **blind**. There is no autocomplete, no
+hover, no language server: it emits source and submits it. So for as long
+as the description listed only module *names*, the compiler was the only
+oracle for a signature, and it was reachable only by being wrong first —
+a `CompileFailed` round trip carrying a whole hermetic build, to learn
+that `proc.run` takes a `Command` rather than a `String`. The design note
+`docs/design-notes/tool-search-and-code-mode.md` put it as: the module
+namespace is the discovery index, the compiler is the schema oracle, and
+the index is listed for free while the oracle is reachable only by being
+wrong first.
+
+The description now carries the oracle. Every module a seam admits is
+rendered into it in full — `pub type` declarations with their
+constructors and fields, `pub const`, and `pub fn` signatures, each under
+the prelude's own `///` documentation — so the model reads the contract
+before it writes rather than after it is refused.
+
+Four things about the shape of that, each of which was a decision:
+
+**It is static, not a tool.** A `code_mode_signatures(module)` tool was
+the original proposal and was rejected on the cache arithmetic. Tool
+bytes render ahead of the system prompt and are the byte prefix of the
+provider's one-hour cached region: a static rendering is written once per
+cache lifetime and read at about a tenth of base input on every request
+thereafter, while a tool costs a round trip *every* time the model wants
+a signature — a request/response cycle, output tokens, latency, and the
+model having to know to ask before writing. Nothing is added to the tool
+array and nothing varies between turns, so the arithmetic that note
+prices is untouched.
+
+**It is generated at build time, and drift is a build failure.**
+`make gen-prelude` runs `gleam export package-interface` over
+`packages/cap` — the compiler's own account of what it will accept, so
+the description cannot describe a prelude the hermetic build would
+reject — renders it with `scripts/gen-prelude.py`, and commits the result
+as `tools/prelude`. `scripts/gen-prelude.sh --check` runs inside `make
+check` and refuses a tree where the artifact and its inputs have parted
+company, naming the file that moved and the command that fixes it. The
+gate is digest comparison and nothing more, so it needs no toolchain and
+costs nothing to run constantly; regeneration is the step that needs
+`gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
+
+**It is filtered through the allowlist, not through the package.**
+`package-interface` reports eleven modules, and the two seams admit ten
+between them: `cap/runtime`, the satellite's trusted boot runtime, is on
+neither. `tools/codemode` selects from the artifact using each
+`SeamOffer`'s own `allowed_imports` — the same list vetting judges
+against — so a module vetting will reject can never be advertised.
+Advertising one would be the same class of lie as classifying a
+submission by reading its imports: the model would write against
+something it cannot import and read a refusal it has no way to
+understand.
+
+**Each seam pays only for what it adds.** The signatures follow the split
+the import lists already take: modules on every offered seam are rendered
+once under a shared heading, and each seam renders only its own. An
+orchestration-only host pays for `cap/strand` and `cap/report` and for
+none of the other nine.
+
+The price is real and is written down where it can be checked: against
+the shipped allowlists a workspace-only host's whole description is
+17,678 bytes, an orchestration-only host's 15,205, and a host serving
+both 28,818 — roughly 4,400, 3,800 and 7,200 tokens. About half of that
+is the `pub type` declarations, which the estimate this work was scoped
+against did not include and which are not optional: `proc.run` returns a
+`proc.Output`, and a program that cannot name the `stdout` field cannot
+read the output it just paid for. What was deliberately left out — the
+`## Examples` doctests, and all but the first sentence of each module's
+own doc — is argued in `scripts/gen-prelude.py`, with the bytes each
+omission saves.
+
+`docs/examples/fan_out_review.gleam` is the worked sample, run verbatim by
+`packages/codemode/test/codemode/orchestration_sample_test.gleam`, and
+`docs/design-notes/orchestration-comparison.md` is the argument the seam
+came out of.
 
 ## Layer two: the satellite node
 
@@ -811,6 +978,10 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |
 | `cap/fs.gleam`, `cap/proc.gleam`, `cap/net.gleam`, `cap/git.gleam`, `cap/lsp.gleam`, `cap/kv.gleam`, `cap/report.gleam` | The prelude's capability modules — typed stubs over `cap_call`. |
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
+| `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
+| `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
+| `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |
+| `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |
 | `test/codemode/e2e_test.gleam` | The jailed acceptance described above. |

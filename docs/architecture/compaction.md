@@ -97,12 +97,12 @@ ceiling come from the resolved route, under the adapter's own api name
 (`compaction_hooks`, `client/wiring.gleam:273`). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:569` (`default_reserve_tokens`) and
+once in `client/serve.gleam:580` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:557`).
+(`compaction_settings`, `client/serve.gleam:545`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
@@ -493,7 +493,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2357`). An
+(`compaction_preparation`, `client/gateway.gleam:2499`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the

@@ -50,7 +50,20 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   `machine`, `runtime`, `provider`, `broker`, `tools`, `conformance`).
 - **FFI**: none. There is no `internal/ffi_*` module here and there must
   not be one; `Clock` and `Generator` take injected functions instead, so
-  impurity belongs to whoever constructed them.
+  impurity belongs to whoever constructed them. Nor is there an
+  `@external` of any target, nor `gleam_erlang` or `gleam_otp` in
+  `gleam.toml` — by rule, not by coincidence.
+  Two properties rest on that, and one `@external` closes both: purity is
+  what makes the state space property-testable without spawning processes,
+  and the same discipline is what keeps this package compiling to the
+  **JavaScript target**. Lint R6 gates on it at error level and its census
+  must stay zero. Portable here means *decide but not act* — replay a
+  conversation tree, validate a transcript with the server's own total
+  decoders, run `next_action` over fetched state — and never the harness in
+  a browser: `gleam_otp` has no JavaScript target, Rule Zero is
+  kernel-enforced (in a browser the harness VM and the untrusted-code VM
+  would be the same VM), and the two-channel doctrine needs processes on
+  both sides. `docs/gleam-style.md` Part IV §5 argues it in full.
 
 ## Traffic
 

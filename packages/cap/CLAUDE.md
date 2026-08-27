@@ -9,14 +9,38 @@ submitted program may import is here, and every one of them is an RPC stub
 frame, sends it over the one AF_UNIX channel to the satellite host, and
 blocks for the `cap_result`. This package runs *inside* the jailed
 satellite node, never in the harness VM, and is a separate build target so
-it can one day be published on its own. WP-J.
+it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
+
+The prelude serves **two seams**, and a submission is vetted against one
+of them (`codemode/vet/policy.Seam`). The *workspace* seam is
+`cap/{fs, proc, net, git, lsp, report, task, actor, kv}` — a program that
+orchestrates effects. The *orchestration* seam is `cap/strand` +
+`cap/report` and nothing else — a program that orchestrates agents. The
+sets are disjoint but for `cap/report`, and that disjointness is the
+point: an orchestrator that could also write files is a materially worse
+thing to hand a model than one that cannot.
 
 ## Key Types
 
-- `cap/report.Outcome` — `Completed(value)` / `Errored(message, details)`.
-  A program is a `fn() -> Outcome`; `to_msgpack` is the marshalling the
-  boot runtime writes as the terminal frame, so a strand receives a
-  structured value and never scrapes stdout.
+- `cap/report.{Outcome, Value}` — `Completed(value)` /
+  `Errored(message, details)`. A program is a `fn() -> Outcome`;
+  `to_msgpack` is the marshalling the boot runtime writes as the terminal
+  frame, so a strand receives a structured value and never scrapes stdout.
+  `Value` is a re-export of the wire's value type plus builders
+  (`string`/`int`/`float`/`bool`/`list`/`object`/`null`) and readers
+  (`field`/`as_string`/`as_int`/`as_bool`/`as_list`). They live here
+  because a program cannot name `core/msgpack`: the allowlist omits it and
+  the hermetic build's `--warnings-as-errors` turns importing a transitive
+  dependency into a compile error, so without them `report.text` was the
+  only thing a program could say.
+- `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
+  the orchestration seam. `assignment`/`within`/`detached`/
+  `from_my_conversation`/`with_tools`/`expecting` build a spawn; `spawn`,
+  `wait` (a list of handles against **one** deadline), `send`, `note`,
+  `notes` and `roster` are the six calls, serviced by the same
+  `client/agency` closures the `agent_*` tools call. Every `StrandError`
+  variant but the last two is one of the harness's own refusal names
+  carrying the harness's own sentence.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry
@@ -74,7 +98,10 @@ it can one day be published on its own. WP-J.
   package-level protocol.
 - **Wire** — one AF_UNIX stream, length-prefixed msgpack, protocol version
   1, 16 MiB cap. Out: `cap_call` (carrying the token, the capability name,
-  the marshalled args, and a deadline) and `cancel`. In: `cap_result`,
+  the marshalled args, and a deadline) and `cancel`. `strand.wait` is the
+  one call that sets its own deadline — the join window plus
+  `wait_margin_ms` — because the harness answers `Pending` at the window
+  rather than hanging, and the channel must outlast that. In: `cap_result`,
   which is the only kind the satellite acts on. Out, exactly once per
   execution: the terminal `outcome` frame
   (`{v: 1, id: 0, kind: "outcome", body}`) carrying
@@ -133,6 +160,19 @@ it can one day be published on its own. WP-J.
   a single list, which made admitting a mailbox's worth of messages cost
   the square of the bound; the fix removed the factor rather than moving
   it, the same lesson `08cdbce` drew from `core/json`'s excerpt.
+- **A refusal keeps the harness's name, or arrives as itself.**
+  `cap/strand.map_error` turns a broker code back into the variant of the
+  same name, and the codes are `codemode/orchestration.refusal_code`'s.
+  The two packages share no dependency — they are the ends of one wire,
+  not peers — so each side pins its own half and the orchestration sample
+  crosses the whole of it for real. A code neither side has learned yet
+  comes back as `StrandRefused` carrying the code verbatim rather than
+  being folded into a generic failure.
+- **Nothing asked for is nothing, not an empty list.** A spawn with no
+  declared result shape sends `nil`, not `[]`, so it is distinguishable
+  from one that declared an empty shape — which is what keeps the
+  harness's `NoResultAsked` verdict a separate fact from "the child
+  answered nothing".
 - **Deny-by-default for `cap/net` is a broker property.** Nothing in
   `cap/net` refuses anything; it marshals and dispatches exactly as
   `cap/fs.read` does and only labels the broker's refusal. The design's

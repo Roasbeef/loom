@@ -1,1 +1,1 @@
-{"v":1,"id":6,"cmd":"approve","body":{"escalation_id":"esc-1"}}
+{"v":1,"id":6,"cmd":"approve","body":{"escalation_id":"esc-2","grants":[{"type":"network","network":{"mode":"proxy","allow":["registry.npmjs.org"],"proxy":"127.0.0.1:3128"}},{"type":"limit","field":"wall_seconds","value":60}],"action":"1d4f0b83c6a7e295408b3f6d9c2e17ba"}}

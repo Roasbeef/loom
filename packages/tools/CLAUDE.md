@@ -25,9 +25,12 @@ whole
 pipeline — vet, hermetic compile, jailed satellite — sits behind a
 **CodeMode** record of closures declared here and filled by
 `client/codemode`. What this side owns is the model's half of the
-contract: the schema, the clamped budget, and the rendering that turns a
-vetting rejection, a compile error, a dead satellite or a program's own
-reported failure into something a model can repair from.
+contract: the schema, the clamped budget, the resolution of which of the
+host's seams a submission is judged against, the capability prelude's
+public signatures rendered into the description so a model does not author
+blind, and the rendering that turns a vetting rejection, a compile error, a
+dead satellite or a program's own reported failure into something a model
+can repair from.
 
 ## Key Types
 
@@ -39,8 +42,18 @@ reported failure into something a model can repair from.
   driver's own coordinates (`strand`, `op_id`, `step_id`,
   `source_index`), base policy and grants, enforcement demand, the
   constructed env, the clock, a `FileSystem` record of functions,
-  `blob_root`, and `clear_call` — the broker seam every jailed execution
-  flows through.
+  `blob_root`, `clear_call` — the broker seam every jailed execution
+  flows through — and `raise_refusal`, the other door onto the same
+  escalation plane.
+- `tools/tool.{RaisedRefusal, Escalated, no_raise}` — the raise seam a
+  tool knocks on when it met a policy refusal somewhere `clear_call` is
+  not. `RaisedRefusal` carries the broker's structured `Denial` (whose
+  `wanted` is the diff an approval may grant) and the refused work's own
+  budget deadline; `Escalated` is `Settle` or `Resume(grants:)`, the
+  mirror of `client/escalate.Decision` that `tools` cannot import;
+  `no_raise()` is the seam for a host with no escalation plane. It exists
+  for `code_mode`, whose clearances happen inside the code-mode pipeline
+  and so never pass `clear_call` (#97).
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
   `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
   tool's schema states. Every closure takes a `Caller` first and is
@@ -50,21 +63,57 @@ reported failure into something a model can repair from.
   crossing that seam. `Delivery` mirrors `runtime/api.Delivery` (which
   `tools` cannot import) the way `effects.ToolOutcome` mirrors the
   broker's `CallOutcome`.
+- `tools/agent.{ResultSchema, ResultField, FieldType, Mismatch,
+  TerminalResult}` plus `{parse_result_schema, render_result_schema,
+  result_fields, validate_result, describe_mismatch, type_name,
+  field_type_name}` — the result contract: the shape a parent may demand
+  of a child, and the verdict a join hands back beside the prose report.
+  A schema is the subset of JSON Schema `tool.object_schema` already
+  emits — an object of named properties with one closed-set type each —
+  and nothing wider; `parse_result_schema` is total and refuses what this
+  harness cannot enforce rather than accepting it and ignoring it.
 - `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
   parse back from `{strand}#{operation}`.
+- `tools/agent.{Minter, minting_step, call_site_digest}` — who, inside
+  one planned tool call, minted a child. `ToolCall` is a model's own
+  `agent_spawn`; `Program(ordinal:)` is a code-mode program on its
+  `ordinal`-th spawn admission, which is a fact `{operation, step_id,
+  source_index}` has nowhere to put. `minting_step` is the step a spawn
+  is *recorded* under and reconciled against, and `call_site_digest` is
+  the constant-width, model-proof half of a minted child's name.
 - `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
-  published `allowed_imports`, `serviced_caps`, `default_within_ms` and
-  `max_within_ms` the tool's description and schema state, so the
-  sentence the model is charged for on every request cannot drift from
-  the policy the program is judged against.
+  published `seams`, `default_within_ms` and `max_within_ms` the tool's
+  description and schema state, so the sentence the model is charged for
+  on every request cannot drift from the policy the program is judged
+  against.
+- `tools/codemode.{Seam, SeamOffer, Seams}` plus `{seam_name, offered,
+  one_seam}` — which allowlist a submission is judged against.
+  `Seam` mirrors `codemode/vet/policy.Seam` (`WorkspaceSeam`,
+  `OrchestrationSeam`); a `SeamOffer` is one seam's published
+  `allowed_imports` and `serviced_caps`; `Seams` is what this host
+  serves, as a named `default` plus `alternates`, so a host can never
+  offer none and an unnamed submission never has an ambiguous seam.
+- `tools/codemode.{PolicyRefusal, Execution.refusal}` — whether policy
+  composition stopped this execution before it ran, and whether an
+  approval could overturn it. `NothingRefused` or `RunRefused(denial:,
+  deadline_ms:)`, and a *peer* of the enforcement report rather than a
+  field inside it, for the reason `codemode`'s `widening` is one.
 - `tools/codemode.{Request, Execution, ExecResult, Outcome, Rejection,
   Rule, Location, CompileFailure, RunFailure, Enforcement, Report}` — the
   vocabulary crossing that seam, mirroring `codemode/vet`,
   `codemode/compile`, `codemode/satellite` and `cap/report` rather than
-  importing them. `RunFailure` is the one deliberate narrowing: eight
-  `satellite.RunError` variants become the four that read differently to
-  a model, with the pipeline's reason text carried verbatim.
+  importing them. `Request.seam` is the resolved seam the execution is
+  judged and routed under. `RunFailure` is the one deliberate narrowing:
+  eight `satellite.RunError` variants become the four that read
+  differently to a model, with the pipeline's reason text carried
+  verbatim.
+- `tools/prelude.surfaces` — **generated** (`make gen-prelude`): every
+  capability-prelude module paired with its public surface — `pub type`
+  declarations with their constructors, `pub const`, `pub fn` signatures,
+  each under the prelude's own `///` docs — rendered from `gleam export
+  package-interface` over `packages/cap`. Unfiltered by design;
+  `tools/codemode` selects from it through a seam's `allowed_imports`.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -87,6 +136,12 @@ reported failure into something a model can repair from.
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
   and `client/serve` registers both families),
   `conformance` (the wiring/e2e suites drive the same adapter).
+- **Generated from**: `packages/cap`, at build time and not as a
+  dependency edge — `scripts/gen-prelude.sh` runs `gleam export
+  package-interface` there and writes `tools/prelude`. Nothing in this
+  package imports `cap`, and nothing at runtime shells out; the artifact
+  is committed and `scripts/gen-prelude.sh --check` (inside `make check`)
+  fails the build when it and its inputs part company.
 - **FFI**: `tools/internal/ffi_hash` — SHA-256 for blob content addressing.
   `tools/internal/ffi_path` — `read_link`, the lstat-level primitive
   workspace containment is built on. Both backed by `tools_ffi.erl`.
@@ -169,11 +224,25 @@ reported failure into something a model can repair from.
   policy's `env_allow` even if the broker sent it.
 - **Timeouts are clamped tool-side** — `default_timeout_ms` 120 s,
   `max_timeout_ms` 600 s for bash; 60 s for grep.
+- **A minted name's discriminating half has a constant width and no
+  model input.** A child's name is `sub:{parent}/{slug}-{digest}`: the
+  slug is the purpose, bounded, and decorative, while the digest is
+  sixteen hex characters over `{operation, minting step, source index}`
+  and is the whole of who owns the child. The split is what closes two
+  ways of colliding two minters onto one name. A discriminator appended
+  to a *slugged* field is erased by that field's cap — a production step
+  id is a 36-character UUID and the slug cap is 24, which is exactly how
+  a `-program` step suffix came to reach no name at all — and a
+  constant-width field has no cap left to be truncated against. And a
+  discriminator sharing a field with model text can be steered by
+  choosing the text, which is why the digest takes none. Lengthening the
+  slug cap fixes neither; `agency_test`'s
+  `a_step_slug_cannot_carry_a_discriminator_test` is the arithmetic.
 - **A model never supplies its own identity, a strand name, or a
   blackboard prefix.** `agent.caller` is built from `Ctx` alone, so a
   model that names another strand in its arguments does not become it;
   `agent_spawn` takes a *purpose* and the Agency mints
-  `sub:{parent}/{slug}-{step}-{index}` from the call's own durable
+  `sub:{parent}/{slug}-{digest}` from the call's own durable
   coordinates; `agent_note` writes under `agent/{caller}/` and
   `agent_notes` reads under `agent/`. Each closes a class rather than a
   case: identity forgery, name squatting, and namespace escape.
@@ -204,6 +273,29 @@ reported failure into something a model can repair from.
   concurrent call in the same step would open that ledger with *its*
   budget — and a satellite needs two outstanding effects to exist at
   all.
+- **The description carries the prelude's signatures, and they are
+  filtered through the allowlist rather than through the package.** A
+  model writing a program has no autocomplete and no language server: it
+  authors blind and learns a signature from a `CompileFailed` round trip
+  carrying a whole hermetic build. So every module a seam admits is
+  rendered into the description in full, statically — nothing is added to
+  the tool array and nothing varies between turns, because tool bytes are
+  the byte prefix of the provider's cached region and a surface that
+  changes per turn does not cost a cache write, it costs the cache
+  (issue #36). `gleam export package-interface` reports eleven modules
+  and the two seams admit ten between them: `cap/runtime` is on neither,
+  so `surface_text` runs each `SeamOffer.allowed_imports` over
+  `prelude.surfaces` and not the other way round. Advertising a module
+  vetting will reject is the same class of lie as classifying a
+  submission by reading its imports. The signatures follow the same
+  per-seam split as the import lists — shared modules stated once, each
+  seam naming only what it adds — so an orchestration-only host pays for
+  `cap/strand` and `cap/report` and for none of the other nine. Measured
+  against the shipped allowlists, the whole description is 17,678 bytes
+  for a workspace-only host, 15,205 for an orchestration-only one, and
+  28,818 for a host serving both; about half of that is the `pub type`
+  declarations, which are not optional because a program that cannot name
+  `proc.Output`'s `stdout` field cannot read the output it paid for.
 - **A code-mode result never implies a jail that was not applied.** The
   seam hands back an `Enforcement` naming *both* jailed stages — the
   hermetic build and the satellite node — as a record rather than a
@@ -215,9 +307,68 @@ reported failure into something a model can repair from.
   different statement from silence (issue #5).
 - **A refusal is a repair brief.** Every violation vetting found is
   listed in one pass with its rule, its offending construct, its byte
-  span where one exists, and the allowlist it was judged against;
-  compiler diagnostics cross verbatim. One round trip per rule is
-  exactly what in-band repair exists to avoid.
+  span where one exists, the **seam** it was judged against and that
+  seam's allowlist; compiler diagnostics cross verbatim. One round trip
+  per rule is exactly what in-band repair exists to avoid. A parse
+  rejection adds `parser_note`, the one way a program can be legal Gleam
+  and still not parse: vetting reads the submission with `glance`, which
+  does not accept label shorthand in a call or a pattern though the
+  compiler does. It is stated in the rejection rather than in the
+  description because that is where someone hits it, and a description
+  is paid for on every request.
+- **A submission is judged against exactly one seam, and it is the one
+  it named.** `CodeMode.seams` is what this host serves; the shell
+  resolves the call's `seam` argument against it, defaults an unnamed
+  submission to `seams.default`, and refuses an unserved or unknown name
+  in band naming what is on offer — never reinterpreting it as the other
+  seam, which in one direction is a refusal the model cannot act on and
+  in the other a widening nobody chose. Nothing classifies a submission
+  by reading its imports: the description would then be a claim about a
+  decision already taken.
+- **The choice costs nothing where there is no choice.** The `seam`
+  property appears in the schema and the second import list in the
+  description only when this host serves more than one seam, and where
+  it does, the seams' shared imports are stated once rather than
+  duplicated. Tool bytes render ahead of the system prompt and are the
+  byte prefix of the provider's cached region, so every word is paid on
+  every request of every strand for the life of the session — but the
+  lists stay *in* the description rather than being deferred to the
+  rejection, because a model that has to guess an import surface pays a
+  whole wasted submission in output tokens, which is the dearer side of
+  that ledger.
+- **A result contract is a lower bound, refused loudly at both ends.** A
+  spawn may carry a `result_schema`; the child records the matching value
+  as an ordinary `agent_note` under `result_note_key`, and `Waited.Ready`
+  carries the verdict as a `TerminalResult` beside the prose `report` —
+  never instead of it, because prose is what a human and a reading model
+  want and typed JSON is what a program branching on `found.files` wants.
+  Three properties are load-bearing. A malformed schema is refused in the
+  shell, before the Agency is called, so the parent learns about its own
+  mistake in the turn it made it rather than after joining a child that
+  could never satisfy it. A mismatch always names both sides — the
+  schema in full and what actually arrived — because a refusal that says
+  only "did not match" costs the reader a round trip to learn what it
+  could have been told. And `NoResultAsked` is its own variant rather
+  than an empty `Result`, so a spawn that named no schema renders exactly
+  the text and exactly the details object it rendered before contracts
+  existed. Surplus fields in a result are not a failure: the contract
+  says what the child owes, not all it may say.
+- **A code-mode policy refusal is raised once, for the whole execution,
+  and only from the run phase.** The shell asks `Ctx.raise_refusal` at
+  most once per call and re-executes at most once on a `Resume`; a second
+  refusal stands in band. Per-clearance would park inside a live
+  satellite — the program's own capability call times out long before a
+  human answers, the pooled wall deadline runs down while they decide,
+  and the node holds one outstanding effect throughout — and, worse for
+  consent, would ask a human about a `cap_call` no client rendered, since
+  an approval binds to the *tool call's* arguments (#65) and a
+  `code_mode` call's arguments are the program. The other two clearance
+  points raise nothing: the hermetic build composes with this execution's
+  grants already dropped, so no approval can widen it, and a capability
+  call refused inside a *running* program is refused after effects have
+  happened, which is precisely what `replay: tool.Never` says must never
+  be repeated. Both are argued where the value is built
+  (`client/codemode`).
 - **`agent_send` is `ReplayNever`; the rest are `ReplaySafe`.** A send
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay

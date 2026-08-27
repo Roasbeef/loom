@@ -4,13 +4,35 @@
 //// hermetic `gleam build` is exercised by `make e2e` on a target kernel;
 //// here the seam is faked so the plumbing is proved without a toolchain.
 
+import broker/budget
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/vet
 import codemode/vet/policy
+import core/clock
+import core/ids
 import gleam/result
 import gleam/string
 import simplifile
+
+// The build phase the compile service is handed. It is derived from an
+// execution identity rather than assembled here, because that is the only
+// way to obtain one.
+fn build_phase() -> identity.PhaseIdentity {
+  identity.for_execution(
+    op_id: op_id(),
+    step_id: "step-1",
+    budget: budget.Budget(max_outstanding: 2, deadline_ms: 1_700_000_120_000),
+  )
+  |> identity.build_phase
+}
+
+fn op_id() -> ids.OpId {
+  let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 5)
+  let #(op, _generator) = ids.mint_op(generator)
+  op
+}
 
 fn vetted(source: String) -> vet.Vetted {
   let assert vet.Passed(vetted) = vet.vet(source, policy.default())
@@ -26,7 +48,7 @@ fn fresh_root(name: String) -> String {
   root
 }
 
-fn ok_builder(root: String) -> compile.Built {
+fn ok_builder(_phase: identity.PhaseIdentity, root: String) -> compile.Built {
   compile.Built(
     result: Ok(compile.BuildProducts(
       beam_dir: root <> "/ebin",
@@ -45,7 +67,7 @@ pub fn compile_writes_program_under_pinned_name_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let compiled = compile.compile(vetted(source), config)
+  let compiled = compile.compile(vetted(source), config, build_phase())
   let assert Ok(artifact) = compiled.result
   assert artifact.entry_module == compile.entry_module
   assert artifact.manifest_hash == "cafef00d"
@@ -70,7 +92,8 @@ pub fn generated_entry_boots_the_pinned_program_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let assert Ok(_artifact) = compile.compile(vetted(source), config).result
+  let assert Ok(_artifact) =
+    compile.compile(vetted(source), config, build_phase()).result
   let assert Ok(entry) =
     simplifile.read(root <> "/src/" <> compile.entry_module <> ".gleam")
   // The entry hands the pinned program's main to the cap boot runtime.
@@ -91,7 +114,7 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
       build: ok_builder,
     )
   let assert Ok(_artifact) =
-    compile.compile(vetted("pub fn main() { 1 }\n"), config).result
+    compile.compile(vetted("pub fn main() { 1 }\n"), config, build_phase()).result
   let assert Ok(toml) = simplifile.read(root <> "/gleam.toml")
   // Exactly the standard library and the vendored prelude are pinned —
   // nothing else can enter the offline build (design rule 3).
@@ -132,7 +155,7 @@ pub fn the_prelude_is_vendored_at_a_relative_path_test() {
 
 pub fn build_rejection_is_in_band_test() {
   let root = fresh_root("reject")
-  let failing = fn(_root) {
+  let failing = fn(_phase, _root) {
     compile.Built(
       result: Error(compile.BuildRejected(
         diagnostics: "type error: expected Int",
@@ -146,7 +169,8 @@ pub fn build_rejection_is_in_band_test() {
       dependencies: compile.default_dependencies(),
       build: failing,
     )
-  let compiled = compile.compile(vetted("pub fn main() { 1 }\n"), config)
+  let compiled =
+    compile.compile(vetted("pub fn main() { 1 }\n"), config, build_phase())
   let assert Error(compile.BuildRejected(diagnostics:)) = compiled.result
   assert string.contains(diagnostics, "type error")
   // A program the compiler refused still ran a real jailed build, and the
@@ -164,7 +188,8 @@ pub fn workspace_setup_failure_is_reported_test() {
       dependencies: compile.default_dependencies(),
       build: ok_builder,
     )
-  let compiled = compile.compile(vetted("pub fn main() { 1 }\n"), config)
+  let compiled =
+    compile.compile(vetted("pub fn main() { 1 }\n"), config, build_phase())
   assert result.is_error(compiled.result)
   let assert Error(compile.WorkspaceSetupFailed(_)) = compiled.result
   // The builder was never reached, so nothing is claimed about a jail.

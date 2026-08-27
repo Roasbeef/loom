@@ -32,6 +32,16 @@
 ////   of the three says so once on stderr and registers no `code_mode`
 ////   tool at all, rather than shipping a definition in the provider's
 ////   cached prefix that can only ever refuse.
+//// - `--codemode-seams <workspace|orchestration|both>` — which code-mode
+////   seams this server offers; default `workspace`. `orchestration` and
+////   `both` need a messaging plane, which this boot always wires, and
+////   `both` is what lets a submission choose per program
+////   (`docs/architecture/code-mode.md`, "Two seams").
+//// - `--best-effort` — accept a degraded sandbox helper (development
+////   kernels without bwrap/Landlock). The default demands full
+////   enforcement, under which a degraded helper is refused at dispatch
+////   — the server still runs, tool calls fail in-band. Run
+////   `make selftest` to learn which posture your kernel supports.
 //// - `LOOM_HELPER_POOL` — how many `loom-exec` helpers may run at
 ////   once (not a flag: it is a property of the host, not of the
 ////   session). Default `exec.default_pool_size()`, the node's
@@ -40,11 +50,6 @@
 ////   running bwrap and a jail, and a batch wider than the pool waits
 ////   for a slot rather than failing. Lower it on a memory-tight host;
 ////   the floor is one.
-//// - `--best-effort` — accept a degraded sandbox helper (development
-////   kernels without bwrap/Landlock). The default demands full
-////   enforcement, under which a degraded helper is refused at dispatch
-////   — the server still runs, tool calls fail in-band. Run
-////   `make selftest` to learn which posture your kernel supports.
 ////
 //// ## Model configuration and precedence
 ////
@@ -271,6 +276,13 @@ pub type Settings {
     /// Where the prepared code-mode build seed lives. A host without one
     /// registers no `code_mode` tool.
     codemode_seed: String,
+    /// Which code-mode seams this server offers. A setting rather than a
+    /// value `boot` derives, for the same reason `base_policy` is one:
+    /// the choice belongs to whoever stands the server up, and the
+    /// `Agency` the orchestration seam needs does not exist until `boot`
+    /// has built one. The default is `WorkspaceOnly` — the seam an
+    /// unconfigured server has always served.
+    codemode_seams: codemode_wiring.Seams,
   )
 }
 
@@ -429,6 +441,7 @@ type Flags {
     helper: Option(String),
     config: Option(String),
     codemode_seed: Option(String),
+    codemode_seams: Option(String),
     best_effort: Bool,
   )
 }
@@ -444,6 +457,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       helper: None,
       config: None,
       codemode_seed: None,
+      codemode_seams: None,
       best_effort: False,
     ),
   )
@@ -466,6 +480,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, config: Some(value)))
     ["--codemode-seed", value, ..rest] ->
       parse_loop(rest, Flags(..flags, codemode_seed: Some(value)))
+    ["--codemode-seams", value, ..rest] ->
+      parse_loop(rest, Flags(..flags, codemode_seams: Some(value)))
     ["--best-effort", ..rest] ->
       parse_loop(rest, Flags(..flags, best_effort: True))
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
@@ -479,6 +495,7 @@ const usage = "usage: loom-server --session <path.db>
   [--helper <path>]        loom-exec binary (default: PATH, then ./bin)
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
   [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed)
+  [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
   [--best-effort]          accept a degraded sandbox helper"
 
 // Fills every default and builds the provider gateway from the model
@@ -524,6 +541,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     catalog.main_model(catalogue)
     |> result.replace_error("the catalogue routes no usable main model"),
   )
+  use codemode_seams <- result.try(parse_codemode_seams(flags.codemode_seams))
   let clock = clock.from_function(ffi_os.system_time_ms)
   Ok(Settings(
     session_path:,
@@ -559,7 +577,30 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       flags.codemode_seed,
       workspace <> "/" <> default_seed_directory,
     ),
+    codemode_seams:,
   ))
+}
+
+// The `--codemode-seams` value, or the default. An unrecognised name is a
+// usage error rather than a fallback: a typo that quietly served the
+// workspace seam would look exactly like a server that ignored the flag,
+// and the person who typed it is standing at the terminal.
+fn parse_codemode_seams(
+  named: Option(String),
+) -> Result(codemode_wiring.Seams, String) {
+  case named {
+    None -> Ok(codemode_wiring.WorkspaceOnly)
+    Some("workspace") -> Ok(codemode_wiring.WorkspaceOnly)
+    Some("orchestration") -> Ok(codemode_wiring.OrchestrationOnly)
+    Some("both") -> Ok(codemode_wiring.BothSeams)
+    Some(other) ->
+      Error(
+        "--codemode-seams must be workspace, orchestration or both, not `"
+        <> other
+        <> "`\n"
+        <> usage,
+      )
+  }
 }
 
 /// pi's compaction defaults, and the only place they are stated.
@@ -906,12 +947,18 @@ fn assemble(
   let code_mode = case codemode_wiring.discover(settings.codemode_seed) {
     Ok(toolchain) ->
       Some(
-        codemode_wiring.seam(codemode_wiring.default_config(
+        codemode_wiring.default_config(
           broker: broker_actor,
           clock:,
           workspace: settings.workspace,
           toolchain:,
-        )),
+        )
+        // Which seams this server offers is the operator's decision, and
+        // the Agency the orchestration one routes onto is the same seam
+        // the `agent_*` tools call — one messaging plane, reached two
+        // ways.
+        |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+        |> codemode_wiring.seam,
       )
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [

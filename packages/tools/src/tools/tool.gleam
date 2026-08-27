@@ -123,6 +123,60 @@ pub type FileSystem {
   )
 }
 
+/// A policy refusal a tool discovered *inside itself*, offered to the
+/// host for a human decision.
+///
+/// Almost every tool meets a policy refusal by getting one back from
+/// `Ctx.clear_call`, and the host raises it there without the tool ever
+/// knowing. `code_mode` is the exception the whole seam exists for: its
+/// clearances happen inside the code-mode pipeline, against the broker
+/// the pipeline holds, so a refused execution comes back to the tool as
+/// an in-band result and reaches no escalation plane at all (#97). This
+/// is the door back.
+///
+/// Constructor invariants: `denial` is the broker's own structured
+/// refusal — its `wanted` is the exact diff an approval may grant, so it
+/// must be derived from `policy.compose`'s narrowings and never written
+/// by hand, or a human would be approving a diff that satisfies nothing;
+/// `deadline_ms` is the refused work's own budget deadline, the instant
+/// past which holding this call open buys nothing.
+pub type RaisedRefusal {
+  RaisedRefusal(denial: escalation.Denial, deadline_ms: Int)
+}
+
+/// What the host's escalation plane decided about a raised refusal.
+///
+/// The mirror of `client/escalate.Decision`, which `tools` cannot see —
+/// the same arrangement `codemode`'s `Outcome` and `Seam` types already
+/// use across that package boundary.
+pub type Escalated {
+  /// Nothing to spend: settle the refusal in band, exactly as a tool
+  /// with no escalation plane behind it always has. Whether a durable
+  /// record was written, and whether anyone was asked, is the host's
+  /// business and deliberately not visible here.
+  Settle
+  /// A human approved exactly these grants, for exactly this call. Retry
+  /// the refused work **once** under them; if it is refused again that
+  /// second refusal stands (design §5.3: one re-execution under the
+  /// widened policy, never a loop).
+  Resume(grants: List(Grant))
+}
+
+/// A raise seam that escalates nothing: every refusal a tool discovers
+/// settles in band, exactly as it did before any of this existed. The
+/// default for a host with no escalation plane, and for tests that are
+/// about something else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.no_raise()(raised) == tool.Settle
+/// ```
+///
+pub fn no_raise() -> fn(RaisedRefusal) -> Escalated {
+  fn(_raised) { Settle }
+}
+
 /// A cleared, running broker call, as tools see it. Wraps the broker's
 /// opaque `CallHandle` in closures so fakes can stand in for the real
 /// broker without minting handles.
@@ -149,7 +203,9 @@ pub type RunningCall {
 /// never anything the model supplied — the agent tools are judged against
 /// `strand` and derive a spawned child's name from the other three, so a
 /// value invented here would let a model claim an identity or mint a
-/// second child on replay.
+/// second child on replay; `raise_refusal` answers about *this* call and
+/// no other, so a tool may raise through it at most once per `run` and
+/// must not build a retry loop out of a `Resume`.
 pub type Ctx {
   Ctx(
     /// Absolute workspace root; every tool path resolves under it.
@@ -179,6 +235,10 @@ pub type Ctx {
     /// The broker seam: clears and dispatches one jailed execution.
     clear_call: fn(broker.CallSpec, Subject(CallEvent)) ->
       Result(RunningCall, Refusal),
+    /// The raise seam: reports a policy refusal the tool met somewhere
+    /// other than `clear_call`, and says what the host decided about it.
+    /// `no_raise()` for a host with no escalation plane.
+    raise_refusal: fn(RaisedRefusal) -> Escalated,
   )
 }
 

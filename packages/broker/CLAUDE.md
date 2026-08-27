@@ -114,8 +114,21 @@ protocol (spec Part 1.4). WP-G.
   concrete case that put it in question (`grep`'s `Concurrent` tag
   contradicting a `bash`-sized `max_outstanding: 1`, issue #50): the
   keying stays `{op_id, step_id}`, the fix was the tool's own declared
-  budget. Read it before threading a new identity through this key
-  (issue #22) or stacking a further cap on top of it (issue #23).
+  budget. Read it before threading a new identity through this key or
+  stacking a further cap on top of it (issue #23). The one caller that has
+  threaded an identity through it, `codemode`, preserves the keying: its
+  `codemode/identity.ExecIdentity` is opaque, derives the build and run
+  phases rather than letting a caller assemble them, and answers
+  `ledger_keys` — one key per execution, or two where the hermetic build
+  is deliberately accounted separately, never one per call (issue #22).
+  That same value now also carries the grants an approved escalation
+  attributed to the execution, and deliberately without touching this
+  key: a widening buys a wider policy at `compose`, never a second ledger
+  with a second `max_outstanding` and a second wall deadline (issue #24).
+  The `CallSpec.grants` a code-mode clearance passes come off the *run*
+  phase, so the hermetic build's clearance is structurally unwidenable —
+  which matters here because `compose` applies grants after the meet and
+  would otherwise let one overrule the build's own `network: NetworkOff`.
 - **A full pool is congestion, and the wait for one happens in the
   borrower's process.** `clear_call` retries a `NoHelper(AllBusy(..))`
   clearance within the caller's own `waiting` budget instead of handing

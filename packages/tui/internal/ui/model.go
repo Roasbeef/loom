@@ -192,6 +192,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case client.StrandResultMsg:
 		return m.onStrandResult(msg), nil
 	case client.ServerErrorMsg:
+		if msg.Body.Code == proto.ErrStaleApproval {
+			return m.onStaleApproval(msg.Body), nil
+		}
 		m.statusNote = fmt.Sprintf("server: %s (%s)", msg.Body.Message, msg.Body.Code)
 		return m.refresh(), nil
 	case client.DecodeErrorMsg:
@@ -256,7 +259,14 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y", "Y":
 			esc := m.escalations[0]
 			m.escalations = m.escalations[1:]
-			var grants []proto.Grant
+			// The echo is of what this overlay actually drew: the
+			// wanted diff it rendered line by line, and the digest of
+			// the action it rendered beside it. The server checks both
+			// against the record it is about to approve, so a record
+			// that moved between the prompt and this keystroke is
+			// refused and re-asked rather than approved on the human's
+			// behalf.
+			grants := []proto.Grant{}
 			if esc.Denial != nil {
 				grants = esc.Denial.Wanted
 			}
@@ -264,6 +274,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.refresh(), m.send(proto.CmdApprove, proto.ApproveBody{
 				EscalationID: esc.EscalationID,
 				Grants:       grants,
+				Action:       esc.Action,
 			})
 		case "n", "N":
 			esc := m.escalations[0]
@@ -689,12 +700,41 @@ func (m *Model) renderTabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Bottom, tabs...)
 }
 
-// renderOverlay is the escalation approval prompt: the exact wanted
-// policy diff, verbatim, decided with y/n.
+// onStaleApproval re-opens a prompt the server refused because the
+// record moved between the draw and the keystroke. The refusal carries
+// the record as it now stands, so the question can be re-asked from the
+// answer itself rather than waiting for a pull to bring it back.
+func (m Model) onStaleApproval(body proto.ErrorBody) Model {
+	m.statusNote = "approval refused — the request changed; re-check it"
+	var details struct {
+		Escalation *proto.EscalationBody `json:"escalation"`
+	}
+	if len(body.Details) == 0 || json.Unmarshal(body.Details, &details) != nil {
+		return m.refresh()
+	}
+	if details.Escalation == nil || details.Escalation.Status != proto.EscalationPending {
+		return m.refresh()
+	}
+	// The head of the queue is where the answered one was, and a
+	// refused answer has not decided anything.
+	m.escalations = append([]proto.EscalationBody{*details.Escalation}, m.escalations...)
+	m.dismissed = false
+	return m.refresh()
+}
+
+// renderOverlay is the escalation approval prompt: what would run, the
+// exact policy diff it would run under, and a y/n.
+//
+// Everything outside the fence is the client's own words. Everything
+// inside it came from the model, went through proto.SanitizePreview on
+// the way, and is bounded on screen — an unbounded block of
+// model-authored text in the chrome could push the wanted lines and the
+// y/n line out of the viewport, which forges a prompt just as well as a
+// cursor move does.
 func (m *Model) renderOverlay() string {
 	esc := m.escalations[0]
 	var b strings.Builder
-	b.WriteString(styleOverlayTitle.Render("sandbox escalation on "+esc.Strand) + "\n")
+	b.WriteString(styleOverlayTitle.Render("sandbox escalation on "+overlayScope(esc)) + "\n")
 	if esc.Denial != nil {
 		b.WriteString(esc.Denial.Reason + "\n")
 		for _, grant := range esc.Denial.Wanted {
@@ -704,8 +744,102 @@ func (m *Model) renderOverlay() string {
 			b.WriteString(styleDim.Render(line) + "\n")
 		}
 	}
+	b.WriteString(m.renderAction(esc))
 	b.WriteString(styleHelp.Render("y approve · n deny · esc later"))
 	return styleOverlay.MaxWidth(m.contentWidth()).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// overlayScope names the strand the record was raised on. It is the
+// record's own call scope; empty means the record names no call, which
+// is a different statement from naming the wrong one and is said as
+// such rather than left blank.
+func overlayScope(esc proto.EscalationBody) string {
+	if esc.Strand == "" {
+		return "no strand (raised out of band)"
+	}
+	return esc.Strand
+}
+
+// previewLines bounds the fenced block. Six lines is enough to read a
+// command line and see that a long one is long, and small enough that
+// the decision keys stay on screen whatever the model wrote.
+const previewLines = 6
+
+// renderAction draws the tool name and the fenced argument window.
+//
+// The tool name is printed unconditionally, including when the record
+// does not carry one: "no tool named" is information a person deciding
+// this needs, and an absent line reads as an ordinary prompt with
+// nothing to say. The footer is unconditional for the same reason — the
+// approval binds the whole action through its digest, while the screen
+// holds at most a two-kilobyte window of it, and a reader who is not
+// told that will take the window for the action.
+func (m *Model) renderAction(esc proto.EscalationBody) string {
+	tool := esc.Tool
+	if tool == "" {
+		tool = "(no tool named on this record)"
+	}
+	var b strings.Builder
+	b.WriteString(styleWant.Render("runs: "+tool) + "\n")
+	b.WriteString(styleDim.Render("┌ arguments · written by the model") + "\n")
+	lines, cut := previewBlock(esc.Preview, m.contentWidth()-6)
+	for _, line := range lines {
+		b.WriteString(styleDim.Render("│ ") + line + "\n")
+	}
+	b.WriteString(styleDim.Render("└ "+previewFooter(esc.Preview, cut)) + "\n")
+	return b.String()
+}
+
+// previewBlock sanitises the preview and folds it into at most
+// previewLines display lines, reporting whether anything was left over.
+func previewBlock(preview string, width int) ([]string, bool) {
+	if preview == "" {
+		return []string{styleDim.Render("(this record carries no preview)")}, false
+	}
+	if width < 16 {
+		width = 16
+	}
+	folded := fold(proto.SanitizePreview(preview), width)
+	if len(folded) > previewLines {
+		return folded[:previewLines], true
+	}
+	return folded, false
+}
+
+// fold breaks text into runs of at most width runes. It is a hard fold,
+// not a word wrap: the preview is canonicalised JSON with no reliable
+// word boundaries, and a fold that hunts for spaces would let the model
+// choose where the breaks land.
+func fold(text string, width int) []string {
+	var lines []string
+	line := make([]rune, 0, width)
+	for _, r := range text {
+		line = append(line, r)
+		if len(line) == width {
+			lines = append(lines, string(line))
+			line = line[:0]
+		}
+	}
+	if len(line) > 0 {
+		lines = append(lines, string(line))
+	}
+	return lines
+}
+
+// previewFooter says what the fence is a window on. The byte count is
+// the client's own count of what it holds, never a number read out of
+// the preview, so a model that writes a plausible-looking size marker
+// into its own arguments cannot restate the footer.
+func previewFooter(preview string, cut bool) string {
+	if preview == "" {
+		return "no preview · the approval still binds the whole action"
+	}
+	if cut {
+		return fmt.Sprintf("%d bytes of preview, first %d lines shown · the approval binds the whole action",
+			len(preview), previewLines)
+	}
+	return fmt.Sprintf("%d bytes of preview · the approval binds the whole action, not this window",
+		len(preview))
 }
 
 // renderPicker is the :models modal: one row per catalogue entry —

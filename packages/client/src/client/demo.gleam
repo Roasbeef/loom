@@ -301,7 +301,9 @@ fn acceptance_flow(
   use Nil <- result.try(command_replied(
     client,
     5,
-    protocol.Approve(escalation_id: "esc-1", grants: Some([wanted])),
+    // Raised through the unscoped door, so the record names no action
+    // and the echo the gateway checks is the empty one.
+    protocol.Approve(escalation_id: "esc-1", grants: [wanted], action: ""),
     escalation_reply(_, "esc-1", "approved"),
     "approve esc-1",
   ))

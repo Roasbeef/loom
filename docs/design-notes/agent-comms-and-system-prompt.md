@@ -197,8 +197,9 @@ mangled and that must be a refusal rather than a crash.
 Three defaults carry real weight.
 
 **The model never names a strand.** It supplies a purpose; the Agency
-mints `sub:{parent}/{slug}-{step}-{index}`, derived from the calling
-operation's step id and the call's source index. Minting kills the whole
+mints `sub:{parent}/{slug}-{digest}`, the digest derived from the calling
+operation, its step id, the call's source index, and which minter inside
+that call asked. Minting kills the whole
 class of collisions and name-squatting at once — a model cannot claim
 `main`, cannot shadow an operator's naming convention, and cannot collide
 with a sibling — and the determinism buys replay safety, below.

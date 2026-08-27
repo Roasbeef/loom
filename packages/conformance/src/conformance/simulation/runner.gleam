@@ -657,8 +657,12 @@ fn check_terminal_writes_once(
   report: Report,
 ) -> Result(Nil, Failure) {
   let total = report.terminal_writes_main + report.terminal_writes_sub
+  // Whether the run wrote once per operation is settled by the operations
+  // up to `total`: one outcome past that is already a mismatch, and the
+  // whole list is walked only to *report* the shortfall, on the path that
+  // is about to fail anyway.
   use <- bool.guard(
-    when: total == list.length(report.outcomes),
+    when: counts_exactly(report.outcomes, total),
     return: Ok(Nil),
   )
   Error(Failure(
@@ -675,6 +679,22 @@ fn check_terminal_writes_once(
       <> " operations: "
       <> string.join(report.outcomes, ", "),
   ))
+}
+
+/// Whether `items` holds exactly `count` elements, counting down through
+/// them rather than measuring them: `list.length` answers a bounded
+/// question by walking everything past the bound, which is the shape lint
+/// R5 exists to find.
+///
+/// Public because the boundary is the whole of it — one place either side
+/// of `count` is a different answer — and a boundary that cannot be tested
+/// on its own gets tested by accident or not at all.
+pub fn counts_exactly(items: List(a), count: Int) -> Bool {
+  case items, count {
+    [], 0 -> True
+    [], _ | [_, ..], 0 -> False
+    [_, ..rest], _ -> counts_exactly(rest, count - 1)
+  }
 }
 
 // A commit-indexed crash is drawn inside the fault-free run's commit

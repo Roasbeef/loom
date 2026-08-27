@@ -1,1 +1,1 @@
-{"v":1,"id":6,"cmd":"approve","body":{"escalation_id":"esc-1","grants":[{"type":"network","network":{"mode":"proxy","allow":["registry.npmjs.org"],"proxy":"127.0.0.1:3128"}}]}}
+{"v":1,"id":6,"cmd":"approve","body":{"escalation_id":"esc-1","grants":[{"type":"network","network":{"mode":"proxy","allow":["registry.npmjs.org"],"proxy":"127.0.0.1:3128"}}],"action":"9f2c1a7b4e0d63859ac41d2f7b6e8035"}}

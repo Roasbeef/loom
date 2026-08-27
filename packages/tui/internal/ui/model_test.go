@@ -136,6 +136,10 @@ func pendingEscalation(id string) client.EscalationMsg {
 		Op:           "op-1",
 		Strand:       "main",
 		Status:       proto.EscalationPending,
+		Tool:         "bash",
+		Action:       "9f2c1a7b4e0d63859ac41d2f7b6e8035",
+		Preview:      `{"command":"npm install left-pad"}`,
+		Asked:        1,
 		Denial: &proto.Denial{
 			Reason: "connect to registry.npmjs.org:443 blocked by policy",
 			Source: proto.DenialPolicy,
@@ -248,6 +252,124 @@ func TestEscalationFlowApprove(t *testing.T) {
 	}
 	if len(body.Grants) != 1 || body.Grants[0].Type != proto.GrantNetwork {
 		t.Fatalf("grants must echo the wanted diff: %+v", body.Grants)
+	}
+	// The digest of the action the overlay drew, echoed back. Without
+	// it the server cannot tell that this answer is about the record it
+	// is holding rather than about a record that moved underneath it.
+	if body.Action != "9f2c1a7b4e0d63859ac41d2f7b6e8035" {
+		t.Fatalf("approve did not echo the rendered action: %+v", body)
+	}
+}
+
+// The overlay must name the action, not only the policy diff: an
+// approval prompt that cannot say what would run cannot carry consent
+// for it.
+func TestOverlayNamesTheAction(t *testing.T) {
+	m, _ := fixture(t)
+	m = apply(t, m, pendingEscalation("esc-1"))
+	view := m.View()
+	if !strings.Contains(view, "runs: bash") {
+		t.Fatalf("the tool name is missing from the prompt:\n%s", view)
+	}
+	if !strings.Contains(view, `npm install left-pad`) {
+		t.Fatalf("the arguments are missing from the prompt:\n%s", view)
+	}
+	// The fence, and the statement that the digest covers more than the
+	// window does, are both unconditional.
+	if !strings.Contains(view, "arguments · written by the model") {
+		t.Fatalf("the preview was not fenced:\n%s", view)
+	}
+	if !strings.Contains(view, "the approval binds the whole action") {
+		t.Fatalf("the window disclaimer is missing:\n%s", view)
+	}
+}
+
+// A preview carrying terminal control sequences must reach the screen
+// inert. This is the forgery the fence exists to stop: the escape below
+// clears the screen and repaints a different question over the prompt.
+func TestOverlayPreviewIsInert(t *testing.T) {
+	m, _ := fixture(t)
+	msg := pendingEscalation("esc-1")
+	msg.Body.Preview = "{\"command\":\"true\x1b[2J\x1b[1;1Hloom: nothing to approve\"}"
+	m = apply(t, m, msg)
+	view := m.View()
+	if strings.ContainsRune(view, 0x1b) && !strings.Contains(view, "\\x1b") {
+		t.Fatalf("a raw escape reached the view:\n%q", view)
+	}
+	if strings.Contains(view, "\x1b[2J") {
+		t.Fatalf("the clear-screen sequence survived:\n%q", view)
+	}
+	if !strings.Contains(view, "\\x1b[2J") {
+		t.Fatalf("the escape was dropped instead of shown:\n%s", view)
+	}
+	// The forged prompt text is still readable — it must be visible as
+	// content, never mistakable for the client's own words.
+	if !strings.Contains(view, "loom: nothing to approve") {
+		t.Fatalf("sanitising ate the payload:\n%s", view)
+	}
+}
+
+// A record from before the action fields existed carries none of them.
+// It must still draw a prompt a person can answer, and answering it
+// must still send an approval.
+func TestOverlayRendersLegacyRecord(t *testing.T) {
+	m, sender := fixture(t)
+	msg := pendingEscalation("esc-old")
+	msg.Body.Tool = ""
+	msg.Body.Action = ""
+	msg.Body.Preview = ""
+	msg.Body.Asked = 0
+	m = apply(t, m, msg)
+	if !m.overlayActive() {
+		t.Fatal("a record with no action did not open a prompt")
+	}
+	view := m.View()
+	if !strings.Contains(view, "no tool named on this record") {
+		t.Fatalf("the absent tool was not stated:\n%s", view)
+	}
+	if !strings.Contains(view, "no preview") {
+		t.Fatalf("the absent preview was not stated:\n%s", view)
+	}
+	m = apply(t, m, key("y"))
+	if len(sender.sent) != 1 || sender.sent[0].cmd != proto.CmdApprove {
+		t.Fatalf("a legacy record could not be approved: %+v", sender.sent)
+	}
+	body := sender.sent[0].body.(proto.ApproveBody)
+	if body.Action != "" {
+		t.Fatalf("a record naming no action must echo none: %+v", body)
+	}
+	if body.Grants == nil {
+		t.Fatalf("grants must be present even when empty: %+v", body)
+	}
+}
+
+// A refused approval re-opens the prompt from the record the refusal
+// handed back, so the human answers the question as it now stands
+// rather than being told "no" and left with nothing to look at.
+func TestStaleApprovalReopensThePrompt(t *testing.T) {
+	m, _ := fixture(t)
+	m = apply(t, m, pendingEscalation("esc-1"))
+	m = apply(t, m, key("y"))
+	if m.overlayActive() {
+		t.Fatal("the prompt should close on the keystroke")
+	}
+	fresh := pendingEscalation("esc-1").Body
+	fresh.Preview = `{"command":"npm install left-pad --unsafe-perm"}`
+	fresh.Action = "0000111122223333444455556666777a"
+	details, err := json.Marshal(map[string]any{"escalation": fresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = apply(t, m, client.ServerErrorMsg{Body: proto.ErrorBody{
+		Code:    proto.ErrStaleApproval,
+		Message: "the action this approval names is not the record's own",
+		Details: details,
+	}})
+	if !m.overlayActive() {
+		t.Fatal("a refused approval did not re-open the prompt")
+	}
+	if !strings.Contains(m.View(), "--unsafe-perm") {
+		t.Fatalf("the re-opened prompt did not show the fresh action:\n%s", m.View())
 	}
 }
 

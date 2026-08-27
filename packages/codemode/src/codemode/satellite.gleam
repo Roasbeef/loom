@@ -98,6 +98,12 @@
 //// `{op_id, step_id}`, so the broker pools budget across the whole
 //// execution: fan-out buys parallelism, not extra resources (design §6.5;
 //// the broker `CLAUDE.md` invariant "Budget is pooled per execution").
+//// That pair, and the budget, arrive as the run phase's `PhaseIdentity`
+//// (`codemode/identity`) — one value threaded from `run` into the host's
+//// state and out again into every clearance, rather than three copies a
+//// caller filled in separately. The host has no way to reach a second
+//// ledger part-way through an execution because it holds no coordinates
+//// it did not receive.
 ////
 //// # The terminal outcome frame
 ////
@@ -127,8 +133,8 @@ import broker/policy.{type SandboxPolicy}
 import broker/token
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
+import codemode/identity.{type PhaseIdentity}
 import core/clock.{type Clock}
-import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -169,12 +175,6 @@ pub type Outcome {
   Completed(value: MsgPackValue)
   /// The program failed in a controlled way, with a message and details.
   Errored(message: String, details: MsgPackValue)
-}
-
-/// The pooled execution identity: one token, one budget ledger, one
-/// `{op_id, step_id}` shared by every `cap_call`.
-pub type ExecId {
-  ExecId(op_id: OpId, step_id: String)
 }
 
 /// One satellite run: the program's outcome, and what the kernel actually
@@ -222,32 +222,106 @@ pub type CapRequest {
     cap: String,
     /// The marshalled call arguments.
     args: MsgPackValue,
-    /// The pooled operation id.
-    op_id: OpId,
-    /// The pooled step id.
-    step_id: String,
+    /// The run phase's identity — the `{op_id, step_id}` this call clears
+    /// under and the pooled budget it reserves against. A router receives
+    /// it derived; it has no coordinates of its own to substitute
+    /// (`codemode/identity`).
+    identity: PhaseIdentity,
     /// The session base policy for this execution.
     base_policy: SandboxPolicy,
-    /// The pooled per-execution budget.
-    budget: Budget,
     /// Enforcement strictness for jailed effects.
     demand: EnforcementDemand,
     /// The allowlist-constructed child environment.
     env: List(#(String, String)),
     /// The working directory inside the jail.
     cwd: String,
+    /// This call's index among the calls of *this capability* the
+    /// execution has already admitted, counting from zero.
+    ///
+    /// The same coordinate `tool.Ctx.source_index` is for an ordinary
+    /// tool call — which call this is within the artifact that produced
+    /// it — for an artifact that is a program rather than an assistant
+    /// message. A router servicing a capability whose effect is *minted*
+    /// rather than merely performed needs it: the orchestration router
+    /// derives a child strand's name partly from it, and without a
+    /// per-call ordinal every spawn in one program would derive the same
+    /// name and reconcile onto one child.
+    ///
+    /// A call refused *before* dispatch — by the router's own argument
+    /// decoding, by an admission ceiling, or by the outstanding cap —
+    /// consumes no ordinal, because nothing was admitted. A call the
+    /// harness-side seam then refuses *does* consume one: it was
+    /// admitted, it reached the plane, and it did the reads that refusal
+    /// took.
+    ordinal: Int,
   )
 }
 
-/// How to service one routed capability call: the clearance to dispatch,
-/// and how to render its settlement back to the satellite.
+/// How to service one routed capability call.
+///
+/// Two shapes, because two genuinely different things are being asked
+/// for. `ClearedCall` is an effect on the world outside the harness — a
+/// process, a file, a socket — and goes through `broker.clear_call` into
+/// a jail. `ServedHere` is a request the *harness itself* answers, under
+/// its own policy, touching nothing outside the VM: the orchestration
+/// seam's calls onto the Agency are the first of these, and the
+/// harness-side `fs`/`kv`/`report` rows of `default_router`'s table will
+/// be the next.
+///
+/// The distinction is not cosmetic. A `ClearedCall` carries a `CallSpec`,
+/// and a `CallSpec` carries `{op_id, step_id, budget}` a router writes by
+/// hand — the boundary `codemode/identity`'s module doc names as still
+/// open. A `ServedHere` plan carries none, so a router that only ever
+/// returns one cannot state coordinates at all.
 pub type CapPlan {
-  CapPlan(spec: CallSpec, render: fn(Collected) -> CapOutcome)
+  /// Dispatch a jailed clearance through the broker and render its
+  /// settlement.
+  ClearedCall(spec: CallSpec, render: fn(Collected) -> CapOutcome)
+  /// Answer in the harness. `serve` runs on a process of its own — never
+  /// on the host actor, which must go on reading the cap channel and
+  /// arming the deadline while a call that may block for tens of seconds
+  /// is outstanding.
+  ///
+  /// It is unlinked and bounded by `call_timeout_ms`, so a wall deadline
+  /// that fires mid-call tears the node down and leaves the served call
+  /// to finish into a stopped host, where its answer is dropped. That is
+  /// the honest shape: there is no executor process group to revoke, and
+  /// the Agency call it wraps is itself bounded — a `wait` by the
+  /// Agency's own ceiling, everything else by a store round trip.
+  ServedHere(serve: fn() -> CapOutcome)
 }
 
 /// A router's in-band refusal of a capability call.
 pub type CapDenial {
   CapDenial(code: String, message: String)
+}
+
+/// A lifetime ceiling on how many times one capability may be admitted
+/// within a single execution.
+///
+/// This exists for one capability and one reason. `agent_spawn` is
+/// throttled by turn cost: the model pays a provider round trip per
+/// spawn, so the economics bound the fan-out without anything in the
+/// harness having to. A program's loop pays nothing. Replacing the turn
+/// with a loop therefore removes an implicit throttle, and an implicit
+/// throttle removed has to be replaced by an explicit one.
+///
+/// It is a *lifetime* bound on admissions, deliberately distinct from the
+/// pooled `max_outstanding` cap (how many effects may be in flight at
+/// once) and from the Agency's `fan_out` / `session_strands` caps (how
+/// many children may be live at once). A program that spawns, joins, and
+/// spawns again frees a live slot every time round and would pass every
+/// one of those checks forever; only a lifetime count stops it.
+///
+/// It is enforced by the host rather than by the router because the host
+/// is where an execution's identity lives. One host is stood up per
+/// execution, holding the one `PhaseIdentity` derived from the one
+/// `ExecIdentity` a caller may mint (`codemode/identity`), so a ceiling
+/// counted here is keyed to that identity by construction: there is no
+/// second host to get a second count from, and a router — which a caller
+/// *could* build twice — never holds the tally.
+pub type CapCeiling {
+  CapCeiling(cap: String, admissions: Int)
 }
 
 /// Maps a `CapRequest` to a `CapPlan`, or refuses it in-band. Injected so
@@ -269,14 +343,13 @@ pub type LaunchSpec {
     token_path: String,
     /// Path to the cap-channel AF_UNIX socket (`LOOM_CAP_SOCK`).
     cap_socket_path: String,
-    /// The pooled operation id.
-    op_id: OpId,
-    /// The pooled step id.
-    step_id: String,
+    /// The run phase's identity: the `{op_id, step_id}` the node is
+    /// dispatched under — the host's own, which is what makes
+    /// `broker.abort` at the deadline reach it — and the pooled budget
+    /// and wall deadline it shares with every `cap_call`.
+    identity: PhaseIdentity,
     /// The session base policy (network off except the cap socket).
     base_policy: SandboxPolicy,
-    /// The pooled per-execution budget and wall deadline.
-    budget: Budget,
     /// The allowlist-constructed child environment.
     env: List(#(String, String)),
     /// The working directory inside the jail.
@@ -314,12 +387,16 @@ pub type WireIn {
   WireClosed(reason: String)
 }
 
-/// The host's configuration: the session base, budget, and the injected
-/// effect seams (entropy, clock, token-file I/O, and the cap router).
+/// The host's configuration: the session base and the injected effect
+/// seams (entropy, clock, token-file I/O, and the cap router).
+///
+/// Carries no operation, step or budget: the run phase's identity is an
+/// argument to `run`, derived from the execution's one `ExecIdentity`, so
+/// a host cannot be configured to run under coordinates of its own
+/// (`codemode/identity`).
 pub type SatelliteConfig {
   SatelliteConfig(
     base_policy: SandboxPolicy,
-    budget: Budget,
     demand: EnforcementDemand,
     env: List(#(String, String)),
     cwd: String,
@@ -332,6 +409,9 @@ pub type SatelliteConfig {
     unlink_token_file: fn(String) -> Nil,
     /// Maps capability calls to clearances.
     router: CapRouter,
+    /// Lifetime admission ceilings, by capability. Empty for a seam that
+    /// needs none; see `CapCeiling` for why the orchestration seam does.
+    ceilings: List(CapCeiling),
     /// How long to wait for one cap call's settlement.
     call_timeout_ms: Int,
   )
@@ -340,7 +420,7 @@ pub type SatelliteConfig {
 // --- run ------------------------------------------------------------------
 
 /// Runs a compiled artifact in a jailed satellite, servicing its
-/// capability calls through `broker` under the pooled `exec_id`, and
+/// capability calls through `broker` under the run phase's identity, and
 /// returns the program's structured `Outcome` together with what the
 /// kernel enforced on the node.
 ///
@@ -354,19 +434,18 @@ pub type SatelliteConfig {
 /// is still owed (M4 triage CH-F3(b)).
 pub fn run(
   artifact: Artifact,
-  exec_id: ExecId,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   launch: Launcher,
 ) -> Run {
-  let ExecId(op_id:, step_id:) = exec_id
   let vault = token.new(config.entropy)
   let binding =
     token.Binding(
-      op_id:,
-      step_id:,
+      op_id: identity.op_id(phase),
+      step_id: identity.step_id(phase),
       policy: config.base_policy,
-      deadline_ms: config.budget.deadline_ms,
+      deadline_ms: identity.pooled_budget(phase).deadline_ms,
     )
   case token.mint(vault, binding) {
     Error(mint_error) ->
@@ -377,8 +456,7 @@ pub fn run(
         Ok(token_path) ->
           run_launched(
             artifact,
-            op_id,
-            step_id,
+            phase,
             broker,
             config,
             launch,
@@ -400,8 +478,7 @@ fn never_launched(error: RunError) -> Run {
 
 fn run_launched(
   artifact: Artifact,
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   launch: Launcher,
@@ -410,17 +487,7 @@ fn run_launched(
 ) -> Run {
   let #(now, _clock) = clock.read(config.clock)
   let result_subject = process.new_subject()
-  case
-    start_host(
-      op_id,
-      step_id,
-      broker,
-      config,
-      vault,
-      token_path,
-      result_subject,
-    )
-  {
+  case start_host(phase, broker, config, vault, token_path, result_subject) {
     Error(start_error) -> {
       config.unlink_token_file(token_path)
       never_launched(HostUnavailable(start_error_text(start_error)))
@@ -428,8 +495,7 @@ fn run_launched(
     Ok(host) ->
       dispatch_launch(
         artifact,
-        op_id,
-        step_id,
+        phase,
         token_path,
         config,
         launch,
@@ -442,8 +508,7 @@ fn run_launched(
 
 fn dispatch_launch(
   artifact: Artifact,
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   token_path: String,
   config: SatelliteConfig,
   launch: Launcher,
@@ -456,10 +521,8 @@ fn dispatch_launch(
       artifact:,
       token_path:,
       cap_socket_path: config.cap_socket_path,
-      op_id:,
-      step_id:,
+      identity: phase,
       base_policy: config.base_policy,
-      budget: config.budget,
       env: config.env,
       cwd: config.cwd,
       wire: host.wire,
@@ -469,8 +532,7 @@ fn dispatch_launch(
       process.send(host.commands, Stop)
       never_launched(LaunchRejected(reason))
     }
-    Ok(connection) ->
-      await_result(config, host, connection, now, result_subject)
+    Ok(connection) -> await_result(phase, host, connection, now, result_subject)
   }
 }
 
@@ -480,14 +542,15 @@ fn dispatch_launch(
 // the host, ordinarily, or `hand_over` here when the host was already
 // gone before it could take the connection (CH-F3).
 fn await_result(
-  config: SatelliteConfig,
+  phase: PhaseIdentity,
   host: Host,
   connection: CapConnection,
   now: Int,
   result_subject: Subject(Run),
 ) -> Run {
   let handed = hand_over(host, connection)
-  let wait = int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
+  let deadline_ms = identity.pooled_budget(phase).deadline_ms
+  let wait = int.max(deadline_ms - now, 0) + result_margin_ms
   case process.receive(result_subject, wait) {
     // The host took the connection and destroyed it itself, so its
     // report is the authoritative one — unless the host was gone before
@@ -587,14 +650,21 @@ type InFlight {
 type State {
   State(
     broker: Broker,
-    op_id: OpId,
-    step_id: String,
+    // The run phase, threaded whole: every clearance the host makes takes
+    // its `{op_id, step_id}` and its budget from here, so the host cannot
+    // drift onto a second ledger part-way through an execution.
+    identity: PhaseIdentity,
     base_policy: SandboxPolicy,
-    budget: Budget,
     demand: EnforcementDemand,
     env: List(#(String, String)),
     cwd: String,
     router: CapRouter,
+    // The lifetime admission ceilings this execution runs under, and the
+    // tally they are checked against. Both live here rather than in the
+    // router because the host is the one thing there is exactly one of
+    // per execution — see `CapCeiling`.
+    ceilings: List(CapCeiling),
+    admitted: Dict(String, Int),
     clock: Clock,
     call_timeout_ms: Int,
     vault: token.Vault,
@@ -615,9 +685,16 @@ type State {
   )
 }
 
+// The one pooled budget every phase of the execution draws on, reached
+// through the threaded identity rather than kept as a second copy on the
+// state — a copy is exactly how the budget came to be specified in three
+// places.
+fn pooled(state: State) -> Budget {
+  identity.pooled_budget(state.identity)
+}
+
 fn start_host(
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   vault: token.Vault,
@@ -638,14 +715,14 @@ fn start_host(
     let state =
       State(
         broker:,
-        op_id:,
-        step_id:,
+        identity: phase,
         base_policy: config.base_policy,
-        budget: config.budget,
         demand: config.demand,
         env: config.env,
         cwd: config.cwd,
         router: config.router,
+        ceilings: config.ceilings,
+        admitted: dict.new(),
         clock:,
         call_timeout_ms: config.call_timeout_ms,
         vault:,
@@ -700,7 +777,7 @@ fn handle_connected(
   // The node exists from here, so the wall deadline starts here: after it,
   // the node dies as a unit (`broker.abort` plus `destroy`).
   let #(now, clock) = clock.read(state.clock)
-  let delay = int.max(state.budget.deadline_ms - now, 0)
+  let delay = int.max(pooled(state).deadline_ms - now, 0)
   let _ = process.send_after(state.commands, delay, Deadline)
   // The host now owns `destroy`. Telling `run_launched` so is what lets it
   // distinguish this from a host that stopped first (CH-F3).
@@ -835,7 +912,13 @@ fn handle_cap_call(
   // `{op_id, step_id, deadline}` binding, not confinement of an escaped
   // `.beam` (see the module doc). `check_for` scans without early exit.
   case
-    token.check_for(state.vault, presented, state.op_id, state.step_id, now)
+    token.check_for(
+      state.vault,
+      presented,
+      identity.op_id(state.identity),
+      identity.step_id(state.identity),
+      now,
+    )
   {
     Error(refusal) ->
       FrameContinue(emit(
@@ -860,8 +943,13 @@ fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
   }
 }
 
-// (b) + (c): map the cap to a clearance and dispatch it under the pooled
+// (b) + (c): map the cap to a plan and service it under the pooled
 // `{op_id, step_id}`, tracking it so a `Cancel` can reach it.
+//
+// The ordinal handed to the router is the count of this capability's
+// admissions so far — not of its attempts. A call the router refuses, or
+// one refused by a ceiling or by the outstanding cap, mints nothing and
+// so leaves the ordinal for the next call to claim.
 fn route_cap_call(
   state: State,
   id: Int,
@@ -872,13 +960,12 @@ fn route_cap_call(
     CapRequest(
       cap:,
       args:,
-      op_id: state.op_id,
-      step_id: state.step_id,
+      identity: state.identity,
       base_policy: state.base_policy,
-      budget: state.budget,
       demand: state.demand,
       env: state.env,
       cwd: state.cwd,
+      ordinal: admitted_count(state, cap),
     )
   case state.router(request) {
     Error(denial) ->
@@ -887,35 +974,90 @@ fn route_cap_call(
         id,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) -> admit_cap_call(state, id, plan)
+    Ok(plan) -> admit_cap_call(state, id, cap, plan)
   }
 }
 
-// The pooled outstanding-effect cap is checked here, in the actor, before
-// a collector exists. The broker enforces the same cap, but only from
-// inside the spawned collector, so a satellite that floods the channel
-// used to buy one harness-VM process per `cap_call` up to the wall
-// deadline (CH-F6). A refused call now costs no process.
-fn admit_cap_call(state: State, id: Int, plan: CapPlan) -> State {
-  case dict.size(state.inflight) >= state.budget.max_outstanding {
-    True -> emit(state, id, budget_denial(state.budget.max_outstanding))
-    False -> {
-      let inflight =
-        dict.insert(
-          state.inflight,
-          id,
-          InFlight(handle: None, cancelled: False),
-        )
-      spawn_collector(
-        state.commands,
-        state.broker,
-        plan,
-        id,
-        state.call_timeout_ms,
-      )
-      State(..state, inflight:)
+// Two ceilings, checked here in the actor before anything is spawned.
+//
+// The pooled outstanding-effect cap bounds how many calls may be in
+// flight at once. The broker enforces the same cap, but only from inside
+// the spawned collector, so a satellite that floods the channel used to
+// buy one harness-VM process per `cap_call` up to the wall deadline
+// (CH-F6). A refused call costs no process.
+//
+// The admission ceiling bounds how many calls of one capability an
+// *execution* may make in its whole life, and it is the seam's own rule
+// rather than the broker's: see `CapCeiling` for why replacing a turn
+// with a loop needs one. It is checked before the outstanding cap so that
+// a program at its ceiling reads the refusal that will still be true a
+// moment later, rather than a transient "too many in flight".
+fn admit_cap_call(state: State, id: Int, cap: String, plan: CapPlan) -> State {
+  let already = admitted_count(state, cap)
+  case ceiling_for(state, cap) {
+    Some(ceiling) if already >= ceiling ->
+      emit(state, id, ceiling_denial(cap, ceiling))
+    Some(_) | None -> {
+      let outstanding = pooled(state).max_outstanding
+      case dict.size(state.inflight) >= outstanding {
+        True -> emit(state, id, budget_denial(outstanding))
+        False -> dispatch_cap_call(state, id, cap, already, plan)
+      }
     }
   }
+}
+
+// Admitted for real: the tally moves, the call becomes cancellable, and a
+// process of its own carries it.
+fn dispatch_cap_call(
+  state: State,
+  id: Int,
+  cap: String,
+  already: Int,
+  plan: CapPlan,
+) -> State {
+  let inflight =
+    dict.insert(state.inflight, id, InFlight(handle: None, cancelled: False))
+  let admitted = dict.insert(state.admitted, cap, already + 1)
+  spawn_worker(state.commands, state.broker, plan, id, state.call_timeout_ms)
+  State(..state, inflight:, admitted:)
+}
+
+// How many calls of `cap` this execution has already admitted.
+fn admitted_count(state: State, cap: String) -> Int {
+  dict.get(state.admitted, cap) |> result.unwrap(0)
+}
+
+// The lifetime ceiling on `cap`, if this execution declares one.
+fn ceiling_for(state: State, cap: String) -> Option(Int) {
+  list.find_map(state.ceilings, fn(ceiling) {
+    case ceiling.cap == cap {
+      True -> Ok(ceiling.admissions)
+      False -> Error(Nil)
+    }
+  })
+  |> option.from_result
+}
+
+// The refusal names the ceiling, the capability, and that it is a
+// lifetime bound: a program told only "refused" would loop, and one told
+// "too many at once" would join and try again forever.
+//
+// The code is `spawn_ceiling` rather than a generic one because there is
+// exactly one ceiling today and a program branches on the name it was
+// given. The mechanism is general; the vocabulary the far side maps
+// (`cap/strand.map_error`) is not, and inventing a code no `cap` module
+// decodes would reach a program as an unnamed refusal.
+fn ceiling_denial(cap: String, ceiling: Int) -> CapOutcome {
+  framing.CapErr(
+    code: "spawn_ceiling",
+    message: "this execution has already admitted its ceiling of "
+      <> int.to_string(ceiling)
+      <> " "
+      <> cap
+      <> " calls; that is a lifetime cap for one program, not a "
+      <> "live-at-once cap, so joining and retrying will not free one",
+  )
 }
 
 fn budget_denial(max_outstanding: Int) -> CapOutcome {
@@ -927,10 +1069,13 @@ fn budget_denial(max_outstanding: Int) -> CapOutcome {
   )
 }
 
-// Services one clearance off the actor's timeline: it clears through the
-// broker, reports the handle back for cancellation, then collects the one
-// settlement and renders it to a `cap_result`.
-fn spawn_collector(
+// Services one admitted call off the actor's timeline. A jailed clearance
+// goes through the broker and reports its handle back so a `Cancel` can
+// reach it; a harness-served call has no handle, because there is no
+// executor process group to revoke — it runs to its own end and its
+// answer is emitted, which a program that cancelled has already stopped
+// listening for.
+fn spawn_worker(
   host: Subject(Msg),
   broker: Broker,
   plan: CapPlan,
@@ -938,7 +1083,11 @@ fn spawn_collector(
   call_timeout_ms: Int,
 ) -> Nil {
   process.spawn_unlinked(fn() {
-    run_collector(host, broker, plan, id, call_timeout_ms)
+    case plan {
+      ClearedCall(spec:, render:) ->
+        run_collector(host, broker, spec, render, id, call_timeout_ms)
+      ServedHere(serve:) -> run_service(host, serve, id, call_timeout_ms)
+    }
   })
   Nil
 }
@@ -946,19 +1095,18 @@ fn spawn_collector(
 fn run_collector(
   host: Subject(Msg),
   broker: Broker,
-  plan: CapPlan,
+  spec: CallSpec,
+  render: fn(Collected) -> CapOutcome,
   id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
   let events = process.new_subject()
-  case
-    broker.clear_call(broker, plan.spec, events:, waiting: clear_timeout_ms)
-  {
+  case broker.clear_call(broker, spec, events:, waiting: clear_timeout_ms) {
     Error(refusal) ->
       process.send(host, CapDone(id:, outcome: refusal_outcome(refusal)))
     Ok(handle) -> {
       process.send(host, CapStarted(id:, handle:))
-      report_collected(host, id, plan, events, call_timeout_ms)
+      report_collected(host, id, render, events, call_timeout_ms)
     }
   }
 }
@@ -966,15 +1114,53 @@ fn run_collector(
 fn report_collected(
   host: Subject(Msg),
   id: Int,
-  plan: CapPlan,
+  render: fn(Collected) -> CapOutcome,
   events: Subject(broker.CallEvent),
   call_timeout_ms: Int,
 ) -> Nil {
   case tool.collect_events(events, waiting: call_timeout_ms) {
     Ok(collected) ->
-      process.send(host, CapDone(id:, outcome: plan.render(collected)))
+      process.send(host, CapDone(id:, outcome: render(collected)))
     Error(Nil) -> process.send(host, CapDone(id:, outcome: unsettled_outcome()))
   }
+}
+
+// A harness-served call, run on a grandchild process this one monitors.
+//
+// The indirection buys totality. `serve` is an injected closure reaching
+// a seam this module knows nothing about, so it may block for as long as
+// that seam allows and it may die; either would leave the program waiting
+// on a `cap_result` that never comes, until the wall deadline killed the
+// node. Monitoring settles both cases in band — too slow is `unsettled`,
+// dead is `cap_failed` naming the death — which is the same posture
+// `report_collected` takes toward a clearance that never settles.
+fn run_service(
+  host: Subject(Msg),
+  serve: fn() -> CapOutcome,
+  id: Int,
+  call_timeout_ms: Int,
+) -> Nil {
+  let answers = process.new_subject()
+  let worker = process.spawn_unlinked(fn() { process.send(answers, serve()) })
+  let monitor = process.monitor(worker)
+  let settled =
+    process.new_selector()
+    |> process.select_map(answers, Ok)
+    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+  let outcome = case process.selector_receive(settled, call_timeout_ms) {
+    Ok(Ok(answer)) -> answer
+    Ok(Error(Nil)) -> served_died_outcome()
+    Error(Nil) -> unsettled_outcome()
+  }
+  process.demonitor_process(monitor)
+  process.send(host, CapDone(id:, outcome:))
+}
+
+fn served_died_outcome() -> CapOutcome {
+  framing.CapErr(
+    code: "cap_failed",
+    message: "the harness-side capability died before answering",
+  )
 }
 
 fn unsettled_outcome() -> CapOutcome {
@@ -1034,7 +1220,7 @@ fn terminate(
 // execution still answers with `exec_exit`, and that report is the ground
 // truth this whole path exists to carry.
 fn cleanup(state: State) -> Report {
-  broker.abort(state.broker, state.op_id)
+  broker.abort(state.broker, identity.op_id(state.identity))
   let node = case state.destroy {
     Some(destroy) -> destroy()
     None -> enforcement.Unreported("no node was launched")
@@ -1197,19 +1383,25 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
     Ok(argv) -> {
       let spec =
         broker.CallSpec(
-          op_id: request.op_id,
-          step_id: request.step_id,
+          op_id: identity.op_id(request.identity),
+          step_id: identity.step_id(request.identity),
           base_policy: request.base_policy,
           requirements: request.base_policy,
-          grants: [],
+          // Whatever the run phase carries — which is the execution's
+          // approved grants, since a capability call the program makes is
+          // the program's own execution and not a stage that produced it.
+          // A router reads them off the identity it was handed rather
+          // than holding a list of its own, so an injected router cannot
+          // widen a call the operator did not approve.
+          grants: identity.grants(request.identity),
           response: broker.ProceedNarrowed,
           demand: request.demand,
           argv:,
           env: request.env,
           cwd: request.cwd,
-          budget: request.budget,
+          budget: identity.pooled_budget(request.identity),
         )
-      Ok(CapPlan(spec:, render: proc_render))
+      Ok(ClearedCall(spec:, render: proc_render))
     }
   }
 }

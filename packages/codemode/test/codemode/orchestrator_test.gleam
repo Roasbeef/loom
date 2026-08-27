@@ -11,6 +11,7 @@ import broker/token
 import codemode/codemode
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -59,10 +60,13 @@ fn exec_config(
       build:,
     ),
     broker:,
-    exec_id: satellite.ExecId(op_id: op_id(), step_id: "step-1"),
+    identity: identity.for_execution(
+      op_id: op_id(),
+      step_id: "step-1",
+      budget: budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000),
+    ),
     satellite: satellite.SatelliteConfig(
       base_policy: policy.workspace_default("/work"),
-      budget: budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000),
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],
       cwd: "/work",
@@ -72,13 +76,14 @@ fn exec_config(
       write_token_file: satellite.private_token_writer(dir),
       unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
+      ceilings: [],
       call_timeout_ms: 3000,
     ),
     launch:,
   )
 }
 
-fn ok_builder(root: String) -> compile.Built {
+fn ok_builder(_phase: identity.PhaseIdentity, root: String) -> compile.Built {
   compile.Built(
     result: Ok(compile.BuildProducts(
       beam_dir: root <> "/ebin",
@@ -125,7 +130,7 @@ pub fn vetting_rejection_short_circuits_test() {
 
 pub fn compile_failure_short_circuits_test() {
   let dir = fresh_dir("compile-fail")
-  let failing = fn(_root) {
+  let failing = fn(_phase, _root) {
     compile.Built(
       result: Error(compile.BuildRejected(diagnostics: "type error")),
       enforcement: build_report(),

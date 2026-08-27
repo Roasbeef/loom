@@ -22,9 +22,10 @@ of the tree's two Go modules, alongside `sandbox`.
   `SnapshotBody`, `EntryBody`, `OpTransitionBody`, `StreamDeltaBody`,
   `UsageBody`, `EscalationBody`, `StrandResultBody`, `ErrorBody`), the
   entry/message parse tree, `ModelInfo` for the model-catalogue
-  snapshot, and `Denial`/`Grant`/`Network`/`Scratch` for the escalation
-  vocabulary. `protocol.md` beside it is the normative body document; the
-  Gleam gateway builds to it and to `testdata/`.
+  snapshot, `Denial`/`Grant`/`Network`/`Scratch` for the escalation
+  vocabulary, and `SanitizePreview` for the one field of that vocabulary
+  the model authors. `protocol.md` beside it is the normative body
+  document; the Gleam gateway builds to it and to `testdata/`.
 - `internal/client.Client` — the connection actor: `New`, `Run`,
   `Messages()`, `Send`, `Request`. It decodes events into typed `Msg`
   values (`StateMsg`, `SnapshotMsg`, `EntryMsg`, `OpTransitionMsg`,
@@ -113,9 +114,26 @@ of the tree's two Go modules, alongside `sandbox`.
 - **`Update` is pure.** No I/O happens inside the bubbletea update
   function; every send leaves as a `tea.Cmd` closure, which is what keeps
   the interaction surface table-testable.
+- **The approval prompt names the action, and the answer quotes it.**
+  The overlay prints the tool, fences the argument preview, bounds it on
+  screen, and always says the preview is a window on a larger action;
+  `y` echoes the rendered diff *and* the rendered action digest back in
+  `approve`, and a `stale_approval` refusal re-opens the prompt from the
+  record it hands back. A prompt that cannot name what would run cannot
+  carry consent for it (`protocol-change/007`).
+- **The preview is model-controlled and never reaches a terminal raw.**
+  `proto.SanitizePreview` neutralises C0/C1 controls, DEL and the
+  bidirectional formatting characters into visible escapes — ESC above
+  all, since a command line carrying ANSI sequences can clear the screen
+  and repaint a forged question over the prompt. It escapes rather than
+  strips, because a dropped byte is a byte the reader cannot know was
+  there. The rules are normative in `protocol.md` for every client; the
+  TUI-wide sweep over the rest of the transcript is issue #80.
 - **The fake implements the contract precisely, not loosely.** It is the
   substrate for the TUI's tests and `--demo`, so where it diverges from
-  `protocol.md` the tests are testing fiction.
+  `protocol.md` the tests are testing fiction. That is why it refuses an
+  `approve` with no `grants` and one whose `action` is not the record's,
+  exactly as the gateway does.
 
 ## Deep Docs
 

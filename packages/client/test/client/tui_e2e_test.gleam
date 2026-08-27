@@ -81,6 +81,7 @@
 import broker/exec
 import broker/policy
 import client/catalog
+import client/codemode
 import client/gateway as hub
 import client/protocol
 import client/serve
@@ -814,5 +815,6 @@ fn settings() -> serve.Settings {
     ),
     // No seed: this host must not go looking for a toolchain.
     codemode_seed: root <> "/no-such-seed",
+    codemode_seams: codemode.WorkspaceOnly,
   )
 }

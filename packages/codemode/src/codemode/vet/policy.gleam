@@ -40,10 +40,72 @@
 //// names the prelude actually ships; the default is the documented starting
 //// point and the value the corpus tests exercise. See `default` for the
 //// per-module justification.
+////
+//// # Two seams over one mechanism
+////
+//// There are two allowlists, not one, and a submission is judged against
+//// exactly one of them (`Seam`, `for_seam`):
+////
+//// - the **workspace** seam — `cap/{fs, proc, net, git, lsp, report, task,
+////   actor, kv}` — a program that orchestrates *effects*;
+//// - the **orchestration** seam — `cap/strand` and `cap/report`, and
+////   nothing else — a program that orchestrates *agents*.
+////
+//// The separation is a rule about which capabilities travel together. An
+//// orchestrator that could also write files, run a process, or reach the
+//// network is a materially worse thing to hand a model than one that
+//// cannot: a compromised orchestration program can spawn and message
+//// within the lineage its own strand roots, and can touch neither the
+//// disk, the network, nor a process. That property holds only while the
+//// two sets stay disjoint in the capability dimension, which is why
+//// `orchestration_cap_modules` and `default_cap_modules` share no entry
+//// and a test pins that they do not.
+////
+//// Nothing else about the mechanism changes: this module was already an
+//// opaque, per-submission allowlist, so two seams are a *configuration*
+//// of machinery that exists rather than a second mechanism to get right.
+//// Both directions of the confinement are the same one rule — an import
+//// outside the allowlist the submission is judged against is rejected —
+//// so an orchestration program reaching for `cap/fs` and a workspace
+//// program reaching for `cap/strand` are refused by the same code, and
+//// both refusals are the structured `ImportNotAllowed` rejection the
+//// model reads and repairs in band.
 
 import gleam/list
 import gleam/set.{type Set}
 import gleam/string
+
+/// Which seam a submission is judged against. Two variants and no third:
+/// the set of seams is closed here rather than left to whoever builds a
+/// policy, so "which capabilities travel together" is a decision this
+/// module owns and a caller selects from.
+pub type Seam {
+  /// The workspace seam: a program that orchestrates effects.
+  WorkspaceSeam
+  /// The orchestration seam: a program that orchestrates agents.
+  OrchestrationSeam
+}
+
+/// The allowlist a seam judges a submission against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let allowed = policy.for_seam(policy.OrchestrationSeam)
+/// assert !policy.contains(allowed, "cap/fs")
+/// ```
+///
+/// ```gleam
+/// let allowed = policy.for_seam(policy.WorkspaceSeam)
+/// assert !policy.contains(allowed, "cap/strand")
+/// ```
+///
+pub fn for_seam(seam: Seam) -> VetPolicy {
+  case seam {
+    WorkspaceSeam -> default()
+    OrchestrationSeam -> orchestration()
+  }
+}
 
 /// The allowlist of importable module names. Opaque so that the only way to
 /// obtain one is through a constructor that fixes the membership set, and so
@@ -196,8 +258,12 @@ fn is_ident_continue(code: Int) -> Bool {
   is_lower_alpha(code) || { code >= 0x30 && code <= 0x39 } || code == 0x5f
 }
 
-/// The default allowlist: the pinned capability prelude plus a curated subset
-/// of the standard library whose public API is provably effect-free.
+/// The default allowlist — the **workspace** seam: the pinned capability
+/// prelude plus a curated subset of the standard library whose public API
+/// is provably effect-free.
+///
+/// This is one of the two seams (`Seam`, `for_seam`); `orchestration` is
+/// the other, and the two share no capability module but `cap/report`.
 ///
 /// # The capability prelude (`cap/*`)
 ///
@@ -232,14 +298,55 @@ pub fn default() -> VetPolicy {
   new(list.append(default_cap_modules(), default_stdlib_modules()))
 }
 
+/// The orchestration seam's allowlist: `cap/strand`, `cap/report`, and the
+/// same pure standard-library subset the workspace seam gets.
+///
+/// `cap/strand` is the whole of what an orchestration program may reach
+/// out to, and `cap/report` is how it says what it found — a program that
+/// could not build an outcome could not report a fan-out's answer at all.
+/// Nothing else is here, and the omissions are the point rather than an
+/// oversight: no `cap/fs`, no `cap/proc`, no `cap/net`, no `cap/git`, so a
+/// compromised orchestrator reaches no disk, no process, and no socket.
+/// `cap/task` and `cap/actor` are absent too, and they are the omission a
+/// reader is most likely to think a mistake: an orchestration program does
+/// not need local concurrency, because `strand.spawn` returns at admission
+/// and `strand.wait` joins a whole list against one deadline — the fan-out
+/// happens on the strands, not in the satellite.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.contains(policy.orchestration(), "cap/strand")
+/// ```
+///
+/// ```gleam
+/// assert !policy.contains(policy.orchestration(), "cap/proc")
+/// ```
+///
+pub fn orchestration() -> VetPolicy {
+  new(list.append(orchestration_cap_modules(), default_stdlib_modules()))
+}
+
 /// The capability-prelude modules in the default allowlist. The union of the
 /// sets named in design §6.2 (`fs proc net git lsp task actor report`) and
 /// spec WP-J (`fs proc git lsp report task actor kv`).
+///
+/// `cap/strand` is deliberately not here. A workspace program that imports
+/// it is rejected by exactly the same rule that rejects an orchestration
+/// program importing `cap/fs`, which is what makes the confinement one
+/// rule read in two directions rather than two rules that could drift.
 fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
     "cap/task", "cap/actor", "cap/kv",
   ]
+}
+
+/// The capability-prelude modules on the orchestration seam. Shares
+/// exactly one entry with `default_cap_modules` — `cap/report`, which
+/// carries no authority of its own — and no other.
+fn orchestration_cap_modules() -> List(String) {
+  ["cap/strand", "cap/report"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,

@@ -33,6 +33,14 @@ loom/
 └── scripts/              dev scripts, CI, fixture repos for sandbox tests
 ```
 
+*(Layout as built. Two packages the sketch has no line for exist:
+`prompt/` — the system-prompt pack, pure, whose home §3.4's own note
+records as missing from the frozen contracts — and `lint/`, Loom's
+house-rule lint over Gleam source, which depends on nothing in the
+harness. `tui/` is its own Go package rather than a directory under
+`client/`, per WP-L's "standalone Go binary". `ext/` does not exist:
+WP-M is unstarted.)*
+
 Package names are unprefixed: they are monorepo-internal and never
 published, so the short names cannot collide on Hex, and each package still
 namespaces its modules under its own directory (`core/entry`,
@@ -324,7 +332,7 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 - **Vetting lint**: parse submitted Gleam (reuse `glance` or the compiler's parser via shim); reject any `@external`, any import outside allowlist, any dependency not the pinned prelude. Output: pass | structured rejection (fed to the model in-band).
 - **Compile service**: hermetic `gleam build` inside an executor jail (no network; vendored prelude + stdlib); artifact = `.beam` set + manifest hash.
 - **Satellite runtime**: `erl` launched in-jail, `-proto_dist` disabled/no epmd, framing channel on stdio; boot module loads artifacts, runs `main`, marshals `report.Outcome`; per-process `max_heap_size`; kept-alive mode for cells (recycled after N calls or any vetting warning).
-- **`cap` prelude**: `cap/fs, proc, git, lsp, report, task, actor, kv` — RPC stubs over `cap_call`. `cap/task`: `parallel_map(order-preserving, max_concurrency, fail_fast opt-in)`, `race` (real cancellation → broker revoke), `both/all`. `cap/actor`: `spawn(init, handler) -> Address(msg)`, `send`, `call(timeout)`, `get`; bounded mailboxes; all under one program-root supervisor, all-for-one.
+- **`cap` prelude**: `cap/fs, proc, net, git, lsp, report, task, actor, kv` — RPC stubs over `cap_call`. `cap/task`: `parallel_map(order-preserving, max_concurrency, fail_fast opt-in)`, `race` (real cancellation → broker revoke), `both/all`. `cap/actor`: `spawn(init, handler) -> Address(msg)`, `send`, `call(timeout)`, `get`; bounded mailboxes; all under one program-root supervisor, all-for-one.
 **Exit**: vetting corpus tests (50+ adversarial programs: hidden FFI via nested deps, unicode-lookalike imports, prelude shadowing — all rejected); end-to-end: the migration sample program from the design discussion runs against a fixture repo; concurrency semantics tests (order preservation, real cancellation kills executor pgroups, budget cap under 1000-way fanout); escaped-satellite tabletop: a hand-written malicious `.beam` loaded directly (bypassing vetting) can reach *nothing* but token-checked RPCs and is killed at deadline.
 
 ### WP-K `events` — bus, projections, search
@@ -463,7 +471,7 @@ demonstrated.
 | M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live | partial |
 | M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI binary drives the real server as of issue #7; `H(macOS)` resolved as unscheduled, not delivered) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
-| M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | not started |
+| M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | partial (three of the four demonstrated end to end; the sample's fan-out reaches a scripted Agency rather than live child strands) |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
 | M6 | +M | promotion-ladder integration test; rollback live | not started |
 | M7 | follow-ups below | per-feature | not started |
@@ -483,9 +491,16 @@ and the table above is what happened: the gateway and TUI landed with
 M3, and Seatbelt is not being built at all.
 
 **One caveat over every row.** §0.3 says a WP is done when its exit
-criteria pass in CI on Linux and macOS. There is no CI configuration in
-the tree, and no suite has ever run on macOS. Every status above means
-green under `make check` on one Linux development container.
+criteria pass in CI on Linux and macOS. There is now a CI configuration in
+the tree — `.github/workflows/ci.yml` carries a Linux gate, a macOS gate,
+a `jail-linux` job that installs bubblewrap, lifts the runner's
+unprivileged-user-namespace restriction and delegates a cgroup v2 base
+before running the self-test and both end-to-ends, and a short soak;
+`nightly.yml` carries the long soak and a cold, cacheless gate. **No run
+of it has ever completed.** Every run to date fails at job startup with no
+job logs, so nothing in the table has been demonstrated by CI, on either
+platform. Every status above still means green under `make check` on one
+Linux development container.
 
 ### What the rows still owe
 
@@ -508,11 +523,20 @@ green under `make check` on one Linux development container.
   has had bubblewrap, Landlock, or a delegated cgroup v2 hierarchy, so
   `make selftest` on such a machine reports every kernel-dependent probe
   SKIPPED and *nothing there proves a kernel confined anything*. The suite
-  is now nine probes, and the CI `jail-linux` job is the machine that has
-  the layers: it installs bubblewrap, lifts Ubuntu's AppArmor restriction
-  on unprivileged user namespaces, and delegates a cgroup v2 base, and
-  `.github/enforcement-expectations` declares probe by probe which layers
-  that run must actually have applied. One probe WP-H's exit list names
+  is now nine probes, and the CI `jail-linux` job is *written* to be the
+  machine that has the layers: it installs bubblewrap, lifts Ubuntu's
+  AppArmor restriction on unprivileged user namespaces, and delegates a
+  cgroup v2 base, and `.github/enforcement-expectations` declares probe by
+  probe which layers that run must actually have applied, failing the job
+  in either direction. That job has never completed a run (see the caveat
+  above), so what it declares is a reviewed intention rather than an
+  observation. One layer is unobserved even in intention: **Landlock has
+  never executed in any environment this repository has run in** (issue
+  #62) — every container and runner so far answers ENOSYS, so the branch
+  that applies a ruleset has never been taken, and every claim about what
+  Landlock does here is read from its documentation. That is most
+  uncomfortable in degraded mode, where Landlock is promoted from second
+  filesystem layer to the only one. One probe WP-H's exit list names
   still has no implementation at all: a non-allowlisted host under `Proxy`,
   because the egress sidecar is unbuilt and proxy mode fails closed as
   network-off. The setsid escape probe and the hostile-`.beam` probe, which
@@ -575,12 +599,53 @@ green under `make check` on one Linux development container.
   path is there and cannot be opened at all (EACCES). The file half used
   to be a read-only bind of the file onto itself and was therefore
   readable (#55); the probe still exercises only the directory half.
-  Outstanding:
-  the satellite's enforcement report is usually lost
-  to the abort that races it, so a green run does not prove the jail
-  engaged (spec-gaps WP-J 14); and of the nine cap modules vetting
-  admits, the shipped router services exactly one, `proc.run` — the rest
-  vet, compile, and refuse in band.
+  Two things the row was accepted without have since closed: the
+  satellite's enforcement report used to be lost to the abort that raced
+  it, so a green run did not prove the jail engaged (spec-gaps WP-J 14),
+  and every `Execution` now carries both stages' reports whatever the
+  outcome; and an approved escalation, which widened nothing here, now
+  composes onto the run phase and only the run phase (issue #24).
+  Outstanding: of the nine cap modules vetting admits, the shipped router
+  services exactly one, `proc.run` — the rest vet, compile, and refuse in
+  band with `unsupported_cap` (issue #16), which is a routing table still
+  being filled in rather than a security property; and nothing mints the
+  escalation code mode can now spend (issue #97).
+
+- **M4.5** — three of the four criteria are demonstrated end to end, and
+  the fourth is demonstrated with the children substituted.
+  `docs/examples/fan_out_review.gleam` is read verbatim by
+  `codemode/orchestration_sample_test`, vetted against the real
+  orchestration allowlist, built offline in a network-off jail, run in a
+  real `erl` satellite over a real AF_UNIX channel through the real
+  `codemode/orchestration` router, and asserted on three properties the
+  outcome line would pass without: three *distinct* children minted, one
+  `wait` carrying all three handles rather than three waits carrying one
+  each, and counts arriving as integers in the order the program listed
+  its packages. Seam confinement is pinned in both directions and the
+  disjointness of the two allowlists is a test rather than a convention;
+  a loop past the spawn-admission ceiling is refused at the ceiling and
+  the refusal names it; every `Execution` carries both stages'
+  enforcement reports and the widening beside them.
+
+  What keeps the row *partial* is the sample's Agency: `codemode` cannot
+  see a live runtime, so the children are played by a fake that reads the
+  real fixture off disk. Everything between the program and that fake is
+  real — the vetting, the compile, the jail, the wire, the router, the
+  caller derivation, the result-contract carriage — but no single run has
+  put a model-written program in front of *live* child strands, and by
+  §0's own rule a criterion met with a test-supplied substitute is not
+  met. The authorization model the sample therefore does not claim is
+  proved separately on `client`'s side, against a live runtime in
+  `agency_test` and through this very router in `client/codemode_test`,
+  where a real Agency refuses a spawn and a send outside the program's own
+  lineage.
+
+  One dependency of the seam is also still half open, and no row names it.
+  Grants thread onto a code-mode run phase and only the run phase, proved
+  by `make e2e-codemode`, but code mode clears through the broker directly
+  rather than through `Ctx.clear_call`, so a policy refusal inside it
+  raises no escalation record and nothing can mint the approval it is now
+  able to spend (issue #97).
 
 ### Delivered outside the table
 
@@ -596,12 +661,16 @@ and rewriting their acceptance would erase what was actually accepted.
 | Anthropic prompt caching at four breakpoints, and cache writes counted toward the overflow comparison | `provider/adapter/anthropic` | no row; spec-gaps WP-F 8, 9 |
 | The `code_mode` tool and its wiring behind a discovered build seed — a host without one registers no tool rather than one that always refuses | `tools/codemode`, `client/codemode` | M4 integrated WP-J but no row required a door to it |
 | The macOS build split and the unsupported-platform refusal | `packages/sandbox` | the resolution of M3's `H(macOS)`, above |
+| An approval bound to the **action** it was granted for: the record carries the tool, a digest of the call's effective arguments and a bounded preview, the claim and the spend both guard on it, and the approval overlay renders the command rather than only the policy diff | `client/escalate`, `client/wiring`, `packages/tui`, `protocol-change/007` | no row named consent granularity; M2's escalation row predates it |
+| The `code_mode` description carrying the prelude's public signatures — generated from `packages/cap` through the compiler's own `package-interface`, filtered by each seam's allowlist, and digest-gated inside `make check` | `tools/prelude`, `scripts/gen-prelude.{sh,py}` | M4 required a door to code mode, not an oracle behind it |
+| `packages/lint` and `make lint`: seven house rules over Gleam source, four of them (R0, R2, R4, R6) gating `make check` at error level on a census that is zero and argued | `packages/lint`, `scripts/lint.sh` | no row; the conventions in §0.2 asserted rules nothing checked |
+| A CI configuration: a Linux gate, a macOS gate, a jail job that installs the kernel layers and checks the self-test against `.github/enforcement-expectations` probe by probe, and a nightly soak | `.github/workflows/` | §0.3's definition of done; see the caveat above for what it has actually run |
 
 ## Part 5 — Follow-up tracks (post-M6, each spec'd on entry)
 
 1. **Remote executor pools** — the framing protocol over SSH tunnel/mTLS; pool registration, health, affinity (route by workspace); policy translation for remote roots. *(Design §5.6; mostly WP-G/H work.)*
 2. **Windows sandbox** — WP-H phase 3: restricted tokens, ACLs, firewall, job objects; port the regression suite.
-3. **MicroVM tier** — Firecracker driver for ExecPool; same policy language; snapshot-boot for warm pools.
+3. **MicroVM tier** — Firecracker driver for ExecPool; same policy language; snapshot-boot for warm pools. *(`docs/design-notes/microvm-executor-tier.md` tests "same policy language, different driver" against the tree: the transport half holds, the enforcement-report half does not, and four things block a driver that reports honestly.)*
 4. **Control-plane clustering** — libcluster + `inet_tls_dist`; session routing by id; `pg` event fan-out across nodes; lease semantics unchanged (one node owns a session file). *(Absorbs spec-gaps M3 messaging 2: cross-node broadcast fan-out. The bus is read-side only today — no strand-facing broadcast-send exists.)*
 5. **Record/replay evals** — instrumented gateway/broker record settlements keyed by intent; replay mode simulates providers/tools from a recorded session; drift report. Unlocks regression evals for prompts, models, and machine changes.
 6. **pi format-4 import** — full Appendix-B-style normalization (id re-minting, aggregate usage adjustment row, unconfigured-main seeding). *(Absorbs spec-gaps WP-A 3 — somewhere to put pi's optional `details` payloads — and WP-B/T 6, the JSONL import shim WP-B's scope names.)*
@@ -638,6 +707,11 @@ named here so no row above implies otherwise:
   and `FileOperations` on a preparation is always empty — Stage C1.
 - **The chaos runner.** WP-T's chaos tier and WP-E's ten-minute soak
   (spec-gaps WP-E 8), which M1 was accepted without.
+- **A kernel that runs Landlock.** Issue #62: the second filesystem layer
+  is unit-tested as data and has never executed. Closing it needs a runner
+  on Landlock ABI ≥ 3 with `bwrap` absent from `PATH`, so the mount layer
+  cannot mask the answer — which is a CI machine nobody has, not a piece of
+  code nobody has written.
 
 ## Part 6 — Bootstrap order (do these before spawning parallel agents)
 

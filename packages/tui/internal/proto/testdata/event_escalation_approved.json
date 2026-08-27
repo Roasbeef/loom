@@ -1,1 +1,1 @@
-{"v":1,"reply_to":6,"event":"escalation","seq":12,"body":{"escalation_id":"esc-1","op":"op-1","strand":"main","status":"approved"}}
+{"v":1,"reply_to":6,"event":"escalation","seq":12,"body":{"escalation_id":"esc-1","op":"op-1","strand":"main","status":"approved","tool":"bash","action":"9f2c1a7b4e0d63859ac41d2f7b6e8035","preview":"{\"command\":\"npm install left-pad\"}","asked":1}}

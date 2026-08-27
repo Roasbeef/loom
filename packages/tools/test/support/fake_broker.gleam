@@ -96,6 +96,7 @@ fn base_ctx(
     filesystem:,
     blob_root: workspace <> "/.blobs",
     clear_call:,
+    raise_refusal: tool.no_raise(),
   )
 }
 
