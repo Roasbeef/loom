@@ -506,12 +506,16 @@ pub fn a_full_pool_waits_for_a_settlement_test() {
 /// short budget still gets its answer, and the answer still names the
 /// pool. This is what keeps a nested borrower degrading into today's
 /// refusal rather than into a stall.
+///
+/// The budget here is deliberately a little over the window the loop
+/// reserves for its last attempt, so the caller does wait for a while
+/// before it gives up rather than declining to wait at all.
 pub fn a_full_pool_still_refuses_once_the_budget_is_spent_test() {
   let #(started, pool) = broker_over_pool(fake_helper.SleepUntilCancel, size: 1)
   let events = process.new_subject()
   let assert Ok(_first) =
     broker.clear_call(started, spec(op()), events:, waiting: 5000)
-  let verdicts = clear_elsewhere(started, spec(op()), waiting: 120)
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 1400)
   let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 1)))) =
     process.receive(verdicts, 3000)
   broker.stop(started)
@@ -599,6 +603,86 @@ pub fn an_abort_during_a_congestion_wait_refuses_the_retry_test() {
   let assert Ok(Error(broker.OperationAborted)) =
     process.receive(verdicts, 2000)
   broker.stop(started)
+}
+
+/// A checkout seam slower than what is left of the caller's budget must
+/// produce an in-band refusal, not a dead borrower.
+///
+/// The arithmetic gets there on its own: a 100 ms budget against a 60 ms
+/// seam leaves 40 ms after the first attempt, and a nap of 25 takes the
+/// next attempt's window to 15 — against a broker that demonstrably
+/// needs 60. `process.call` panics on a timeout, so the retry used to
+/// kill the borrower and hand back no verdict at all. The borrower here
+/// is a strand effect process: its death is a synthetic zero-usage
+/// abort, where `NoHelper` is something the model can read and route
+/// around.
+///
+/// The loop therefore reserves a window it believes the broker can
+/// answer in and stops rather than spending its last milliseconds on an
+/// exchange it expects to lose.
+pub fn a_slow_seam_refuses_in_band_rather_than_killing_the_caller_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() {
+          process.sleep(60)
+          Error(exec.AllBusy(size: 2))
+        },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 100)
+  let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 2)))) =
+    process.receive(verdicts, 3000)
+  broker.stop(started)
+}
+
+/// A broker that does not answer within the caller's whole budget is
+/// still a verdict. `clear_call`'s exchange is a `try_call` precisely so
+/// that the one caller holding the refusal cannot lose it by dying of
+/// the wait — and the broker legitimately blocks for seconds at a time
+/// on a checkout seam or a relay handshake, so this is congestion
+/// wearing a different hat rather than a broken broker.
+pub fn a_broker_that_never_answers_refuses_rather_than_panicking_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() {
+          process.sleep(2000)
+          Error(exec.AllBusy(size: 2))
+        },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 150)
+  assert process.receive(verdicts, 3000) == Ok(Error(broker.BrokerUnavailable))
+  broker.stop(started)
+}
+
+/// A broker that stops underneath a parked waiter answers it. The wait
+/// is a loop of exchanges, and this PR widened the window in which one
+/// of them can land on a broker that has since stopped from a single
+/// round trip to the caller's whole budget. `process.call` panics on a
+/// dead callee; the waiter needs to settle its effect instead.
+pub fn a_waiter_outliving_the_broker_refuses_rather_than_panicking_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { Error(exec.AllBusy(size: 2)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 30_000)
+  // Let the caller reach its wait, then stop the broker underneath it.
+  process.sleep(80)
+  broker.stop(started)
+  assert process.receive(verdicts, 3000) == Ok(Error(broker.BrokerUnavailable))
 }
 
 /// A clearance begun *after* an abort is an ordinary clearance. `abort`

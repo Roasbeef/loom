@@ -66,6 +66,7 @@ import broker/budget.{type Budget}
 import broker/escalation.{type Denial}
 import broker/exec.{type ExecFailure, type ExecResult, type Helper}
 import broker/framing.{type OutputStream}
+import broker/internal/call
 import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import core/clock.{type Clock}
@@ -159,9 +160,10 @@ pub type Refusal {
   /// Token minting failed (entropy fault).
   MintRefused(error: token.MintError)
   /// No helper could be borrowed. For a full pool this arrives only
-  /// after `clear_call` spent the caller's whole `waiting` budget on the
-  /// congestion — the ordinary batch-wider-than-the-pool case waits and
-  /// then runs rather than reaching here.
+  /// after `clear_call` spent the caller's `waiting` budget down to the
+  /// last window it can honour — the ordinary
+  /// batch-wider-than-the-pool case waits and then runs rather than
+  /// reaching here.
   NoHelper(error: exec.CheckoutError)
   /// The operation was aborted, so nothing more may be dispatched under
   /// it. Reachable because clearance is not instantaneous: a caller
@@ -169,7 +171,11 @@ pub type Refusal {
   /// and the retry that follows must not become the one execution the
   /// abort cannot reach.
   OperationAborted
-  /// The broker's internal relay could not start.
+  /// The broker could not be reached far enough to decide anything: its
+  /// internal relay would not start, or the clearance exchange itself
+  /// went unanswered — the broker did not reply inside the caller's
+  /// `waiting` budget, or it had stopped underneath a caller waiting out
+  /// a congested pool. Nothing was dispatched in any of those cases.
   BrokerUnavailable
 }
 
@@ -360,6 +366,16 @@ pub fn clear_call(
 // gets today instead of into a stall. Waiters are not queued, so a
 // contended pool hands slots out in no particular order; every waiter
 // still leaves within its own budget.
+//
+// **Every waiter leaves with a verdict, too**, and that takes two
+// things beyond the arithmetic. The exchange is a `try_call`, because
+// `process.call` panics on a timeout and on a dead callee and this
+// caller is a strand effect process holding the refusal the model is
+// meant to read: a panic here loses it and settles as a synthetic
+// zero-usage abort instead. And a retry is only issued with a window
+// the broker could plausibly answer in (`min_retry_window_ms`), so the
+// loop stops waiting rather than spending its last few milliseconds on
+// an exchange it does not expect to win.
 fn clear_awaiting_helper(
   broker: Broker,
   spec: CallSpec,
@@ -372,12 +388,13 @@ fn clear_awaiting_helper(
   // Each attempt is capped at what is left, not at the original
   // budget, so the total cannot outrun `waiting` however slow an
   // individual exchange with the broker turns out to be.
-  let #(outcome, epoch) =
-    process.call(
+  use #(outcome, epoch) <- or_unavailable(
+    call.try_call(
       broker.subject,
       waiting: int.max(1, remaining),
       sending: fn(reply) { ClearCall(spec:, events:, since:, reply:) },
-    )
+    ),
+  )
   use <- bool.guard(when: !congested(outcome), return: outcome)
   // Charge the attempt itself, not only the nap. Under the congestion
   // this loop exists for, the broker is at its busiest and an exchange
@@ -385,8 +402,11 @@ fn clear_awaiting_helper(
   // for minutes.
   let #(answered, clock) = clock.read(clock)
   let remaining = remaining - int.max(0, answered - started)
-  use <- bool.guard(when: remaining <= 0, return: outcome)
   let nap = int.min(remaining, helper_wait_interval_ms)
+  use <- bool.guard(
+    when: remaining - nap < min_retry_window_ms,
+    return: outcome,
+  )
   process.sleep(nap)
   clear_awaiting_helper(
     broker,
@@ -396,6 +416,25 @@ fn clear_awaiting_helper(
     remaining - nap,
     Some(epoch),
   )
+}
+
+// use #(outcome, epoch) <- or_unavailable(call.try_call(..))
+//
+// Turns an exchange that produced no reply into a refusal. The broker
+// is a serial actor: an exchange waits behind whatever handler is
+// running, so a late answer is congestion wearing a different hat, and
+// a caller that died of it would have had no verdict to hand back at
+// all. A broker that has stopped underneath a parked waiter reaches the
+// same place — the operation cannot run, and saying so beats faulting
+// the strand.
+fn or_unavailable(
+  attempt: Result(a, call.CallFault),
+  then: fn(a) -> Result(CallHandle, Refusal),
+) -> Result(CallHandle, Refusal) {
+  case attempt {
+    Error(call.NoReply) | Error(call.CalleeGone) -> Error(BrokerUnavailable)
+    Ok(answer) -> then(answer)
+  }
 }
 
 // Whether a clearance came back because the pool is momentarily full,
@@ -424,6 +463,29 @@ fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
 // freed helper is picked up promptly; long enough that a waiter costs a
 // few dozen wakeups a second rather than a spin.
 const helper_wait_interval_ms = 25
+
+// The smallest window `clear_awaiting_helper` will issue a retry with.
+//
+// The naps are short and the budget is finite, so without a floor the
+// tail of a wait is a run of exchanges with windows of a few
+// milliseconds — 25, then 1. The broker cannot honour those. It is a
+// serial actor and every clearance it *grants* blocks it: up to a
+// second waiting for the new relay to hand back its subject, five more
+// on the helper's exec handshake, and however long the checkout seam
+// takes (fifteen seconds in production). A retry with less than a
+// second left is therefore not a wait, it is a bet that the broker is
+// idle at the exact moment this loop has given up on it being idle.
+//
+// The bet is not free even though a lost exchange is now a refusal
+// rather than a crash: the exchange most likely to time out is the one
+// where a helper came free and the broker dispatched, and a caller that
+// walks away from that answer leaves a jailed execution running with
+// nobody listening for its settlement. So the loop reserves this much
+// of the caller's budget for its last attempt and stops there. It
+// cannot guarantee an answer — no floor derived from a congestion
+// budget covers a fifteen-second checkout — but it stops the loop from
+// manufacturing the case.
+const min_retry_window_ms = 1000
 
 /// Streams stdin to a cleared call; `eof: True` closes the child's
 /// stdin after `data`. No-op once the call settled.

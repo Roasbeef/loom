@@ -122,6 +122,82 @@ pub fn start_helper_configured(
   helper
 }
 
+/// A wedge that can be closed over a helper's channel. While it is open
+/// every channel write goes straight through; once `close_wedge` lands,
+/// each write blocks for the configured span. That is what a wedged
+/// helper actually looks like from the pool's side: the actor is alive
+/// and its pid says so, its mailbox keeps growing, and it answers
+/// nothing — which is the one case a readiness probe exists to catch and
+/// the one case a panicking probe turns into a dead pool.
+pub opaque type Wedge {
+  Wedge(control: Subject(WedgeMsg))
+}
+
+type WedgeMsg {
+  CloseWedge
+  WedgeClosed(reply: Subject(Bool))
+}
+
+/// Starts a fake helper whose channel writes can be made to block, plus
+/// the wedge that makes them. Heartbeats tick every 10 ms, so a closed
+/// wedge leaves the actor inside a write essentially all the time rather
+/// than only while a caller happens to be talking to it.
+pub fn start_wedgeable_helper(
+  blocking_for wedge_ms: Int,
+) -> #(exec.Helper, Wedge) {
+  let wedge = start_wedge()
+  let #(transport, inbox) = start(EchoArgv)
+  let assert exec.ChannelTransport(send:, close:) = transport
+  let config =
+    exec.HelperConfig(
+      transport: exec.ChannelTransport(
+        send: fn(bytes) {
+          case
+            process.call(wedge.control, waiting: 1000, sending: WedgeClosed)
+          {
+            True -> process.sleep(wedge_ms)
+            False -> Nil
+          }
+          send(bytes)
+        },
+        close:,
+      ),
+      handshake_timeout_ms: 2000,
+      cancel_grace_ms: 400,
+      heartbeat_interval_ms: 10,
+    )
+  let assert Ok(helper) = exec.start(config)
+  process.send(inbox, Attach(wire: exec.wire(helper)))
+  let assert Ok(_features) = exec.await_ready(helper, waiting: 3000)
+  #(helper, wedge)
+}
+
+/// Closes the wedge: from here on the helper's channel writes block.
+pub fn close_wedge(wedge: Wedge) -> Nil {
+  process.send(wedge.control, CloseWedge)
+}
+
+fn start_wedge() -> Wedge {
+  let handoff = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let inbox = process.new_subject()
+    process.send(handoff, inbox)
+    wedge_loop(inbox, False)
+  })
+  let assert Ok(inbox) = process.receive(handoff, 1000)
+  Wedge(control: inbox)
+}
+
+fn wedge_loop(inbox: Subject(WedgeMsg), closed: Bool) -> Nil {
+  case process.receive_forever(inbox) {
+    CloseWedge -> wedge_loop(inbox, True)
+    WedgeClosed(reply:) -> {
+      process.send(reply, closed)
+      wedge_loop(inbox, closed)
+    }
+  }
+}
+
 type FakeState {
   FakeState(
     script: Script,

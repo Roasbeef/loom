@@ -48,6 +48,7 @@
 //// caller.
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
+import broker/internal/call
 import broker/internal/ffi_crypto
 import broker/internal/ffi_os
 import broker/internal/ffi_port
@@ -432,7 +433,11 @@ pub fn await_ready(
   process.call(helper.commands, waiting: timeout, sending: AwaitReady)
 }
 
-/// The helper's current lifecycle position.
+/// The helper's current lifecycle position. Panics if the helper does
+/// not answer within `timeout` or has already died — `process.call`'s
+/// contract, and the right one for a caller whose next step needs the
+/// answer. The pool's own readiness probe deliberately does not use
+/// this: see `helper_ready`.
 pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
   process.call(helper.commands, waiting: timeout, sending: QueryStatus)
 }
@@ -1610,24 +1615,40 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
   }
 }
 
-// Whether an idle helper is still fit to lend. The `status` round-trip
+// Whether an idle helper is still fit to lend. The probe round-trip
 // runs inside the pool actor, so its timeout is time the next checkout
 // may wait — but an idle helper is by construction running nothing and
 // answers in microseconds, and one that cannot answer within
 // `ready_probe_ms` is wedged, which is exactly what this is here to
 // catch. The cost is therefore bounded by the number of *wedged*
-// helpers and paid once each: a probe that times out retires the helper
-// (`next_helper` shuts it down and moves on), so it is never probed
-// again. Shortening the timeout to make a larger pool cheaper would
-// trade that for retiring healthy helpers under load, which is the
-// worse failure.
+// helpers and paid once each: an unanswered probe retires the helper
+// (`next_helper` shuts it down and moves on, `handle_checkin` refuses
+// to take it back), so it is never probed again. Shortening the timeout
+// to make a larger pool cheaper would trade that for retiring healthy
+// helpers under load, which is the worse failure.
+//
+// That accounting is only true because the probe is a `try_call`. The
+// public `status` is an ordinary `process.call`, which panics on a
+// timeout — inside the pool actor that is not a retired helper, it is a
+// dead pool, and a dead pool kills the broker with it, since the broker
+// borrows through a `process.call` of its own. A question about one
+// helper's health must not be answerable with the pool's death.
 fn helper_ready(helper: Helper) -> Bool {
   case process.is_alive(helper.pid) {
     False -> False
     True ->
-      case status(helper, waiting: ready_probe_ms) {
-        StatusReady(_) -> True
-        StatusStarting | StatusDead(_) -> False
+      case
+        call.try_call(
+          helper.commands,
+          waiting: ready_probe_ms,
+          sending: QueryStatus,
+        )
+      {
+        Ok(StatusReady(_)) -> True
+        Ok(StatusStarting)
+        | Ok(StatusDead(_))
+        | Error(call.NoReply)
+        | Error(call.CalleeGone) -> False
       }
   }
 }

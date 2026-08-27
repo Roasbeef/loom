@@ -320,6 +320,66 @@ pub fn pool_retires_dead_helpers_and_respawns_test() {
   exec.stop_pool(pool)
 }
 
+/// A helper that is alive but answers nothing is *wedged*, and the pool
+/// retires it — it does not die of it. The readiness probe runs inside
+/// the pool actor, so a probe that faulted on a timeout would take the
+/// pool with it, and the broker after that: the broker borrows through
+/// a `process.call` of its own, which panics when its callee dies. The
+/// scaling argument for a sixteen-slot pool rests on a probe costing one
+/// timeout per wedged helper and never being paid twice; that is only
+/// true if the first timeout is survivable.
+pub fn pool_retires_a_wedged_helper_rather_than_faulting_test() {
+  let #(wedged, wedge) = fake_helper.start_wedgeable_helper(blocking_for: 4000)
+  let first_spawn = one_shot()
+  let assert Ok(pool) =
+    exec.start_pool(size: 1, spawn: fn() {
+      case first_spawn() {
+        True -> Ok(wedged)
+        False -> Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+      }
+    })
+  let assert Ok(borrowed) = exec.checkout(pool, waiting: 2000)
+  assert exec.pid(borrowed) == exec.pid(wedged)
+  // Close the wedge and let a heartbeat tick carry the actor into a
+  // channel write it will not come back from inside the probe's window.
+  fake_helper.close_wedge(wedge)
+  process.sleep(200)
+  exec.checkin(pool, borrowed)
+  // The probe times out, the wedged helper is retired, and the slot
+  // respawns. A pool that had faulted would take this `checkout` with
+  // it instead of answering.
+  let assert Ok(fresh) = exec.checkout(pool, waiting: 4000)
+  assert exec.pid(fresh) != exec.pid(wedged)
+  let assert exec.StatusReady(_) = exec.status(fresh, waiting: 1000)
+  exec.checkin(pool, fresh)
+  exec.stop_pool(pool)
+}
+
+type LatchMsg {
+  Take(reply: process.Subject(Bool))
+}
+
+// A latch readable from any process: `True` the first time it is taken,
+// `False` afterwards. The pool actor runs a test's `spawn` closure in
+// its own process and cannot `receive` on a subject the test owns, so a
+// one-shot needs a process of its own to live in.
+fn one_shot() -> fn() -> Bool {
+  let handoff = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let inbox = process.new_subject()
+    process.send(handoff, inbox)
+    latch_loop(inbox, True)
+  })
+  let assert Ok(inbox) = process.receive(handoff, 1000)
+  fn() { process.call(inbox, waiting: 1000, sending: Take) }
+}
+
+fn latch_loop(inbox: process.Subject(LatchMsg), fresh: Bool) -> Nil {
+  let Take(reply:) = process.receive_forever(inbox)
+  process.send(reply, fresh)
+  latch_loop(inbox, False)
+}
+
 // Waits until the helper actor has processed the death notification.
 fn process_settle(helper: exec.Helper) -> Result(Nil, Nil) {
   case exec.status(helper, waiting: 1000) {
