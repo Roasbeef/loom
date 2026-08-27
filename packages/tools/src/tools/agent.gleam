@@ -74,14 +74,31 @@
 //// ## Waiting is per call, not per child
 ////
 //// `agent_wait` takes an **array** of handles and the Agency waits them
-//// all against **one** deadline. This is load-bearing, not a convenience:
-//// per-call scheduling (`execution_mode`) only takes effect under
-//// `tool_execution: Parallel`, and the shipped default is `Sequential`,
-//// under which a batch of eight one-handle waits would be eight serial
-//// deadline windows. Declaring the tool `Concurrent` is honest — it only
-//// reads — but nothing today makes it bite, so the fan-out story is
-//// carried by the multi-handle wait instead, which works under either
-//// setting.
+//// all against **one** deadline. This is load-bearing, not a convenience,
+//// and it stayed load-bearing when `tool_execution: Parallel` became the
+//// shipped default. The tool's `Concurrent` declaration does now bite —
+//// eight one-handle waits in one batch genuinely overlap — but three
+//// things the setting cannot change are why the array is still the unit:
+////
+//// - **The setting is not a guarantee.** `tool_execution` is a run
+////   setting a host or a session may set back to `sequential` (the
+////   gateway's config key), and under it eight one-handle waits are
+////   eight serial deadline windows again. A fan-out story that only
+////   holds on the default is one that breaks when someone turns the
+////   default off.
+//// - **A batch is only as parallel as its most exclusive member.** One
+////   `bash`, `fs_write` or `code_mode` beside the waits fences the whole
+////   batch (`runtime/strand_runtime.tool_may_start`), and the serial
+////   windows come back inside a session that never changed a setting.
+//// - **Overlap is not free where it does happen.** Eight waits are eight
+////   effect processes, eight intent commits and eight settlements to
+////   reconcile, each against a deadline of its own. One call is one
+////   intent, one settlement, and one deadline for the whole set — which
+////   is also the only shape in which "wait for the batch" is a single
+////   durable fact.
+////
+//// So the mode makes the degenerate case cheaper; it does not carry the
+//// fan-out story, and nothing here rests on it.
 
 import broker/policy.{type SandboxPolicy}
 import core/ids.{type EntryId, type OpId}
@@ -683,9 +700,11 @@ pub fn wait_tool(agency: Agency) -> Tool {
       ["handles"],
     ),
     replay: tool.Safe,
-    // Only consulted under `tool_execution: Parallel`, which is not the
-    // shipped default. Declared honestly — the tool only reads — but the
-    // fan-out story does not rest on it.
+    // Honest: the tool only reads. Under the shipped `Parallel` default
+    // this is consulted for real, so single-handle waits in one batch do
+    // overlap — but the fan-out story still does not rest on it, because
+    // an `Exclusive` sibling fences the batch and a session may set
+    // `sequential` back. See the module doc.
     execution_mode: tool.Concurrent,
     requirements: empty_requirements,
     run: fn(ctx, args) { run_wait(agency, ctx, args) },

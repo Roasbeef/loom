@@ -193,15 +193,16 @@ minting a second; `agent_send` is not, because a send mints a fresh entry
 id per admission and a replay would deliver twice.
 
 **Execution mode** is a scheduling constraint the *loop* reads, and it is
-consulted only under `tool_execution: Parallel` batch settings — under
-the shipped sequential default there is never more than one live tool
-effect, so the question does not arise. When it does arise, the rule is
-`tool_may_start` in `runtime/strand_runtime`: an `Exclusive` tool starts
-only when nothing else is running, and nothing starts beside a live
-`Exclusive` one. The machine plans the batch either way; the mode only
-decides whether the driver clears the next planned call now or parks
-until the frontier is clear. Nothing about a fan-out story may rest on a
-tool being `Concurrent`.
+consulted under `tool_execution: Parallel` batch settings — which is the
+shipped default, so every declaration here is live rather than latent.
+The rule is `tool_may_start` in `runtime/strand_runtime`: an `Exclusive`
+tool starts only when nothing else is running, and nothing starts beside
+a live `Exclusive` one. The machine plans the batch either way; the mode
+only decides whether the driver clears the next planned call now or parks
+until the frontier is clear. Still, nothing about a fan-out story may
+rest on a tool being `Concurrent`: a session can set `tool_execution`
+back to `sequential`, and one `Exclusive` call in a batch fences every
+`Concurrent` sibling beside it.
 
 ## Why an edit plan carries a digest
 
