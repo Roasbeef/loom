@@ -59,7 +59,12 @@
 //// disk, the network, nor a process. That property holds only while the
 //// two sets stay disjoint in the capability dimension, which is why
 //// `orchestration_cap_modules` and `default_cap_modules` share no entry
-//// and a test pins that they do not.
+//// but `cap/report`, and a test pins the *intersection* rather than a
+//// snapshot of either side. Both lists are public for that test's sake:
+//// the seams also share `default_stdlib_modules`, so a capability added
+//// to that shared list would widen both seams at once, and the property
+//// that catches it has to be able to name the capability lists apart
+//// from the allowlists they end up in.
 ////
 //// Nothing else about the mechanism changes: this module was already an
 //// opaque, per-submission allowlist, so two seams are a *configuration*
@@ -335,7 +340,21 @@ pub fn orchestration() -> VetPolicy {
 /// it is rejected by exactly the same rule that rejects an orchestration
 /// program importing `cap/fs`, which is what makes the confinement one
 /// rule read in two directions rather than two rules that could drift.
-fn default_cap_modules() -> List(String) {
+///
+/// Public because the confinement's real property is about *this* list and
+/// its orchestration counterpart, not about either seam's whole allowlist:
+/// the two seams also share `default_stdlib_modules`, so a test that could
+/// only see `default()` and `orchestration()` could not tell a capability
+/// added to both apart from a stdlib module added to both. See
+/// `orchestration_cap_modules`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.default_cap_modules(), "cap/fs")
+/// ```
+///
+pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
     "cap/task", "cap/actor", "cap/kv",
@@ -345,14 +364,69 @@ fn default_cap_modules() -> List(String) {
 /// The capability-prelude modules on the orchestration seam. Shares
 /// exactly one entry with `default_cap_modules` — `cap/report`, which
 /// carries no authority of its own — and no other.
-fn orchestration_cap_modules() -> List(String) {
+///
+/// That intersection *is* the confinement, so it is asserted as an
+/// intersection rather than as a snapshot of one side of it. A snapshot
+/// catches a capability moved from one seam to the other and misses a
+/// capability added to both, which is the likelier mistake: the shared
+/// door is `default_stdlib_modules`, which both seams append, and a new
+/// module looks like it belongs there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.orchestration_cap_modules(), "cap/strand")
+/// ```
+///
+pub fn orchestration_cap_modules() -> List(String) {
   ["cap/strand", "cap/report"]
+}
+
+/// The capability-prelude modules on **no** seam, deliberately.
+///
+/// `cap/runtime` is the boot runtime: the satellite's generated entry
+/// module calls it, and a submitted program has no business naming it. So
+/// it is unreachable from either allowlist — which, on its own, is
+/// indistinguishable from an oversight. A capability written, vendored
+/// into the build seed and never allowlisted fails exactly the same way:
+/// the `code_mode` description omits it, vetting rejects any program that
+/// imports it, and nothing anywhere says the module exists but cannot be
+/// reached (issue #95).
+///
+/// Writing the exclusion down is most of the value — it turns "not in the
+/// allowlist" from an absence into a decision someone made — and
+/// `scripts/gen-prelude.sh --check` is what makes it load-bearing: every
+/// module in `packages/cap` must appear on a seam's list or on this one,
+/// so a new module forces the question rather than disappearing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.harness_only_cap_modules() == ["cap/runtime"]
+/// ```
+///
+pub fn harness_only_cap_modules() -> List(String) {
+  ["cap/runtime"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,
 /// effect-free public API (see `default`); none exposes I/O, processes, atom
 /// creation, or an FFI-declaring surface to its caller.
-fn default_stdlib_modules() -> List(String) {
+///
+/// **Both seams append this list**, so a `cap/*` name added here would land
+/// on the orchestration seam and the workspace seam at once, widening the
+/// orchestration surface past `cap/strand` + `cap/report` with no
+/// intersection test able to see it. That is the one door the disjointness
+/// property does not close by itself, so a test asserts this list holds no
+/// capability module at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !list.contains(policy.default_stdlib_modules(), "cap/fs")
+/// ```
+///
+pub fn default_stdlib_modules() -> List(String) {
   [
     "gleam/list", "gleam/string", "gleam/string_tree", "gleam/int",
     "gleam/float", "gleam/bool", "gleam/result", "gleam/option", "gleam/dict",

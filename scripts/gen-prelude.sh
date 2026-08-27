@@ -4,7 +4,7 @@
 #
 #   scripts/gen-prelude.sh              regenerate it (needs gleam, python3)
 #   scripts/gen-prelude.sh --check      fail if it has drifted (needs nothing)
-#   scripts/gen-prelude.sh --self-test  prove the gate catches both drifts
+#   scripts/gen-prelude.sh --self-test  prove the gate catches every drift
 #
 # ## Why an artifact rather than a call at startup
 #
@@ -42,6 +42,24 @@
 # the generated file" and sends you to `packages/cap`, because a hand-edit
 # here is a claim about the prelude that the prelude does not make — the
 # exact silent lie the artifact exists to prevent.
+#
+# ## The third thing --check gates: every cap module is decided about
+#
+# The description filters these rendered blocks through each seam's
+# `allowed_imports`, so it fails closed: a module on no allowlist simply
+# never reaches a model. That is right for `cap/runtime`, which is the
+# boot runtime and belongs to the harness — and indistinguishable from an
+# omission for anything else. A capability written, vendored into the
+# build seed and never allowlisted produces exactly one symptom: a program
+# failing to vet against a module its author believes shipped (issue #95).
+#
+# So every `cap/*` module must appear either on a seam's allowlist or on
+# `harness_only_cap_modules`, the written-down "reachable by nobody, on
+# purpose" list — all three read out of the allowlist source itself. This
+# script is where the check belongs because it already enumerates the
+# package and already runs in `make check`, and because it needs no
+# toolchain to do either: the lists are string literals and the modules
+# are files.
 set -euo pipefail
 self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$0")/.."
@@ -103,6 +121,88 @@ stamped_inputs() {
 
 stamped_body_digest() {
 	awk '/^\/\/\/\/ Body digest/ { print $NF }' "$1"
+}
+
+# ------------------------------------------------- every cap is decided
+#
+# Takes the allowlist source as an argument for the same reason
+# `check_artifact` takes the artifact: the self-test below points it at a
+# deliberately broken copy. The module set is always the real tree.
+
+allowlist_source="packages/codemode/src/codemode/vet/policy.gleam"
+
+# The `cap/*` modules `packages/cap` actually ships. `internal/` is a
+# directory and cannot be imported by a submitted program at all, so the
+# glob is the whole set by construction.
+cap_modules() {
+	for path in packages/cap/src/cap/*.gleam; do
+		name=$(basename "$path" .gleam)
+		echo "cap/$name"
+	done | LC_ALL=C sort
+}
+
+# Every `cap/*` name on any of the three lists that decide reachability.
+# Read out of the function bodies rather than the whole file, because the
+# doc comments quote module names too and a quote is not a decision.
+listed_caps() {
+	awk '
+		/^pub fn (default_cap_modules|orchestration_cap_modules|harness_only_cap_modules)\(\)/ {
+			inside = 1
+			next
+		}
+		inside && /^}/ { inside = 0; next }
+		inside {
+			line = $0
+			while (match(line, /"cap\/[a-z_]+"/)) {
+				print substr(line, RSTART + 1, RLENGTH - 2)
+				line = substr(line, RSTART + RLENGTH)
+			}
+		}
+	' "$1" | LC_ALL=C sort -u
+}
+
+check_coverage() {
+	local source="$1"
+	local failed=0
+	local listed module
+
+	if [ ! -f "$source" ]; then
+		echo "gen-prelude: $source is missing; the allowlists live there" >&2
+		return 1
+	fi
+
+	listed=$(listed_caps "$source")
+	if [ -z "$listed" ]; then
+		echo "gen-prelude: no cap module names could be read out of $source;" >&2
+		echo "gen-prelude: the allowlist functions moved or were renamed." >&2
+		return 1
+	fi
+
+	for module in $(cap_modules); do
+		case "
+$listed" in
+		*"
+$module"*) ;;
+		*)
+			echo "gen-prelude: $module is on no seam's allowlist and on no" >&2
+			echo "gen-prelude: harness-only list, so no program can import it and" >&2
+			echo "gen-prelude: nothing says that is deliberate. Add it to a seam in" >&2
+			echo "gen-prelude: $source, or to harness_only_cap_modules there if it" >&2
+			echo "gen-prelude: is the harness's own." >&2
+			failed=1
+			;;
+		esac
+	done
+
+	for module in $listed; do
+		if [ ! -f "packages/cap/src/${module}.gleam" ]; then
+			echo "gen-prelude: $source lists $module, which packages/cap does not" >&2
+			echo "gen-prelude: ship; a program allowed to import it would not compile." >&2
+			failed=1
+		fi
+	done
+
+	return "$failed"
 }
 
 # ------------------------------------------------------------------ check
@@ -182,19 +282,24 @@ EOF
 
 if [ "${1:-}" = "--check" ]; then
 	check_artifact "$artifact"
+	check_coverage "$allowlist_source"
 	count=$(stamped_inputs "$artifact" | wc -l | tr -d ' ')
-	echo "prelude surface is current ($count inputs)"
+	decided=$(cap_modules | wc -l | tr -d ' ')
+	echo "prelude surface is current ($count inputs, $decided cap modules decided about)"
 	exit 0
 fi
 
 # -------------------------------------------------------------- self test
 #
 # A gate nobody has watched fail is a gate nobody knows works. This drives
-# the two drift shapes against copies of the real artifact and insists each
-# is caught: a stamp edited to something else stands in for a `cap` module
-# that moved, and a line appended to the body stands in for a hand-edit.
-# Both are pure sha256 work on temporary files; nothing in the tree is
-# touched, so it is cheap enough to run beside the gate itself.
+# each drift shape against a copy of the real file and insists it is
+# caught: a stamp edited to something else stands in for a `cap` module
+# that moved, a line appended to the body stands in for a hand-edit, a
+# capability dropped from a seam list stands in for a module nobody
+# decided about, and an entry added to the harness-only list stands in for
+# a list naming a module that does not ship. All of it is sha256 and text
+# work on temporary files; nothing in the tree is touched, so it is cheap
+# enough to run beside the gate itself.
 
 if [ "${1:-}" = "--self-test" ]; then
 	work=$(mktemp -d)
@@ -241,7 +346,53 @@ if [ "${1:-}" = "--self-test" ]; then
 		;;
 	esac
 
-	echo "prelude gate self-test passed (fresh accepted, stale input and hand-edit both refused)"
+	# The coverage gate, driven against copies of the allowlist source the
+	# same way. Two shapes again, and again they need different fixes: a
+	# module nobody decided about sends you to a seam list, and a list
+	# naming a module that does not ship sends you to `packages/cap`.
+	if ! check_coverage "$allowlist_source" >/dev/null 2>&1; then
+		echo "gen-prelude: self-test FAILED — the real allowlists did not pass coverage" >&2
+		exit 1
+	fi
+
+	# One capability dropped from a seam list: the shape of a module
+	# nobody allowlisted.
+	sed 's/"cap\/kv", //; s/, "cap\/kv"//' "$allowlist_source" >"$work/undecided.gleam"
+	if check_coverage "$work/undecided.gleam" >/dev/null 2>&1; then
+		echo "gen-prelude: self-test FAILED — an unallowlisted cap module was not caught" >&2
+		exit 1
+	fi
+	undecided_says=$(check_coverage "$work/undecided.gleam" 2>&1 >/dev/null || true)
+	undecided_says=${undecided_says%%$'\n'*}
+
+	# A listed module the package does not ship: the shape of a rename
+	# that moved the file and not the list.
+	sed 's/\["cap\/runtime"\]/["cap\/runtime", "cap\/ghost"]/' \
+		"$allowlist_source" >"$work/phantom.gleam"
+	if check_coverage "$work/phantom.gleam" >/dev/null 2>&1; then
+		echo "gen-prelude: self-test FAILED — a listed but unshipped module was not caught" >&2
+		exit 1
+	fi
+	phantom_says=$(check_coverage "$work/phantom.gleam" 2>&1 >/dev/null || true)
+	phantom_says=${phantom_says%%$'\n'*}
+
+	case "$undecided_says" in
+	*"cap/kv is on no seam"*) ;;
+	*)
+		echo "gen-prelude: self-test FAILED — the undecided case did not name the module: $undecided_says" >&2
+		exit 1
+		;;
+	esac
+	case "$phantom_says" in
+	*"lists cap/ghost"*) ;;
+	*)
+		echo "gen-prelude: self-test FAILED — the phantom case did not name the module: $phantom_says" >&2
+		exit 1
+		;;
+	esac
+
+	echo "prelude gate self-test passed (fresh accepted; stale input, hand-edit,"
+	echo "undecided cap module and phantom allowlist entry all refused)"
 	exit 0
 fi
 

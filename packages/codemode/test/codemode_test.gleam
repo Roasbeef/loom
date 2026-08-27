@@ -475,18 +475,57 @@ pub fn the_workspace_may_not_reach_strands_test() {
 /// carries no authority of its own. This is the property both directions
 /// above rest on: widen either set and the confinement stops meaning
 /// anything, whichever way the rejection tests point.
+///
+/// Asserted as an intersection over the two lists themselves, not as a
+/// snapshot of the names that happen to be on them today. A literal list
+/// fails when a capability *moves* between the seams and passes when one
+/// is added to *both*, which is the likelier mistake — see the stdlib
+/// test below for the door that makes it likely.
 pub fn the_seams_share_only_the_report_capability_test() {
-  let workspace = policy.default()
-  let orchestration = policy.orchestration()
-  let caps = [
-    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/task",
-    "cap/actor", "cap/kv", "cap/strand",
-  ]
-  assert list.all(caps, fn(name) {
-    policy.contains(workspace, name) != policy.contains(orchestration, name)
+  let workspace = policy.default_cap_modules()
+  let orchestration = policy.orchestration_cap_modules()
+  let shared =
+    list.filter(workspace, fn(name) { list.contains(orchestration, name) })
+  assert shared == ["cap/report"]
+  // Both sets are non-empty, so the intersection above is a real
+  // disjointness claim rather than one made vacuous by an empty side.
+  assert list.length(workspace) > 1
+  assert list.length(orchestration) > 1
+  // And each list is the one the seam actually judges against.
+  assert list.all(workspace, policy.contains(policy.default(), _))
+  assert list.all(orchestration, policy.contains(policy.orchestration(), _))
+}
+
+/// The shared standard-library list holds no capability module.
+///
+/// `default()` and `orchestration()` both append `default_stdlib_modules`,
+/// so a `cap/*` name added there reaches both seams at once — widening the
+/// orchestration surface past `cap/strand` + `cap/report` without ever
+/// appearing in either capability list, where the intersection test above
+/// would have caught it. A new pure helper module looks like it belongs in
+/// the shared list, which is what makes this the plausible mistake rather
+/// than an exotic one.
+pub fn the_shared_stdlib_list_admits_no_capability_test() {
+  assert list.all(policy.default_stdlib_modules(), fn(name) {
+    !string.starts_with(name, "cap/")
   })
-  assert policy.contains(workspace, "cap/report")
-  assert policy.contains(orchestration, "cap/report")
+}
+
+/// A capability on no seam is a decision, written down.
+///
+/// `cap/runtime` is the boot runtime and belongs to the harness, not to a
+/// submitted program. The list exists so that "unreachable" is a claim
+/// somebody made rather than an omission nobody noticed, and
+/// `scripts/gen-prelude.sh --check` holds it against the modules
+/// `packages/cap` actually ships (issue #95). Here we only pin that it
+/// contradicts neither seam.
+pub fn a_harness_only_capability_is_on_no_seam_test() {
+  let harness_only = policy.harness_only_cap_modules()
+  assert harness_only != []
+  assert list.all(harness_only, fn(name) {
+    !policy.contains(policy.default(), name)
+    && !policy.contains(policy.orchestration(), name)
+  })
 }
 
 /// `for_seam` is the selector, and it selects the two allowlists above.
