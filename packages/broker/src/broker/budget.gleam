@@ -17,8 +17,13 @@
 //// ledger per *batch*, never one per call — against the concrete case
 //// that put it in question (`grep`'s `max_outstanding: 1` contradicting
 //// its own `Concurrent` declaration, issue #50). Read it before adding
-//// anything that threads a new identity through this key (issue #22) or
-//// stacks a further cap on top of it (issue #23).
+//// anything that threads a new identity through this key or stacks a
+//// further cap on top of it (issue #23). The threading that already
+//// exists, `codemode/identity`, keeps this keying: it derives its build
+//// and run phases from one opaque `ExecIdentity` rather than letting a
+//// caller assemble either, so an execution resolves to one ledger — or
+//// two where its hermetic build is deliberately accounted apart — and
+//// never to one per call (issue #22).
 
 /// The budget attached to one execution's token.
 pub type Budget {

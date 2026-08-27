@@ -10,6 +10,7 @@ import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy
+import codemode/identity
 import codemode/satellite
 import core/clock
 import core/ids
@@ -30,10 +31,12 @@ fn request(args: MsgPackValue) -> satellite.CapRequest {
   satellite.CapRequest(
     cap: "proc.run",
     args:,
-    op_id: op_id(),
-    step_id: "step-1",
+    identity: identity.run_phase(identity.for_execution(
+      op_id: op_id(),
+      step_id: "step-1",
+      budget: budget.Budget(max_outstanding: 4, deadline_ms: t + 30_000),
+    )),
     base_policy: policy.workspace_default("/work"),
-    budget: budget.Budget(max_outstanding: 4, deadline_ms: t + 30_000),
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",

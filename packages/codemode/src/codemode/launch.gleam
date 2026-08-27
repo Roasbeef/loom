@@ -67,6 +67,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
+import codemode/identity
 import codemode/internal/ffi_unix.{type Listener, type Socket}
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
@@ -167,7 +168,7 @@ fn launch(
   config: LaunchConfig,
   spec: LaunchSpec,
 ) -> Result(CapConnection, String) {
-  use _ <- result.try(check_budget(spec.budget))
+  use _ <- result.try(check_budget(identity.pooled_budget(spec.identity)))
   let #(now, _clock) = clock.read(config.clock)
   let requirements = node_requirements(spec, now)
   use effective <- result.try(composed_policy(spec.base_policy, requirements))
@@ -270,7 +271,7 @@ fn destroy(
   outbox: Subject(Out),
   settlement: Subject(Settlement),
 ) -> Report {
-  broker.abort(config.broker, spec.op_id)
+  broker.abort(config.broker, identity.op_id(spec.identity))
   let report = await_report(settlement)
   process.send(outbox, Shutdown)
   unlink(spec.cap_socket_path)
@@ -624,7 +625,8 @@ fn spawn_node(
   now: Int,
 ) -> Nil {
   let call = node_call(config, spec, requirements)
-  let waiting = int.max(spec.budget.deadline_ms - now, 0) + settle_margin_ms
+  let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
+  let waiting = int.max(deadline_ms - now, 0) + settle_margin_ms
   process.spawn_unlinked(fn() {
     run_node(config, call, exits, settlement, waiting)
   })
@@ -699,8 +701,8 @@ pub fn node_call(
   requirements: SandboxPolicy,
 ) -> CallSpec {
   broker.CallSpec(
-    op_id: spec.op_id,
-    step_id: spec.step_id,
+    op_id: identity.op_id(spec.identity),
+    step_id: identity.step_id(spec.identity),
     base_policy: spec.base_policy,
     requirements:,
     grants: [],
@@ -712,7 +714,7 @@ pub fn node_call(
     argv: node_argv(config.erl_path, spec.artifact),
     env: node_env(spec),
     cwd: spec.cwd,
-    budget: spec.budget,
+    budget: identity.pooled_budget(spec.identity),
   )
 }
 
@@ -790,7 +792,8 @@ pub fn node_requirements(spec: LaunchSpec, now_ms: Int) -> SandboxPolicy {
 // zero means "no limit" on the wire, which is the opposite of what an
 // exhausted deadline should say.
 fn remaining_seconds(spec: LaunchSpec, now_ms: Int) -> Int {
-  int.max({ int.max(spec.budget.deadline_ms - now_ms, 0) + 999 } / 1000, 1)
+  let deadline_ms = identity.pooled_budget(spec.identity).deadline_ms
+  int.max({ int.max(deadline_ms - now_ms, 0) + 999 } / 1000, 1)
 }
 
 // A base wall of zero is "no limit", so the deadline is the only bound;

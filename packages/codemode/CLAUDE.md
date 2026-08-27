@@ -15,7 +15,18 @@ model-influenced code itself (Rule Zero). WP-J.
   first refusal, and returns an `Execution`: the outcome plus what the
   kernel enforced on both jailed stages. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
-  `Ran(source, artifact, outcome)`.
+  `Ran(source, artifact, outcome)`. `ExecConfig.identity` is the one
+  place in the pipeline an operation, a step or a budget can be written.
+- `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
+  for_execution, with_own_build_ledger, under_budget, build_phase,
+  run_phase, ledger_keys}` — the identity one execution runs under, and
+  the phases derived from it. Both types are opaque: `for_execution` is
+  the only way to mint an `ExecIdentity`, and `build_phase` / `run_phase`
+  — which take one — are the only ways to obtain a `PhaseIdentity`.
+  `BuildLedger` (`BuildSharesLedger` | `BuildHasOwnLedger`) is the whole
+  of the choice an execution has about its ledger count, and
+  `ledger_keys` reads that count off the identity value before anything
+  runs.
 - `codemode/enforcement.{Report, Enforcement, of_call, of_result, layers}`
   — what a jailed stage's helper reported, or why no report exists.
   `Reported(entries, degraded)` is `exec_exit`'s ground truth with the
@@ -27,7 +38,9 @@ model-influenced code itself (Rule Zero). WP-J.
   source can reach a build.
 - `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
   Compiled, Builder, Dependency, CompileConfig}` — the hermetic compile
-  service. Writes the program under the pinned `program_module`,
+  service. `Builder` is `fn(PhaseIdentity, String) -> Built`: the build
+  phase arrives per build from the pipeline, so a builder holds no
+  coordinates of its own. Writes the program under the pinned `program_module`,
   generates `entry_module`, and pins exactly `default_dependencies()`.
   `compile` returns a `Compiled`: the artifact or its error, and the
   build jail's enforcement report.
@@ -36,14 +49,18 @@ model-influenced code itself (Rule Zero). WP-J.
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
   --warnings-as-errors` inside a network-off jail, then the flattened
-  `.beam` set and its content address.
+  `.beam` set and its content address. Carries no operation, step or
+  budget.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`.
-- `codemode/satellite.{ExecId, Run, RunError, Outcome, SatelliteConfig,
+- `codemode/satellite.{Run, RunError, Outcome, SatelliteConfig,
   LaunchSpec, CapConnection, Launcher, WireIn, CapRouter, CapRequest,
   CapPlan, CapDenial}` — the in-harness host: the broker end of the cap
-  channel, the deadline, the teardown. `run` returns a `Run`: the
+  channel, the deadline, the teardown. `run` takes the run phase's
+  `PhaseIdentity`; `SatelliteConfig` carries none, and `LaunchSpec` and
+  `CapRequest` carry the derived identity rather than a loose
+  `{op_id, step_id, budget}` triple. `run` returns a `Run`: the
   program's outcome and the node's enforcement report, which
   `CapConnection.destroy` hands back. `Msg` is opaque so no forged
   settlement can be injected.
@@ -82,6 +99,8 @@ model-influenced code itself (Rule Zero). WP-J.
   `broker/framing` does not know and the host decodes itself.
 - **Broker** — every `cap_call` becomes a `broker.clear_call` under one
   pooled `{op_id, step_id}`; so do the jailed build and the node itself.
+  Every one of those keys is derived from `ExecConfig.identity`; see the
+  identity invariant below for what an execution may spend.
 - **Commits / registers**: none. `execute` returns the source and artifact
   for the runtime to persist; this package writes no entries.
 
@@ -130,6 +149,28 @@ model-influenced code itself (Rule Zero). WP-J.
   connection, leaving the node's `destroy` handle undelivered;
   `hand_over` monitors the host so a connection arriving after its death
   is destroyed rather than dropped.
+- **One threaded `ExecIdentity`, from which the build phase is derived.**
+  The invariant is *not* "one identity ever": the build/run split is
+  legitimate — a different jail under a different policy with its own
+  enforcement report — and `make e2e-codemode` and the migration sample
+  both rely on accounting the build separately. What is typed is that the
+  build phase is *derived*, never assembled beside the run's. `ExecConfig`
+  has exactly one identity field; `compile.CompileConfig`,
+  `build.BuildConfig`, `satellite.SatelliteConfig` and
+  `launch.LaunchConfig` have no operation, step or budget at all, and
+  `codemode.execute` hands each injected seam the phase it derived. Both
+  identity types are opaque, so a `PhaseIdentity` cannot exist without an
+  `ExecIdentity` to come from, and `BuildLedger`'s two variants are the
+  whole of the choice — there is no way to spell a third ledger.
+  `identity.ledger_keys` is therefore a function of the identity value
+  alone, answering one or two before anything runs (issue #22, spec-gaps
+  WP-J 16, `docs/adr/005-budget-pooling-granularity.md`). The limit of the
+  claim: `broker.CallSpec` is a public record shared with `tools` and
+  `client`, so an injected router or launcher could still hand-write a
+  clearance under coordinates it invented — closing that needs an opaque
+  `CallSpec` in the broker, which has callers outside this package. What
+  is closed is the case that happened: a *configuration* carrying its own
+  copy of the identity fields.
 - **The node runs under the host's own `{op_id, step_id}`.** That is what
   makes `broker.abort` at the deadline actually kill it, and what pools
   the budget across the whole execution — fan-out buys parallelism, not

@@ -65,6 +65,7 @@
 //// satellite spins up — never a crash.
 
 import codemode/enforcement.{type Report}
+import codemode/identity.{type PhaseIdentity}
 import codemode/vet.{type Vetted}
 import gleam/list
 import gleam/result
@@ -147,12 +148,19 @@ pub type Built {
   Built(result: Result(BuildProducts, CompileError), enforcement: Report)
 }
 
-/// The build seam. Given the prepared build root, it runs the offline
-/// build and returns the products or a structured error, plus the jail's
-/// enforcement report. Production wraps a network-off
-/// `broker.clear_call`; tests inject a fake. See the module doc.
+/// The build seam. Given the build phase's identity and the prepared build
+/// root, it runs the offline build and returns the products or a
+/// structured error, plus the jail's enforcement report. Production wraps a
+/// network-off `broker.clear_call`; tests inject a fake. See the module
+/// doc.
+///
+/// The identity is an argument rather than something the builder was
+/// configured with, and that is load-bearing: a builder cannot hold
+/// coordinates of its own, so the build clears under whatever the pipeline
+/// derived from the execution's one `ExecIdentity` and nothing else
+/// (`codemode/identity`).
 pub type Builder =
-  fn(String) -> Built
+  fn(PhaseIdentity, String) -> Built
 
 /// A compiled program, and what the kernel enforced on the build that
 /// produced it. Total in both fields: a compile that never reached the
@@ -205,7 +213,15 @@ pub fn default_dependencies() -> List(Dependency) {
 /// back as `BuildRejected`; nothing crashes. A workspace that could not be
 /// prepared never reaches the builder, so its enforcement is `Unreported`
 /// naming that: no jail ran, and none is claimed.
-pub fn compile(vetted: Vetted, config: CompileConfig) -> Compiled {
+///
+/// `identity` is the build phase, derived by the caller from the
+/// execution's one `ExecIdentity` (`codemode/identity.build_phase`); it is
+/// passed straight through to the builder.
+pub fn compile(
+  vetted: Vetted,
+  config: CompileConfig,
+  identity: PhaseIdentity,
+) -> Compiled {
   case prepare(vetted, config) {
     Error(error) ->
       Compiled(
@@ -215,7 +231,7 @@ pub fn compile(vetted: Vetted, config: CompileConfig) -> Compiled {
         ),
       )
     Ok(root) -> {
-      let Built(result:, enforcement:) = config.build(root)
+      let Built(result:, enforcement:) = config.build(identity, root)
       Compiled(
         result: result.map(result, fn(products) {
           Artifact(

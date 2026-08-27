@@ -57,15 +57,14 @@
 //// requirement is stated here and checked by the composition.
 
 import broker/broker.{type Broker, type CallSpec}
-import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand, type ExecResult}
 import broker/policy.{type SandboxPolicy}
 import codemode/compile.{
   type BuildProducts, type Built, type CompileError, type Dependency, Built,
 }
 import codemode/enforcement
+import codemode/identity.{type PhaseIdentity}
 import codemode/seed
-import core/ids.{type OpId}
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -89,15 +88,17 @@ const settle_margin_ms = 10_000
 // How much compiler output to carry back as diagnostics.
 const diagnostics_limit = 8000
 
-/// Everything the production builder needs beyond the build root.
+/// Everything the production builder needs beyond the build phase's
+/// identity and the build root.
+///
+/// Deliberately carries no operation, step or budget: those reach the
+/// build as the `PhaseIdentity` the pipeline derived from the execution's
+/// one `ExecIdentity`, so a caller cannot configure the build to clear
+/// under coordinates of its own (`codemode/identity`).
 pub type BuildConfig {
   BuildConfig(
     /// The running broker the build is dispatched through.
     broker: Broker,
-    /// The operation the build belongs to.
-    op_id: OpId,
-    /// The step within the operation.
-    step_id: String,
     /// The prepared seed (`codemode/seed`) the build root is cloned from.
     seed_root: String,
     /// Absolute path to the `gleam` executable.
@@ -107,8 +108,6 @@ pub type BuildConfig {
     /// Roots the build may read: the Gleam and Erlang toolchains. Usually
     /// `["/"]`, which the session base must then also cover.
     toolchain_roots: List(String),
-    /// The pooled budget for the build.
-    budget: Budget,
     /// Enforcement strictness demanded of the jailed build.
     demand: EnforcementDemand,
     /// The child environment. Must carry `PATH` — see the module doc.
@@ -121,16 +120,17 @@ pub type BuildConfig {
   )
 }
 
-/// Builds the production `compile.Builder`.
+/// Builds the production `compile.Builder`. The identity arrives per
+/// build, from the pipeline; the configuration holds none.
 pub fn builder(config: BuildConfig) -> compile.Builder {
-  fn(build_root) { build(config, build_root) }
+  fn(phase, build_root) { build(config, phase, build_root) }
 }
 
 // The build's report is a return value, not a callback: a caller holding
 // the products holds what the kernel enforced on the jail that made them,
 // and a build that never ran says so rather than saying nothing
 // (`codemode/enforcement`, issue #5).
-fn build(config: BuildConfig, root: String) -> Built {
+fn build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   case prepare(config, root) {
     Error(error) ->
       Built(
@@ -139,7 +139,7 @@ fn build(config: BuildConfig, root: String) -> Built {
           "it was never dispatched: its seed could not be prepared",
         ),
       )
-    Ok(Nil) -> run_build(config, root)
+    Ok(Nil) -> run_build(config, phase, root)
   }
 }
 
@@ -182,12 +182,12 @@ fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
 
 // --- running the build ----------------------------------------------------
 
-fn run_build(config: BuildConfig, root: String) -> Built {
+fn run_build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   let events = process.new_subject()
   case
     broker.clear_call(
       config.broker,
-      build_call(config, root),
+      build_call(config, phase, root),
       events:,
       waiting: clear_timeout_ms,
     )
@@ -283,10 +283,19 @@ fn reached_for_hex(diagnostics: String) -> Bool {
 
 /// The clearance that runs the build: network off, exactly one writable
 /// root (the build root), and the toolchain readable.
-pub fn build_call(config: BuildConfig, root: String) -> CallSpec {
+///
+/// The `{op_id, step_id}` and the budget come from `identity` and from
+/// nowhere else, so this clearance lands in whichever ledger the
+/// execution's `BuildLedger` chose — the execution's own, or its `-build`
+/// sub-step — and never in a third.
+pub fn build_call(
+  config: BuildConfig,
+  phase: PhaseIdentity,
+  root: String,
+) -> CallSpec {
   broker.CallSpec(
-    op_id: config.op_id,
-    step_id: config.step_id,
+    op_id: identity.op_id(phase),
+    step_id: identity.step_id(phase),
     base_policy: config.base_policy,
     requirements: build_requirements(config, root),
     grants: [],
@@ -298,7 +307,7 @@ pub fn build_call(config: BuildConfig, root: String) -> CallSpec {
     argv: [config.gleam_path, "build", "--warnings-as-errors"],
     env: config.env,
     cwd: root,
-    budget: config.budget,
+    budget: identity.pooled_budget(phase),
   )
 }
 

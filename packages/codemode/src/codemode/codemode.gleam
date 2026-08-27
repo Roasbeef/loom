@@ -34,8 +34,9 @@ import codemode/compile.{type Artifact, type CompileConfig, type CompileError}
 import codemode/enforcement.{
   type Enforcement, type Report, Enforcement, Unreported,
 }
+import codemode/identity.{type ExecIdentity}
 import codemode/satellite.{
-  type ExecId, type Launcher, type Outcome, type RunError, type SatelliteConfig,
+  type Launcher, type Outcome, type RunError, type SatelliteConfig,
 }
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
@@ -70,13 +71,21 @@ pub type ExecOutcome {
 
 /// The injected dependencies `execute` needs beyond the source and its vet
 /// policy: the compile configuration, the running broker, the satellite
-/// configuration and launcher, and the pooled execution identity.
+/// configuration and launcher, and the one execution identity.
+///
+/// `identity` is the only place in the whole pipeline an operation, a step
+/// or a budget can be written. The compile, satellite and launch
+/// configurations carry none, and `execute` derives the build and run
+/// phases from this one value — so how many pooled ledgers the execution
+/// opens is `identity.ledger_keys(config.identity)`, readable before
+/// anything runs and never widened by a caller
+/// (`codemode/identity`, `docs/adr/005-budget-pooling-granularity.md`).
 pub type ExecConfig {
   ExecConfig(
     vet_policy: VetPolicy,
     compile: CompileConfig,
     broker: Broker,
-    exec_id: ExecId,
+    identity: ExecIdentity,
     satellite: SatelliteConfig,
     launch: Launcher,
   )
@@ -111,7 +120,15 @@ fn compile_and_run(
   vetted: Vetted,
   config: ExecConfig,
 ) -> Execution {
-  let compiled = compile.compile(vetted, config.compile)
+  // The build's identity is *derived* here, from the execution's, rather
+  // than supplied alongside it: that derivation is the only thing standing
+  // between the build and a ledger of its own invention.
+  let compiled =
+    compile.compile(
+      vetted,
+      config.compile,
+      identity.build_phase(config.identity),
+    )
   case compiled.result {
     Error(error) -> compile_failed(compiled.enforcement, error)
     Ok(artifact) ->
@@ -138,7 +155,7 @@ fn run_and_report(
   let ran =
     satellite.run(
       artifact,
-      config.exec_id,
+      identity.run_phase(config.identity),
       config.broker,
       config.satellite,
       config.launch,

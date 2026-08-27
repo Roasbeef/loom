@@ -20,6 +20,7 @@ import broker/policy
 import broker/token
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/satellite
 import core/clock
 import core/ids
@@ -40,8 +41,12 @@ fn op_id() -> ids.OpId {
   op
 }
 
-fn exec_id() -> satellite.ExecId {
-  satellite.ExecId(op_id: op_id(), step_id: "step-1")
+// The run phase of one execution, derived from the one identity the
+// execution is minted with. There is no way to hand the host a second one:
+// `SatelliteConfig` carries no coordinates and no budget.
+fn run_phase(budget: budget.Budget) -> identity.PhaseIdentity {
+  identity.for_execution(op_id: op_id(), step_id: "step-1", budget:)
+  |> identity.run_phase
 }
 
 fn artifact() -> compile.Artifact {
@@ -61,10 +66,9 @@ fn fresh_dir(name: String) -> String {
   dir
 }
 
-fn config(dir: String, budget: budget.Budget) -> satellite.SatelliteConfig {
+fn config(dir: String) -> satellite.SatelliteConfig {
   satellite.SatelliteConfig(
     base_policy: policy.workspace_default("/work"),
-    budget:,
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",
@@ -106,12 +110,11 @@ fn holding() -> fn() -> Result(exec.Helper, exec.CheckoutError) {
 pub fn happy_path_returns_the_program_outcome_test() {
   let dir = fresh_dir("happy")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(finish_peer),
@@ -130,14 +133,13 @@ fn finish_peer(ctx: PeerCtx) -> Nil {
 pub fn a_completed_run_carries_the_nodes_enforcement_report_test() {
   let dir = fresh_dir("node-report")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let report =
     enforcement.Reported(entries: ["bwrap", "seccomp-net"], degraded: False)
   let ran =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.reporting_launcher(connected_then_finish, report),
@@ -179,12 +181,11 @@ fn connected_then_finish(ctx: PeerCtx) -> Nil {
 pub fn cap_calls_without_the_token_are_all_denied_test() {
   let dir = fresh_dir("denied")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(denied_peer(3)),
@@ -208,11 +209,11 @@ fn denied_peer(count: Int) -> fn(PeerCtx) -> Nil {
 pub fn satellite_that_never_returns_is_killed_at_the_deadline_test() {
   let dir = fresh_dir("deadline")
   let broker = start_broker(echoing())
-  let cfg = config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 200))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 200)),
       broker,
       cfg,
       satellite_peer.launcher(satellite_peer.wait_for_close),
@@ -232,13 +233,19 @@ pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
   let dir = fresh_dir("late-launch")
   let broker = start_broker(echoing())
   // The wall deadline is 100ms; the jail spawn takes four times that.
-  let cfg = config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 100))
+  let cfg = config(dir)
   let destroyed = process.new_subject()
   let outcome =
-    satellite.run(artifact(), exec_id(), broker, cfg, fn(_spec) {
-      process.sleep(400)
-      Ok(recording_connection(destroyed))
-    }).outcome
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 100)),
+      broker,
+      cfg,
+      fn(_spec) {
+        process.sleep(400)
+        Ok(recording_connection(destroyed))
+      },
+    ).outcome
   assert outcome == Error(satellite.DeadlineExceeded)
   assert process.receive(destroyed, 2000) == Ok(Nil)
   broker.stop(broker)
@@ -247,17 +254,22 @@ pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
 pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
   let dir = fresh_dir("late-connect")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let destroyed = process.new_subject()
   // The cap channel closes before the launcher hands its connection back,
   // so the host settles and stops with the connection still in flight.
   let outcome =
-    satellite.run(artifact(), exec_id(), broker, cfg, fn(spec) {
-      process.send(spec.wire, satellite.WireClosed(reason: "socket closed"))
-      process.sleep(100)
-      Ok(recording_connection(destroyed))
-    }).outcome
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      fn(spec) {
+        process.send(spec.wire, satellite.WireClosed(reason: "socket closed"))
+        process.sleep(100)
+        Ok(recording_connection(destroyed))
+      },
+    ).outcome
   assert outcome == Error(satellite.SatelliteGone("socket closed"))
   assert process.receive(destroyed, 2000) == Ok(Nil)
   broker.stop(broker)
@@ -282,15 +294,11 @@ fn recording_connection(destroyed: Subject(Nil)) -> satellite.CapConnection {
 pub fn the_real_token_does_not_widen_policy_test() {
   let dir = fresh_dir("policy")
   let broker = start_broker(echoing())
-  let cfg =
-    satellite.SatelliteConfig(
-      ..config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
-      router: network_router,
-    )
+  let cfg = satellite.SatelliteConfig(..config(dir), router: network_router)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(real_token_peer),
@@ -312,8 +320,8 @@ fn network_router(
     "net.fetch" ->
       Ok(satellite.CapPlan(
         spec: broker.CallSpec(
-          op_id: request.op_id,
-          step_id: request.step_id,
+          op_id: identity.op_id(request.identity),
+          step_id: identity.step_id(request.identity),
           base_policy: request.base_policy,
           requirements: policy.SandboxPolicy(
             ..request.base_policy,
@@ -325,7 +333,7 @@ fn network_router(
           argv: ["fetch"],
           env: request.env,
           cwd: request.cwd,
-          budget: request.budget,
+          budget: identity.pooled_budget(request.identity),
         ),
         render: satellite.proc_render,
       ))
@@ -362,12 +370,11 @@ fn real_token_peer(ctx: PeerCtx) -> Nil {
 pub fn an_outcome_frame_of_another_version_is_rejected_test() {
   let dir = fresh_dir("outcome-version")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(fn(ctx) {
@@ -387,12 +394,11 @@ pub fn an_outcome_frame_of_another_version_is_rejected_test() {
 pub fn an_outcome_frame_missing_its_id_is_rejected_test() {
   let dir = fresh_dir("outcome-id")
   let broker = start_broker(echoing())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(fn(ctx) {
@@ -428,12 +434,11 @@ pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
   // answer at all.
   broker.stop(broker)
   process.sleep(50)
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 0, deadline_ms: t + 5000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 0, deadline_ms: t + 5000)),
       broker,
       cfg,
       satellite_peer.launcher(budget_peer(3)),
@@ -461,12 +466,11 @@ pub fn parallel_results_preserve_input_order_test() {
     start_broker(fn() {
       Ok(fake_helper.start_helper(fake_helper.Gated(control:)))
     })
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 16, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 16, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(echo_peer(count)),
@@ -543,12 +547,11 @@ pub fn pooled_budget_refuses_fanout_past_the_cap_test() {
   let broker = start_broker(holding())
   // One shared ledger of cap 2 for the whole execution: of four concurrent
   // cap_calls, exactly two are refused. Per-call budgets would refuse none.
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 2, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 2, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(budget_peer(count)),
@@ -576,12 +579,11 @@ fn budget_peer(count: Int) -> fn(PeerCtx) -> Nil {
 pub fn cancel_kills_the_losers_clearance_only_test() {
   let dir = fresh_dir("cancel")
   let broker = start_broker(holding())
-  let cfg =
-    config(dir, budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000))
+  let cfg = config(dir)
   let outcome =
     satellite.run(
       artifact(),
-      exec_id(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
       satellite_peer.launcher(cancel_peer),

@@ -11,6 +11,7 @@ import broker/token
 import codemode/build
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/seed
 import core/clock
 import core/ids
@@ -50,11 +51,22 @@ fn idle_broker() -> broker.Broker {
   started
 }
 
+// The build phase of one execution, derived — never assembled. The
+// execution here accounts its build separately, so the derived step is
+// `step-1-build`.
+fn build_phase() -> identity.PhaseIdentity {
+  identity.for_execution(
+    op_id: op_id(),
+    step_id: "step-1",
+    budget: budget.Budget(max_outstanding: 2, deadline_ms: t + 120_000),
+  )
+  |> identity.with_own_build_ledger
+  |> identity.build_phase
+}
+
 fn config(seed_root: String) -> build.BuildConfig {
   build.BuildConfig(
     broker: idle_broker(),
-    op_id: op_id(),
-    step_id: "step-1",
     seed_root:,
     gleam_path: "/usr/local/bin/gleam",
     base_policy: policy.SandboxPolicy(
@@ -63,7 +75,6 @@ fn config(seed_root: String) -> build.BuildConfig {
       network: policy.NetworkFull,
     ),
     toolchain_roots: ["/"],
-    budget: budget.Budget(max_outstanding: 2, deadline_ms: t + 120_000),
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     dependencies: compile.default_dependencies(),
@@ -107,7 +118,7 @@ pub fn the_build_allows_only_the_environment_it_passes_test() {
 pub fn a_missing_seed_is_reported_before_any_clearance_test() {
   let root = fresh_dir("no-seed")
   let builder = build.builder(config("/nonexistent/codemode-seed"))
-  let built = builder(root)
+  let built = builder(build_phase(), root)
   let assert Error(compile.BuildUnavailable(reason:)) = built.result
   assert string.contains(reason, "make codemode-seed")
   // A build that was never dispatched claims nothing about a jail, and
@@ -127,7 +138,7 @@ pub fn a_seed_pinned_to_other_dependencies_is_refused_test() {
       compile.PathDependency(name: "cap", path: compile.prelude_path),
     ])
   let builder = build.builder(config(seed_root))
-  let built = builder(root)
+  let built = builder(build_phase(), root)
   let assert Error(compile.BuildUnavailable(reason:)) = built.result
   assert string.contains(reason, "different dependency table")
   let assert enforcement.Unreported(_why) = built.enforcement

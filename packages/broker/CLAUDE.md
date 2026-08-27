@@ -107,8 +107,13 @@ protocol (spec Part 1.4). WP-G.
   concrete case that put it in question (`grep`'s `Concurrent` tag
   contradicting a `bash`-sized `max_outstanding: 1`, issue #50): the
   keying stays `{op_id, step_id}`, the fix was the tool's own declared
-  budget. Read it before threading a new identity through this key
-  (issue #22) or stacking a further cap on top of it (issue #23).
+  budget. Read it before threading a new identity through this key or
+  stacking a further cap on top of it (issue #23). The one caller that has
+  threaded an identity through it, `codemode`, preserves the keying: its
+  `codemode/identity.ExecIdentity` is opaque, derives the build and run
+  phases rather than letting a caller assemble them, and answers
+  `ledger_keys` — one key per execution, or two where the hermetic build
+  is deliberately accounted separately, never one per call (issue #22).
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's relay process dies
   unsettled (every relay is monitored). Releases are generation-checked, so

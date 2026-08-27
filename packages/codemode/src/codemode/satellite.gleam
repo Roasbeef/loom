@@ -98,6 +98,12 @@
 //// `{op_id, step_id}`, so the broker pools budget across the whole
 //// execution: fan-out buys parallelism, not extra resources (design §6.5;
 //// the broker `CLAUDE.md` invariant "Budget is pooled per execution").
+//// That pair, and the budget, arrive as the run phase's `PhaseIdentity`
+//// (`codemode/identity`) — one value threaded from `run` into the host's
+//// state and out again into every clearance, rather than three copies a
+//// caller filled in separately. The host has no way to reach a second
+//// ledger part-way through an execution because it holds no coordinates
+//// it did not receive.
 ////
 //// # The terminal outcome frame
 ////
@@ -127,8 +133,8 @@ import broker/policy.{type SandboxPolicy}
 import broker/token
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
+import codemode/identity.{type PhaseIdentity}
 import core/clock.{type Clock}
-import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -169,12 +175,6 @@ pub type Outcome {
   Completed(value: MsgPackValue)
   /// The program failed in a controlled way, with a message and details.
   Errored(message: String, details: MsgPackValue)
-}
-
-/// The pooled execution identity: one token, one budget ledger, one
-/// `{op_id, step_id}` shared by every `cap_call`.
-pub type ExecId {
-  ExecId(op_id: OpId, step_id: String)
 }
 
 /// One satellite run: the program's outcome, and what the kernel actually
@@ -222,14 +222,13 @@ pub type CapRequest {
     cap: String,
     /// The marshalled call arguments.
     args: MsgPackValue,
-    /// The pooled operation id.
-    op_id: OpId,
-    /// The pooled step id.
-    step_id: String,
+    /// The run phase's identity — the `{op_id, step_id}` this call clears
+    /// under and the pooled budget it reserves against. A router receives
+    /// it derived; it has no coordinates of its own to substitute
+    /// (`codemode/identity`).
+    identity: PhaseIdentity,
     /// The session base policy for this execution.
     base_policy: SandboxPolicy,
-    /// The pooled per-execution budget.
-    budget: Budget,
     /// Enforcement strictness for jailed effects.
     demand: EnforcementDemand,
     /// The allowlist-constructed child environment.
@@ -269,14 +268,13 @@ pub type LaunchSpec {
     token_path: String,
     /// Path to the cap-channel AF_UNIX socket (`LOOM_CAP_SOCK`).
     cap_socket_path: String,
-    /// The pooled operation id.
-    op_id: OpId,
-    /// The pooled step id.
-    step_id: String,
+    /// The run phase's identity: the `{op_id, step_id}` the node is
+    /// dispatched under — the host's own, which is what makes
+    /// `broker.abort` at the deadline reach it — and the pooled budget
+    /// and wall deadline it shares with every `cap_call`.
+    identity: PhaseIdentity,
     /// The session base policy (network off except the cap socket).
     base_policy: SandboxPolicy,
-    /// The pooled per-execution budget and wall deadline.
-    budget: Budget,
     /// The allowlist-constructed child environment.
     env: List(#(String, String)),
     /// The working directory inside the jail.
@@ -314,12 +312,16 @@ pub type WireIn {
   WireClosed(reason: String)
 }
 
-/// The host's configuration: the session base, budget, and the injected
-/// effect seams (entropy, clock, token-file I/O, and the cap router).
+/// The host's configuration: the session base and the injected effect
+/// seams (entropy, clock, token-file I/O, and the cap router).
+///
+/// Carries no operation, step or budget: the run phase's identity is an
+/// argument to `run`, derived from the execution's one `ExecIdentity`, so
+/// a host cannot be configured to run under coordinates of its own
+/// (`codemode/identity`).
 pub type SatelliteConfig {
   SatelliteConfig(
     base_policy: SandboxPolicy,
-    budget: Budget,
     demand: EnforcementDemand,
     env: List(#(String, String)),
     cwd: String,
@@ -340,7 +342,7 @@ pub type SatelliteConfig {
 // --- run ------------------------------------------------------------------
 
 /// Runs a compiled artifact in a jailed satellite, servicing its
-/// capability calls through `broker` under the pooled `exec_id`, and
+/// capability calls through `broker` under the run phase's identity, and
 /// returns the program's structured `Outcome` together with what the
 /// kernel enforced on the node.
 ///
@@ -354,19 +356,18 @@ pub type SatelliteConfig {
 /// is still owed (M4 triage CH-F3(b)).
 pub fn run(
   artifact: Artifact,
-  exec_id: ExecId,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   launch: Launcher,
 ) -> Run {
-  let ExecId(op_id:, step_id:) = exec_id
   let vault = token.new(config.entropy)
   let binding =
     token.Binding(
-      op_id:,
-      step_id:,
+      op_id: identity.op_id(phase),
+      step_id: identity.step_id(phase),
       policy: config.base_policy,
-      deadline_ms: config.budget.deadline_ms,
+      deadline_ms: identity.pooled_budget(phase).deadline_ms,
     )
   case token.mint(vault, binding) {
     Error(mint_error) ->
@@ -377,8 +378,7 @@ pub fn run(
         Ok(token_path) ->
           run_launched(
             artifact,
-            op_id,
-            step_id,
+            phase,
             broker,
             config,
             launch,
@@ -400,8 +400,7 @@ fn never_launched(error: RunError) -> Run {
 
 fn run_launched(
   artifact: Artifact,
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   launch: Launcher,
@@ -410,17 +409,7 @@ fn run_launched(
 ) -> Run {
   let #(now, _clock) = clock.read(config.clock)
   let result_subject = process.new_subject()
-  case
-    start_host(
-      op_id,
-      step_id,
-      broker,
-      config,
-      vault,
-      token_path,
-      result_subject,
-    )
-  {
+  case start_host(phase, broker, config, vault, token_path, result_subject) {
     Error(start_error) -> {
       config.unlink_token_file(token_path)
       never_launched(HostUnavailable(start_error_text(start_error)))
@@ -428,8 +417,7 @@ fn run_launched(
     Ok(host) ->
       dispatch_launch(
         artifact,
-        op_id,
-        step_id,
+        phase,
         token_path,
         config,
         launch,
@@ -442,8 +430,7 @@ fn run_launched(
 
 fn dispatch_launch(
   artifact: Artifact,
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   token_path: String,
   config: SatelliteConfig,
   launch: Launcher,
@@ -456,10 +443,8 @@ fn dispatch_launch(
       artifact:,
       token_path:,
       cap_socket_path: config.cap_socket_path,
-      op_id:,
-      step_id:,
+      identity: phase,
       base_policy: config.base_policy,
-      budget: config.budget,
       env: config.env,
       cwd: config.cwd,
       wire: host.wire,
@@ -469,8 +454,7 @@ fn dispatch_launch(
       process.send(host.commands, Stop)
       never_launched(LaunchRejected(reason))
     }
-    Ok(connection) ->
-      await_result(config, host, connection, now, result_subject)
+    Ok(connection) -> await_result(phase, host, connection, now, result_subject)
   }
 }
 
@@ -480,14 +464,15 @@ fn dispatch_launch(
 // the host, ordinarily, or `hand_over` here when the host was already
 // gone before it could take the connection (CH-F3).
 fn await_result(
-  config: SatelliteConfig,
+  phase: PhaseIdentity,
   host: Host,
   connection: CapConnection,
   now: Int,
   result_subject: Subject(Run),
 ) -> Run {
   let handed = hand_over(host, connection)
-  let wait = int.max(config.budget.deadline_ms - now, 0) + result_margin_ms
+  let deadline_ms = identity.pooled_budget(phase).deadline_ms
+  let wait = int.max(deadline_ms - now, 0) + result_margin_ms
   case process.receive(result_subject, wait) {
     // The host took the connection and destroyed it itself, so its
     // report is the authoritative one — unless the host was gone before
@@ -587,10 +572,11 @@ type InFlight {
 type State {
   State(
     broker: Broker,
-    op_id: OpId,
-    step_id: String,
+    // The run phase, threaded whole: every clearance the host makes takes
+    // its `{op_id, step_id}` and its budget from here, so the host cannot
+    // drift onto a second ledger part-way through an execution.
+    identity: PhaseIdentity,
     base_policy: SandboxPolicy,
-    budget: Budget,
     demand: EnforcementDemand,
     env: List(#(String, String)),
     cwd: String,
@@ -615,9 +601,16 @@ type State {
   )
 }
 
+// The one pooled budget every phase of the execution draws on, reached
+// through the threaded identity rather than kept as a second copy on the
+// state — a copy is exactly how the budget came to be specified in three
+// places.
+fn pooled(state: State) -> Budget {
+  identity.pooled_budget(state.identity)
+}
+
 fn start_host(
-  op_id: OpId,
-  step_id: String,
+  phase: PhaseIdentity,
   broker: Broker,
   config: SatelliteConfig,
   vault: token.Vault,
@@ -638,10 +631,8 @@ fn start_host(
     let state =
       State(
         broker:,
-        op_id:,
-        step_id:,
+        identity: phase,
         base_policy: config.base_policy,
-        budget: config.budget,
         demand: config.demand,
         env: config.env,
         cwd: config.cwd,
@@ -700,7 +691,7 @@ fn handle_connected(
   // The node exists from here, so the wall deadline starts here: after it,
   // the node dies as a unit (`broker.abort` plus `destroy`).
   let #(now, clock) = clock.read(state.clock)
-  let delay = int.max(state.budget.deadline_ms - now, 0)
+  let delay = int.max(pooled(state).deadline_ms - now, 0)
   let _ = process.send_after(state.commands, delay, Deadline)
   // The host now owns `destroy`. Telling `run_launched` so is what lets it
   // distinguish this from a host that stopped first (CH-F3).
@@ -835,7 +826,13 @@ fn handle_cap_call(
   // `{op_id, step_id, deadline}` binding, not confinement of an escaped
   // `.beam` (see the module doc). `check_for` scans without early exit.
   case
-    token.check_for(state.vault, presented, state.op_id, state.step_id, now)
+    token.check_for(
+      state.vault,
+      presented,
+      identity.op_id(state.identity),
+      identity.step_id(state.identity),
+      now,
+    )
   {
     Error(refusal) ->
       FrameContinue(emit(
@@ -872,10 +869,8 @@ fn route_cap_call(
     CapRequest(
       cap:,
       args:,
-      op_id: state.op_id,
-      step_id: state.step_id,
+      identity: state.identity,
       base_policy: state.base_policy,
-      budget: state.budget,
       demand: state.demand,
       env: state.env,
       cwd: state.cwd,
@@ -897,8 +892,9 @@ fn route_cap_call(
 // used to buy one harness-VM process per `cap_call` up to the wall
 // deadline (CH-F6). A refused call now costs no process.
 fn admit_cap_call(state: State, id: Int, plan: CapPlan) -> State {
-  case dict.size(state.inflight) >= state.budget.max_outstanding {
-    True -> emit(state, id, budget_denial(state.budget.max_outstanding))
+  let cap = pooled(state).max_outstanding
+  case dict.size(state.inflight) >= cap {
+    True -> emit(state, id, budget_denial(cap))
     False -> {
       let inflight =
         dict.insert(
@@ -1034,7 +1030,7 @@ fn terminate(
 // execution still answers with `exec_exit`, and that report is the ground
 // truth this whole path exists to carry.
 fn cleanup(state: State) -> Report {
-  broker.abort(state.broker, state.op_id)
+  broker.abort(state.broker, identity.op_id(state.identity))
   let node = case state.destroy {
     Some(destroy) -> destroy()
     None -> enforcement.Unreported("no node was launched")
@@ -1197,8 +1193,8 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
     Ok(argv) -> {
       let spec =
         broker.CallSpec(
-          op_id: request.op_id,
-          step_id: request.step_id,
+          op_id: identity.op_id(request.identity),
+          step_id: identity.step_id(request.identity),
           base_policy: request.base_policy,
           requirements: request.base_policy,
           grants: [],
@@ -1207,7 +1203,7 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
           argv:,
           env: request.env,
           cwd: request.cwd,
-          budget: request.budget,
+          budget: identity.pooled_budget(request.identity),
         )
       Ok(CapPlan(spec:, render: proc_render))
     }

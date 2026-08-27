@@ -27,6 +27,7 @@ import codemode/build
 import codemode/codemode
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import codemode/vet
@@ -319,16 +320,21 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
   // rather than on the build.
   let assert vet.Passed(vetted) = vet.vet(source, config.vet_policy)
     as "the spinning program must vet"
-  let assert Ok(artifact) = compile.compile(vetted, config.compile).result
+  let assert Ok(artifact) =
+    compile.compile(
+      vetted,
+      config.compile,
+      identity.build_phase(config.identity),
+    ).result
     as "the spinning program must compile"
   let #(started, _clock) = clock.read(rig.wall_clock())
   let short = budget.Budget(max_outstanding: 4, deadline_ms: started + 6000)
   let ran =
     satellite.run(
       artifact,
-      config.exec_id,
+      identity.run_phase(identity.under_budget(config.identity, budget: short)),
       live.broker,
-      satellite.SatelliteConfig(..config.satellite, budget: short),
+      config.satellite,
       config.launch,
     )
   let #(ended, _clock) = clock.read(rig.wall_clock())
@@ -430,13 +436,10 @@ fn exec_config(
       dependencies: compile.default_dependencies(),
       build: build.builder(build.BuildConfig(
         broker: live.broker,
-        op_id: op_id(now),
-        step_id: step_id <> "-build",
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,
         base_policy: live.base_policy,
         toolchain_roots: ["/"],
-        budget: pooled,
         demand: exec.BestEffort,
         env: [#("PATH", path)],
         dependencies: compile.default_dependencies(),
@@ -444,10 +447,19 @@ fn exec_config(
       )),
     ),
     broker: live.broker,
-    exec_id: satellite.ExecId(op_id: op_id(now), step_id:),
+    // One identity for the whole execution, with the hermetic build
+    // accounted separately: a different jail under a different policy,
+    // finished before the node starts, so the two pooled caps are never
+    // live at once. `-build` is the derived sub-step, not a second
+    // identity the caller wrote.
+    identity: identity.for_execution(
+      op_id: op_id(now),
+      step_id:,
+      budget: pooled,
+    )
+      |> identity.with_own_build_ledger,
     satellite: satellite.SatelliteConfig(
       base_policy: live.base_policy,
-      budget: pooled,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
