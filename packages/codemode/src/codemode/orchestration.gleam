@@ -65,12 +65,17 @@
 //// what the program spawned (the reap predicate is
 //// `minted_by.operation`, `client/agency.reap_run`).
 ////
-//// None of this rests on `{op_id, step_id}` being unique per execution.
-//// The pipeline assumes that elsewhere — it is the broker's pooled
-//// ledger key, and `client/codemode.exec_root` names an execution's whole
-//// working directory after a digest of it — but a batch holding two
-//// `code_mode` calls falsifies it, so a seam that mints durable names
-//// declines to depend on it.
+//// None of this rests on `{op_id, step_id}` being unique per execution,
+//// and nothing else does any more either. That pair is the *batch*
+//// identity the broker pools budget on; `{op_id, step_id, source_index}`
+//// is the execution identity, and `client/codemode.exec_root` digests
+//// the triple so an execution's whole working directory — its build
+//// root, its cap socket, its token file — is its own. The pooled ledger
+//// still keys on the pair, deliberately: two programs in one batch are
+//// one batch (`docs/adr/005-budget-pooling-granularity.md`, "Two
+//// programs in one batch"). A seam that mints durable names was the
+//// first place that had to stop depending on the pair, which is why the
+//// argument was written down here first.
 ////
 //// # Every boundary decodes totally
 ////
@@ -139,6 +144,65 @@ pub const serviced_caps = [
 /// unbounded loop reaches in a second.
 pub const default_spawn_ceiling = 32
 
+/// The lifetime ceiling on `strand.send` admissions in one execution.
+///
+/// A send is a durable commit per call, and to an *idle* descendant it
+/// **starts a run** — a provider round trip the harness pays for. A send
+/// loop to a child that keeps going idle is spawn-join-spawn with the
+/// mint replaced by a wake, so it costs what a spawn loop costs while
+/// passing every live cap. Sized as four messages per potential child at
+/// the spawn ceiling: a plan that needs more conversation than that with
+/// each of thirty-two children is not a plan a program should be running
+/// unattended.
+pub const send_ceiling = 128
+
+/// The lifetime ceiling on `strand.note` admissions in one execution.
+///
+/// One durable write-once register per call, under a key the program
+/// chooses — so a loop mints unbounded *distinct* registers and the
+/// session store grows by exactly as much as the program felt like
+/// writing, permanently, after the execution is gone. That is the "mints
+/// something that outlives the execution" test met head on. Eight cells
+/// per potential child at the spawn ceiling, which is a generous
+/// blackboard for a deterministic plan and nowhere near a loop.
+pub const note_ceiling = 256
+
+/// The lifetime ceiling on `strand.notes` admissions in one execution.
+///
+/// A full prefix scan of every agent namespace in the session, per call.
+/// It mints nothing, but its cost grows with what the program's own
+/// writes just added, so a note/notes loop is quadratic in harness work
+/// where every other call here is linear.
+///
+/// **This number and `note_ceiling` hold together and must be relaxed
+/// together, or not at all.** The quadratic needs both factors unbounded:
+/// with notes at 64 and note at 256, the worst case is 64 scans over
+/// (whatever the session already held + 256) cells, which is linear in
+/// each factor separately. Raising `note_ceiling` alone puts the
+/// superlinear term back, and so does raising this one. The alternative —
+/// charging a read by the size of what it returned, or giving a program a
+/// work budget it can read — is the model-readable budget issue #23
+/// forbids, arriving by the side door; a flat count is the whole of the
+/// instrument on purpose.
+pub const notes_ceiling = 64
+
+/// The in-band code a spawn refused at its ceiling travels under.
+///
+/// Shipped vocabulary: `cap/strand.map_error` decodes it to
+/// `SpawnCeilingReached` and #23's exit criteria assert on it, so it
+/// stays its own code rather than being folded into the generic one
+/// below.
+pub const spawn_ceiling_code = "spawn_ceiling"
+
+/// The in-band code every other ceiling refusal travels under.
+///
+/// One code and one decoded variant for the three, not three of each. A
+/// program at any of them does the same thing — stop looping — and the
+/// message names the capability and the number, so a third arm would buy
+/// a distinction nothing acts on. `cap/strand.map_error` decodes this to
+/// `AdmissionCeilingReached`.
+pub const admission_ceiling_code = "admission_ceiling"
+
 // --- the seam --------------------------------------------------------------
 
 /// What the router needs beyond the request: the Agency to call, the
@@ -160,17 +224,53 @@ pub type Orchestration {
 }
 
 /// The lifetime admission ceilings an orchestration execution runs under:
-/// one, on spawning. See `satellite.CapCeiling` for why a loop needs a
-/// ceiling where a turn did not.
+/// four of the six capabilities, sized by what each one costs. See
+/// `satellite.CapCeiling` for the test a capability has to meet to earn a
+/// ceiling at all, and for why the unit is the execution.
+///
+/// `strand.wait` and `strand.roster` have none, and their absence is a
+/// decision rather than an omission. A `wait`'s whole cost is time, which
+/// the Agency's own per-call clamp and the execution's wall deadline
+/// already bind; it mints nothing and it cannot outlive the program that
+/// is blocked in it. A `roster` is bounded structurally — it reads a
+/// lineage whose size is `session_strands` (16) — so a loop over it
+/// re-reads a constant.
+///
+/// Only the spawn ceiling is configurable, because it is the one an
+/// operator has a reason to tune against a session's own `fan_out` and
+/// `session_strands`. The other three are constants of this seam: they
+/// are sized against what the harness pays, not against what a session
+/// affords.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // orchestration.ceilings(32) == [CapCeiling("strand.spawn", 32)]
+/// // orchestration.ceilings(32) |> list.length == 4
 /// ```
 ///
 pub fn ceilings(spawn_admissions: Int) -> List(CapCeiling) {
-  [CapCeiling(cap: spawn_cap, admissions: spawn_admissions)]
+  [
+    CapCeiling(
+      cap: spawn_cap,
+      admissions: spawn_admissions,
+      code: spawn_ceiling_code,
+    ),
+    CapCeiling(
+      cap: send_cap,
+      admissions: send_ceiling,
+      code: admission_ceiling_code,
+    ),
+    CapCeiling(
+      cap: note_cap,
+      admissions: note_ceiling,
+      code: admission_ceiling_code,
+    ),
+    CapCeiling(
+      cap: notes_cap,
+      admissions: notes_ceiling,
+      code: admission_ceiling_code,
+    ),
+  ]
 }
 
 /// The capability router for the orchestration seam.

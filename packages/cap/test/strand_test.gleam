@@ -420,6 +420,7 @@ pub fn every_refusal_code_recovers_its_name_test() {
     #("parent_run_ended", strand.ParentRunEnded("because")),
     #("result_schema_unmet", strand.ResultSchemaUnmet("because")),
     #("spawn_ceiling", strand.SpawnCeilingReached("because")),
+    #("admission_ceiling", strand.AdmissionCeilingReached("because")),
   ]
   assert list.all(cases, fn(one) {
     install_fake(with: denied(one.0))
@@ -466,6 +467,12 @@ pub fn a_handle_renders_the_way_the_harness_writes_it_test() {
 pub fn a_refusal_and_a_join_render_for_a_report_test() {
   assert strand.error_text(strand.NotADescendant("nope"))
     == "not_a_descendant: nope"
+  // The two ceilings render apart, so a program building a report out of
+  // what went wrong says which bound it hit rather than "a ceiling".
+  assert strand.error_text(strand.SpawnCeilingReached("32 reached"))
+    == "spawn_ceiling: 32 reached"
+  assert strand.error_text(strand.AdmissionCeilingReached("256 reached"))
+    == "admission_ceiling: 256 reached"
   assert strand.waited_text(strand.Pending(
       handle: strand.Handle(strand: "sub:a", operation: "op_1"),
       waited_ms: 20,

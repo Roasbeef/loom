@@ -46,11 +46,30 @@
 //// `agent_spawn` is throttled by turn cost — the model pays a provider
 //// round trip per spawn, so the economics bound the fan-out. **A loop
 //// pays nothing.** Replacing the turn with a loop removes an implicit
-//// throttle, so the seam adds an explicit one: a hard ceiling on spawn
-//// admissions per execution, refused in band *at* the ceiling as
-//// `SpawnCeilingReached`. It is a lifetime bound on admissions, not a
-//// live-children bound; `FanOutCapReached` is still what answers a
-//// program that asks for more children at once than its strand may have.
+//// throttle, so the seam adds an explicit one: a hard ceiling on
+//// admissions per execution, refused in band *at* the ceiling. It is a
+//// lifetime bound on admissions, not a live-children bound;
+//// `FanOutCapReached` is still what answers a program that asks for more
+//// children at once than its strand may have.
+////
+//// The same argument covers every call that mints something outliving
+//// the execution, so four of the six are capped and two are not:
+////
+//// | call | ceiling | why |
+//// |---|---|---|
+//// | `spawn` | 32 | a child strand, durable |
+//// | `send` | 128 | a durable commit, and to an idle child it starts a run |
+//// | `note` | 256 | a durable write-once register under a chosen key |
+//// | `notes` | 64 | a full prefix scan of the session's agent namespaces |
+//// | `wait` | none | its cost is time, which the clamp and the deadline bind |
+//// | `roster` | none | bounded by `session_strands`, a structural constant |
+////
+//// A spawn refused at its ceiling is `SpawnCeilingReached`; the other
+//// three are `AdmissionCeilingReached`, whose message names the
+//// capability and the number. **`note` and `notes` are one decision.**
+//// A note/notes loop is quadratic in harness work, and the quadratic
+//// needs both factors unbounded — capping either alone leaves it. Relax
+//// one and you have relaxed both.
 ////
 //// # What a satellite's death does and does not mean
 ////
@@ -261,9 +280,16 @@ pub type StrandError {
   /// demanded of it.
   ResultSchemaUnmet(message: String)
   /// This execution has admitted as many spawns as it may. The seam's own
-  /// ceiling, and the only refusal here that is not the tools'; see the
-  /// module doc for why a loop needs one where a turn did not.
+  /// ceiling; see the module doc for why a loop needs one where a turn
+  /// did not.
   SpawnCeilingReached(message: String)
+  /// This execution has admitted as many calls of some *other* capped
+  /// capability — `send`, `note` or `notes` — as it may. One variant for
+  /// the three because the answer to all three is the same, stop looping,
+  /// and the message names which capability, what the number was, and
+  /// that the bound is for the execution's whole lifetime. Retrying, or
+  /// waiting first, will not free one.
+  AdmissionCeilingReached(message: String)
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
   /// The capability channel could not carry the call.
@@ -717,6 +743,7 @@ fn map_error(error: CallError) -> StrandError {
         "parent_run_ended" -> ParentRunEnded(message:)
         "result_schema_unmet" -> ResultSchemaUnmet(message:)
         "spawn_ceiling" -> SpawnCeilingReached(message:)
+        "admission_ceiling" -> AdmissionCeilingReached(message:)
         _ -> StrandRefused(code:, message:)
       }
   }
@@ -744,6 +771,7 @@ pub fn error_text(error: StrandError) -> String {
     ParentRunEnded(message:) -> "parent_run_ended: " <> message
     ResultSchemaUnmet(message:) -> "result_schema_unmet: " <> message
     SpawnCeilingReached(message:) -> "spawn_ceiling: " <> message
+    AdmissionCeilingReached(message:) -> "admission_ceiling: " <> message
     StrandRefused(code:, message:) -> code <> ": " <> message
     StrandUnavailable(reason:) -> "unavailable: " <> reason
   }

@@ -297,31 +297,73 @@ pub type CapDenial {
 }
 
 /// A lifetime ceiling on how many times one capability may be admitted
-/// within a single execution.
+/// within a single execution, and the in-band code its refusal travels
+/// under.
 ///
-/// This exists for one capability and one reason. `agent_spawn` is
-/// throttled by turn cost: the model pays a provider round trip per
-/// spawn, so the economics bound the fan-out without anything in the
-/// harness having to. A program's loop pays nothing. Replacing the turn
-/// with a loop therefore removes an implicit throttle, and an implicit
-/// throttle removed has to be replaced by an explicit one.
+/// ## What earns a ceiling
 ///
-/// It is a *lifetime* bound on admissions, deliberately distinct from the
-/// pooled `max_outstanding` cap (how many effects may be in flight at
-/// once) and from the Agency's `fan_out` / `session_strands` caps (how
-/// many children may be live at once). A program that spawns, joins, and
-/// spawns again frees a live slot every time round and would pass every
-/// one of those checks forever; only a lifetime count stops it.
+/// A capability needs one when a call **mints something that outlives the
+/// execution**. `agent_spawn` is the clearest case: a model pays a
+/// provider round trip per spawn, so the economics bound the fan-out
+/// without anything in the harness having to, and a program's loop pays
+/// nothing — an implicit throttle removed has to be replaced by an
+/// explicit one. The same test admits a durable message that starts a
+/// run, and a durable write-once register under a program-chosen key. It
+/// excludes a call whose whole cost is time, which the per-call clamp and
+/// the wall deadline already bind.
 ///
-/// It is enforced by the host rather than by the router because the host
-/// is where an execution's identity lives. One host is stood up per
-/// execution, holding the one `PhaseIdentity` derived from the one
-/// `ExecIdentity` a caller may mint (`codemode/identity`), so a ceiling
-/// counted here is keyed to that identity by construction: there is no
-/// second host to get a second count from, and a router — which a caller
-/// *could* build twice — never holds the tally.
+/// A ceiling is a *lifetime* bound on admissions, deliberately distinct
+/// from the pooled `max_outstanding` cap (how many effects may be in
+/// flight at once) and from the Agency's `fan_out` / `session_strands`
+/// caps (how many children may be live at once). A program that spawns,
+/// joins, and spawns again frees a live slot every time round and would
+/// pass every one of those checks forever; only a lifetime count stops
+/// it. `codemode/orchestration.ceilings` is the table and argues each
+/// number.
+///
+/// ## Why per execution, and not per turn
+///
+/// The tally lives in the host, so it is per execution: one host is stood
+/// up per `run`, one `run` per `execute`, one `execute` per tool call. A
+/// batch holding K `code_mode` calls therefore gets K fresh tallies, and
+/// it is worth being exact about why that is the right unit rather than a
+/// factor the model chose.
+///
+/// What the turn cost throttled was **zero-marginal-cost iteration**, not
+/// turns. Inside one execution a program's loop is free, which is the
+/// whole defect; a *second* `code_mode` call is not free — it costs an
+/// authored program, a hermetic `gleam build`, a jailed node launch and
+/// its own wall deadline. Its marginal cost is spawn-shaped, so a
+/// per-execution ceiling reinstates exactly the economics that were lost.
+/// Per turn would not be a security boundary in any case: a model that
+/// can put K executions in one assistant message can put K in K messages,
+/// and nothing bounds turns.
+///
+/// The host is also the only place the tally can be keyed honestly. One
+/// host holds the one `PhaseIdentity` derived from the one `ExecIdentity`
+/// a caller may mint (`codemode/identity`), so a count here is keyed to
+/// that identity by construction: there is no second host to get a second
+/// count from, and a router — which a caller *could* build twice — never
+/// holds the tally.
+///
+/// If a lifetime spawn count per *batch* is ever wanted, the escalation
+/// path is a fold rather than a new mechanism: the lineage ledger is
+/// durable, records `minted_by: CallSite(operation, step_id,
+/// source_index)` for every child, and is already read on the spawn path,
+/// so a count per `{operation, step_id}` is a pure fold over data in
+/// hand. It generalises to none of the other ceilings — nothing durable
+/// records a note, a read or a send by call site — which is a reason to
+/// build it only when a spawn count is what is actually wanted.
+///
+/// ## The code
+///
+/// `code` is the in-band refusal code, declared here by the seam rather
+/// than chosen by the host, because the vocabulary is half of a contract
+/// whose other half is `cap/strand.map_error`: a code no `cap` module
+/// decodes reaches a program as an unnamed refusal. The host stays
+/// generic over the list and knows no capability names.
 pub type CapCeiling {
-  CapCeiling(cap: String, admissions: Int)
+  CapCeiling(cap: String, admissions: Int, code: String)
 }
 
 /// Maps a `CapRequest` to a `CapPlan`, or refuses it in-band. Injected so
@@ -994,10 +1036,9 @@ fn route_cap_call(
 // moment later, rather than a transient "too many in flight".
 fn admit_cap_call(state: State, id: Int, cap: String, plan: CapPlan) -> State {
   let already = admitted_count(state, cap)
-  case ceiling_for(state, cap) {
-    Some(ceiling) if already >= ceiling ->
-      emit(state, id, ceiling_denial(cap, ceiling))
-    Some(_) | None -> {
+  case ceiling_reached(state, cap, already) {
+    Some(ceiling) -> emit(state, id, ceiling_denial(ceiling))
+    None -> {
       let outstanding = pooled(state).max_outstanding
       case dict.size(state.inflight) >= outstanding {
         True -> emit(state, id, budget_denial(outstanding))
@@ -1028,35 +1069,39 @@ fn admitted_count(state: State, cap: String) -> Int {
   dict.get(state.admitted, cap) |> result.unwrap(0)
 }
 
-// The lifetime ceiling on `cap`, if this execution declares one.
-fn ceiling_for(state: State, cap: String) -> Option(Int) {
-  list.find_map(state.ceilings, fn(ceiling) {
-    case ceiling.cap == cap {
-      True -> Ok(ceiling.admissions)
-      False -> Error(Nil)
-    }
+// The lifetime ceiling `cap` has already reached, if this execution
+// declares one for it and the tally is at it. Answering with the whole
+// ceiling rather than its number is what lets the refusal travel under
+// the code the seam declared: a guard cannot read a record field, and
+// asking the question here keeps the admission path two arms deep.
+fn ceiling_reached(
+  state: State,
+  cap: String,
+  already: Int,
+) -> Option(CapCeiling) {
+  list.find(state.ceilings, fn(ceiling) {
+    ceiling.cap == cap && already >= ceiling.admissions
   })
   |> option.from_result
 }
 
-// The refusal names the ceiling, the capability, and that it is a
-// lifetime bound: a program told only "refused" would loop, and one told
-// "too many at once" would join and try again forever.
+// The refusal names the capability, the number, and that the bound is for
+// the execution's whole lifetime: a program told only "refused" would
+// loop, and one told "too many at once" would wait and try again forever.
 //
-// The code is `spawn_ceiling` rather than a generic one because there is
-// exactly one ceiling today and a program branches on the name it was
-// given. The mechanism is general; the vocabulary the far side maps
-// (`cap/strand.map_error`) is not, and inventing a code no `cap` module
-// decodes would reach a program as an unnamed refusal.
-fn ceiling_denial(cap: String, ceiling: Int) -> CapOutcome {
+// The code is the seam's, carried on the ceiling. `cap/strand.map_error`
+// is the other half of that contract, so a code no `cap` module decodes
+// would reach a program as an unnamed refusal — which is why the host,
+// which knows no capability names, does not invent one here.
+fn ceiling_denial(ceiling: CapCeiling) -> CapOutcome {
   framing.CapErr(
-    code: "spawn_ceiling",
+    code: ceiling.code,
     message: "this execution has already admitted its ceiling of "
-      <> int.to_string(ceiling)
+      <> int.to_string(ceiling.admissions)
       <> " "
-      <> cap
+      <> ceiling.cap
       <> " calls; that is a lifetime cap for one program, not a "
-      <> "live-at-once cap, so joining and retrying will not free one",
+      <> "live-at-once cap, so waiting and retrying will not free one",
   )
 }
 

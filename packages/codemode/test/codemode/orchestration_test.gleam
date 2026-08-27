@@ -789,6 +789,175 @@ pub fn the_ceiling_refusal_names_the_ceiling_test() {
   Nil
 }
 
+// --- the whole ceiling table -----------------------------------------------
+//
+// The spawn tests above run at a shrunk bound because what they prove is
+// the mechanism: refused *at* the ceiling, never reaching the plane, and
+// under the shipped `spawn_ceiling` name. What follows runs at the
+// production numbers instead, because what it proves is the *table* —
+// that each capped capability refuses at its own bound and says which.
+
+// One row of `orchestration.ceilings`, as this suite asserts it.
+type Capped {
+  Capped(cap: String, bound: Int, code: String)
+}
+
+fn capped() -> List(Capped) {
+  [
+    Capped(
+      cap: orchestration.spawn_cap,
+      bound: orchestration.default_spawn_ceiling,
+      code: "spawn_ceiling",
+    ),
+    Capped(
+      cap: orchestration.send_cap,
+      bound: orchestration.send_ceiling,
+      code: "admission_ceiling",
+    ),
+    Capped(
+      cap: orchestration.note_cap,
+      bound: orchestration.note_ceiling,
+      code: "admission_ceiling",
+    ),
+    Capped(
+      cap: orchestration.notes_cap,
+      bound: orchestration.notes_ceiling,
+      code: "admission_ceiling",
+    ),
+  ]
+}
+
+fn production_ceilings() -> List(satellite.CapCeiling) {
+  orchestration.ceilings(orchestration.default_spawn_ceiling)
+}
+
+/// Each capped capability admits exactly its own number and then refuses,
+/// under its own code, in a message that names the capability, the number
+/// and the lifetime.
+///
+/// One test over the table rather than four hand-written ones: the defect
+/// #88 records is that an argument covering six calls had been spent on
+/// one, so what needs pinning is the *correspondence* between the table
+/// and what the host does with it, row by row.
+pub fn every_capped_capability_refuses_at_its_own_bound_test() {
+  list.each(capped(), fn(row) {
+    let seen = recorder()
+    let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+    let assert Ok(reported) =
+      run_peer_with(
+        fresh_dir("bound-" <> row.cap),
+        agency,
+        production_ceilings(),
+        looping_peer(row.cap, row.bound + 1),
+      )
+      as "the ceiling peer must report"
+    // Admitted exactly `bound` times, then refused — at the ceiling, not
+    // before it and not one call late.
+    assert list.length(reported) == row.bound + 1
+    assert list.take(reported, row.bound) == list.repeat("ok", row.bound)
+    let assert [refusal] = list.drop(reported, row.bound)
+      as "one refusal, at the bound"
+    assert string.starts_with(refusal, row.code <> "\n")
+    // A program told only "refused" retries forever, and one told "too
+    // many at once" waits first and then retries forever. It is told the
+    // capability, the number, and that the bound is for the execution's
+    // whole life.
+    assert string.contains(refusal, row.cap)
+    assert string.contains(refusal, int.to_string(row.bound))
+    assert string.contains(refusal, "lifetime")
+    // And the Agency saw exactly the admitted ones: a refused call never
+    // reached the messaging plane at all.
+    assert list.length(fake_agency.drain(seen)) == row.bound
+  })
+}
+
+/// `strand.wait` and `strand.roster` carry no ceiling, and the absence is
+/// a decision rather than an oversight.
+///
+/// A wait's whole cost is time, which the Agency's own clamp and the
+/// execution's wall deadline already bind; a roster reads a lineage whose
+/// size is `session_strands`, a structural constant, so a loop over it
+/// re-reads the same bounded thing. Driven past the *largest* ceiling in
+/// the table, so a ceiling accidentally added to either would be caught
+/// here rather than only in the row list above.
+pub fn the_uncapped_calls_are_uncapped_test() {
+  let attempts = orchestration.note_ceiling + 1
+  list.each([orchestration.wait_cap, orchestration.roster_cap], fn(cap) {
+    let seen = recorder()
+    let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+    let assert Ok(reported) =
+      run_peer_with(
+        fresh_dir("uncapped-" <> cap),
+        agency,
+        production_ceilings(),
+        looping_peer(cap, attempts),
+      )
+      as "the uncapped peer must report"
+    assert reported == list.repeat("ok", attempts)
+    assert list.length(fake_agency.drain(seen)) == attempts
+  })
+}
+
+/// The table is exactly the four calls that mint something outliving the
+/// execution, in the numbers their own docs argue.
+///
+/// Pinned as a whole because the numbers are load-bearing together:
+/// `note` and `notes` bound a quadratic between them, and relaxing either
+/// alone puts the superlinear term back.
+pub fn the_ceiling_table_is_the_four_that_mint_test() {
+  let rows =
+    list.map(production_ceilings(), fn(entry) {
+      Capped(cap: entry.cap, bound: entry.admissions, code: entry.code)
+    })
+  assert rows == capped()
+  assert orchestration.note_ceiling == 256
+  assert orchestration.notes_ceiling == 64
+}
+
+// A peer that calls one capability `attempts` times, reporting `"ok"` for
+// each admission and `"{code}\n{message}"` for each refusal, in order.
+fn looping_peer(cap: String, attempts: Int) -> fn(PeerCtx) -> Nil {
+  fn(ctx: PeerCtx) {
+    let reported =
+      list.map(
+        int.range(from: attempts - 1, to: -1, with: [], run: list.prepend),
+        fn(id) {
+          satellite_peer.send_cap_call(
+            ctx,
+            ctx.token,
+            id,
+            cap,
+            looped_args(cap, id),
+          )
+          case answer(ctx, id) {
+            Ok(framing.CapOk(..)) -> "ok"
+            Ok(framing.CapErr(code:, message:)) -> code <> "\n" <> message
+            Error(Nil) -> "no answer"
+          }
+        },
+      )
+    satellite_peer.send_outcome(
+      ctx,
+      msgpack.ArrayValue(list.map(reported, msgpack.StringValue)),
+    )
+  }
+}
+
+// Well-formed arguments for the `n`th call of `cap`. The varying part is
+// deliberate where a repeat would be unrealistic: two spawns with one
+// purpose derive one name, and two notes under one key are one register.
+fn looped_args(cap: String, n: Int) -> MsgPackValue {
+  let nth = int.to_string(n)
+  case cap {
+    "strand.spawn" -> spawn_args("review " <> nth)
+    "strand.note" -> map([#("key", text("k" <> nth)), #("value", text("v"))])
+    "strand.send" -> map([#("to", text("main")), #("text", text("hi " <> nth))])
+    // The rest take no argument that a repeat would spoil, so they reuse
+    // the plan-shape suite's own well-formed arguments.
+    _other -> arguments(cap)
+  }
+}
+
 // A peer that spawns until it is refused, reporting the code of every
 // answer in order.
 fn spawning_peer(ctx: PeerCtx) -> Nil {
@@ -858,11 +1027,22 @@ fn answer(ctx: PeerCtx, id: Int) -> Result(framing.CapOutcome, Nil) {
   }
 }
 
-// Runs one peer against a real satellite host under the orchestration
-// router and the ceiling, and reads the string list it reported.
+// Runs one peer against a real satellite host under the small spawn
+// ceiling this suite's first two tests use.
 fn run_peer(
   dir: String,
   agency: agent.Agency,
+  script: fn(PeerCtx) -> Nil,
+) -> Result(List(String), String) {
+  run_peer_with(dir, agency, orchestration.ceilings(ceiling), script)
+}
+
+// Runs one peer against a real satellite host under the orchestration
+// router and the given ceilings, and reads the string list it reported.
+fn run_peer_with(
+  dir: String,
+  agency: agent.Agency,
+  ceilings: List(satellite.CapCeiling),
   script: fn(PeerCtx) -> Nil,
 ) -> Result(List(String), String) {
   let assert Ok(broker_actor) =
@@ -896,7 +1076,7 @@ fn run_peer(
         write_token_file: satellite.private_token_writer(dir),
         unlink_token_file: satellite.unlink_token_file,
         router: orchestration.router(seam(agency)),
-        ceilings: orchestration.ceilings(ceiling),
+        ceilings:,
         call_timeout_ms: 3000,
       ),
       satellite_peer.launcher(script),
