@@ -1387,7 +1387,13 @@ fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
           step_id: identity.step_id(request.identity),
           base_policy: request.base_policy,
           requirements: request.base_policy,
-          grants: [],
+          // Whatever the run phase carries — which is the execution's
+          // approved grants, since a capability call the program makes is
+          // the program's own execution and not a stage that produced it.
+          // A router reads them off the identity it was handed rather
+          // than holding a list of its own, so an injected router cannot
+          // widen a call the operator did not approve.
+          grants: identity.grants(request.identity),
           response: broker.ProceedNarrowed,
           demand: request.demand,
           argv:,

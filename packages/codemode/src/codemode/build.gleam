@@ -288,6 +288,15 @@ fn reached_for_hex(diagnostics: String) -> Bool {
 /// nowhere else, so this clearance lands in whichever ledger the
 /// execution's `BuildLedger` chose — the execution's own, or its `-build`
 /// sub-step — and never in a third.
+///
+/// The grants come from the same place, and for a build phase they are
+/// empty by construction: `identity.build_phase` drops the execution's
+/// approval rather than forwarding it, so an approved escalation never
+/// widens the hermetic build. That matters more here than anywhere else
+/// in the pipeline, because `policy.compose` applies grants *after* the
+/// meet — a `GrantNetwork` reaching this call would undo the one property
+/// the build exists to have. See `codemode/identity`, "The widening, and
+/// why it lives here".
 pub fn build_call(
   config: BuildConfig,
   phase: PhaseIdentity,
@@ -298,7 +307,7 @@ pub fn build_call(
     step_id: identity.step_id(phase),
     base_policy: config.base_policy,
     requirements: build_requirements(config, root),
-    grants: [],
+    grants: identity.grants(phase),
     // Nothing about a hermetic build is best-effort: a session base that
     // cannot deliver these requirements must refuse, not run a build with
     // the network on or the workspace writable.

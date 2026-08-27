@@ -1,5 +1,5 @@
-//// The identity one code-mode execution runs under, and the phases
-//// derived from it.
+//// The identity one code-mode execution runs under, the approval that
+//// widens it, and the phases derived from both.
 ////
 //// # Why this module exists
 ////
@@ -56,8 +56,51 @@
 //// its own copy of the identity fields, filled in by a caller who had no
 //// way to see that a sibling configuration had already been filled in
 //// differently.
+////
+//// # The widening, and why it lives here
+////
+//// An approved escalation widens a code-mode execution by handing it
+//// grants, and grants are the only way `broker/policy.compose` ever
+//// widens anything. Those grants have exactly the requirements the
+//// identity has — one threaded value, derived per phase, with no way for
+//// a caller to assemble a second — so they ride the same value rather
+//// than a fourth field on four configuration records. `widened_by` is
+//// the only way to attach them, `grants` the only way to read them back,
+//// and both `PhaseIdentity` and `ExecIdentity` stay opaque.
+////
+//// The derivation is where the interesting decision is: **`run_phase`
+//// carries the grants and `build_phase` drops them.** An approval widens
+//// the program's own execution, never the hermetic build that produced
+//// it. Three reasons, in the order they matter:
+////
+//// 1. Composition applies grants *after* the meet, so a
+////    `GrantNetwork(NetworkFull)` reaching the build call would put the
+////    network back on inside a build whose entire security property is
+////    that it is pinned and offline. The build states
+////    `network: NetworkOff` as a requirement and `RefuseNarrowed` as its
+////    response precisely so that it cannot run any other way, and a
+////    grant is the one thing in the system that can overrule a
+////    requirement.
+//// 2. Nothing a submitted program says changes what the build asks for.
+////    Its policy is the pipeline's — one writable root, the toolchain
+////    readable, the network off — so a build refused on policy is a
+////    session base that cannot host a hermetic build at all. That is an
+////    operator's misconfiguration, not a decision a human is being asked
+////    to make about *this* program.
+//// 3. The two phases are deliberately different propositions: a
+////    different jail, a different policy, a different enforcement
+////    report. Widening the build is not the same act as widening the
+////    program, and a mechanism that could not tell them apart would be
+////    consent to one spent on the other.
+////
+//// Because `build_phase` is the only way to obtain a build phase, this
+//// is a property of the types rather than of the four clearance sites
+//// remembering to pass `[]`: every one of them now reads
+//// `identity.grants(phase)`, and for a build phase that is empty by
+//// construction.
 
 import broker/budget.{type Budget}
+import broker/policy.{type Grant}
 import core/ids.{type OpId}
 import gleam/list
 
@@ -115,6 +158,7 @@ pub opaque type ExecIdentity {
     step_id: String,
     budget: Budget,
     build_ledger: BuildLedger,
+    grants: List(Grant),
   )
 }
 
@@ -126,7 +170,13 @@ pub opaque type ExecIdentity {
 /// level half of the invariant: a build configuration cannot carry an
 /// identity of its own, because it cannot construct one.
 pub opaque type PhaseIdentity {
-  PhaseIdentity(phase: Phase, op_id: OpId, step_id: String, budget: Budget)
+  PhaseIdentity(
+    phase: Phase,
+    op_id: OpId,
+    step_id: String,
+    budget: Budget,
+    grants: List(Grant),
+  )
 }
 
 /// Mints the identity for one execution. The build phase shares the
@@ -145,7 +195,13 @@ pub fn for_execution(
   step_id step_id: String,
   budget budget: Budget,
 ) -> ExecIdentity {
-  ExecIdentity(op_id:, step_id:, budget:, build_ledger: BuildSharesLedger)
+  ExecIdentity(
+    op_id:,
+    step_id:,
+    budget:,
+    build_ledger: BuildSharesLedger,
+    grants: [],
+  )
 }
 
 /// Accounts the build phase against its own ledger, under the derived
@@ -187,9 +243,46 @@ pub fn under_budget(
   ExecIdentity(..identity, budget:)
 }
 
+/// The same execution, widened by an approved escalation's grants.
+///
+/// This is the only way grants enter the pipeline, and it is deliberately
+/// a setter on the one threaded value rather than a field on
+/// `ExecConfig`, `BuildConfig`, `SatelliteConfig` and `LaunchConfig`: four
+/// places to write a widening is four places for a caller to write a
+/// *different* widening, which is the defect the identity threading closed
+/// for operations and steps.
+///
+/// The grants are the ones a human approved for this execution's action
+/// and nothing else. A grant that cannot be attributed to one execution
+/// must widen nothing, so a caller with no approval in hand calls this
+/// with `[]` or does not call it at all — there is no session-wide list to
+/// fall back on, here or anywhere below.
+///
+/// Replaces rather than accumulates: two approvals for one execution are
+/// one set of grants, assembled by whoever holds them, not something this
+/// value quietly unions on repeated calls.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // identity.for_execution(op, step_id: "turn-4", budget:)
+/// //   |> identity.widened_by([policy.GrantEnv(name: "CC")])
+/// //   |> identity.run_phase
+/// //   |> identity.grants == [policy.GrantEnv(name: "CC")]
+/// ```
+///
+pub fn widened_by(
+  identity: ExecIdentity,
+  grants grants: List(Grant),
+) -> ExecIdentity {
+  ExecIdentity(..identity, grants:)
+}
+
 /// The build phase, derived from the execution's identity: the same
-/// operation, the same budget, and the step the execution's `BuildLedger`
-/// says the build is accounted under.
+/// operation, the same budget, the step the execution's `BuildLedger`
+/// says the build is accounted under — and **no grants**, whatever the
+/// execution carries. The module doc argues why the hermetic build is the
+/// one stage an approval never widens.
 ///
 /// ## Examples
 ///
@@ -203,12 +296,18 @@ pub fn build_phase(identity: ExecIdentity) -> PhaseIdentity {
     op_id: identity.op_id,
     step_id: build_step(identity),
     budget: identity.budget,
+    // Dropped, not forwarded: an approval widens the program's own
+    // execution and never the hermetic build that produced it. The module
+    // doc argues the three reasons; this line is where the argument is
+    // enforced, and it is the only place in the pipeline that decides it.
+    grants: [],
   )
 }
 
 /// The run phase, derived from the execution's identity: the execution's
-/// own `{op_id, step_id}` and budget, unchanged. The node and every
-/// capability call the program makes clear under this.
+/// own `{op_id, step_id}`, budget and approved grants, unchanged. The node
+/// and every capability call the program makes clear under this, so this
+/// is the one phase an approved escalation widens.
 ///
 /// ## Examples
 ///
@@ -222,6 +321,7 @@ pub fn run_phase(identity: ExecIdentity) -> PhaseIdentity {
     op_id: identity.op_id,
     step_id: identity.step_id,
     budget: identity.budget,
+    grants: identity.grants,
   )
 }
 
@@ -276,6 +376,24 @@ pub fn step_id(identity: PhaseIdentity) -> String {
 ///
 pub fn pooled_budget(identity: PhaseIdentity) -> Budget {
   identity.budget
+}
+
+/// The approved grants this phase's clearances compose with — the run
+/// phase's, and empty for a build phase whatever the execution carries.
+///
+/// Every clearance the pipeline builds reads its grants from here rather
+/// than writing a list of its own, so "which phases an approval widens"
+/// is answered once, in `build_phase` and `run_phase`, instead of at four
+/// call sites that could drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // identity.grants(identity.build_phase(widened)) == []
+/// ```
+///
+pub fn grants(identity: PhaseIdentity) -> List(Grant) {
+  identity.grants
 }
 
 /// The pair the broker keys its pooled ledger by, for this phase.
