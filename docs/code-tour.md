@@ -196,7 +196,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:260`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:271`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:270`), and its shape is the shape of every admission
 in the system.
@@ -689,7 +689,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1157`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1093`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1099`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -1105,7 +1105,7 @@ a sibling — and the determinism is exactly what makes a replayed spawn
 find its own child instead of minting a second one. If the ledger already
 has a cell for the minted name, the same handle comes straight back.
 
-`api.create_strand` (`runtime/api.gleam:672`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:679`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1116,7 +1116,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:893`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:900`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
@@ -1349,7 +1349,7 @@ the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:404`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:555`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

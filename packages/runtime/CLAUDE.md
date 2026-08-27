@@ -97,24 +97,45 @@ extended by the M3 runtime wave.
   names the strand for the same reason `ThresholdQuery` does: a
   preparation is built from a *strand's* durable projection, and one
   `Effects` record serves every strand of a session.
-- `runtime/escalation.{Escalation, CallScope, Status, claimed}` — the
-  durable record of a broker denial awaiting a decision, its decision,
-  and its single consumed re-execution. `CallScope` is the exact call
-  identity (`{operation, strand, step, source index, call id}`) an
-  approval is attributed to; only the clearance whose coordinates match
-  can spend it. `claimed` is the transition that moves a record to a
-  *later* call raising the same want: pending moves and refreshes its
-  denial, approved moves and keeps its grants, decided re-opens as a
-  fresh pending question with none.
-- `runtime/api.{escalations, escalation, escalations_below,
-  raise_escalation_for, claim_escalation, approve_escalation,
-  deny_escalation, consume_escalation}` — the durable escalation surface.
+- `runtime/escalation.{Escalation, CallScope, Action, Claim, Status,
+  claimed, scoped_to, bound_to}` — the durable record of a broker denial
+  awaiting a decision, its decision, and its single consumed
+  re-execution. `CallScope` is the exact call identity (`{operation,
+  strand, step, source index, call id}`) an approval is attributed to;
+  only the clearance whose coordinates match can spend it. `Action` is
+  what the claimant would actually *run* — `{tool, digest, preview}`,
+  all three computed by `client/escalate` and stored here opaquely —
+  and it is what consent binds to (#65): the record id is a digest of
+  the *want*, which says nothing about the command behind it.
+  `claimed` is the transition that moves a record to a *later* call
+  raising the same want: pending moves and refreshes its denial and
+  action, approved moves and keeps its grants **only when the claimant's
+  action digest matches**, and everything else — a mismatched action, a
+  rejection, a consumption — re-opens as a fresh pending question with
+  no grants. Re-opening costs a human an answer, so a record counts its
+  `asked` questions and `claimed` answers `Exhausted` past the caller's
+  `max_asks` rather than re-opening again (#66). `bound_to` is
+  `scoped_to`'s sibling and fails the same way: a record naming no
+  action matches nothing.
+- `runtime/api.{escalations, escalation, escalation_cell,
+  escalations_below, raise_escalation_for, claim_escalation,
+  approve_escalation, deny_escalation, consume_escalation,
+  consume_escalation_at}` — the durable escalation surface.
   `escalation(runtime, id)` is the bounded point lookup a parked call
   polls on (`client/escalate`), rather than listing and decoding the
-  whole reserved prefix once a second; `escalations_below` is the
-  bounded count question a capped raiser asks; `claim_escalation` is the
-  raise-or-take-over door parking uses, where `raise_escalation_for`
-  stays write-once for callers that mean "record this, once".
+  whole reserved prefix once a second; `escalation_cell` is the same
+  read carrying the seq, for a caller that will decide something from
+  what it read; `escalations_below` is the bounded count question a
+  capped raiser asks; `claim_escalation` is the raise-or-take-over door
+  parking uses, taking the claimant's `Action` and a `max_asks` bound
+  and answering `Claimed` or `Exhausted`, where `raise_escalation_for`
+  stays write-once (and actionless) for callers that mean "record this,
+  once". The two consume doors differ in exactly one thing:
+  `consume_escalation` re-reads and consumes whatever it finds, which is
+  right for a host holding no earlier read, while
+  `consume_escalation_at` CASes at the seq the caller checked, which is
+  what a caller that checked a scope or an action owes its own check
+  (#68).
 - `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
   compare-and-set half of the blackboard: read a cell with the seq of
   the write that put it there, then write only if it has not moved. The
