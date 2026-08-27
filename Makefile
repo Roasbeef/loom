@@ -112,14 +112,21 @@ server-shipment: ## Package the server: build/erlang-shipment + bin/loom-server 
 # argument in full — mechanism, what it costs, and why the helper ships
 # beside the release instead of inside it.
 #
-# To build: gleam, rebar3, erl, go, strip. To run what comes out: nothing.
+# A release also carries code mode: `bin/gleam` and `share/codemode-seed`
+# beside the helper, found through `code:root_dir()` rather than PATH.
+# That is half the download, so `DIST_CODEMODE=0` builds the lean 29 MB
+# artifact for a deploy that will never write a program — and drops the
+# seed from the prerequisites with it.
+#
+# To build: gleam, rebar3, erl, go, strip, and a prepared seed (`make
+# codemode-seed`). To run what comes out: nothing.
 
 .PHONY: release
-release: ## Build the self-contained server into build/release/loom (needs rebar3)
+release: ## Build the self-contained server into build/release/loom (needs rebar3 + a seed)
 	@scripts/release.sh
 
 .PHONY: release-smoke
-release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves
+release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves code mode
 	@scripts/release.sh --smoke
 
 .PHONY: dist
