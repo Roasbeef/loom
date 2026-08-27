@@ -170,6 +170,7 @@ import broker/budget.{type Budget}
 import broker/escalation
 import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
+import client/install
 import client/internal/ffi_os
 import codemode/build
 import codemode/codemode as pipeline
@@ -474,19 +475,28 @@ pub const serviced_caps = ["proc.run"]
 
 // --- discovery -------------------------------------------------------------
 
-/// Locates what this host needs to run code mode, or says what is missing.
+/// Locates what this host needs to run code mode, or says what is missing
+/// *and how to supply it*.
 ///
 /// Three questions, each answered against the host rather than assumed:
-/// is `gleam` on `PATH`, is `erl`, and is there a prepared build seed at
-/// `seed_root` whose dependency table is byte-identical to the one the
-/// compile service generates. The last is `seed.verify`, and it is the
+/// where `gleam` is, where `erl` is, and whether there is a prepared build
+/// seed at `seed_root` whose dependency table is byte-identical to the one
+/// the compile service generates. The last is `seed.verify`, and it is the
 /// interesting one: a seed prepared from a different table resolved a
 /// different dependency graph, so building against it would pin something
 /// other than what the compile service says it pins.
 ///
+/// The first two used to be "is it on `PATH`", and that is what made code
+/// mode absent from an unpacked release even though **the release ships
+/// `erl` inside it** — `erts-<vsn>/bin/erl`, sitting in the tarball, never
+/// on `PATH`. Both now ask `client/install` first; see `locate`.
+///
 /// A host that fails any of them registers no `code_mode` tool at all,
-/// which is why this returns the reason: the boot prints it once rather
-/// than shipping a tool that can only ever refuse.
+/// which is why this returns the reason: a tool definition is a cache
+/// prefix paid on every request of every strand for the life of the
+/// session, so advertising one that can only refuse is worse than
+/// omitting it. What the boot prints therefore has to carry the whole
+/// remedy, because it is the only thing anybody will ever see about it.
 ///
 /// ## Examples
 ///
@@ -495,20 +505,77 @@ pub const serviced_caps = ["proc.run"]
 /// ```
 ///
 pub fn discover(seed_root: String) -> Result(Toolchain, String) {
-  use gleam_path <- result.try(executable("gleam"))
-  use erl_path <- result.try(executable("erl"))
-  use _verified <- result.try(seed.verify(
-    seed_root,
-    compile.default_dependencies(),
+  use gleam_path <- result.try(locate(
+    "gleam",
+    beside: install.gleam_compiler(),
+    remedy: "code mode compiles the model's program with it, so put `gleam` "
+      <> "(>= 1.11) on PATH, or run the `bin/loom` of a release built with "
+      <> "the code-mode bundle, which ships one",
   ))
+  use erl_path <- result.try(locate(
+    "erl",
+    beside: install.erl(),
+    remedy: "code mode runs the compiled program in a jailed BEAM, so put "
+      <> "`erl` (OTP >= 27) on PATH",
+  ))
+  use _verified <- result.try(
+    seed.verify(seed_root, compile.default_dependencies())
+    |> result.map_error(seed_remedy),
+  )
   Ok(Toolchain(gleam_path:, erl_path:, seed_root:))
 }
 
-fn executable(name: String) -> Result(String, String) {
-  ffi_os.find_executable(name)
-  |> result.replace_error(
-    name <> " is not on PATH, so code-mode programs cannot be built or run",
-  )
+/// One executable of the code-mode toolchain: the copy shipped beside
+/// this server if there is one, then `PATH`.
+///
+/// `beside` outranks `PATH` for both of the toolchain's executables, and
+/// for `erl` it is not merely a fallback for releases. `install.erl()` is
+/// the emulator of the ERTS *this VM is running*, and a satellite loads
+/// `.beam` files the hermetic build produced against that same OTP —
+/// whereas the first `erl` on `PATH` is whichever installation a shell
+/// profile points at, which on a host with two OTPs is a coin flip.
+///
+/// The failure is one sentence naming both places that were looked and
+/// the way out, because it is the only thing the operator will ever see:
+/// there is no tool to fail later.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.locate("sh", beside: "/bin/sh", remedy: "…") == Ok("/bin/sh")
+/// ```
+///
+pub fn locate(
+  name: String,
+  beside beside: String,
+  remedy remedy: String,
+) -> Result(String, String) {
+  install.existing_file(beside)
+  |> result.lazy_or(fn() { ffi_os.find_executable(name) })
+  // map_error rather than replace_error: the message concatenates four
+  // strings and is wanted on approximately no boots at all.
+  |> result.map_error(fn(_nil) {
+    name
+    <> " is not beside this server at "
+    <> beside
+    <> " and not on PATH; "
+    <> remedy
+    <> ". No code_mode tool is registered."
+  })
+}
+
+// `seed.verify` says exactly what is wrong with a seed and points at the
+// one command that repairs a checkout's own. What it cannot know is that
+// this server might be an unpacked release, where there is no checkout
+// and no `make`, so the two other ways to supply a seed are added here —
+// where `client/install` is in scope and the question "is this a
+// release" is answerable.
+fn seed_remedy(reason: String) -> String {
+  reason
+  <> " — or pass --codemode-seed <dir>. A release built with the code-mode "
+  <> "bundle ships a prepared seed at "
+  <> install.seed()
+  <> ". No code_mode tool is registered."
 }
 
 /// A `PATH` for the hermetic build, built from where the executables were

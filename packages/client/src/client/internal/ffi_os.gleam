@@ -75,3 +75,21 @@ pub fn terminate_supervisor(
 /// function with tests rather than a line of Erlang.
 @external(erlang, "client_ffi", "platform")
 pub fn platform() -> #(String, String)
+
+/// The root directory of the installation this VM is running out of.
+/// OTP `code:root_dir/0` — for a release it is the unpacked release
+/// tree, for every other run it is the OTP installation the emulator
+/// came from. There is no pure answer: it is the `ROOTDIR` the emulator
+/// resolved for itself at boot, and it is the only anchor that survives
+/// being invoked through a launcher, a symlink, or from any working
+/// directory. `client/install` turns it into paths.
+@external(erlang, "client_ffi", "code_root_dir")
+pub fn code_root_dir() -> String
+
+/// The running emulator's ERTS version, e.g. `"16.4.0.5"`. OTP
+/// `erlang:system_info(version)` — an ambient fact of the running
+/// system. It names the `erts-<version>` directory under
+/// `code_root_dir()`, which is how `client/install` reaches the very
+/// emulator that is executing this code without globbing for it.
+@external(erlang, "client_ffi", "erts_version")
+pub fn erts_version() -> String

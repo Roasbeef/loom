@@ -170,6 +170,7 @@ import client/codemode as codemode_wiring
 import client/escalate
 import client/gateway as hub
 import client/host
+import client/install
 import client/internal/ffi_os
 import client/server
 import client/summaries
@@ -314,6 +315,11 @@ pub type Booted {
     token_path: String,
     bind_host: String,
     prompt: system_prompt.Assembled,
+    /// The `loom-exec` this boot's ladder settled on. Carried so the
+    /// listening line can name it: it is the binary that enforces every
+    /// jail this session builds, and the ladder that chose it has four
+    /// rungs.
+    helper_path: String,
   )
 }
 
@@ -373,9 +379,14 @@ fn run_server(settings: Settings, logger: Logger) -> Nil {
 // a fatal exit — whichever way `booted.stops` fires.
 fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
   announce(booted)
+  // The helper path is on this line because it is the answer to "which
+  // binary enforced this session's sandbox", and the ladder that picked
+  // it has four rungs. An operator auditing a running server should not
+  // have to re-derive it, and a release smoke should not have to guess.
   log.info(logger, "server.listening", [
     field.count(key: "port", value: booted.served.port),
     field.ident(key: "prompt_digest", value: booted.prompt.digest),
+    field.text(key: "helper", value: booted.helper_path),
   ])
   // Only an entry point installs the signal handler: doing so replaces
   // the VM's default, whose answer to `SIGTERM` is an immediate
@@ -495,9 +506,9 @@ const usage = "usage: loom-server --session <path.db>
   [--bind <host:port>]     listen interface (default 127.0.0.1:0)
   [--token-file <path>]    bearer token file (default <session>.token)
   [--workspace <dir>]      workspace root (default the current directory)
-  [--helper <path>]        loom-exec binary (default: PATH, then ./bin)
+  [--helper <path>]        loom-exec binary (default: beside this server, then PATH, then ./bin)
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
-  [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed)
+  [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed, then the bundled one)
   [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
   [--best-effort]          accept a degraded sandbox helper"
 
@@ -576,10 +587,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     max_output_tokens: main_entry.max_output_tokens,
     api: adapter_api(main_entry.dialect),
     compaction: compaction_settings(main_entry.context_window),
-    codemode_seed: option.unwrap(
-      flags.codemode_seed,
-      workspace <> "/" <> default_seed_directory,
-    ),
+    codemode_seed: seed_root(flags.codemode_seed, workspace),
     codemode_seams:,
   ))
 }
@@ -683,35 +691,98 @@ fn split_bind(bind: String) -> Result(#(String, Int), String) {
   }
 }
 
-// The helper lookup ladder: explicit flag, then PATH, then the repo's
-// conventional ./bin. Only the flag is verified to exist eagerly —
-// the pool spawns helpers lazily, and a missing binary at first
-// checkout would surface as a confusing in-band tool failure, so boot
-// insists on a real file up front.
+/// The helper lookup ladder, as an order rather than as a lookup: the
+/// explicit flag, then the helper shipped beside this server, then
+/// `PATH`, then the repo's conventional `./bin`.
+///
+/// Each rung is a thunk so the order is the only thing stated here and a
+/// test can supply its own rungs — precedence is the whole of what this
+/// decides, and precedence is what a host-dependent lookup cannot show.
+///
+/// **The flag stays first**, because that is how an operator points at a
+/// helper they built or audited themselves, and it is deliberately *not*
+/// checked for existence by this function: a flag naming a missing file
+/// must fail saying so rather than falling through to a helper the
+/// operator did not choose.
+///
+/// **Beside the server outranks `PATH`**, and `client/install`'s module
+/// doc is honest about what that is worth: a release's own `bin/` is
+/// already at the front of the in-VM `PATH`, because OTP's `erl` script
+/// puts it there, so this rung changes no release's answer. What it
+/// changes is why the answer is right — the tree is asked because it is
+/// the tree, not because a start script happened to rewrite an
+/// environment variable — and it is what lets the refusal below name a
+/// path rather than say "not on PATH" about a component that ships in
+/// the tarball.
+///
+/// `./bin` stays last and stays in: it is where `make binaries` writes,
+/// which is the whole of its job. Promoting it above `PATH` was
+/// considered and rejected — it is relative to the working directory,
+/// and a working-directory executable outranking `PATH` is a hazard of
+/// its own, not a repair.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.helper_ladder(Some("/audited/loom-exec"), ..) == Ok("/audited/loom-exec")
+/// ```
+///
+pub fn helper_ladder(
+  flag: Option(String),
+  beside beside: fn() -> Result(String, Nil),
+  on_path on_path: fn() -> Result(String, Nil),
+  in_bin in_bin: fn() -> Result(String, Nil),
+) -> Result(String, Nil) {
+  install.first_of([
+    fn() { option.to_result(flag, Nil) },
+    beside,
+    on_path,
+    in_bin,
+  ])
+}
+
+// The ladder run against this host, with the boot's insistence on a real
+// file on the end of it. Only existence is checked, and it is checked
+// eagerly: the pool spawns helpers lazily, so a missing binary would
+// otherwise first surface at a tool call, as a confusing in-band
+// failure, long after the person who mistyped the path had walked away.
 fn find_helper(flag: Option(String)) -> Result(String, String) {
-  let candidate = case flag {
-    Some(path) -> Ok(path)
-    None ->
-      ffi_os.find_executable("loom-exec")
-      |> result.lazy_or(fn() {
-        case simplifile.is_file("./bin/loom-exec") {
-          Ok(True) -> Ok("./bin/loom-exec")
-          _ -> Error(Nil)
-        }
+  let found =
+    helper_ladder(
+      flag,
+      beside: install.bundled_helper,
+      on_path: fn() { ffi_os.find_executable(install.helper_name) },
+      in_bin: fn() { install.existing_file(repo_helper) },
+    )
+  case found {
+    Error(Nil) -> Error(no_helper_anywhere())
+    Ok(path) ->
+      // map_error, not replace_error: the message concatenates, and an
+      // eager argument would build it on every successful boot.
+      install.existing_file(path)
+      |> result.map_error(fn(_nil) {
+        "the helper binary does not exist: " <> path
       })
   }
-  case candidate {
-    Error(Nil) ->
-      Error(
-        "no loom-exec helper found on PATH or in ./bin;"
-        <> " build one with `make binaries` or pass --helper",
-      )
-    Ok(path) ->
-      case simplifile.is_file(path) {
-        Ok(True) -> Ok(path)
-        _ -> Error("the helper binary does not exist: " <> path)
-      }
-  }
+}
+
+// Where `make binaries` writes the helper, relative to a repository
+// checkout's own root.
+const repo_helper = "./bin/loom-exec"
+
+// Named, and lazy at its one call site, because it interpolates the
+// installation root: a message built on every successful boot to be
+// thrown away is the eager-argument hazard in miniature.
+fn no_helper_anywhere() -> String {
+  "no "
+  <> install.helper_name
+  <> " sandbox helper found. Looked beside this server at "
+  <> install.helper()
+  <> ", then on PATH, then at "
+  <> repo_helper
+  <> ". Supply one with --helper <path>, build one from a checkout with "
+  <> "`make binaries`, or run the `bin/loom` of an unpacked release, "
+  <> "which ships its own."
 }
 
 // The subscribe name for a session file: its base name without the
@@ -948,7 +1019,15 @@ fn assemble(
   // here and registers no `code_mode` tool, rather than shipping a
   // definition in the cached prefix that can only ever refuse.
   let code_mode = case codemode_wiring.discover(settings.codemode_seed) {
-    Ok(toolchain) ->
+    Ok(toolchain) -> {
+      // Which `gleam`, which `erl`, which seed — because the ladder now
+      // has more than one rung and "code mode is on" is a much less
+      // useful thing to know than which toolchain it will build with.
+      log.info(logger, "codemode.ready", [
+        field.text(key: "gleam", value: toolchain.gleam_path),
+        field.text(key: "erl", value: toolchain.erl_path),
+        field.text(key: "seed", value: toolchain.seed_root),
+      ])
       Some(
         codemode_wiring.default_config(
           broker: broker_actor,
@@ -963,6 +1042,7 @@ fn assemble(
         |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
         |> codemode_wiring.seam,
       )
+    }
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
         field.text(key: "reason", value: reason),
@@ -974,6 +1054,15 @@ fn assemble(
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
   let tool_registry = registry(Some(agency_seam), code_mode)
+  // The registry itself, once, at boot. Two planes decide their own
+  // presence from the host they found — a messaging plane, a code-mode
+  // pipeline — so "which tools does this server actually offer" is not
+  // derivable from the flags, and it is the same sorted list that renders
+  // into the provider's cached byte prefix. Naming it here is what lets a
+  // release smoke assert on registration rather than on a proxy for it.
+  log.info(logger, "server.tools", [
+    field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
+  ])
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
   // cell is therefore read straight off the store here — legal, nothing
@@ -1157,6 +1246,7 @@ fn assemble(
     token_path: settings.token_path,
     bind_host: settings.bind_host,
     prompt: assembled,
+    helper_path: settings.helper_path,
   ))
 }
 
@@ -1412,6 +1502,57 @@ pub fn registry(
 /// workspace: exactly where `make codemode-seed` writes one in this repo,
 /// so a development host that ran it is wired without a flag.
 pub const default_seed_directory = "build/codemode-seed"
+
+/// The build-seed ladder, as an order: `--codemode-seed`, then the
+/// workspace's own, then the one a release ships, and `otherwise` when
+/// nothing answers.
+///
+/// **The workspace outranks the bundle.** A checkout's seed is
+/// regenerated by `make codemode-seed` against the tree being worked on,
+/// so preferring it means a contributor who changed the compile service's
+/// dependency table builds against their own seed rather than a frozen
+/// one `seed.verify` would then reject — and a release, which has no
+/// workspace seed, still reaches the rung below.
+///
+/// The flag is first for the same reason it is first in the helper
+/// ladder: an operator naming a seed must not be quietly handed another.
+///
+/// `otherwise` is a choice about the *refusal* rather than a fallback
+/// that can work. Nothing is at that path — that is why the ladder got
+/// there — so what it decides is which path `seed.verify` names when it
+/// says there is no seed, and naming somewhere a person can actually put
+/// one beats naming a directory inside a release they may not have.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.seed_ladder(None, in_workspace: .., bundled: .., otherwise: "…")
+/// ```
+///
+pub fn seed_ladder(
+  flag: Option(String),
+  in_workspace in_workspace: fn() -> Result(String, Nil),
+  bundled bundled: fn() -> Result(String, Nil),
+  otherwise otherwise: String,
+) -> String {
+  install.first_of([
+    fn() { option.to_result(flag, Nil) },
+    in_workspace,
+    bundled,
+  ])
+  |> result.unwrap(otherwise)
+}
+
+// The ladder run against this host.
+fn seed_root(flag: Option(String), workspace: String) -> String {
+  let in_workspace = workspace <> "/" <> default_seed_directory
+  seed_ladder(
+    flag,
+    in_workspace: fn() { install.existing_directory(in_workspace) },
+    bundled: install.bundled_seed,
+    otherwise: in_workspace,
+  )
+}
 
 // One entropy seam serves two masters: id seeds must never repeat
 // within a session lifetime (spec-gaps WP-E item 6) and the bearer

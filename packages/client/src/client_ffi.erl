@@ -9,7 +9,7 @@
 -export([system_time_ms/0, unique_positive_integer/0, find_executable/1,
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
          create_exclusive_private_file/2, platform/0,
-         terminate_supervisor/2]).
+         terminate_supervisor/2, code_root_dir/0, erts_version/0]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -31,6 +31,18 @@ platform() ->
     {_Family, Name} = os:type(),
     {atom_to_binary(Name, utf8),
      unicode:characters_to_binary(erlang:system_info(system_architecture))}.
+
+%% code:root_dir/0 and erlang:system_info(version), each as a binary.
+%% Both name the installation the emulator resolved for itself at boot:
+%% for a release, root_dir is the unpacked release tree; otherwise it is
+%% the OTP installation erl came from. Neither is normalized and neither
+%% is joined into a path here -- client/install decides what lives where,
+%% because that is a decision and decisions belong in Gleam.
+code_root_dir() ->
+    unicode:characters_to_binary(code:root_dir()).
+
+erts_version() ->
+    unicode:characters_to_binary(erlang:system_info(version)).
 
 find_executable(Name) ->
     case os:find_executable(binary_to_list(Name)) of
