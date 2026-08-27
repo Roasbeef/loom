@@ -95,6 +95,16 @@ fn request_for(step: String) -> codemode_tool.Request {
 }
 
 fn request_on(seam: codemode_tool.Seam, step: String) -> codemode_tool.Request {
+  request_widened(seam, step, [])
+}
+
+// A request carrying whatever an approval attributed to this call. The
+// empty list is the ordinary case; the widening tests pass a real grant.
+fn request_widened(
+  seam: codemode_tool.Seam,
+  step: String,
+  grants: List(policy.Grant),
+) -> codemode_tool.Request {
   codemode_tool.Request(
     source: "pub fn main() { todo }",
     seam:,
@@ -107,6 +117,7 @@ fn request_on(seam: codemode_tool.Seam, step: String) -> codemode_tool.Request {
     demand: exec.FullEnforcement,
     env: [#("PATH", "/usr/bin")],
     within_ms: 60_000,
+    grants:,
   )
 }
 
@@ -121,7 +132,8 @@ pub fn both_jailed_stages_run_under_the_callers_identity_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let built = codemode.exec_config(config, request, "/work/x", 9000)
+  let built =
+    codemode.exec_config(config, request, "/work/x", 9000, widened_by: [])
   // One identity, and the keys it answers are the caller's own. Asserting
   // on `ledger_keys` rather than on a field pins the stronger property:
   // the build no longer carries coordinates that could disagree, so this
@@ -135,7 +147,8 @@ pub fn one_pooled_budget_covers_the_build_and_the_node_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let built = codemode.exec_config(config, request, "/work/x", 9000)
+  let built =
+    codemode.exec_config(config, request, "/work/x", 9000, widened_by: [])
   // One ledger, now by construction: both phases derive from one identity,
   // so the budget cannot differ between them and the deadline is the one
   // the caller's `within_ms` produced rather than one this module invented.
@@ -152,12 +165,108 @@ pub fn the_program_runs_in_the_callers_workspace_test() {
   let broker_actor = idle_broker()
   let request = request_for("turn-4:tools")
   let built =
-    codemode.exec_config(config_for(broker_actor), request, "/work/x", 9000)
+    codemode.exec_config(
+      config_for(broker_actor),
+      request,
+      "/work/x",
+      9000,
+      widened_by: [],
+    )
   assert built.satellite.cwd == "/work"
   // The program's own children inherit the driver's constructed
   // environment, not the build's toolchain PATH.
   assert built.satellite.env == request.env
   assert built.satellite.demand == request.demand
+  broker.stop(broker_actor)
+}
+
+// --- what an approved escalation widens ------------------------------------
+
+pub fn an_approval_reaches_the_run_phase_test() {
+  // Issue #24's whole point at this seam: an approved escalation's grants
+  // ride the one threaded identity, so the node's clearance and every
+  // capability call the program makes compose them. Before this they were
+  // dropped and an approval widened nothing.
+  let broker_actor = idle_broker()
+  let grants = [policy.GrantNetwork(network: policy.NetworkFull)]
+  let built =
+    codemode.exec_config(
+      config_for(broker_actor),
+      request_for("turn-4:tools"),
+      "/work/x",
+      9000,
+      widened_by: grants,
+    )
+  assert identity.grants(identity.run_phase(built.identity)) == grants
+  broker.stop(broker_actor)
+}
+
+pub fn an_approval_never_reaches_the_hermetic_build_test() {
+  // The other half, and the one with teeth. Composition applies grants
+  // after the meet, so a `GrantNetwork` reaching the build phase would put
+  // the network back on inside a build that is pinned and offline by
+  // design. `identity.build_phase` drops them, so there is no widened
+  // build phase for a clearance to be built from.
+  let broker_actor = idle_broker()
+  let built =
+    codemode.exec_config(
+      config_for(broker_actor),
+      request_for("turn-4:tools"),
+      "/work/x",
+      9000,
+      widened_by: [policy.GrantNetwork(network: policy.NetworkFull)],
+    )
+  assert identity.grants(identity.build_phase(built.identity)) == []
+  broker.stop(broker_actor)
+}
+
+pub fn a_widening_opens_no_second_ledger_test() {
+  // Grants are consent, not accounting. An approval that also bought a
+  // second `{op_id, step_id}` would buy a second `max_outstanding` cap and
+  // a second wall deadline with it.
+  let broker_actor = idle_broker()
+  let config = config_for(broker_actor)
+  let request = request_for("turn-4:tools")
+  let widened =
+    codemode.exec_config(config, request, "/work/x", 9000, widened_by: [
+      policy.GrantEnv(name: "CC"),
+    ])
+  // Against the caller's own coordinates rather than against an
+  // unapproved execution's: both would go through `widened_by`, so
+  // comparing them could only prove the two agree, never that either is
+  // the pair the driver handed in.
+  assert identity.ledger_keys(widened.identity)
+    == [#(request.op_id, request.step_id)]
+  broker.stop(broker_actor)
+}
+
+pub fn one_host_does_not_leak_an_approval_to_another_execution_test() {
+  // There is no session-wide grant list anywhere below `Config`, so an
+  // approval attributed to one execution cannot widen the next one. Two
+  // executions off one host configuration, one approved and one not: the
+  // unapproved one carries nothing, which is the property design §5.3
+  // states as "one re-execution of the denied action, never a silent
+  // session widening".
+  let broker_actor = idle_broker()
+  let config = config_for(broker_actor)
+  let approved =
+    codemode.exec_config(
+      config,
+      request_for("turn-4:tools"),
+      "/work/x",
+      9000,
+      widened_by: [policy.GrantEnv(name: "CC")],
+    )
+  let plain =
+    codemode.exec_config(
+      config,
+      request_for("turn-5:tools"),
+      "/work/y",
+      9000,
+      widened_by: [],
+    )
+  assert identity.grants(identity.run_phase(approved.identity)) != []
+  assert identity.grants(identity.run_phase(plain.identity)) == []
   broker.stop(broker_actor)
 }
 
@@ -201,7 +310,8 @@ pub fn the_pipeline_is_handed_the_widened_base_test() {
   let broker_actor = idle_broker()
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
-  let built = codemode.exec_config(config, request, "/work/x", 9000)
+  let built =
+    codemode.exec_config(config, request, "/work/x", 9000, widened_by: [])
   assert built.satellite.base_policy
     == codemode.execution_policy(request.base_policy)
   assert codemode.build_config(config, request).base_policy
@@ -264,6 +374,7 @@ pub fn the_socket_and_the_token_live_under_that_directory_test() {
       request,
       "/work/.codemode/one",
       9000,
+      widened_by: [],
     )
   assert built.satellite.cap_socket_path == "/work/.codemode/one/s"
   assert built.compile.build_root == "/work/.codemode/one"
@@ -587,6 +698,7 @@ pub fn only_the_orchestration_surface_carries_a_spawn_ceiling_test() {
       request_on(codemode_tool.OrchestrationSeam, "turn-9:tools"),
       "/work/.codemode/x",
       9000,
+      widened_by: [],
     )
   assert orchestrated.satellite.ceilings
     == orchestration.ceilings(orchestration.default_spawn_ceiling)
@@ -596,6 +708,7 @@ pub fn only_the_orchestration_surface_carries_a_spawn_ceiling_test() {
       request,
       "/work/.codemode/x",
       9000,
+      widened_by: [],
     )
   assert plain.satellite.ceilings == []
   broker.stop(broker_actor)

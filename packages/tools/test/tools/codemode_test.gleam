@@ -978,3 +978,36 @@ pub fn two_seams_state_a_shared_module_once_test() {
   assert string.contains(described, "### cap/proc")
   assert string.contains(described, "### cap/strand")
 }
+
+// The link that made every other widening test hypothetical. Grants are
+// consumed for one call by the driver and land on the `Ctx`; `Request` is
+// the only channel from there into the pipeline, so if this does not
+// carry them the whole path is inert however well the far end threads
+// them. It was, until it was wired.
+pub fn a_request_carries_the_grants_this_call_was_approved_test() {
+  let wanted = policy.GrantEnv(name: "LOOM_CAP_SOCK")
+  let ctx = tool.Ctx(..ctx_for("turn-1:tools"), grants: [wanted])
+  let built =
+    codemode.request(
+      echoing(),
+      ctx,
+      "pub fn main() { todo }",
+      option.None,
+      on: codemode.WorkspaceSeam,
+    )
+  assert built.grants == [wanted]
+}
+
+// And the ordinary case stays empty, so a widening is something an
+// approval did rather than something the request shape hands out.
+pub fn an_unapproved_request_carries_no_grants_test() {
+  let built =
+    codemode.request(
+      echoing(),
+      ctx_for("turn-1:tools"),
+      "pub fn main() { todo }",
+      option.None,
+      on: codemode.WorkspaceSeam,
+    )
+  assert built.grants == []
+}
