@@ -117,7 +117,25 @@ over one session file. WP-L.
   `execute` prepares a per-execution directory, drives vet → compile →
   run under the caller's own `{op_id, step_id}`, restates the pipeline's
   two enforcement reports in the tool's vocabulary, and removes the
-  directory again.
+  directory again. `Config` carries no `vet_policy` of its own: it
+  carries `surface`.
+- `client/codemode.{Surface, Seams, serving, orchestrating,
+  surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
+  vetting_seam}` — which code-mode seams this host serves.
+  `Surface` is `Workspace`, `Orchestration(agency, spawn_ceiling)` or
+  `Both(...)`: one field, because the vetting allowlist, the capability
+  router and the spawn ceiling have to agree and a host that could set
+  them apart would eventually set them apart. `Seams`
+  (`WorkspaceOnly` / `OrchestrationOnly` / `BothSeams`) is the same
+  choice as a *setting* — what a flag can carry before there is an
+  `Agency` to serve the orchestration seam with — and `serving` turns
+  one plus an Agency into a `Surface`; `orchestrating` is the
+  orchestration-only case of it. `seam(config)` publishes exactly the
+  seams the surface serves as `tools/codemode.Seams`, each with the
+  allowlist and the serviced capabilities read off the running policy,
+  so what the model may ask for and what will judge it cannot drift.
+  `tool_seam` / `vetting_seam` are the two directions of the mirror
+  between `vet/policy.Seam` and the tool's own `Seam`.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -167,6 +185,14 @@ over one session file. WP-L.
   registry: five core tools, plus the six `agent_*` tools only when a
   messaging plane exists, plus `code_mode` only when this host wired a
   code-mode pipeline.
+- `client/serve.Settings.codemode_seams` — which code-mode seams this
+  server offers (`--codemode-seams workspace|orchestration|both`,
+  default `WorkspaceOnly`). A setting for the same reason
+  `base_policy` is one: the choice belongs to whoever stands the server
+  up, and the Agency the orchestration seam routes onto does not exist
+  until `boot` has built it. An unrecognised flag value is a usage
+  error, not a fallback — a typo that quietly served the workspace seam
+  would look exactly like a server ignoring the flag.
 - `client/serve.Booted` — what `shutdown` takes apart, plus three things
   it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
   this boot handed the wiring (so a test can prove the pinned prompt is
@@ -417,6 +443,21 @@ over one session file. WP-L.
   enqueued child results were rejected over. The refusal is upward only:
   a parent giving an idle child more work is a live agent's explicit
   decision inside its own run.
+- **A code-mode submission is judged against the seam it named, and
+  routed by the seam the host wired.** The two halves are read from
+  different places on purpose. The allowlist follows the *submission*
+  (`exec_config` takes its vetting policy from `Request.seam`), so a
+  refusal the model reads is about the surface it asked for. The router
+  and the spawn ceiling follow the *surface*, so a host serving one seam
+  hands out that seam's router whatever a request names and no
+  submission can widen what the operator wired. A request naming a seam
+  the surface does not serve is refused by the tool shell before
+  `execute` is called and again by `execute` itself — `StartFailed`,
+  nothing dispatched, both stages unreported — rather than being
+  reinterpreted as the seam the host does serve. The residual mismatch
+  that arrangement allows can only narrow: a program vetted against one
+  seam's imports and routed by the other's cannot import the modules
+  whose calls that router services, so it reaches nothing at all.
 - **A code-mode execution runs under the calling strand's own
   `{op_id, step_id}`.** The hermetic build, the jailed `erl`, and every
   capability call the running program makes are dispatched under that one

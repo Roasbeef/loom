@@ -1209,8 +1209,8 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1304`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:352`) finds `gleam` and `erl`
+`serve.registry` (`client/serve.gleam:1333`) appends the tool only when
+`codemode.discover` (`client/codemode.gleam:423`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it

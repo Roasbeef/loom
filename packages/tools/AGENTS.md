@@ -25,8 +25,9 @@ whole
 pipeline — vet, hermetic compile, jailed satellite — sits behind a
 **CodeMode** record of closures declared here and filled by
 `client/codemode`. What this side owns is the model's half of the
-contract: the schema, the clamped budget, and the rendering that turns a
-vetting rejection, a compile error, a dead satellite or a program's own
+contract: the schema, the clamped budget, the resolution of which of the
+host's seams a submission is judged against, and the rendering that turns
+a vetting rejection, a compile error, a dead satellite or a program's own
 reported failure into something a model can repair from.
 
 ## Key Types
@@ -63,17 +64,26 @@ reported failure into something a model can repair from.
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
   parse back from `{strand}#{operation}`.
 - `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
-  published `allowed_imports`, `serviced_caps`, `default_within_ms` and
-  `max_within_ms` the tool's description and schema state, so the
-  sentence the model is charged for on every request cannot drift from
-  the policy the program is judged against.
+  published `seams`, `default_within_ms` and `max_within_ms` the tool's
+  description and schema state, so the sentence the model is charged for
+  on every request cannot drift from the policy the program is judged
+  against.
+- `tools/codemode.{Seam, SeamOffer, Seams}` plus `{seam_name, offered,
+  one_seam}` — which allowlist a submission is judged against.
+  `Seam` mirrors `codemode/vet/policy.Seam` (`WorkspaceSeam`,
+  `OrchestrationSeam`); a `SeamOffer` is one seam's published
+  `allowed_imports` and `serviced_caps`; `Seams` is what this host
+  serves, as a named `default` plus `alternates`, so a host can never
+  offer none and an unnamed submission never has an ambiguous seam.
 - `tools/codemode.{Request, Execution, ExecResult, Outcome, Rejection,
   Rule, Location, CompileFailure, RunFailure, Enforcement, Report}` — the
   vocabulary crossing that seam, mirroring `codemode/vet`,
   `codemode/compile`, `codemode/satellite` and `cap/report` rather than
-  importing them. `RunFailure` is the one deliberate narrowing: eight
-  `satellite.RunError` variants become the four that read differently to
-  a model, with the pipeline's reason text carried verbatim.
+  importing them. `Request.seam` is the resolved seam the execution is
+  judged and routed under. `RunFailure` is the one deliberate narrowing:
+  eight `satellite.RunError` variants become the four that read
+  differently to a model, with the pipeline's reason text carried
+  verbatim.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -217,9 +227,35 @@ reported failure into something a model can repair from.
   different statement from silence (issue #5).
 - **A refusal is a repair brief.** Every violation vetting found is
   listed in one pass with its rule, its offending construct, its byte
-  span where one exists, and the allowlist it was judged against;
-  compiler diagnostics cross verbatim. One round trip per rule is
-  exactly what in-band repair exists to avoid.
+  span where one exists, the **seam** it was judged against and that
+  seam's allowlist; compiler diagnostics cross verbatim. One round trip
+  per rule is exactly what in-band repair exists to avoid. A parse
+  rejection adds `parser_note`, the one way a program can be legal Gleam
+  and still not parse: vetting reads the submission with `glance`, which
+  does not accept label shorthand in a call or a pattern though the
+  compiler does. It is stated in the rejection rather than in the
+  description because that is where someone hits it, and a description
+  is paid for on every request.
+- **A submission is judged against exactly one seam, and it is the one
+  it named.** `CodeMode.seams` is what this host serves; the shell
+  resolves the call's `seam` argument against it, defaults an unnamed
+  submission to `seams.default`, and refuses an unserved or unknown name
+  in band naming what is on offer — never reinterpreting it as the other
+  seam, which in one direction is a refusal the model cannot act on and
+  in the other a widening nobody chose. Nothing classifies a submission
+  by reading its imports: the description would then be a claim about a
+  decision already taken.
+- **The choice costs nothing where there is no choice.** The `seam`
+  property appears in the schema and the second import list in the
+  description only when this host serves more than one seam, and where
+  it does, the seams' shared imports are stated once rather than
+  duplicated. Tool bytes render ahead of the system prompt and are the
+  byte prefix of the provider's cached region, so every word is paid on
+  every request of every strand for the life of the session — but the
+  lists stay *in* the description rather than being deferred to the
+  rejection, because a model that has to guess an import surface pays a
+  whole wasted submission in output tokens, which is the dearer side of
+  that ledger.
 - **A result contract is a lower bound, refused loudly at both ends.** A
   spawn may carry a `result_schema`; the child records the matching value
   as an ordinary `agent_note` under `result_note_key`, and `Waited.Ready`

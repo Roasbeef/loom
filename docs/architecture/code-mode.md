@@ -144,6 +144,19 @@ however it is spaced, since whitespace and comments are discarded before
 the scan: `@ external`, and an `@` with a comment before the name, both
 lex to the same two tokens.
 
+The same fact — that vetting's parser is not the compiler's — costs
+something in the other direction, and a submitter should hear about it
+where it bites. `glance` 1.1 does not accept **label shorthand**: neither
+`f(value:)` in a call nor `Pending(handle:, waited_ms:)` in a pattern,
+both of which `gleam build` compiles happily. So a submitted program is
+held to a slightly narrower language than the one that would compile it,
+and the difference surfaces as an `Unparseable` rejection at a byte offset
+for syntax that is perfectly legal Gleam. The `code_mode` tool says so in
+the parse rejection itself (`tools/codemode.parser_note`) rather than in
+its description: the description is the byte prefix of the provider's
+cached region and is paid on every request of every strand, while the
+rejection is paid only by the submission that tripped it.
+
 Three adversaries motivate the rules, and each is a real entry in the
 vetting corpus:
 
@@ -273,6 +286,35 @@ from the pooled outstanding-effect cap and from the Agency's live
 spawns again passes forever. It is enforced by the satellite host, because
 one host is stood up per execution holding the one `PhaseIdentity` a
 caller may mint, so the tally is keyed to that identity by construction.
+
+### Who chooses the seam
+
+The host chooses which seams it *serves* (`client/codemode.Surface`, and
+`--codemode-seams` on the shipped server, which defaults to the workspace
+seam alone). Where it serves both, the **submission** chooses between them:
+`code_mode` takes a `seam` argument and a program is judged against
+exactly the one it names, defaulting to the workspace seam when it names
+none. Nothing infers the seam from a program's imports — classifying a
+submission by reading it would make the tool description a claim about a
+decision the harness had already taken, and a model that meant to
+orchestrate would learn it had been vetted as a workspace program only
+from a refusal it could not act on.
+
+Two properties keep that reachability from widening anything. The
+**allowlist follows the submission**, so the seam a program is refused
+against is the seam it asked for, and the refusal names it. The **router
+follows the host**, so a surface serving one seam hands out that seam's
+router whatever a request says, and no submission can reach a capability
+the operator did not wire. A seam a host does not serve is refused before
+anything is dispatched, in the tool shell and again in the wiring.
+
+The argument and the schema grow only where there is a choice: a host
+serving one seam renders neither the `seam` property nor a second import
+list, and where both are served the shared standard-library subset is
+stated once rather than duplicated into two lists the model would have to
+diff. Both are the same arithmetic as tool registration itself — the tool
+array renders ahead of the system prompt and is the byte prefix of the
+cached region, so anything in it is paid on every request of the session.
 
 `docs/examples/fan_out_review.gleam` is the worked sample, run verbatim by
 `packages/codemode/test/codemode/orchestration_sample_test.gleam`, and
