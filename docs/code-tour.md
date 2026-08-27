@@ -726,7 +726,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:303`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:328`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:479` and `:519`):
@@ -1219,7 +1219,7 @@ model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1310`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1318`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:236`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

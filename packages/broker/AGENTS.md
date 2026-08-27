@@ -149,6 +149,20 @@ protocol (spec Part 1.4). WP-G.
   cancel ladder. Presented bytes are compared in constant time and the
   check scans every entry without early exit, so a match's position leaks
   nothing either.
+- **A clearance cannot resume across an abort.** `abort` is a *scoped*
+  cancel, not a verdict that an operation is over: code mode runs its
+  satellite under the strand's own `{op_id, step_id}` precisely so
+  `abort` reaches it, and calls it on every teardown including the
+  successful one — so a strand goes on clearing calls under the same key
+  afterwards, and blanket-refusing an aborted operation would brick every
+  strand after its first `code_mode`. What must not survive is a
+  clearance that *began before* the sweep and finished after it: since
+  `clear_call` waits out a congested pool, a retry could otherwise
+  compose a fresh policy, open a fresh ledger, mint a token `revoke_all`
+  never saw, and start the one jailed execution the abort could not
+  reach. So the broker counts aborts per operation, a retry states the
+  epoch it last saw, and a mismatch is `OperationAborted`. A first
+  attempt carries no epoch and is judged on its own merits.
 - **Unenforceable policy narrows, never widens.** The egress proxy sidecar
   does not exist, so `narrow_unenforceable` downgrades `NetworkProxy` to
   `NetworkOff` and reports it as an ordinary `Narrowing` before every

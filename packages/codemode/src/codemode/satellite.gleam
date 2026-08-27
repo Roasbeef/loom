@@ -1466,6 +1466,8 @@ fn refusal_outcome(refusal: broker.Refusal) -> CapOutcome {
         code: "no_helper",
         message: "no sandbox helper was available",
       )
+    broker.OperationAborted ->
+      framing.CapErr(code: "aborted", message: "the operation was aborted")
     broker.BrokerUnavailable ->
       framing.CapErr(code: "broker", message: "the tool broker is unavailable")
   }

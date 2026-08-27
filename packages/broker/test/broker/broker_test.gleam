@@ -568,3 +568,51 @@ pub fn a_waiting_call_holds_no_budget_slot_test() {
   broker.stop(started)
   exec.stop_pool(pool)
 }
+
+/// An abort that lands while a clearance is waiting out a congested
+/// pool must refuse that clearance, not let it dispatch afterwards.
+/// This is the window the congestion wait opened: `abort` revokes the
+/// operation's tokens and cancels its running calls in one sweep, so a
+/// retry that woke up afterwards would compose a fresh policy, open a
+/// fresh ledger, mint a token the sweep never saw, and start a jailed
+/// execution with nothing left to cancel it.
+///
+/// The pool here never lends, so without the epoch check the caller
+/// would sit for its whole five-second budget and answer `NoHelper`.
+/// Answering `OperationAborted` in a fraction of that is the proof that
+/// the retry was refused for the right reason.
+pub fn an_abort_during_a_congestion_wait_refuses_the_retry_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { Error(exec.AllBusy(size: 2)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  let op_id = op()
+  let verdicts = clear_elsewhere(started, spec(op_id), waiting: 5000)
+  // Let the caller reach its wait, then abort underneath it.
+  process.sleep(80)
+  broker.abort(started, op_id)
+  let assert Ok(Error(broker.OperationAborted)) =
+    process.receive(verdicts, 2000)
+  broker.stop(started)
+}
+
+/// A clearance begun *after* an abort is an ordinary clearance. `abort`
+/// is a scoped cancel rather than a terminal verdict on the operation —
+/// code mode aborts the strand's own operation on every teardown, the
+/// successful ones included — so a fresh call under the same key must
+/// still run. Only a clearance resuming across the abort is refused.
+pub fn a_clearance_begun_after_an_abort_still_runs_test() {
+  let #(started, _checkins) =
+    broker_with_fresh_helpers(fake_helper.EchoArgv, at: 1000)
+  let op_id = op()
+  let events = process.new_subject()
+  broker.abort(started, op_id)
+  let assert Ok(_handle) =
+    broker.clear_call(started, spec(op_id), events:, waiting: 2000)
+  broker.stop(started)
+}

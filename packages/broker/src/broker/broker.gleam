@@ -163,6 +163,12 @@ pub type Refusal {
   /// congestion — the ordinary batch-wider-than-the-pool case waits and
   /// then runs rather than reaching here.
   NoHelper(error: exec.CheckoutError)
+  /// The operation was aborted, so nothing more may be dispatched under
+  /// it. Reachable because clearance is not instantaneous: a caller
+  /// waiting out a congested pool can have `abort` land underneath it,
+  /// and the retry that follows must not become the one execution the
+  /// abort cannot reach.
+  OperationAborted
   /// The broker's internal relay could not start.
   BrokerUnavailable
 }
@@ -192,7 +198,10 @@ pub type BrokerConfig {
 
 /// A running ToolBroker.
 pub opaque type Broker {
-  Broker(subject: Subject(Msg))
+  /// `clock` is the session's own clock, copied here so `clear_call`
+  /// can charge a congestion wait against real elapsed time from the
+  /// borrower's process without a round trip to the actor.
+  Broker(subject: Subject(Msg), clock: Clock)
 }
 
 /// The broker actor's message type. Opaque.
@@ -200,7 +209,12 @@ pub opaque type Msg {
   ClearCall(
     spec: CallSpec,
     events: Subject(CallEvent),
-    reply: Subject(Result(CallHandle, Refusal)),
+    /// The abort epoch this caller last observed for the operation, on
+    /// a retry; `None` on a first attempt, which has no earlier
+    /// observation to invalidate. The reply carries the current epoch
+    /// back so the next retry can say what it is resuming from.
+    since: Option(Int),
+    reply: Subject(#(Result(CallHandle, Refusal), Int)),
   )
   SendStdin(handle: CallHandle, data: BitArray, eof: Bool)
   CancelCall(handle: CallHandle)
@@ -247,6 +261,14 @@ type State {
     // outstanding reservations.
     ledgers: Dict(#(OpId, String), LedgerSlot),
     next_generation: Int,
+    // How many times `abort` has swept each operation. Not a record of
+    // which operations are finished: `abort` is a scoped cancel, not a
+    // terminal one, and a strand goes on clearing calls under the same
+    // key afterwards — code mode aborts the strand's own operation on
+    // every teardown, the successful ones included. What the count is
+    // for is telling a *resumed* clearance from a fresh one; see
+    // `clear_awaiting_helper`.
+    abort_epochs: Dict(OpId, Int),
     // The broker's own subject, handed to relays for Settle reports.
     self: Subject(Msg),
   )
@@ -268,6 +290,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
         active: dict.new(),
         ledgers: dict.new(),
         next_generation: 1,
+        abort_epochs: dict.new(),
         self: subject,
       )
     // The broker monitors every relay it spawns; the selector routes
@@ -284,7 +307,9 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
   })
   |> actor.on_message(handle)
   |> actor.start
-  |> result.map(fn(started) { Broker(subject: started.data) })
+  |> result.map(fn(started) {
+    Broker(subject: started.data, clock: config.clock)
+  })
 }
 
 /// Clears and dispatches one tool call. On `Ok` the call is running:
@@ -306,7 +331,7 @@ pub fn clear_call(
   events events: Subject(CallEvent),
   waiting timeout: Int,
 ) -> Result(CallHandle, Refusal) {
-  clear_awaiting_helper(broker, spec, events, timeout, timeout)
+  clear_awaiting_helper(broker, spec, events, broker.clock, timeout, None)
 }
 
 // Clears, and on a full pool waits for a slot instead of refusing.
@@ -339,20 +364,38 @@ fn clear_awaiting_helper(
   broker: Broker,
   spec: CallSpec,
   events: Subject(CallEvent),
-  timeout: Int,
+  clock: Clock,
   remaining: Int,
+  since: Option(Int),
 ) -> Result(CallHandle, Refusal) {
-  let outcome =
-    process.call(broker.subject, waiting: timeout, sending: fn(reply) {
-      ClearCall(spec:, events:, reply:)
-    })
-  use <- bool.guard(
-    when: remaining <= 0 || !congested(outcome),
-    return: outcome,
-  )
+  let #(started, clock) = clock.read(clock)
+  // Each attempt is capped at what is left, not at the original
+  // budget, so the total cannot outrun `waiting` however slow an
+  // individual exchange with the broker turns out to be.
+  let #(outcome, epoch) =
+    process.call(
+      broker.subject,
+      waiting: int.max(1, remaining),
+      sending: fn(reply) { ClearCall(spec:, events:, since:, reply:) },
+    )
+  use <- bool.guard(when: !congested(outcome), return: outcome)
+  // Charge the attempt itself, not only the nap. Under the congestion
+  // this loop exists for, the broker is at its busiest and an exchange
+  // is not free; charging naps alone let a nominally 30 s budget run
+  // for minutes.
+  let #(answered, clock) = clock.read(clock)
+  let remaining = remaining - int.max(0, answered - started)
+  use <- bool.guard(when: remaining <= 0, return: outcome)
   let nap = int.min(remaining, helper_wait_interval_ms)
   process.sleep(nap)
-  clear_awaiting_helper(broker, spec, events, timeout, remaining - nap)
+  clear_awaiting_helper(
+    broker,
+    spec,
+    events,
+    clock,
+    remaining - nap,
+    Some(epoch),
+  )
 }
 
 // Whether a clearance came back because the pool is momentarily full,
@@ -370,6 +413,7 @@ fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
     | Error(InvalidPolicy(error: _))
     | Error(BudgetRefused(refusal: _))
     | Error(MintRefused(error: _))
+    | Error(OperationAborted)
     | Error(BrokerUnavailable)
     | Ok(_) -> False
   }
@@ -461,9 +505,24 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
 
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
-    ClearCall(spec:, events:, reply:) -> {
-      let #(state, outcome) = do_clear_call(state, spec, events)
-      process.send(reply, outcome)
+    ClearCall(spec:, events:, since:, reply:) -> {
+      let epoch = dict.get(state.abort_epochs, spec.op_id) |> result.unwrap(0)
+      // A clearance that began before an abort of this operation must
+      // not dispatch after it: the abort revoked that operation's
+      // tokens and cancelled its running calls, so admitting this one
+      // would leave exactly the execution the abort could not reach. A
+      // first attempt carries no epoch and is judged on its own merits,
+      // which is what lets a strand go on working after code mode's
+      // teardown aborts its operation.
+      let resumed_across_abort = case since {
+        Some(seen) -> seen != epoch
+        None -> False
+      }
+      let #(state, outcome) = case resumed_across_abort {
+        True -> #(state, Error(OperationAborted))
+        False -> do_clear_call(state, spec, events)
+      }
+      process.send(reply, #(outcome, epoch))
       actor.continue(state)
     }
     SendStdin(handle:, data:, eof:) -> {
@@ -493,7 +552,20 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       // generations and release nothing further.
       let ledgers =
         dict.filter(state.ledgers, fn(key, _slot) { key.0 != op_id })
-      actor.continue(State(..state, vault:, ledgers:))
+      // Bumping the epoch is what closes the window `clear_call`'s
+      // congestion wait opens. A caller napping on a full pool wakes
+      // and retries, and without this the retry would compose a fresh
+      // policy, open a fresh ledger, mint a token `revoke_all` has
+      // already passed over, and dispatch a jailed execution under an
+      // operation this very abort was emptying — with nothing left to
+      // cancel it. Comparing epochs refuses exactly that resumption
+      // while leaving a clearance begun *after* the abort to proceed,
+      // which is what code mode's teardown-then-continue needs.
+      let abort_epochs =
+        dict.upsert(state.abort_epochs, op_id, fn(seen) {
+          option.unwrap(seen, 0) + 1
+        })
+      actor.continue(State(..state, vault:, ledgers:, abort_epochs:))
     }
     Settle(call_id:) ->
       case dict.get(state.active, call_id) {
