@@ -320,7 +320,7 @@ pub fn next_action(
 ) -> Action {
 ```
 
-`next_action` lives at `machine/planner.gleam:546`. It reads a durable
+`next_action` lives at `machine/planner.gleam:506`. It reads a durable
 state and a bundle of inputs and returns one of six actions, defined by
 `Action` (`machine/planner.gleam:464`):
 
@@ -397,7 +397,7 @@ and both are worth knowing by name. `threshold_checked` records the
 trigger whose compaction check already ran, so a boundary is never
 checked twice; `skip_inbox_once` is set by a drain on the checkpoint it
 produces, so a crash mid-drain cannot turn a one-at-a-time drain into an
-all-item drain (`checkpoint_action`, `machine/planner.gleam:703`).
+all-item drain (`checkpoint_action`, `machine/planner.gleam:678`).
 
 Large payloads never live inline in the state. Tool arguments go to
 `op.tool_args/{op}:{step}:{index}`, a summary's frozen input to
@@ -429,7 +429,7 @@ two:
                    in one atomic transaction
 ```
 
-`admit_generation` (`machine/planner.gleam:1158`) mints `R` and `U`, folds them into
+`admit_generation` (`machine/planner.gleam:1058`) mints `R` and `U`, folds them into
 `GenerationEffectPending`, and returns the intent transaction beside the
 next state. `runtime/strand_runtime.gleam:658` commits it and only then
 runs the continuation that starts the effect:
@@ -544,7 +544,7 @@ exactly as it would for a dead provider.
 
 `stream.await_terminal` returns, the effect process sends `ProviderDone`
 to the driver, and the driver turns it into an observation and plans
-again. `settle_assistant` (`machine/planner.gleam:1248`) classifies the
+again. `settle_assistant` (`machine/planner.gleam:1135`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask
@@ -553,7 +553,7 @@ compaction on its way out; ask about tool use before a genuine length
 stop and a truncated response executes calls cut in half.
 
 Then one transaction, in pi's normative order
-(`settle_writes`, `machine/planner.gleam:1604`):
+(`settle_writes`, `machine/planner.gleam:1538`):
 
 ```gleam
   [
@@ -931,7 +931,7 @@ a checkpoint. What happens next is the same code with three differences
 worth knowing.
 
 **The checkpoint drains first.** The procedure
-`checkpoint_action` (`machine/planner.gleam:703`) runs a fixed order:
+`checkpoint_action` (`machine/planner.gleam:678`) runs a fixed order:
 apply accepted deferred
 writes, drain steer input per the run's drain mode, check the compaction
 threshold, and only then start a generation step or, at a `MayFinish`
@@ -1154,7 +1154,7 @@ Collecting the result is a store read, not a message.
 `await_strand_result` (`runtime/api.gleam:911`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
-register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
+register (`build.set_last_result`, `machine/planner.gleam:3587`). Keying
 on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
@@ -1283,8 +1283,8 @@ renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1368`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:494`) finds `gleam` and `erl`
+`serve.registry` (`client/serve.gleam:1454`) appends the tool only when
+`codemode.discover` (`client/codemode.gleam:504`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1400,7 +1400,7 @@ design names it as the mechanism for the self-improvement loop; no
 release-upgrade machinery, no upgrade handling, and no extension zone
 exists in the tree. The single `code_change/3` in the source is the
 SIGTERM relay's gen_event boilerplate — a no-op
-`code_change` (`client_ffi.erl:119`). **Distribution is not used
+`code_change` (`client_ffi.erl:131`). **Distribution is not used
 either**: the bus is a single node's, and the control-plane half of the
 two-channel doctrine has no code behind it yet.
 

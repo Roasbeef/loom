@@ -33,14 +33,26 @@ package is wrong.
 - `machine/planner` is a big module on purpose: one public function over
   a closed vocabulary, then a section per phase of pi's spec. Read its
   module doc first — it enumerates the sections and what each *decides*,
-  which is the map. Two conventions hold throughout: every type the
+  which is the map. Three conventions hold throughout: every type the
   module has is declared before the first function body (the private ones
-  included), and a phase's entry function is a dispatch table whose arms
-  name the decision rather than making it. The corruption path has its
-  own `use` forms — `or_fault` and `or_fault_unless` — because Gleam has
-  no early return and `result.try` cannot serve where the continuation
-  returns an `Action`; reach for them rather than nesting a `case` whose
-  error arm is `Fault(report:)`.
+  included); a phase's entry function is a dispatch table whose arms
+  name the decision rather than making it; and a handler takes the
+  *bundle* its values arrived in rather than the bundle exploded into
+  parameters. There are four bundles — `RunPass` (a pass over a run:
+  `op`, `in`, and the four `RunState` fields that are not the phase),
+  `AssistantAttempt`, `StructuralTask` and `Fetch` — each of them the
+  record its values were destructured out of, so passing one is a
+  restoration and not an invention. A handler that changes a field says
+  so with a record update (`RunPass(..pass, inbox: remaining)`) at the
+  one hop that makes the change; `run_state` puts a pass and a phase
+  back together into the state a transition commits. Do not go back to
+  threading the fields: `gleam format` gives a wide call one argument per
+  line, so each value costs two lines per hop and nothing checks the
+  argument order but the types — issue #75 measured that shape at 28% of
+  the file. The corruption path has its own `use` forms — `or_fault` and
+  `or_fault_unless` — because Gleam has no early return and `result.try`
+  cannot serve where the continuation returns an `Action`; reach for them
+  rather than nesting a `case` whose error arm is `Fault(report:)`.
 - `machine/acceptance.accept_prompt` — the single acceptance transaction
   for a run, standalone compaction, or navigation.
 - `machine/classification.{settle, classify}` — the normative

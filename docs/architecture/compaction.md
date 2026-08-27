@@ -97,12 +97,12 @@ ceiling come from the resolved route, under the adapter's own api name
 (`compaction_hooks`, `client/wiring.gleam:273`). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:613` (`default_reserve_tokens`) and
+once in `client/serve.gleam:621` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:578`).
+(`compaction_settings`, `client/serve.gleam:589`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
@@ -336,14 +336,14 @@ as a faulted driver or a crashed effect.
 
 Each nested request settles its own ledger row and clears the in-flight
 marker in one transaction, so the next pass is unambiguously "between
-requests" (`settle_summary_request`, `machine/planner.gleam:3897`). Those
+requests" (`settle_summary_request`, `machine/planner.gleam:2981`). Those
 rows carry no entry id, because they commit before the result entry
 exists. When progress finally reports `SummaryProduced`, the publication
 is a single transaction: the compaction entry parented on the current
 leaf, carrying the summary, the complete retained tail from the frozen
 preparation, the `tokens_before` the preparation recorded, a `from_hook`
 of `False`, and the summarizer's display usage — plus the leaf move
-(`compaction_publication`, `machine/planner.gleam:4395`). No extra usage
+(`compaction_publication`, `machine/planner.gleam:3448`). No extra usage
 row is written on this path; the hook-supplied path writes one because
 nothing else billed it, and the generated path already paid per request.
 
@@ -351,7 +351,7 @@ Where the run goes next depends on who hosted the work. An in-run
 compaction restores the checkpoint it copied aside, already marked
 threshold-checked, so the same boundary is never rechecked and the run
 carries straight on to its generation step (`publish_structural`,
-`machine/planner.gleam:4153`). A standalone compaction operation
+`machine/planner.gleam:3345`). A standalone compaction operation
 finishes, with the new entry as its result leaf.
 
 ## When the compaction does not happen
@@ -359,8 +359,8 @@ finishes, with the new entry as its result leaf.
 Decline and failure both end an in-run compaction with nothing published,
 and for both the first question is the `CompactionReason` — not the error
 and not how far the retry ladder got. That is one rule read at two sites,
-`decide_structural` for a decline (`machine/planner.gleam:3657`) and
-`structural_failure` for a failure (`machine/planner.gleam:4116`).
+`decide_structural` for a decline (`machine/planner.gleam:2803`) and
+`structural_failure` for a failure (`machine/planner.gleam:3302`).
 
 **A threshold compaction is Loom's own clamp**, applied because the
 context crossed an inequality the harness chose. Failing to apply it
@@ -393,10 +393,10 @@ against the same dead route — on every turn for the rest of the run.
 So abandoning a threshold compaction also **switches threshold compaction
 off for the remainder of that run**, by clearing `enabled` in the run's
 own captured `CompactionSettings`
-(`abandon_threshold_compaction`, `machine/planner.gleam:4262`). That is
+(`abandon_threshold_compaction`, `machine/planner.gleam:3249`). That is
 the durable record of the attempt the backoff needs, and it needs no new
 state: `enabled` is already the single gate step 3 reads
-(`after_inbox`, `machine/planner.gleam:739`), already inside `op.state`,
+(`after_inbox`, `machine/planner.gleam:748`), already inside `op.state`,
 and therefore already survives a crash-restore rather than re-opening the
 gate on recovery.
 
@@ -409,7 +409,7 @@ ability to compact.
 The run then continues unclamped, which is survivable because the clamp
 was never the only guard. Overflow recovery does not consult these
 settings at all — a request that does not fit still diverts into a
-compaction task (`settle_overflow`, `machine/planner.gleam:1427`) — so
+compaction task (`settle_overflow`, `machine/planner.gleam:1209`) — so
 the provider's own limit remains the backstop. If the summarizer is
 still down when it fires, that compaction drains the run, and by then
 draining is the honest outcome.
@@ -418,7 +418,7 @@ draining is the honest outcome.
 
 Not every structural error is about the summarizer, so the threshold path
 consults one predicate before it decides to survive
-(`fatal_to_the_context`, `machine/planner.gleam:4223`). It asks what the
+(`fatal_to_the_context`, `machine/planner.gleam:3210`). It asks what the
 error is a statement *about*. An unresolvable route, a provider that
 would not answer, a summarizer that replied with a tool call instead of
 a summary, a settlement lost with its process, an attempt orphaned at the
@@ -482,7 +482,7 @@ response, its leaf move, its usage row, the preparation and the new state
 as one transaction — so the compaction task can never exist without the
 response that caused it — and resumes the same trigger with the one-shot
 recovery marked spent, so a retried request cannot loop on overflow
-(`enter_overflow_compaction`, `machine/planner.gleam:1462`). An empty
+(`enter_overflow_compaction`, `machine/planner.gleam:1248`). An empty
 preparation, or a second overflow on the same step, drains the run as
 `context_overflow`; so does a compaction that was declined or that failed
 against its summarizer, which is where this path parts company with the
