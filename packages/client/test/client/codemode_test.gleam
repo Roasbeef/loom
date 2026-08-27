@@ -9,26 +9,47 @@
 //// base policy this module is allowed to touch, where an execution's
 //// files land, and the translation from the pipeline's vocabulary into
 //// the one the model reads.
+////
+//// The orchestration seam is the exception, and deliberately so. Its
+//// router calls the *real* Agency over a *real* runtime here, because the
+//// property it has to have — that a program may address only the lineage
+//// its own strand roots, refused under the names the `agent_*` tools
+//// already refuse under — is one no fake can be evidence for. The
+//// `codemode` package proves the carriage against a scripted Agency; this
+//// is where the two halves meet.
 
 import broker/broker
+import broker/budget
 import broker/exec
+import broker/framing
 import broker/policy
+import client/agency
 import client/codemode
 import client/serve
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/identity
+import codemode/orchestration
 import codemode/satellite
 import codemode/vet
-import core/clock
+import codemode/vet/policy as vet_policy
+import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json
 import core/message
 import core/msgpack
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleam/string
+import machine/strand as machine_strand
+import provider/stream
+import runtime/api
+import runtime/effects
+import session/session
 import simplifile
+import tools/agent
 import tools/codemode as codemode_tool
 import tools/tool
 
@@ -517,4 +538,341 @@ fn dead_filesystem() -> tool.FileSystem {
     is_file: fn(_path) { Ok(False) },
     read_link: fn(_path) { Ok(tool.LinkMissing) },
   )
+}
+
+// --- the orchestration seam ------------------------------------------------
+
+pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
+  // One field decides both, because a host that could set them apart
+  // would eventually set them apart — and "which capabilities travel
+  // together" is the whole of what the separation buys.
+  let broker_actor = idle_broker()
+  let config =
+    codemode.orchestrating(config_for(broker_actor), over: none_agency())
+  let seam = codemode.seam(config)
+  assert list.contains(seam.allowed_imports, "cap/strand")
+  assert list.contains(seam.allowed_imports, "cap/report")
+  assert !list.contains(seam.allowed_imports, "cap/fs")
+  assert !list.contains(seam.allowed_imports, "cap/proc")
+  assert seam.serviced_caps == orchestration.serviced_caps
+  assert codemode.surface_seam(config.surface) == vet_policy.OrchestrationSeam
+  // And the workspace surface is unmoved by it.
+  let workspace = codemode.seam(config_for(broker_actor))
+  assert list.contains(workspace.allowed_imports, "cap/proc")
+  assert !list.contains(workspace.allowed_imports, "cap/strand")
+  assert workspace.serviced_caps == codemode.serviced_caps
+  broker.stop(broker_actor)
+}
+
+pub fn only_the_orchestration_surface_carries_a_spawn_ceiling_test() {
+  // `agent_spawn` is throttled by turn cost and a loop pays nothing, so
+  // the seam that replaces the turn with a loop is the one that needs an
+  // explicit ceiling. The workspace seam mints nothing that outlives its
+  // execution and declares none.
+  let broker_actor = idle_broker()
+  let request = request_for("turn-9:tools")
+  let orchestrated =
+    codemode.exec_config(
+      codemode.orchestrating(config_for(broker_actor), over: none_agency()),
+      request,
+      "/work/.codemode/x",
+      9000,
+    )
+  assert orchestrated.satellite.ceilings
+    == orchestration.ceilings(orchestration.default_spawn_ceiling)
+  let plain =
+    codemode.exec_config(
+      config_for(broker_actor),
+      request,
+      "/work/.codemode/x",
+      9000,
+    )
+  assert plain.satellite.ceilings == []
+  broker.stop(broker_actor)
+}
+
+pub fn an_orchestration_program_is_vetted_against_its_own_seam_test() {
+  // The whole pipeline, not just the policy value: a program importing
+  // `cap/strand` is refused by a workspace host and admitted by an
+  // orchestration one, both as the structured rejection the model reads.
+  let broker_actor = idle_broker()
+  let source = "import cap/report\nimport cap/strand\npub fn main() { 1 }\n"
+  let request = codemode_tool.Request(..request_for("turn-9:tools"), source:)
+  let refused = codemode.execute(config_for(broker_actor), request)
+  let assert codemode_tool.VetRejected(rejections:) = refused.result
+    as "a workspace host must refuse cap/strand"
+  assert list.any(rejections, fn(one) {
+    one.rule == codemode_tool.ImportNotAllowed
+    && string.contains(one.detail, "cap/strand")
+  })
+  broker.stop(broker_actor)
+}
+
+// --- the lineage rule, over a live runtime ---------------------------------
+
+pub fn a_spawn_reaches_the_real_agency_test() {
+  // The happy path first, because every refusal below would hold just as
+  // well for a seam that refused everything.
+  let live = start_runtime()
+  let assert framing.CapOk(value:) =
+    orchestrated(live, "main", "strand.spawn", spawn_args("review core"))
+    as "a spawn from the root strand must be admitted"
+  assert string.starts_with(child_of(value), "sub:main/review-core-")
+}
+
+pub fn a_spawn_from_a_child_hits_the_depth_cap_test() {
+  // `depth_cap` is 1 — only the strand a human is talking to may spawn —
+  // and it is counted from the durable lineage ledger, so a program
+  // running on a child reaches it under the name the tools use.
+  let live = start_runtime()
+  let assert framing.CapOk(value:) =
+    orchestrated(live, "main", "strand.spawn", spawn_args("review core"))
+    as "the first spawn must be admitted"
+  let child = child_of(value)
+  let #(code, message) =
+    refused(live, child, "strand.spawn", spawn_args("review deeper"))
+  assert code == "depth_cap"
+  assert string.contains(message, "capped at depth")
+}
+
+pub fn a_call_as_an_unknown_strand_fails_closed_test() {
+  // The caller identity comes from the dispatching `Ctx`, never from the
+  // program — and a name the session does not know is refused rather than
+  // treated as a root with no constraints.
+  let live = start_runtime()
+  let #(code, message) =
+    refused(live, "sub:main/nobody-9-9", "strand.spawn", spawn_args("review"))
+  assert code == "not_addressable"
+  assert string.contains(message, "sub:main/nobody-9-9")
+}
+
+pub fn a_send_outside_the_lineage_is_refused_by_name_test() {
+  // The addressing rule, fail-closed: a strand with no lineage cell is a
+  // root and is nobody's descendant, so "no lineage fact" answers
+  // `not_addressable` rather than "unknown, allow".
+  let live = start_runtime()
+  let #(code, message) =
+    refused(
+      live,
+      "main",
+      "strand.send",
+      msgpack.MapValue([
+        pair("to", msgpack.StringValue("sub:elsewhere/nobody")),
+        pair("text", msgpack.StringValue("hello")),
+      ]),
+    )
+  assert code == "not_addressable"
+  assert string.contains(message, "sub:elsewhere/nobody")
+}
+
+pub fn a_join_outside_the_lineage_is_refused_by_name_test() {
+  // Joins are strictly downward, which is what keeps the wait graph
+  // acyclic; a handle naming something the caller did not spawn is
+  // `not_a_descendant`.
+  let live = start_runtime()
+  let #(code, message) =
+    refused(
+      live,
+      "main",
+      "strand.wait",
+      msgpack.MapValue([
+        pair(
+          "handles",
+          msgpack.ArrayValue([
+            msgpack.MapValue([
+              pair("strand", msgpack.StringValue("sub:elsewhere/nobody")),
+              pair(
+                "operation",
+                msgpack.StringValue(ids.op_id_to_string(an_op(11))),
+              ),
+            ]),
+          ]),
+        ),
+        pair("within_ms", msgpack.IntValue(1)),
+      ]),
+    )
+  assert code == "not_a_descendant"
+  assert string.contains(message, "sub:elsewhere/nobody")
+}
+
+// Routes one capability call through the production orchestration router
+// over the live Agency, as the calling strand `from`, and runs the plan
+// the way the satellite host's worker process does.
+fn orchestrated(
+  live: Live,
+  from: String,
+  cap: String,
+  args: msgpack.MsgPackValue,
+) -> framing.CapOutcome {
+  let router =
+    orchestration.router(orchestration.Orchestration(
+      agency: live.seam,
+      strand: from,
+    ))
+  let request =
+    satellite.CapRequest(
+      cap:,
+      args:,
+      identity: identity.run_phase(identity.for_execution(
+        op_id: an_op(5),
+        step_id: "turn-9:tools",
+        budget: budget.Budget(max_outstanding: 4, deadline_ms: 9_000_000),
+      )),
+      base_policy: policy.workspace_default("/work"),
+      demand: exec.BestEffort,
+      env: [],
+      cwd: "/work",
+      ordinal: 0,
+    )
+  case router(request) {
+    Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
+    Ok(satellite.ServedHere(serve:)) -> serve()
+    Ok(satellite.ClearedCall(..)) ->
+      panic as "an orchestration call is never a jailed clearance"
+  }
+}
+
+// The `{code, message}` a program reads when the call is refused.
+fn refused(
+  live: Live,
+  from: String,
+  cap: String,
+  args: msgpack.MsgPackValue,
+) -> #(String, String) {
+  let assert framing.CapErr(code:, message:) =
+    orchestrated(live, from, cap, args)
+    as "the call must be refused"
+  #(code, message)
+}
+
+fn child_of(value: msgpack.MsgPackValue) -> String {
+  let assert msgpack.MapValue(entries:) = value as "a spawn answers a map"
+  let assert Ok(msgpack.StringValue(strand)) =
+    list.find_map(entries, fn(entry) {
+      case entry.0 == msgpack.StringValue("strand") {
+        True -> Ok(entry.1)
+        False -> Error(Nil)
+      }
+    })
+    as "a spawn answers with the child's strand"
+  strand
+}
+
+fn spawn_args(purpose: String) -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    pair("purpose", msgpack.StringValue(purpose)),
+    pair("brief", msgpack.StringValue("look")),
+    pair("within_ms", msgpack.NilValue),
+    pair("detach", msgpack.BoolValue(False)),
+    pair("context", msgpack.StringValue("fresh")),
+    pair("tools", msgpack.NilValue),
+    pair("result_schema", msgpack.NilValue),
+  ])
+}
+
+fn pair(
+  key: String,
+  value: msgpack.MsgPackValue,
+) -> #(msgpack.MsgPackValue, msgpack.MsgPackValue) {
+  #(msgpack.StringValue(key), value)
+}
+
+fn none_agency() -> agent.Agency {
+  agent.Agency(
+    spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
+    wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
+    notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    roster: fn(_caller) { Error(agent.AgencyUnavailable) },
+    max_wait_ms: 30_000,
+  )
+}
+
+// --- a live runtime behind a real Agency -----------------------------------
+//
+// The same shape `client/test/client/agency_test.gleam` uses, trimmed to
+// what a refusal path needs: a memory session, an injected clock, and a
+// provider that never settles, because no run has to finish for the
+// lineage ledger to answer.
+
+type Live {
+  Live(seam: agent.Agency)
+}
+
+fn start_runtime() -> Live {
+  let session_clock = counting_clock(1_756_000_000_000, 3)
+  let assert Ok(sess) = session.open_memory(session_clock)
+    as "the memory session must open"
+  let assert Ok(counter) =
+    actor.new(1)
+    |> actor.on_message(fn(next, reply: Subject(Int)) {
+      process.send(reply, next)
+      actor.continue(next + 1)
+    })
+    |> actor.start
+    as "the entropy counter must start"
+  let entropy = fn() {
+    7_000_000
+    + process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
+    * 104_729
+  }
+  let name = process.new_name(prefix: "loom_codemode_agency")
+  let config =
+    agency.Config(
+      ..agency.default_config(name, counting_clock(1_756_000_000_000, 3)),
+      rest: fn(_slice) { Nil },
+      first_slice_ms: 1,
+      max_slice_ms: 1,
+    )
+  let configuration =
+    machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: ["agent_spawn", "code_mode"],
+    )
+  let base = api.default_options(configuration)
+  let assert Ok(runtime) =
+    api.open(
+      sess,
+      effects.Effects(
+        clock: session_clock,
+        entropy:,
+        timers: effects.real_timers(),
+        provider: effects.ProviderSurface(
+          timeout_ms: 60_000,
+          request: fn(_spec) {
+            stream.StreamHandle(events: process.new_subject())
+          },
+        ),
+        tools: effects.ToolSurface(
+          clear: fn(_query) {
+            effects.ClearanceRefused(reason: "no tools in this harness")
+          },
+          run: fn(_run) { effects.ToolFailed(reason: "no tools") },
+          replay_still_safe: fn(_name) { False },
+          execution_mode: fn(_name) { effects.ExclusiveExecution },
+        ),
+        hooks: effects.default_hooks(),
+      ),
+      api.Options(..base, poll_interval_ms: 25, subagent: agency.is_subagent),
+    )
+    as "the runtime must open"
+  let assert Ok(_holder) = agency.start(config, runtime)
+    as "the agency holder must start"
+  Live(seam: agency.seam(config))
+}
+
+fn counting_clock(from: Int, by: Int) -> Clock {
+  let assert Ok(counter) =
+    actor.new(from)
+    |> actor.on_message(fn(now, reply: Subject(Int)) {
+      process.send(reply, now)
+      actor.continue(now + by)
+    })
+    |> actor.start
+    as "the clock counter must start"
+  clock.from_function(fn() {
+    process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
+  })
 }

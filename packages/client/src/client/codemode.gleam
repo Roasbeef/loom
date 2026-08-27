@@ -9,6 +9,32 @@
 //// schema, and a total `run` that turns every failure into a structured
 //// result the model can act on.
 ////
+//// ## Two seams, one pipeline
+////
+//// A host serves one of two code-mode seams, and `Config.surface` is the
+//// whole of the choice. The **workspace** surface is what `default_config`
+//// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
+//// by `satellite.default_router`, a program that orchestrates *effects*.
+//// The **orchestration** surface — `orchestrating` — is `cap/strand` plus
+//// `cap/report` and nothing else, routed onto the Agency closures the
+//// `agent_*` tools call, a program that orchestrates *agents*.
+////
+//// One field rather than two, because the vetting allowlist and the
+//// capability router have to agree and a host that could set them apart
+//// would eventually set them apart. `surface_policy` and `surface_router`
+//// both read the one value: the seam decides which allowlist a submission
+//// is judged against, and the same seam decides which capabilities the
+//// satellite will service. Which capabilities travel together is the
+//// point of the separation, so it is not a thing to be assembled from two
+//// places.
+////
+//// `client/serve`'s own boot builds the workspace surface, so the shipped
+//// server serves that one; a host assembling its own registry passes
+//// `codemode.seam(codemode.orchestrating(config, over: agency))` instead.
+//// Letting the *model* choose per submission needs a `seam` argument on
+//// the `code_mode` tool, which lives in `tools/codemode` — see this
+//// package's notes rather than guessing from here.
+////
 //// ## One execution, one identity, one budget
 ////
 //// Everything a code-mode call does — the hermetic `gleam build`, the
@@ -70,6 +96,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/orchestration
 import codemode/satellite
 import codemode/seed
 import codemode/vet
@@ -82,6 +109,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import simplifile
+import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
@@ -116,8 +144,10 @@ pub type Config {
     erl_path: String,
     /// A `PATH` for the hermetic build, covering both executables.
     toolchain_path: String,
-    /// The vetting allowlist submitted programs are judged against.
-    vet_policy: vet_policy.VetPolicy,
+    /// Which of the two seams this host's `code_mode` serves. It decides
+    /// the vetting allowlist *and* the capability router together; see
+    /// the module doc for why that is one field.
+    surface: Surface,
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -131,6 +161,94 @@ pub type Config {
     /// The ceiling a call's `within_ms` is clamped to.
     max_within_ms: Int,
   )
+}
+
+/// Which of the two code-mode seams a host serves.
+///
+/// The two variants carry different things because they *are* different
+/// things: a workspace program needs nothing beyond the pipeline, and an
+/// orchestration program needs the messaging plane it orchestrates
+/// through and the ceiling on how much of it one execution may spend.
+///
+/// A host with no messaging plane simply does not build the second one.
+/// There is deliberately no `Orchestration` without an `Agency`: a seam
+/// that vetted `cap/strand` and then answered every call
+/// `strands_unavailable` would be a tool surface the model is charged for
+/// on every request and can never use.
+pub type Surface {
+  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
+  /// `satellite.default_router`.
+  Workspace
+  /// `cap/strand` + `cap/report`, routed onto the Agency closures.
+  Orchestration(agency: Agency, spawn_ceiling: Int)
+}
+
+/// The same host configuration, serving the orchestration seam over a
+/// messaging plane instead of the workspace seam.
+///
+/// Both halves move together — the allowlist a submission is judged
+/// against and the router that services it — because they are one field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.orchestrating(over: agency.seam(agency_config))
+/// ```
+///
+pub fn orchestrating(config: Config, over agency: Agency) -> Config {
+  Config(
+    ..config,
+    surface: Orchestration(
+      agency:,
+      spawn_ceiling: orchestration.default_spawn_ceiling,
+    ),
+  )
+}
+
+/// The vetting allowlist a surface judges a submission against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.surface_policy(codemode.Workspace) == vet_policy.default()
+/// ```
+///
+pub fn surface_policy(surface: Surface) -> vet_policy.VetPolicy {
+  vet_policy.for_seam(surface_seam(surface))
+}
+
+/// Which seam a surface is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.surface_seam(codemode.Workspace)
+///   == vet_policy.WorkspaceSeam
+/// ```
+///
+pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
+  case surface {
+    Workspace -> vet_policy.WorkspaceSeam
+    Orchestration(..) -> vet_policy.OrchestrationSeam
+  }
+}
+
+/// The capability names a surface's router actually services. Published
+/// through the seam so the tool's description tells the model the truth
+/// rather than a copy that can drift from the router.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.surface_caps(codemode.Workspace) == ["proc.run"]
+/// ```
+///
+pub fn surface_caps(surface: Surface) -> List(String) {
+  case surface {
+    Workspace -> serviced_caps
+    Orchestration(..) -> orchestration.serviced_caps
+  }
 }
 
 /// The pooled outstanding-effect cap one execution runs under. Above the
@@ -192,7 +310,7 @@ pub fn default_config(
     gleam_path: toolchain.gleam_path,
     erl_path: toolchain.erl_path,
     toolchain_path: toolchain_path(toolchain),
-    vet_policy: vet_policy.default(),
+    surface: Workspace,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -287,8 +405,8 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
     execute: fn(request) { execute(config, request) },
-    allowed_imports: vet_policy.allowed_imports(config.vet_policy),
-    serviced_caps:,
+    allowed_imports: vet_policy.allowed_imports(surface_policy(config.surface)),
+    serviced_caps: surface_caps(config.surface),
     default_within_ms: config.default_within_ms,
     max_within_ms: config.max_within_ms,
   )
@@ -482,7 +600,7 @@ pub fn exec_config(
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
   pipeline.ExecConfig(
-    vet_policy: config.vet_policy,
+    vet_policy: surface_policy(config.surface),
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
@@ -507,7 +625,8 @@ pub fn exec_config(
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
-      router: satellite.default_router,
+      router: surface_router(config.surface, request),
+      ceilings: surface_ceilings(config.surface),
       call_timeout_ms: config.call_timeout_ms,
     ),
     launch: launch.launcher(launch.LaunchConfig(
@@ -518,6 +637,40 @@ pub fn exec_config(
       accept_timeout_ms: config.accept_timeout_ms,
     )),
   )
+}
+
+// The capability router one execution runs behind, and the strand every
+// Agency call it makes is judged as.
+//
+// The strand comes from the request — which `tools/codemode.request`
+// filled from the dispatching `Ctx` and never from the model's arguments
+// — so a program cannot claim to be another strand, and the addressing
+// rule the Agency enforces stays enforceable.
+fn surface_router(
+  surface: Surface,
+  request: codemode_tool.Request,
+) -> satellite.CapRouter {
+  case surface {
+    Workspace -> satellite.default_router
+    Orchestration(agency:, spawn_ceiling: _) ->
+      orchestration.router(orchestration.Orchestration(
+        agency:,
+        strand: request.strand,
+      ))
+  }
+}
+
+// The lifetime admission ceilings the execution runs under. The workspace
+// seam declares none: its capabilities perform effects the pooled budget
+// and the wall deadline already bound, and none of them *mints* anything
+// that outlives the execution. `strand.spawn` does, which is the whole
+// reason the orchestration seam needs one (`satellite.CapCeiling`).
+fn surface_ceilings(surface: Surface) -> List(satellite.CapCeiling) {
+  case surface {
+    Workspace -> []
+    Orchestration(agency: _, spawn_ceiling:) ->
+      orchestration.ceilings(spawn_ceiling)
+  }
 }
 
 /// The hermetic build's configuration. It carries no operation, step or

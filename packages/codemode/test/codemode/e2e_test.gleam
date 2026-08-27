@@ -469,6 +469,7 @@ fn exec_config(
       write_token_file: satellite.private_token_writer(live.token_dir),
       unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
+      ceilings: [],
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(

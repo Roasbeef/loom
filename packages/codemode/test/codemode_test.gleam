@@ -421,6 +421,101 @@ pub fn cap_actor_kv_program_passes_test() {
   assert is_passed(vet.vet(source, policy()))
 }
 
+// --- Category 7: the two seams, confined in both directions -----------------
+//
+// One rule, read in two directions: an import outside the allowlist the
+// submission is judged against is rejected. The two directions get their
+// own tests anyway, because the property that matters is not "the rule
+// works" — it is that these two *particular* sets stay disjoint, and a
+// test that only ever pointed one way would pass while the other set was
+// widened. Both are the structured `ImportNotAllowed` rejection the model
+// reads and repairs in band, never a crash.
+
+/// An orchestration-seam program reaching for the workspace is rejected.
+pub fn orchestration_may_not_reach_the_workspace_test() {
+  let reaching = [
+    "import cap/strand\nimport cap/fs\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/proc\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/net\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/git\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/lsp\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/kv\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/task\npub fn main() { 1 }\n",
+    "import cap/strand\nimport cap/actor\npub fn main() { 1 }\n",
+  ]
+  let seam = policy.orchestration()
+  assert list.all(reaching, fn(source) {
+    has_rule(vet.vet(source, seam), ImportNotAllowed)
+  })
+  // The rejection names the module it refused, so the model can delete
+  // the import rather than guess which one was the problem.
+  assert any_detail_contains(
+    vet.vet("import cap/strand\nimport cap/fs\npub fn main() { 1 }\n", seam),
+    "cap/fs",
+  )
+}
+
+/// A workspace-seam program reaching for strands is rejected.
+pub fn the_workspace_may_not_reach_strands_test() {
+  let reaching = [
+    "import cap/strand\npub fn main() { 1 }\n",
+    "import cap/proc\nimport cap/strand\npub fn main() { 1 }\n",
+    "import cap/fs\nimport cap/strand as s\npub fn main() { 1 }\n",
+  ]
+  assert list.all(reaching, fn(source) {
+    has_rule(vet.vet(source, policy()), ImportNotAllowed)
+  })
+  assert any_detail_contains(
+    vet.vet("import cap/strand\npub fn main() { 1 }\n", policy()),
+    "cap/strand",
+  )
+}
+
+/// The two capability sets are disjoint but for `cap/report`, which
+/// carries no authority of its own. This is the property both directions
+/// above rest on: widen either set and the confinement stops meaning
+/// anything, whichever way the rejection tests point.
+pub fn the_seams_share_only_the_report_capability_test() {
+  let workspace = policy.default()
+  let orchestration = policy.orchestration()
+  let caps = [
+    "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/task",
+    "cap/actor", "cap/kv", "cap/strand",
+  ]
+  assert list.all(caps, fn(name) {
+    policy.contains(workspace, name) != policy.contains(orchestration, name)
+  })
+  assert policy.contains(workspace, "cap/report")
+  assert policy.contains(orchestration, "cap/report")
+}
+
+/// `for_seam` is the selector, and it selects the two allowlists above.
+pub fn for_seam_selects_the_allowlist_test() {
+  assert policy.allowed_imports(policy.for_seam(policy.WorkspaceSeam))
+    == policy.allowed_imports(policy.default())
+  assert policy.allowed_imports(policy.for_seam(policy.OrchestrationSeam))
+    == policy.allowed_imports(policy.orchestration())
+}
+
+/// An orchestration program that stays inside its seam passes, and the
+/// same source is rejected on the workspace seam. Without this the two
+/// rejections above would hold just as well for a policy that rejected
+/// everything.
+pub fn an_orchestration_program_passes_its_own_seam_test() {
+  let source =
+    "import cap/report
+import cap/strand
+import gleam/list
+
+pub fn main() -> report.Outcome {
+  let _ = list.map([1], fn(n) { n })
+  report.text(\"orchestrated\")
+}
+"
+  assert is_passed(vet.vet(source, policy.orchestration()))
+  assert has_rule(vet.vet(source, policy.default()), ImportNotAllowed)
+}
+
 // --- Vetted token & bypass-prevention properties ---------------------------
 
 /// A pass carries the parsed module, so downstream need not re-parse.
