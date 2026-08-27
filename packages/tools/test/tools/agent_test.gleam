@@ -46,6 +46,7 @@ fn ctx_for(strand: String, step: String, index: Int) -> Ctx {
     filesystem: dead_filesystem(),
     blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
+    raise_refusal: tool.no_raise(),
   )
 }
 

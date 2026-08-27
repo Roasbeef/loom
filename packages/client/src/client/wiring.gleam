@@ -106,6 +106,7 @@
 ////   report instead.
 
 import broker/broker.{type Broker}
+import broker/escalation.{type Denial}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import client/escalate.{type Escalations}
@@ -1028,6 +1029,72 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
     filesystem: fs.real_filesystem(),
     blob_root: config.blob_root,
     clear_call: escalating_runner(config, run),
+    raise_refusal: raising_seam(config, run),
+  )
+}
+
+// The other door onto the same escalation plane: the one a tool knocks on
+// when it met a policy refusal somewhere `clear_call` is not.
+//
+// `code_mode` is why it exists. Its clearances happen inside the
+// code-mode pipeline, against the broker that pipeline holds, so the
+// runner above never sees them and a refused execution used to reach no
+// record at all — grants could be spent there and nothing could mint one
+// (#97). Everything below this line is the runner's own reasoning, one
+// seam over: the same `Refused` value, the same seam, the same "one
+// re-execution of exactly this call" on an approval.
+//
+// **Once for the whole execution, not once per clearance.** A code-mode
+// program's clearances happen while a satellite is alive, and parking one
+// of them parks inside a live node: the program's own capability call
+// times out long before a human answers, the execution's pooled wall
+// deadline runs down while they decide, and the node holds one
+// outstanding effect throughout. Consent is the sharper argument. An
+// approval binds to the *call's* arguments (#65) and a `code_mode` call's
+// arguments are the program, so a human asked about an individual
+// `cap_call` would be answering about something no client rendered.
+// Asked once, about the whole submission, the consent unit is exactly
+// what was shown — and exactly what the action digest already covers.
+//
+// The tool decides *whether* to raise, because only the tool knows which
+// of its refusals a re-execution could actually repair; this decides what
+// happens to the one it raises.
+fn raising_seam(
+  config: Config,
+  run: effects.ToolRun,
+) -> fn(tool.RaisedRefusal) -> tool.Escalated {
+  fn(raised: tool.RaisedRefusal) {
+    let tool.RaisedRefusal(denial:, deadline_ms:) = raised
+    case config.escalations.refused(refused_call(run, denial, deadline_ms)) {
+      escalate.Settle -> tool.Settle
+      escalate.Resume(grants:) -> tool.Resume(grants:)
+    }
+  }
+}
+
+// One refused call as the escalation seam sees it. Both doors build it
+// the same way and from the same place — the driver's `ToolRun` — so a
+// record raised through either is scoped to one real call in the tree and
+// bound to the arguments a resumption would re-execute with.
+fn refused_call(
+  run: effects.ToolRun,
+  denial: Denial,
+  deadline_ms: Int,
+) -> escalate.Refused {
+  escalate.Refused(
+    operation: run.operation,
+    strand: run.strand,
+    step_id: run.step_id,
+    source_index: run.source_index,
+    call_id: run.call.id,
+    tool: run.call.name,
+    denial:,
+    // The post-clearance arguments, which is what a resumption
+    // re-executes with and therefore what a human's consent is bound
+    // to — never `run.call.arguments`, which a clearance hook may have
+    // rewritten out from under the execution.
+    arguments: run.arguments,
+    deadline_ms:,
   )
 }
 
@@ -1057,22 +1124,7 @@ fn escalating_runner(
   fn(spec: broker.CallSpec, events) {
     case direct(spec, events) {
       Error(broker.PolicyRefused(denial:)) -> {
-        let refused =
-          escalate.Refused(
-            operation: run.operation,
-            strand: run.strand,
-            step_id: run.step_id,
-            source_index: run.source_index,
-            call_id: run.call.id,
-            tool: run.call.name,
-            denial:,
-            // The post-clearance arguments, which is what a resumption
-            // re-executes with and therefore what a human's consent is
-            // bound to — never `run.call.arguments`, which a clearance
-            // hook may have rewritten out from under the execution.
-            arguments: run.arguments,
-            deadline_ms: spec.budget.deadline_ms,
-          )
+        let refused = refused_call(run, denial, spec.budget.deadline_ms)
         case config.escalations.refused(refused) {
           escalate.Settle -> Error(broker.PolicyRefused(denial:))
           escalate.Resume(grants: approved) ->

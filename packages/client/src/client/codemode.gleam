@@ -9,6 +9,43 @@
 //// schema, and a total `run` that turns every failure into a structured
 //// result the model can act on.
 ////
+//// ## Two seams, one pipeline
+////
+//// There are two code-mode seams, and `Config.surface` says which of them
+//// this host serves. The **workspace** seam is what `default_config`
+//// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
+//// by `satellite.default_router`, a program that orchestrates *effects*.
+//// The **orchestration** seam is `cap/strand` plus `cap/report` and
+//// nothing else, routed onto the Agency closures the `agent_*` tools call,
+//// a program that orchestrates *agents*. A host may serve either alone or
+//// both (`Surface`, `serving`); when it serves both, a submission names
+//// the one it wants and the tool defaults it to the workspace seam.
+////
+//// One field rather than two, because the vetting allowlist and the
+//// capability router have to agree and a host that could set them apart
+//// would eventually set them apart. Which capabilities travel together is
+//// the point of the separation, so it is not a thing to be assembled from
+//// two places.
+////
+//// The two halves are read from different places on purpose, and the
+//// asymmetry is the security property. The **allowlist follows the
+//// submission**: a program is vetted against exactly the seam it named,
+//// so a refusal it reads is about the surface it asked for. The **router
+//// follows the host**: a surface serving one seam hands out that seam's
+//// router whatever a request names, so no submission can widen what the
+//// host wired. Where the two could disagree — a request naming a seam
+//// this host does not serve — `execute` refuses before anything is
+//// dispatched, and the fallback under that refusal is narrowing in both
+//// directions anyway: a program vetted against one seam's imports and
+//// routed by the other's can call nothing at all, because it cannot
+//// import the modules whose calls that router services.
+////
+//// `client/serve` defaults to the workspace seam and takes the choice as
+//// a setting; a host assembling its own registry passes
+//// `codemode.seam(codemode.orchestrating(config, over: agency))`, or
+//// `codemode.serving(config, codemode.BothSeams, over: agency)` to leave
+//// the choice to the model.
+////
 //// ## One execution, one identity, one budget
 ////
 //// Everything a code-mode call does — the hermetic `gleam build`, the
@@ -26,6 +63,75 @@
 //// one outstanding effect for its whole life, so a cap of one would starve
 //// every `cap_call` the program makes; `launch` refuses such a budget in
 //// band rather than hanging.
+////
+//// ## What an approved escalation widens
+////
+//// The same threaded identity carries the grants an approval attributed
+//// to this execution (`identity.widened_by`), and the pipeline composes
+//// them at the *run* phase alone: the satellite node's clearance and
+//// every capability call the program makes. The hermetic build is never
+//// widened — see `codemode/identity`, "The widening, and why it lives
+//// here" — and there is no session-wide grant list anywhere below, so an
+//// approval that cannot be attributed to one execution widens nothing.
+////
+//// `approved_grants` reads `Request.grants`, which `tools/codemode.request`
+//// fills from `tool.Ctx.grants` — so an approval consumed for this call
+//// reaches the run phase, and only the run phase.
+////
+//// ## Reporting a refusal outward, so that something can mint one
+////
+//// The paragraph above is the half of the loop that *spends* an approval.
+//// The other half is where one comes from, and for a long time there was
+//// nowhere: this module clears through the broker it holds rather than
+//// through `tool.Ctx.clear_call`, so a policy refusal inside a code-mode
+//// execution reached no escalation plane and no durable record, and there
+//// was nothing for a human to approve (#97).
+////
+//// So `execute` **watches** the one stage an approval could widen and
+//// reports what composition refused, as a `codemode_tool.PolicyRefusal`
+//// beside the outcome. It is a peer of the enforcement report and not a
+//// field inside it, for the reason `codemode`'s own `widening` is one: an
+//// enforcement report is the helper's verbatim account of a stage that
+//// *ran*, and a refusal is the harness deciding a stage may not.
+////
+//// That stage is the satellite **launch**, and it is the only one, which
+//// is a decision about what "a policy refusal for a whole execution"
+//// means rather than an omission. The pipeline clears on policy in three
+//// places and the other two are unraisable, each for its own reason.
+////
+//// The **hermetic build** clears with no grants at all:
+//// `identity.build_phase` drops this execution's approval before the
+//// build composes anything, because grants apply *after* the meet and one
+//// reaching the build would undo the offline, pinned property the build
+//// exists to have. A build refused on policy is therefore an operator's
+//// misconfiguration and no answer a human could give would change it —
+//// asking would be filing a decision nobody can act on. The model reads
+//// the build's own verbatim reason in `CompileFailed` regardless.
+////
+//// A **capability call** refused inside a running program is refused
+//// after the program has already performed effects. The one thing an
+//// approval buys is a re-execution (design §5.3), `code_mode` is
+//// `replay: tool.Never` precisely because a program's capability calls
+//// have nothing to reconcile onto, and re-running a submission to widen
+//// its seventh call would replay the first six. The consent unit would be
+//// wrong too: a human is asked about the *program*, and by then the
+//// program is half-spent. So that refusal is handed to the program, which
+//// is the party that can still route around it, and to the model in the
+//// outcome the program returns.
+////
+//// The launch is the one refusal with none of those problems: the node
+//// has not started, so no capability call has been serviced and nothing
+//// of the program has run. A re-execution under the widened policy
+//// repeats no effect, and the action a human consents to is still the
+//// whole submitted program.
+////
+//// The watching is done by wrapping the `satellite.Launcher` the pipeline
+//// already takes as an injected value, and asking — only once the launch
+//// has already refused — the same policy question the launch asked:
+//// `policy.compose` over the same base, the same requirements (through
+//// `launch.node_requirements`, the launch's own function, so there is
+//// nothing here to drift), and the same grants. Nothing is
+//// re-implemented and no reason text is parsed.
 ////
 //// ## The two env names, and why they are added here
 ////
@@ -61,7 +167,8 @@
 
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
-import broker/policy.{type SandboxPolicy}
+import broker/escalation
+import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/internal/ffi_os
 import codemode/build
@@ -70,6 +177,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/launch
+import codemode/orchestration
 import codemode/satellite
 import codemode/seed
 import codemode/vet
@@ -77,11 +185,14 @@ import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
+import gleam/bool
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
 import simplifile
+import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
@@ -116,8 +227,10 @@ pub type Config {
     erl_path: String,
     /// A `PATH` for the hermetic build, covering both executables.
     toolchain_path: String,
-    /// The vetting allowlist submitted programs are judged against.
-    vet_policy: vet_policy.VetPolicy,
+    /// Which of the two seams this host's `code_mode` serves. It decides
+    /// the vetting allowlist *and* the capability router together; see
+    /// the module doc for why that is one field.
+    surface: Surface,
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -131,6 +244,153 @@ pub type Config {
     /// The ceiling a call's `within_ms` is clamped to.
     max_within_ms: Int,
   )
+}
+
+/// Which of the two code-mode seams a host serves, and what the
+/// orchestration one needs to be served with.
+///
+/// The variants carry different things because they *are* different
+/// things: a workspace program needs nothing beyond the pipeline, and an
+/// orchestration program needs the messaging plane it orchestrates
+/// through and the ceiling on how much of it one execution may spend.
+///
+/// A host with no messaging plane simply does not build the second one.
+/// There is deliberately no `Orchestration` without an `Agency`: a seam
+/// that vetted `cap/strand` and then answered every call
+/// `strands_unavailable` would be a tool surface the model is charged for
+/// on every request and can never use.
+///
+/// `Both` is a third variant rather than a flag on the second, for the
+/// same reason: an orchestration-only host is a real posture — code mode
+/// that can start agents and touch neither disk, process nor socket — and
+/// folding it into "orchestration implies workspace" would quietly take
+/// it away.
+pub type Surface {
+  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
+  /// `satellite.default_router`.
+  Workspace
+  /// `cap/strand` + `cap/report`, routed onto the Agency closures.
+  Orchestration(agency: Agency, spawn_ceiling: Int)
+  /// Both, with each submission naming the seam it wants; the workspace
+  /// seam is what one that names none is judged against.
+  Both(agency: Agency, spawn_ceiling: Int)
+}
+
+/// Which seams a host means to serve, as a *setting*: the choice a flag
+/// or a config file can carry, before there is an `Agency` to serve the
+/// orchestration seam with. `serving` turns one of these plus an Agency
+/// into the `Surface` a `Config` holds.
+pub type Seams {
+  /// The workspace seam alone — the shipped default.
+  WorkspaceOnly
+  /// The orchestration seam alone.
+  OrchestrationOnly
+  /// Both, with the submission choosing.
+  BothSeams
+}
+
+/// The same host configuration, serving the seams a setting names over a
+/// messaging plane.
+///
+/// The allowlist a submission is judged against, the router that services
+/// it and the spawn ceiling all move together, because they are one
+/// field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.serving(codemode.BothSeams, over: agency_seam)
+/// ```
+///
+pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
+  let spawn_ceiling = orchestration.default_spawn_ceiling
+  Config(..config, surface: case seams {
+    WorkspaceOnly -> Workspace
+    OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
+    BothSeams -> Both(agency:, spawn_ceiling:)
+  })
+}
+
+/// The same host configuration, serving the orchestration seam over a
+/// messaging plane instead of the workspace seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.orchestrating(over: agency.seam(agency_config))
+/// ```
+///
+pub fn orchestrating(config: Config, over agency: Agency) -> Config {
+  serving(config, OrchestrationOnly, over: agency)
+}
+
+/// The vetting allowlist one seam judges a submission against.
+///
+/// Indexed by the seam and not by the surface: a program is vetted
+/// against exactly the seam it named, so the refusal it reads is about
+/// the surface it asked for rather than about the host's default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.seam_policy(vet_policy.WorkspaceSeam) == vet_policy.default()
+/// ```
+///
+pub fn seam_policy(seam: vet_policy.Seam) -> vet_policy.VetPolicy {
+  vet_policy.for_seam(seam)
+}
+
+/// Every seam a surface serves, the default first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.surface_seams(codemode.Workspace)
+///   == [vet_policy.WorkspaceSeam]
+/// ```
+///
+pub fn surface_seams(surface: Surface) -> List(vet_policy.Seam) {
+  case surface {
+    Workspace -> [vet_policy.WorkspaceSeam]
+    Orchestration(..) -> [vet_policy.OrchestrationSeam]
+    Both(..) -> [vet_policy.WorkspaceSeam, vet_policy.OrchestrationSeam]
+  }
+}
+
+/// The seam a submission that names none is judged against: the first one
+/// this surface serves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.surface_seam(codemode.Workspace)
+///   == vet_policy.WorkspaceSeam
+/// ```
+///
+pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
+  case surface {
+    Workspace | Both(..) -> vet_policy.WorkspaceSeam
+    Orchestration(..) -> vet_policy.OrchestrationSeam
+  }
+}
+
+/// The capability names one seam's router actually services. Published
+/// through the seam so the tool's description tells the model the truth
+/// rather than a copy that can drift from the router.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.seam_caps(vet_policy.WorkspaceSeam) == ["proc.run"]
+/// ```
+///
+pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
+  case seam {
+    vet_policy.WorkspaceSeam -> serviced_caps
+    vet_policy.OrchestrationSeam -> orchestration.serviced_caps
+  }
 }
 
 /// The pooled outstanding-effect cap one execution runs under. Above the
@@ -192,7 +452,7 @@ pub fn default_config(
     gleam_path: toolchain.gleam_path,
     erl_path: toolchain.erl_path,
     toolchain_path: toolchain_path(toolchain),
-    vet_policy: vet_policy.default(),
+    surface: Workspace,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -287,11 +547,69 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
     execute: fn(request) { execute(config, request) },
-    allowed_imports: vet_policy.allowed_imports(config.vet_policy),
-    serviced_caps:,
+    seams: offered_seams(config.surface),
     default_within_ms: config.default_within_ms,
     max_within_ms: config.max_within_ms,
   )
+}
+
+// What the tool may offer a model: exactly the seams this surface serves,
+// each carrying the allowlist `execute` will judge that seam's
+// submissions against and the capabilities its router will service. The
+// tool refuses anything else, so a model can never name a seam that would
+// arrive here unserved.
+//
+// `surface_seams` is non-empty for every surface, so the fallback below
+// is unreachable; it is a workspace-seam offer rather than a panic
+// because a `code_mode` that vanished would be a worse answer to a bug
+// than one that serves the narrower of the two.
+fn offered_seams(surface: Surface) -> codemode_tool.Seams {
+  case list.map(surface_seams(surface), seam_offer) {
+    [] -> codemode_tool.one_seam(seam_offer(vet_policy.WorkspaceSeam))
+    [default, ..alternates] -> codemode_tool.Seams(default:, alternates:)
+  }
+}
+
+fn seam_offer(seam: vet_policy.Seam) -> codemode_tool.SeamOffer {
+  codemode_tool.SeamOffer(
+    seam: tool_seam(seam),
+    allowed_imports: vet_policy.allowed_imports(seam_policy(seam)),
+    serviced_caps: seam_caps(seam),
+  )
+}
+
+/// One seam in the vocabulary the tool speaks. `tools` cannot see
+/// `codemode`, so the two `Seam` types are mirrors — the same arrangement
+/// `Outcome` and `Enforcement` already use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.tool_seam(vet_policy.WorkspaceSeam)
+///   == codemode_tool.WorkspaceSeam
+/// ```
+///
+pub fn tool_seam(seam: vet_policy.Seam) -> codemode_tool.Seam {
+  case seam {
+    vet_policy.WorkspaceSeam -> codemode_tool.WorkspaceSeam
+    vet_policy.OrchestrationSeam -> codemode_tool.OrchestrationSeam
+  }
+}
+
+/// And back: the seam a request named, in the pipeline's vocabulary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.vetting_seam(codemode_tool.WorkspaceSeam)
+///   == vet_policy.WorkspaceSeam
+/// ```
+///
+pub fn vetting_seam(seam: codemode_tool.Seam) -> vet_policy.Seam {
+  case seam {
+    codemode_tool.WorkspaceSeam -> vet_policy.WorkspaceSeam
+    codemode_tool.OrchestrationSeam -> vet_policy.OrchestrationSeam
+  }
 }
 
 /// Runs one submitted program end to end and reports what ran.
@@ -310,6 +628,19 @@ pub fn execute(
   config: Config,
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
+  // A seam this host does not serve, before anything is dispatched. The
+  // tool shell has already refused one, so this is for a caller that
+  // built its own `Request`: it must not be silently reinterpreted as the
+  // seam the host does serve, in either direction — one way that is a
+  // refusal naming an allowlist the submission never asked for, the other
+  // a widening nobody chose.
+  use <- bool.lazy_guard(
+    when: !list.contains(
+      surface_seams(config.surface),
+      vetting_seam(request.seam),
+    ),
+    return: fn() { unserved(config.surface, request.seam) },
+  )
   let root = exec_root(config, request)
   // The socket check first: it is pure, and failing it after creating the
   // directory would leave one behind for an execution that never ran.
@@ -323,14 +654,27 @@ pub fn execute(
           "the code-mode work directory could not be created, so nothing "
           <> "was dispatched",
         ),
+        refusal: codemode_tool.NothingRefused,
       )
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
       let deadline_ms = now + request.within_ms
+      let shortfalls = process.new_subject()
       let execution =
         pipeline.execute(
           request.source,
-          exec_config(config, request, root, deadline_ms),
+          watching(
+            exec_config(
+              config,
+              request,
+              root,
+              deadline_ms,
+              widened_by: approved_grants(request),
+            ),
+            config.clock,
+            reporting: shortfalls,
+            until: deadline_ms,
+          ),
         )
       // The whole execution is over: the node is destroyed, the socket and
       // token are unlinked by the host's own teardown, and nothing but the
@@ -340,9 +684,232 @@ pub fn execute(
       codemode_tool.Execution(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
+        refusal: reported_refusal(shortfalls),
       )
     }
   }
+}
+
+// The grants an approved escalation attributed to *this* `code_mode`
+// call, which is what an execution re-run under an approval is allowed to
+// compose with.
+//
+// They ride the request rather than the surface because an approval
+// widens one re-execution of one action, never a session: a grant list
+// configured on the seam would outlive the call that was consented to.
+// And they are not folded into `request.base_policy` on the way past,
+// which would be a second widening path and would reach the hermetic
+// build — `identity.widened_by` puts them on the run phase alone
+// (`codemode/identity`, "The widening, and why it lives here").
+//
+// Two ways in, one destination. A call arrives carrying grants when the
+// *driver* consumed an approval for it at clearance time (`Ctx.grants`,
+// through `tools/codemode.request`); a call acquires them mid-flight when
+// this module reported a refusal outward and a human answered, which
+// `tools/codemode` appends to the same field before executing once more.
+// Both are approvals attributed to this one call, so both compose in the
+// same place.
+fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
+  request.grants
+}
+
+// --- watching the stage a human can widen ----------------------------------
+
+// The same execution configuration, with the satellite launcher wrapped
+// so that a launch refused on *policy* is reported outward as a
+// structured denial rather than only as the reason text the run settles
+// with.
+//
+// Wrapping is the whole trick, and it is what keeps this honest. The
+// pipeline flattens every refusal to prose on its way to the model — that
+// is right for a model and useless for consent, because an approval
+// grants `denial.wanted` and prose has no wanted. Rather than parse the
+// prose back, or re-derive what the node asks for, the wrapper calls
+// `launch`'s *own* public `node_requirements` against the spec the
+// pipeline actually built and asks `policy.compose` the same question the
+// launch asked. There is nothing here for the two to drift apart on: if
+// the node's requirements change, this changes with them.
+//
+// **The launch, and only the launch.** The hermetic build clears on
+// policy too, and it is deliberately unwatched. `identity.build_phase`
+// drops this execution's grants before the build composes anything —
+// grants apply *after* the meet, so one reaching the build would undo the
+// offline, pinned property the build exists to have — so a build refused
+// on policy is an operator's misconfiguration and no answer a human could
+// give would change it. Filing that as a question would be filing a
+// decision nobody can act on, and it would be inexact into the bargain:
+// the build prepares its seed before it clears, so "the build failed and
+// the base is narrow" is not the same statement as "the build was refused
+// on policy". The model reads the build's verbatim reason in
+// `CompileFailed` either way. A capability call refused inside a *running*
+// program is unwatched for a different reason, argued in the module doc:
+// by then the program has performed effects, and the one thing an
+// approval buys is a re-execution.
+fn watching(
+  exec: pipeline.ExecConfig,
+  session_clock: Clock,
+  reporting shortfalls: Subject(codemode_tool.PolicyRefusal),
+  until deadline_ms: Int,
+) -> pipeline.ExecConfig {
+  pipeline.ExecConfig(
+    ..exec,
+    launch: watched_launcher(
+      exec.launch,
+      session_clock,
+      shortfalls,
+      deadline_ms,
+    ),
+  )
+}
+
+// The satellite launch, watched.
+//
+// The composition is only run once the launcher has already refused.
+// That ordering costs nothing on a working execution and answers "was
+// policy the reason?" without a second oracle: `launch` composes `base ⊕
+// requirements ⊕ grants` before it binds a socket or spawns anything, so
+// a launch that failed *and* narrows is a launch that narrowed, and a
+// launch that failed on a socket it could not bind composes cleanly and
+// reports nothing.
+//
+// A plain `case` rather than a `result.map_error`: the error arm reports
+// on a subject, and a combinator that reads like a rename is the last
+// place a side effect should be hiding (`docs/gleam-style.md` Part III,
+// "Where the lineage stops").
+fn watched_launcher(
+  launcher: satellite.Launcher,
+  session_clock: Clock,
+  shortfalls: Subject(codemode_tool.PolicyRefusal),
+  deadline_ms: Int,
+) -> satellite.Launcher {
+  fn(spec) {
+    case launcher(spec) {
+      Ok(connection) -> Ok(connection)
+      Error(reason) -> {
+        let #(now, _clock) = clock.read(session_clock)
+        // Both variants named: a bare variable in the second arm would
+        // be a catch-all whatever it is called, and a third kind of
+        // refusal added later would start being reported here with
+        // nobody having decided that it should be.
+        case launch_refusal(spec, now, reason, deadline_ms) {
+          codemode_tool.NothingRefused -> Nil
+          codemode_tool.RunRefused(..) as refused ->
+            process.send(shortfalls, refused)
+        }
+        Error(reason)
+      }
+    }
+  }
+}
+
+/// What composition would refuse this satellite launch for, if anything:
+/// `RunRefused` carrying the exact grants that would satisfy it, or
+/// `NothingRefused` when the session base already covers the node.
+///
+/// Public because it is the whole of the decision `watched_launcher`
+/// makes, and the only part of it a test can hold still: a `LaunchSpec`
+/// is a value, and the answer to "what does this base owe this node" is a
+/// pure function of one.
+///
+/// `reason` is the launcher's own sentence, carried into the denial
+/// verbatim so a human reads "the session base cannot host a satellite
+/// node: environment variable LOOM_CAP_SOCK" rather than a paraphrase of
+/// it. The wanted diff is never taken from a caller: it can only come
+/// from `policy.wanted_grants` over the narrowings computed here, so
+/// nothing can offer a human a diff of its own invention.
+///
+/// `policy.narrow_unenforceable` is deliberately not applied. The node
+/// requires `NetworkOff`, composition takes the meet, and the one
+/// downgrade that rule performs turns `NetworkProxy` into `NetworkOff` —
+/// so it cannot fire here, and applying it would invite the belief that
+/// this is a second implementation of the broker's clearance rather than
+/// a re-run of the one question the launch already asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.launch_refusal(spec, now, reason, deadline_ms)
+/// //   == codemode_tool.RunRefused(denial:, deadline_ms:)
+/// ```
+///
+pub fn launch_refusal(
+  spec: satellite.LaunchSpec,
+  now_ms: Int,
+  reason: String,
+  deadline_ms: Int,
+) -> codemode_tool.PolicyRefusal {
+  let #(_effective, narrowings) =
+    policy.compose(
+      base: spec.base_policy,
+      requirements: launch.node_requirements(spec, now_ms),
+      grants: identity.grants(spec.identity),
+    )
+  case narrowings {
+    [] -> codemode_tool.NothingRefused
+    [_, ..] ->
+      codemode_tool.RunRefused(
+        denial: escalation.Denial(
+          reason:,
+          source: escalation.PolicyDenial,
+          wanted: policy.wanted_grants(narrowings),
+        ),
+        deadline_ms:,
+      )
+  }
+}
+
+// What the watcher reported, or that nothing did.
+//
+// The receive is bounded at zero and that is not optimism. The wrapper
+// runs on this very process — `satellite.run` calls the launcher from
+// `dispatch_launch`, before it starts waiting on anything — so by the
+// time `pipeline.execute` has returned, a report that was going to be
+// made is already in this mailbox. Should the pipeline ever move the
+// launch onto a process of its own, the report is simply lost and the
+// refusal settles in band with no record raised, which is the direction
+// every other failure in this seam falls.
+//
+// A subject rather than a return value because the launcher is a
+// callback: its shape is the pipeline's contract and its return type has
+// no room for anything but the connection. One report at most can arrive
+// — a launch happens once per execution.
+fn reported_refusal(
+  shortfalls: Subject(codemode_tool.PolicyRefusal),
+) -> codemode_tool.PolicyRefusal {
+  // The eager `unwrap` is right here: the fallback is a bare constructor
+  // over nothing, so computing it on every execution costs a word.
+  result.unwrap(
+    process.receive(shortfalls, within: 0),
+    codemode_tool.NothingRefused,
+  )
+}
+
+// Nothing started, and the reason names both the seam that was asked for
+// and the ones on offer. `StartFailed` rather than a vetting rejection
+// because the program was never judged at all: no allowlist was applied
+// to it, and saying one was would be the lie this whole path exists to
+// avoid.
+fn unserved(
+  surface: Surface,
+  seam: codemode_tool.Seam,
+) -> codemode_tool.Execution {
+  let served =
+    surface_seams(surface)
+    |> list.map(fn(one) { codemode_tool.seam_name(tool_seam(one)) })
+    |> string.join(", ")
+  codemode_tool.Execution(
+    result: codemode_tool.RunFailed(codemode_tool.StartFailed(
+      reason: "this host does not serve the "
+      <> codemode_tool.seam_name(seam)
+      <> " code-mode seam; it serves: "
+      <> served,
+    )),
+    enforcement: nothing_dispatched(
+      "the submission named a seam this host does not serve, so nothing "
+      <> "was dispatched",
+    ),
+    refusal: codemode_tool.NothingRefused,
+  )
 }
 
 // A fresh directory per execution. `delete` first because a directory left
@@ -466,6 +1033,14 @@ const mask_64 = 18_446_744_073_709_551_615
 /// type rather than a change: `with_own_build_ledger` is the e2e's
 /// deliberate split, not the default.
 ///
+/// `widened_by` is the approval this execution carries, and it goes onto
+/// the same identity for the same reason the budget does — one threaded
+/// value, phases derived from it, nowhere for a caller to write a second.
+/// The run phase composes them; the hermetic build never sees them
+/// (`codemode/identity`, "The widening, and why it lives here"). Passing
+/// `[]` is an unapproved execution and is exactly as wide as this
+/// pipeline has always been.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -478,11 +1053,12 @@ pub fn exec_config(
   request: codemode_tool.Request,
   root: String,
   deadline_ms: Int,
+  widened_by grants: List(Grant),
 ) -> pipeline.ExecConfig {
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
   pipeline.ExecConfig(
-    vet_policy: config.vet_policy,
+    vet_policy: seam_policy(vetting_seam(request.seam)),
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
@@ -493,7 +1069,8 @@ pub fn exec_config(
       op_id: request.op_id,
       step_id: request.step_id,
       budget: pooled,
-    ),
+    )
+      |> identity.widened_by(grants:),
     satellite: satellite.SatelliteConfig(
       base_policy:,
       demand: request.demand,
@@ -507,7 +1084,8 @@ pub fn exec_config(
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
-      router: satellite.default_router,
+      router: surface_router(config.surface, request),
+      ceilings: surface_ceilings(config.surface, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
     launch: launch.launcher(launch.LaunchConfig(
@@ -518,6 +1096,59 @@ pub fn exec_config(
       accept_timeout_ms: config.accept_timeout_ms,
     )),
   )
+}
+
+// The capability router one execution runs behind, and the strand every
+// Agency call it makes is judged as.
+//
+// The strand comes from the request — which `tools/codemode.request`
+// filled from the dispatching `Ctx` and never from the model's arguments
+// — so a program cannot claim to be another strand, and the addressing
+// rule the Agency enforces stays enforceable.
+//
+// The *surface* picks the router, and the request only chooses among the
+// seams the surface already serves. A host that wired one seam therefore
+// hands out that seam's router whatever a submission names, so nothing a
+// model says can widen what the operator wired; and the mismatch that
+// arrangement allows — vetted against one seam's imports, routed by the
+// other's — can only narrow, because a program that may not import
+// `cap/proc` cannot call `proc.run` however willing the router is.
+fn surface_router(
+  surface: Surface,
+  request: codemode_tool.Request,
+) -> satellite.CapRouter {
+  case surface, vetting_seam(request.seam) {
+    Workspace, _seam -> satellite.default_router
+    Both(..), vet_policy.WorkspaceSeam -> satellite.default_router
+    Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
+      orchestration.router(orchestration.Orchestration(
+        agency:,
+        strand: request.strand,
+        source_index: request.source_index,
+      ))
+  }
+}
+
+// The lifetime admission ceilings the execution runs under. The workspace
+// seam declares none: its capabilities perform effects the pooled budget
+// and the wall deadline already bound, and none of them *mints* anything
+// that outlives the execution. `strand.spawn` does, which is the whole
+// reason the orchestration seam needs one (`satellite.CapCeiling`).
+//
+// Read off the surface beside the router, and for the same reason: the
+// ceiling belongs to the router that can mint strands, so the two can
+// never be chosen apart.
+fn surface_ceilings(
+  surface: Surface,
+  request: codemode_tool.Request,
+) -> List(satellite.CapCeiling) {
+  case surface, vetting_seam(request.seam) {
+    Workspace, _seam -> []
+    Both(..), vet_policy.WorkspaceSeam -> []
+    Orchestration(spawn_ceiling:, ..), _seam
+    | Both(spawn_ceiling:, ..), _seam
+    -> orchestration.ceilings(spawn_ceiling)
+  }
 }
 
 /// The hermetic build's configuration. It carries no operation, step or

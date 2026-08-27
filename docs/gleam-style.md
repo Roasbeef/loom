@@ -816,10 +816,47 @@ tighten the ecosystem defaults:
    faults the harness"). Always with an `as "message"`.
 4. **FFI confinement**: `@external` only in `*/internal/ffi_*.gleam`
    modules; every external carries a comment naming the OTP function used
-   and why no pure alternative exists. CI greps enforce this.
+   and why no pure alternative exists. CI greps enforce this. Three
+   packages are stricter still — see 5.
 5. **Purity layering**: `core` and `machine` are pure — no I/O
    imports at all. Effects live behind the broker; the state machine is
    `State × Inputs -> Action`.
+
+   `core`, `machine` and `prompt` carry that further: **no `@external` of
+   any target, and no `gleam_erlang` or `gleam_otp`**, in source or in
+   `gleam.toml`. This is a rule, not an accident of how they were written,
+   and lint R6 gates on it at error level with a census that must stay
+   zero. Two properties rest on it. The first is the one already recorded:
+   purity is what makes the whole operation state space property-testable
+   without spawning processes, because `next_action` is `State × Inputs ->
+   Action` and a property test can enumerate states rather than supervise
+   them. The second is the one that used to go unsaid: those three compile
+   to the **JavaScript target** today, and every `@external` or BEAM-only
+   dependency closes that door. One external closes both properties at
+   once, however deterministic the function behind it is — foreign code is
+   trusted unchecked, so it is a hole in exactly the claim the property
+   tests rest on. No target is the safe one: an Erlang external ends the
+   portability, a JavaScript one breaks the BEAM build Loom actually ships
+   on, and a matched pair still puts trusted-unchecked foreign code inside
+   the packages whose entire claim is that they are pure functions of their
+   arguments. Reach for a clock or an id through the injected capabilities
+   of 6 below instead.
+
+   **Portable does not mean the harness runs in a browser**, and the rule
+   is not a step toward that. `gleam_otp` has no JavaScript target at all,
+   and the orchestration plane *is* supervision trees, actors, monitors and
+   links — there is nothing to port the design onto. Rule Zero is
+   kernel-enforced: bwrap namespaces, Landlock, seccomp, a helper over a
+   port. In a browser the harness VM and the untrusted-code VM would be the
+   same VM, which *inverts* the invariant the whole architecture exists to
+   hold. And the two-channel doctrine assumes both channels; doorbells need
+   processes. What the portable subset is good for is enough to **decide
+   but not act**: replay a conversation tree, validate a transcript with
+   the same total decoders the server uses, run `next_action` over fetched
+   state to show what the harness would do next. Every effect still
+   proxied. A browser *client* is a different seam entirely — `packages/tui`
+   speaks the frozen §1.6 protocol over the client gateway, and that gets
+   the real harness with its real sandbox behind a web front end.
 6. **Time and identity are injected**: timestamps come from a `Clock`
    capability, ids from an injected UUIDv7 generator — never
    `erlang:system_time` or random bytes reached for directly.

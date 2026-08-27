@@ -61,8 +61,20 @@ package is wrong.
 - **Depended on by**: `session` (typed register access through
   `machine/codec`), `runtime` (drives the planner), `conformance` (scripts
   and invariant checks).
-- **FFI**: none, and there must be none. Purity here is what makes the
-  whole state space property-testable without processes.
+- **FFI**: none, and there must be none — no `@external` of any target,
+  and no `gleam_erlang` or `gleam_otp` in `gleam.toml`, by rule rather
+  than by coincidence.
+  Two properties rest on that, and one `@external` closes both: purity is
+  what makes the state space property-testable without spawning processes,
+  and the same discipline is what keeps this package compiling to the
+  **JavaScript target**. Lint R6 gates on it at error level and its census
+  must stay zero. Portable here means *decide but not act* — replay a
+  conversation tree, validate a transcript with the server's own total
+  decoders, run `next_action` over fetched state — and never the harness in
+  a browser: `gleam_otp` has no JavaScript target, Rule Zero is
+  kernel-enforced (in a browser the harness VM and the untrusted-code VM
+  would be the same VM), and the two-channel doctrine needs processes on
+  both sides. `docs/gleam-style.md` Part IV §5 argues it in full.
 
 ## Traffic
 

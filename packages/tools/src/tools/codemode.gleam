@@ -8,6 +8,25 @@
 //// the program instead of landing in the context
 //// (`docs/architecture/code-mode.md`).
 ////
+//// ## Which seam a submission is judged against
+////
+//// There is not one allowlist but two, and a submission is judged
+//// against exactly one of them: the **workspace** seam, a program that
+//// orchestrates effects, and the **orchestration** seam, a program that
+//// orchestrates agents (`docs/architecture/code-mode.md`, "Two seams").
+//// Which of them a host serves is the host's decision; which of the ones
+//// it serves a *submission* wants is the model's, named in the call's
+//// `seam` argument and defaulting to whichever the host put first.
+////
+//// The choice appears in the schema exactly when there is a choice: a
+//// host serving one seam renders neither the argument nor a second
+//// import list, so it pays nothing for a decision its model cannot make.
+//// A seam this host does not serve is refused in the shell before the
+//// pipeline is called, naming the ones it does — never quietly
+//// reinterpreted as the other seam, because a submission judged against
+//// an allowlist it did not ask for is a refusal the model cannot act on
+//// and, in the other direction, a widening nobody chose.
+////
 //// ## Why a seam rather than a direct call
 ////
 //// `codemode` depends on `tools` — its capability router renders a
@@ -45,8 +64,9 @@
 //// report came back at all. A tool result must never imply confinement
 //// that was not applied.
 
+import broker/escalation.{type Denial}
 import broker/exec.{type EnforcementDemand}
-import broker/policy.{type SandboxPolicy}
+import broker/policy.{type Grant, type SandboxPolicy}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
@@ -54,14 +74,89 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option}
+import gleam/result
 import gleam/string
 import tools/blob
+import tools/prelude
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 /// The name the model calls this tool by.
 pub const tool_name = "code_mode"
 
 // --- what crosses the seam -------------------------------------------------
+
+/// Which of the two seams a submission is judged and routed under.
+/// Mirrors `codemode/vet/policy.Seam`, which owns the closed set — two
+/// variants and no third, because "which capabilities travel together"
+/// is a decision the vetting policy makes and this side only names.
+pub type Seam {
+  /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`: a program
+  /// that orchestrates *effects*.
+  WorkspaceSeam
+  /// `cap/strand` and `cap/report` and nothing else: a program that
+  /// orchestrates *agents*.
+  OrchestrationSeam
+}
+
+/// The name a model names a seam by, in the tool's arguments and in
+/// every refusal that has to say which seam a program was judged
+/// against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.seam_name(codemode.WorkspaceSeam) == "workspace"
+/// ```
+///
+pub fn seam_name(seam: Seam) -> String {
+  case seam {
+    WorkspaceSeam -> "workspace"
+    OrchestrationSeam -> "orchestration"
+  }
+}
+
+/// What one seam offers a submission judged against it.
+///
+/// Constructor invariants: `allowed_imports` is the vetting allowlist
+/// that seam's submissions are actually judged against and
+/// `serviced_caps` the capability names that seam's router actually
+/// maps, both read off the running policy rather than copied, so the
+/// sentence the model is charged for cannot drift from what refuses it.
+pub type SeamOffer {
+  SeamOffer(
+    seam: Seam,
+    /// The modules a submission naming this seam may import.
+    allowed_imports: List(String),
+    /// The capability names this seam's router services today; every
+    /// other one compiles and then answers `unsupported_cap`.
+    serviced_caps: List(String),
+  )
+}
+
+/// The seams a host serves: the one a submission that names none is
+/// judged against, and any other it will also accept.
+///
+/// A record with a named `default` rather than a list, so a host cannot
+/// offer nothing at all and there is never a question of which seam an
+/// unnamed submission gets. The set of *seams* is closed at two
+/// (`Seam`), so `alternates` holds at most one useful entry; it is a
+/// list only because nothing here needs to know that.
+pub type Seams {
+  Seams(default: SeamOffer, alternates: List(SeamOffer))
+}
+
+/// Every seam this host serves, the default first — the order the tool's
+/// description names them in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // list.length(codemode.offered(seam.seams)) == 2
+/// ```
+///
+pub fn offered(seams: Seams) -> List(SeamOffer) {
+  [seams.default, ..seams.alternates]
+}
 
 /// Who is calling and what they submitted, in the driver's own durable
 /// coordinates.
@@ -71,17 +166,28 @@ pub const tool_name = "code_mode"
 /// `{op_id, step_id}` in particular *is* the execution identity the broker
 /// pools budget under, so a value invented here would mint a second budget
 /// and put the execution beyond the reach of the operation's abort.
-/// `within_ms` is already clamped to `max_within_ms` when it arrives.
+/// `within_ms` is already clamped to `max_within_ms` when it arrives,
+/// and `seam` is one the host actually serves — the shell resolves the
+/// model's argument against `CodeMode.seams` and refuses an unserved one
+/// before `execute` is ever called.
 pub type Request {
   Request(
     /// The submitted program, verbatim.
     source: String,
+    /// The seam this submission is judged and routed under.
+    seam: Seam,
     /// The strand whose driver dispatched the call.
     strand: String,
     /// The pooled operation id.
     op_id: OpId,
     /// The pooled step id.
     step_id: String,
+    /// This call's own index within its step. Carried because a whole
+    /// execution shares one `{op_id, step_id}` with every other call in
+    /// its batch, so it is the only durable coordinate that tells two
+    /// code-mode calls in one step apart — which is what the orchestration
+    /// seam derives a child strand's name from.
+    source_index: Int,
     /// The workspace root the program runs against.
     workspace: String,
     /// The session base policy this execution is judged against.
@@ -92,6 +198,13 @@ pub type Request {
     env: List(#(String, String)),
     /// The whole execution's wall budget, in milliseconds.
     within_ms: Int,
+    /// Grants from escalation approvals consumed for *this* call, if
+    /// any. Carried per-request rather than configured on the surface
+    /// because an approval is attributable to one call: a grant list on
+    /// the seam would be a session-wide widening nobody consented to,
+    /// and folding grants into `base_policy` would be a second widening
+    /// path that also reaches the hermetic build.
+    grants: List(Grant),
   )
 }
 
@@ -202,10 +315,57 @@ pub type ExecResult {
   Ran(outcome: Outcome, manifest_hash: String)
 }
 
-/// One whole execution: how it settled, and what the kernel really did to
-/// each stage of it.
+/// Whether a policy refusal stopped this execution before it ran, and
+/// therefore whether there is anything a human could be asked about.
+///
+/// A named two-variant type rather than `Option(Denial)` because the
+/// question it answers is not "is there a denial here" but "is this one
+/// an approval can overturn" — and because a `deadline_ms` rides with the
+/// denial, which an `Option` would have nowhere to put.
+///
+/// The pipeline clears on policy in three places and only one of them is
+/// here. The hermetic build composes with this execution's grants already
+/// dropped, so no approval can widen it and a refusal there is an
+/// operator's misconfiguration reported in the ordinary `CompileFailed`
+/// result. A capability call refused inside a running program is refused
+/// after the program has performed effects, and `code_mode` is
+/// `replay: tool.Never` precisely because those effects have nothing to
+/// reconcile onto — so the one thing an approval buys, a re-execution, is
+/// the one thing that must not happen; that refusal is the program's to
+/// handle. The seam that fills this field argues both at length
+/// (`client/codemode`).
+pub type PolicyRefusal {
+  /// Nothing this seam offers for a decision. Either no stage was refused
+  /// on policy, or the one that was is not one an approval could widen.
+  /// The execution may still have failed for any other reason.
+  NothingRefused
+  /// The **run** phase was refused before the satellite serviced a single
+  /// capability call, so nothing of the program ran.
+  ///
+  /// `denial.wanted` is the exact diff that would let it — derived from
+  /// policy composition's own narrowings, never written by hand, because
+  /// a human approving a diff that satisfies nothing has been asked a
+  /// question with no useful answer. `deadline_ms` is the refused
+  /// execution's own budget deadline, the instant past which holding this
+  /// call open buys nothing.
+  RunRefused(denial: Denial, deadline_ms: Int)
+}
+
+/// One whole execution: how it settled, what the kernel really did to
+/// each stage of it, and whether policy composition is what stopped it.
+///
+/// `refusal` is a peer of `enforcement` rather than a field inside it,
+/// for the reason `codemode`'s `widening` is: an enforcement report is
+/// the helper's verbatim account of what the kernel did to a stage that
+/// *ran*, and a refusal is the harness deciding a stage may not run. A
+/// harness-side decision folded into that report is exactly the
+/// applied-versus-skipped confusion the report exists to prevent.
 pub type Execution {
-  Execution(result: ExecResult, enforcement: Enforcement)
+  Execution(
+    result: ExecResult,
+    enforcement: Enforcement,
+    refusal: PolicyRefusal,
+  )
 }
 
 /// The code-mode seam: everything this tool may do, as data.
@@ -213,25 +373,36 @@ pub type Execution {
 /// Constructor invariants: `execute` is total — every failure of every
 /// stage is a value in the `Execution` it returns, and it runs the
 /// execution under the `Request`'s own `{op_id, step_id}` rather than
-/// minting an identity of its own. `allowed_imports` is the vetting
-/// allowlist the same execution is judged against and `serviced_caps` the
-/// capability names the router actually maps, both published so the tool's
-/// description states the real numbers rather than a copy that can drift.
+/// minting an identity of its own. `seams` names every seam this host
+/// serves and, for each, the allowlist a submission naming it is judged
+/// against and the capabilities its router maps — published rather than
+/// copied, so the sentence the model is charged for on every request
+/// cannot drift from the policy the program is judged against.
 /// `default_within_ms` is at most `max_within_ms`.
 pub type CodeMode {
   CodeMode(
     /// Runs one submitted program end to end.
     execute: fn(Request) -> Execution,
-    /// The modules a submitted program may import.
-    allowed_imports: List(String),
-    /// The capability names the harness services today; every other one
-    /// compiles and then answers `unsupported_cap`.
-    serviced_caps: List(String),
+    /// The seams this host serves, the default first.
+    seams: Seams,
     /// The wall budget used when the call names none.
     default_within_ms: Int,
     /// The ceiling a call's `within_ms` is clamped to.
     max_within_ms: Int,
   )
+}
+
+/// A host that serves one seam, which is every host until one wires a
+/// messaging plane behind the orchestration router.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.one_seam(offer).alternates == []
+/// ```
+///
+pub fn one_seam(offer: SeamOffer) -> Seams {
+  Seams(default: offer, alternates: [])
 }
 
 // --- the tool --------------------------------------------------------------
@@ -253,8 +424,8 @@ pub type CodeMode {
 /// // tool.registry(list.append(core_tools, codemode.tools(seam)))
 /// ```
 ///
-pub fn tools(seam: CodeMode) -> List(Tool) {
-  [tool_for(seam)]
+pub fn tools(mode: CodeMode) -> List(Tool) {
+  [tool_for(mode)]
 }
 
 /// The `code_mode` tool itself.
@@ -277,66 +448,312 @@ pub fn tools(seam: CodeMode) -> List(Tool) {
 /// // codemode.tool_for(seam).name == codemode.tool_name
 /// ```
 ///
-pub fn tool_for(seam: CodeMode) -> Tool {
+pub fn tool_for(mode: CodeMode) -> Tool {
   tool.Tool(
     name: tool_name,
-    description: description(seam),
+    description: description(mode),
     schema: tool.object_schema(
-      [
-        #(
-          "program",
-          tool.string_property(
-            "the Gleam program. It must define `pub fn main() -> "
-            <> "report.Outcome` and import `cap/report` to build one",
+      list.flatten([
+        [
+          #(
+            "program",
+            tool.string_property(
+              "the Gleam program. It must define `pub fn main() -> "
+              <> "report.Outcome` and import `cap/report` to build one",
+            ),
           ),
-        ),
-        #(
-          "within_ms",
-          tool.integer_property(
-            "wall budget for the whole execution — compile included; "
-            <> "default "
-            <> int.to_string(seam.default_within_ms)
-            <> ", clamped to "
-            <> int.to_string(seam.max_within_ms),
+        ],
+        seam_properties(mode.seams),
+        [
+          #(
+            "within_ms",
+            tool.integer_property(
+              "wall budget for the whole execution — compile included; "
+              <> "default "
+              <> int.to_string(mode.default_within_ms)
+              <> ", clamped to "
+              <> int.to_string(mode.max_within_ms),
+            ),
           ),
-        ),
-      ],
+        ],
+      ]),
       ["program"],
     ),
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements:,
-    run: fn(ctx, args) { run(seam, ctx, args) },
+    run: fn(ctx, args) { run(mode, ctx, args) },
   )
 }
 
-/// The model-facing description: what to write, what may be imported, what
-/// is actually serviced, and what comes back when it is refused.
+// The `seam` argument exists exactly when this host serves more than one
+// seam. A single-seam host renders no property at all rather than an
+// enum of one: the schema is part of the tool bytes, which render ahead
+// of the system prompt and are the byte prefix of the provider's cached
+// region, so an argument with one legal value would be paid for on every
+// request of every strand to tell the model about a decision it cannot
+// make.
+fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
+  case seams.alternates {
+    [] -> []
+    _alternates -> [
+      #(
+        "seam",
+        tool.enum_property(
+          list.map(offered(seams), fn(offer) { seam_name(offer.seam) }),
+          "which seam to judge and run this program under; default `"
+            <> seam_name(seams.default.seam)
+            <> "`",
+        ),
+      ),
+    ]
+  }
+}
+
+/// The model-facing description: what to write, which seams this host
+/// serves and what each may import, the public surface of every module
+/// they admit, what is actually serviced, and what comes back when a
+/// program is refused.
 ///
-/// The allowlist and the serviced capabilities are read off the seam, so
-/// the sentence the model is charged for on every request cannot drift
-/// from the policy the program is judged against.
+/// Every list here is read off the seam rather than copied, so the
+/// sentence the model is charged for on every request cannot drift from
+/// the policy the program is judged against.
+///
+/// ## The size decision, since a description is a cache prefix
+///
+/// Tool bytes render *before* the system prompt and are the byte prefix
+/// of the provider's cached region, so a word added here is paid on every
+/// request of every strand for the life of the session. Two seams could
+/// therefore have been handled by naming the seams and leaving both
+/// import lists to the rejection — the model guesses, is refused in band
+/// by a pure vetting pass, and repairs. That was rejected. The wrong
+/// guess costs a whole submission: a provider round trip and several
+/// hundred *output* tokens to write a program against an import surface
+/// the model was never shown, and the description is the only place it
+/// could have learned that surface before writing. Cached prefix bytes
+/// are the cheapest tokens in the ledger and generated tokens the
+/// dearest, so paying the prefix once beats paying a rewrite per
+/// unfamiliar program.
+///
+/// Two full lists were rejected too, and for a plainer reason: the seams
+/// differ only in their `cap/*` modules and share the whole pure
+/// standard-library subset, so printing both in full duplicates a dozen
+/// module names and hands the model two long lists to diff for the
+/// difference that matters. The shared part is therefore stated once and
+/// each seam names only what it adds — derived from the offers rather
+/// than asserted, so it cannot go stale. A host serving one seam renders
+/// exactly the sentence it rendered before seams were selectable: the
+/// extra bytes are paid by the hosts that actually offer the choice.
+///
+/// The prelude's own signatures are appended after all of that, on the
+/// same per-seam split and for a related reason; `signatures_text` has
+/// the measurement and the argument.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // string.contains(codemode.description(seam), "cap/report")
+/// // string.contains(codemode.description(mode), "cap/report")
+/// // string.contains(codemode.description(mode), "pub fn run(Command)")
 /// ```
 ///
-pub fn description(seam: CodeMode) -> String {
+pub fn description(mode: CodeMode) -> String {
   "Run a Gleam program in a jailed satellite and get one structured "
   <> "result. Use it instead of a chain of tool calls when the steps "
   <> "depend on each other: loops, conditionals, and concurrency happen "
   <> "inside the program, and only what `main` returns comes back — the "
   <> "intermediate output never enters the conversation. Write `pub fn "
   <> "main() -> report.Outcome`, returning `report.text(...)` or "
-  <> "`report.value(...)`. Imports are restricted to: "
-  <> string.join(list.sort(seam.allowed_imports, string.compare), ", ")
-  <> ". `@external` is refused. Capabilities serviced today: "
-  <> string.join(list.sort(seam.serviced_caps, string.compare), ", ")
-  <> "; the other `cap/*` modules compile but answer unsupported_cap. A "
-  <> "program that is refused or does not compile comes back with the "
+  <> "`report.value(...)`. "
+  <> seams_text(mode.seams)
+  <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
+  <> signatures_text(mode.seams)
+}
+
+// The legend the signature blocks need and cannot carry themselves.
+//
+// Two sentences, about 60 tokens, paid once per description rather than
+// per module. The label sentence is the one that earns its place: the
+// package interface carries a parameter's *label* and not its name,
+// because the label is the whole of what a caller may write, so an
+// unlabelled parameter has nothing to render but its type. Told that,
+// a reader knows `read(String)` takes one positional argument; not told
+// it, the most natural reading of a bare `String` is a parameter whose
+// name was omitted, and the call it writes next is the labelled form the
+// compiler rejects. Sixty tokens against a wasted submission is the same
+// trade the import lists already won.
+const signature_legend = "Each module's public surface, as the compiler reports it. A parameter written `label: Type` is labelled and must be passed that way; a bare type is positional. A `pub type` body lists the constructors and fields a program may build and match; a type with no body is opaque and reached only through the functions under it."
+
+// The rendered public surface of every prelude module a seam admits.
+//
+// A model writing a program authors blind. Before this, the description
+// named the modules it could import and said nothing about what was in
+// them, so the compiler was the only oracle for a signature and it was
+// reachable only by being wrong first — a `CompileFailed` round trip
+// carrying a whole hermetic build, to learn that `proc.run` takes a
+// `Command` rather than a `String` (issue #36).
+//
+// The blocks are generated (`tools/prelude`, `make gen-prelude`) and
+// rendered here, so these are the whole description as it goes on the
+// wire, measured rather than estimated. Against the real allowlists a
+// workspace-only host renders 17,678 bytes — about 4,400 tokens at the
+// usual four-bytes-per-token estimate — an orchestration-only host
+// 15,205 (~3,800), and a host serving both 28,818 (~7,200), in which
+// the `cap/report` block the two seams share is stated once.
+//
+// That is above the ~2,100/~1,900 the work was scoped against, and the
+// whole of the difference is the `pub type` declarations: issue #36
+// measured function signatures and their docs alone. They are not
+// optional. `proc.run` returns a `proc.Output`, and a program that
+// cannot name the `stdout` field cannot read the output it just paid
+// for; `strand.wait` returns a `List(Waited)` whose three variants are
+// the whole of what a join means. A signature without the record it
+// returns is a contract half stated, which is the same failure the
+// signatures were added to fix, one level down.
+//
+// The ledger still favours it, and by more than the ratio suggests.
+// These bytes render ahead of the system prompt, inside the provider's
+// one-hour cached prefix: written once per cache lifetime, then read at
+// about a tenth of base input on every request. A wrong guess about a
+// signature costs a provider round trip, several hundred *output*
+// tokens — the dearest line in the ledger — and a hermetic build to
+// produce the diagnostic. One avoided rewrite pays for many requests'
+// worth of prefix reads. What was deliberately left out, and what a
+// reader loses by it, is in `scripts/gen-prelude.py`.
+fn signatures_text(seams: Seams) -> String {
+  case list.filter(signature_sections(seams), fn(section) { section.1 != "" }) {
+    [] -> ""
+    sections ->
+      "\n\n"
+      <> signature_legend
+      <> "\n\n"
+      <> string.join(list.map(sections, render_section), "\n")
+  }
+}
+
+fn render_section(section: #(String, String)) -> String {
+  case section.0 {
+    "" -> section.1
+    heading -> heading <> "\n\n" <> section.1
+  }
+}
+
+// The same split the import lists take, applied to the same lists: the
+// modules every offered seam allows are rendered once, and each seam
+// renders only what it adds. An orchestration-only host therefore pays
+// for `cap/strand` and `cap/report` and for none of the other nine, and
+// a host serving both pays for `cap/report` once rather than twice.
+//
+// A single-seam host renders one unheaded block, so its description is
+// the description it rendered before, with the surfaces appended and no
+// word anywhere about a seam it cannot choose.
+fn signature_sections(seams: Seams) -> List(#(String, String)) {
+  case seams.alternates {
+    [] -> [#("", surface_text(seams.default.allowed_imports))]
+    _alternates -> {
+      let offers = offered(seams)
+      let shared = shared_imports(offers)
+      let added =
+        list.map(offers, fn(offer) {
+          let own =
+            list.filter(offer.allowed_imports, fn(module) {
+              !list.contains(shared, module)
+            })
+          #(
+            "## Only on the `" <> seam_name(offer.seam) <> "` seam",
+            surface_text(own),
+          )
+        })
+      [#("## On every seam", surface_text(shared)), ..added]
+    }
+  }
+}
+
+// The prelude blocks for exactly the modules in `allowed`, in the
+// generated artifact's own (sorted) order.
+//
+// The filter runs the allowlist over the artifact rather than the
+// artifact over the allowlist, and that direction is the security-
+// relevant one. `gleam export package-interface` reports eleven modules;
+// the seams admit ten between them, and `cap/runtime` — the satellite's
+// trusted boot runtime — is on neither. Rendering the artifact and
+// trusting it to be filtered elsewhere would put a module vetting
+// rejects into the description, which is a lie of the same class as
+// classifying a submission by reading its imports. The stdlib modules on
+// the allowlist have no block here and simply do not match.
+fn surface_text(allowed: List(String)) -> String {
+  prelude.surfaces
+  |> list.filter(fn(entry) { list.contains(allowed, entry.0) })
+  |> list.map(fn(entry) { entry.1 })
+  |> string.join("\n")
+}
+
+// One seam: the sentence this tool has always rendered.
+fn seams_text(seams: Seams) -> String {
+  case seams.alternates {
+    [] ->
+      "Imports are restricted to: "
+      <> joined(seams.default.allowed_imports)
+      <> ". `@external` is refused. Capabilities serviced today: "
+      <> joined(seams.default.serviced_caps)
+      <> "; the other `cap/*` modules compile but answer unsupported_cap."
+    _alternates -> many_seams_text(seams)
+  }
+}
+
+// More than one: name them, say which is the default, and state the
+// shared import subset once instead of twice.
+fn many_seams_text(seams: Seams) -> String {
+  let offers = offered(seams)
+  let shared = shared_imports(offers)
+  let clauses =
+    offers
+    |> list.map(fn(offer) { seam_clause(offer, shared) })
+    |> string.join(" ")
+  int.to_string(list.length(offers))
+  <> " seams, named by `seam` and defaulting to `"
+  <> seam_name(seams.default.seam)
+  <> "`; a program is judged against exactly the one it names. "
+  <> clauses
+  <> case shared {
+    [] -> ""
+    modules -> " Every seam also allows: " <> joined(modules) <> "."
+  }
+  <> " `@external` is refused, and the `cap/*` modules the named seam "
+  <> "does not service compile but answer unsupported_cap."
+}
+
+fn seam_clause(offer: SeamOffer, shared: List(String)) -> String {
+  "`"
+  <> seam_name(offer.seam)
+  <> "` adds imports: "
+  <> joined(
+    list.filter(offer.allowed_imports, fn(module) {
+      !list.contains(shared, module)
+    }),
+  )
+  <> "; capabilities serviced: "
+  <> joined(offer.serviced_caps)
+  <> "."
+}
+
+// The modules every offered seam allows. Derived rather than declared:
+// the seams' pure standard-library subset is the same list today, and a
+// description that asserted so would be a claim nothing checks.
+fn shared_imports(offers: List(SeamOffer)) -> List(String) {
+  case offers {
+    [] -> []
+    [first, ..rest] ->
+      list.filter(first.allowed_imports, fn(module) {
+        list.all(rest, fn(offer) {
+          list.contains(offer.allowed_imports, module)
+        })
+      })
+  }
+}
+
+fn joined(names: List(String)) -> String {
+  string.join(list.sort(names, string.compare), ", ")
 }
 
 /// What a code-mode execution needs of the session base: the workspace
@@ -360,45 +777,125 @@ pub fn requirements(workspace: String) -> SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: [])
 }
 
-fn run(seam: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use program <- tool.with_arg(tool.required_string(args, "program"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
+  use named <- tool.with_arg(tool.optional_string(args, "seam"))
+  use offer <- tool.with_arg(chosen_seam(mode.seams, named))
   case string.trim(program) {
     "" -> tool.failure("invalid arguments: `program` must not be empty")
-    _ ->
-      seam.execute(request(seam, ctx, program, within_ms))
-      |> render(seam, ctx, _)
+    _ -> {
+      let asked = request(mode, ctx, program, within_ms, on: offer.seam)
+      render(ctx, offer, once_more_if_approved(mode, ctx, asked))
+    }
   }
 }
 
-/// The request one call sends across the seam: the submitted program and
-/// the clamped budget, and otherwise nothing the model supplied.
+// One execution, and — if a policy refusal stopped it and a human said
+// yes — exactly one more under what they granted.
+//
+// **Once, for the whole execution, and not per clearance.** A code-mode
+// program makes many clearances and a satellite services them while it is
+// alive, so raising per clearance would park inside a live node: the
+// program's own call times out long before a person answers, the pooled
+// wall deadline runs down while they think, and the node holds one
+// outstanding effect the whole time. Worse for consent — the human would
+// be asked about a `cap_call` that appears nowhere in what the client
+// rendered, because an approval binds to the *tool call's* arguments
+// (#65) and those arguments are the program. Asking once, about the whole
+// submission, makes the consent unit the thing that was actually shown.
+//
+// `RunRefused` is the only refusal offered, and it is offered before any
+// capability call was serviced: the re-execution therefore repeats no
+// effect, which matters because `code_mode` is `replay: tool.Never` and a
+// program's effects have nothing to reconcile onto. A build refusal names
+// itself in the result and raises nothing (`PolicyRefusal`), and a
+// capability call refused *inside* a running program stays the program's
+// business — the seam it is refused through hands it the reason, and a
+// harness that re-ran the whole submission to widen call number seven
+// would be replaying calls one through six.
+//
+// The retry is not a loop. A second refusal — of the same want or of a
+// new one — settles in band, which is design §5.3's "one re-execution
+// under the widened policy" read literally.
+fn once_more_if_approved(
+  mode: CodeMode,
+  ctx: Ctx,
+  asked: Request,
+) -> Execution {
+  let execution = mode.execute(asked)
+  case execution.refusal {
+    NothingRefused -> execution
+    RunRefused(denial:, deadline_ms:) ->
+      case ctx.raise_refusal(tool.RaisedRefusal(denial:, deadline_ms:)) {
+        tool.Settle -> execution
+        // Appended rather than substituted: an approval widens what this
+        // call already carried, and the grants the call arrived with are
+        // ones a human approved for it too — through the driver's own
+        // clearance path, one turn earlier.
+        tool.Resume(grants:) ->
+          mode.execute(
+            Request(..asked, grants: list.append(asked.grants, grants)),
+          )
+      }
+  }
+}
+
+// The seam a call is judged under: the one it named, when this host
+// serves it, and the host's default when it named none. An unserved seam
+// and an unknown name answer the same way and say what is on offer —
+// there is nothing to gain by telling a model that a seam it cannot use
+// exists somewhere, and nothing but harm in judging its program against
+// an allowlist it did not ask for.
+fn chosen_seam(
+  seams: Seams,
+  named: Option(String),
+) -> Result(SeamOffer, String) {
+  case named {
+    option.None -> Ok(seams.default)
+    option.Some(name) ->
+      offered(seams)
+      |> list.find(fn(offer) { seam_name(offer.seam) == name })
+      |> result.map_error(fn(_missing) {
+        "`seam` must be one of: "
+        <> joined(list.map(offered(seams), fn(offer) { seam_name(offer.seam) }))
+      })
+  }
+}
+
+/// The request one call sends across the seam: the submitted program,
+/// the resolved seam and the clamped budget, and otherwise nothing the
+/// model supplied.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.request(seam, ctx, source, option.None).op_id == ctx.op_id
+/// // codemode.request(mode, ctx, source, None, on: seam).op_id == ctx.op_id
 /// ```
 ///
 pub fn request(
-  seam: CodeMode,
+  mode: CodeMode,
   ctx: Ctx,
   source: String,
   within_ms: Option(Int),
+  on seam: Seam,
 ) -> Request {
   Request(
     source:,
+    seam:,
     strand: ctx.strand,
     op_id: ctx.op_id,
     step_id: ctx.step_id,
+    source_index: ctx.source_index,
     workspace: ctx.workspace,
     base_policy: ctx.base_policy,
     demand: ctx.demand,
     env: ctx.env,
+    grants: ctx.grants,
     within_ms: int.clamp(
-      option.unwrap(within_ms, seam.default_within_ms),
+      option.unwrap(within_ms, mode.default_within_ms),
       min: 1,
-      max: seam.max_within_ms,
+      max: mode.max_within_ms,
     ),
   )
 }
@@ -409,9 +906,9 @@ pub fn request(
 // synchronous pipeline with one settlement, and the point of code mode is
 // that the steps inside it stay inside it — a stream of intermediates
 // would put back exactly the context traffic the feature removes.
-fn render(seam: CodeMode, ctx: Ctx, execution: Execution) -> ToolOutcome {
+fn render(ctx: Ctx, offer: SeamOffer, execution: Execution) -> ToolOutcome {
   case execution.result {
-    VetRejected(rejections:) -> vet_outcome(seam, rejections)
+    VetRejected(rejections:) -> vet_outcome(offer, rejections)
     CompileFailed(failure:) -> compile_outcome(ctx, execution, failure)
     RunFailed(failure:) -> run_failed_outcome(execution, failure)
     Ran(outcome:, manifest_hash:) ->
@@ -422,13 +919,20 @@ fn render(seam: CodeMode, ctx: Ctx, execution: Execution) -> ToolOutcome {
 // A rejection is a repair brief: every violation in one pass, each with
 // its rule, its offending construct and its offset, and the allowlist it
 // was judged against so the fix does not need a second round trip.
-fn vet_outcome(seam: CodeMode, rejections: List(Rejection)) -> ToolOutcome {
+//
+// The seam is named unconditionally, in the heading and in the details,
+// because a model that asked for one seam and reads a refusal that could
+// have come from either has no way to tell a program it must repair from
+// a submission it must re-aim. Thirty bytes, on a path that is already a
+// failure, buys that.
+fn vet_outcome(offer: SeamOffer, rejections: List(Rejection)) -> ToolOutcome {
+  let judged =
+    "the program was refused before it ran, judged against the `"
+    <> seam_name(offer.seam)
+    <> "` seam; "
   let heading = case list.length(rejections) {
-    1 -> "the program was refused before it ran; one rule was broken:"
-    count ->
-      "the program was refused before it ran; "
-      <> int.to_string(count)
-      <> " rules were broken:"
+    1 -> judged <> "one rule was broken:"
+    count -> judged <> int.to_string(count) <> " rules were broken:"
   }
   let body =
     [
@@ -437,9 +941,15 @@ fn vet_outcome(seam: CodeMode, rejections: List(Rejection)) -> ToolOutcome {
       case list.any(rejections, is_import_rejection) {
         False -> []
         True -> [
-          "the imports a program may use are: "
-          <> string.join(list.sort(seam.allowed_imports, string.compare), ", "),
+          "the imports a program may use on the `"
+          <> seam_name(offer.seam)
+          <> "` seam are: "
+          <> joined(offer.allowed_imports),
         ]
+      },
+      case list.any(rejections, is_parse_rejection) {
+        False -> []
+        True -> [parser_note]
       },
       ["fix the program and submit it again."],
     ]
@@ -449,11 +959,12 @@ fn vet_outcome(seam: CodeMode, rejections: List(Rejection)) -> ToolOutcome {
   |> tool.with_details(
     json.Object([
       #("status", json.String("vetting_rejected")),
+      #("seam", json.String(seam_name(offer.seam))),
       #("rejections", json.Array(list.map(rejections, rejection_json))),
       #(
         "allowed_imports",
         json.Array(
-          list.sort(seam.allowed_imports, string.compare)
+          list.sort(offer.allowed_imports, string.compare)
           |> list.map(json.String),
         ),
       ),
@@ -461,8 +972,27 @@ fn vet_outcome(seam: CodeMode, rejections: List(Rejection)) -> ToolOutcome {
   )
 }
 
+/// What a parse rejection adds: the one way a program can be legal Gleam
+/// and still fail to parse here.
+///
+/// Vetting reads the submission with `glance`, a standalone parser rather
+/// than the compiler's own, and `glance` 1.1 does not accept label
+/// shorthand — in a call or in a pattern — though `gleam build` does. So
+/// a submitted program is held to a slightly narrower language than the
+/// one that will compile it, and the difference surfaces as an
+/// `Unparseable` rejection at a byte offset for syntax that is perfectly
+/// legal. It is stated here rather than in the tool description for the
+/// reason every byte of that description is argued over: this is where
+/// someone actually hits it, and a reader who never writes the shorthand
+/// never pays for the sentence.
+pub const parser_note = "note: vetting parses the submission with a standalone parser that accepts a slightly narrower Gleam than the compiler. Label shorthand — `f(value:)` in a call, `Pending(handle:, waited_ms:)` in a pattern — does not parse here; write each label's value out."
+
 fn is_import_rejection(rejection: Rejection) -> Bool {
   rejection.rule == ImportNotAllowed
+}
+
+fn is_parse_rejection(rejection: Rejection) -> Bool {
+  rejection.rule == Unparseable
 }
 
 fn rejection_text(rejection: Rejection) -> String {

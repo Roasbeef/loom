@@ -6,36 +6,72 @@ Code mode: a model writes a *program*, not a tool call, and the program
 runs once in a disposable jailed BEAM whose only reachable effect is one
 capability channel back to the broker. This package is the whole harness
 side of that — vet, compile, launch, host — and it never runs
-model-influenced code itself (Rule Zero). WP-J.
+model-influenced code itself (Rule Zero). WP-J, and WP-N for the
+orchestration seam.
+
+There are **two seams over one pipeline**, and a submission is vetted
+against exactly one of them (`vet/policy.Seam`). The *workspace* seam is
+`cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
+`satellite.default_router`. The *orchestration* seam is `cap/strand` +
+`cap/report` and nothing else, routed by `codemode/orchestration` onto the
+Agency closures the `agent_*` tools call. Which capabilities travel
+together is the whole of what the separation buys: a compromised
+orchestration program can spawn and message within the lineage its own
+strand roots, and can reach neither the disk, the network, nor a process.
 
 ## Key Types
 
 - `codemode/codemode.{Execution, ExecOutcome, ExecConfig}` — `execute`
   threads source through vet → compile → run, short-circuiting at the
-  first refusal, and returns an `Execution`: the outcome plus what the
-  kernel enforced on both jailed stages. Every stage's failure is a
+  first refusal, and returns an `Execution`: the outcome, what the
+  kernel enforced on both jailed stages, and what an approved escalation
+  widened. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
   `Ran(source, artifact, outcome)`. `ExecConfig.identity` is the one
-  place in the pipeline an operation, a step or a budget can be written.
+  place in the pipeline an operation, a step, a budget *or an approval's
+  grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
-  for_execution, with_own_build_ledger, under_budget, build_phase,
-  run_phase, ledger_keys}` — the identity one execution runs under, and
-  the phases derived from it. Both types are opaque: `for_execution` is
+  for_execution, with_own_build_ledger, under_budget, widened_by,
+  build_phase, run_phase, grants, ledger_keys}` — the identity one
+  execution runs under, the approval that widens it, and
+  the phases derived from both. Both types are opaque: `for_execution` is
   the only way to mint an `ExecIdentity`, and `build_phase` / `run_phase`
   — which take one — are the only ways to obtain a `PhaseIdentity`.
   `BuildLedger` (`BuildSharesLedger` | `BuildHasOwnLedger`) is the whole
   of the choice an execution has about its ledger count, and
   `ledger_keys` reads that count off the identity value before anything
-  runs.
-- `codemode/enforcement.{Report, Enforcement, of_call, of_result, layers}`
-  — what a jailed stage's helper reported, or why no report exists.
+  runs. `widened_by` attaches an approved escalation's grants and
+  `grants` reads back what a phase carries — the run phase's, and empty
+  for a build phase whatever the execution holds.
+- `codemode/enforcement.{Report, Enforcement, Widening, of_call,
+  of_result, layers, widened, unspent, grant_label}`
+  — what a jailed stage's helper reported, or why no report exists, and
+  what an approval relaxed before it was asked to.
   `Reported(entries, degraded)` is `exec_exit`'s ground truth with the
   broker's own degraded rule applied (any `skip:` entry counts);
   `Unreported(reason)` is never a claim of confinement. `layers` splits
   applied layers from skipped ones so no renderer can confuse them.
-- `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.VetPolicy`
-  — the pure import/`@external` lint. `Vetted` is opaque, so only linted
-  source can reach a build.
+  `Widening` is a peer of `Enforcement` rather than a field in it —
+  `Reported.entries` is the helper's verbatim ground truth, and folding a
+  harness-side decision into it would put a claim about what Loom did
+  where a reader expects one about what the kernel did. Two states and no
+  third: `Widened(grants)` for a run phase that composed them,
+  `NotWidened(reason)` for both of the ways that does not happen.
+  `grant_label` renders one grant as a diff line an operator can read.
+- `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.{VetPolicy,
+  Seam, for_seam, default, orchestration}` — the pure import/`@external`
+  lint and the two allowlists it is parameterized by. `Vetted` is opaque,
+  so only linted source can reach a build. `Seam` is closed at two
+  variants, so "which capabilities travel together" is a decision this
+  package owns and a host selects from rather than assembles.
+- `codemode/orchestration.{Orchestration, router, ceilings, serviced_caps,
+  refusal_code, default_spawn_ceiling}` — the
+  orchestration seam's capability router. It decodes a `strand.*` frame
+  into `tools/agent`'s vocabulary, hands it to one of the six `Agency`
+  closures under a `Caller` derived from the threaded `PhaseIdentity`, and
+  carries the answer — or the refusal, under the tools' own name — back.
+  It builds **no `broker.CallSpec`**: every plan it returns is
+  `satellite.ServedHere`, so it cannot state coordinates at all.
 - `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
   Compiled, Builder, Dependency, CompileConfig}` — the hermetic compile
   service. `Builder` is `fn(PhaseIdentity, String) -> Built`: the build
@@ -49,8 +85,8 @@ model-influenced code itself (Rule Zero). WP-J.
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
   --warnings-as-errors` inside a network-off jail, then the flattened
-  `.beam` set and its content address. Carries no operation, step or
-  budget.
+  `.beam` set and its content address. Carries no operation, step,
+  budget or grants.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`.
@@ -63,7 +99,10 @@ model-influenced code itself (Rule Zero). WP-J.
   `{op_id, step_id, budget}` triple. `run` returns a `Run`: the
   program's outcome and the node's enforcement report, which
   `CapConnection.destroy` hands back. `Msg` is opaque so no forged
-  settlement can be injected.
+  settlement can be injected. `CapPlan` has two shapes — `ClearedCall`
+  (a jailed `broker.clear_call`) and `ServedHere` (a request the harness
+  answers itself, on a process of its own) — and `CapCeiling` is a
+  lifetime cap on one capability's admissions within one execution.
 
 ## Relationships
 
@@ -97,10 +136,18 @@ model-influenced code itself (Rule Zero). WP-J.
   stream: `cap_call`/`cancel`/`heartbeat` in, `cap_result` out, plus the
   one terminal `outcome` frame (`{v:1, id:0, kind:"outcome", body}`) that
   `broker/framing` does not know and the host decodes itself.
-- **Broker** — every `cap_call` becomes a `broker.clear_call` under one
-  pooled `{op_id, step_id}`; so do the jailed build and the node itself.
-  Every one of those keys is derived from `ExecConfig.identity`; see the
-  identity invariant below for what an execution may spend.
+- **Broker** — on the workspace seam every `cap_call` becomes a
+  `broker.clear_call` under one pooled `{op_id, step_id}`; so do the
+  jailed build and the node itself, on both seams. Every one of those keys
+  is derived from `ExecConfig.identity`; see the identity invariant below
+  for what an execution may spend. An orchestration `cap_call` reaches no
+  clearance at all — it is a `ServedHere` plan answered by the Agency, on
+  a process the host spawns and monitors, bounded by `call_timeout_ms`.
+- **Agency** (orchestration seam only) — the six `tools/agent.Agency`
+  closures, judged against a `Caller` whose strand is the dispatching
+  one and whose operation is the threaded identity's. Commits, register
+  reads and the lineage ledger are all `client/agency`'s; this package
+  makes the call and carries the answer.
 - **Commits / registers**: none. `execute` returns the source and artifact
   for the runtime to persist; this package writes no entries.
 
@@ -109,6 +156,46 @@ model-influenced code itself (Rule Zero). WP-J.
 - **Vetting is the gate on what a program may ask for; the broker decides
   per call what it gets.** The allowlist is byte-identical membership
   behind an ASCII grammar gate, so no homoglyph is ever a member.
+- **The two seams are confined by one rule read in two directions.** An
+  import outside the allowlist the submission is judged against is
+  rejected, so an orchestration program reaching for `cap/fs` and a
+  workspace program reaching for `cap/strand` are refused by the same
+  code — and both as the structured `ImportNotAllowed` rejection the model
+  repairs in band. What the two directions rest on is that
+  `orchestration_cap_modules` and `default_cap_modules` share no entry but
+  `cap/report`; widen either and both rejections stop meaning anything, so
+  the disjointness is pinned by its own test.
+- **The spawn ceiling is the host's, not the router's.** `agent_spawn` is
+  throttled by turn cost — the model pays a round trip per spawn — and a
+  program's loop pays nothing, so replacing the turn with a loop removes
+  an implicit throttle and has to add an explicit one. It is a *lifetime*
+  cap on admissions, distinct from the pooled `max_outstanding` (in flight
+  at once) and from the Agency's `fan_out`/`session_strands` (live at
+  once), which a spawn-join-spawn loop passes forever. It lives in the
+  host because one host is stood up per execution holding the one
+  `PhaseIdentity` a caller may mint, so the tally is keyed to that
+  identity by construction; a router, which a caller could build twice,
+  never holds it. Refused *at* the ceiling, in band, naming the number and
+  saying that joining will not free a slot.
+- **A code-mode spawn says who minted it, in a field of its own.** A
+  child's name is minted from `{parent, purpose slug, call-site digest}`,
+  and a whole execution is one planned tool call — so every spawn in a
+  program arrives under one `{operation, step_id, source_index}` and
+  would otherwise mint one name repeatedly, the second reconciling onto
+  the first child. `CapRequest.ordinal` separates them and travels as
+  `agent.Minter.Program(ordinal:)`; `Caller.source_index` stays the
+  *dispatching* `code_mode` call's own index. Two fields for two facts,
+  because they answer different questions and each is load-bearing on its
+  own: the ordinal separates one program's spawns from each other, and
+  the source index separates this execution from every other call in its
+  batch — an `agent_spawn` at index 0 and, decisively, a second
+  `code_mode` call, which shares this one's operation, step and ordinal
+  tally alike. The predecessor spent `source_index` on the ordinal and
+  distinguished the rest with a `-program` suffix on the step; the suffix
+  reached no name at all, because the name slugged the step and the slug
+  cap is shorter than a step id. The *operation* is threaded through
+  untouched, which is what keeps a run end reaping what the program
+  spawned.
 - **A program's module name is chosen by the compile service, never by the
   source.** `program_module` is a path, and a Gleam module is named by its
   path, so prelude shadowing is structurally impossible.
@@ -171,6 +258,38 @@ model-influenced code itself (Rule Zero). WP-J.
   `CallSpec` in the broker, which has callers outside this package. What
   is closed is the case that happened: a *configuration* carrying its own
   copy of the identity fields.
+- **An approval widens the run phase and never the hermetic build.** An
+  approved escalation's grants ride the same threaded `ExecIdentity`
+  (`identity.widened_by`), for the same reason the budget does: four
+  configuration records able to hold a widening is four places a caller
+  could write a *different* one. `run_phase` carries them and
+  `build_phase` **drops** them, so the four clearances that used to pass
+  `grants: []` now all read `identity.grants(phase)` and the build's is
+  empty by construction rather than by remembering. That asymmetry is a
+  decision, not a convenience: `policy.compose` applies grants *after*
+  the meet, so a `GrantNetwork` reaching the build call would put the
+  network back on inside a build whose whole security property is that it
+  is pinned and offline — and nothing a submitted program says changes
+  what the build asks for anyway, so a build refused on policy is an
+  operator's misconfiguration rather than a decision about this program.
+  Grants move no ledger key, so an approval buys a widening and never a
+  second pooled cap. `codemode.Execution.widening` says which grants a
+  run composed, or which of the two ways it composed none — an approval
+  that is spent, and one that is carried and never reached, are different
+  facts and an operator auditing approvals needs both (issue #24,
+  spec-gaps WP-J 15, design §5.3).
+- **The grants an execution carries are attributed to it, or there are
+  none.** There is no session-wide grant list anywhere below
+  `ExecConfig` — the same absence `client/wiring` keeps for the tool
+  path — so an approval that cannot be attributed to one execution
+  widens nothing. Composition is the only place grants act, and it is
+  still `base ⊕ requirements ⊕ grants`: a grant that does not cover a
+  shortfall leaves the refusal exactly where it was, which is what keeps
+  a yes given for one want from being spendable on another. What binds
+  an approval to *this* program is upstream of this package — the action
+  digest of the `code_mode` call's effective arguments, which include
+  the submitted source (issue #65) — and this package must not have a
+  second door that skips it.
 - **The node runs under the host's own `{op_id, step_id}`.** That is what
   makes `broker.abort` at the deadline actually kill it, and what pools
   the budget across the whole execution — fan-out buys parallelism, not
@@ -201,6 +320,29 @@ model-influenced code itself (Rule Zero). WP-J.
   readable roots *and* refuses the two cases the vocabulary cannot state:
   a path under a `protected` entry, and a path under the scratch tmpfs
   mount. See `protocol-change/004-sandbox-policy-explicit-mounts.md`.
+- **The orchestration router builds no clearance.** Every plan it returns
+  is `ServedHere`, so the `CallSpec` boundary `codemode/identity`'s module
+  doc names — a public record an injected router could fill with invented
+  coordinates — is untouched by this seam rather than widened by it. The
+  `{op_id, step_id}` it hands the Agency come off the threaded
+  `PhaseIdentity`; the one thing it derives is the call site's `Minter`,
+  and that never becomes a ledger key.
+  It follows that **a grant has nothing to widen on this seam**, and that
+  is the answer rather than an omission. A grant is a `policy.Grant`; it
+  composes into a `SandboxPolicy`; a `ServedHere` plan builds no policy,
+  reserves no budget and enters no jail. What bounds an orchestration
+  call instead is the Agency's own authorization — the descendant-only
+  addressing rule, `depth_cap`, `fan_out`, `session_strands` — plus this
+  package's spawn ceiling, and **none of those is widenable by an
+  approval**. They are structural bounds on a lineage rather than
+  per-call sandbox policy an operator would authorize one re-execution
+  of, and routing grants at them would be a second widening path beside
+  composition. The satellite *node* on this seam is still a jailed
+  clearance under the run phase, so an orchestration execution is
+  widened exactly where a workspace one is and nowhere else. The
+  affordance that would change this is "approve similar for this
+  session" (§5.3, filed as #79), which is a session-policy change and
+  not a grant.
 - **The default router refuses what it does not service.** `proc.run` is
   the only capability it maps today; every other `cap` name comes back
   `unsupported_cap` until the harness-side tool bridge lands, and a caller
@@ -213,6 +355,13 @@ model-influenced code itself (Rule Zero). WP-J.
 
 - [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md) —
   the three layers, the pipeline, and what each one actually confines.
+- [docs/design-notes/orchestration-comparison.md](../../docs/design-notes/orchestration-comparison.md)
+  — "The verdict: connect them, through a second seam": why the
+  orchestration seam is a second allowlist rather than a tenth capability,
+  and why Rule Zero closes the trusted-interpreter alternative.
+- [docs/examples/fan_out_review.gleam](../../docs/examples/fan_out_review.gleam)
+  — the orchestration sample, run verbatim by
+  `test/codemode/orchestration_sample_test.gleam`.
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —
   the one door, the wire, the jail, Rule Zero.
 - [docs/review/m4-triage.md](../../docs/review/m4-triage.md) — the review

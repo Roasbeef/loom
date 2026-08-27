@@ -64,7 +64,7 @@
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
-import broker/policy.{type Narrowing, type SandboxPolicy}
+import broker/policy.{type Grant, type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
 import codemode/identity
@@ -171,7 +171,11 @@ fn launch(
   use _ <- result.try(check_budget(identity.pooled_budget(spec.identity)))
   let #(now, _clock) = clock.read(config.clock)
   let requirements = node_requirements(spec, now)
-  use effective <- result.try(composed_policy(spec.base_policy, requirements))
+  use effective <- result.try(composed_policy(
+    spec.base_policy,
+    requirements,
+    identity.grants(spec.identity),
+  ))
   use _ <- result.try(path_reachable(
     effective,
     spec.cap_socket_path,
@@ -694,7 +698,16 @@ fn collect_node_result(
 }
 
 /// The clearance that launches the node: the same `{op_id, step_id}` the
-/// host services cap calls under, so `broker.abort` reaches it.
+/// host services cap calls under, so `broker.abort` reaches it, and the
+/// same approved grants `launch` already composed the effective policy
+/// with.
+///
+/// Both come off the run phase's identity. Reading them from one place
+/// is what keeps this call and the composition check below in agreement:
+/// a node cleared under grants the pre-check did not apply would be
+/// running in a jail nobody checked, and one cleared without grants the
+/// pre-check did apply would be refused by the broker for a shortfall the
+/// launch had already satisfied.
 pub fn node_call(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -705,7 +718,7 @@ pub fn node_call(
     step_id: identity.step_id(spec.identity),
     base_policy: spec.base_policy,
     requirements:,
-    grants: [],
+    grants: identity.grants(spec.identity),
     // The launch already composed and checked this policy; refusing a
     // narrowing here means the broker disagreed, and a satellite in a
     // weaker jail than the one that was checked must not run.
@@ -821,12 +834,27 @@ fn check_budget(pooled: Budget) -> Result(Nil, String) {
   }
 }
 
+// The effective policy the node will actually run under, or the reason
+// the session base cannot host one.
+//
+// This is the launch policy composition — the site an approval has to
+// reach for a widened re-run to mean anything. `base ⊕ requirements ⊕
+// grants` is the broker's own rule; running it here first is a pre-check,
+// so that a base which cannot host a node is refused in band with the
+// exact shortfall named rather than dying somewhere inside a jail. The
+// grants are therefore not decoration: without them the pre-check would
+// refuse a launch the broker would then have cleared, and the approval
+// would be spent on a call this function had already turned away.
+//
+// Grants only ever widen, so the reachability checks that run on the
+// result of this stay sound: a path the unwidened policy covered is still
+// covered, and one it did not may now be, which is the whole point.
 fn composed_policy(
   base: SandboxPolicy,
   requirements: SandboxPolicy,
+  grants: List(Grant),
 ) -> Result(SandboxPolicy, String) {
-  let #(effective, narrowings) =
-    policy.compose(base:, requirements:, grants: [])
+  let #(effective, narrowings) = policy.compose(base:, requirements:, grants:)
   case narrowings {
     [] -> Ok(effective)
     shortfalls ->

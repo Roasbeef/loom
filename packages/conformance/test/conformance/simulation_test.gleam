@@ -51,6 +51,20 @@ fn sweep(from: Int) -> Nil {
   }
 }
 
+// The terminal-write check asks whether the run wrote once per operation,
+// and answers it by counting down through the outcomes rather than by
+// measuring them. Exactness is the point — a run one write short and a run
+// one write over are both failures the suite must report — so the count is
+// pinned at the bound and one place either side of it.
+pub fn counts_exactly_is_exact_at_the_bound_test() {
+  assert runner.counts_exactly([], 0)
+  assert runner.counts_exactly(["a", "b", "c"], 3)
+  assert !runner.counts_exactly(["a", "b"], 3)
+  assert !runner.counts_exactly(["a", "b", "c", "d"], 3)
+  assert !runner.counts_exactly(["a"], 0)
+  assert !runner.counts_exactly([], 1)
+}
+
 pub fn simulation_sweep_a_test() {
   sweep(sweep_from)
 }

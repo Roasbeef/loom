@@ -29,9 +29,23 @@ Before writing any code, read these in order:
 - Gleam >= 1.11, Erlang/OTP >= 27. All code passes `gleam format --check`
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
-  `protocol-change/NNN.md` proposal, never silent drift.
-- Pure packages (`core`, `machine`) perform no I/O. Every
+  `protocol-change/NNN.md` proposal, never silent drift. There are seven;
+  `001` and `006` are the format precedent — the problem, what was
+  considered, the decision, and what it costs.
+- Pure packages (`core`, `machine`, `prompt`) perform no I/O. Every
   durability/wire boundary uses total decoders.
+- `core`, `machine` and `prompt` additionally hold no `@external` — of any
+  target — and no `gleam_erlang` or `gleam_otp`, in source or in
+  `gleam.toml`. That is a rule rather than a coincidence, and lint R6 gates
+  on it at error level. Two properties rest on it: the operation state space
+  stays property-testable without spawning processes, and those three stay
+  compilable to the JavaScript target. One external closes both, however
+  deterministic the function behind it is. Portable there means *decide but
+  not act* — replay a conversation tree, validate a transcript with the
+  server's own total decoders, run `next_action` over fetched state — and
+  never the harness in a browser: `gleam_otp` has no JavaScript target, Rule
+  Zero is kernel-enforced, and the two-channel doctrine needs processes on
+  both sides. `docs/gleam-style.md` Part IV §5 has the whole argument.
 - Chain fallible steps with `use` + `result.try`, or a small `or_*`
   combinator where the two sides are not both `Result`; `case` is for
   ADT dispatch, never for stacking `Result`s — and never buy a shallower
@@ -43,11 +57,35 @@ Before writing any code, read these in order:
 ## Working in the repo
 
 `make help` lists the common commands. `make check` is the full gate —
-format check, warning-free build, and tests across every package — and is
-exactly what CI runs; `make check-<package>` narrows it to one. Other
-regulars: `make fmt` before committing, `make selftest` to see which
-sandbox enforcement layers the current kernel actually provides, and
-`make e2e` for the jailed end-to-end against a freshly built helper.
+format check, warning-free build, tests across every package, and the lint
+— and is exactly what CI runs; `make check-<package>` narrows it to one.
+Other regulars: `make fmt` before committing, `make selftest` to see which
+sandbox enforcement layers the current kernel actually provides, `make
+e2e` for the jailed end-to-end against a freshly built helper, and `make
+e2e-codemode` for the code-mode pipeline against a real toolchain and a
+real satellite (`make codemode-seed` prepares the offline cache it needs).
+
+`make lint` is Loom's own house-rule lint over the Gleam sources, and it
+runs at the end of `make check`. Seven rules: R0 unparseable source, R1
+eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
+`panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
+R6 the portable subset `core`, `machine` and `prompt` are held to. **R0,
+R2, R4 and R6 fail the build**; the other three warn and cost nothing.
+A rule reaches the error tier by a census that is zero, decidable and
+argued — the staging lives in `finding.error_by_default`, and
+`packages/lint/CLAUDE.md` says what each rule is for. `make lint-<package>`
+narrows it. Read the warnings: they are the reason the gating rules could
+be promoted, and they are only useful if somebody looks at them.
+
+Two committed artifacts are generated and gated rather than regenerated
+by the build. `make gen-prelude` re-renders
+`packages/tools/src/tools/prelude.gleam` — the capability prelude's public
+surface, which the `code_mode` description carries — from `packages/cap`,
+and needs `gleam` and `python3`;
+`make prelude-check` is the digest comparison `make check` runs and needs
+neither. `make gen-sql` is the same arrangement for the generated SQL
+modules. Change `packages/cap`'s public surface and you must regenerate,
+or the gate fails naming the file that moved.
 
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,

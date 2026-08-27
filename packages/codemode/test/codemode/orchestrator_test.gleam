@@ -76,6 +76,7 @@ fn exec_config(
       write_token_file: satellite.private_token_writer(dir),
       unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
+      ceilings: [],
       call_timeout_ms: 3000,
     ),
     launch:,

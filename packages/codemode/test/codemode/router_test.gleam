@@ -40,6 +40,7 @@ fn request(args: MsgPackValue) -> satellite.CapRequest {
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",
+    ordinal: 0,
   )
 }
 
@@ -134,10 +135,18 @@ pub fn proc_run_summarizes_output_that_is_not_text_test() {
 
 // --- what the router will not silently ignore -----------------------------
 
+// The routed plan for one set of arguments, which every routing test but
+// the refusal ones wants.
+fn router_plan(args: MsgPackValue) -> satellite.CapPlan {
+  let assert Ok(plan) = satellite.default_router(request(args))
+    as "the default router must route a plain command"
+  plan
+}
+
 pub fn a_plain_command_is_routed_test() {
-  let assert Ok(plan) =
-    satellite.default_router(request(plain_args(["/bin/echo", "hi"])))
-  assert plan.spec.argv == ["/bin/echo", "hi"]
+  let assert satellite.ClearedCall(spec:, render: _) =
+    router_plan(plain_args(["/bin/echo", "hi"]))
+  assert spec.argv == ["/bin/echo", "hi"]
 }
 
 pub fn a_command_with_a_working_directory_is_refused_test() {

@@ -105,7 +105,10 @@ over one session file. WP-L.
   fan-out caps, the multi-handle wait loop, the lineage ledger's four
   reconciliation branches, the lazy deadline reap, the result contract a
   spawn's `result_schema` writes and the child is judged against, and the
-  framing that marks another agent's text as data.
+  framing that marks another agent's text as data. `child_name` mints
+  `sub:{parent}/{slug}-{digest}`, the digest being
+  `agent.call_site_digest` over the caller's coordinates and the `Minter`
+  inside them.
 - `client/codemode.{Config, Toolchain, seam, discover, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
@@ -117,7 +120,33 @@ over one session file. WP-L.
   `execute` prepares a per-execution directory, drives vet → compile →
   run under the caller's own `{op_id, step_id}`, restates the pipeline's
   two enforcement reports in the tool's vocabulary, and removes the
-  directory again.
+  directory again. `Config` carries no `vet_policy` of its own: it
+  carries `surface`.
+- `client/codemode.launch_refusal` — what policy composition would
+  refuse a satellite launch for: `tools/codemode.RunRefused` carrying the
+  exact grants that would satisfy it, or `NothingRefused`. `execute`
+  wraps the pipeline's `satellite.Launcher` with it and reports the
+  answer outward beside the outcome, which is the whole of what makes an
+  escalation record *mintable* from inside code mode (#97). Public
+  because it is the wrapper's entire decision and the only part of it a
+  hermetic test can hold still.
+- `client/codemode.{Surface, Seams, serving, orchestrating,
+  surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
+  vetting_seam}` — which code-mode seams this host serves.
+  `Surface` is `Workspace`, `Orchestration(agency, spawn_ceiling)` or
+  `Both(...)`: one field, because the vetting allowlist, the capability
+  router and the spawn ceiling have to agree and a host that could set
+  them apart would eventually set them apart. `Seams`
+  (`WorkspaceOnly` / `OrchestrationOnly` / `BothSeams`) is the same
+  choice as a *setting* — what a flag can carry before there is an
+  `Agency` to serve the orchestration seam with — and `serving` turns
+  one plus an Agency into a `Surface`; `orchestrating` is the
+  orchestration-only case of it. `seam(config)` publishes exactly the
+  seams the surface serves as `tools/codemode.Seams`, each with the
+  allowlist and the serviced capabilities read off the running policy,
+  so what the model may ask for and what will judge it cannot drift.
+  `tool_seam` / `vetting_seam` are the two directions of the mirror
+  between `vet/policy.Seam` and the tool's own `Seam`.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -132,9 +161,12 @@ over one session file. WP-L.
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
   `Config.escalations` is the escalation seam a policy refusal goes
-  through; there is deliberately **no** session-wide grant list, because
-  a grant that cannot be attributed to the call in hand must widen
-  nothing.
+  through — from `escalating_runner` for a refusal the broker handed
+  back, and from the `Ctx.raise_refusal` seam for one a tool met
+  elsewhere; both build the same `escalate.Refused` from the same
+  `ToolRun`. There is deliberately **no** session-wide grant list,
+  because a grant that cannot be attributed to the call in hand must
+  widen nothing.
 - `client/wiring.{compaction_hooks, recording_summaries}` — the two
   halves of live compaction, separable so a host with its own provider
   surface can run the real ones. `compaction_hooks` builds the whole
@@ -167,6 +199,14 @@ over one session file. WP-L.
   registry: five core tools, plus the six `agent_*` tools only when a
   messaging plane exists, plus `code_mode` only when this host wired a
   code-mode pipeline.
+- `client/serve.Settings.codemode_seams` — which code-mode seams this
+  server offers (`--codemode-seams workspace|orchestration|both`,
+  default `WorkspaceOnly`). A setting for the same reason
+  `base_policy` is one: the choice belongs to whoever stands the server
+  up, and the Agency the orchestration seam routes onto does not exist
+  until `boot` has built it. An unrecognised flag value is a usage
+  error, not a fallback — a typo that quietly served the workspace seam
+  would look exactly like a server ignoring the flag.
 - `client/serve.Booted` — what `shutdown` takes apart, plus three things
   it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
   this boot handed the wiring (so a test can prove the pinned prompt is
@@ -391,6 +431,23 @@ over one session file. WP-L.
   mid-restart would otherwise evaporate and the child would run until the
   session closed. The mark is written once and every later observation
   re-issues the abort.
+- **A spawn adopts an existing child on a name match only when the ledger
+  says this caller minted it.** Handing an existing child back is the
+  reconciliation path that makes `agent_spawn` `ReplaySafe`, and it is
+  worth keeping — but a name is *derived* and a lineage cell is
+  *recorded*, and only the second is evidence. So `minted_by` is compared
+  against the caller's own call site — the operation, `agent.minting_step`
+  (the step with the minter folded in, since `lineage.CallSite` has no
+  field for a program's ordinal) and the source index — and a mismatch is
+  refused as `agent.NameAlreadyMinted`, never adopted. Adoption without
+  that check is an ownership transfer rather than a reconciliation: the
+  adopting spawn's brief, tools, `within_ms`, `detach` and `result_schema`
+  are all discarded (`write_result_schema` runs only on the minting
+  branch), `check_capacity` is skipped so the adopted child costs nothing
+  against `fan_out`, and the caller goes on to wait on a strand doing
+  somebody else's work and report its answer as the answer to a question
+  it never asked. The name derivation is what makes a collision
+  unreachable; this is what makes one harmless if it were reached.
 - **The blackboard is clamped on both sides.** `agent_note` writes under
   `agent/{caller}/`; `agent_notes` with no prefix reads `agent/` and not
   the whole non-reserved fact namespace, which is what
@@ -417,6 +474,49 @@ over one session file. WP-L.
   enqueued child results were rejected over. The refusal is upward only:
   a parent giving an idle child more work is a live agent's explicit
   decision inside its own run.
+- **A code-mode submission is judged against the seam it named, and
+  routed by the seam the host wired.** The two halves are read from
+  different places on purpose. The allowlist follows the *submission*
+  (`exec_config` takes its vetting policy from `Request.seam`), so a
+  refusal the model reads is about the surface it asked for. The router
+  and the spawn ceiling follow the *surface*, so a host serving one seam
+  hands out that seam's router whatever a request names and no
+  submission can widen what the operator wired. A request naming a seam
+  the surface does not serve is refused by the tool shell before
+  `execute` is called and again by `execute` itself — `StartFailed`,
+  nothing dispatched, both stages unreported — rather than being
+  reinterpreted as the seam the host does serve. The residual mismatch
+  that arrangement allows can only narrow: a program vetted against one
+  seam's imports and routed by the other's cannot import the modules
+  whose calls that router services, so it reaches nothing at all.
+- **A code-mode policy refusal is raised once, for the whole execution,
+  and only from the satellite launch.** Code mode clears through the
+  broker the pipeline holds rather than through `Ctx.clear_call`, so
+  until #97 a refused execution reached no escalation plane and nothing
+  could mint the grants #24 taught it to spend. `execute` now wraps the
+  pipeline's launcher, re-asks the launch's own composition question
+  (`launch.node_requirements` ⊕ the base ⊕ the identity's grants, so
+  there is nothing to drift), and reports the shortfall outward as
+  `tools/codemode.RunRefused`; `wiring.tool_context` supplies the raise
+  seam that turns it into a durable record, and the tool shell
+  re-executes once on an approval. Three clearance points, one raise: the
+  hermetic build composes with the grants already dropped, so no approval
+  can widen it and the question would be unanswerable; a capability call
+  refused inside a *running* program is refused after effects have
+  happened, and the one thing an approval buys is a re-execution, which
+  `replay: tool.Never` says must never happen. The launch is the only one
+  where nothing has run yet, so the re-execution repeats no effect and
+  the action a human consents to is still the whole submitted program.
+- **The action a code-mode approval binds to is the program.**
+  `wiring`'s raise builds `escalate.Refused` with `tool: "code_mode"` and
+  `arguments: run.arguments` — the same post-clearance arguments the
+  broker path uses — so `record_id` digests `{strand, "code_mode", wanted
+  diff}` and `action_digest` digests the submission. A retry of the same
+  program inherits the approval and spends it; a *different* program
+  wanting the same diff lands on the same record id, fails the action
+  binding, and re-opens the question with no grants (#65). That is the
+  seam where consent would most easily leak, because the want is coarse
+  and the program is everything.
 - **A code-mode execution runs under the calling strand's own
   `{op_id, step_id}`.** The hermetic build, the jailed `erl`, and every
   capability call the running program makes are dispatched under that one

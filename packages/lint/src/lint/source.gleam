@@ -96,6 +96,49 @@ pub fn keyword_offsets(text: String) -> Keywords {
   |> scan(Keywords([], []))
 }
 
+/// Where the token stream says `@external` appears, in source order.
+///
+/// R6's `@external` half reads tokens rather than the AST, and this is the
+/// whole of it. Two reasons, both the same one `codemode/vet` scans tokens
+/// for: an external in a file `glance` cannot parse must still be reported
+/// rather than reduced to an R0 warning, because R6 is a policy rule and a
+/// parser miss there would be a hole in the policy; and the word inside a
+/// string or a comment lexes to a single token that never decomposes into
+/// `@` followed by `external`, so a text search's false positives never
+/// arise.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let src = "@external(erlang, \"m\", \"f\")\npub fn f() -> Int\n"
+/// assert source.external_offsets(src) == [0]
+/// ```
+///
+/// ```gleam
+/// // Not an attribute: a string lexes to one token.
+/// assert source.external_offsets("const c = \"@external\"") == []
+/// ```
+///
+pub fn external_offsets(text: String) -> List(Int) {
+  glexer.new(text)
+  |> glexer.discard_whitespace
+  |> glexer.discard_comments
+  |> glexer.lex
+  |> externals([])
+}
+
+fn externals(
+  tokens: List(#(token.Token, glexer.Position)),
+  found: List(Int),
+) -> List(Int) {
+  case tokens {
+    [] -> list.reverse(found)
+    [#(token.At, position), #(token.Name("external"), _), ..rest] ->
+      externals(rest, [position.byte_offset, ..found])
+    [_, ..rest] -> externals(rest, found)
+  }
+}
+
 /// Byte offsets of the two constructs R4 forbids, in source order.
 pub type Keywords {
   Keywords(panics: List(Int), let_asserts: List(Int))

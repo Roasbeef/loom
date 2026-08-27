@@ -78,6 +78,7 @@ fn config(dir: String) -> satellite.SatelliteConfig {
     write_token_file: satellite.private_token_writer(dir),
     unlink_token_file: satellite.unlink_token_file,
     router: satellite.default_router,
+    ceilings: [],
     call_timeout_ms: 3000,
   )
 }
@@ -318,7 +319,7 @@ fn network_router(
 ) -> Result(satellite.CapPlan, satellite.CapDenial) {
   case request.cap {
     "net.fetch" ->
-      Ok(satellite.CapPlan(
+      Ok(satellite.ClearedCall(
         spec: broker.CallSpec(
           op_id: identity.op_id(request.identity),
           step_id: identity.step_id(request.identity),

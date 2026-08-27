@@ -114,6 +114,14 @@ protocol (spec Part 1.4). WP-G.
   phases rather than letting a caller assemble them, and answers
   `ledger_keys` — one key per execution, or two where the hermetic build
   is deliberately accounted separately, never one per call (issue #22).
+  That same value now also carries the grants an approved escalation
+  attributed to the execution, and deliberately without touching this
+  key: a widening buys a wider policy at `compose`, never a second ledger
+  with a second `max_outstanding` and a second wall deadline (issue #24).
+  The `CallSpec.grants` a code-mode clearance passes come off the *run*
+  phase, so the hermetic build's clearance is structurally unwidenable —
+  which matters here because `compose` applies grants after the meet and
+  would otherwise let one overrule the build's own `network: NetworkOff`.
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's relay process dies
   unsettled (every relay is monitored). Releases are generation-checked, so

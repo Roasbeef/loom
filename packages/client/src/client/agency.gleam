@@ -131,7 +131,7 @@ import machine/operation.{type LastResult}
 import machine/strand as machine_strand
 import runtime/api
 import runtime/effects
-import runtime/lineage.{type Lineage, CallSite, Lineage}
+import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
 import runtime/writer
 import session/session
 import tools/agent.{
@@ -415,27 +415,89 @@ fn spawn(
   })
   use name <- result.try(child_name(caller, request.purpose))
   case cell_of(ledger, name) {
-    // The first execution completed: hand back the same handle. This is
-    // what makes `agent_spawn` replay-safe.
-    Some(existing) ->
-      Ok(Spawned(
-        handle: Handle(strand: existing.strand, operation: existing.brief),
-        strand: existing.strand,
-        tools: existing.tools,
-      ))
+    Some(existing) -> adopt(caller, existing)
     None -> reconcile(config, runtime, ledger, caller, request, name, depth)
   }
 }
 
+// A child already sits under the derived name. That is the ordinary
+// replay path — the first execution completed and the same handle is
+// handed back, which is the whole of what makes `agent_spawn`
+// `ReplaySafe` — but only when the ledger agrees this caller is the one
+// that minted it.
+//
+// A name match on its own is not an ownership proof, and treating it as
+// one is an ownership *transfer*: the adopting caller's brief, tools,
+// `within_ms`, `detach` and `result_schema` are all silently dropped —
+// `write_result_schema` runs on the other branch — and `check_capacity`
+// is skipped, so the adopted child costs its new parent nothing against
+// `fan_out`. The caller then waits on a strand doing something else and
+// reports its answer as the answer to a question it never asked.
+//
+// So the ledger, not the name, decides. `minted_by` is the call site the
+// name was derived from, and `agent.minting_step` is what makes "the same
+// caller" mean the same operation, the same step, the same planned call
+// *and* the same minter inside it — a program's ordinal included, since
+// `CallSite` has no field of its own for it. Anything else is refused.
+// The check is cheap and the name derivation already makes reaching it
+// hard; it is here because a name is derived and a ledger cell is
+// recorded, and only one of those two is evidence.
+fn adopt(caller: Caller, existing: Lineage) -> Result(Spawned, Refusal) {
+  use <- bool.guard(
+    when: existing.minted_by != call_site(caller),
+    return: Error(agent.NameAlreadyMinted(strand: existing.strand)),
+  )
+  Ok(Spawned(
+    handle: Handle(strand: existing.strand, operation: existing.brief),
+    strand: existing.strand,
+    tools: existing.tools,
+  ))
+}
+
+// The call site a spawn is recorded under and reconciled against. One
+// function, so the cell that is written and the cell that is compared can
+// never drift apart.
+fn call_site(caller: Caller) -> CallSite {
+  CallSite(
+    operation: caller.operation,
+    step_id: agent.minting_step(caller),
+    source_index: caller.source_index,
+  )
+}
+
 /// The name a spawn mints for a child, derived only from state that is
 /// durable in the intent: the caller's strand, the purpose it slugged,
-/// and the `{step, source index}` coordinates a replayed call arrives
-/// under.
+/// and `agent.call_site_digest` over the coordinates a replayed call
+/// arrives under — operation, minting step, and source index.
 ///
 /// The model never supplies a name, so it cannot claim `main`, cannot
 /// shadow an operator's convention, and cannot collide with a sibling —
 /// and the determinism is exactly what lets a replayed spawn find its own
 /// child instead of minting a second one.
+///
+/// ## Two halves, and why only one of them may be truncated
+///
+/// The slug is the model's half and is decoration: it is bounded at
+/// `agent.max_slug_length` so a pasted paragraph cannot become a register
+/// key, and nothing about who owns the child rests on it. The digest is
+/// the harness's half and is the whole of the identity: sixteen hex
+/// characters, constant width, no model input.
+///
+/// The two properties that division buys are the two the previous shape
+/// lacked, and it lacked them together. It ended `-{step-slug}-{index}`,
+/// where the step was slugged by the *purpose* slugger and so truncated
+/// at twenty-four characters — and a production step id is a
+/// thirty-six-character UUID, so every discriminator a caller appended to
+/// the step was cut off before it reached the name. A constant-width
+/// field has no cap left to be truncated against. And because the digest
+/// takes no model-supplied input, a chosen purpose moves the decoration
+/// and nothing else; there is no string a model can pick that makes two
+/// call sites derive one name.
+///
+/// The step and index are not lost, only moved: they are recorded whole
+/// in the child's lineage cell, under `minted_by`, which is where an
+/// operator asking "where did this strand come from" should look and is
+/// what a reconciliation is checked against.
 ///
 /// Exposed because it is the coordinate function the idempotence
 /// argument rests on, and a claim like that should be checkable from
@@ -445,7 +507,7 @@ fn spawn(
 ///
 /// ```gleam
 /// // agency.child_name(caller, "review the auth code")
-/// // -> Ok("sub:main/review-the-auth-code-turn-1-tools-0")
+/// // -> Ok("sub:main/review-the-auth-code-7b1c0a4e2d95f318")
 /// ```
 ///
 pub fn child_name(caller: Caller, purpose: String) -> Result(String, Refusal) {
@@ -455,16 +517,13 @@ pub fn child_name(caller: Caller, purpose: String) -> Result(String, Refusal) {
       reason: "`purpose` must contain at least one letter or digit",
     )),
   )
-  let step = result.unwrap(agent.slug(caller.step_id), "step")
   Ok(
     subagent_prefix
     <> caller.strand
     <> "/"
     <> slug
     <> "-"
-    <> step
-    <> "-"
-    <> int.to_string(caller.source_index),
+    <> agent.call_site_digest(caller),
   )
 }
 
@@ -519,11 +578,7 @@ fn reconcile(
       strand: name,
       parent: caller.strand,
       depth:,
-      minted_by: CallSite(
-        operation: caller.operation,
-        step_id: caller.step_id,
-        source_index: caller.source_index,
-      ),
+      minted_by: call_site(caller),
       brief:,
       tools:,
       deadline: deadline_of(config, now, request.within_ms),
@@ -701,19 +756,39 @@ fn check_capacity(
   let live =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
   let mine = list.filter(live, fn(cell) { cell.parent == caller.strand })
-  case list.length(mine) >= config.fan_out {
-    True ->
-      Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
-    False ->
-      case list.length(live) >= config.session_strands {
-        True ->
-          Error(agent.FanOutCapReached(
-            live: list.length(live),
-            cap: config.session_strands,
-          ))
-        False -> Ok(Nil)
-      }
-  }
+  // Both guards are lazy, and that is not a flourish: the count in the
+  // refusal is the one thing here that genuinely has to walk the list,
+  // and an eager `return:` would walk it on every admitted spawn to
+  // build a message nobody reads. The refusal path pays for its own
+  // number; the admission path pays for nothing.
+  use <- bool.lazy_guard(when: at_least(mine, config.fan_out), return: fn() {
+    Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
+  })
+  use <- bool.lazy_guard(
+    when: at_least(live, config.session_strands),
+    return: fn() {
+      Error(agent.FanOutCapReached(
+        live: list.length(live),
+        cap: config.session_strands,
+      ))
+    },
+  )
+  Ok(Nil)
+}
+
+// Whether `values` holds at least `bound` elements, answered at the bound
+// instead of by counting: `list.drop` stops as soon as it has dropped
+// that many, so a session holding a hundred live strands costs a check
+// the same as one holding `bound` of them.
+//
+// The `bound <= 0` arm is the arithmetic, not a defensive crumple zone.
+// "At least none" is true of every list, the empty one included, and the
+// drop spelling gets that case wrong twice over: `bound - 1` is negative,
+// and `list.drop` hands a negative count the whole list back, so an empty
+// ledger would read as *not* at a cap of zero. A host that sets `fan_out`
+// to zero means no spawns at all, and this is the line that says so.
+fn at_least(values: List(a), bound: Int) -> Bool {
+  bound <= 0 || list.drop(values, bound - 1) != []
 }
 
 fn deadline_of(
@@ -867,7 +942,16 @@ fn wait_loop(
       settle_handle(runtime, found, handle)
     })
   let #(now, _clock) = clock.read(config.clock)
-  case dict.size(settled) == list.length(handles) || now >= deadline {
+  // "Everything has settled" asked at the bound rather than by counting.
+  // Every key in `settled` is one of *these* handles' own — the fold
+  // above inserts under `handle_to_string` and nothing else puts a key in
+  // — so the dict can never outgrow the list, and "as many settled as
+  // there are handles" is the same question as "no handle sits past the
+  // ones that have settled". `dict.size` is a constant-time read of the
+  // map's own counter; `list.drop` stops at it. The alternative walked
+  // the handle list on every slice of every wait, which is the one loop
+  // in this module that runs on a timer.
+  case list.drop(handles, dict.size(settled)) == [] || now >= deadline {
     True ->
       list.map(handles, fn(handle) {
         case dict.get(settled, agent.handle_to_string(handle)) {

@@ -12,6 +12,7 @@
 //// that pair is the execution the broker pools budget under.
 
 import broker/broker.{type CallEvent, type CallSpec, type Refusal}
+import broker/escalation
 import broker/exec
 import broker/policy
 import core/clock
@@ -24,6 +25,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import tools/codemode
+import tools/prelude
 import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
@@ -49,6 +51,7 @@ fn ctx_for(step: String) -> Ctx {
     filesystem: dead_filesystem(),
     blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
+    raise_refusal: tool.no_raise(),
   )
 }
 
@@ -71,12 +74,45 @@ fn dead_filesystem() -> tool.FileSystem {
 
 const allowlist = ["cap/proc", "cap/report", "gleam/int"]
 
-// A seam that always answers with the same execution.
-fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
-  codemode.CodeMode(
-    execute: fn(_request) { execution },
+// The other seam's allowlist. Disjoint from the workspace one but for
+// `cap/report` and the pure stdlib entry, the way the real pair is —
+// which is what lets a test tell the two apart by what a refusal lists.
+const orchestration_allowlist = ["cap/report", "cap/strand", "gleam/int"]
+
+fn workspace_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.WorkspaceSeam,
     allowed_imports: allowlist,
     serviced_caps: ["proc.run"],
+  )
+}
+
+fn orchestration_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.OrchestrationSeam,
+    allowed_imports: orchestration_allowlist,
+    serviced_caps: ["strand.spawn", "strand.wait"],
+  )
+}
+
+// A host serving both, the workspace seam first — so an unnamed
+// submission gets it, and a named one has somewhere else to go.
+fn both_seams() -> codemode.Seams {
+  codemode.Seams(default: workspace_offer(), alternates: [orchestration_offer()])
+}
+
+// A seam that always answers with the same execution.
+fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
+  scripted_over(codemode.one_seam(workspace_offer()), execution)
+}
+
+fn scripted_over(
+  seams: codemode.Seams,
+  execution: codemode.Execution,
+) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(_request) { execution },
+    seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
   )
@@ -85,6 +121,10 @@ fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
 // A seam whose "program" reports the request it was given, so the result
 // is a transcript of what crossed the seam.
 fn echoing() -> codemode.CodeMode {
+  echoing_over(codemode.one_seam(workspace_offer()))
+}
+
+fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
   codemode.CodeMode(
     execute: fn(request: codemode.Request) {
       codemode.Execution(
@@ -115,15 +155,19 @@ fn echoing() -> codemode.CodeMode {
                 msgpack.StringValue("source"),
                 msgpack.StringValue(request.source),
               ),
+              #(
+                msgpack.StringValue("seam"),
+                msgpack.StringValue(codemode.seam_name(request.seam)),
+              ),
             ]),
           ),
           manifest_hash: "sha256-echo",
         ),
         enforcement: jailed(),
+        refusal: codemode.NothingRefused,
       )
     },
-    allowed_imports: allowlist,
-    serviced_caps: ["proc.run"],
+    seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
   )
@@ -133,6 +177,7 @@ fn ran(outcome: codemode.Outcome) -> codemode.Execution {
   codemode.Execution(
     result: codemode.Ran(outcome:, manifest_hash: "sha256-abc"),
     enforcement: jailed(),
+    refusal: codemode.NothingRefused,
   )
 }
 
@@ -254,6 +299,7 @@ pub fn a_vetting_rejection_names_the_rule_and_the_import_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("import gleam/io"))],
     )
@@ -306,6 +352,7 @@ pub fn every_violation_is_listed_in_one_pass_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -330,6 +377,7 @@ pub fn a_parse_error_points_at_a_byte_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("pub fn main( {"))],
     )
@@ -359,6 +407,7 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
           ),
           node: codemode.Unreported("the program did not compile"),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -382,6 +431,7 @@ pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
           reason: "the helper pool is empty",
         )),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -406,6 +456,7 @@ pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
             degraded: False,
           ),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -431,6 +482,7 @@ pub fn an_unreported_jail_is_never_implied_test() {
           manifest_hash: "sha256-abc",
         ),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -500,6 +552,7 @@ pub fn a_degraded_stage_says_so_test() {
             degraded: True,
           ),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -596,7 +649,11 @@ pub fn the_budget_defaults_and_clamps_test() {
 }
 
 fn echoed_value(args: List(#(String, json.JsonValue))) {
-  let outcome = call(echoing(), args)
+  echoed_over(codemode.one_seam(workspace_offer()), args)
+}
+
+fn echoed_over(seams: codemode.Seams, args: List(#(String, json.JsonValue))) {
+  let outcome = call(echoing_over(seams), args)
   let assert Some(json.Object(fields)) = outcome.details
     as "the echoing seam must answer with a value"
   list.key_find(fields, "value")
@@ -620,6 +677,181 @@ pub fn bad_arguments_are_an_in_band_refusal_test() {
   let outcome = call(echoing(), [#("within_ms", json.Int(5))])
   assert outcome.is_error
   assert string.contains(text_of(outcome), "`program` is required")
+}
+
+// --- which seam a submission is judged against -----------------------------
+
+pub fn a_model_named_seam_reaches_the_pipeline_test() {
+  // The point of the argument: the seam the model asked for is the seam
+  // the pipeline is told to judge and route under. Nothing infers it from
+  // the program's imports, which would make the description a lie.
+  let assert Ok(json.Object(orchestrating)) =
+    echoed_over(both_seams(), [
+      #("program", json.String("...")),
+      #("seam", json.String("orchestration")),
+    ])
+    as "the echo must be a map"
+  assert list.contains(orchestrating, #("seam", json.String("orchestration")))
+  // And a submission that names none gets the host's default.
+  let assert Ok(json.Object(defaulted)) =
+    echoed_over(both_seams(), [#("program", json.String("..."))])
+    as "the echo must be a map"
+  assert list.contains(defaulted, #("seam", json.String("workspace")))
+}
+
+pub fn a_rejection_names_the_seam_it_was_judged_against_test() {
+  // A model that asked for one seam and read a refusal that could have
+  // come from either cannot tell a program it must repair from a
+  // submission it must re-aim. So the refusal names the seam, and the
+  // allowlist it prints is that seam's — not the host's default's.
+  let refusal =
+    codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.ImportNotAllowed,
+          detail: "`cap/proc` is not an allowed import",
+          location: codemode.SourceSpan(start: 0, end: 16),
+        ),
+      ]),
+      enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
+    )
+  let outcome =
+    call(scripted_over(both_seams(), refusal), [
+      #("program", json.String("import cap/proc")),
+      #("seam", json.String("orchestration")),
+    ])
+  assert outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "judged against the `orchestration` seam")
+  assert string.contains(text, "on the `orchestration` seam are:")
+  assert string.contains(text, "cap/strand")
+  // The other seam's own module must not appear in an allowlist the
+  // program was not judged against.
+  assert !string.contains(text, "cap/proc,")
+  let assert Some(json.Object(fields)) = outcome.details
+    as "a rejection must carry structured details"
+  assert list.contains(fields, #("seam", json.String("orchestration")))
+  assert list.contains(fields, #(
+    "allowed_imports",
+    json.Array(list.map(
+      list.sort(orchestration_allowlist, string.compare),
+      json.String,
+    )),
+  ))
+}
+
+pub fn a_workspace_submission_is_judged_against_the_workspace_seam_test() {
+  // The same refusal on the same host, aimed the other way.
+  let refusal =
+    codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.ImportNotAllowed,
+          detail: "`cap/strand` is not an allowed import",
+          location: codemode.Unlocated,
+        ),
+      ]),
+      enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
+    )
+  let outcome =
+    call(scripted_over(both_seams(), refusal), [
+      #("program", json.String("import cap/strand")),
+      #("seam", json.String("workspace")),
+    ])
+  let text = text_of(outcome)
+  assert string.contains(text, "judged against the `workspace` seam")
+  assert string.contains(text, "on the `workspace` seam are:")
+  assert string.contains(text, "cap/proc")
+  let assert Some(json.Object(fields)) = outcome.details
+    as "a rejection must carry structured details"
+  assert list.contains(fields, #("seam", json.String("workspace")))
+  assert list.contains(fields, #(
+    "allowed_imports",
+    json.Array(list.map(list.sort(allowlist, string.compare), json.String)),
+  ))
+}
+
+pub fn a_seam_this_host_does_not_serve_never_reaches_the_pipeline_test() {
+  // Refused in the shell, naming what is on offer. Quietly judging the
+  // program against the other seam would be either a refusal the model
+  // cannot act on or a widening nobody chose, depending on which way the
+  // mistake ran.
+  let exploding =
+    codemode.CodeMode(
+      ..scripted(ran(codemode.Completed(msgpack.NilValue))),
+      execute: fn(_request) {
+        panic as "an unserved seam must not reach the pipeline"
+      },
+    )
+  let outcome =
+    call(exploding, [
+      #("program", json.String("import cap/strand")),
+      #("seam", json.String("orchestration")),
+    ])
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "`seam` must be one of: workspace")
+}
+
+pub fn the_choice_costs_nothing_where_there_is_no_choice_test() {
+  // The description and the schema are the byte prefix of the provider's
+  // cached region, paid on every request of every strand. A host serving
+  // one seam therefore renders exactly what it rendered before seams were
+  // selectable: one import list, and no argument for a decision its model
+  // cannot make.
+  let alone = codemode.tool_for(echoing())
+  assert string.contains(alone.description, "Imports are restricted to:")
+  assert !string.contains(alone.description, "named by `seam`")
+  assert !string.contains(json.to_string(alone.schema), "\"seam\"")
+
+  let both = codemode.tool_for(echoing_over(both_seams()))
+  assert string.contains(both.description, "named by `seam`")
+  assert string.contains(both.description, "defaulting to `workspace`")
+  assert string.contains(both.description, "`orchestration` adds imports:")
+  assert string.contains(both.description, "strand.spawn")
+  // The shared subset is stated once rather than in both lists — the two
+  // seams differ in their `cap/*` modules and nothing else, and a model
+  // handed two long lists to diff is being charged for the duplicate.
+  assert occurrences(both.description, "gleam/int") == 1
+  assert string.contains(
+    both.description,
+    "Every seam also allows: cap/report, gleam/int",
+  )
+  assert string.contains(json.to_string(both.schema), "\"orchestration\"")
+}
+
+fn occurrences(haystack: String, needle: String) -> Int {
+  list.length(string.split(haystack, needle)) - 1
+}
+
+pub fn a_parse_rejection_says_what_the_parser_will_not_accept_test() {
+  // Vetting reads the submission with a standalone parser that accepts a
+  // narrower Gleam than the compiler: label shorthand does not parse,
+  // though `gleam build` takes it. A program can therefore be refused at
+  // a byte offset for syntax that is perfectly legal, and the refusal is
+  // where someone hits it — so it is where the note lives, rather than in
+  // a description every request pays for.
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.Unparseable,
+            detail: "unexpected token",
+            location: codemode.SourcePoint(byte_offset: 61),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert string.contains(text_of(outcome), "Label shorthand")
+  assert string.contains(text_of(outcome), "write each label's value out")
+  // And nothing about the shorthand is in the sentence every request pays
+  // for.
+  assert !string.contains(codemode.description(echoing()), "shorthand")
 }
 
 // --- the tool's own contract -----------------------------------------------
@@ -655,4 +887,317 @@ pub fn the_requirements_ask_for_the_workspace_and_the_toolchain_test() {
   // The Gleam and Erlang toolchains live outside the workspace.
   assert wanted.readable_roots == ["/"]
   assert wanted.network == policy.NetworkOff
+}
+
+// --- the prelude signatures in the description -----------------------------
+
+pub fn the_description_carries_the_signatures_of_every_admitted_module_test() {
+  // The point of the whole exercise: a model writing a program can read
+  // what is in the modules it may import, instead of learning it from a
+  // `CompileFailed` round trip that carried a hermetic build (issue #36).
+  let described = codemode.description(echoing())
+  assert string.contains(described, "### cap/proc")
+  assert string.contains(described, "### cap/report")
+  assert string.contains(
+    described,
+    "pub fn run(Command) -> Result(Output, ProcError)",
+  )
+  // The record a signature returns, not only the signature: a program
+  // that cannot name `stdout` cannot read the output it just paid for.
+  assert string.contains(described, "stdout: String")
+  // And the labelled/positional convention the rendering depends on is
+  // stated rather than left to be guessed at.
+  assert string.contains(described, "`label: Type` is labelled")
+}
+
+pub fn the_signatures_never_advertise_a_module_the_seam_refuses_test() {
+  // `gleam export package-interface` reports eleven modules and the two
+  // seams admit ten between them: `cap/runtime`, the satellite's trusted
+  // boot runtime, is on neither allowlist. Advertising it would be a map
+  // to the forbidden — the model would write against something vetting
+  // rejects and read a refusal it has no way to understand.
+  //
+  // The first assertion is what keeps the second from being vacuous: the
+  // generated artifact does carry `cap/runtime`, so its absence from the
+  // description is the allowlist filter working rather than an empty
+  // input.
+  let carried =
+    list.any(prelude.surfaces, fn(entry) { entry.0 == "cap/runtime" })
+  assert carried
+
+  let served = [
+    codemode.description(echoing()),
+    codemode.description(echoing_over(codemode.one_seam(orchestration_offer()))),
+    codemode.description(echoing_over(both_seams())),
+  ]
+  list.each(served, fn(described) {
+    assert !string.contains(described, "### cap/runtime")
+    assert !string.contains(described, "pub fn boot(")
+  })
+}
+
+pub fn an_orchestration_only_host_renders_no_workspace_signatures_test() {
+  // An orchestration-only host pays for `cap/strand` and `cap/report` and
+  // for none of the other nine. These bytes are the prefix of the
+  // provider's cached head, so a module rendered for a seam this host
+  // does not serve is paid for on every request of every strand for the
+  // life of the session, to describe something no submission can use.
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(orchestration_offer())))
+  assert string.contains(described, "### cap/strand")
+  assert string.contains(described, "### cap/report")
+  assert !string.contains(described, "### cap/proc")
+  assert !string.contains(described, "pub fn run(Command)")
+  assert !string.contains(described, "### cap/fs")
+}
+
+pub fn a_single_seam_description_still_opens_exactly_as_it_did_test() {
+  // `bb799ca` made a one-seam host render byte-identically to the tool
+  // before seams were selectable. The signatures are appended, so that
+  // sentence is still the description's exact prefix — a host with no
+  // choice to make reads no word about one.
+  let described = codemode.description(echoing())
+  let before =
+    "Run a Gleam program in a jailed satellite and get one structured "
+    <> "result. Use it instead of a chain of tool calls when the steps "
+    <> "depend on each other: loops, conditionals, and concurrency happen "
+    <> "inside the program, and only what `main` returns comes back — the "
+    <> "intermediate output never enters the conversation. Write `pub fn "
+    <> "main() -> report.Outcome`, returning `report.text(...)` or "
+    <> "`report.value(...)`. Imports are restricted to: cap/proc, "
+    <> "cap/report, gleam/int. `@external` is refused. Capabilities "
+    <> "serviced today: proc.run; the other `cap/*` modules compile but "
+    <> "answer unsupported_cap. A program that is refused or does not "
+    <> "compile comes back with the reason, so you can fix it and submit "
+    <> "again."
+  assert string.starts_with(described, before)
+  // And no word about a seam anywhere in the prose it pays for, which is
+  // the half of the sentence this host controls. The signature blocks
+  // below carry the prelude's own doc comments verbatim, so what they say
+  // is `packages/cap`'s business rather than this rendering's.
+  let assert [prose, ..] = string.split(described, "Each module's public")
+  assert !string.contains(prose, "seam")
+}
+
+pub fn two_seams_state_a_shared_module_once_test() {
+  // The same split the import lists take, applied to the same lists:
+  // `cap/report` is on both allowlists, so it is rendered once under a
+  // shared heading rather than twice. Duplicating it would cost its whole
+  // block a second time in the cached prefix and hand the model two
+  // listings to reconcile.
+  let described = codemode.description(echoing_over(both_seams()))
+  assert occurrences(described, "### cap/report") == 1
+  assert string.contains(described, "## On every seam")
+  assert string.contains(described, "## Only on the `workspace` seam")
+  assert string.contains(described, "## Only on the `orchestration` seam")
+  assert string.contains(described, "### cap/proc")
+  assert string.contains(described, "### cap/strand")
+}
+
+// The link that made every other widening test hypothetical. Grants are
+// consumed for one call by the driver and land on the `Ctx`; `Request` is
+// the only channel from there into the pipeline, so if this does not
+// carry them the whole path is inert however well the far end threads
+// them. It was, until it was wired.
+pub fn a_request_carries_the_grants_this_call_was_approved_test() {
+  let wanted = policy.GrantEnv(name: "LOOM_CAP_SOCK")
+  let ctx = tool.Ctx(..ctx_for("turn-1:tools"), grants: [wanted])
+  let built =
+    codemode.request(
+      echoing(),
+      ctx,
+      "pub fn main() { todo }",
+      option.None,
+      on: codemode.WorkspaceSeam,
+    )
+  assert built.grants == [wanted]
+}
+
+// And the ordinary case stays empty, so a widening is something an
+// approval did rather than something the request shape hands out.
+pub fn an_unapproved_request_carries_no_grants_test() {
+  let built =
+    codemode.request(
+      echoing(),
+      ctx_for("turn-1:tools"),
+      "pub fn main() { todo }",
+      option.None,
+      on: codemode.WorkspaceSeam,
+    )
+  assert built.grants == []
+}
+
+// --- raising a refusal the pipeline could not raise itself (#97) ------------
+
+// `code_mode` clears nothing through `Ctx.clear_call`: its clearances
+// happen inside the code-mode pipeline, against the broker that pipeline
+// holds. So a policy refusal there reached no escalation plane at all,
+// and grants could be spent in the pipeline with nothing able to mint
+// one. The shell's answer is `Ctx.raise_refusal` — raised once, for the
+// whole submission — and these pin what it does with each answer.
+
+const raised_grant = policy.GrantEnv(name: "LOOM_CAP_SOCK")
+
+// A seam that refuses the run phase until the call carries the grant, and
+// records every request that crossed it so a test can count executions
+// rather than infer them.
+fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(request: codemode.Request) {
+      process.send(crossings, request.grants)
+      case list.contains(request.grants, raised_grant) {
+        True ->
+          codemode.Execution(
+            result: codemode.Ran(
+              outcome: codemode.Completed(value: msgpack.StringValue("widened")),
+              manifest_hash: "sha256-widened",
+            ),
+            enforcement: jailed(),
+            refusal: codemode.NothingRefused,
+          )
+        False -> run_refused()
+      }
+    },
+    seams: codemode.one_seam(workspace_offer()),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+// A seam that refuses however wide the call gets: what the second refusal
+// after an approval looks like from the shell's side.
+fn always_refusing(
+  crossings: Subject(List(policy.Grant)),
+) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(request: codemode.Request) {
+      process.send(crossings, request.grants)
+      run_refused()
+    },
+    seams: codemode.one_seam(workspace_offer()),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+fn run_refused() -> codemode.Execution {
+  codemode.Execution(
+    result: codemode.RunFailed(codemode.StartFailed(
+      reason: "the session base cannot host a satellite node",
+    )),
+    enforcement: nothing_ran(),
+    refusal: codemode.RunRefused(
+      denial: escalation.Denial(
+        reason: "the session base cannot host a satellite node",
+        source: escalation.PolicyDenial,
+        wanted: [raised_grant],
+      ),
+      deadline_ms: 9000,
+    ),
+  )
+}
+
+// A `Ctx` whose raise seam answers `answer` and reports what it was
+// asked. The whole point of the seam is that the *host* decides, so a
+// test drives it by being the host.
+fn raising_ctx(
+  answer: tool.Escalated,
+  asked: Subject(tool.RaisedRefusal),
+) -> Ctx {
+  tool.Ctx(..ctx_for("turn-1:tools"), raise_refusal: fn(refusal) {
+    process.send(asked, refusal)
+    answer
+  })
+}
+
+fn drained(inbox: Subject(a), taken: List(a)) -> List(a) {
+  case process.receive(inbox, within: 0) {
+    Error(Nil) -> list.reverse(taken)
+    Ok(item) -> drained(inbox, [item, ..taken])
+  }
+}
+
+fn submitted(seam: codemode.CodeMode, ctx: Ctx) -> tool.ToolOutcome {
+  codemode.tool_for(seam).run(
+    ctx,
+    json.Object([#("program", json.String("pub fn main() { todo }"))]),
+  )
+}
+
+pub fn a_run_refusal_is_raised_once_with_the_wanted_diff_test() {
+  // Once for the whole submission, not once per clearance inside it: a
+  // program makes many clearances, and a human asked about one of them
+  // would be answering about something no client rendered. The consent
+  // unit is the program, which is what the arguments are.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let _outcome =
+    submitted(widenable(crossings), raising_ctx(tool.Settle, asked))
+  let assert [refusal] = drained(asked, [])
+    as "exactly one refusal must reach the host"
+  assert refusal.denial.wanted == [raised_grant]
+  assert refusal.deadline_ms == 9000
+}
+
+pub fn an_approval_re_executes_the_submission_once_test() {
+  // Design §5.3 read literally: one re-execution under the widened
+  // policy. The grants are *appended* to what the call already carried,
+  // because a call can arrive holding an approval the driver consumed for
+  // it a turn earlier and this one is a second grant for the same call,
+  // not a replacement.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      widenable(crossings),
+      raising_ctx(tool.Resume(grants: [raised_grant]), asked),
+    )
+  assert !outcome.is_error
+  assert string.contains(text_of(outcome), "widened")
+  // Twice, and no more: the refused attempt, then the approved one.
+  assert drained(crossings, []) == [[], [raised_grant]]
+  assert list.length(drained(asked, [])) == 1
+}
+
+pub fn a_settled_refusal_executes_once_and_stands_test() {
+  // Nobody widened it — no plane, nobody attached, a denial, a window
+  // that closed. The model reads the refusal the first execution
+  // produced, and nothing ran a second time.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome = submitted(widenable(crossings), raising_ctx(tool.Settle, asked))
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "could not start")
+  assert drained(crossings, []) == [[]]
+}
+
+pub fn a_second_refusal_after_an_approval_stands_test() {
+  // The retry is not a loop. If the widened policy still does not satisfy
+  // the pipeline, the second refusal settles in band — it is not raised
+  // again, which would let one want drive a human round the same question
+  // for as long as the model kept submitting.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      always_refusing(crossings),
+      raising_ctx(tool.Resume(grants: [raised_grant]), asked),
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "could not start")
+  assert drained(crossings, []) == [[], [raised_grant]]
+  assert list.length(drained(asked, [])) == 1
+}
+
+pub fn an_execution_with_nothing_refused_never_asks_test() {
+  // The common case, and the one that would be most expensive to get
+  // wrong: a healthy execution must not put a question to anybody.
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      scripted(ran(codemode.Completed(value: msgpack.StringValue("fine")))),
+      raising_ctx(tool.Settle, asked),
+    )
+  assert !outcome.is_error
+  assert drained(asked, []) == []
 }

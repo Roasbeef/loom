@@ -2,6 +2,92 @@
 
 ---
 
+## 2026-08-27 — a downloadable server: OTP release, helper beside it
+
+### State
+
+The tree had no distribution. `make server-shipment` produced 11 MB of
+BEAM files that need an Erlang installation to run, `make binaries`
+produced 26.6 MB of unstripped Go, and `bin/loom-server` was a 261-byte
+`sh` shim over the shipment's entrypoint. Roughly 38 MB, and still
+"install OTP 27 first".
+
+`make release` now assembles an OTP release with `include_erts` over that
+same shipment, using rebar3/relx — Gleam has no release verb, and the
+shipment is the one artifact that already has every dependency's `ebin`
+and `priv` in one place, so relx needs a `lib_dirs` and works out the
+application closure itself. `make dist` packages it. Both were run;
+`docs/distribution.md` carries the argument and every measured number.
+
+### The helper: beside, not inside
+
+The interesting decision was `loom-exec`. Embedding it and extracting at
+run time would have needed an answer for the extraction directory and who
+else can create it, for two instances racing, for a digest checked before
+exec and what that digest proves when it travels inside the same file as
+the payload — and the honest answer to the last one is *not much against
+an attacker already running as this uid*, who can rewrite the download
+itself. So the artifact ships the helper as a file beside the launcher
+and gets a property instead of a mitigation: **Loom never writes an
+executable at run time and then execs it.** `SHA256SUMS` covers every
+executable in the tree and is checkable by anyone from the moment it is
+unpacked.
+
+Rule Zero is untouched by any of this — the helper is still a separate OS
+process the broker spawns, which is the whole point of it.
+
+### relx's launcher is not shipped
+
+relx generates a `vm.args` with `-sname loom -setcookie loom` and a start
+script that offers `ping`/`rpc`/`remsh` over it. A guessable cookie on a
+node accepting remote calls is exactly what the two-channel doctrine says
+must never be the default, and there is no control plane for it to serve.
+The script, the `vm.args` and the `sys.config` are deleted after assembly
+and replaced with a launcher that boots `no_dot_erlang` — so a `~/.erlang`
+nobody audited is not evaluated inside the harness VM on the way up.
+
+### Sizes
+
+`-ldflags="-s -w"` on the Go binaries: `loom-exec` 4,878,696 → 3,281,120
+(32.7% off), `loom-tui` 21,700,138 → 15,798,564 (27.2%). Bigger: the
+copied ERTS strips 57.3 MB → 11.3 MB, because `beam.smp` ships with 42 MB
+of symbols and DWARF the emulator never reads. Release tree 29 MB,
+tarball 11 MB, client 16 MB.
+
+All three copies of the helper — `bin/loom-exec`, `packages/sandbox/loom-exec`,
+and the one in the release — are now byte-identical, because every Go
+build goes through `scripts/go-build.sh`. That is what makes `make
+selftest`'s verdict evidence about the artifact. Re-ran `make selftest`
+(4 enforced, 5 skipped, unchanged) and `make e2e` (49 passed) against the
+stripped helper.
+
+### Cross-compilation: none, and the target says so
+
+`esqlite3_nif.so` is compiled C and the ERTS is the build host's, so a
+release is per-platform. `scripts/release.sh` refuses a `GOOS`/`GOARCH`
+that is not the host rather than producing a tree whose name lies. Only
+`linux-x86_64` has been built and smoke-tested. macOS would ship a helper
+with no jail, which refuses to serve without `--allow-unenforced`;
+packaging is not what is missing there.
+
+### Found on the way
+
+`scripts/dev.sh --smoke` had been broken since 5abe62f, which replaced
+`io.println("loom-server: closed")` with structured logging and left the
+script grepping for a line nothing prints. Fixed here — the witness is
+the `server.stopped` log event — and `--smoke` passes again. Worth noting
+that nothing caught it: the smoke variant is not in `make check`.
+
+### Wanted from the source, not made here
+
+The server's helper ladder is `--helper`, then `PATH`, then `./bin`. An
+unpacked release is usually neither, so the generated launcher injects
+`--helper` unless the caller passed one. If the ladder gained "the
+directory of the running executable" between the flag and `PATH`, that
+trick could go away.
+
+---
+
 ## 2026-08-25 — M4 kickoff: cap set pinned, vetting lint landed
 
 ### State
