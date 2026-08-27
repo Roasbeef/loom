@@ -29,11 +29,18 @@ protocol (spec Part 1.4). WP-G.
   derivation behind it (schedulers online, clamped).
 - `broker/internal/call.{try_call, CallFault}` — `process.call` without
   the panic: `NoReply` on a timeout, `CalleeGone` on a dead or ownerless
-  callee. Used where the caller is holding a verdict it must deliver —
-  the congestion loop and the pool's readiness probe — and nowhere else.
+  callee. Every exchange on the clearance path now goes through it (the
+  congestion loop, the pool checkout, and the four helper-actor calls);
+  what is left on `process.call` is the two `@internal` test accessors,
+  whose callers do want the crash.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
+  Three of those types carry a variant for a peer that answered
+  nothing: `CheckoutError.PoolUnavailable`,
+  `ExecFailure.HelperUnresponsive`, and `HelperStatus.StatusUnresponsive`
+  — separate facts from `AllBusy`, `ChannelClosed` and `StatusDead`,
+  which are things a live peer said.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
@@ -76,14 +83,19 @@ protocol (spec Part 1.4). WP-G.
   - `broker.Msg` — `ClearCall(spec, events, reply)`,
     `SendStdin(handle, data, eof)`, `CancelCall(handle)`, `AbortOp(op_id)`,
     `Settle(call_id)`, `RelayDown(down)`, `QueryRelay(handle, reply)`,
-    `StopBroker`.
+    `QueryEpochs(reply)`, `StopBroker`. The last two are `@internal`
+    observability, reached only by `relay_pid` and `abort_epoch_count`.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
     `CancelDeadline(exec_id)`, `HandshakeDeadline`, `HeartbeatTick`,
     `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`.
   - `exec.PoolMsg` — `Checkout(reply)`, `Checkin(helper)`, `StopPool`.
     `Checkout` answers immediately, `AllBusy` included: it never defers a
-    reply, because its one run-time borrower is the broker actor.
+    reply, because its one run-time borrower is the broker actor. It can
+    still answer *late* — spawning runs in the pool actor — and a
+    borrower that gave up by then leaves that helper counted as lent
+    with nobody to check it in. Bounded by the pool's size; see the
+    checkout invariant below.
   - Outbound to callers: `broker.CallEvent` (`CallOutput`, `CallSettled`)
     and `exec.ExecEvent` (`Output`, `Exited`, `Failed`).
 - **Commits / registers**: none. The broker persists nothing; durability of
@@ -163,11 +175,32 @@ protocol (spec Part 1.4). WP-G.
   fatal.** `helper_ready` probes an idle helper before lending it, from
   inside the pool actor — so a probe that faulted on a timeout would take
   the pool down, and the broker with it, since the broker borrows through
-  a call of its own. The probe is `try_call` for that reason, which is
-  also what makes the cost accounting true: one timeout per wedged
-  helper, paid once, because the helper is shut down and never probed
-  again. The public `exec.status` keeps `process.call`'s panicking
-  contract and is not what the pool uses.
+  a call of its own. That is what makes the cost accounting true: one
+  timeout per wedged helper, paid once, because the helper is shut down
+  and never probed again. The probe used to be a private `try_call`
+  because the public `exec.status` panicked; `status` now answers
+  `StatusUnresponsive` instead, so there is one probe and
+  `helper_ready` is the policy on its answer — only a helper that says
+  it is ready gets lent.
+- **No exchange on the clearance path may fault where a refusal is
+  owed.** The broker calls its checkout seam and dispatches to the
+  borrowed helper synchronously inside its own message handler, so a
+  pool that stopped, or a helper that died in the microseconds between
+  the borrow and the dispatch, was the broker's death rather than one
+  call's refusal — and a broker's death is every in-flight strand's
+  verdict, each settling as a synthetic zero-usage abort instead of an
+  error the model can route around. `checkout` answers
+  `PoolUnavailable`; `run`, `await_ready` and `heartbeat` answer
+  `HelperUnresponsive`; a dispatch refusal still settles in band as the
+  call's one `CallSettled`. `PoolUnavailable` is deliberately not
+  `AllBusy`: `congested` waits out a full pool and refuses an
+  unanswering one at once, because napping on a pool that says nothing
+  spends the caller's whole clearance budget to reach the same answer.
+  The cost of not crashing is a late `Ok(helper)` sent to a subject
+  nobody is selecting on, leaving that helper counted as lent — bounded
+  by the pool's size, requiring a pool that blocked past a whole window
+  and then recovered, and strictly better than a dead broker, which
+  strands the same helpers and loses everything else besides.
 - **The pool size is a resource budget, not a policy dial.** Every
   helper is an OS process running bwrap and a jail.
   `exec.pool_size_for` clamps the node's scheduler count to `[4, 16]`
@@ -201,6 +234,28 @@ protocol (spec Part 1.4). WP-G.
   reach. So the broker counts aborts per operation, a retry states the
   epoch it last saw, and a mismatch is `OperationAborted`. A first
   attempt carries no epoch and is judged on its own merits.
+- **That epoch table is never pruned, and the bound is measured rather
+  than mechanised** (issue #104). A missing key reads as epoch 0, which
+  is exactly what a waiter that started before any abort of its
+  operation holds — so dropping an entry does not fail closed, it
+  *admits* the retry the epoch exists to refuse, silently. (A waiter
+  that started after two aborts holds `Some(2)` and takes the opposite
+  spurious refusal, so pruning is unsafe in both directions at once.)
+  `release_slot` may delete a ledger with nothing outstanding because
+  absence and emptiness mean the same thing there; absence here means
+  "never aborted", which is the one thing a pruned entry is not. What
+  makes retention affordable is the growth law: one entry per operation
+  *ever aborted*, not one per abort — repeat aborts upsert the counter,
+  and code mode, the only production caller of `abort`, aborts the
+  strand's own operation on every teardown. At ~110 bytes an entry, in a
+  broker that lives exactly as long as one `loom-server` process serving
+  one session (its death is fatal to the server and nothing restarts
+  it), ten thousand such operations cost about a megabyte beside a
+  conversation store holding durable rows for every one of those turns.
+  The alternative was a retention window the broker would have to take
+  as configuration, whose too-short value is not a crash but a silent
+  hole in the confinement above. `broker.abort_epoch_count` is
+  `@internal` and exists so a test can pin that law.
 - **Unenforceable policy narrows, never widens.** The egress proxy sidecar
   does not exist, so `narrow_unenforceable` downgrades `NetworkProxy` to
   `NetworkOff` and reports it as an ordinary `Narrowing` before every

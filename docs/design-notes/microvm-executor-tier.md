@@ -51,7 +51,7 @@ already names remote pools among its intended carriers
 frames is a helper, whatever it is running on.
 
 **The channel is already a seam with two implementations.**
-`Transport` (`packages/broker/src/broker/exec.gleam:212`) has exactly two
+`Transport` (`packages/broker/src/broker/exec.gleam:221`) has exactly two
 variants: `PortTransport`, a real OS port onto a spawned helper, and
 `ChannelTransport`, an in-process fake the tests drive the same actor
 with. A vsock or virtio-serial transport is a third variant of a type
@@ -60,7 +60,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:1521`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:1585`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:1533`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:1542`). "One microVM per helper"
@@ -100,7 +100,7 @@ the failure model — are the parts that genuinely are a driver swap.
 This is the largest item, and the one that most directly threatens the
 sandbox package's central promise: *degraded means degraded, out loud*.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:800`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:816`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
@@ -112,7 +112,7 @@ shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
 (`packages/broker/src/broker/exec.gleam:845`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:861`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:918`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -139,7 +139,7 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:958`), and today
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:967`), and today
 that list is consulted for exactly one thing: whether it contains
 `"degraded"` (`degraded_features`,
 `packages/broker/src/broker/exec.gleam:770`). Issue #64 already proposes
@@ -155,7 +155,7 @@ strict. Doing this without a VM tier is a refactor; doing it with one is
 a prerequisite.
 
 There is a companion trap. `host_platform_for`
-(`packages/broker/src/broker/exec.gleam:1242`) answers `JailedHost` for
+(`packages/broker/src/broker/exec.gleam:1292`) answers `JailedHost` for
 `"linux"` and `UnjailedHost` for everything else, mirroring the helper's
 own `jail.PlatformFor` — which, as `packages/sandbox/CLAUDE.md` is
 careful to say, is "not a probe of the kernel but a fact about the
@@ -398,7 +398,7 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:1496`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:1531`), wired
 through `LOOM_HELPER_POOL` (`start_pool`,
 `packages/client/src/client/serve.gleam:894`), which means there are
 several cold slots to fill rather than one, and a wide first batch pays
@@ -415,7 +415,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:1242`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:1292`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

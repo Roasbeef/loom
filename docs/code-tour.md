@@ -734,7 +734,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:334`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:368`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:479` and `:519`):
@@ -778,7 +778,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1350`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1407`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
