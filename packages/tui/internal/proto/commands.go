@@ -47,12 +47,19 @@ type AbortBody struct {
 	Strand string `json:"strand"`
 }
 
-// ApproveBody approves a pending escalation. Grants must be a subset of
-// the escalation's wanted diff (partial approval narrows the
-// re-execution); absent means "everything that was wanted".
+// ApproveBody approves a pending escalation. Both Grants and Action are
+// required: they are the client's echo of what it actually put in front
+// of a human — the policy diff and the digest of the action that diff
+// would authorize — and the gateway refuses an approval whose echo does
+// not match the record it is about to commit (ErrStaleApproval), rather
+// than resolving "everything wanted" against a record that may have
+// moved since the prompt was drawn. Grants may still be a subset of the
+// wanted diff: an approval narrows, never widens. Action is the empty
+// string exactly when the record names no action.
 type ApproveBody struct {
 	EscalationID string  `json:"escalation_id"`
-	Grants       []Grant `json:"grants,omitempty"`
+	Grants       []Grant `json:"grants"`
+	Action       string  `json:"action"`
 }
 
 // DenyBody rejects a pending escalation; no re-execution will run.

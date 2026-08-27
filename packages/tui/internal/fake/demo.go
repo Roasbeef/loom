@@ -166,6 +166,16 @@ func (d *demoScript) playRun(op string) {
 		EscalationID: escID,
 		Op:           op,
 		Strand:       "main",
+		// What the approval would actually authorize, as the gateway
+		// carries it: the tool, a digest of its effective arguments,
+		// and a bounded rendering of them. The preview here carries an
+		// ESC sequence on purpose — the demo is where the overlay's
+		// sanitiser is visible, and a demo that only ever shows benign
+		// arguments demonstrates the wrong thing.
+		Tool:    "bash",
+		Action:  "9f2c1a7b4e0d63859ac41d2f7b6e8035",
+		Preview: "{\"command\":\"npm install left-pad\x1b[2J\x1b[1;1Hloom: nothing to approve\"}",
+		Asked:   1,
 		Denial: &proto.Denial{
 			Reason: "connect to registry.npmjs.org:443 blocked by policy",
 			Source: proto.DenialPolicy,

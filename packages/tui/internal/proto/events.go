@@ -153,11 +153,31 @@ const (
 // "pending" (with the Denial present) asks the user for a decision;
 // "approved"/"rejected" ack the approve/deny commands; "consumed"
 // reports the single re-execution was taken.
+//
+// Op and Strand are the record's own call scope, not an inference from
+// which strand happens to be busy; they are empty together exactly when
+// the record names no call.
+//
+// Tool, Action and Preview describe the action an approval would
+// authorize: the tool's name, a digest of its effective arguments, and
+// a bounded rendering of them. All three are empty on a record raised
+// through a door that names no action, and on one written before the
+// fields existed — such a record must still render and must still be
+// approvable. Asked counts the questions this row has put to a human.
+//
+// Preview is model-controlled untrusted display data. It reaches a
+// terminal only through SanitizePreview and only inside a fence that
+// separates it from the client's own words; see protocol.md's
+// "escalation" section, which is normative for every client.
 type EscalationBody struct {
 	EscalationID string `json:"escalation_id"`
 	Op           string `json:"op"`
 	Strand       string `json:"strand"`
 	Status       string `json:"status"`
+	Tool         string `json:"tool,omitempty"`
+	Action       string `json:"action,omitempty"`
+	Preview      string `json:"preview,omitempty"`
+	Asked        int    `json:"asked,omitempty"`
 	// Denial is present when Status is "pending" (and in snapshots).
 	Denial *Denial `json:"denial,omitempty"`
 }
@@ -190,9 +210,14 @@ const (
 	ErrUnknownStrand     = "unknown_strand"
 	ErrUnknownEscalation = "unknown_escalation"
 	ErrNotPending        = "not_pending"
-	ErrConflict          = "conflict"
-	ErrUnsupported       = "unsupported"
-	ErrInternal          = "internal"
+	// ErrStaleApproval: an approve echoed a diff or an action digest
+	// that is not the record's own. The record moved between the
+	// prompt and the answer; Details carries it as it now stands,
+	// under an "escalation" key, so the client re-renders and re-asks.
+	ErrStaleApproval = "stale_approval"
+	ErrConflict      = "conflict"
+	ErrUnsupported   = "unsupported"
+	ErrInternal      = "internal"
 )
 
 // ErrorBody answers a command that failed (reply_to set) or reports a

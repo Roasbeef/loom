@@ -356,6 +356,23 @@ func (c *conn) sendError(replyTo uint64, code, message string) {
 	c.send(proto.Event{V: proto.Version, ReplyTo: replyTo, Event: proto.EventError, Body: raw})
 }
 
+// sendStaleApproval refuses an approve whose echo does not match the
+// record, handing the record back under a "escalation" key so the
+// client can re-render its prompt from the refusal itself.
+func (c *conn) sendStaleApproval(replyTo uint64, record proto.EscalationBody) {
+	details, err := json.Marshal(map[string]any{"escalation": record})
+	if err != nil {
+		c.sendError(replyTo, proto.ErrInternal, err.Error())
+		return
+	}
+	raw, _ := json.Marshal(proto.ErrorBody{
+		Code:    proto.ErrStaleApproval,
+		Message: "the action this approval names is not the record's own",
+		Details: details,
+	})
+	c.send(proto.Event{V: proto.Version, ReplyTo: replyTo, Event: proto.EventError, Body: raw})
+}
+
 func (c *conn) sendReply(replyTo uint64, event string, body any) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -513,6 +530,20 @@ func (c *conn) applyCommandLocked(sess *Session, cmd proto.Command) bool {
 			c.sendError(cmd.ID, proto.ErrBadRequest, err.Error())
 			return false
 		}
+		if body.Grants == nil {
+			c.sendError(cmd.ID, proto.ErrBadRequest, "grants is required")
+			return false
+		}
+		// The echoed action must be the record's own. The fake holds
+		// one immutable record per id so nothing can move underneath a
+		// prompt here, but a client that fails to echo what it drew
+		// must fail against the fake exactly as it fails against the
+		// gateway — the fake is the substrate the TUI's own tests run
+		// on, and a lenient one would test fiction.
+		if st, ok := sess.escalations[body.EscalationID]; ok && st.body.Action != body.Action {
+			c.sendStaleApproval(cmd.ID, st.body)
+			return false
+		}
 		return c.decideEscalationLocked(sess, cmd.ID, body.EscalationID, proto.EscalationApproved)
 	case proto.CmdDeny:
 		var body proto.DenyBody
@@ -645,9 +676,8 @@ func (c *conn) decideEscalationLocked(sess *Session, replyTo uint64, id, status 
 	}
 	st.body.Status = status
 	st.body.Denial = nil
-	sess.broadcastLocked(proto.EventEscalation, proto.EscalationBody{
-		EscalationID: id, Op: st.body.Op, Strand: st.body.Strand, Status: status,
-	}, c, replyTo)
+	decided := st.body
+	sess.broadcastLocked(proto.EventEscalation, decided, c, replyTo)
 	return true
 }
 

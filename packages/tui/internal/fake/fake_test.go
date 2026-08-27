@@ -96,6 +96,7 @@ func TestEscalationLifecycle(t *testing.T) {
 
 	sess.RaiseEscalation(proto.EscalationBody{
 		EscalationID: "esc-1", Op: "op-1", Strand: "main",
+		Tool: "bash", Action: "act-1", Preview: `{"command":"true"}`, Asked: 1,
 		Denial: &proto.Denial{Reason: "no", Source: proto.DenialPolicy},
 	})
 	ev := w.read()
@@ -103,7 +104,35 @@ func TestEscalationLifecycle(t *testing.T) {
 		t.Fatalf("raise not broadcast with seq: %+v", ev)
 	}
 
-	id = w.send(proto.CmdApprove, proto.ApproveBody{EscalationID: "esc-1"})
+	// An echo that names a different action is refused, and the refusal
+	// hands the record back so a client can re-render its prompt.
+	id = w.send(proto.CmdApprove, proto.ApproveBody{
+		EscalationID: "esc-1", Grants: []proto.Grant{}, Action: "act-other",
+	})
+	stale := w.readReply(id)
+	if stale.Event != proto.EventError {
+		t.Fatalf("a stale echo answered with %s", stale.Event)
+	}
+	staleBody, err := stale.Error()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleBody.Code != proto.ErrStaleApproval {
+		t.Fatalf("a stale echo answered with code %s", staleBody.Code)
+	}
+	var details struct {
+		Escalation *proto.EscalationBody `json:"escalation"`
+	}
+	if err := json.Unmarshal(staleBody.Details, &details); err != nil {
+		t.Fatal(err)
+	}
+	if details.Escalation == nil || details.Escalation.Action != "act-1" {
+		t.Fatalf("the refusal did not hand back the record: %+v", details.Escalation)
+	}
+
+	id = w.send(proto.CmdApprove, proto.ApproveBody{
+		EscalationID: "esc-1", Grants: []proto.Grant{}, Action: "act-1",
+	})
 	reply := w.readReply(id)
 	if reply.Event != proto.EventEscalation {
 		t.Fatalf("approve answered with %s", reply.Event)
@@ -114,6 +143,9 @@ func TestEscalationLifecycle(t *testing.T) {
 	}
 	if body.Status != proto.EscalationApproved {
 		t.Fatalf("status %s", body.Status)
+	}
+	if body.Tool != "bash" || body.Action != "act-1" {
+		t.Fatalf("the decided record dropped its action: %+v", body)
 	}
 
 	// A second decision must refuse: not pending any more.

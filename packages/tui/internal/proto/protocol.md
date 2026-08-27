@@ -108,11 +108,23 @@ once, in seq order**.
 - `follow_up` `{strand, text}` — queue a turn to run after the live op
   settles.
 - `abort` `{strand}` — cancel the strand's live op.
-- `approve` `{escalation_id: string, grants?: [Grant]}` — `grants` must
-  be a subset of the denial's `wanted` (partial approval narrows the
-  re-execution); absent means everything wanted. Wider grants are
-  refused (`bad_request`); non-pending escalations refuse with
-  `not_pending`.
+- `approve` `{escalation_id: string, grants: [Grant], action: string}` —
+  both `grants` and `action` are **required**, and both are echoes of
+  what the client actually displayed: the policy diff it drew, and the
+  `action` digest it drew beside it. The server checks the pair against
+  the record it is about to commit and refuses a mismatch with
+  `stale_approval`, handing the record back rather than reconciling
+  (see below). `grants` may be a subset of the denial's `wanted` —
+  partial approval narrows the re-execution — and may never exceed it.
+  `action` is the empty string exactly when the record names no action.
+  Non-pending escalations refuse with `not_pending`.
+
+  An earlier revision made `grants` optional, absent meaning "everything
+  this record wants", resolved when the commit ran. A pending record's
+  denial is refreshed by whichever call currently holds the claim, so
+  that resolved a diff the human never read; requiring the echo is what
+  makes consent a statement about a specific widening of a specific
+  action rather than about a record id.
 - `deny` `{escalation_id}`
 - `fork` `{strand, scope: "branch"|"tree", name?}` — the new strand
   appears in the `strands` snapshot reply.
@@ -198,7 +210,64 @@ cacheWrite, total}`). Clients accumulate onto the snapshot baseline.
 ### `escalation`
 
 `{escalation_id, op, strand, status:
-"pending"|"approved"|"rejected"|"consumed", denial?}`
+"pending"|"approved"|"rejected"|"consumed", tool?, action?, preview?,
+asked?, denial?}`
+
+`op` and `strand` are the record's own call scope — the operation and
+strand the denial was raised for. They are empty together exactly when
+the record names no call (an escalation raised out of band); they are
+never inferred from which strand happens to be busy.
+
+`tool`, `action` and `preview` describe the **action** an approval would
+authorize, as opposed to the policy diff it would authorize it under:
+the tool's name, a stable digest of the call's effective arguments, and
+a bounded rendering of those arguments. `asked` counts the questions the
+record has put to a human — one for the raise that opened it, one more
+for each re-opening.
+
+All four are additive within v1 and each is omitted when it says
+nothing, so a record raised through a door that names no action is
+byte-identical to one written before the fields existed. A reader treats
+an absent `tool`/`action`/`preview` as the empty string and an absent
+`asked` as `0`; such a record must still render and must still be
+approvable, with `action: ""` as its echo. A field that is *present* and
+of the wrong type is a malformed body, not an absent one.
+
+`action` is compared for equality and never interpreted. `preview` is
+bounded (2 KB in this harness) and carries the harness's own truncation
+marker — `… [2,048 of 41,203 bytes]` — when the arguments did not fit.
+
+#### Rendering the preview (normative for every client)
+
+`preview` is **model-controlled untrusted display data**, shown inside
+the one prompt whose purpose is to be answered truthfully. A client that
+prints it raw has handed the model a forgery primitive: a `bash` command
+line carrying ANSI sequences can clear the screen, address the cursor
+over the client's own words, and repaint a different question above the
+approve/deny it is about to be answered with. This section binds any
+client, not only the reference TUI; the protocol can state the rule but
+cannot enforce it, which is the point of stating it here.
+
+1. **Neutralise, do not strip.** Escape every C0 control (`U+0000`–
+   `U+001F`, ESC above all), `U+007F`, every C1 control (`U+0080`–
+   `U+009F`), and the bidirectional formatting characters (`U+200E`,
+   `U+200F`, `U+202A`–`U+202E`, `U+2066`–`U+2069`) into a visible form.
+   Dropping a byte hides that it was there; `npm install left-pad` and
+   `npm install\b\b\b\b evil` must not print identically. Invalid
+   UTF-8 becomes `U+FFFD`.
+2. **Fence it.** The preview is rendered in a block visually separated
+   from the client's own words, so nothing inside it can be read as
+   chrome.
+3. **Bound it on screen.** An unbounded block of model-authored text can
+   push the wanted lines and the decision keys out of the viewport,
+   which forges a prompt as effectively as a cursor move does.
+4. **Always name the tool, and always say the preview is a window.**
+   Print `tool` even when it is empty — "this record names no tool" is
+   something the person deciding needs to know, and a silently missing
+   line reads as an ordinary prompt. Render the truncation marker when
+   the preview carries one, and state the size the client holds
+   regardless: the approval binds the whole action through `action`,
+   while the screen shows at most a 2 KB window of it.
 
 `denial` is present when `status` is `"pending"` (and in snapshots):
 `{reason: string, source: "policy"|"execution", enforcement?:
@@ -220,6 +289,23 @@ Grant (mirrors `broker/policy.Grant`), discriminated by `type`:
 Grants echo back byte-comparable on `approve`; the gateway matches them
 structurally against `wanted`.
 
+**A refused `approve`.** When the echoed `grants` or `action` are not
+the record's own, the reply is `error` with code `stale_approval`, and
+its `details` carry the record as the server now holds it:
+
+```json
+{"escalation": {"escalation_id": "esc-1", "op": "op-1", "strand": "main",
+                "status": "pending", "tool": "bash", "action": "...",
+                "preview": "...", "asked": 2, "denial": {...}}}
+```
+
+The body under `escalation` is exactly an `escalation` event body. The
+command had no effect — the record is untouched and still pending — and
+a client re-renders its prompt from these details and asks again. The
+check and the commit are made against one read of the record, at the
+register seq that read saw, so a claim landing in between loses the
+commit rather than passing unseen.
+
 ### `strand_result`
 
 `{strand, op, status: "done"|"aborted"|"failed", error?: {code,
@@ -230,8 +316,8 @@ message}}` — the strand's operation settled terminally.
 `{code, message, details?}` — with `reply_to`: the command failed; the
 command had no effect. Without `reply_to`: a connection-scoped fault.
 Defined codes: `bad_request`, `unknown_session`, `unknown_strand`,
-`unknown_escalation`, `not_pending`, `conflict`, `unsupported`,
-`internal`. Open set; clients display unknown codes.
+`unknown_escalation`, `not_pending`, `stale_approval`, `conflict`,
+`unsupported`, `internal`. Open set; clients display unknown codes.
 
 ## Open questions for the gateway
 
