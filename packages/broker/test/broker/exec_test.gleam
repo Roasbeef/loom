@@ -331,6 +331,21 @@ fn process_settle(helper: exec.Helper) -> Result(Nil, Nil) {
   }
 }
 
+// The default ceiling is derived, not guessed: a scheduler count
+// clamped into a range that is meaningful on a one-core CI box and
+// still bounded on a build server.
+pub fn default_pool_size_is_clamped_scheduler_count_test() {
+  assert exec.pool_size_for(schedulers: 1) == exec.min_pool_size
+  assert exec.pool_size_for(schedulers: 3) == exec.min_pool_size
+  assert exec.pool_size_for(schedulers: 8) == 8
+  assert exec.pool_size_for(schedulers: 96) == exec.max_pool_size
+  // Whatever this node reports, the derivation still lands in range —
+  // and never on the literal `2` the server used to hardcode.
+  let live = exec.default_pool_size()
+  assert live >= exec.min_pool_size
+  assert live <= exec.max_pool_size
+}
+
 pub fn pool_spawn_failure_surfaces_test() {
   let assert Ok(pool) =
     exec.start_pool(size: 1, spawn: fn() { Error(exec.PortOpenFailed) })

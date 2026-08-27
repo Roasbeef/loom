@@ -19,7 +19,8 @@
     write_private_file/3,
     delete_file/1,
     port_event/1,
-    os_name/0
+    os_name/0,
+    schedulers_online/0
 ]).
 
 %% crypto:strong_rand_bytes/1 — a cryptographically strong entropy
@@ -125,6 +126,14 @@ delete_file(Path) ->
 os_name() ->
     {_Family, Name} = os:type(),
     atom_to_binary(Name, utf8).
+
+%% erlang:system_info(schedulers_online) — how many schedulers this node
+%% is actually running on, which is the closest the BEAM comes to
+%% "how big is this machine". Used only to size the helper pool's
+%% default ceiling; the clamping that turns it into a pool size is a
+%% decision and stays in Gleam.
+schedulers_online() ->
+    erlang:system_info(schedulers_online).
 
 %% Normalizes a raw port message (received via a record selector on the
 %% port) into the broker/internal/ffi_port.PortEvent shape. Pure term

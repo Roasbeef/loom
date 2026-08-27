@@ -13,3 +13,13 @@
 /// is fixed for the life of the node.
 @external(erlang, "broker_ffi", "os_name")
 pub fn os_name() -> String
+
+/// How many schedulers this node is running on — the closest the BEAM
+/// comes to "how big is this machine", and the only signal the helper
+/// pool has for sizing its default ceiling.
+///
+/// Uses `erlang:system_info(schedulers_online)`; a runtime-system fact
+/// with no pure answer. Turning it into a pool size is a decision, and
+/// lives in `broker/exec.pool_size_for`.
+@external(erlang, "broker_ffi", "schedulers_online")
+pub fn schedulers_online() -> Int
