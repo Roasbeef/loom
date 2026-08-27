@@ -132,6 +132,65 @@ router being real, which is why #16 gates it.
 
 ---
 
+## Reading the issue tracker
+
+Every open issue carries exactly one `phase:` label. **`phase:debt` is the
+largest bucket and that is correct** — it means found work with no phase
+gate, picked up in a debt wave between phases, and most of this tracker is
+review-wave findings rather than planned milestone work. Do not read a
+thin `phase:3` as a light phase; read it as an honest one.
+
+*(Housekeeping: `phase:debt` was created implicitly by first use, so it has
+GitHub's default grey and no description. Someone with web access should set
+them.)*
+
+### The dependency edges that matter
+
+- **#99 is the root of the phase-1 subtree.** A check that has never
+  completed cannot be made required (#1), and CI is the only environment
+  likely to have a Landlock-capable kernel (#62).
+- **#16's thirteen names are not equally blocked.** `#105` blocks only the
+  `fs.write`/`fs.edit` arms; `#25` blocks the four `lsp.*` names; the egress
+  proxy blocks `net.request`. **Nine of the thirteen are unblocked today.**
+- **#16 blocks #30**, and therefore the whole phase-4 ladder — a skill that
+  can only call `proc.run` is not a capability. This is the phase-3 → phase-4
+  seam.
+- **#30 → #31 → #32 → #33** in order, and #32 does not close until #33 does.
+  **#100's classification work belongs before or during #32**, not after: it
+  exists to shape the hook vocabulary while #32 is designing it.
+- **#80 blocks #81** — the full-argument pager must render through #80's
+  sanitiser, or a 40 KB model-controlled blob pages straight into a terminal.
+- **#73's rule-A fix gates #74's census** — the fixes are independent, the
+  measurement is not.
+- **#89 is a soft prerequisite for #30**: L1 re-vets from source on every
+  invocation, so a stored skill using a dialect the vetter misparses can
+  never be invoked.
+
+Decide-together pairs: **#77 + #82** (same single-latched door, spend site
+and raise site). **#66 + #79** (bounding retries trades capability for
+security with nowhere for capability to go until the session-widening valve
+exists). **#58 + #69** (same harness; #69 is a live candidate cause for the
+shape #58 presents as).
+
+### Known-stale filings — re-scope before picking up
+
+- **#42's scope shrank** when #35 landed; it may now be a few log calls
+  rather than an events-plane addition.
+- **#91 item 1 overlaps #16**: both cover `report.emit` being unrouted, on
+  the orchestration and workspace seams. Service both seams in one change or
+  each issue half-fixes it.
+- **#73's baseline numbers are already moving.** Re-measure; do not trust
+  the header.
+- **#98 is a research record whose question is settled**, carried forward
+  into #100. It will sit in the phase-4 bucket looking like a task.
+
+**A general warning, learned twice this week.** An issue's own severity note
+can be stale in either direction. #68 was filed as "benign today, fix it when
+#65 lands"; #65 landed, and a plausible reading said #68 had therefore become
+live and urgent. The code said otherwise — it had been fixed inside #65 and
+never closed, with a test named for it. **Read the code before acting on a
+filing's self-assessment, including when the filing sounds alarming.**
+
 ## Standing decisions — do not re-litigate
 
 - **The ledger keys on `{op_id, step_id}`; paths key on
