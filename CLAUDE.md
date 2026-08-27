@@ -4,6 +4,18 @@ Loom is a BEAM-native coding agent harness written in Gleam. Sessions are
 supervision trees over a durable, write-once conversation store; all effects
 flow through a capability-checked broker into kernel-enforced sandboxes.
 
+## Start here
+
+**`docs/next.md`** is the handoff: where the tree actually is, what to work
+on next, the design rulings already made, and what is deliberately left
+open. Read it before planning anything, and rewrite it when you finish a
+body of work — it is worth more than any status comment.
+
+**`docs/execution.md`** is how work gets done here: planning a wave,
+briefing and monitoring sub-agents, the verification standard, and the
+hazards that have already cost real time. Read it before dispatching a
+sub-agent or trusting a green gate.
+
 ## Required reading
 
 Before writing any code, read these in order:
@@ -29,9 +41,9 @@ Before writing any code, read these in order:
 - Gleam >= 1.11, Erlang/OTP >= 27. All code passes `gleam format --check`
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
-  `protocol-change/NNN.md` proposal, never silent drift. There are seven;
-  `001` and `006` are the format precedent — the problem, what was
-  considered, the decision, and what it costs.
+  `protocol-change/NNN.md` proposal, never silent drift. There are seven
+  (`protocol-change/001`–`007`); `001` and `006` are the format precedent —
+  the problem, what was considered, the decision, and what it costs.
 - Pure packages (`core`, `machine`, `prompt`) perform no I/O. Every
   durability/wire boundary uses total decoders.
 - `core`, `machine` and `prompt` additionally hold no `@external` — of any
@@ -64,6 +76,18 @@ sandbox enforcement layers the current kernel actually provides, `make
 e2e` for the jailed end-to-end against a freshly built helper, and `make
 e2e-codemode` for the code-mode pipeline against a real toolchain and a
 real satellite (`make codemode-seed` prepares the offline cache it needs).
+`make release` builds the self-contained server, `make release-smoke` boots
+it with no `erl` on `PATH` and proves code mode registers from the bundled
+toolchain, and `make dist` packages both plus the TUI —
+`docs/distribution.md` says what a release carries and why.
+
+**Verify a gate by its own exit code.** Backgrounding
+`make check > log; echo $?; tail log` reports `tail`'s status, not `make`'s,
+and has twice produced a confident false "green" here. Capture `make`'s
+status directly and then read the log for failures. To check a commit
+independently of uncommitted work, add a git worktree — but **not under
+`/tmp`**, where code mode correctly refuses a cap socket because the jail
+replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
 runs at the end of `make check`. Nine rules: R0 unparseable source, R1
@@ -96,6 +120,51 @@ named for the work itself — `storage/branch-index-repair`,
 `fix/hashline-replay`, `wp-j/vetting-lint` — never for the tool or agent
 that produced it. One work package or one fix per branch; merge to `main`
 once its exit criteria pass.
+
+## Where decisions live
+
+A decision is only settled once it is written where the next reader will
+look for it. Five places, and they are not interchangeable:
+
+- **`docs/adr/NNN-*.md`** — architecture decisions with consequences that
+  outlive one change: the SQLite binding, msgpack, budget pooling
+  granularity. An ADR is amended by an **addendum inside it**, never by a
+  silent edit; ADR-005's addendum on batch-versus-execution identity is the
+  precedent.
+- **`protocol-change/NNN.md`** — the only way to change an interface frozen
+  in spec Part 1. Never silent drift. `001` and `006` are the format.
+- **`docs/issue-plan.md`** — the plan of record behind the GitHub issues,
+  including what each phase means and what gates what. Issues carry
+  `phase:N` labels; `phase:debt` means found work with no phase gate.
+- **The issue itself** — when measurement contradicts an issue's diagnosis,
+  the correction goes *on the issue* as a comment. This happens often here
+  (see `docs/execution.md` §6) and the next reader will find the filing
+  before they find the commit.
+- **The code** — a rule that can be checked belongs in `make lint`,
+  `make doc-check` or a test, not in prose. Prose that a gate could enforce
+  will drift; a gate will not.
+
+Design intent lives in `docs/loom-design.md`, mechanics in
+`docs/loom-implementation-spec.md`. **Where they conflict, the spec wins on
+mechanics and the design doc on intent.** Where either conflicts with the
+code, measure before believing the doc — the doc has usually been the stale
+one.
+
+## The documentation map
+
+- **Orientation** — `README.md`, `docs/code-tour.md` (a guided read of the
+  tree), `docs/notebook.md`.
+- **Design and spec** — `docs/loom-design.md`,
+  `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
+- **Architecture, per plane and subsystem** — `docs/architecture/`:
+  `durability`, `orchestration`, `effects`, `code-mode`, `messaging`,
+  `compaction`, `events`, `client`, `models`, `simulation`.
+- **Decisions** — `docs/adr/`, `protocol-change/`.
+- **Design notes** (explorations, not commitments) — `docs/design-notes/`.
+- **Review waves** — `docs/review/`, one file per wave with its triage.
+- **Operations** — `docs/distribution.md` (what a release carries and why),
+  `docs/execution.md` (how work gets done), `docs/next.md` (what to do next).
+- **Style** — `docs/gleam-style.md`.
 
 ## Per-package docs
 
