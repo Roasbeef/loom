@@ -2,7 +2,10 @@
 //// the driver genuinely overlaps tool effects. Each scripted tool blocks
 //// until the *other* tool's execution has started — a batch that
 //// deadlocks under sequential dispatch by construction — and the run
-//// completes only because both effects run concurrently.
+//// completes only because both effects run concurrently. One test runs
+//// the same batch under `api.default_options` with nothing overridden,
+//// which is what pins `Parallel` as the *shipped* default rather than
+//// merely a reachable one.
 
 import core/clock
 import gleam/erlang/process
@@ -177,6 +180,71 @@ pub fn exclusive_tool_serializes_a_parallel_batch_test() {
       "assistant:tool_use:mixed batch|call(c1)read|call(c2)bash|call(c3)probe",
       "tool:read:c1:ok:out:read", "tool:bash:c2:ok:out:bash",
       "tool:probe:c3:ok:out:probe", "assistant:stop:all done",
+    ]
+  harness.assert_placement_invariants(sess)
+  process.kill(rt.tree.supervisor)
+}
+
+/// The same deadlocks-under-sequential-dispatch batch, run under
+/// `api.default_options` with nothing overridden. It completes, which is
+/// the only way the shipped default can be `Parallel` — an assertion
+/// about the setting's *value* would pass just as well if nothing read
+/// it, and this batch cannot finish unless something does.
+pub fn the_shipped_default_overlaps_tool_effects_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [#("read", ReplaySafe), #("probe", ReplaySafe)],
+      fn(spec) {
+        case fake.turn(spec) {
+          0 ->
+            fake.Reply(fake.tool_use(
+              "fanning out",
+              [#("c1", "read"), #("c2", "probe")],
+              4,
+            ))
+          _ -> fake.Reply(fake.answer("both done", 5))
+        }
+      },
+      fn(tool_run) {
+        let sibling = case tool_run.call.name {
+          "read" -> "tool:probe:c2"
+          _ -> "tool:read:c1"
+        }
+        wait_for(fn() { recorder.read(rec, sibling) >= 1 }, 5000)
+        fake.ToolReply(
+          text: "out:" <> tool_run.call.name,
+          is_error: False,
+          terminate: False,
+        )
+      },
+    )
+  let base = api.default_options(harness.configuration())
+  // Everything but `settings`: the defaults are what is under test.
+  let options =
+    api.Options(
+      ..base,
+      poll_interval_ms: 50,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("fan out")])
+    as "the prompt must be accepted"
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 15_000)
+    as "the default batch must complete, which only parallel dispatch allows"
+  harness.assert_completed(last)
+  assert harness.final_projection(sess)
+    == [
+      "user:fan out",
+      "assistant:tool_use:fanning out|call(c1)read|call(c2)probe",
+      "tool:read:c1:ok:out:read", "tool:probe:c2:ok:out:probe",
+      "assistant:stop:both done",
     ]
   harness.assert_placement_invariants(sess)
   process.kill(rt.tree.supervisor)

@@ -56,8 +56,8 @@ import machine/codec
 import machine/operation.{
   type LastResult, type NormalizedRetryPolicy, type Operation,
   type OperationState, type RunSettings, type StructuralPreparation,
-  CompactionSettings, ConsumeAll, NormalizedRetryPolicy, PendingMessage,
-  RunSettings, Sequential,
+  CompactionSettings, ConsumeAll, NormalizedRetryPolicy, Parallel,
+  PendingMessage, RunSettings,
 }
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
@@ -122,9 +122,20 @@ pub type Options {
   )
 }
 
-/// Sensible defaults: strand `"main"`, sequential tools, consume-all
+/// Sensible defaults: strand `"main"`, parallel tools, consume-all
 /// queues, compaction off, three attempts with a 100 ms base backoff, a
 /// 200 ms checkpoint poll, and a conservative restart tolerance.
+///
+/// `tool_execution: Parallel` is the default because a batch the model
+/// issued as one batch is a batch it expects to run as one: under
+/// `Sequential` a fan-out of five reads is five round trips through the
+/// jail, in source order, for no correctness the parallel path does not
+/// already provide. Overlap is still gated twice below this setting —
+/// an `Exclusive` tool runs alone (`runtime/strand_runtime.tool_may_start`)
+/// and the broker pools one budget ledger per `{op_id, step_id}` — and
+/// tree materialization stays source-ordered whatever order effects
+/// settle in. A host that wants the old behaviour sets `Sequential`
+/// here, or the session sets the `tool_execution` config key.
 ///
 /// ## Examples
 ///
@@ -144,7 +155,7 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
       ),
       steering_mode: ConsumeAll,
       follow_up_mode: ConsumeAll,
-      tool_execution: Sequential,
+      tool_execution: Parallel,
     ),
     retry_policy: NormalizedRetryPolicy(max_attempts: 3, base_delay_ms: 100),
     stream_options: json.Object([]),
