@@ -27,6 +27,10 @@ protocol (spec Part 1.4). WP-G.
 - `broker/exec.{default_pool_size, pool_size_for, min_pool_size,
   max_pool_size}` — the default helper-pool ceiling and the pure
   derivation behind it (schedulers online, clamped).
+- `broker/internal/call.{try_call, CallFault}` — `process.call` without
+  the panic: `NoReply` on a timeout, `CalleeGone` on a dead or ownerless
+  callee. Used where the caller is holding a verdict it must deliver —
+  the congestion loop and the pool's readiness probe — and nowhere else.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
@@ -143,6 +147,27 @@ protocol (spec Part 1.4). WP-G.
   executions ending, which their wall deadlines guarantee. `AllBusy(size:
   0)` is not congestion and never waits: a pool that lends nothing has
   nothing to check back in.
+- **Every waiter leaves within its own budget *and with a verdict*.**
+  The second half is not free. The loop reserves `min_retry_window_ms`
+  of the caller's budget for its last attempt rather than issuing
+  exchanges with a nap's worth of window left, because the broker is
+  serial and a clearance it grants blocks it for a relay handshake, a
+  helper handshake and a checkout seam. And the exchange is
+  `internal/call.try_call`, not `process.call`: the latter panics on a
+  timeout and on a dead callee, and the caller is a strand effect
+  process whose death becomes a synthetic zero-usage abort in place of
+  the in-band refusal the model can act on. A broker slower than the
+  caller's whole budget, or one stopped underneath a parked waiter,
+  answers `BrokerUnavailable`.
+- **A helper the pool cannot get an answer out of is retired, not
+  fatal.** `helper_ready` probes an idle helper before lending it, from
+  inside the pool actor — so a probe that faulted on a timeout would take
+  the pool down, and the broker with it, since the broker borrows through
+  a call of its own. The probe is `try_call` for that reason, which is
+  also what makes the cost accounting true: one timeout per wedged
+  helper, paid once, because the helper is shut down and never probed
+  again. The public `exec.status` keeps `process.call`'s panicking
+  contract and is not what the pool uses.
 - **The pool size is a resource budget, not a policy dial.** Every
   helper is an OS process running bwrap and a jail.
   `exec.pool_size_for` clamps the node's scheduler count to `[4, 16]`

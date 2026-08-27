@@ -207,7 +207,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:271`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:282`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:270`), and its shape is the shape of every admission
 in the system.
@@ -734,7 +734,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:328`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:334`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:479` and `:519`):
@@ -778,7 +778,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1344`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1350`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1140,7 +1140,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:679`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:690`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1151,7 +1151,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:900`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:911`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
@@ -1283,7 +1283,7 @@ renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1333`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1368`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:494`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

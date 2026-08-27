@@ -119,6 +119,19 @@ borrower — a code-mode satellite holding one helper while its capability
 calls ask for another — degrades into the refusal it always got instead
 of into a stall.
 
+**Every waiter leaves with a verdict**, which is a second property and
+takes its own machinery. The loop reserves a window it believes the
+broker could answer in and stops rather than issuing an exchange with a
+few milliseconds left, because the broker is serial and a clearance it
+grants blocks it for a relay handshake, a helper handshake and a
+checkout. And the exchange itself answers instead of crashing: an
+ordinary `process.call` faults its caller on a timeout and on a dead
+callee, and the caller here is a strand effect process holding the very
+refusal the model was meant to read. What no floor covers — a broker
+slower than the caller's whole budget, or one stopped underneath a
+parked waiter — comes back as `BrokerUnavailable` rather than faulting
+the strand.
+
 Each dispatched call gets a **relay** process owning the execution's
 event subject: it forwards output, enforces the wall deadline, and
 reports settlement back to the broker. Past the deadline it cancels and

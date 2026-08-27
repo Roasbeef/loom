@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1472`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1483`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.
@@ -343,7 +343,7 @@ exotic favor" into "consume the standard delegation contract".
 
 **The new finding, which raises the stakes:** the gap is *silent at the
 strict tier*. `FullEnforcement`'s contract
-(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:64`) is that
+(`EnforcementDemand`, `packages/broker/src/broker/exec.gleam:70`) is that
 any layer the policy called for and the helper did not apply refuses the
 result — the settle path keys on `skip:` entries
 (`packages/broker/src/broker/exec.gleam:762`). But when no cgroup
