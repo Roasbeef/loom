@@ -601,7 +601,7 @@ and rewriting their acceptance would erase what was actually accepted.
 
 1. **Remote executor pools** — the framing protocol over SSH tunnel/mTLS; pool registration, health, affinity (route by workspace); policy translation for remote roots. *(Design §5.6; mostly WP-G/H work.)*
 2. **Windows sandbox** — WP-H phase 3: restricted tokens, ACLs, firewall, job objects; port the regression suite.
-3. **MicroVM tier** — Firecracker driver for ExecPool; same policy language; snapshot-boot for warm pools.
+3. **MicroVM tier** — Firecracker driver for ExecPool; same policy language; snapshot-boot for warm pools. *(`docs/design-notes/microvm-executor-tier.md` tests "same policy language, different driver" against the tree: the transport half holds, the enforcement-report half does not, and four things block a driver that reports honestly.)*
 4. **Control-plane clustering** — libcluster + `inet_tls_dist`; session routing by id; `pg` event fan-out across nodes; lease semantics unchanged (one node owns a session file). *(Absorbs spec-gaps M3 messaging 2: cross-node broadcast fan-out. The bus is read-side only today — no strand-facing broadcast-send exists.)*
 5. **Record/replay evals** — instrumented gateway/broker record settlements keyed by intent; replay mode simulates providers/tools from a recorded session; drift report. Unlocks regression evals for prompts, models, and machine changes.
 6. **pi format-4 import** — full Appendix-B-style normalization (id re-minting, aggregate usage adjustment row, unconfigured-main seeding). *(Absorbs spec-gaps WP-A 3 — somewhere to put pi's optional `details` payloads — and WP-B/T 6, the JSONL import shim WP-B's scope names.)*
