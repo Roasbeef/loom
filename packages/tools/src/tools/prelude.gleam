@@ -33,11 +33,11 @@
 ////   449f69c2ca5b09c6c2f5d12cb86ae4bc7c1e90e9ead2c6fe8aaaebbb6be9e14f  packages/cap/src/cap/proc.gleam
 ////   fbd196f1cab01e6ace75d87514d13376a1fb6f7726c103d43c6e15b40adad626  packages/cap/src/cap/report.gleam
 ////   3c6837128a8a17020070e7143ebbe27e38278c84e0d74b50c4fa91eeafa243ae  packages/cap/src/cap/runtime.gleam
-////   12b4ad8b0de73dc467c84cf2e0854fa434ce3041fbb2bc5bf21702a7989807a5  packages/cap/src/cap/strand.gleam
+////   48dafdb572b23f5a560c142dc2b58a441f00766870e01b08e55b4bafee3e0b58  packages/cap/src/cap/strand.gleam
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 0162eec5f7335bd0331a0ec328f1e79e2d1325a79f62f1735c945996baf5ecd0
+//// Body digest (every line after the marker): daaf7e5c05335ebce49a6dc0dd2d4b586a94dc80c30ce6f0f47ba516c51269cb
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -618,9 +618,16 @@ pub type StrandError {
   /// demanded of it.
   ResultSchemaUnmet(message: String)
   /// This execution has admitted as many spawns as it may. The seam's own
-  /// ceiling, and the only refusal here that is not the tools'; see the
-  /// module doc for why a loop needs one where a turn did not.
+  /// ceiling; see the module doc for why a loop needs one where a turn
+  /// did not.
   SpawnCeilingReached(message: String)
+  /// This execution has admitted as many calls of some *other* capped
+  /// capability — `send`, `note` or `notes` — as it may. One variant for
+  /// the three because the answer to all three is the same, stop looping,
+  /// and the message names which capability, what the number was, and
+  /// that the bound is for the execution's whole lifetime. Retrying, or
+  /// waiting first, will not free one.
+  AdmissionCeilingReached(message: String)
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
   /// The capability channel could not carry the call.
