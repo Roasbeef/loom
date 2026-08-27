@@ -119,8 +119,10 @@ protocol (spec Part 1.4). WP-G.
   chunking.
 - **Budget is pooled per execution, not per call — a decision, not a
   default.** A token is valid for exactly one `{op_id, step_id}`, so that
-  pair *is* the execution identity and the broker holds one
-  `budget.Ledger` per live pair. The first clearance opens the ledger;
+  pair is the *batch* identity the broker pools on, and it holds one
+  `budget.Ledger` per live pair. The execution identity is
+  `{op_id, step_id, source_index}` — two programs in one batch share the
+  ledger and take separate paths, deliberately (ADR-005's addendum). The first clearance opens the ledger;
   later clearances reserve against the stored budget, which their own
   budget field cannot widen. This closes the amplification hole: 10,000
   polite parallel reads share one `max_outstanding` cap and one aggregate

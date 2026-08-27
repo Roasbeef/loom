@@ -40,7 +40,10 @@ thing to hand a model than one that cannot.
   `notes` and `roster` are the six calls, serviced by the same
   `client/agency` closures the `agent_*` tools call. Every `StrandError`
   variant but the last two is one of the harness's own refusal names
-  carrying the harness's own sentence.
+  carrying the harness's own sentence — except the two ceilings, which are
+  the seam's own: `SpawnCeilingReached` and `AdmissionCeilingReached`, the
+  second covering `send`, `note` and `notes` alike because a program at
+  any of them does the same thing and the message names which.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry
@@ -160,9 +163,19 @@ thing to hand a model than one that cannot.
   a single list, which made admitting a mailbox's worth of messages cost
   the square of the bound; the fix removed the factor rather than moving
   it, the same lesson `08cdbce` drew from `core/json`'s excerpt.
+- **Four of the six calls carry a lifetime admission ceiling, and the
+  numbers hold together.** `spawn` 32, `send` 128, `note` 256, `notes`
+  64; `wait` and `roster` none, because a wait's cost is time and a
+  roster's size is `session_strands`. The test a call has to meet is that
+  it *mints something outliving the execution*. **`note` and `notes` are
+  one decision**: a note/notes loop is quadratic in harness work and the
+  quadratic needs both factors unbounded, so relaxing either alone puts
+  it back. The ceilings are the host's (`codemode/satellite.CapCeiling`);
+  this side only names what comes back.
 - **A refusal keeps the harness's name, or arrives as itself.**
   `cap/strand.map_error` turns a broker code back into the variant of the
-  same name, and the codes are `codemode/orchestration.refusal_code`'s.
+  same name, and the codes are `codemode/orchestration.refusal_code`'s
+  plus the two ceiling codes.
   The two packages share no dependency — they are the ends of one wire,
   not peers — so each side pins its own half and the orchestration sample
   crosses the whole of it for real. A code neither side has learned yet

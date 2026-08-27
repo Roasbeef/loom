@@ -148,8 +148,8 @@ over one session file. WP-L.
   vetting_seam}` — which code-mode seams this host serves.
   `Surface` is `Workspace`, `Orchestration(agency, spawn_ceiling)` or
   `Both(...)`: one field, because the vetting allowlist, the capability
-  router and the spawn ceiling have to agree and a host that could set
-  them apart would eventually set them apart. `Seams`
+  router and the admission ceilings have to agree and a host that could
+  set them apart would eventually set them apart. `Seams`
   (`WorkspaceOnly` / `OrchestrationOnly` / `BothSeams`) is the same
   choice as a *setting* — what a flag can carry before there is an
   `Agency` to serve the orchestration seam with — and `serving` turns
@@ -515,8 +515,8 @@ over one session file. WP-L.
   different places on purpose. The allowlist follows the *submission*
   (`exec_config` takes its vetting policy from `Request.seam`), so a
   refusal the model reads is about the surface it asked for. The router
-  and the spawn ceiling follow the *surface*, so a host serving one seam
-  hands out that seam's router whatever a request names and no
+  and the admission ceilings follow the *surface*, so a host serving one
+  seam hands out that seam's router whatever a request names and no
   submission can widen what the operator wired. A request naming a seam
   the surface does not serve is refused by the tool shell before
   `execute` is called and again by `execute` itself — `StartFailed`,
@@ -556,7 +556,7 @@ over one session file. WP-L.
 - **A code-mode execution runs under the calling strand's own
   `{op_id, step_id}`.** The hermetic build, the jailed `erl`, and every
   capability call the running program makes are dispatched under that one
-  pair, which *is* the execution identity the broker pools budget under —
+  pair, which is the *batch* identity the broker pools budget on —
   so the compile and the run share one ledger and one wall deadline
   rather than minting a second budget, and `broker.abort` on the
   operation reaches the build and the node alike. The pooled
@@ -579,15 +579,24 @@ over one session file. WP-L.
   other dimension untouched; it is one small named function so it stays
   auditable rather than diffusing into the wiring.
 - **An execution's files live in their own directory inside the
-  workspace,** named for `{op_id, step_id}` and removed when the
-  execution settles. Inside the workspace, so the session base already
+  workspace,** named for `{op_id, step_id, source_index}` and removed
+  when the execution settles. Inside the workspace, so the session base already
   makes it writable and nothing has to be widened to build there; unique
-  per execution, so two strands running code mode at once cannot share a
-  build root. The directory's name is a short digest of that pair rather
-  than the pair itself, because the cap socket sits inside it and an
-  AF_UNIX path is capped near 108 bytes — a socket that would exceed the
-  limit is refused in band, naming the workspace, instead of failing as an
-  opaque `einval` from `listen`.
+  per execution, so neither two strands running code mode at once nor two
+  `code_mode` calls in one batch can share a build root. The third field
+  is what makes the second true: `code_mode` is `tool.Exclusive`, which
+  forbids a concurrent *start* and nothing more, so one batch may hold two
+  `code_mode` calls that run back to back under one operation and one
+  step. Keyed on the pair they would build in one directory, bind one cap
+  socket and write one token file — and the launcher's janitor runs
+  teardown asynchronously after the host dies, on ordinary exits too, so
+  the first execution's cleanup could unlink the second's live socket and
+  token, while `prepare_root`'s recursive delete races the same janitor
+  the other way (issue #87). The name is a short digest of that triple
+  rather than the triple itself, because the cap socket sits inside it and
+  an AF_UNIX path is capped near 108 bytes — a socket that would exceed
+  the limit is refused in band, naming the workspace, instead of failing
+  as an opaque `einval` from `listen`.
 - **Registration is gated on the seam, for both families.** A host with
   no messaging plane ships no `agent_*` tools and a host with no
   toolchain or no prepared build seed ships no `code_mode` — the boot

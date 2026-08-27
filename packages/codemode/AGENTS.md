@@ -59,13 +59,19 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `NotWidened(reason)` for both of the ways that does not happen.
   `grant_label` renders one grant as a diff line an operator can read.
 - `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.{VetPolicy,
-  Seam, for_seam, default, orchestration}` — the pure import/`@external`
-  lint and the two allowlists it is parameterized by. `Vetted` is opaque,
+  Seam, for_seam, default, orchestration, default_cap_modules,
+  orchestration_cap_modules, harness_only_cap_modules,
+  default_stdlib_modules}` — the pure import/`@external`
+  lint and the two allowlists it is parameterized by. The four list
+  functions are public so the confinement can be asserted as a property
+  rather than as a snapshot, and so `scripts/gen-prelude.sh --check` can
+  read them with no toolchain. `Vetted` is opaque,
   so only linted source can reach a build. `Seam` is closed at two
   variants, so "which capabilities travel together" is a decision this
   package owns and a host selects from rather than assembles.
 - `codemode/orchestration.{Orchestration, router, ceilings, serviced_caps,
-  refusal_code, default_spawn_ceiling}` — the
+  refusal_code, default_spawn_ceiling, send_ceiling, note_ceiling,
+  notes_ceiling, spawn_ceiling_code, admission_ceiling_code}` — the
   orchestration seam's capability router. It decodes a `strand.*` frame
   into `tools/agent`'s vocabulary, hands it to one of the six `Agency`
   closures under a `Caller` derived from the threaded `PhaseIdentity`, and
@@ -101,8 +107,10 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `CapConnection.destroy` hands back. `Msg` is opaque so no forged
   settlement can be injected. `CapPlan` has two shapes — `ClearedCall`
   (a jailed `broker.clear_call`) and `ServedHere` (a request the harness
-  answers itself, on a process of its own) — and `CapCeiling` is a
-  lifetime cap on one capability's admissions within one execution.
+  answers itself, on a process of its own) — and `CapCeiling(cap,
+  admissions, code)` is a lifetime cap on one capability's admissions
+  within one execution, carrying the in-band code its refusal travels
+  under so the host stays generic over capability names.
 
 ## Relationships
 
@@ -156,6 +164,15 @@ strand roots, and can reach neither the disk, the network, nor a process.
 - **Vetting is the gate on what a program may ask for; the broker decides
   per call what it gets.** The allowlist is byte-identical membership
   behind an ASCII grammar gate, so no homoglyph is ever a member.
+- **A capability on no allowlist is a decision, not an absence.** The
+  filter fails closed, so a `cap` module nobody allowlisted simply never
+  reaches a description and any program importing it is rejected — which
+  is right for `cap/runtime` and indistinguishable from an oversight for
+  anything else. `harness_only_cap_modules` is where that exclusion is
+  written down, and `scripts/gen-prelude.sh --check` holds all three lists
+  against the modules `packages/cap` actually ships: every module must be
+  on a seam or on that list, and every listed name must be a module that
+  exists (issue #95). Both directions self-test.
 - **The two seams are confined by one rule read in two directions.** An
   import outside the allowlist the submission is judged against is
   rejected, so an orchestration program reaching for `cap/fs` and a
@@ -164,19 +181,54 @@ strand roots, and can reach neither the disk, the network, nor a process.
   repairs in band. What the two directions rest on is that
   `orchestration_cap_modules` and `default_cap_modules` share no entry but
   `cap/report`; widen either and both rejections stop meaning anything, so
-  the disjointness is pinned by its own test.
-- **The spawn ceiling is the host's, not the router's.** `agent_spawn` is
-  throttled by turn cost — the model pays a round trip per spawn — and a
-  program's loop pays nothing, so replacing the turn with a loop removes
-  an implicit throttle and has to add an explicit one. It is a *lifetime*
-  cap on admissions, distinct from the pooled `max_outstanding` (in flight
-  at once) and from the Agency's `fan_out`/`session_strands` (live at
-  once), which a spawn-join-spawn loop passes forever. It lives in the
-  host because one host is stood up per execution holding the one
-  `PhaseIdentity` a caller may mint, so the tally is keyed to that
-  identity by construction; a router, which a caller could build twice,
-  never holds it. Refused *at* the ceiling, in band, naming the number and
-  saying that joining will not free a slot.
+  the disjointness is pinned as an **intersection over those two lists**
+  rather than as a literal snapshot of one side. A snapshot catches a
+  capability *moved* between the seams and misses one *added to both* —
+  and the door for that is `default_stdlib_modules`, which both seams
+  append, so a second test asserts that list holds no `cap/*` entry at all
+  (issue #90).
+- **The admission ceilings are the host's, not the router's, and they
+  cover every call that mints.** A call is throttled by turn cost — the
+  model pays a round trip per call — and a program's loop pays nothing, so
+  replacing the turn with a loop removes an implicit throttle and has to
+  add an explicit one. The test is whether a call *mints something that
+  outlives the execution*, which four of the six meet: `strand.spawn`
+  (32), `strand.send` (128 — a durable commit, and to an idle descendant
+  it starts a run), `strand.note` (256 — a durable write-once register
+  under a program-chosen key) and `strand.notes` (64 — a full prefix scan
+  per call). `strand.wait` and `strand.roster` have none: a wait's whole
+  cost is time, which the per-call clamp and the wall deadline bind, and a
+  roster is bounded by `session_strands`. **`note` and `notes` are one
+  decision** — a note/notes loop is quadratic in harness work and the
+  quadratic needs both factors unbounded, so relaxing either alone
+  restores it; the alternative, a size-charged read or a work budget, is
+  the model-readable budget #23 forbids arriving by the side door. Each is
+  a *lifetime* cap on admissions, distinct from the pooled
+  `max_outstanding` (in flight at once) and from the Agency's
+  `fan_out`/`session_strands` (live at once), which a spawn-join-spawn
+  loop passes forever. Refused *at* the ceiling, in band, naming the
+  capability and the number and saying that waiting will not free a slot:
+  a spawn under the shipped `spawn_ceiling` code, the other three under
+  one generic `admission_ceiling`, because a program at any of them does
+  the same thing and the message says which. Only the spawn number is
+  configurable (`Orchestration.spawn_ceiling`); the rest are the seam's
+  constants.
+- **The unit is the execution, and that is the replacement for the
+  turn.** One host per `run`, one `run` per `execute`, one `execute` per
+  tool call — so K `code_mode` calls in one message get K tallies. What
+  the turn cost throttled was zero-marginal-cost *iteration*, not turns:
+  inside one execution a loop is free, while a second `code_mode` call
+  costs an authored program, a hermetic build, a node launch and its own
+  deadline, so its marginal cost is spawn-shaped. Per turn would not be a
+  boundary anyway — a model that can put K executions in one message can
+  put K in K messages. The host is also the only place the tally can be
+  keyed honestly: it holds the one `PhaseIdentity` derived from the one
+  `ExecIdentity` a caller may mint, and a router, which a caller could
+  build twice, never holds it. A lifetime spawn count per *batch*, if it
+  is ever wanted, is a fold over the durable lineage ledger's
+  `minted_by: CallSite(operation, step_id, source_index)` rather than a
+  new mechanism — and it generalises to none of the other three, since
+  nothing durable records a note, a read or a send by call site.
 - **A code-mode spawn says who minted it, in a field of its own.** A
   child's name is minted from `{parent, purpose slug, call-site digest}`,
   and a whole execution is one planned tool call — so every spawn in a
@@ -251,7 +303,19 @@ strand roots, and can reach neither the disk, the network, nor a process.
   whole of the choice — there is no way to spell a third ledger.
   `identity.ledger_keys` is therefore a function of the identity value
   alone, answering one or two before anything runs (issue #22, spec-gaps
-  WP-J 16, `docs/adr/005-budget-pooling-granularity.md`). The limit of the
+  WP-J 16, `docs/adr/005-budget-pooling-granularity.md`). **`{op_id,
+  step_id}` is the batch identity, not the execution identity**:
+  `code_mode` is `tool.Exclusive`, which forbids a concurrent start and
+  nothing more, so one batch may hold two `code_mode` calls that run back
+  to back sharing the pair. `{op_id, step_id, source_index}` is the
+  execution identity, `client/codemode.exec_root` digests that triple so
+  each execution's build root, cap socket and token file are its own, and
+  the ledger keys on the pair deliberately (ADR-005, "Two programs in one
+  batch"). The source index is **not** a fourth field on `ExecIdentity`
+  and must not become one: what this value exports feeds ledger keys and
+  `CallSpec`s, so a per-call coordinate stored here would sit one
+  field-read from the budget key, where "completing" it would mint one
+  ledger per call in a batch the model authored (issue #87). The limit of the
   claim: `broker.CallSpec` is a public record shared with `tools` and
   `client`, so an injected router or launcher could still hand-write a
   clearance under coordinates it invented — closing that needs an opaque
