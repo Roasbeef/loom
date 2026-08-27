@@ -95,6 +95,7 @@ fn echoing_agency() -> agent.Agency {
             handle:,
             outcome: agent.Completed,
             report: caller.strand <> "@" <> string.inspect(within_ms),
+            result: agent.NoResultAsked,
             notes: [],
           )
         }),
@@ -151,6 +152,70 @@ fn bool_text(flag: Bool) -> String {
   case flag {
     True -> "detached"
     False -> "attached"
+  }
+}
+
+// The running example: `{files: [string] (required), count: integer}`.
+fn a_schema() -> agent.ResultSchema {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #(
+              "files",
+              json.Object([
+                #("type", json.String("array")),
+                #("items", json.Object([#("type", json.String("string"))])),
+              ]),
+            ),
+            #("count", json.Object([#("type", json.String("integer"))])),
+          ]),
+        ),
+        #("required", json.Array([json.String("files")])),
+      ]),
+    )
+    as "the running example must parse"
+  schema
+}
+
+// An Agency whose join answers one handle with a fixed terminal result,
+// so the rendering of each `TerminalResult` variant can be pinned
+// without a runtime.
+fn joining_agency(result: agent.TerminalResult) -> agent.Agency {
+  agent.Agency(..echoing_agency(), wait: fn(_caller, handles, _within) {
+    Ok(
+      list.map(handles, fn(handle) {
+        agent.Ready(
+          handle:,
+          outcome: agent.Completed,
+          report: "looked at three files",
+          result:,
+          notes: [],
+        )
+      }),
+    )
+  })
+}
+
+// A spawn closure that reports the schema it was handed. Written out
+// rather than inlined because a record update does not carry its field
+// types into an anonymous function's arguments.
+fn watching_spawn(
+  seen: Subject(option.Option(agent.ResultSchema)),
+) -> fn(agent.Caller, agent.SpawnRequest) ->
+  Result(agent.Spawned, agent.Refusal) {
+  fn(caller: agent.Caller, request: agent.SpawnRequest) {
+    process.send(seen, request.result_schema)
+    Ok(
+      agent.Spawned(
+        handle: agent.Handle(strand: "sub:x", operation: caller.operation),
+        strand: "sub:x",
+        tools: [],
+      ),
+    )
   }
 }
 
@@ -551,4 +616,379 @@ pub fn roster_takes_no_arguments_test() {
     )
   assert !outcome.is_error
   assert string.contains(text_of(outcome), "parent sub:main/x")
+}
+
+// --- the result contract ---------------------------------------------------
+
+pub fn a_schema_is_stated_in_the_dialect_the_tools_already_speak_test() {
+  // No JSON Schema dependency: the subset the harness enforces is the
+  // one `tool.object_schema` already emits for every tool definition the
+  // model reads, so the parent states a shape in a notation it is fluent
+  // in and the harness decodes only what it can hold a child to.
+  let fields = agent.result_fields(a_schema())
+  assert list.map(fields, fn(field) { field.name }) == ["files", "count"]
+  let assert [files, count] = fields
+  assert files.expects == agent.ArrayField(items: agent.StringField)
+  assert files.required
+  assert count.expects == agent.IntegerField
+  assert !count.required
+}
+
+pub fn a_schema_round_trips_through_its_rendered_form_test() {
+  // The rendered form is what the brief quotes and what the Agency
+  // stores durably, so a schema read back out of a fact cell has to
+  // parse to the value that was written.
+  let rendered = agent.render_result_schema(a_schema())
+  assert agent.parse_result_schema(rendered) == Ok(a_schema())
+  // `additionalProperties` is absent, which is JSON Schema's "extras
+  // allowed" default and exactly what validation does.
+  assert !string.contains(json.to_string(rendered), "additionalProperties")
+}
+
+pub fn a_schema_asking_for_what_this_harness_cannot_enforce_is_refused_test() {
+  // A constraint that is accepted and then ignored is worse than no
+  // constraint: the parent would read it back in the brief and never
+  // learn nothing was checking it.
+  let with_pattern =
+    json.Object([
+      #("type", json.String("object")),
+      #(
+        "properties",
+        json.Object([
+          #(
+            "name",
+            json.Object([
+              #("type", json.String("string")),
+              #("pattern", json.String("^a")),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+  let assert Error(reason) = agent.parse_result_schema(with_pattern)
+  assert string.contains(reason, "pattern")
+}
+
+pub fn a_schema_that_is_not_an_object_of_properties_is_refused_test() {
+  let assert Error(_not_object) =
+    agent.parse_result_schema(json.Array([json.String("files")]))
+  let assert Error(_wrong_type) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("array")),
+        #("properties", json.Object([])),
+      ]),
+    )
+  let assert Error(_empty) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #("properties", json.Object([])),
+      ]),
+    )
+  let assert Error(undeclared) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([#("a", json.Object([#("type", json.String("string"))]))]),
+        ),
+        #("required", json.Array([json.String("b")])),
+      ]),
+    )
+  assert string.contains(undeclared, "`b`")
+}
+
+pub fn a_malformed_schema_is_refused_at_spawn_not_at_join_test() {
+  // The parent learns about its own mistake in the turn it made it. The
+  // Agency is never reached, so nothing was minted and nothing has to be
+  // joined before the news arrives.
+  let unreachable =
+    agent.Agency(..echoing_agency(), spawn: fn(_caller, _request) {
+      panic as "a malformed schema must never reach the seam"
+    })
+  let outcome =
+    run(
+      "agent_spawn",
+      ctx_for("main", "t", 0),
+      unreachable,
+      json.Object([
+        #("purpose", json.String("review")),
+        #("brief", json.String("read it")),
+        #("result_schema", json.String("give me the files")),
+      ]),
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "`result_schema`")
+  assert string.contains(text_of(outcome), "must be a JSON object")
+}
+
+pub fn a_spawn_carries_its_schema_to_the_seam_test() {
+  let seen = process.new_subject()
+  let watching = agent.Agency(..echoing_agency(), spawn: watching_spawn(seen))
+  let with_schema =
+    json.Object([
+      #("purpose", json.String("review")),
+      #("brief", json.String("read it")),
+      #("result_schema", agent.render_result_schema(a_schema())),
+    ])
+  let outcome =
+    run("agent_spawn", ctx_for("main", "t", 0), watching, with_schema)
+  assert !outcome.is_error
+  let assert Ok(option.Some(carried)) = process.receive(seen, within: 100)
+  assert carried == a_schema()
+  // And a spawn that named none hands the seam an absent one rather than
+  // an invented empty contract.
+  let without =
+    json.Object([
+      #("purpose", json.String("review")),
+      #("brief", json.String("read it")),
+    ])
+  let _plain = run("agent_spawn", ctx_for("main", "t", 0), watching, without)
+  assert process.receive(seen, within: 100) == Ok(None)
+}
+
+// --- validation ------------------------------------------------------------
+
+pub fn a_matching_result_validates_test() {
+  assert agent.validate_result(
+      a_schema(),
+      json.Object([
+        #("files", json.Array([json.String("auth.gleam")])),
+        #("count", json.Int(1)),
+      ]),
+    )
+    == Ok(Nil)
+}
+
+pub fn a_missing_required_field_names_itself_and_its_type_test() {
+  let assert Error(mismatch) =
+    agent.validate_result(a_schema(), json.Object([#("count", json.Int(0))]))
+  assert mismatch
+    == agent.FieldMissing(
+      name: "files",
+      expects: agent.ArrayField(items: agent.StringField),
+    )
+  let said = agent.describe_mismatch(mismatch)
+  assert string.contains(said, "`files`")
+  assert string.contains(said, "array of string")
+}
+
+pub fn a_wrong_type_names_both_sides_test() {
+  let assert Error(mismatch) =
+    agent.validate_result(a_schema(), json.Object([#("files", json.Int(3))]))
+  let said = agent.describe_mismatch(mismatch)
+  assert string.contains(said, "must be `array of string`")
+  assert string.contains(said, "not `integer`")
+}
+
+pub fn an_array_mismatch_names_the_offending_element_test() {
+  // "array" is not the news when an array is what was asked for.
+  let assert Error(mismatch) =
+    agent.validate_result(
+      a_schema(),
+      json.Object([#("files", json.Array([json.String("a"), json.Int(2)]))]),
+    )
+  assert string.contains(
+    agent.describe_mismatch(mismatch),
+    "array containing integer",
+  )
+}
+
+pub fn a_result_that_is_not_an_object_is_refused_test() {
+  let assert Error(agent.NotAnObject(received: "array")) =
+    agent.validate_result(a_schema(), json.Array([]))
+}
+
+pub fn an_optional_field_may_be_absent_but_never_wrong_test() {
+  let only_required = json.Object([#("files", json.Array([]))])
+  assert agent.validate_result(a_schema(), only_required) == Ok(Nil)
+  let assert Error(agent.FieldWrongType(name: "count", ..)) =
+    agent.validate_result(
+      a_schema(),
+      json.Object([
+        #("files", json.Array([])),
+        #("count", json.String("three")),
+      ]),
+    )
+}
+
+pub fn a_surplus_field_is_not_a_failure_test() {
+  // The contract is a lower bound on the shape: a child that reported
+  // more than it owed still reported what it owed.
+  assert agent.validate_result(
+      a_schema(),
+      json.Object([
+        #("files", json.Array([])),
+        #("notes", json.String("nothing interesting")),
+      ]),
+    )
+    == Ok(Nil)
+}
+
+pub fn a_number_field_takes_either_kind_of_number_test() {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #("ratio", json.Object([#("type", json.String("number"))])),
+            #("anything", json.Object([])),
+          ]),
+        ),
+      ]),
+    )
+  assert agent.validate_result(schema, json.Object([#("ratio", json.Int(1))]))
+    == Ok(Nil)
+  assert agent.validate_result(
+      schema,
+      json.Object([#("ratio", json.Float(0.5))]),
+    )
+    == Ok(Nil)
+  // A property with no `type` is the shape `tool.any_property` emits, and
+  // takes anything, `null` included.
+  assert agent.validate_result(schema, json.Object([#("anything", json.Null)]))
+    == Ok(Nil)
+}
+
+// --- what the child is told ------------------------------------------------
+
+pub fn a_refused_result_names_the_schema_and_what_it_got_test() {
+  // The anonymous-refusal pattern is what this says: a failure that says
+  // "did not match" without saying what was wanted costs the reader a
+  // round trip to learn what it could have been told.
+  let assert Error(mismatch) =
+    agent.validate_result(a_schema(), json.Object([#("files", json.Int(3))]))
+  let said =
+    agent.describe(agent.ResultSchemaUnmet(
+      schema: a_schema(),
+      received: json.Object([#("files", json.Int(3))]),
+      mismatch:,
+    ))
+  // What was wanted, in full.
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(a_schema())),
+  )
+  // What arrived.
+  assert string.contains(said, "{\"files\":3}")
+  // And that nothing was written, so the child knows to write again.
+  assert string.contains(said, "write the note again")
+  assert agent.refusal_outcome(agent.ResultSchemaUnmet(
+    schema: a_schema(),
+    received: json.Null,
+    mismatch:,
+  )).is_error
+}
+
+// --- what the parent sees --------------------------------------------------
+
+pub fn a_join_hands_back_a_matching_result_as_json_test() {
+  let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
+  let value =
+    json.Object([
+      #("files", json.Array([json.String("auth.gleam")])),
+      #("count", json.Int(1)),
+    ])
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      joining_agency(agent.ResultGiven(value:)),
+      json.Object([
+        #("handles", json.Array([json.String(agent.handle_to_string(handle))])),
+      ]),
+    )
+  assert !outcome.is_error
+  // Typed, in the details a program reads — not prose to be regexed.
+  let assert option.Some(json.Object(fields: details)) = outcome.details
+  let assert Ok(json.Array(items: [json.Object(fields: first)])) =
+    list.key_find(details, "results")
+  assert list.key_find(first, "result")
+    == Ok(json.Object([#("state", json.String("given")), #("value", value)]))
+  // The prose report survives beside it: it is what a human reads.
+  assert string.contains(text_of(outcome), "looked at three files")
+  assert string.contains(text_of(outcome), "[result] ")
+}
+
+pub fn a_join_names_the_schema_when_the_result_is_unusable_test() {
+  let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
+  let received = json.Object([#("files", json.Int(3))])
+  let assert Error(mismatch) = agent.validate_result(a_schema(), received)
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      joining_agency(agent.ResultUnusable(
+        schema: a_schema(),
+        received:,
+        mismatch:,
+      )),
+      json.Object([
+        #("handles", json.Array([json.String(agent.handle_to_string(handle))])),
+      ]),
+    )
+  let said = text_of(outcome)
+  assert string.contains(said, "unusable result")
+  assert string.contains(said, "must be `array of string`")
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(a_schema())),
+  )
+  assert string.contains(said, "{\"files\":3}")
+}
+
+pub fn a_join_says_so_when_a_child_owed_a_result_and_recorded_none_test() {
+  let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      joining_agency(agent.ResultAbsent(schema: a_schema())),
+      json.Object([
+        #("handles", json.Array([json.String(agent.handle_to_string(handle))])),
+      ]),
+    )
+  assert string.contains(text_of(outcome), "owed a result matching")
+  let assert option.Some(details) = outcome.details
+  assert string.contains(json.to_string(details), "\"state\":\"absent\"")
+}
+
+pub fn a_join_without_a_schema_renders_exactly_what_it_did_before_test() {
+  // The compatibility floor, pinned byte for byte: a spawn that named no
+  // schema must produce the outcome it produced before result contracts
+  // existed — no extra field, no invented sentinel.
+  let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      echoing_agency(),
+      json.Object([
+        #("handles", json.Array([json.String(agent.handle_to_string(handle))])),
+      ]),
+    )
+  assert text_of(outcome) == "[sub:a completed]\nmain@30000"
+  assert outcome.details
+    == option.Some(
+      json.Object([
+        #(
+          "results",
+          json.Array([
+            json.Object([
+              #("handle", json.String(agent.handle_to_string(handle))),
+              #("strand", json.String("sub:a")),
+              #("state", json.String("ready")),
+              #("outcome", json.String("completed")),
+              #("report", json.String("main@30000")),
+              #("notes", json.Object([])),
+            ]),
+          ]),
+        ),
+        #("pending", json.Bool(False)),
+      ]),
+    )
 }

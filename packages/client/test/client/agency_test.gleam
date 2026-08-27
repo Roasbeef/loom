@@ -48,6 +48,10 @@ type Harness {
 type Provider {
   Settles(text: String)
   Hangs
+  /// Answers like `Settles` and reports the context it was handed, so a
+  /// test can assert on what actually reached a child's model rather than
+  /// on the string the harness meant to put there.
+  Watches(text: String, into: Subject(List(message.AgentMessage)))
 }
 
 fn counting_clock(from: Int, by: Int) -> Clock {
@@ -122,10 +126,9 @@ fn start_harness_with(
         clock: session_clock,
         entropy:,
         timers: effects.real_timers(),
-        provider: effects.ProviderSurface(
-          timeout_ms: 60_000,
-          request: fn(_spec) { scripted_stream(provider) },
-        ),
+        provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(spec) {
+          scripted_stream(provider, spec)
+        }),
         tools: effects.ToolSurface(
           clear: fn(_query) {
             effects.ClearanceRefused(reason: "no tools in this harness")
@@ -144,37 +147,58 @@ fn start_harness_with(
   Harness(runtime:, seam:, config:)
 }
 
-fn scripted_stream(provider: Provider) -> stream.StreamHandle {
+fn scripted_stream(
+  provider: Provider,
+  spec: effects.RequestSpec,
+) -> stream.StreamHandle {
   let events = process.new_subject()
   case provider {
     Hangs -> Nil
-    Settles(text:) -> {
-      let response =
-        message.AssistantMessage(
-          content: [message.AssistantText(text:, text_signature: None)],
-          api: "test",
-          provider: "acme",
-          model: "loom-1",
-          response_model: None,
-          response_id: None,
-          diagnostics: None,
-          usage: effects.zero_usage(),
-          stop_reason: message.Stop,
-          deferred: None,
-          error_message: None,
-          raw_stop_reason: None,
-          end_turn: Some(True),
-          timestamp: 0,
-        )
-      let assert Ok(settled) = stream.settle(response)
-        as "the scripted response must settle"
-      process.send(
-        events,
-        stream.Settled(message: settled, usage: effects.zero_usage()),
-      )
+    Watches(text:, into:) -> {
+      report_context(into, spec)
+      settle_into(events, text)
     }
+    Settles(text:) -> settle_into(events, text)
   }
   stream.StreamHandle(events:)
+}
+
+fn report_context(
+  into: Subject(List(message.AgentMessage)),
+  spec: effects.RequestSpec,
+) -> Nil {
+  case spec {
+    effects.GenerationRequest(context:, ..) -> process.send(into, context)
+    effects.PollRequest(..) | effects.SummaryRequest(..) -> Nil
+  }
+}
+
+fn settle_into(events: Subject(stream.StreamEvent), text: String) -> Nil {
+  {
+    let response =
+      message.AssistantMessage(
+        content: [message.AssistantText(text:, text_signature: None)],
+        api: "test",
+        provider: "acme",
+        model: "loom-1",
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: effects.zero_usage(),
+        stop_reason: message.Stop,
+        deferred: None,
+        error_message: None,
+        raw_stop_reason: None,
+        end_turn: Some(True),
+        timestamp: 0,
+      )
+    let assert Ok(settled) = stream.settle(response)
+      as "the scripted response must settle"
+    process.send(
+      events,
+      stream.Settled(message: settled, usage: effects.zero_usage()),
+    )
+  }
 }
 
 // The operation id is derived from the whole coordinate triple, not just
@@ -199,9 +223,65 @@ fn a_spawn(purpose: String) -> agent.SpawnRequest {
     brief: "read the file and report",
     tools: None,
     within_ms: None,
+    result_schema: None,
     context: agent.Fresh,
     detach: False,
   )
+}
+
+// `{files: [string] (required), count: integer}` — the running example
+// for every result-contract test below.
+fn a_schema() -> agent.ResultSchema {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #(
+              "files",
+              json.Object([
+                #("type", json.String("array")),
+                #("items", json.Object([#("type", json.String("string"))])),
+              ]),
+            ),
+            #("count", json.Object([#("type", json.String("integer"))])),
+          ]),
+        ),
+        #("required", json.Array([json.String("files")])),
+      ]),
+    )
+    as "the running example must parse"
+  schema
+}
+
+fn a_spawn_wanting(purpose: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..a_spawn(purpose), result_schema: Some(a_schema()))
+}
+
+// Waits for a child's brief run to settle, then joins it. Every result
+// test needs the same two steps and neither is what the test is about.
+fn joined(harness: Harness, caller: Caller, handle: Handle) -> agent.Waited {
+  assert until(
+    fn() {
+      case
+        api.await_strand_result(
+          harness.runtime,
+          strand: handle.strand,
+          operation: handle.operation,
+          within_ms: 0,
+        )
+      {
+        Ok(_settled) -> True
+        Error(Nil) -> False
+      }
+    },
+    200,
+  )
+  let assert Ok([waited]) = harness.seam.wait(caller, [handle], 200)
+    as "the join must answer"
+  waited
 }
 
 fn cell_for(harness: Harness, strand: String) -> Option(lineage.Lineage) {
@@ -820,5 +900,230 @@ pub fn the_default_tool_set_drops_the_spawn_tool_on_its_own_test() {
     )
     as "an explicit request at an allowed depth must be honoured"
   assert list.contains(asked.tools, "agent_spawn")
+  close(harness)
+}
+
+// --- the result contract ---------------------------------------------------
+
+pub fn a_matching_result_comes_back_as_json_not_prose_test() {
+  // The whole point of the feature: the parent branches on `files`
+  // rather than regexing a sentence about files.
+  let harness = start_harness(Settles("I read three files"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let value =
+    json.Object([
+      #("files", json.Array([json.String("auth.gleam")])),
+      #("count", json.Int(1)),
+    ])
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      value,
+    )
+    as "a matching result must be accepted"
+  let assert agent.Ready(report:, result:, ..) =
+    joined(harness, caller, child.handle)
+  assert result == agent.ResultGiven(value:)
+  // The prose survives beside it. Neither audience is traded for the
+  // other: a human reads the report, a program reads the result.
+  assert report == "I read three files"
+  close(harness)
+}
+
+pub fn a_result_that_misses_the_schema_is_refused_to_the_child_test() {
+  // Refused to the child, on the child's own write, in the run that
+  // produced the value — the one party that can repair it, at the one
+  // moment repairing it is cheap.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let wrong = json.Object([#("count", json.Int(1))])
+  let assert Error(refusal) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      wrong,
+    )
+    as "a result that misses the schema must be refused"
+  let assert agent.ResultSchemaUnmet(schema:, received:, ..) = refusal
+  assert schema == a_schema()
+  assert received == wrong
+  // Named, not anonymous: what was wanted, and what arrived.
+  let said = agent.describe(refusal)
+  assert string.contains(said, "`files` is required")
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(schema)),
+  )
+  assert string.contains(said, "{\"count\":1}")
+  // And nothing was written, so a retry is a plain retry.
+  assert api.fact(
+      harness.runtime,
+      agent.blackboard_prefix <> child.strand <> "/" <> agent.result_note_key,
+    )
+    == Ok(None)
+  close(harness)
+}
+
+pub fn a_child_with_no_contract_may_still_note_a_result_test() {
+  // The key is only special where a schema asked for it. A child spawned
+  // without one writes `result` like any other cell.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the child must spawn"
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      agent.result_note_key,
+      json.String("whatever I like"),
+    )
+    as "an uncontracted result note must write"
+  close(harness)
+}
+
+pub fn a_child_that_owed_a_result_and_recorded_none_is_named_test() {
+  let harness = start_harness(Settles("I forgot the note"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let assert agent.Ready(outcome:, result:, ..) =
+    joined(harness, caller, child.handle)
+  assert result == agent.ResultAbsent(schema: a_schema())
+  // The run itself completed, and the outcome says so. Folding the
+  // contract verdict into it would make the field a waiter reads to ask
+  // "did this crash" answer a different question.
+  assert outcome == agent.Completed
+  close(harness)
+}
+
+pub fn an_unusable_cell_is_caught_on_the_way_back_out_test() {
+  // The write is checked, and the read is checked too — not as a second
+  // authorization but because the value crossed the durable store, and a
+  // value crossing that boundary is decoded rather than trusted. Written
+  // here past the note path, which is what a cell seeded before the
+  // contract existed would look like.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let junk = json.Object([#("files", json.String("auth.gleam"))])
+  let assert Ok(Nil) =
+    api.put_fact(
+      harness.runtime,
+      agent.blackboard_prefix <> child.strand <> "/" <> agent.result_note_key,
+      junk,
+    )
+    as "the raw cell must write"
+  let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
+  let assert agent.ResultUnusable(schema:, received:, mismatch:) = result
+  assert schema == a_schema()
+  assert received == junk
+  assert string.contains(
+    agent.describe_mismatch(mismatch),
+    "must be `array of string`",
+  )
+  close(harness)
+}
+
+pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
+  // The compatibility floor. No contract cell, nothing appended to the
+  // brief, and a join that reports no verdict at all rather than an
+  // invented empty one.
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the child must spawn"
+  assert api.fact(harness.runtime, agency.result_schema_prefix <> child.strand)
+    == Ok(None)
+  let assert Ok(context) = process.receive(seen, within: 2000)
+    as "the child's model must be called"
+  assert !string.contains(context_text(context), "result contract")
+  let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
+  assert result == agent.NoResultAsked
+  assert agency.result_contract(None) == ""
+  close(harness)
+}
+
+pub fn the_schema_reaches_the_childs_own_context_test() {
+  // "Carried into the child's brief" has to mean the child can read it,
+  // not that the harness meant to say it — so this asserts on the
+  // context the provider was actually handed.
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(_child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let assert Ok(context) = process.receive(seen, within: 2000)
+    as "the child's model must be called"
+  let said = context_text(context)
+  assert string.contains(
+    said,
+    json.to_string(agent.render_result_schema(a_schema())),
+  )
+  assert string.contains(said, agent.result_note_key)
+  // In the harness's voice, after the sender's text is closed off: the
+  // brief is model-authored data, this is the run's own obligation.
+  assert string.contains(said, "[end brief.")
+  assert string.contains(said, "from the harness and not from the sender")
+  close(harness)
+}
+
+fn context_text(context: List(message.AgentMessage)) -> String {
+  context
+  |> list.flat_map(fn(entry) {
+    case entry {
+      message.UserMessage(content:, ..) ->
+        list.filter_map(content, fn(block) {
+          case block {
+            message.UserText(text:, ..) -> Ok(text)
+            message.UserImage(..) -> Error(Nil)
+          }
+        })
+      message.AssistantMessage(..)
+      | message.ToolResultMessage(..)
+      | message.CustomMessage(..) -> []
+    }
+  })
+  |> string.join("\n")
+}
+
+pub fn a_child_cannot_reach_the_contract_it_is_judged_against_test() {
+  // The contract lives outside `agent/`, and `agent_note` prepends
+  // `agent/{caller}/` to every key a model supplies, so a traversal-
+  // shaped key lands inside the namespace with a silly name and the
+  // contract is untouched.
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn_wanting("review"))
+    as "the child must spawn"
+  let forged =
+    json.Object([
+      #("type", json.String("object")),
+      #("properties", json.Object([#("anything", json.Object([]))])),
+    ])
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "turn-1:tools", 0),
+      "../../" <> agency.result_schema_prefix <> child.strand,
+      forged,
+    )
+    as "the odd key still writes inside the namespace"
+  let assert Ok(Some(held)) =
+    api.fact(harness.runtime, agency.result_schema_prefix <> child.strand)
+    as "the contract must still be there"
+  assert held == agent.render_result_schema(a_schema())
+  // And the contract is invisible to the blackboard read, so a child
+  // cannot discover what its siblings were asked for either.
+  let assert Ok(cells) =
+    harness.seam.notes(caller_on(child.strand, "turn-1:tools", 0), None)
+    as "the blackboard read must answer"
+  assert list.key_find(cells, agency.result_schema_prefix <> child.strand)
+    == Error(Nil)
   close(harness)
 }
