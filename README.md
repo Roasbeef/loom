@@ -473,7 +473,7 @@ Nothing is published yet. `make dist` builds both, and the sizes below
 are what it produced on a Linux x86_64 development container:
 
 ```
-dist/loom-0.1.0-linux-x86_64.tar.gz    11 MB   the server (29 MB unpacked)
+dist/loom-0.1.0-linux-x86_64.tar.gz    21 MB   the server (58 MB unpacked)
 dist/loom-tui-0.1.0-linux-x86_64       16 MB   the terminal client
 dist/SHA256SUMS
 ```
@@ -481,8 +481,14 @@ dist/SHA256SUMS
 The server tarball unpacks to a directory holding `bin/loom` (the
 launcher), `bin/loom-exec` (the sandbox helper, a file beside it — Loom
 never extracts an executable at run time), the runtime system, the
-compiled applications, and a `SHA256SUMS` over every executable in the
-tree that `sha256sum -c` will check.
+compiled applications, the code-mode toolchain (`bin/gleam` and
+`share/codemode-seed`), and a `SHA256SUMS` over every executable in the
+tree that `sha256sum -c` will check. The server finds all of those
+through `code:root_dir()` — the release root, resolved by the emulator
+itself — before it looks at `PATH`, so nothing depends on where you
+unpacked it or what else is installed. Code mode is roughly half the
+download; `DIST_CODEMODE=0 make release` builds the 11 MB / 29 MB
+artifact without it.
 
 A release is built for one platform and cannot be otherwise: it carries
 this machine's runtime system and `esqlite3_nif.so`, which is compiled C.
@@ -549,20 +555,22 @@ The server's full configuration surface, flags first:
 --bind host:port       listen address (default 127.0.0.1:0 — port printed)
 --token-file <path>    bearer token file (default <session>.token, mode 0600)
 --workspace <dir>      the jail's writable root (default: current directory)
---helper <path>        loom-exec location (default: beside the launcher)
+--helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
---codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed)
+--codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
 --codemode-seams <s>   workspace, orchestration, or both (default workspace)
 --best-effort          accept a degraded jail (dev kernels); default refuses
 ```
 
-`code_mode` is registered only when this host has `gleam` and `erl` on
-`PATH` *and* a build seed whose dependency table matches the one the
-compile service generates. A machine running a release has none of those,
-so it prints the reason once and ships no `code_mode` definition at all,
-rather than one that always refuses: a tool definition renders ahead of
-the system prompt and is paid for on every request of every strand for
-the life of the session. Every other tool works normally.
+`code_mode` is registered only when this host has a Gleam compiler, an
+emulator, *and* a build seed whose dependency table matches the one the
+compile service generates. A release carries all three and registers it;
+a checkout registers it once `make codemode-seed` has run. A host with
+none of them prints the reason once — naming what is missing and how to
+supply it — and ships no `code_mode` definition at all, rather than one
+that always refuses: a tool definition renders ahead of the system prompt
+and is paid for on every request of every strand for the life of the
+session. Every other tool works normally.
 
 Environment: `ANTHROPIC_API_KEY` (optional, read at dispatch),
 `LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
@@ -585,7 +593,8 @@ with `:models` and switches the active strand's model by name.
 
 You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or
 newer for the sandbox helper and the terminal client. `make release`
-additionally needs `rebar3` and `strip`; nothing else does. Nothing is
+additionally needs `rebar3`, `strip` and a prepared build seed (`make
+codemode-seed`, once, with the network); nothing else does. Nothing is
 published to Hex — the packages are monorepo-internal and are built where
 they sit.
 

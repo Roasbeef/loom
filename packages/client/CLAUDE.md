@@ -54,6 +54,17 @@ over one session file. WP-L.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
+- `client/install.{root, helper, helper_name, gleam_compiler, erl, seed,
+  seed_directory, existing_file, existing_directory, bundled_helper,
+  bundled_seed, first_of}` — where this Loom is installed, and what ships
+  beside it. `root()` is `code:root_dir()`: the unpacked release tree for
+  a release, the OTP installation root for every other run. Everything
+  else is a path built onto it and *probed*, so existence is the whole
+  discriminator and nothing special-cases a development host. `erl()`
+  names `erts-<vsn>/bin/erl` with the version read from the live system
+  rather than globbed for, so it is the emulator actually running the
+  harness. `first_of` is the ladder itself — the first rung that answers
+  wins, and no rung below it is evaluated.
 - `client/grants` — decoding the runtime's opaque escalation JSON back
   into `broker/policy.Grant`, and encoding it again. Pure and total.
 - `client/escalate.{Config, Message, Refused, Decision, Escalations,
@@ -115,7 +126,9 @@ over one session file. WP-L.
   implemented over the real pipeline, the other package this one exists
   to join (`tools` cannot see `codemode`, which already depends on it).
   `discover` locates `gleam`, `erl` and a verified build seed or says
-  what is missing; `seam` closes over a `Config` and needs no process
+  what is missing *and how to supply it*, each executable through
+  `locate` — the tree this server shipped in first, `PATH` second;
+  `seam` closes over a `Config` and needs no process
   name, because the broker it dispatches through already exists;
   `execute` prepares a per-execution directory, drives vet → compile →
   run under the caller's own `{op_id, step_id}`, restates the pipeline's
@@ -211,9 +224,11 @@ over one session file. WP-L.
   it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
   this boot handed the wiring (so a test can prove the pinned prompt is
   the one on the wire and the startup line can name its digest);
-  `services`, the supervisor over the restartable composition layer; and
+  `services`, the supervisor over the restartable composition layer;
   `stops`, the subject the host reports a `SIGTERM` or a fatal fault on,
-  owned by whichever process called `boot`.
+  owned by whichever process called `boot`; and `helper_path`, the
+  `loom-exec` the ladder settled on, carried so the listening line can
+  name the binary that will enforce every jail this session builds.
 - `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
   process tree. `adopt` runs a boot on a dedicated exit-trapping process
   so every link an `actor.start` forms lands there rather than on the
@@ -234,6 +249,13 @@ over one session file. WP-L.
   startup line out, and either `SIGTERM` or a fatal fault runs the same
   `shutdown` so the lease is released rather than left to its TTL.
   `client.main` delegates here for the shipment's entrypoint.
+- `client/serve.{helper_ladder, seed_ladder}` — the two lookup orders,
+  taken as rungs rather than performed inline, because *order* is the
+  whole of what they decide and a lookup against the host running a test
+  cannot show an order. `helper_ladder` is `--helper`, the tree this
+  server shipped in, `PATH`, `./bin`; `seed_ladder` is `--codemode-seed`,
+  the workspace's own seed, the bundled one, and a named path for the
+  refusal to point at when nothing answers.
 - `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
   jailed commands run under, the *default* session base policy, and the
@@ -290,7 +312,9 @@ over one session file. WP-L.
   `client/wiring` (legal — T depends on all). `packages/tui` is its Go
   client, coupled only through the protocol and the golden fixtures.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
-  wall clock, unique entropy, `PATH` lookup, `os:type`/machine
+  wall clock, unique entropy, `PATH` lookup, `code:root_dir/0` and the
+  running ERTS version (the anchor `client/install` builds every
+  in-tree path from), `os:type`/machine
   architecture for the prompt's platform line, the SIGTERM relay,
   `sys:terminate/3` for stopping the service supervisor the way OTP
   stops one, and the documented exit-code halt. Test-side, `client_test_ffi.erl` is a
@@ -567,10 +591,26 @@ over one session file. WP-L.
 - **Registration is gated on the seam, for both families.** A host with
   no messaging plane ships no `agent_*` tools and a host with no
   toolchain or no prepared build seed ships no `code_mode` — the boot
-  says which is missing, once, on stderr. The wire tool array is the byte
-  prefix of the provider's cached region, so a permanently-refusing
-  definition would be paid for on every request of every strand for the
-  life of the session.
+  says which is missing, once, as a `codemode.unavailable` log line, and
+  the registry it actually built as `server.tools`. The wire tool array
+  is the byte prefix of the provider's cached region, so a
+  permanently-refusing definition would be paid for on every request of
+  every strand for the life of the session. **The message is part of the
+  mechanism, not decoration**: it is the only thing anybody will ever
+  see about an absent code mode, because there is no tool left to fail
+  later, so it names what is missing, both places that were looked, and
+  the way to supply it. A working host logs `codemode.ready` with the
+  `gleam`, the `erl` and the seed it settled on.
+- **A component of Loom is looked for in Loom's own tree before `PATH`.**
+  The helper, the emulator and the compiler are all located from
+  `code:root_dir()` first (`client/install`). For `loom-exec` that is a
+  security property rather than a convenience: it is the binary that
+  builds the namespaces and applies Landlock and seccomp, so a stray one
+  an unrelated install left on `PATH` must not outrank the audited one
+  shipped in the same tree as the running server. An explicit `--helper`
+  still outranks both, because that is how an operator points at a helper
+  they audited themselves, and a flag naming a missing file refuses
+  saying so rather than falling through to one they did not choose.
 - **Approved grants are validated structurally against the wanted diff**
   before being stored back in the runtime's internal vocabulary, so the
   consume path hands a re-execution exactly what was approved.

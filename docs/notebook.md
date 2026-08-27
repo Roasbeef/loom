@@ -2,6 +2,136 @@
 
 ---
 
+## 2026-08-27 — a release that can find what it ships (#101, #102)
+
+### State
+
+Both issues were one defect at two seams: a released Loom could not find
+things inside its own tree, because every lookup for a component of Loom
+started at `PATH`. The helper was papered over by the launcher injecting
+`--helper`; code mode was not papered over at all and simply went
+missing, even though **the release already carried `erl`** —
+`erts-<vsn>/bin/erl`, in the tarball, never on `PATH`.
+
+#101 proposed "the directory of the running executable", and on the BEAM
+that phrase does not resolve: the running executable is `beam.smp`,
+inside `erts-<vsn>/bin`, and the thing the operator typed is a shell
+script that has already `exec`ed away. OTP's own answer is
+`code:root_dir/0`, and it was checked by running it rather than by
+reading about it: for a release it is the release root, and for
+everything else — `gleam run`, the shipment, a dev shell — it is the OTP
+installation root the `erl` on `PATH` came from. Absolute both times,
+independent of the working directory, resolved by the emulator rather
+than by argv.
+
+Nothing special-cases the second row. `client/install` builds paths onto
+the anchor and *probes* them, and existence is the whole discriminator:
+`bin/loom-exec` and `bin/gleam` are absent under an OTP installation
+root, so those rungs skip and the ladder falls through to `PATH` exactly
+as before; `erts-<vsn>/bin/erl` is present under **both**, and under an
+OTP installation it is the very emulator running the harness — which is a
+better answer than `PATH` gives, since a satellite loads beams the
+hermetic build just produced.
+
+The three ladders now read: helper — flag, tree, `PATH`, `./bin`;
+`gleam`/`erl` — tree, `PATH`; seed — flag, workspace, tree. The flags
+stay on top. The seed puts the workspace above the bundle, because a
+checkout's seed is regenerated against the tree being worked on and a
+frozen one would only be rejected by `seed.verify` a moment later.
+
+Code mode now ships in the main artifact: 29 MB → 58 MB unpacked, 11 MB →
+21 MB compressed, with `DIST_CODEMODE=0` for a deploy that will never
+write a program. A second archive was the tempting option and the TUI is
+the precedent for it — but the TUI splits off *because the protocol is
+frozen*, and there is no frozen interface between the harness and the
+seed. There is `seed.verify`, which wants the seed's `gleam.toml` byte
+identical to what the compile service renders. Two separately downloaded
+archives that must agree byte-for-byte on an internal, unfrozen table is
+the arrangement most likely to reproduce #102 with an extra download in
+front of it.
+
+### Found on the way
+
+**Both issues were partly wrong about the mechanism, and it took a
+mutation to notice.** With the release built and code mode registering,
+reverting `discover` to a PATH-only lookup and rebuilding — the exact
+unfixed code — left the smoke *green*. OTP's `erl` start script prepends
+`$BINDIR:$ROOTDIR/bin` to `PATH` before it execs the emulator, so inside
+a release's VM `PATH` already begins with the release's own
+`erts-<vsn>/bin` and its own `bin/`. Measured, booting with
+`env -i PATH=/usr/bin:/bin`:
+
+```
+PATH=<root>/erts-16.4.0.5/bin:<root>/bin:/usr/bin:/bin
+```
+
+So `erl` was never being missed; code mode was absent because `gleam` and
+the seed were not in the tarball, full stop. And the precedence worry —
+a stray `loom-exec` outranking the shipped one — cannot happen in a
+release either, because the tree's `bin` is at the *front* of that PATH.
+It is real for every non-release run, where `$ROOTDIR` is an OTP install
+with no `loom-exec` in it, and the anchor does not help there; `./bin`
+was deliberately not promoted above `PATH` in exchange, since a
+working-directory executable outranking `PATH` is a hazard rather than a
+repair.
+
+What survives the correction: the launcher's injection was never
+load-bearing, so removing it is safe and proven so; a release working
+because a start script rewrote an environment variable is an accident to
+stop relying on; and the seed is a rung `PATH` can never serve, since
+`share/codemode-seed` is not an executable. That last one is the mutation
+the release smoke does catch — drop the bundled rung from
+`serve.seed_ladder` and the built release registers no `code_mode`, with
+the message naming both the workspace path and the bundled one.
+
+**The release's own ERTS could not boot.** `scripts/release.sh` deleted
+`bin/*` to be rid of relx's daemon-supervisor launcher, and
+`no_dot_erlang.boot` was in that directory — which is exactly where
+`escript` looks for its boot file, `$ROOTDIR/bin/*.boot`, in every OTP
+installation. So the bundled `escript` and `erlc` had never worked. It
+was invisible because the generated launcher names its boot file
+absolutely and was the only thing that had ever booted that ERTS.
+`gleam build` shells out to `escript`, so code mode in a release is what
+tripped over it. The deletion now spares `*.boot`, and the build refuses
+if relx stops writing one.
+
+**The `compiler` application was missing too.** An escript is compiled at
+load time by `compile:forms/1`, which nothing in the server's own closure
+pulls in — so the first fix produced a toolchain that booted and then
+failed `undef`. 617 KB in the release, listed only for a code-mode build,
+and reachable only from the emulator the *build jail* runs.
+
+**The seed's 5.4 MB of `build/` is not what the issue guessed.** Gleam
+ships pre-generated `.erl` inside its Hex packages, so `build/packages`
+(1.2 MB, source) is what makes an offline build possible at all, and
+`build/dev` (4.3 MB, compiled beams) is purely an `erlc` cache. Dropping
+it takes the seed to 1.1 MB and a hermetic build from 0.45 s to 1.44 s.
+Worth keeping, but for a second of `erlc` per execution — not for "a
+fresh compile of the world".
+
+**`SHA256SUMS` did not cover the seed.** The manifest was "every
+executable file", and the seed has none — but it holds `vendor/cap` and
+`vendor/core`, the prelude compiled into every satellite a code-mode
+program ever runs as. So the one part of the tarball that *becomes* code
+without being an executable was outside the thing an operator can check.
+The manifest now covers everything under `share/` too: 615 files, and
+`sha256sum -c` still passes on the unpacked tree.
+
+**`gleam` is not stripped upstream.** 29,168,608 → 22,826,152, 21.7% off,
+and it still builds; everything else in the release already was.
+
+### Wanted from the source, not made here
+
+The generated launcher still resolves `$0` with `dirname` + `pwd -P`,
+which resolves the *directory* physically but not a symlink to the
+launcher itself. `~/.local/bin/loom -> …/release/bin/loom` would compute
+the wrong root and fail to find the bundled `erl`. The harness side is
+now immune — `code:root_dir()` reports what the emulator resolved — but
+the launcher has to reach the emulator first. A `readlink` loop would fix
+it; nothing in the tree depends on it yet.
+
+---
+
 ## 2026-08-27 — a downloadable server: OTP release, helper beside it
 
 ### State

@@ -31,13 +31,16 @@ generates the `rebar.config`; there is no checked-in one, because the
 release version and the ERTS version are both read from the tree at
 build time.
 
-**To build**: `gleam`, `rebar3`, `erl`, `go`, `strip`. **To run what
-comes out**: nothing. `make release-smoke` proves that second claim
-rather than asserting it — it boots the built release with
-`env -i PATH=/usr/bin:/bin`, so neither `erl` nor `gleam` is reachable,
-and requires a `/healthz` 200, a 401 from an unauthenticated websocket
-upgrade, a written session file, and the graceful-shutdown log line on
-SIGTERM.
+**To build**: `gleam`, `rebar3`, `erl`, `go`, `strip`, and a prepared
+build seed (`make codemode-seed`, which is the one step in this tree
+allowed the network; `DIST_CODEMODE=0` drops that requirement and the
+bundle with it). **To run what comes out**: nothing. `make release-smoke`
+proves that second claim rather than asserting it — it boots the built
+release with `env -i PATH=/usr/bin:/bin`, so neither `erl` nor `gleam` is
+reachable, and requires a `/healthz` 200, a 401 from an unauthenticated
+websocket upgrade, a written session file, the graceful-shutdown log line
+on SIGTERM, and the four code-mode and helper checks the last section
+describes.
 
 ### What was rejected
 
@@ -64,9 +67,11 @@ a *distributed* node from a `vm.args` relx generates with `-sname loom
 cookie on a node that accepts remote calls is exactly what the design's
 two-channel doctrine says must never be the default — native
 distribution never crosses a trust boundary — and Loom has no control
-plane for it to serve anyway. `scripts/release.sh` deletes relx's `bin/`
-and the `vm.args` and `sys.config` only that script reads, and writes a
-launcher that is the shipment entrypoint's invocation with two changes:
+plane for it to serve anyway. `scripts/release.sh` deletes relx's start
+scripts and the `vm.args` and `sys.config` only they read — but not the
+`*.boot` files sharing that directory, which are standard OTP and which
+the bundled `escript` needs, and which an earlier `rm -f bin/*` was
+quietly taking with them — and writes a launcher that is the shipment entrypoint's invocation with two changes:
 `erl` is the bundled one, and the boot script is `no_dot_erlang`, so a
 `~/.erlang` nobody audited is not evaluated inside the harness VM on the
 way up.
@@ -109,19 +114,126 @@ beside the binary costs nothing.
 What the release does instead:
 
 - `bin/loom-exec` sits next to `bin/loom` in the unpacked tree, and the
-  launcher passes `--helper "$here/loom-exec"` unless the caller already
-  passed `--helper`. So the default is the shipped helper and an
-  operator who wants a separately packaged or separately audited one
-  still wins, which is what that flag already means.
-- `SHA256SUMS` in the tree covers every executable file in it, including
-  the helper and every NIF. It is checkable with `sha256sum -c` from the
-  moment the tarball is unpacked, by anyone, at any later time — which
-  is the thing a blob inside a binary is not.
+  **server finds it there itself**. The launcher used to inject
+  `--helper "$here/loom-exec"`, because the server's ladder was
+  `--helper`, then `PATH`, then `./bin` and an unpacked release is none
+  of those. That injection is gone; the ladder is now `--helper`, then
+  the tree this server shipped in, then `PATH`, then `./bin`. An
+  operator who wants a separately packaged or separately audited helper
+  still wins, which is what that flag already means. See "The
+  installation anchor" below for how the tree is located, and #101 for
+  why it had to stop being the launcher's job.
+- `SHA256SUMS` in the tree covers every executable file in it — the
+  helper, every NIF, the bundled `gleam` — **and everything under
+  `share/`**, which is the build seed. That second half is not
+  thoroughness for its own sake: the seed holds `vendor/cap` and
+  `vendor/core`, the prelude compiled into every satellite a code-mode
+  program runs as, so a tampered seed is arbitrary code inside every
+  jailed node. "Executables only" would have left the one part of the
+  tarball that *becomes* code without being one outside the manifest.
+  615 files, checkable with `sha256sum -c` from the moment the tarball is
+  unpacked, by anyone, at any later time — which is the thing a blob
+  inside a binary is not.
 - The helper is byte-identical across `make binaries`, `make sandbox`
   and `make release`, because all three go through `scripts/go-build.sh`
   with the same `-trimpath -ldflags="-s -w"`. That is what makes `make
   selftest`'s ENFORCED/SKIPPED verdict evidence about the *shipped*
   helper rather than about a development build of it.
+
+## The installation anchor: `code:root_dir()`
+
+Four of the release's own components are looked for by the running
+server: the sandbox helper, the emulator a code-mode satellite is
+launched with, the Gleam compiler a program is built with, and the build
+seed that build is cloned from. All four used to be looked up on `PATH`,
+or in the seed's case at a fixed workspace-relative path.
+
+**One measurement first, because without it this section claims more than
+it delivers.** OTP's `erl` start script prepends `$BINDIR:$ROOTDIR/bin`
+to `PATH` before it execs the emulator. Booting the release with
+`env -i PATH=/usr/bin:/bin` and asking the VM gives:
+
+```
+PATH=<root>/erts-16.4.0.5/bin:<root>/bin:/usr/bin:/bin
+```
+
+So a release was **not** failing to find `erl` — #102's "it is simply not
+on `PATH`" is wrong about the mechanism, though right that code mode was
+absent — and it would not fail to find a `loom-exec` or a `gleam` placed
+in its `bin/`. The launcher's `--helper` injection was never load-bearing.
+Nor does #101's precedence worry arise in a release: the tree's own `bin`
+is at the *front* of that `PATH`, so a stray `loom-exec` later on it never
+wins. That worry is real for every **non-release** run, and the anchor
+does not help there either — under an OTP installation root there is no
+`loom-exec` to find, so a checkout still resolves `PATH` before `./bin`.
+An operator who cares passes `--helper`, and `./bin` was deliberately not
+promoted above `PATH`, because a working-directory executable outranking
+`PATH` is a hazard of its own rather than a repair.
+
+What is left is still worth doing, and it is two things. A release that
+works *because a start script rewrites an environment variable* is an
+accident being relied on: undocumented, inherited by every process the VM
+later spawns, and untrue the day the launcher execs `beam.smp` directly.
+And no `PATH` mechanism will ever find `share/codemode-seed`, which is
+not an executable — that rung is genuinely new, and it is the one a
+mutation of the release smoke can actually break.
+
+The obvious way to state the anchor is "the directory of the running
+executable", and **on the BEAM that phrase is ambiguous**. What the operating system executed
+is `beam.smp`, several directories down inside `erts-<vsn>/bin`; what the
+operator typed is a shell script that has already `exec`ed away. Neither
+is the release root.
+
+OTP answers the question itself. `code:root_dir/0` returns the `ROOTDIR`
+the emulator resolved for itself at boot:
+
+| how Loom was started | `code:root_dir()` |
+|---|---|
+| an unpacked release, through `bin/loom` | the release root — the directory holding `bin/`, `lib/`, `releases/` and `erts-<vsn>/` |
+| `gleam run`, the erlang shipment, a dev shell | the OTP installation root the `erl` on `PATH` came from — `/usr/local/otp` on the development container |
+
+Both were checked by running them. It is absolute in both cases, it does
+not move with the working directory, and it survives being reached
+through a launcher or a symlink, because the emulator resolved it rather
+than argv. That is why the anchor lives in `client/install` rather than
+in the generated launcher: the launcher is where #101 was already being
+papered over, and fixing it there again would have been the same defect
+in a new place.
+
+**Nothing special-cases the second row.** The paths are probed and
+existence is the whole discriminator:
+
+- `bin/loom-exec` and `bin/gleam` do not exist under an OTP installation
+  root, so those rungs are skipped and the ladder falls through to `PATH`
+  exactly as before — which, for a *release*, is the same answer the rung
+  itself gives, per the measurement above. If a `loom-exec` ever *is*
+  installed there, that is a Loom installed there and finding it is right.
+- `erts-<vsn>/bin/erl` exists under **both**, and under an OTP
+  installation it is the very emulator running the harness. So that rung
+  answers on a development host too — and answers *better* than `PATH`
+  does, because a satellite loads `.beam` files the hermetic build just
+  produced and the running emulator is by construction the one whose OTP
+  that build resolved against, while the first `erl` on `PATH` is
+  whichever installation a shell profile points at.
+- `share/codemode-seed` exists only in a release built with the code-mode
+  bundle, so a checkout keeps using its own `build/codemode-seed`.
+
+The three ladders, in full, highest rung first:
+
+| what | ladder |
+|---|---|
+| the sandbox helper | `--helper`, the release tree, `PATH`, `./bin` |
+| `gleam` and `erl` | the release tree, `PATH` |
+| the build seed | `--codemode-seed`, `<workspace>/build/codemode-seed`, the release tree |
+
+The two flags stay on top: that is how an operator points at a component
+they audited or prepared themselves, and a flag naming a missing file
+fails saying so rather than falling through to something they did not
+choose. The seed ladder puts the *workspace* above the bundle for the
+opposite reason — a checkout's seed is regenerated by `make codemode-seed`
+against the tree being worked on, and a contributor who changed the
+compile service's dependency table must build against their own rather
+than against a frozen one `seed.verify` would then reject.
 
 ## The TUI is a separate download
 
@@ -135,7 +247,7 @@ gateway protocol, and three things follow from that:
   editor plugin and a phone are peers of the terminal.
 - Neither half should pay for the other. A headless deploy would carry
   16 MB of terminal UI it can never draw; a laptop attaching to a remote
-  server would carry 29 MB of BEAM it will never boot.
+  server would carry 58 MB of BEAM and toolchain it will never boot.
 - Fusing them implies they must match versions. The protocol being
   frozen is exactly the claim that they need not.
 
@@ -177,67 +289,184 @@ host beside the server, because that is what has been run and tested.
 
 ## Sizes, measured
 
-Stripping the two Go binaries was free and was taken:
+Stripping the Go binaries was free and was taken:
 
 | binary | before | after `-s -w` | |
 |---|---|---|---|
 | `bin/loom-exec` | 4,878,696 | 3,281,120 | 32.7% off |
 | `bin/loom-tui` | 21,700,138 | 15,798,564 | 27.2% off |
 
+The bundled `gleam` was not stripped upstream and everything else in the
+release is, so it is stripped on the way in — 29,168,608 to 22,826,152
+bytes, 21.7% off, and the stripped binary still builds the seed offline
+(the release smoke proves that, not just `--version`).
+
 The copied ERTS is stripped too, which is the single largest saving in
 the artifact: `beam.smp` arrives at 53 MB, of which about 42 MB is a
 symbol table and DWARF the emulator never reads. Erlang stack traces and
 crash dumps come from the BEAM's own tables, not from ELF, so this costs
 a C-level backtrace under `gdb` and nothing else. `DIST_STRIP_ERTS=0`
-turns it off.
+turns off both strips.
 
-| | |
-|---|---|
-| ERTS as copied | 57.3 MB |
-| ERTS stripped | 11.3 MB |
-| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 15 MB |
-| `bin/loom-exec` | 3.2 MB |
-| **the release tree** | **29 MB** |
-| `dist/loom-0.1.0-linux-x86_64.tar.gz` | **11 MB** |
-| `dist/loom-tui-0.1.0-linux-x86_64` | **16 MB** |
+Every figure below is `du -sh` on the built tree, and both columns were
+built and smoke-tested on the development container.
+
+| | with code mode | `DIST_CODEMODE=0` |
+|---|---|---|
+| ERTS as copied | 57.3 MB | 57.3 MB |
+| ERTS stripped | 11 MB | 11 MB |
+| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 16 MB | 15 MB |
+| — of which the `compiler` application | 617 KB | — |
+| `bin/loom-exec` | 3.2 MB | 3.2 MB |
+| `bin/gleam`, stripped | 22 MB | — |
+| `share/codemode-seed` | 5.8 MB | — |
+| **the release tree** | **58 MB** | **29 MB** |
+| **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **21 MB** | **11 MB** |
+| `dist/loom-tui-0.1.0-linux-x86_64` | 16 MB | 16 MB |
+
+So code mode costs **+29 MB unpacked and +10 MB compressed**, a little
+over a doubling either way. That is close to the estimate #102 worked
+from (≈64 MB unpacked) and lands lower, because stripping `gleam` was
+worth 6 MB and the issue's 5.8 MB seed figure is block-allocated —
+`du --apparent-size` puts it at 4.0 MB.
+
+**Where the seed's bulk is, and what it buys.** 5.4 MB of the seed's
+5.8 MB is `build/`, split 4.3 MB of compiled dependency `.beam` under
+`build/dev/erlang` and 1.2 MB of dependency *source* under
+`build/packages`. Only the second is load-bearing: Gleam ships
+pre-generated `.erl` inside its Hex packages, so `build/packages` is what
+makes a clone build with the network off at all, and a seed without it
+reaches for Hex and fails. `build/dev` is purely a cache of `erlc` output.
+Dropping it takes the seed to 1.1 MB and takes a hermetic build from
+**0.45 s to 1.44 s** — measured, three times each, on a clone of the
+shipped seed with nothing but the release's own `bin` on `PATH`. Every
+code-mode execution pays that, on top of a jail spin-up, so the 4.3 MB
+stays; but the reason is a second of `erlc` per call, not "a fresh
+compile of the world", and it is worth stating the real number.
 
 For comparison, what the tree produced before any of this: an 11 MB
 shipment plus 26.6 MB of unstripped Go binaries, which needed an OTP
 installation on top.
 
-## Code mode is absent from a release, and that is a gap (#102)
+## Code mode ships in the release, and doubling the artifact is the cost
 
-The server registers the `code_mode` tool only on a host that has
-`gleam` and `erl` on `PATH` *and* a build seed whose dependency table
-matches the compile service's. A release satisfies **one** of those and
-is not asked the right question about it:
+The server registers the `code_mode` tool only on a host that has a Gleam
+compiler, an emulator, *and* a build seed whose dependency table is
+byte-identical to the one the compile service generates. A release used
+to satisfy **one** of those and was not asked the right question about
+it: `erts-<vsn>/bin/erl` was in the tarball all along, simply not on
+`PATH`, and discovery only looked at `PATH`. So one third of the reason
+code mode was absent from a release was a lookup failure rather than a
+missing file — the same shape as the helper ladder above, and fixed by
+the same anchor.
 
-| prerequisite | in the release |
+The other two thirds were real files, and they now ship:
+
+| prerequisite | where it comes from |
 |---|---|
-| `erl` | **yes** — `erts-.../bin/erl` ships in the tarball, but is not on `PATH`, so discovery misses it |
-| `gleam` | no, 29 MB |
-| build seed | no, 5.8 MB |
+| `erl` | `erts-<vsn>/bin/erl`, already in the tarball; found through `code:root_dir()` |
+| `gleam` | `bin/gleam`, copied from the build host and stripped — 22 MB |
+| the build seed | `share/codemode-seed`, copied from `make codemode-seed` — 5.8 MB |
+| the `compiler` OTP application | listed in the release for a code-mode build only — 617 KB |
 
-So a released Loom drops the tool this milestone was built to deliver,
-and one of the three reasons is a discovery failure rather than a
-missing file — the same shape as the helper ladder above.
+That last row is not obvious and was found by running the thing rather
+than by reading it. `gleam build` compiles Erlang through an `escript`,
+an escript is compiled at load time by `compile:forms/1`, and
+`compile:forms/1` lives in the `compiler` application — which nothing in
+the server's own closure pulls in. Without it the bundled toolchain boots
+and fails `undef` on its first module. None of it is reachable from the
+harness VM: it is loaded by the emulator the *build jail* runs.
 
-The mechanism is right and stays: the server prints the reason once at
-boot and ships no `code_mode` definition, because a tool definition is
-a cache prefix paid on every request of every strand for the life of the
-session, and advertising a tool that cannot run is worse than omitting
-it. What is wrong is treating the omission as settled. Bundling the
-compiler and the seed roughly doubles the artifact, from 29 MB unpacked
-to about 64 MB; that is a real cost and it is the cost of shipping the
-thing the project is about. #102 carries the decision.
+Finding that also uncovered a plain bug in the release. The script
+deleted `bin/*` to be rid of relx's daemon-supervisor launcher, and
+`no_dot_erlang.boot` was in there — `$ROOTDIR/bin/*.boot` is where
+`escript` looks for its own boot file, so every release built so far had
+an ERTS whose `escript` and `erlc` could not start. Nothing noticed,
+because the launcher names its boot file absolutely and the launcher was
+the only thing that had ever booted that ERTS. The deletion now spares
+`*.boot` and the build fails loudly if relx stops writing it.
 
-## What is wanted from the source and was not changed here
+### Why the main artifact, rather than a second archive
 
-One change would remove the launcher's `--helper` injection: the
-server's helper ladder is `--helper`, then `PATH`, then `./bin`, and an
-unpacked release is usually neither, since a person runs
-`loom-0.1.0-linux-x86_64/bin/loom` from wherever they happen to be. If
-the ladder gained "the directory of the running executable" between the
-flag and `PATH`, the helper beside the binary would be found however
-Loom is invoked, and the launcher would be three lines shorter. That is
-a change in `packages/client`, and it is not made here.
+Three options were on the table (#102): ship both in the main artifact,
+ship a `loom-codemode-<version>-<platform>.tar.gz` that unpacks beside
+the release, or keep the status quo and document it honestly.
+
+**The main artifact, with `DIST_CODEMODE=0` as the opt-out**, on the
+project's own priority order — security and isolation, correctness,
+robustness, performance, capability.
+
+The decisive argument is *correctness*, and it is the second-archive
+option's own weakness. The TUI splits off because the gateway protocol is
+frozen; "the protocol being frozen is exactly the claim that they need
+not match versions" is the sentence three sections up, and it does not
+transfer. There is no frozen interface between the harness and the seed —
+there is `seed.verify`, which demands the seed's `gleam.toml` be *byte
+identical* to what `compile.default_dependencies()` renders. Two
+separately downloaded archives that must agree byte-for-byte on an
+internal, unfrozen table is the arrangement most likely to leave someone
+with a release that boots, says "the seed was prepared from a different
+dependency table", and drops the tool again — which is #102 with an extra
+download in front of it. Robustness points the same way: one artifact,
+one `SHA256SUMS` covering every executable in it, one thing to verify.
+
+What the second archive buys is a 10 MB download for a deploy that will
+never write a program, and that is a real cost paid by real deployments —
+so the opt-out exists and is one environment variable. What it does not
+get to be is the default, because the default should deliver the thing
+the project is about. `DIST_CODEMODE=0` also keeps `make release` free of
+`make codemode-seed`, which is the one step in this tree allowed the
+network.
+
+Against the status quo there is little to say beyond #102's own sentence:
+a release that omits code mode delivers a harness whose flagship
+capability works only for people who could already build from source. The
+argument for keeping it was that "a machine running a release has none of
+those", and a third of that was false.
+
+### The absence mechanism is unchanged; the message is not
+
+A host that fails any of the three still registers **no `code_mode`
+definition at all**, and that stays. A tool definition renders ahead of
+the system prompt and is therefore a byte prefix of the provider's cached
+region, paid on every request of every strand for the life of the
+session; advertising a tool that can only refuse is worse than omitting
+it.
+
+What changed is that the reason is no longer terminal. It names what is
+missing, where it was looked for, and how to supply it — the standard
+`8d09689` set when a stale helper started naming `make binaries`. A
+`DIST_CODEMODE=0` release says, verbatim:
+
+```
+gleam is not beside this server at /opt/loom/bin/gleam and not on PATH;
+code mode compiles the model's program with it, so put `gleam` (>= 1.11)
+on PATH, or run the `bin/loom` of a release built with the code-mode
+bundle, which ships one. No code_mode tool is registered.
+```
+
+and the symmetric `codemode.ready` line names the `gleam`, the `erl` and
+the seed a working host settled on, because with four rungs across three
+ladders "code mode is on" is much less useful than which toolchain it
+will build with.
+
+`make release-smoke` checks all of this on the built artifact rather than
+asserting it. Booted with `env -i PATH=/usr/bin:/bin`, the release must
+report the helper it found is the one beside it, must list `code_mode` in
+its `server.tools` line, must refuse `--helper /nonexistent/loom-exec`
+(so the flag still outranks the shipped helper), and must compile a clone
+of the bundled seed in a network namespace with nothing but its own `bin`
+on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
+`code_mode`, and a stated reason.
+
+## What is still wanted from the source
+
+Nothing about the helper ladder: #101 is closed above, and the launcher
+is three lines shorter for it.
+
+Two things this did not touch. **A macOS release still ships a helper
+with no jail** — `loom-exec` compiles for darwin, reports
+`platform-unsupported` and refuses to serve without `--allow-unenforced`
+— so packaging is not what is missing there. And **`make dist` still
+builds `loom-tui` for the host only**, though Go cross-compiles it with
+`GOOS`/`GOARCH` alone, because that is what has been built and tested.
