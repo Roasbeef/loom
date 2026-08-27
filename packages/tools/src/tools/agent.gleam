@@ -11,19 +11,37 @@
 //// same arrangement `effects.ToolOutcome` uses to mirror the broker's
 //// `CallOutcome` without a broker dependency.
 ////
-//// ## Why a tool and not a capability
+//// ## Why a tool, and where the capability lives instead
 ////
-//// A `cap/strand` capability would run inside the satellite, which
-//// executes untrusted model-written Gleam. A tool runs in the harness:
-//// trusted code, policy-checked, able to commit durably. The messaging
-//// doctrine requires the commit — a payload that changes what the
-//// recipient does travels through the store, never a mailbox — and it was
-//// designed assuming trusted writers. Handing a jailed program a
-//// messaging capability imports an untrusted writer into a plane built
-//// for trusted ones. Handing the *model* a messaging tool does not,
-//// because the harness still decides what the call does with the
+//// A tool runs in the harness: trusted code, policy-checked, able to
+//// commit durably. The messaging doctrine requires the commit — a
+//// payload that changes what the recipient does travels through the
+//// store, never a mailbox — and it was designed assuming trusted
+//// writers. Handing the *model* a messaging tool keeps that assumption
+//// intact, because the harness still decides what the call does with the
 //// arguments it was given. Every refusal below is therefore enforced by
 //// the Agency, never requested in a prompt.
+////
+//// The objection that used to stand here — that a `cap/strand`
+//// capability would run inside the satellite, which executes untrusted
+//// model-written Gleam, and so would import an untrusted writer into a
+//// plane built for trusted ones — was answered rather than dropped, and
+//// the risk it named is still the reason the answer looks as it does.
+//// `cap/strand` exists now, on the **orchestration seam**: a code-mode
+//// allowlist of `cap/strand` and `cap/report` and nothing else, whose
+//// calls are serviced by these same Agency closures, judged against the
+//// same `Caller`, under the same descendant-only addressing rule and the
+//// same caps. What makes that safe is confinement, not trust — the seam
+//// carries no filesystem, no process, no network, so the untrusted
+//// writer on the far side of it reaches the store through exactly the
+//// door a model's own `agent_send` reaches it through and through no
+//// other. The one rule the seam adds is the one thing that changes when
+//// a loop replaces a turn: a lifetime ceiling on spawn admissions per
+//// execution, because `agent_spawn` is throttled by the cost of a
+//// provider round trip and a loop pays nothing.
+//// (`docs/design-notes/orchestration-comparison.md`, "The verdict:
+//// connect them, through a second seam"; `docs/architecture/code-mode.md`,
+//// "Two seams, and why the sets are disjoint".)
 ////
 //// ## What the model is never allowed to say
 ////
