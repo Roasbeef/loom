@@ -66,11 +66,15 @@ e2e-codemode` for the code-mode pipeline against a real toolchain and a
 real satellite (`make codemode-seed` prepares the offline cache it needs).
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
-runs at the end of `make check`. Seven rules: R0 unparseable source, R1
+runs at the end of `make check`. Nine rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
-R6 the portable subset `core`, `machine` and `prompt` are held to. **R0,
-R2, R4 and R6 fail the build**; the other three warn and cost nothing.
+R6 the portable subset `core`, `machine` and `prompt` are held to, R7 a
+`let assert` carrying no `as "message"`, R8 a one-caller function wide
+enough to be a moved pyramid. **R0, R2, R4 and R6 fail the build**; the
+other five warn and cost nothing. R3 and R8 are censuses and will never
+gate: both over-report by construction, which is the point of measuring
+rather than refusing.
 A rule reaches the error tier by a census that is zero, decidable and
 argued — the staging lives in `finding.error_by_default`, and
 `packages/lint/CLAUDE.md` says what each rule is for. `make lint-<package>`

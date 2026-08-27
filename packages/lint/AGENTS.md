@@ -12,10 +12,15 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 
 A pure analysis over `glance`'s AST, plus two `glexer` token scans for
 the rules where a parser miss would be a policy hole rather than a missed
-suggestion, plus one line scan of a `gleam.toml`. Four of the seven rules
+suggestion, plus one line scan of a `gleam.toml`. Four of the nine rules
 gate — R0, R2, R4 and R6 — and each of their censuses must stay zero; the
-other three report. See **Staging** below before wiring anything else to
+other five report. See **Staging** below before wiring anything else to
 the exit code.
+
+A run is two passes over the sources, not one: R1's structural half needs
+every `use`-compatible combinator the run can see before it can judge any
+one call site, because a combinator defined in `tools/tool` is called from
+sixteen other modules.
 
 `codemode/vet` is the shape this follows — a policy, a set of rules, and
 a finding type that carries the reason — for a different purpose. `vet`
@@ -27,6 +32,13 @@ wrote ourselves. Nothing here is a security control.
 - `lint.check(path, code, policy) -> List(Finding)` — the whole library
   API for a source. Pure, total given `glance` returns, and the only
   entry point anything outside the package should need.
+- `lint.check_with(path, code, policy, combinators)` and
+  `lint.exported_combinators(path, code) -> List(Eager)` — the same for a
+  run that has read more than one file. `exported_combinators` is the
+  first pass: the `use`-compatible combinators a source *exports*, keyed
+  under its own module path, which is exactly what a qualified call in
+  another file resolves to. `check` is `check_with(…, [])` and is what a
+  single-file caller — a test, a doctest — should keep using.
 - `lint.check_manifest(path, code) -> List(Finding)` — the same for a
   `gleam.toml`. Only R6 has anything to say about one.
 - `lint.package_of(path) -> Option(String)` — which package a path
@@ -35,7 +47,8 @@ wrote ourselves. Nothing here is a security control.
 - `lint/finding.{Rule, Finding, id, name, parse, render, rules,
   error_by_default}` — the vocabulary. `Rule` is `Unparseable |
   EagerFallback | NestingDepth | CatchAll | PanicInSource |
-  BoundedLength | PortablePurity`, printed as `R0`..`R6`.
+  BoundedLength | PortablePurity | AssertWithoutMessage |
+  LoneCallerArity`, printed as `R0`..`R8`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   NestingDepth, PanicInSource, PortablePurity]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
@@ -51,29 +64,36 @@ wrote ourselves. Nothing here is a security control.
   no target, and why "portable" does not mean the harness runs in a
   browser. Read its module doc before touching the rule; the three
   findings it emits carry that argument into the report.
-- `lint/policy.{Policy, default, for_tests, for_package,
-  harness_packages, Eager, eager_combinators, portable_packages, BeamOnly,
-  beam_only_dependencies}` —
+- `lint/policy.{Policy, default, for_tests, for_tests_like, for_package,
+  harness_packages, Eager, eager_combinators, Counted, counted_calls,
+  portable_packages, BeamOnly, beam_only_dependencies}` —
   what the rules are tuned with: the R2 nesting threshold (3), whether
   `panic` is allowed (it is, in `test/` — and in the `src/` of a package
   `harness_packages` names, which `for_package` keys off and `lint.check`
   applies from the path), and whether R3 looks at multi-subject `case`s
-  (it does not). `eager_combinators` is R1's
+  (it does not). `assert_message` (R7, off for tests
+  alongside `allow_panic` — `for_tests_like` is the one place that decides
+  what a test source is exempt from) and `lone_caller_arity` (R8's
+  threshold, 7). `counted_calls` is R5's table: the two counting calls it
+  watches and, per call, the bounded question to suggest instead, because
+  the advice for a string is not `list.drop`. `eager_combinators` is R1's
   hand-curated table — module, function, the *label* of the eagerly
   evaluated argument, its positional index, and the lazy counterpart to
   suggest — for the six stdlib combinators plus the rare locally-defined
   one the structural check below cannot reach on its own (`tools/fs`'s
   `require`, which takes no continuation at all).
-- `lint/scan.{Raw, module, cheap}` — the AST walk. `Raw` is a finding
+- `lint/scan.{Raw, module, cheap, exported_eager_rows}` — the AST walk. `Raw` is a finding
   before it has a line: a rule, a **byte offset**, a function name and a
   detail. `cheap` is R1's trivially-cheap predicate, public because it is
   the single judgement the rule rests on and it must be testable alone.
   `module` also takes the file's own module path now (`lint.module_path`
   derives it from the source path), which is what lets a call to a
   locally-defined combinator resolve at all and what R1's structural
-  half — `scan.local_eager_rows` — keys a file's own synthesized `Eager`
-  rows under, so they can only ever match calls inside the file that
-  defines them.
+  half keys a file's synthesized `Eager` rows under. `module` also takes
+  the rows the run collected from every *other* file
+  (`exported_eager_rows`, public functions only), and drops any keyed
+  under its own path so a combinator called where it is defined is one
+  finding rather than two.
 - `lint/source.{line_starts, lines_of, line_of, keyword_offsets,
   Keywords, external_offsets}` — byte offsets to lines, and the two
   token scans: R4's backstop and R6's `@external` half.
@@ -102,6 +122,10 @@ wrote ourselves. Nothing here is a security control.
 
 No actors, no registers, no wire messages. `lint/cli` reads files with
 `simplifile` and writes to stdout; everything else is a pure function.
+Each source is read once and parsed twice: once by
+`lint.exported_combinators` to collect R1's cross-module table, once by
+`lint.check_with` to lint it against the whole table. Over sixteen
+packages the second parse costs about a second.
 It reads `gleam.toml` as well as `.gleam`: the manifests are *derived*
 from the sources a run touched (the package root above each `/src/` or
 `/test/`) rather than named, because `make lint` points at
@@ -129,7 +153,7 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   `bool.guard`, `result.replace_error`, `result.unwrap`, `option.unwrap`,
   `result.or`, `option.or` plus the odd locally-defined row
   (`policy.eager_combinators`) — known by name. The **structural** half
-  (`scan.local_eager_rows`) finds this tree's own `or_fault` lineage —
+  finds this tree's own `or_fault` lineage —
   `or_fault`, `or_fault_unless`, `or_fail`, `or_outcome`, `or_reply`,
   `or_continue`, `or_halt`, `or_key_halt`, and whatever the next file
   adds — by *signature* rather than by name: a locally-defined function
@@ -141,6 +165,16 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   *between* the subject and the continuation is checked, which is why a
   two-parameter combinator (`or_fault`, `or_halt`, `or_key_halt`) never
   flags and the report does not flood across the whole lineage.
+  A last parameter that is `fn(…)` is not enough on its own: it must be a
+  **continuation**, meaning it produces the function's own return type,
+  the way `or_fault(result, then: fn(a) -> Action) -> Action` does. A
+  function that merely takes a closure last is doing something else with
+  it — `call.try_call(subject, waiting:, sending: fn(reply) -> message)`
+  builds a request with `sending:` and uses `waiting:` unconditionally —
+  and while the table was built one file at a time this stayed implicit,
+  because such a function had to sit beside its own call sites to be seen
+  at all. Reading the whole tree's exports made it load-bearing: the first
+  row the cross-module pass added was `try_call`'s, and it was wrong.
   The **body** is read as well as the signature (issue #73, C): the
   combinator must branch on its own subject — the leading `case`'s
   subject, or the leading `use <- guard(…)`'s first argument — and a
@@ -152,19 +186,46 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   conservatively — a body shape the walk does not recognize drops its rows
   rather than inventing them. Neither *proves* the argument is wasted, so
   the rule still reports rather than gates.
+  The rows are collected across the whole run (issue #73, D). A row is
+  keyed under the module that defines the combinator, which is exactly
+  what a qualified call resolves to, so nothing in the lookup changed —
+  only where the rows come from: `lint/cli` reads every source once,
+  collects `lint.exported_combinators` over all of them, and hands that
+  table to each file. Before it, `tool.or_outcome`'s nineteen call sites
+  were visible only in the three that share its file. The pass added
+  exactly one finding across the tree, the `try_call` false positive
+  above; with the continuation narrowing in place R1's census is
+  unchanged — which is the result, since those sixteen were clean by luck
+  and are now clean by coverage.
 - **R2 `nesting-depth`** — a function whose `case` expressions nest
   deeper than the threshold. Measured on the AST, never on indentation:
   `client/protocol.gleam` and `machine/codec.gleam` look deep to a column
   counter and are wide literals the formatter broke one argument per
   line. That distinction is the whole reason this tool parses.
-- **R3 `catch-all`** — a `_ ->` arm in a single-subject `case` whose
-  other arms are flat constructor patterns. Two narrowings keep it from
-  drowning the report, both decidable without types: a `case` where any
-  pattern anywhere matches a literal is skipped (no enumeration of `Int`
-  exists, so `_ ->` is mandatory), and a `case` whose arms match
-  *combinations* — `Ok(Some(Cell(..)))` — is skipped, because `_ ->`
-  there stands for the remaining combinations rather than for a sibling
-  variant. **R3 still over-reports and cannot stop**: see below.
+- **R3 `catch-all`** — a final arm in a single-subject `case` that matches
+  regardless of the subject, where the other arms are flat constructor
+  patterns. **Both spellings**: `_ ->` and a bare variable, `other ->`,
+  which is a catch-all whatever it is called (gleam-style Part III) and
+  which the rule was blind to until issue #73 — seventy-three arms, which
+  is R3 from 134 to 206 on its own, including every one of the serious
+  ones the baseline review found and all nine of `core`'s. The finding says which spelling it found and, for
+  a named one, whether the arm reads the binding: a `_ ->` can often be
+  deleted and the variants written in its place, while an `other ->` whose
+  arm reads `other` means every enumerated arm has to name the value.
+  (In a tree that compiles warning-free the second is the only kind there
+  is — an unread binding is a compiler warning, and would be spelled
+  `_other` — so the census is 73 named and 0 unread. The rule still asks,
+  because a linter reads sources the compiler has not accepted yet.)
+  Three narrowings keep it from drowning the report, all decidable without
+  types: a `case` where any pattern anywhere matches a literal is skipped
+  (no enumeration of `Int` exists, so `_ ->` is mandatory); a `case` whose
+  arms match *combinations* — `Ok(Some(Cell(..)))` — is skipped, because
+  `_ ->` there stands for the remaining combinations rather than for a
+  sibling variant; and a `case` **any** of whose arms carries a guard is
+  skipped, because a guarded arm cannot be exhaustive on its own, so the
+  final arm is mandatory and a finding about it is always wrong (twelve of
+  them in the first census). **R3 still over-reports and cannot stop**:
+  see below.
 - **R4 `panic-in-src`** — `panic` or `let assert` outside `test/`, and
   outside the `src/` of a package `policy.harness_packages` names.
   Loom policy forbids both; nothing else enforced it. The exemption is
@@ -172,13 +233,21 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   about *presence* only: Part IV rule 3 also demands an `as "message"` on
   every admitted `let assert`, none of those ninety carries one, and no
   rule checks it yet (issue #73, item F).
-- **R5 `bounded-length`** — `list.length(xs)` compared against anything
-  that is not another count. The bound need not be a literal:
+- **R5 `bounded-length`** — a count compared against anything that is not
+  another count. Two counts, from `policy.counted_calls`: `list.length`
+  and `string.length`. The bound need not be a literal:
   `list.length(xs) > max_results` walks the whole list to answer a
   question settled at `max_results`, and in this tree that is the
   commoner spelling. This was the other half of the `core/json` bug —
   `excerpt` ended with `list.length(rest) > 24`, which is what made a
-  hot-path error construction quadratic rather than merely wasteful.
+  hot-path error construction quadratic rather than merely wasteful. The
+  string spelling was invisible until issue #73 and hid ten sites, two of
+  them hot: `core/corruption.bound`, on every corruption report the tree
+  builds, and `telemetry/field.secret_shaped`, once per token of every
+  scrubbed log line including OTP report lines. The finding names the
+  bounded question for the thing that was counted — `list.drop(xs, k)`
+  against `[]`, `string.drop_start(text, k)` against `""` — because the
+  advice for a string is not the advice for a list.
 - **R6 `portable-purity`** — an `@external`, a BEAM-only import, or a
   BEAM-only dependency in `core`, `machine` or `prompt`. Those three hold
   none of the three today, by rule rather than by coincidence, and two
@@ -197,12 +266,33 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   dependency bought for three lines. `lint/portable`'s module doc carries
   the argument, and every finding carries enough of it that a reader can
   tell whether their case is the exception worth arguing.
+- **R7 `assert-without-message`** — a `let assert` in `src/` with no
+  `as "…"`. R4's other half rather than a second opinion about R4's
+  question: R4 asks whether the construct belongs in this file at all and
+  `harness_packages` answers "here, yes", after which Part IV rule 3 asks
+  what the crash report will say. A bare `let assert Ok(x) = …` answers
+  with a pattern and a line number, which is the whole of what an operator
+  gets. So the rule reaches the harness R4 exempts — where every one of
+  its findings is — and goes off for `test/`, where the test's own name is
+  the message. Its census is 84 and it warns; see **Staging**.
+- **R8 `lone-caller-arity`** — a private function with more than
+  `lone_caller_arity` parameters (7) and exactly one caller, where a
+  caller is another function in the same module whose body mentions the
+  name. Not a hazard: a census, like R3. What it measures is the thing a
+  nesting metric rewards and never charges for — a block lifted out of its
+  caller with the caller's locals re-declared as a signature, which reads
+  shallower, threads the same state by hand, and is checked by nothing but
+  the argument order. It over-reports by construction (some of these grow
+  a second caller next week), under-reports where a name is shadowed, and
+  does not see a reference from a constant. It would have named
+  `reconcile_orphaned_poll` — thirteen parameters, one caller — on the
+  commit that introduced it.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
-**R0, R2, R4 and R6 gate; R1, R3 and R5 warn.** `make lint` and
+**R0, R2, R4 and R6 gate; R1, R3, R5, R7 and R8 warn.** `make lint` and
 `make check` fail on any of the four. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
@@ -247,34 +337,64 @@ arguing.
   token backstop means a construct the parser dropped is reported rather
   than assumed inert. This is the one rule `CLAUDE.md` and gleam-style
   Part IV state in as many words, and until the promotion the distance
-  between a stated rule and an enforced one was exactly this flag.
+  between a stated rule and an enforced one was exactly this flag. The
+  missing `as "message"` is R7's, not R4's.
 
-Promotion of the remaining three is per rule and costs one flag,
-`scripts/lint.sh --error=R5` — except R3, which can never be promoted at
-all. The census over `packages/*/src` reads (after the `conformance`
-exemption, R1's body check, and R5's three fixes in `core`, `storage` and
-`conformance`; see `git log` for the census this superseded):
+Promotion of the remaining five is per rule and costs one flag,
+`scripts/lint.sh --error=R5` — except R3 and R8, which can never be
+promoted at all. The census over `packages/*/src` reads (after the
+`conformance` exemption, R1's body check and its cross-module pass, R3's
+two spellings and its guard narrowing, R5's string spelling and the four
+fixes in `core`, `telemetry` and `lint` that followed it; see `git log`
+for the censuses this superseded):
 
 | rule | findings | disposition |
 | --- | --- | --- |
 | R0 unparseable | 0 | **error level**; `glance` 7 parses the whole tree |
-| R1 eager-fallback | 21 | real, and all performance-only on cold paths; promotable once they are fixed |
+| R1 eager-fallback | 20 | real, and all performance-only on cold paths; promotable once they are fixed |
 | R2 nesting-depth | 0 at threshold 3 | **error level**; a regression guard, promotable precisely because it finds nothing |
-| R3 catch-all | 134 | **stays a warning**; undecidable without types |
+| R3 catch-all | 195 | **stays a warning**; undecidable without types |
 | R4 panic-in-src | 0 | **error level**; `conformance/src` is exempt by package and was the whole census |
-| R5 bounded-length | 3, all in `client` | precise; promotable once `client/agency` is fixed |
+| R5 bounded-length | 6, in `cap`, `client`, `prompt`, `provider` and `tools` | precise; promotable once those five are fixed |
 | R6 portable-purity | 0 | **error level**; zero is the invariant, not the starting point |
+| R7 assert-without-message | 84, all in `conformance/src` | Part IV rule 3 at nothing per cent; a rule cannot gate on a census it has never been at zero for |
+| R8 lone-caller-arity | 3, and moving | **stays a warning**; a shape, never a verdict |
 
-R1's twenty-one are what the triage left after the body check removed
-nine false positives: every one is a real eager argument, none of them
+R1's twenty are what the triage left after the body check removed nine
+false positives: every one is a real eager argument, none of them
 recurses (both reviewers checked the whole `or_fault` lineage), and the
 cost is a wasted allocation on a cold path. Promoting a rule the same
 season its predicate changed is how a linter starts failing correct code,
 so R1 warns until its census is zero and stays there.
 
+R5's six are what is left of ten after the four in packages this change
+owned — `core/corruption.bound`, `telemetry/field`'s two, and this tool's
+own census padding — were fixed. The remaining five files (`cap/git`,
+`client/agency`, `prompt/summary`, `provider`'s two adapters,
+`tools/agent`) are the same one-line shape and the same promotion is
+waiting on them.
+
+R7 is not R4 with a longer message, and inheriting R4's exemption would
+make it report nothing at all: every one of its eighty-four is in the
+harness `harness_packages` admits the construct in. Ninety `let assert`s
+that name no invariant is a house rule at nothing per cent a full sweep
+after it was written, which is worth a number even though — especially
+though — fixing it is a separate change from counting it.
+
+R8 is R3's kind of rule and reaches the error tier never. "More than
+seven parameters and one caller" is a shape worth looking at, not a
+defect: a helper grows a second caller, a wide signature is sometimes
+the honest one, and the caller count is over-approximated by a name
+match. Its number moves under the reader: it was 49 when issue #73
+measured it, 40 of them in `machine/planner.gleam`, and 10 when this
+change landed the rule — the planner rewrite is removing the population
+it was written to measure, which is the rule working rather than the rule
+failing. Do not tune the threshold to make the number look better; 7 is
+where the tree's own signatures stop being readable at a glance.
+
 R3 is the doc-check `symbol absent from file` case: deciding whether an
 arm *could* have been exhaustive needs the subject's type, and `glance`
-resolves no types. The two narrowings above remove the classes that are
+resolves no types. The three narrowings above remove the classes that are
 decidably not exhaustive-able; what is left mixes genuine variant
 dispatch with idiomatic two-arm predicates, and the finding text says
 which shape it is rather than pretending the distinction is not there.
@@ -321,6 +441,11 @@ that a rule *fires* is not a test that it gates.
   turns into an exit code, and R4's pair runs the same source under
   `core` (gates) and under `conformance` (silent), which is the exemption
   itself under test.
+  R3's guard narrowing is tested from both sides — the same `case` with
+  and without a guarded sibling — so removing the check fails a test
+  rather than silently restoring twelve false positives, and R8's four
+  conditions (private, over the threshold, exactly one caller, recursion
+  not counted) each have a negative case.
   `test/lint_test.gleam` also carries the `core/json` regression shape
   verbatim, so R1 is pinned to the bug that motivated it — and, for R1's
   structural half, the `or_fault_unless`/`require` shapes issue #56 found
@@ -332,6 +457,12 @@ that a rule *fires* is not a test that it gates.
   `gleam/erlangish/thing` import (proving a prefix is a path segment),
   and a commented-out dependency line (proving the manifest scan keys on
   the key rather than on the substring).
+- **A finding is reported once.** R1's table now reaches a file from two
+  directions — its own rows and the run's collected ones — and a
+  combinator called in the file that defines it is in both. `scan.module`
+  drops the imported rows keyed under its own path; a test pins that one
+  call site produces one finding, because a duplicated warning is how a
+  census stops being read.
 - **The walk never reports a line.** `lint/scan` emits byte offsets;
   `lint` converts them in one merged pass over the file's line index.
   Keeping the conversion out of the walk is what keeps the walk pure of

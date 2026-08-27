@@ -112,6 +112,16 @@ stays the billing source of truth (§3.4).
   is still a diagnostic. `telemetry/redaction_test` plants a provider
   key, a 64-hex clearance token and a 43-character channel token under
   both a denylisted and an innocent key and greps the rendered bytes.
+- **The shape rule's questions are bounded by the bound, never by the
+  token.** `secret_shaped` runs once per token of every scrubbed field,
+  including the OTP report lines this package adopts, and a single
+  unbroken 100 KB value is an ordinary accident in one. So "is this at
+  least `credential_run` long" drops `credential_run - 1` graphemes and
+  asks whether anything is left, and "is this a UUID" asks the binary
+  its own byte size before splitting on `-`. Both were `string.length`
+  and a `string.split` of the whole token, which is `core/json`'s
+  quadratic-excerpt bug in another spelling (lint R5, issue #73); on a
+  100 KB token the pair cost 142 µs per call and now costs 3.3 µs.
 - **The shape rule's exemption is typed.** 32 unbroken characters is
   also what a digest looks like, so `Ident` opts a value out — and only
   out of the shape rule. Every exemption is therefore a deliberate,
