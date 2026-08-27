@@ -24,6 +24,7 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import tools/codemode
+import tools/prelude
 import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
@@ -871,4 +872,109 @@ pub fn the_requirements_ask_for_the_workspace_and_the_toolchain_test() {
   // The Gleam and Erlang toolchains live outside the workspace.
   assert wanted.readable_roots == ["/"]
   assert wanted.network == policy.NetworkOff
+}
+
+// --- the prelude signatures in the description -----------------------------
+
+pub fn the_description_carries_the_signatures_of_every_admitted_module_test() {
+  // The point of the whole exercise: a model writing a program can read
+  // what is in the modules it may import, instead of learning it from a
+  // `CompileFailed` round trip that carried a hermetic build (issue #36).
+  let described = codemode.description(echoing())
+  assert string.contains(described, "### cap/proc")
+  assert string.contains(described, "### cap/report")
+  assert string.contains(
+    described,
+    "pub fn run(Command) -> Result(Output, ProcError)",
+  )
+  // The record a signature returns, not only the signature: a program
+  // that cannot name `stdout` cannot read the output it just paid for.
+  assert string.contains(described, "stdout: String")
+  // And the labelled/positional convention the rendering depends on is
+  // stated rather than left to be guessed at.
+  assert string.contains(described, "`label: Type` is labelled")
+}
+
+pub fn the_signatures_never_advertise_a_module_the_seam_refuses_test() {
+  // `gleam export package-interface` reports eleven modules and the two
+  // seams admit ten between them: `cap/runtime`, the satellite's trusted
+  // boot runtime, is on neither allowlist. Advertising it would be a map
+  // to the forbidden — the model would write against something vetting
+  // rejects and read a refusal it has no way to understand.
+  //
+  // The first assertion is what keeps the second from being vacuous: the
+  // generated artifact does carry `cap/runtime`, so its absence from the
+  // description is the allowlist filter working rather than an empty
+  // input.
+  let carried =
+    list.any(prelude.surfaces, fn(entry) { entry.0 == "cap/runtime" })
+  assert carried
+
+  let served = [
+    codemode.description(echoing()),
+    codemode.description(echoing_over(codemode.one_seam(orchestration_offer()))),
+    codemode.description(echoing_over(both_seams())),
+  ]
+  list.each(served, fn(described) {
+    assert !string.contains(described, "### cap/runtime")
+    assert !string.contains(described, "pub fn boot(")
+  })
+}
+
+pub fn an_orchestration_only_host_renders_no_workspace_signatures_test() {
+  // An orchestration-only host pays for `cap/strand` and `cap/report` and
+  // for none of the other nine. These bytes are the prefix of the
+  // provider's cached head, so a module rendered for a seam this host
+  // does not serve is paid for on every request of every strand for the
+  // life of the session, to describe something no submission can use.
+  let described =
+    codemode.description(echoing_over(codemode.one_seam(orchestration_offer())))
+  assert string.contains(described, "### cap/strand")
+  assert string.contains(described, "### cap/report")
+  assert !string.contains(described, "### cap/proc")
+  assert !string.contains(described, "pub fn run(Command)")
+  assert !string.contains(described, "### cap/fs")
+}
+
+pub fn a_single_seam_description_still_opens_exactly_as_it_did_test() {
+  // `bb799ca` made a one-seam host render byte-identically to the tool
+  // before seams were selectable. The signatures are appended, so that
+  // sentence is still the description's exact prefix — a host with no
+  // choice to make reads no word about one.
+  let described = codemode.description(echoing())
+  let before =
+    "Run a Gleam program in a jailed satellite and get one structured "
+    <> "result. Use it instead of a chain of tool calls when the steps "
+    <> "depend on each other: loops, conditionals, and concurrency happen "
+    <> "inside the program, and only what `main` returns comes back — the "
+    <> "intermediate output never enters the conversation. Write `pub fn "
+    <> "main() -> report.Outcome`, returning `report.text(...)` or "
+    <> "`report.value(...)`. Imports are restricted to: cap/proc, "
+    <> "cap/report, gleam/int. `@external` is refused. Capabilities "
+    <> "serviced today: proc.run; the other `cap/*` modules compile but "
+    <> "answer unsupported_cap. A program that is refused or does not "
+    <> "compile comes back with the reason, so you can fix it and submit "
+    <> "again."
+  assert string.starts_with(described, before)
+  // And no word about a seam anywhere in the prose it pays for, which is
+  // the half of the sentence this host controls. The signature blocks
+  // below carry the prelude's own doc comments verbatim, so what they say
+  // is `packages/cap`'s business rather than this rendering's.
+  let assert [prose, ..] = string.split(described, "Each module's public")
+  assert !string.contains(prose, "seam")
+}
+
+pub fn two_seams_state_a_shared_module_once_test() {
+  // The same split the import lists take, applied to the same lists:
+  // `cap/report` is on both allowlists, so it is rendered once under a
+  // shared heading rather than twice. Duplicating it would cost its whole
+  // block a second time in the cached prefix and hand the model two
+  // listings to reconcile.
+  let described = codemode.description(echoing_over(both_seams()))
+  assert occurrences(described, "### cap/report") == 1
+  assert string.contains(described, "## On every seam")
+  assert string.contains(described, "## Only on the `workspace` seam")
+  assert string.contains(described, "## Only on the `orchestration` seam")
+  assert string.contains(described, "### cap/proc")
+  assert string.contains(described, "### cap/strand")
 }

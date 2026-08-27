@@ -76,6 +76,7 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 import tools/blob
+import tools/prelude
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 /// The name the model calls this tool by.
@@ -455,8 +456,9 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 }
 
 /// The model-facing description: what to write, which seams this host
-/// serves and what each may import, what is actually serviced, and what
-/// comes back when a program is refused.
+/// serves and what each may import, the public surface of every module
+/// they admit, what is actually serviced, and what comes back when a
+/// program is refused.
 ///
 /// Every list here is read off the seam rather than copied, so the
 /// sentence the model is charged for on every request cannot drift from
@@ -488,10 +490,15 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 /// exactly the sentence it rendered before seams were selectable: the
 /// extra bytes are paid by the hosts that actually offer the choice.
 ///
+/// The prelude's own signatures are appended after all of that, on the
+/// same per-seam split and for a related reason; `signatures_text` has
+/// the measurement and the argument.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // string.contains(codemode.description(mode), "cap/report")
+/// // string.contains(codemode.description(mode), "pub fn run(Command)")
 /// ```
 ///
 pub fn description(mode: CodeMode) -> String {
@@ -505,6 +512,125 @@ pub fn description(mode: CodeMode) -> String {
   <> seams_text(mode.seams)
   <> " A program that is refused or does not compile comes back with the "
   <> "reason, so you can fix it and submit again."
+  <> signatures_text(mode.seams)
+}
+
+// The legend the signature blocks need and cannot carry themselves.
+//
+// Two sentences, about 60 tokens, paid once per description rather than
+// per module. The label sentence is the one that earns its place: the
+// package interface carries a parameter's *label* and not its name,
+// because the label is the whole of what a caller may write, so an
+// unlabelled parameter has nothing to render but its type. Told that,
+// a reader knows `read(String)` takes one positional argument; not told
+// it, the most natural reading of a bare `String` is a parameter whose
+// name was omitted, and the call it writes next is the labelled form the
+// compiler rejects. Sixty tokens against a wasted submission is the same
+// trade the import lists already won.
+const signature_legend = "Each module's public surface, as the compiler reports it. A parameter written `label: Type` is labelled and must be passed that way; a bare type is positional. A `pub type` body lists the constructors and fields a program may build and match; a type with no body is opaque and reached only through the functions under it."
+
+// The rendered public surface of every prelude module a seam admits.
+//
+// A model writing a program authors blind. Before this, the description
+// named the modules it could import and said nothing about what was in
+// them, so the compiler was the only oracle for a signature and it was
+// reachable only by being wrong first — a `CompileFailed` round trip
+// carrying a whole hermetic build, to learn that `proc.run` takes a
+// `Command` rather than a `String` (issue #36).
+//
+// The blocks are generated (`tools/prelude`, `make gen-prelude`) and
+// rendered here, so these are the whole description as it goes on the
+// wire, measured rather than estimated. Against the real allowlists a
+// workspace-only host renders 17,678 bytes — about 4,400 tokens at the
+// usual four-bytes-per-token estimate — an orchestration-only host
+// 15,205 (~3,800), and a host serving both 28,818 (~7,200), in which
+// the `cap/report` block the two seams share is stated once.
+//
+// That is above the ~2,100/~1,900 the work was scoped against, and the
+// whole of the difference is the `pub type` declarations: issue #36
+// measured function signatures and their docs alone. They are not
+// optional. `proc.run` returns a `proc.Output`, and a program that
+// cannot name the `stdout` field cannot read the output it just paid
+// for; `strand.wait` returns a `List(Waited)` whose three variants are
+// the whole of what a join means. A signature without the record it
+// returns is a contract half stated, which is the same failure the
+// signatures were added to fix, one level down.
+//
+// The ledger still favours it, and by more than the ratio suggests.
+// These bytes render ahead of the system prompt, inside the provider's
+// one-hour cached prefix: written once per cache lifetime, then read at
+// about a tenth of base input on every request. A wrong guess about a
+// signature costs a provider round trip, several hundred *output*
+// tokens — the dearest line in the ledger — and a hermetic build to
+// produce the diagnostic. One avoided rewrite pays for many requests'
+// worth of prefix reads. What was deliberately left out, and what a
+// reader loses by it, is in `scripts/gen-prelude.py`.
+fn signatures_text(seams: Seams) -> String {
+  case list.filter(signature_sections(seams), fn(section) { section.1 != "" }) {
+    [] -> ""
+    sections ->
+      "\n\n"
+      <> signature_legend
+      <> "\n\n"
+      <> string.join(list.map(sections, render_section), "\n")
+  }
+}
+
+fn render_section(section: #(String, String)) -> String {
+  case section.0 {
+    "" -> section.1
+    heading -> heading <> "\n\n" <> section.1
+  }
+}
+
+// The same split the import lists take, applied to the same lists: the
+// modules every offered seam allows are rendered once, and each seam
+// renders only what it adds. An orchestration-only host therefore pays
+// for `cap/strand` and `cap/report` and for none of the other nine, and
+// a host serving both pays for `cap/report` once rather than twice.
+//
+// A single-seam host renders one unheaded block, so its description is
+// the description it rendered before, with the surfaces appended and no
+// word anywhere about a seam it cannot choose.
+fn signature_sections(seams: Seams) -> List(#(String, String)) {
+  case seams.alternates {
+    [] -> [#("", surface_text(seams.default.allowed_imports))]
+    _alternates -> {
+      let offers = offered(seams)
+      let shared = shared_imports(offers)
+      let added =
+        list.map(offers, fn(offer) {
+          let own =
+            list.filter(offer.allowed_imports, fn(module) {
+              !list.contains(shared, module)
+            })
+          #(
+            "## Only on the `" <> seam_name(offer.seam) <> "` seam",
+            surface_text(own),
+          )
+        })
+      [#("## On every seam", surface_text(shared)), ..added]
+    }
+  }
+}
+
+// The prelude blocks for exactly the modules in `allowed`, in the
+// generated artifact's own (sorted) order.
+//
+// The filter runs the allowlist over the artifact rather than the
+// artifact over the allowlist, and that direction is the security-
+// relevant one. `gleam export package-interface` reports eleven modules;
+// the seams admit ten between them, and `cap/runtime` — the satellite's
+// trusted boot runtime — is on neither. Rendering the artifact and
+// trusting it to be filtered elsewhere would put a module vetting
+// rejects into the description, which is a lie of the same class as
+// classifying a submission by reading its imports. The stdlib modules on
+// the allowlist have no block here and simply do not match.
+fn surface_text(allowed: List(String)) -> String {
+  prelude.surfaces
+  |> list.filter(fn(entry) { list.contains(allowed, entry.0) })
+  |> list.map(fn(entry) { entry.1 })
+  |> string.join("\n")
 }
 
 // One seam: the sentence this tool has always rendered.
