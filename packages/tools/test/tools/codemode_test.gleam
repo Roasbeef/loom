@@ -71,12 +71,45 @@ fn dead_filesystem() -> tool.FileSystem {
 
 const allowlist = ["cap/proc", "cap/report", "gleam/int"]
 
-// A seam that always answers with the same execution.
-fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
-  codemode.CodeMode(
-    execute: fn(_request) { execution },
+// The other seam's allowlist. Disjoint from the workspace one but for
+// `cap/report` and the pure stdlib entry, the way the real pair is —
+// which is what lets a test tell the two apart by what a refusal lists.
+const orchestration_allowlist = ["cap/report", "cap/strand", "gleam/int"]
+
+fn workspace_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.WorkspaceSeam,
     allowed_imports: allowlist,
     serviced_caps: ["proc.run"],
+  )
+}
+
+fn orchestration_offer() -> codemode.SeamOffer {
+  codemode.SeamOffer(
+    seam: codemode.OrchestrationSeam,
+    allowed_imports: orchestration_allowlist,
+    serviced_caps: ["strand.spawn", "strand.wait"],
+  )
+}
+
+// A host serving both, the workspace seam first — so an unnamed
+// submission gets it, and a named one has somewhere else to go.
+fn both_seams() -> codemode.Seams {
+  codemode.Seams(default: workspace_offer(), alternates: [orchestration_offer()])
+}
+
+// A seam that always answers with the same execution.
+fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
+  scripted_over(codemode.one_seam(workspace_offer()), execution)
+}
+
+fn scripted_over(
+  seams: codemode.Seams,
+  execution: codemode.Execution,
+) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(_request) { execution },
+    seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
   )
@@ -85,6 +118,10 @@ fn scripted(execution: codemode.Execution) -> codemode.CodeMode {
 // A seam whose "program" reports the request it was given, so the result
 // is a transcript of what crossed the seam.
 fn echoing() -> codemode.CodeMode {
+  echoing_over(codemode.one_seam(workspace_offer()))
+}
+
+fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
   codemode.CodeMode(
     execute: fn(request: codemode.Request) {
       codemode.Execution(
@@ -115,6 +152,10 @@ fn echoing() -> codemode.CodeMode {
                 msgpack.StringValue("source"),
                 msgpack.StringValue(request.source),
               ),
+              #(
+                msgpack.StringValue("seam"),
+                msgpack.StringValue(codemode.seam_name(request.seam)),
+              ),
             ]),
           ),
           manifest_hash: "sha256-echo",
@@ -122,8 +163,7 @@ fn echoing() -> codemode.CodeMode {
         enforcement: jailed(),
       )
     },
-    allowed_imports: allowlist,
-    serviced_caps: ["proc.run"],
+    seams:,
     default_within_ms: 300_000,
     max_within_ms: 900_000,
   )
@@ -596,7 +636,11 @@ pub fn the_budget_defaults_and_clamps_test() {
 }
 
 fn echoed_value(args: List(#(String, json.JsonValue))) {
-  let outcome = call(echoing(), args)
+  echoed_over(codemode.one_seam(workspace_offer()), args)
+}
+
+fn echoed_over(seams: codemode.Seams, args: List(#(String, json.JsonValue))) {
+  let outcome = call(echoing_over(seams), args)
   let assert Some(json.Object(fields)) = outcome.details
     as "the echoing seam must answer with a value"
   list.key_find(fields, "value")
@@ -620,6 +664,178 @@ pub fn bad_arguments_are_an_in_band_refusal_test() {
   let outcome = call(echoing(), [#("within_ms", json.Int(5))])
   assert outcome.is_error
   assert string.contains(text_of(outcome), "`program` is required")
+}
+
+// --- which seam a submission is judged against -----------------------------
+
+pub fn a_model_named_seam_reaches_the_pipeline_test() {
+  // The point of the argument: the seam the model asked for is the seam
+  // the pipeline is told to judge and route under. Nothing infers it from
+  // the program's imports, which would make the description a lie.
+  let assert Ok(json.Object(orchestrating)) =
+    echoed_over(both_seams(), [
+      #("program", json.String("...")),
+      #("seam", json.String("orchestration")),
+    ])
+    as "the echo must be a map"
+  assert list.contains(orchestrating, #("seam", json.String("orchestration")))
+  // And a submission that names none gets the host's default.
+  let assert Ok(json.Object(defaulted)) =
+    echoed_over(both_seams(), [#("program", json.String("..."))])
+    as "the echo must be a map"
+  assert list.contains(defaulted, #("seam", json.String("workspace")))
+}
+
+pub fn a_rejection_names_the_seam_it_was_judged_against_test() {
+  // A model that asked for one seam and read a refusal that could have
+  // come from either cannot tell a program it must repair from a
+  // submission it must re-aim. So the refusal names the seam, and the
+  // allowlist it prints is that seam's — not the host's default's.
+  let refusal =
+    codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.ImportNotAllowed,
+          detail: "`cap/proc` is not an allowed import",
+          location: codemode.SourceSpan(start: 0, end: 16),
+        ),
+      ]),
+      enforcement: nothing_ran(),
+    )
+  let outcome =
+    call(scripted_over(both_seams(), refusal), [
+      #("program", json.String("import cap/proc")),
+      #("seam", json.String("orchestration")),
+    ])
+  assert outcome.is_error
+  let text = text_of(outcome)
+  assert string.contains(text, "judged against the `orchestration` seam")
+  assert string.contains(text, "on the `orchestration` seam are:")
+  assert string.contains(text, "cap/strand")
+  // The other seam's own module must not appear in an allowlist the
+  // program was not judged against.
+  assert !string.contains(text, "cap/proc,")
+  let assert Some(json.Object(fields)) = outcome.details
+    as "a rejection must carry structured details"
+  assert list.contains(fields, #("seam", json.String("orchestration")))
+  assert list.contains(fields, #(
+    "allowed_imports",
+    json.Array(list.map(
+      list.sort(orchestration_allowlist, string.compare),
+      json.String,
+    )),
+  ))
+}
+
+pub fn a_workspace_submission_is_judged_against_the_workspace_seam_test() {
+  // The same refusal on the same host, aimed the other way.
+  let refusal =
+    codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.ImportNotAllowed,
+          detail: "`cap/strand` is not an allowed import",
+          location: codemode.Unlocated,
+        ),
+      ]),
+      enforcement: nothing_ran(),
+    )
+  let outcome =
+    call(scripted_over(both_seams(), refusal), [
+      #("program", json.String("import cap/strand")),
+      #("seam", json.String("workspace")),
+    ])
+  let text = text_of(outcome)
+  assert string.contains(text, "judged against the `workspace` seam")
+  assert string.contains(text, "on the `workspace` seam are:")
+  assert string.contains(text, "cap/proc")
+  let assert Some(json.Object(fields)) = outcome.details
+    as "a rejection must carry structured details"
+  assert list.contains(fields, #("seam", json.String("workspace")))
+  assert list.contains(fields, #(
+    "allowed_imports",
+    json.Array(list.map(list.sort(allowlist, string.compare), json.String)),
+  ))
+}
+
+pub fn a_seam_this_host_does_not_serve_never_reaches_the_pipeline_test() {
+  // Refused in the shell, naming what is on offer. Quietly judging the
+  // program against the other seam would be either a refusal the model
+  // cannot act on or a widening nobody chose, depending on which way the
+  // mistake ran.
+  let exploding =
+    codemode.CodeMode(
+      ..scripted(ran(codemode.Completed(msgpack.NilValue))),
+      execute: fn(_request) {
+        panic as "an unserved seam must not reach the pipeline"
+      },
+    )
+  let outcome =
+    call(exploding, [
+      #("program", json.String("import cap/strand")),
+      #("seam", json.String("orchestration")),
+    ])
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "`seam` must be one of: workspace")
+}
+
+pub fn the_choice_costs_nothing_where_there_is_no_choice_test() {
+  // The description and the schema are the byte prefix of the provider's
+  // cached region, paid on every request of every strand. A host serving
+  // one seam therefore renders exactly what it rendered before seams were
+  // selectable: one import list, and no argument for a decision its model
+  // cannot make.
+  let alone = codemode.tool_for(echoing())
+  assert string.contains(alone.description, "Imports are restricted to:")
+  assert !string.contains(alone.description, "named by `seam`")
+  assert !string.contains(json.to_string(alone.schema), "\"seam\"")
+
+  let both = codemode.tool_for(echoing_over(both_seams()))
+  assert string.contains(both.description, "named by `seam`")
+  assert string.contains(both.description, "defaulting to `workspace`")
+  assert string.contains(both.description, "`orchestration` adds imports:")
+  assert string.contains(both.description, "strand.spawn")
+  // The shared subset is stated once rather than in both lists — the two
+  // seams differ in their `cap/*` modules and nothing else, and a model
+  // handed two long lists to diff is being charged for the duplicate.
+  assert occurrences(both.description, "gleam/int") == 1
+  assert string.contains(
+    both.description,
+    "Every seam also allows: cap/report, gleam/int",
+  )
+  assert string.contains(json.to_string(both.schema), "\"orchestration\"")
+}
+
+fn occurrences(haystack: String, needle: String) -> Int {
+  list.length(string.split(haystack, needle)) - 1
+}
+
+pub fn a_parse_rejection_says_what_the_parser_will_not_accept_test() {
+  // Vetting reads the submission with a standalone parser that accepts a
+  // narrower Gleam than the compiler: label shorthand does not parse,
+  // though `gleam build` takes it. A program can therefore be refused at
+  // a byte offset for syntax that is perfectly legal, and the refusal is
+  // where someone hits it — so it is where the note lives, rather than in
+  // a description every request pays for.
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.Unparseable,
+            detail: "unexpected token",
+            location: codemode.SourcePoint(byte_offset: 61),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert string.contains(text_of(outcome), "Label shorthand")
+  assert string.contains(text_of(outcome), "write each label's value out")
+  // And nothing about the shorthand is in the sentence every request pays
+  // for.
+  assert !string.contains(codemode.description(echoing()), "shorthand")
 }
 
 // --- the tool's own contract -----------------------------------------------
