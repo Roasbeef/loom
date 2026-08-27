@@ -90,9 +90,10 @@ pub type ForkScope {
 /// Constructor invariants mirror protocol.md's command table: strand and
 /// session names are non-empty as sent (emptiness is a semantic check
 /// the gateway answers in-band, not a decode failure); `Approve.grants`
-/// is `None` for "everything wanted"; `UnknownCommand` carries any
-/// well-formed envelope whose `cmd` name this build does not know — the
-/// server answers it with `error` (`unsupported`).
+/// and `Approve.action` are the echo of what the client rendered, both
+/// required on the wire; `UnknownCommand` carries any well-formed
+/// envelope whose `cmd` name this build does not know — the server
+/// answers it with `error` (`unsupported`).
 pub type Command {
   /// Scope the connection to a session and start the event stream.
   Subscribe(session: String, from_seq: Option(Int))
@@ -106,9 +107,15 @@ pub type Command {
   FollowUp(strand: String, text: String)
   /// Cancel the strand's live operation.
   Abort(strand: String)
-  /// Approve a pending escalation; `grants` must be a subset of the
-  /// denial's wanted diff (`None` means everything wanted).
-  Approve(escalation_id: String, grants: Option(List(Grant)))
+  /// Approve a pending escalation. `grants` is the policy diff the
+  /// client displayed and `action` the action digest it displayed
+  /// beside it; the gateway checks both against the record it is about
+  /// to commit and refuses a mismatch (`code_stale_approval`) rather
+  /// than reconciling one. `grants` must additionally be a subset of
+  /// the denial's wanted diff — an approval may narrow what was asked
+  /// for, never widen it — and `action` is the empty string exactly
+  /// when the record names no action.
+  Approve(escalation_id: String, grants: List(Grant), action: String)
   /// Reject a pending escalation.
   Deny(escalation_id: String)
   /// Fork a strand; the new strand appears in the `strands` reply.
@@ -208,15 +215,37 @@ pub type EntryRecord {
 ///
 /// Constructor invariants: `status` is one of the four lifecycle names;
 /// `denial` is present exactly when the record is pending (and in
-/// snapshots of pending escalations). `op`/`strand` are best-effort
-/// attribution — the durable escalation record does not store them (see
-/// the spec-gap note in `client/gateway`).
+/// snapshots of pending escalations). `op`/`strand` are the record's
+/// own `CallScope` — the operation and the strand the denial was
+/// raised for, read off the record and never inferred — and are empty
+/// together exactly when the record names no call.
+///
+/// `tool`, `action` and `preview` are the action an approval would
+/// authorize: the tool's name, a digest of its effective arguments,
+/// and a bounded rendering of those arguments. All three are empty on
+/// a record raised through a door that names no action, and on one
+/// written before this field existed; a client must still render and
+/// still be able to approve such a record.
+///
+/// `preview` is **model-controlled untrusted display data**. Every
+/// client sanitises it before it reaches a terminal and fences it away
+/// from the client's own words — protocol.md's `escalation` section is
+/// the normative statement, and it binds any client, not just this
+/// one. `action` is compared for equality and never interpreted.
+///
+/// `asked` counts the questions this row has put to a human: one for
+/// the raise that opened it and one more for each re-opening. It is
+/// `0` on a record written before it existed.
 pub type EscalationRecord {
   EscalationRecord(
     escalation_id: String,
     op: String,
     strand: String,
     status: String,
+    tool: String,
+    action: String,
+    preview: String,
+    asked: Int,
     denial: Option(Denial),
   )
 }
@@ -311,6 +340,13 @@ pub const code_unknown_escalation = "unknown_escalation"
 /// The escalation is not pending (or not approved, for consume).
 pub const code_not_pending = "not_pending"
 
+/// An `approve` echoed a policy diff or an action digest that is not
+/// the record's own as the gateway read it. The record moved between
+/// the render and the answer; the error's `details` carry the record
+/// as it now stands, in the `escalation` event's body shape, so the
+/// client re-renders and asks again.
+pub const code_stale_approval = "stale_approval"
+
 /// The command conflicts with the strand's live state.
 pub const code_conflict = "conflict"
 
@@ -367,16 +403,12 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "abort",
       json.Object([#("strand", json.String(strand))]),
     )
-    Approve(escalation_id:, grants:) -> #(
+    Approve(escalation_id:, grants:, action:) -> #(
       "approve",
-      object_of([
-        #("escalation_id", Some(json.String(escalation_id))),
-        #(
-          "grants",
-          option.map(grants, fn(grants) {
-            json.Array(list.map(grants, encode_grant))
-          }),
-        ),
+      json.Object([
+        #("escalation_id", json.String(escalation_id)),
+        #("grants", json.Array(list.map(grants, encode_grant))),
+        #("action", json.String(action)),
       ]),
     )
     Deny(escalation_id:) -> #(
@@ -509,15 +541,18 @@ fn decode_command_body(
     "approve" -> {
       use fields <- result.try(body_fields(body))
       use escalation_id <- result.try(required_string(fields, "escalation_id"))
+      // Both echoes are required, and their absence is a refused frame
+      // rather than a tolerated default. A client that cannot say what
+      // it rendered has not carried anyone's consent, and defaulting
+      // either one would restore precisely the commit-time resolution
+      // this replaced.
       use grants <- result.try(case list.key_find(fields, "grants") {
-        Error(Nil) -> Ok(None)
-        Ok(json.Array(items)) ->
-          items
-          |> list.try_map(decode_grant)
-          |> result.map(Some)
+        Ok(json.Array(items)) -> list.try_map(items, decode_grant)
         Ok(_) -> Error("grants must be an array of grant objects")
+        Error(Nil) -> Error("grants is required")
       })
-      Ok(Approve(escalation_id:, grants:))
+      use action <- result.try(required_string(fields, "action"))
+      Ok(Approve(escalation_id:, grants:, action:))
     }
     "deny" -> {
       use fields <- result.try(body_fields(body))
@@ -747,14 +782,48 @@ fn encode_entry_record(record: EntryRecord) -> JsonValue {
   ])
 }
 
+// The action fields are additive within v1, so each is emitted only
+// when it says something: a record that names no action encodes
+// exactly as one written before the fields existed, and a reader that
+// does not know them is unaffected either way.
 fn encode_escalation(record: EscalationRecord) -> JsonValue {
   object_of([
     #("escalation_id", Some(json.String(record.escalation_id))),
     #("op", Some(json.String(record.op))),
     #("strand", Some(json.String(record.strand))),
     #("status", Some(json.String(record.status))),
+    #("tool", non_empty(record.tool)),
+    #("action", non_empty(record.action)),
+    #("preview", non_empty(record.preview)),
+    #("asked", case record.asked {
+      0 -> None
+      asked -> Some(json.Int(asked))
+    }),
     #("denial", option.map(record.denial, encode_denial)),
   ])
+}
+
+/// The `details` object a `stale_approval` error carries: the record
+/// as the gateway read it, under an `escalation` key, in exactly the
+/// shape the `escalation` event's body has. A client re-renders its
+/// prompt from this and asks again — the one reply to a refused
+/// `approve` is therefore enough to recover without a `catch_up`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.stale_approval_details(record)
+/// ```
+///
+pub fn stale_approval_details(record: EscalationRecord) -> JsonValue {
+  json.Object([#("escalation", encode_escalation(record))])
+}
+
+fn non_empty(text: String) -> Option(JsonValue) {
+  case text {
+    "" -> None
+    text -> Some(json.String(text))
+  }
 }
 
 fn encode_denial(denial: Denial) -> JsonValue {
@@ -1060,7 +1129,33 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
       Ok(Some(denial))
     }
   })
-  Ok(EscalationRecord(escalation_id:, op:, strand:, status:, denial:))
+  use tool <- result.try(defaulted_string(fields, "tool"))
+  use action <- result.try(defaulted_string(fields, "action"))
+  use preview <- result.try(defaulted_string(fields, "preview"))
+  use asked <- result.try(
+    optional_int(fields, "asked") |> result.map(option.unwrap(_, 0)),
+  )
+  Ok(EscalationRecord(
+    escalation_id:,
+    op:,
+    strand:,
+    status:,
+    tool:,
+    action:,
+    preview:,
+    asked:,
+    denial:,
+  ))
+}
+
+// Absent reads as empty — that is the tolerance the additive fields
+// were specified with — but present-and-not-a-string is still a
+// malformed body, the same distinction `optional_string` draws.
+fn defaulted_string(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(String, String) {
+  optional_string(fields, key) |> result.map(option.unwrap(_, ""))
 }
 
 fn decode_denial(value: JsonValue) -> Result(Denial, String) {
