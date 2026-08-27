@@ -140,6 +140,35 @@ pub fn parse_accepts_uppercase_test() {
   assert ids.parse_entry_id(text) == Ok(id)
 }
 
+// A uuid group is accepted when it holds exactly as many hexadecimal
+// digits as its place demands, and the check counts down through the group
+// rather than measuring it — so the boundary is worth pinning from both
+// sides rather than from the inside. Each group is tried at its width, one
+// digit short of it and one digit past it, with the dashes left in place so
+// that the group split still succeeds and it is the width that decides.
+pub fn parse_group_width_is_exact_test() {
+  let assert Ok(_at_the_bound) =
+    ids.parse_entry_id("0195c8d1-4a2e-7b31-8000-000000000000")
+
+  let below = [
+    "0195c8d-4a2e-7b31-8000-000000000000",
+    "0195c8d1-4a2-7b31-8000-000000000000",
+    "0195c8d1-4a2e-7b3-8000-000000000000",
+    "0195c8d1-4a2e-7b31-800-000000000000",
+    "0195c8d1-4a2e-7b31-8000-00000000000",
+  ]
+  let above = [
+    "0195c8d12-4a2e-7b31-8000-000000000000",
+    "0195c8d1-4a2e0-7b31-8000-000000000000",
+    "0195c8d1-4a2e-7b312-8000-000000000000",
+    "0195c8d1-4a2e-7b31-80000-000000000000",
+    "0195c8d1-4a2e-7b31-8000-0000000000000",
+  ]
+  list.each(list.append(below, above), fn(text) {
+    let assert Error(_report) = ids.parse_entry_id(text)
+  })
+}
+
 pub fn parse_rejects_invalid_test() {
   let invalid = [
     "",

@@ -2872,10 +2872,14 @@ fn scan_window_pages(
         }),
       )
       let refined = list.fold(over: entries, from: refined, with: branch.step)
-      case list.length(entries) < fetch_cap {
+      // The page came back under a `LIMIT fetch_cap`, so the only question
+      // is whether it came back short — and a row at `fetch_cap - 1` settles
+      // that without counting the page. `list.length` would walk every
+      // decoded entry of every page to answer it, on the scan path.
+      case list.drop(entries, fetch_cap - 1) {
         // Fewer rows than requested: the window is exhausted.
-        True -> Ok(refined)
-        False -> {
+        [] -> Ok(refined)
+        [_, ..] -> {
           let window = case q.order, list.last(entries) {
             NewestFirst, Ok(last) -> Window(..window, hi: last.seq - 1)
             OldestFirst, Ok(last) -> Window(..window, lo: last.seq)

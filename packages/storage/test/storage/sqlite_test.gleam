@@ -3,6 +3,7 @@
 //// matrix lives in the conformance package.
 
 import core/clock
+import core/entry.{type Entry}
 import core/register
 import core/tx.{InsertEntry, InsertUsage, SetRegister, Tx}
 import gleam/dict
@@ -113,6 +114,41 @@ pub fn branch_plan_drives_from_branch_entries_test() {
     assert !string.contains(plan, "SCAN e")
   })
   let assert Ok(Nil) = storage.close(store)
+}
+
+// A page comes back under `LIMIT fetch_cap`, and whether to fetch another
+// is decided from that page alone: a row sitting at the last place the cap
+// allows is what says the page came back full. That is a bounded question,
+// and getting its boundary wrong truncates a chain at the page size while
+// every shorter scan in the suite stays green — so the boundary is pinned
+// from both sides. 256 is `sqlite.gleam`'s private `page_size`.
+pub fn scan_crosses_the_page_boundary_test() {
+  let page_size = 256
+  list.each([page_size - 1, page_size, page_size + 1], fn(length) {
+    let store = open_store("pages_" <> int.to_string(length), "w1")
+    let empty: #(List(Entry), fixtures.Ctx) = #([], fixtures.new_ctx())
+    let #(chain, _ctx) =
+      int.range(from: 0, to: length, with: empty, run: fn(acc, n) {
+        let #(built, ctx) = acc
+        let parent = case built {
+          [] -> None
+          [previous, ..] -> Some(previous.id)
+        }
+        let #(entry, ctx) =
+          fixtures.message_entry(ctx, parent, "m" <> int.to_string(n))
+        #([entry, ..built], ctx)
+      })
+    let assert [tip, ..] = chain
+    let assert Ok(_result) =
+      storage.commit(
+        store,
+        Tx(writes: list.map(list.reverse(chain), InsertEntry), expected: []),
+      )
+    let assert Ok(scanned) =
+      storage.scan_branch(store, storage.branch_scan(from: tip.id))
+    assert list.length(scanned) == length
+    let assert Ok(Nil) = storage.close(store)
+  })
 }
 
 pub fn reopen_preserves_data_test() {
