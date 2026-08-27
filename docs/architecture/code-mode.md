@@ -227,6 +227,58 @@ property the design wants still holds, because there is no policy field
 for a program to flip and so no way for a program to widen its own network
 access — but it holds in the broker, not in the prelude.
 
+## Two seams, and why the sets are disjoint
+
+There is not one prelude but two, and a submission is vetted against
+exactly one of them (`codemode/vet/policy.Seam`).
+
+The **workspace seam** is the nine modules above: a program that
+orchestrates *effects*. The **orchestration seam** is `cap/strand` and
+`cap/report`, and nothing else: a program that orchestrates *agents*.
+`cap/strand` gives `spawn`, `wait` — a list of handles against one shared
+deadline — `send`, `note`/`notes` and `roster`, and every one of them is
+serviced by the same `client/agency` closures the model's own `agent_*`
+tools call, judged against the same `Caller`. The authorization model is
+reused rather than invented: descendant-only addressing, the depth and
+fan-out caps, the lineage ledger, and the refusal names are the tools'.
+
+Why a second allowlist rather than a tenth capability: **which
+capabilities travel together is the point.** An orchestrator that could
+also write files, run a process, or reach the network is a materially
+worse thing to hand a model than one that cannot. A compromised
+orchestration program can spawn and message within the lineage its own
+strand roots, and can touch neither the disk, the network, nor a process.
+That holds only while the two capability sets stay disjoint, which is why
+they share no module but `cap/report` — which carries no authority of its
+own — and why a test pins the disjointness rather than trusting the two
+lists to stay apart.
+
+Why a capability rather than an interpreter: Rule Zero. A trusted
+orchestration interpreter living in the harness VM *is* model-influenced
+execution in the harness VM, which is the one thing the architecture
+forbids. So the script runs outside, which means it needs a channel back
+to the broker, and that channel is `cap/strand`. Rule Zero forbids running
+the orchestrator in the harness; it does not forbid model-influenced code
+from *causing* a harness commit, which every tool call already does.
+
+The seam brings one rule that is genuinely new. `agent_spawn` is throttled
+by turn cost — the model pays a provider round trip per spawn, so the
+economics bound the fan-out without the harness having to. A loop pays
+nothing. Replacing the turn with a loop therefore removes an implicit
+throttle, and an implicit throttle removed has to become an explicit one:
+a **hard ceiling on spawn admissions per execution**, refused in band *at*
+the ceiling and naming it. It is a lifetime bound on admissions, distinct
+from the pooled outstanding-effect cap and from the Agency's live
+`fan_out`/`session_strands` caps — which a program that spawns, joins and
+spawns again passes forever. It is enforced by the satellite host, because
+one host is stood up per execution holding the one `PhaseIdentity` a
+caller may mint, so the tally is keyed to that identity by construction.
+
+`docs/examples/fan_out_review.gleam` is the worked sample, run verbatim by
+`packages/codemode/test/codemode/orchestration_sample_test.gleam`, and
+`docs/design-notes/orchestration-comparison.md` is the argument the seam
+came out of.
+
 ## Layer two: the satellite node
 
 A vetted, compiled program runs in a **satellite node**: a disposable `erl`
@@ -811,6 +863,8 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `codemode/enforcement.gleam` | What each jailed stage's helper reported, or why no report exists; both stages of an execution as one record. |
 | `cap/fs.gleam`, `cap/proc.gleam`, `cap/net.gleam`, `cap/git.gleam`, `cap/lsp.gleam`, `cap/kv.gleam`, `cap/report.gleam` | The prelude's capability modules — typed stubs over `cap_call`. |
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
+| `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
+| `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |
 | `test/codemode/e2e_test.gleam` | The jailed acceptance described above. |
