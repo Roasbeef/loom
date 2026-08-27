@@ -69,11 +69,18 @@ pub fn report(
 }
 
 // Truncates oversized context excerpts, marking the cut with an ellipsis.
+//
+// Asked with `drop_start`, which walks `max_context_length` graphemes and
+// stops, rather than with `string.length`, which walks the whole excerpt to
+// answer a question settled long before its end. Every corruption report in
+// the tree is built through here and the context is whatever hostile input
+// was in hand, so the walk was proportional to the attacker's input — the
+// same shape as `excerpt`'s `list.length(rest) > 24` in `core/json`, which
+// is the bug this package's linter exists for.
 fn bound(context: String) -> String {
-  case string.length(context) > max_context_length {
-    True ->
-      string.slice(context, at_index: 0, length: max_context_length) <> "…"
-    False -> context
+  case string.drop_start(context, max_context_length) {
+    "" -> context
+    _ -> string.slice(context, at_index: 0, length: max_context_length) <> "…"
   }
 }
 

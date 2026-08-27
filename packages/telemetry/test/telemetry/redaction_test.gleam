@@ -118,6 +118,25 @@ pub fn a_loom_identifier_is_not_mistaken_for_a_secret_test() {
   assert string.contains(line, entry_id)
 }
 
+/// The credential-run rule is a boundary, and the bounded question that
+/// replaced `string.length` has to answer it in exactly the same place:
+/// thirty-one graphemes is diagnostic text, thirty-two is a token. A test
+/// that only planted a long secret would pass against an off-by-one.
+pub fn the_credential_run_is_a_boundary_test() {
+  assert !field.secret_shaped(string.repeat("a", field.credential_run - 1))
+  assert field.secret_shaped(string.repeat("a", field.credential_run))
+}
+
+/// A UUID is admitted by its shape, not by its size. The cheap byte-size
+/// test in front of the split must not let through a value that is the
+/// right length and the wrong alphabet — a secret that happened to be
+/// thirty-six bytes with dashes in the right places would be rendered.
+pub fn a_uuid_shaped_value_that_is_not_hexadecimal_is_still_a_secret_test() {
+  assert !field.secret_shaped(entry_id)
+  assert field.secret_shaped("abcdefgh-3c1a-7abc-8def-0123456789ab")
+  assert field.secret_shaped("0192éf7e-3c1a-7abc-8def-0123456789ab")
+}
+
 pub fn a_denylisted_key_is_redacted_whatever_it_holds_test() {
   // Shape alone would let a short token through; the key rule is what
   // catches it.

@@ -242,8 +242,19 @@ pub fn secret_shaped(word: String) -> Bool {
       list.any(credential_prefixes, fn(prefix) {
         string.starts_with(word, prefix)
       })
-      || string.length(word) >= credential_run
+      || at_least(word, credential_run)
   }
+}
+
+// Whether a token is at least `run` graphemes long, answered by dropping
+// `run - 1` of them and asking whether anything is left.
+//
+// `string.length(word) >= run` walks the whole token, and this one runs per
+// token of every scrubbed log field — including OTP report lines, where a
+// single unbroken 100 KB value is an ordinary accident. The question is
+// settled by the thirty-second grapheme either way.
+fn at_least(word: String, run: Int) -> Bool {
+  string.drop_start(word, run - 1) != ""
 }
 
 /// The unbroken token length at which a value is assumed to be
@@ -313,6 +324,19 @@ fn is_alphanumeric(grapheme: String) -> Bool {
 // UUIDv7 and appear in error text constantly; treating them as secrets
 // would make the shape rule unusable.
 fn is_uuid(word: String) -> Bool {
+  // Thirty-six bytes exactly, dashes included, and every grapheme that can
+  // pass `hex_run` is one byte — so asking the binary its own size settles
+  // most tokens for free, where `string.split` would walk all of a 100 KB
+  // value to find out there are no dashes in it.
+  case string.byte_size(word) == uuid_bytes {
+    False -> False
+    True -> uuid_runs(word)
+  }
+}
+
+const uuid_bytes = 36
+
+fn uuid_runs(word: String) -> Bool {
   case string.split(word, "-") {
     [a, b, c, d, e] ->
       hex_run(a, 8)
@@ -324,8 +348,13 @@ fn is_uuid(word: String) -> Bool {
   }
 }
 
+// `byte_size` rather than `string.length`: it is the binary's own size on
+// the BEAM rather than a grapheme walk, and the hex test below makes the
+// two agree on anything that can return `True` — a multi-byte grapheme
+// costs more bytes than it does graphemes, so it can only make this
+// comparison hold on a segment that then fails to be hexadecimal.
 fn hex_run(text: String, length: Int) -> Bool {
-  string.length(text) == length
+  string.byte_size(text) == length
   && list.all(string.to_graphemes(text), fn(grapheme) {
     case int.base_parse(grapheme, 16) {
       Ok(_) -> True
