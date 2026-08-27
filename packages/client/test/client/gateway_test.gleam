@@ -2,11 +2,15 @@
 //// unknown names tolerated with `unsupported`, subscription gating,
 //// and the semantic error codes of the command table.
 
+import broker/escalation as broker_escalation
+import broker/policy.{type Grant}
 import client/catalog
 import client/gateway
+import client/grants
 import client/protocol
 import client/serve
 import core/clock
+import core/ids
 import core/json
 import core/message
 import gleam/erlang/process.{type Subject}
@@ -19,13 +23,19 @@ import provider/model
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/escalation as durable
 import session/session
 import tools/tool
 
 // --- wiring ----------------------------------------------------------------
 
 type Harness {
-  Harness(hub: gateway.Gateway, connection: Int, inbox: Subject(String))
+  Harness(
+    hub: gateway.Gateway,
+    connection: Int,
+    inbox: Subject(String),
+    runtime: api.Runtime,
+  )
 }
 
 fn start_harness() -> Harness {
@@ -167,7 +177,7 @@ fn start_harness_full(
   let hub = gateway.Gateway(name:)
   let inbox = process.new_subject()
   let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
-  Harness(hub:, connection:, inbox:)
+  Harness(hub:, connection:, inbox:, runtime:)
 }
 
 fn send_raw(harness: Harness, frame: String) -> Nil {
@@ -634,4 +644,434 @@ pub fn set_config_active_tools_preserves_membership_test() {
   assert list.contains(names, "bash")
   assert list.contains(names, "grep")
   assert !list.contains(names, "fs_write")
+}
+
+// --- escalations: naming the request, and answering that one ---------------
+//
+// Two properties are under test here and they are the same property
+// twice. A prompt must identify the request it is about — which strand
+// raised it, which tool would run, with what arguments — and an answer
+// must be about the request that was identified. Everything below is one
+// of those two halves.
+
+fn op_id(seed: Int) -> ids.OpId {
+  let #(op, _generator) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed:))
+  op
+}
+
+fn scope_on(strand: String, operation: ids.OpId) -> durable.CallScope {
+  durable.CallScope(
+    operation:,
+    strand:,
+    step_id: "turn-1:tools",
+    source_index: 0,
+    call_id: "call-" <> strand,
+  )
+}
+
+fn wall(seconds: Int) -> Grant {
+  policy.GrantLimit(field: policy.WallSeconds, value: seconds)
+}
+
+fn to_registry() -> Grant {
+  policy.GrantNetwork(network: policy.NetworkProxy(
+    allow: ["registry.npmjs.org"],
+    proxy: "127.0.0.1:3128",
+  ))
+}
+
+// Files (or re-files) a record through the same door `client/escalate`
+// raises through, so the tests see the record shape the gateway will
+// actually meet: scoped, action-bound, and refreshed by whichever call
+// most recently stood at the door.
+fn claim(
+  harness: Harness,
+  id: String,
+  scope: durable.CallScope,
+  action: durable.Action,
+  wanted: List(Grant),
+) -> Nil {
+  let denial =
+    grants.encode_denial(
+      reason: "tool requirements exceed the session policy",
+      source: broker_escalation.PolicyDenial,
+      wanted:,
+    )
+  let assert Ok(durable.Claimed(_record)) =
+    api.claim_escalation(
+      harness.runtime,
+      id,
+      denial,
+      action:,
+      scope:,
+      max_asks: 3,
+    )
+    as "the test's own raise must take the claim"
+  Nil
+}
+
+// The next escalation event on the wire, skipping anything else the pull
+// happened to carry.
+fn next_escalation(harness: Harness) -> protocol.EscalationRecord {
+  case next(harness).event {
+    protocol.EscalationEvent(record:) -> record
+    _ -> next_escalation(harness)
+  }
+}
+
+fn stored(harness: Harness, id: String) -> durable.Escalation {
+  let assert Ok(record) = api.escalation(harness.runtime, id)
+    as "the record must still be readable"
+  record
+}
+
+/// #67. The hub used to infer `op`/`strand` from its live map: with one
+/// operation open it named that strand for *every* record, and with none
+/// open — the state this harness is in — it named neither. The record
+/// has carried its own `CallScope` since it started carrying one, so two
+/// records raised on two strands must come back naming their own, which
+/// fails against the guess in both of its branches.
+pub fn an_escalation_names_the_strand_that_raised_it_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let main_op = op_id(11)
+  let sub_op = op_id(22)
+
+  claim(
+    harness,
+    "esc-main",
+    scope_on("main", main_op),
+    durable.Action(tool: "bash", digest: "d-main", preview: "{}"),
+    [to_registry()],
+  )
+  let first = next_escalation(harness)
+  claim(
+    harness,
+    "esc-sub",
+    scope_on("sub:1", sub_op),
+    durable.Action(tool: "bash", digest: "d-sub", preview: "{}"),
+    [to_registry()],
+  )
+  let second = next_escalation(harness)
+
+  assert first.strand == "main"
+  assert first.op == ids.op_id_to_string(main_op)
+  assert second.strand == "sub:1"
+    as "a refusal raised on sub:1 must not be presented as main's"
+  assert second.op == ids.op_id_to_string(sub_op)
+}
+
+/// The same attribution on the snapshot path, which is a second call
+/// site and was wrong in the same way.
+pub fn a_snapshot_names_the_strand_that_raised_each_escalation_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-sub",
+    scope_on("sub:1", op_id(33)),
+    durable.Action(tool: "bash", digest: "d-sub", preview: "{}"),
+    [to_registry()],
+  )
+  send(harness, 1, protocol.Subscribe(session: "sess-01", from_seq: None))
+  let assert protocol.SnapshotEvent(protocol.FullSnapshot(escalations:, ..)) =
+    next(harness).event
+    as "subscribe must reply with a full snapshot"
+  let assert [record] = escalations
+  assert record.strand == "sub:1"
+  assert record.op == ids.op_id_to_string(op_id(33))
+}
+
+/// The prompt carries the action, so a client has something to render
+/// beyond "something on this strand wants network".
+pub fn an_escalation_carries_the_action_it_would_authorize_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(44)),
+    durable.Action(
+      tool: "bash",
+      digest: "0123456789abcdef0123456789abcdef",
+      preview: "{\"command\":\"npm install left-pad\"}",
+    ),
+    [to_registry()],
+  )
+  let record = next_escalation(harness)
+  assert record.tool == "bash"
+  assert record.action == "0123456789abcdef0123456789abcdef"
+  assert record.preview == "{\"command\":\"npm install left-pad\"}"
+  assert record.asked == 1
+}
+
+/// #72, as reported. `dedup_key` drops a limit grant's magnitude on
+/// purpose, so a retry asking for ten times the timeout lands on the
+/// *same* row and refreshes the stored denial. An approval that resolved
+/// "everything wanted" at commit time therefore committed a widening the
+/// human never saw: a person looking at `wall_seconds 60` could commit
+/// `wall_seconds 600`. The answer now states the diff and the action it
+/// was drawn from, and a record that has moved refuses it and hands
+/// itself back.
+pub fn approve_of_a_refreshed_record_is_refused_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(55)),
+    durable.Action(
+      tool: "bash",
+      digest: "d-60",
+      preview: "{\"timeout_ms\":60000}",
+    ),
+    [wall(60)],
+  )
+  let rendered = next_escalation(harness)
+  assert rendered.denial
+    == Some(
+      protocol.Denial(
+        reason: "tool requirements exceed the session policy",
+        source: "policy",
+        enforcement: None,
+        wanted: [wall(60)],
+      ),
+    )
+
+  // The retry: same want, same row, ten times the magnitude.
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(56)),
+    durable.Action(
+      tool: "bash",
+      digest: "d-600",
+      preview: "{\"timeout_ms\":600000}",
+    ),
+    [wall(600)],
+  )
+  let _refreshed = next_escalation(harness)
+
+  send(
+    harness,
+    30,
+    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-60"),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(30)
+  let assert protocol.ErrorEvent(code:, details: Some(details), ..) =
+    envelope.event
+    as "a stale echo must be refused, with the record attached"
+  assert code == protocol.code_stale_approval
+
+  // The refusal carries the record as it now stands, so the client can
+  // re-render without waiting for a pull.
+  let assert json.Object(fields) = details
+  let assert Ok(json.Object(fresh)) = list.key_find(fields, "escalation")
+  assert list.key_find(fresh, "action") == Ok(json.String("d-600"))
+
+  // And nothing was decided: the row is still a question.
+  assert stored(harness, "esc-1").status == durable.Pending
+  assert stored(harness, "esc-1").grants == []
+}
+
+/// The action half of the echo, on its own: a diff that is
+/// byte-identical across the refresh and an action that moved. This is
+/// #65 seen from the prompt's side — the model asks for the same
+/// widening in order to run something else — and it is the case the
+/// diff check alone cannot see.
+pub fn approve_echoing_a_stale_action_is_refused_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(70)),
+    durable.Action(tool: "bash", digest: "d-true", preview: "{\"c\":\"true\"}"),
+    [to_registry()],
+  )
+  let _rendered = next_escalation(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(71)),
+    durable.Action(tool: "bash", digest: "d-curl", preview: "{\"c\":\"curl\"}"),
+    [to_registry()],
+  )
+  let _refreshed = next_escalation(harness)
+
+  send(
+    harness,
+    40,
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [to_registry()],
+      action: "d-true",
+    ),
+  )
+  let envelope = next(harness)
+  let assert protocol.ErrorEvent(code:, ..) = envelope.event
+    as "an approval naming a superseded action must be refused"
+  assert code == protocol.code_stale_approval
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+/// The diff half of the echo, on its own: an action that still matches
+/// but a diff that has moved underneath it. The composed base a
+/// denial is measured against is not the model's to choose, so the two
+/// can move independently.
+pub fn approve_echoing_a_stale_diff_is_refused_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let action =
+    durable.Action(tool: "bash", digest: "d-1", preview: "{\"command\":\"go\"}")
+  claim(harness, "esc-1", scope_on("main", op_id(57)), action, [wall(60)])
+  let _rendered = next_escalation(harness)
+  claim(harness, "esc-1", scope_on("main", op_id(58)), action, [wall(600)])
+  let _refreshed = next_escalation(harness)
+
+  send(
+    harness,
+    31,
+    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+  )
+  let envelope = next(harness)
+  let assert protocol.ErrorEvent(code:, ..) = envelope.event
+  assert code == protocol.code_stale_approval
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+/// An approval may narrow what was asked for and may never widen it. The
+/// widening direction is the same refusal as a stale echo, because from
+/// the record's side the two are the same statement: this is not my
+/// diff.
+pub fn approve_cannot_widen_past_the_wanted_diff_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(59)),
+    durable.Action(tool: "bash", digest: "d-1", preview: "{}"),
+    [wall(60)],
+  )
+  let _rendered = next_escalation(harness)
+  send(
+    harness,
+    32,
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [to_registry()],
+      action: "d-1",
+    ),
+  )
+  let envelope = next(harness)
+  let assert protocol.ErrorEvent(code:, ..) = envelope.event
+  assert code == protocol.code_stale_approval
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+/// The positive control, which is what separates a check from a
+/// blockade: an answer about the record as it stands is committed, and
+/// committed with exactly the grants the client echoed — not with
+/// whatever the record wanted when the commit ran.
+pub fn approve_echoing_the_record_commits_those_grants_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(60)),
+    durable.Action(tool: "bash", digest: "d-1", preview: "{}"),
+    [wall(60), to_registry()],
+  )
+  let _rendered = next_escalation(harness)
+
+  // Narrowed on purpose: the human said yes to the timeout and no to
+  // the network.
+  send(
+    harness,
+    33,
+    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(33)
+  let assert protocol.EscalationEvent(record:) = envelope.event
+    as "an accepted approval is acked with the escalation event"
+  assert record.status == "approved"
+
+  let record = stored(harness, "esc-1")
+  assert record.status == durable.Approved
+  let assert Ok(committed) = grants.decode_all(record.grants)
+  assert committed == [wall(60)]
+    as "the commit must spend the echoed diff, not the stored one"
+}
+
+/// A record raised through a door that names no call and no action — the
+/// shape everything written before this change has. It must still reach
+/// a client renderable, and must still be answerable: a client that
+/// echoes the nothing it was given matches.
+pub fn a_record_with_no_action_still_renders_and_still_approves_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let assert Ok(Nil) =
+    api.raise_escalation(
+      harness.runtime,
+      "esc-legacy",
+      grants.encode_denial(
+        reason: "tool requirements exceed the session policy",
+        source: broker_escalation.PolicyDenial,
+        wanted: [to_registry()],
+      ),
+    )
+    as "the unscoped door must still file a record"
+  let rendered = next_escalation(harness)
+  assert rendered.op == ""
+  assert rendered.strand == ""
+  assert rendered.tool == ""
+  assert rendered.action == ""
+  assert rendered.preview == ""
+
+  send(
+    harness,
+    34,
+    protocol.Approve(
+      escalation_id: "esc-legacy",
+      grants: [to_registry()],
+      action: "",
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(34)
+  let assert protocol.EscalationEvent(record:) = envelope.event
+    as "a record naming no action must still be approvable"
+  assert record.status == "approved"
+  assert stored(harness, "esc-legacy").status == durable.Approved
+}
+
+/// A decided record refuses a second answer, and the refusal is
+/// `not_pending` rather than a stale echo: the question is closed, not
+/// changed.
+pub fn approve_of_a_decided_record_is_not_pending_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(61)),
+    durable.Action(tool: "bash", digest: "d-1", preview: "{}"),
+    [wall(60)],
+  )
+  let _rendered = next_escalation(harness)
+  send(
+    harness,
+    35,
+    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+  )
+  let _ack = next(harness)
+  send(
+    harness,
+    36,
+    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+  )
+  expect_error(harness, 36, "not_pending")
 }
