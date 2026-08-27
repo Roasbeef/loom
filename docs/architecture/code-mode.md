@@ -316,6 +316,79 @@ diff. Both are the same arithmetic as tool registration itself — the tool
 array renders ahead of the system prompt and is the byte prefix of the
 cached region, so anything in it is paid on every request of the session.
 
+### What the description tells a model about the prelude
+
+A model writing a program authors **blind**. There is no autocomplete, no
+hover, no language server: it emits source and submits it. So for as long
+as the description listed only module *names*, the compiler was the only
+oracle for a signature, and it was reachable only by being wrong first —
+a `CompileFailed` round trip carrying a whole hermetic build, to learn
+that `proc.run` takes a `Command` rather than a `String`. The design note
+`docs/design-notes/tool-search-and-code-mode.md` put it as: the module
+namespace is the discovery index, the compiler is the schema oracle, and
+the index is listed for free while the oracle is reachable only by being
+wrong first.
+
+The description now carries the oracle. Every module a seam admits is
+rendered into it in full — `pub type` declarations with their
+constructors and fields, `pub const`, and `pub fn` signatures, each under
+the prelude's own `///` documentation — so the model reads the contract
+before it writes rather than after it is refused.
+
+Four things about the shape of that, each of which was a decision:
+
+**It is static, not a tool.** A `code_mode_signatures(module)` tool was
+the original proposal and was rejected on the cache arithmetic. Tool
+bytes render ahead of the system prompt and are the byte prefix of the
+provider's one-hour cached region: a static rendering is written once per
+cache lifetime and read at about a tenth of base input on every request
+thereafter, while a tool costs a round trip *every* time the model wants
+a signature — a request/response cycle, output tokens, latency, and the
+model having to know to ask before writing. Nothing is added to the tool
+array and nothing varies between turns, so the arithmetic that note
+prices is untouched.
+
+**It is generated at build time, and drift is a build failure.**
+`make gen-prelude` runs `gleam export package-interface` over
+`packages/cap` — the compiler's own account of what it will accept, so
+the description cannot describe a prelude the hermetic build would
+reject — renders it with `scripts/gen-prelude.py`, and commits the result
+as `tools/prelude`. `scripts/gen-prelude.sh --check` runs inside `make
+check` and refuses a tree where the artifact and its inputs have parted
+company, naming the file that moved and the command that fixes it. The
+gate is digest comparison and nothing more, so it needs no toolchain and
+costs nothing to run constantly; regeneration is the step that needs
+`gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
+
+**It is filtered through the allowlist, not through the package.**
+`package-interface` reports eleven modules, and the two seams admit ten
+between them: `cap/runtime`, the satellite's trusted boot runtime, is on
+neither. `tools/codemode` selects from the artifact using each
+`SeamOffer`'s own `allowed_imports` — the same list vetting judges
+against — so a module vetting will reject can never be advertised.
+Advertising one would be the same class of lie as classifying a
+submission by reading its imports: the model would write against
+something it cannot import and read a refusal it has no way to
+understand.
+
+**Each seam pays only for what it adds.** The signatures follow the split
+the import lists already take: modules on every offered seam are rendered
+once under a shared heading, and each seam renders only its own. An
+orchestration-only host pays for `cap/strand` and `cap/report` and for
+none of the other nine.
+
+The price is real and is written down where it can be checked: against
+the shipped allowlists a workspace-only host's whole description is
+17,678 bytes, an orchestration-only host's 15,205, and a host serving
+both 28,818 — roughly 4,400, 3,800 and 7,200 tokens. About half of that
+is the `pub type` declarations, which the estimate this work was scoped
+against did not include and which are not optional: `proc.run` returns a
+`proc.Output`, and a program that cannot name the `stdout` field cannot
+read the output it just paid for. What was deliberately left out — the
+`## Examples` doctests, and all but the first sentence of each module's
+own doc — is argued in `scripts/gen-prelude.py`, with the bytes each
+omission saves.
+
 `docs/examples/fan_out_review.gleam` is the worked sample, run verbatim by
 `packages/codemode/test/codemode/orchestration_sample_test.gleam`, and
 `docs/design-notes/orchestration-comparison.md` is the argument the seam
@@ -907,6 +980,8 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
 | `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
 | `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
+| `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |
+| `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |
 | `cap/internal/` | The channel actor, dispatch slot, wire codec, and socket FFI the program cannot import. |
 | `test/codemode/e2e_test.gleam` | The jailed acceptance described above. |

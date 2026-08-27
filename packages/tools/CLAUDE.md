@@ -26,9 +26,11 @@ pipeline — vet, hermetic compile, jailed satellite — sits behind a
 **CodeMode** record of closures declared here and filled by
 `client/codemode`. What this side owns is the model's half of the
 contract: the schema, the clamped budget, the resolution of which of the
-host's seams a submission is judged against, and the rendering that turns
-a vetting rejection, a compile error, a dead satellite or a program's own
-reported failure into something a model can repair from.
+host's seams a submission is judged against, the capability prelude's
+public signatures rendered into the description so a model does not author
+blind, and the rendering that turns a vetting rejection, a compile error, a
+dead satellite or a program's own reported failure into something a model
+can repair from.
 
 ## Key Types
 
@@ -91,6 +93,12 @@ reported failure into something a model can repair from.
   eight `satellite.RunError` variants become the four that read
   differently to a model, with the pipeline's reason text carried
   verbatim.
+- `tools/prelude.surfaces` — **generated** (`make gen-prelude`): every
+  capability-prelude module paired with its public surface — `pub type`
+  declarations with their constructors, `pub const`, `pub fn` signatures,
+  each under the prelude's own `///` docs — rendered from `gleam export
+  package-interface` over `packages/cap`. Unfiltered by design;
+  `tools/codemode` selects from it through a seam's `allowed_imports`.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -113,6 +121,12 @@ reported failure into something a model can repair from.
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
   and `client/serve` registers both families),
   `conformance` (the wiring/e2e suites drive the same adapter).
+- **Generated from**: `packages/cap`, at build time and not as a
+  dependency edge — `scripts/gen-prelude.sh` runs `gleam export
+  package-interface` there and writes `tools/prelude`. Nothing in this
+  package imports `cap`, and nothing at runtime shells out; the artifact
+  is committed and `scripts/gen-prelude.sh --check` (inside `make check`)
+  fails the build when it and its inputs part company.
 - **FFI**: `tools/internal/ffi_hash` — SHA-256 for blob content addressing.
   `tools/internal/ffi_path` — `read_link`, the lstat-level primitive
   workspace containment is built on. Both backed by `tools_ffi.erl`.
@@ -237,6 +251,29 @@ reported failure into something a model can repair from.
   concurrent call in the same step would open that ledger with *its*
   budget — and a satellite needs two outstanding effects to exist at
   all.
+- **The description carries the prelude's signatures, and they are
+  filtered through the allowlist rather than through the package.** A
+  model writing a program has no autocomplete and no language server: it
+  authors blind and learns a signature from a `CompileFailed` round trip
+  carrying a whole hermetic build. So every module a seam admits is
+  rendered into the description in full, statically — nothing is added to
+  the tool array and nothing varies between turns, because tool bytes are
+  the byte prefix of the provider's cached region and a surface that
+  changes per turn does not cost a cache write, it costs the cache
+  (issue #36). `gleam export package-interface` reports eleven modules
+  and the two seams admit ten between them: `cap/runtime` is on neither,
+  so `surface_text` runs each `SeamOffer.allowed_imports` over
+  `prelude.surfaces` and not the other way round. Advertising a module
+  vetting will reject is the same class of lie as classifying a
+  submission by reading its imports. The signatures follow the same
+  per-seam split as the import lists — shared modules stated once, each
+  seam naming only what it adds — so an orchestration-only host pays for
+  `cap/strand` and `cap/report` and for none of the other nine. Measured
+  against the shipped allowlists, the whole description is 17,678 bytes
+  for a workspace-only host, 15,205 for an orchestration-only one, and
+  28,818 for a host serving both; about half of that is the `pub type`
+  declarations, which are not optional because a program that cannot name
+  `proc.Output`'s `stdout` field cannot read the output it paid for.
 - **A code-mode result never implies a jail that was not applied.** The
   seam hands back an `Enforcement` naming *both* jailed stages — the
   hermetic build and the satellite node — as a record rather than a
