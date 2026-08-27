@@ -27,35 +27,50 @@
 ////
 //// # The one coordinate this module derives, and why
 ////
-//// A child strand's name is minted by the Agency from the caller's
-//// durable coordinates and the purpose it was given:
-//// `sub:{parent}/{purpose-slug}-{step-slug}-{source index}`. Two of those
-//// are fixed for a whole code-mode execution — it is one tool call — so a
-//// program that spawned twice with one purpose would derive one name
-//// twice and the second spawn would *reconcile onto the first child*,
-//// handing back a handle to a strand that is already doing something
-//// else. That is a silent wrong answer, so two things move it:
+//// A child strand's name is minted by the Agency from the purpose it was
+//// given and the caller's durable coordinates:
+//// `sub:{parent}/{purpose-slug}-{call-site-digest}`. Everything after the
+//// slug comes out of `agent.call_site_digest` — the operation, the
+//// minting step, and the planned call's source index — so what this
+//// module owes the Agency is a `Caller` that says truthfully *who is
+//// minting*, and nothing else.
 ////
-//// - **the source index becomes the call's ordinal.** `CapRequest.ordinal`
-////   counts this capability's admissions within the execution, which is
-////   exactly what `tool.Ctx.source_index` counts within an assistant
-////   message: which call this is inside the artifact that produced it.
-////   Distinct per spawn, deterministic, and derived by the host rather
-////   than supplied by the program.
-//// - **the step gains `program_step_suffix`.** Without it a program's
-////   first spawn and an `agent_spawn` at source index 0 in the same step
-////   would derive the same name, because both would carry the same step
-////   and the same index. The suffix is derived in one named function, in
-////   the same shape and for the same kind of reason as
-////   `identity.build_suffix`, and it reaches only the *name* and the
-////   recorded call site: the operation is threaded through untouched, so
-////   a run end still reaps what the program spawned (the reap predicate
-////   is `minted_by.operation`, `client/agency.reap_run`).
+//// A whole code-mode execution is one planned tool call, so a program
+//// that spawned twice with one purpose would present one coordinate
+//// twice and the second spawn would find the first child sitting under
+//// the derived name. `CapRequest.ordinal` is what separates them: the
+//// host counts this capability's admissions within the execution, which
+//// is what `tool.Ctx.source_index` counts within an assistant message —
+//// which call this is inside the artifact that produced it. Distinct per
+//// spawn, deterministic, and derived by the host rather than supplied by
+//// the program.
 ////
-//// Both rest on `{op_id, step_id}` being unique per execution, which the
-//// pipeline already assumes everywhere else — it is the broker's pooled
+//// The ordinal travels as `agent.Minter.Program(ordinal:)` and **not** in
+//// `Caller.source_index`, which stays the dispatching `code_mode` call's
+//// own index within its step. An earlier arrangement spent `source_index`
+//// on the ordinal and tried to recover the difference with a `-program`
+//// suffix on the step. The suffix did not survive: the name slugged the
+//// step, `agent.slug` caps a slug at `agent.max_slug_length`, and a
+//// production step id is a 36-character UUID — so `{step}` and
+//// `{step}-program` truncated to the same twenty-four characters and a
+//// program's first spawn derived exactly the name an `agent_spawn` at
+//// source index 0 in the same step derived. Two fields for two facts is
+//// what fixes it, and it fixes more than the suffix ever could have:
+//// two `code_mode` calls in one batch share their operation, their step
+//// and their ordinal tallies alike, and differ only in the source index,
+//// so nothing derived from the step alone could have told them apart
+//// either.
+////
+//// The operation is threaded through untouched, so a run end still reaps
+//// what the program spawned (the reap predicate is
+//// `minted_by.operation`, `client/agency.reap_run`).
+////
+//// None of this rests on `{op_id, step_id}` being unique per execution.
+//// The pipeline assumes that elsewhere — it is the broker's pooled
 //// ledger key, and `client/codemode.exec_root` names an execution's whole
-//// working directory after a digest of it.
+//// working directory after a digest of it — but a batch holding two
+//// `code_mode` calls falsifies it, so a seam that mints durable names
+//// declines to depend on it.
 ////
 //// # Every boundary decodes totally
 ////
@@ -110,11 +125,6 @@ pub const serviced_caps = [
   spawn_cap, wait_cap, send_cap, note_cap, notes_cap, roster_cap,
 ]
 
-/// The step suffix a code-mode spawn's call site carries. See the module
-/// doc: it is what keeps a program's children from colliding with the
-/// children of an `agent_spawn` in the same step.
-pub const program_step_suffix = "-program"
-
 /// The default lifetime ceiling on spawn admissions in one execution.
 ///
 /// Above `session_strands` (16) on purpose. The Agency's live caps —
@@ -131,16 +141,22 @@ pub const default_spawn_ceiling = 32
 
 // --- the seam --------------------------------------------------------------
 
-/// What the router needs beyond the request: the Agency to call, and the
-/// strand every call is judged as.
+/// What the router needs beyond the request: the Agency to call, the
+/// strand every call is judged as, and where in its own step the
+/// dispatching call sits.
 ///
 /// `strand` is the strand whose driver dispatched the `code_mode` tool
 /// call, taken from the dispatching `Ctx` and never from anything the
 /// program says. It is the identity the whole authorization model is
 /// stated against, so a program that could name its own would be able to
 /// address any strand in the session.
+///
+/// `source_index` comes from the same `Ctx` and for a related reason: it
+/// is what tells this execution apart from every other call in its batch,
+/// including another `code_mode` call, and a spawn's name has to say
+/// which execution minted it. See the module doc.
 pub type Orchestration {
-  Orchestration(agency: Agency, strand: String)
+  Orchestration(agency: Agency, strand: String, source_index: Int)
 }
 
 /// The lifetime admission ceilings an orchestration execution runs under:
@@ -196,15 +212,18 @@ pub fn router(seam: Orchestration) -> CapRouter {
   }
 }
 
-// The caller every Agency call is judged against. The operation and step
-// come from the threaded `PhaseIdentity` — this module writes neither —
-// and the two derivations the name needs are the module doc's subject.
+// The caller every Agency call is judged against. Every field is
+// somebody else's: the strand and the source index are the dispatching
+// `Ctx`'s, the operation and step come off the threaded `PhaseIdentity`
+// — this module writes neither — and the only thing derived here is the
+// `Minter`, which is the module doc's subject.
 fn caller_of(seam: Orchestration, request: CapRequest) -> Caller {
   agent.Caller(
     strand: seam.strand,
     operation: identity.op_id(request.identity),
-    step_id: identity.step_id(request.identity) <> program_step_suffix,
-    source_index: request.ordinal,
+    step_id: identity.step_id(request.identity),
+    source_index: seam.source_index,
+    minter: agent.Program(ordinal: request.ordinal),
   )
 }
 
@@ -802,6 +821,7 @@ pub fn refusal_code(refusal: Refusal) -> String {
     agent.FanOutCapReached(..) -> "fan_out_cap"
     agent.UnknownTool(..) -> "unknown_tool"
     agent.InvalidArgument(..) -> "invalid_argument"
+    agent.NameAlreadyMinted(..) -> "name_already_minted"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
     agent.PlaneFailed(..) -> "plane_failed"

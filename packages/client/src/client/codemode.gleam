@@ -834,6 +834,7 @@ fn surface_router(
       orchestration.router(orchestration.Orchestration(
         agency:,
         strand: request.strand,
+        source_index: request.source_index,
       ))
   }
 }

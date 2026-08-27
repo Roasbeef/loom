@@ -53,11 +53,18 @@
 ////   cannot claim to be another strand, so the addressing rule below is
 ////   enforceable at all.
 //// - **A strand name.** `agent_spawn` takes a *purpose*; the Agency mints
-////   `sub:{parent}/{slug}-{step}-{index}` from the purpose and the call's
-////   own durable coordinates. Minting kills name-squatting, sibling
+////   `sub:{parent}/{slug}-{digest}`, where the slug is the purpose,
+////   bounded, and the digest is sixteen fixed hex characters over the
+////   call's own durable coordinates and the `Minter` inside them
+////   (`call_site_digest`). Minting kills name-squatting, sibling
 ////   collisions, and shadowing an operator's convention at once — and the
 ////   determinism is what makes a replayed spawn reach for the same name
-////   and reconcile rather than mint a second child.
+////   and reconcile rather than mint a second child. The split of labour
+////   between the two halves is deliberate: the model's half is decoration
+////   and is allowed to be truncated, while the half that decides *whose
+////   child this is* has a constant width and no model input at all, so
+////   neither a long purpose nor a chosen one can collapse two minters
+////   onto one name.
 //// - **A blackboard prefix.** `agent_note` writes under
 ////   `agent/{caller}/` and cannot escape it; `agent_notes` reads under
 ////   `agent/` and nothing else. The reserved corners of the fact
@@ -165,14 +172,52 @@ const max_excerpt = 240
 
 /// Who is calling, in the driver's own durable coordinates.
 ///
-/// Constructor invariants: every field comes from `Ctx`, which the driver
-/// built from its own state — `strand` is the dispatching driver's name
-/// and the identity every authorization decision is made against, and
-/// `{operation, step_id, source_index}` are the persisted coordinates a
-/// replayed call arrives under, which is what makes a minted child name
-/// stable across replay.
+/// Constructor invariants: every field but `minter` comes from `Ctx`,
+/// which the driver built from its own state — `strand` is the
+/// dispatching driver's name and the identity every authorization
+/// decision is made against, and `{operation, step_id, source_index}` are
+/// the persisted coordinates a replayed call arrives under, which is what
+/// makes a minted child name stable across replay. `source_index` is
+/// always the *planned tool call's* own index within its step, never an
+/// index derived from anything running inside that call; who inside the
+/// call is minting is `minter`'s job and only `minter`'s.
 pub type Caller {
-  Caller(strand: String, operation: OpId, step_id: String, source_index: Int)
+  Caller(
+    strand: String,
+    operation: OpId,
+    step_id: String,
+    source_index: Int,
+    minter: Minter,
+  )
+}
+
+/// Who, inside one planned tool call, is minting a child strand.
+///
+/// `{operation, step_id, source_index}` names a tool call, and for a
+/// model's own `agent_spawn` that is the whole story: one planned call
+/// mints one child, so the triple is a coordinate a name can be derived
+/// from and a replay can find its way back to.
+///
+/// It stops being the whole story the moment the planned call is a
+/// `code_mode` execution. One such call runs a whole *program*, the
+/// program may spawn many times, and every one of those spawns arrives
+/// under the same triple — so the triple names the call, not the minting.
+/// `Program` carries the ordinal that separates them, and carries it as
+/// its own field rather than by overwriting `source_index`, because the
+/// two facts answer different questions and a name that conflates them
+/// cannot tell a program's first spawn from the model's own.
+///
+/// Constructor invariants: `ordinal` counts a program's spawn admissions
+/// within one execution, is assigned by the host rather than supplied by
+/// the program, and starts at zero for every execution — so it separates
+/// one program's spawns from each other and never one program from
+/// another. Separating programs is `source_index`'s job.
+pub type Minter {
+  /// The planned tool call is itself the minter: a model's `agent_spawn`.
+  ToolCall
+  /// A code-mode program running under the planned tool call is the
+  /// minter, on its `ordinal`-th spawn admission.
+  Program(ordinal: Int)
 }
 
 /// A durable reference to one child operation. It survives restart and
@@ -442,6 +487,16 @@ pub type Refusal {
     received: JsonValue,
     mismatch: Mismatch,
   )
+  /// The name this spawn derives is already a child's, and the ledger
+  /// says a different minter made it. Reconciliation hands an existing
+  /// child back on a name match — that is what makes a replayed spawn
+  /// idempotent — but only when the recorded call site is the caller's
+  /// own; anything else would be an ownership transfer rather than a
+  /// reconciliation, quietly discarding this spawn's brief, tools,
+  /// deadline and result contract and handing back a strand already busy
+  /// with somebody else's work. Refused rather than adopted, because a
+  /// wrong answer that reads like a right one is the worse outcome.
+  NameAlreadyMinted(strand: String)
   /// The durable plane refused or failed — a commit, a read, a decode.
   PlaneFailed(reason: String)
 }
@@ -1162,6 +1217,11 @@ pub fn describe(refusal: Refusal) -> String {
       <> " and you recorded "
       <> excerpt(json.to_string(received))
       <> ". Nothing was written; fix the value and write the note again"
+    NameAlreadyMinted(strand:) ->
+      "`"
+      <> strand
+      <> "` was minted by a different call and is already busy with it; "
+      <> "nothing was started. Ask for this with a different purpose"
     PlaneFailed(reason:) -> "the messaging plane failed: " <> reason
   }
 }
@@ -1807,8 +1867,119 @@ pub fn caller(ctx: Ctx) -> Caller {
     operation: ctx.op_id,
     step_id: ctx.step_id,
     source_index: ctx.source_index,
+    minter: ToolCall,
   )
 }
+
+/// The step a spawn's minting is *recorded* under, which is also the step
+/// a reconciliation compares against: the caller's own step id, plus the
+/// minter whenever the minter is not the planned tool call itself.
+///
+/// The lineage ledger records a spawn's call site as
+/// `{operation, step_id, source_index}` (`runtime/lineage.CallSite`) — a
+/// triple with nowhere to put a program's ordinal. Rather than spend
+/// `source_index` on it, which is how a program's first spawn came to be
+/// indistinguishable from an `agent_spawn` at index 0, the ordinal rides
+/// in the step id behind a `#`: a minted step id is a UUID and an
+/// operator's is a path-ish label, so neither carries one and the join
+/// stays unambiguous. Widening `CallSite` is the better fix and is
+/// `runtime`'s to make.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent.minting_step(caller) == caller.step_id  // minter: ToolCall
+/// ```
+///
+/// ```gleam
+/// // agent.minting_step(caller) == caller.step_id <> "#program/2"
+/// ```
+///
+pub fn minting_step(caller: Caller) -> String {
+  case caller.minter {
+    ToolCall -> caller.step_id
+    Program(ordinal:) -> caller.step_id <> "#program/" <> int.to_string(ordinal)
+  }
+}
+
+/// The fixed-width, model-proof half of a minted child's name: sixteen
+/// lowercase hex characters standing for the whole of who minted it.
+///
+/// Everything that distinguishes one minter from another is in here —
+/// the operation, the minting step (so the program ordinal with it), and
+/// the planned call's source index — and nothing a model says is. That
+/// division is the point. A name whose only per-minter component was a
+/// *slug* could be erased by the slug's own length cap, and a name whose
+/// discriminator shared a field with model text could be steered into a
+/// collision by choosing the text; a constant-width digest over
+/// coordinates alone has neither opening, because there is no cap left to
+/// truncate it against and no input left for a model to choose.
+///
+/// The encoding is length-prefixed per field, so no field's content can
+/// be shifted into its neighbour: two different coordinates cannot hash
+/// the same string, whatever separators they happen to contain.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // string.length(agent.call_site_digest(caller)) == 16
+/// ```
+///
+pub fn call_site_digest(caller: Caller) -> String {
+  [
+    ids.op_id_to_string(caller.operation),
+    minting_step(caller),
+    int.to_string(caller.source_index),
+  ]
+  |> list.map(fn(field) {
+    int.to_string(string.byte_size(field)) <> ":" <> field
+  })
+  |> string.concat
+  |> coordinate_hash
+  |> int.to_base16
+  |> string.lowercase
+  |> string.pad_start(to: 16, with: "0")
+}
+
+// FNV-1a 64 over the coordinate's UTF-8 bytes.
+//
+// Written out here rather than borrowed from `tools/hashline` because the
+// two digests answer to different masters: hashline's is a
+// same-round-trip token, explicitly versioned and free to change with a
+// release, while this one is baked into durable strand names and register
+// keys and must derive identically forever.
+//
+// It is not a security primitive and does not need to be. No input to it
+// is model-supplied; the one field a program influences at all is its own
+// ordinal, which the seam's spawn ceiling bounds to a few dozen reachable
+// values; and a collision is caught rather than trusted, because
+// `client/agency` refuses to adopt a child whose recorded call site is
+// not the caller's own.
+fn coordinate_hash(text: String) -> Int {
+  hash_loop(<<text:utf8>>, fnv_offset_basis)
+}
+
+fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
+  case bytes {
+    <<byte, rest:bytes>> ->
+      hash_loop(
+        rest,
+        int.bitwise_and(
+          int.bitwise_exclusive_or(accumulator, byte) * fnv_prime,
+          mask_64,
+        ),
+      )
+    // UTF-8 encoding is always byte-aligned, so the only other shape is
+    // the empty array.
+    _ -> accumulator
+  }
+}
+
+const fnv_offset_basis = 14_695_981_039_346_656_037
+
+const fnv_prime = 1_099_511_628_211
+
+const mask_64 = 18_446_744_073_709_551_615
 
 /// A refusal rendered as the in-band error result the model reads.
 ///

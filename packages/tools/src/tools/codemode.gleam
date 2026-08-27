@@ -180,6 +180,12 @@ pub type Request {
     op_id: OpId,
     /// The pooled step id.
     step_id: String,
+    /// This call's own index within its step. Carried because a whole
+    /// execution shares one `{op_id, step_id}` with every other call in
+    /// its batch, so it is the only durable coordinate that tells two
+    /// code-mode calls in one step apart — which is what the orchestration
+    /// seam derives a child strand's name from.
+    source_index: Int,
     /// The workspace root the program runs against.
     workspace: String,
     /// The session base policy this execution is judged against.
@@ -648,6 +654,7 @@ pub fn request(
     strand: ctx.strand,
     op_id: ctx.op_id,
     step_id: ctx.step_id,
+    source_index: ctx.source_index,
     workspace: ctx.workspace,
     base_policy: ctx.base_policy,
     demand: ctx.demand,
