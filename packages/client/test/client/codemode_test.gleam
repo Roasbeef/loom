@@ -91,8 +91,13 @@ fn an_op(seed: Int) -> OpId {
 }
 
 fn request_for(step: String) -> codemode_tool.Request {
+  request_on(codemode_tool.WorkspaceSeam, step)
+}
+
+fn request_on(seam: codemode_tool.Seam, step: String) -> codemode_tool.Request {
   codemode_tool.Request(
     source: "pub fn main() { todo }",
+    seam:,
     strand: "sub:main/sweep-1-0",
     op_id: an_op(3),
     step_id: step,
@@ -397,10 +402,14 @@ pub fn the_seam_publishes_the_policy_the_program_is_judged_against_test() {
   // from drifting from the policy `execute` actually applies.
   let broker_actor = idle_broker()
   let seam = codemode.seam(config_for(broker_actor))
-  assert list.contains(seam.allowed_imports, "cap/report")
-  assert list.contains(seam.allowed_imports, "cap/proc")
-  assert !list.contains(seam.allowed_imports, "gleam/io")
-  assert seam.serviced_caps == codemode.serviced_caps
+  let offered = seam.seams.default
+  assert list.contains(offered.allowed_imports, "cap/report")
+  assert list.contains(offered.allowed_imports, "cap/proc")
+  assert !list.contains(offered.allowed_imports, "gleam/io")
+  assert offered.serviced_caps == codemode.serviced_caps
+  // A host serving one seam offers one, so the model is charged for no
+  // choice it cannot make.
+  assert seam.seams.alternates == []
   assert seam.default_within_ms <= seam.max_within_ms
   broker.stop(broker_actor)
 }
@@ -549,7 +558,7 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   let broker_actor = idle_broker()
   let config =
     codemode.orchestrating(config_for(broker_actor), over: none_agency())
-  let seam = codemode.seam(config)
+  let seam = codemode.seam(config).seams.default
   assert list.contains(seam.allowed_imports, "cap/strand")
   assert list.contains(seam.allowed_imports, "cap/report")
   assert !list.contains(seam.allowed_imports, "cap/fs")
@@ -557,7 +566,7 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   assert seam.serviced_caps == orchestration.serviced_caps
   assert codemode.surface_seam(config.surface) == vet_policy.OrchestrationSeam
   // And the workspace surface is unmoved by it.
-  let workspace = codemode.seam(config_for(broker_actor))
+  let workspace = codemode.seam(config_for(broker_actor)).seams.default
   assert list.contains(workspace.allowed_imports, "cap/proc")
   assert !list.contains(workspace.allowed_imports, "cap/strand")
   assert workspace.serviced_caps == codemode.serviced_caps
@@ -574,7 +583,7 @@ pub fn only_the_orchestration_surface_carries_a_spawn_ceiling_test() {
   let orchestrated =
     codemode.exec_config(
       codemode.orchestrating(config_for(broker_actor), over: none_agency()),
-      request,
+      request_on(codemode_tool.OrchestrationSeam, "turn-9:tools"),
       "/work/.codemode/x",
       9000,
     )
@@ -606,6 +615,115 @@ pub fn an_orchestration_program_is_vetted_against_its_own_seam_test() {
     && string.contains(one.detail, "cap/strand")
   })
   broker.stop(broker_actor)
+}
+
+// --- which seam a submission is judged against -----------------------------
+
+pub fn a_submission_is_judged_against_the_seam_it_named_test() {
+  // The real vetting pass, both directions, on one host that serves both
+  // seams: the same program aimed at two seams is judged against two
+  // allowlists, and the refusal is the structured one a model repairs
+  // from. Nothing classifies a submission by reading its imports — that
+  // would make the tool description a claim about a decision the harness
+  // had already taken for itself.
+  let broker_actor = idle_broker()
+  let config =
+    codemode.serving(
+      config_for(broker_actor),
+      codemode.BothSeams,
+      over: none_agency(),
+    )
+  let orchestrating =
+    codemode_tool.Request(
+      ..request_on(codemode_tool.OrchestrationSeam, "turn-9:tools"),
+      source: "import cap/report\nimport cap/strand\npub fn main() { 1 }\n",
+    )
+  // Admitted: vetting let it past, and what stopped it afterwards was the
+  // absent toolchain rather than the allowlist.
+  assert !is_vet_rejected(codemode.execute(config, orchestrating).result)
+  // The same source aimed at the other seam this same host serves.
+  let as_workspace =
+    codemode_tool.Request(..orchestrating, seam: codemode_tool.WorkspaceSeam)
+  assert refuses_import(
+    codemode.execute(config, as_workspace).result,
+    "cap/strand",
+  )
+  // And the confinement read the other way: an orchestration submission
+  // reaching for an effect capability is refused by the same one rule.
+  let effects =
+    codemode_tool.Request(
+      ..orchestrating,
+      source: "import cap/fs\npub fn main() { 1 }\n",
+    )
+  assert refuses_import(codemode.execute(config, effects).result, "cap/fs")
+  broker.stop(broker_actor)
+}
+
+pub fn a_seam_this_host_does_not_serve_dispatches_nothing_test() {
+  // The tool shell refuses an unserved seam before `execute` is called,
+  // so this is the second door: a caller that built its own request must
+  // not have it quietly reinterpreted as the seam this host does serve.
+  let broker_actor = idle_broker()
+  let refused =
+    codemode.execute(
+      config_for(broker_actor),
+      request_on(codemode_tool.OrchestrationSeam, "turn-4:tools"),
+    )
+  let assert codemode_tool.RunFailed(codemode_tool.StartFailed(reason:)) =
+    refused.result
+    as "an unserved seam must settle in band"
+  assert string.contains(reason, "does not serve the orchestration")
+  assert string.contains(reason, "it serves: workspace")
+  // Nothing ran, and both stages say so rather than going missing.
+  let assert codemode_tool.Unreported(build) = refused.enforcement.build
+  let assert codemode_tool.Unreported(node) = refused.enforcement.node
+  assert string.contains(build, "nothing was dispatched")
+  assert string.contains(node, "nothing was dispatched")
+  broker.stop(broker_actor)
+}
+
+pub fn a_host_serving_both_offers_both_and_defaults_to_the_workspace_test() {
+  // What the model is told it may ask for is exactly what this host will
+  // judge a submission against — the seams, their allowlists and their
+  // serviced capabilities all read off the running surface.
+  let broker_actor = idle_broker()
+  let seam =
+    codemode.seam(codemode.serving(
+      config_for(broker_actor),
+      codemode.BothSeams,
+      over: none_agency(),
+    ))
+  assert seam.seams.default.seam == codemode_tool.WorkspaceSeam
+  assert list.contains(seam.seams.default.allowed_imports, "cap/proc")
+  let assert [orchestration_offer] = seam.seams.alternates
+    as "a both-seams host must offer a second seam"
+  assert orchestration_offer.seam == codemode_tool.OrchestrationSeam
+  assert list.contains(orchestration_offer.allowed_imports, "cap/strand")
+  assert !list.contains(orchestration_offer.allowed_imports, "cap/proc")
+  assert orchestration_offer.serviced_caps == orchestration.serviced_caps
+  broker.stop(broker_actor)
+}
+
+fn is_vet_rejected(result: codemode_tool.ExecResult) -> Bool {
+  case result {
+    codemode_tool.VetRejected(..) -> True
+    codemode_tool.CompileFailed(..)
+    | codemode_tool.RunFailed(..)
+    | codemode_tool.Ran(..) -> False
+  }
+}
+
+fn refuses_import(result: codemode_tool.ExecResult, module: String) -> Bool {
+  case result {
+    codemode_tool.VetRejected(rejections:) ->
+      list.any(rejections, fn(one) {
+        one.rule == codemode_tool.ImportNotAllowed
+        && string.contains(one.detail, module)
+      })
+    codemode_tool.CompileFailed(..)
+    | codemode_tool.RunFailed(..)
+    | codemode_tool.Ran(..) -> False
+  }
 }
 
 // --- the lineage rule, over a live runtime ---------------------------------

@@ -11,29 +11,40 @@
 ////
 //// ## Two seams, one pipeline
 ////
-//// A host serves one of two code-mode seams, and `Config.surface` is the
-//// whole of the choice. The **workspace** surface is what `default_config`
+//// There are two code-mode seams, and `Config.surface` says which of them
+//// this host serves. The **workspace** seam is what `default_config`
 //// builds: `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed
 //// by `satellite.default_router`, a program that orchestrates *effects*.
-//// The **orchestration** surface — `orchestrating` — is `cap/strand` plus
-//// `cap/report` and nothing else, routed onto the Agency closures the
-//// `agent_*` tools call, a program that orchestrates *agents*.
+//// The **orchestration** seam is `cap/strand` plus `cap/report` and
+//// nothing else, routed onto the Agency closures the `agent_*` tools call,
+//// a program that orchestrates *agents*. A host may serve either alone or
+//// both (`Surface`, `serving`); when it serves both, a submission names
+//// the one it wants and the tool defaults it to the workspace seam.
 ////
 //// One field rather than two, because the vetting allowlist and the
 //// capability router have to agree and a host that could set them apart
-//// would eventually set them apart. `surface_policy` and `surface_router`
-//// both read the one value: the seam decides which allowlist a submission
-//// is judged against, and the same seam decides which capabilities the
-//// satellite will service. Which capabilities travel together is the
-//// point of the separation, so it is not a thing to be assembled from two
-//// places.
+//// would eventually set them apart. Which capabilities travel together is
+//// the point of the separation, so it is not a thing to be assembled from
+//// two places.
 ////
-//// `client/serve`'s own boot builds the workspace surface, so the shipped
-//// server serves that one; a host assembling its own registry passes
-//// `codemode.seam(codemode.orchestrating(config, over: agency))` instead.
-//// Letting the *model* choose per submission needs a `seam` argument on
-//// the `code_mode` tool, which lives in `tools/codemode` — see this
-//// package's notes rather than guessing from here.
+//// The two halves are read from different places on purpose, and the
+//// asymmetry is the security property. The **allowlist follows the
+//// submission**: a program is vetted against exactly the seam it named,
+//// so a refusal it reads is about the surface it asked for. The **router
+//// follows the host**: a surface serving one seam hands out that seam's
+//// router whatever a request names, so no submission can widen what the
+//// host wired. Where the two could disagree — a request naming a seam
+//// this host does not serve — `execute` refuses before anything is
+//// dispatched, and the fallback under that refusal is narrowing in both
+//// directions anyway: a program vetted against one seam's imports and
+//// routed by the other's can call nothing at all, because it cannot
+//// import the modules whose calls that router services.
+////
+//// `client/serve` defaults to the workspace seam and takes the choice as
+//// a setting; a host assembling its own registry passes
+//// `codemode.seam(codemode.orchestrating(config, over: agency))`, or
+//// `codemode.serving(config, codemode.BothSeams, over: agency)` to leave
+//// the choice to the model.
 ////
 //// ## One execution, one identity, one budget
 ////
@@ -104,6 +115,7 @@ import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/result
@@ -163,9 +175,10 @@ pub type Config {
   )
 }
 
-/// Which of the two code-mode seams a host serves.
+/// Which of the two code-mode seams a host serves, and what the
+/// orchestration one needs to be served with.
 ///
-/// The two variants carry different things because they *are* different
+/// The variants carry different things because they *are* different
 /// things: a workspace program needs nothing beyond the pipeline, and an
 /// orchestration program needs the messaging plane it orchestrates
 /// through and the ceiling on how much of it one execution may spend.
@@ -175,19 +188,61 @@ pub type Config {
 /// that vetted `cap/strand` and then answered every call
 /// `strands_unavailable` would be a tool surface the model is charged for
 /// on every request and can never use.
+///
+/// `Both` is a third variant rather than a flag on the second, for the
+/// same reason: an orchestration-only host is a real posture — code mode
+/// that can start agents and touch neither disk, process nor socket — and
+/// folding it into "orchestration implies workspace" would quietly take
+/// it away.
 pub type Surface {
   /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
   /// `satellite.default_router`.
   Workspace
   /// `cap/strand` + `cap/report`, routed onto the Agency closures.
   Orchestration(agency: Agency, spawn_ceiling: Int)
+  /// Both, with each submission naming the seam it wants; the workspace
+  /// seam is what one that names none is judged against.
+  Both(agency: Agency, spawn_ceiling: Int)
+}
+
+/// Which seams a host means to serve, as a *setting*: the choice a flag
+/// or a config file can carry, before there is an `Agency` to serve the
+/// orchestration seam with. `serving` turns one of these plus an Agency
+/// into the `Surface` a `Config` holds.
+pub type Seams {
+  /// The workspace seam alone — the shipped default.
+  WorkspaceOnly
+  /// The orchestration seam alone.
+  OrchestrationOnly
+  /// Both, with the submission choosing.
+  BothSeams
+}
+
+/// The same host configuration, serving the seams a setting names over a
+/// messaging plane.
+///
+/// The allowlist a submission is judged against, the router that services
+/// it and the spawn ceiling all move together, because they are one
+/// field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.serving(codemode.BothSeams, over: agency_seam)
+/// ```
+///
+pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
+  let spawn_ceiling = orchestration.default_spawn_ceiling
+  Config(..config, surface: case seams {
+    WorkspaceOnly -> Workspace
+    OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
+    BothSeams -> Both(agency:, spawn_ceiling:)
+  })
 }
 
 /// The same host configuration, serving the orchestration seam over a
 /// messaging plane instead of the workspace seam.
-///
-/// Both halves move together — the allowlist a submission is judged
-/// against and the router that services it — because they are one field.
 ///
 /// ## Examples
 ///
@@ -197,28 +252,44 @@ pub type Surface {
 /// ```
 ///
 pub fn orchestrating(config: Config, over agency: Agency) -> Config {
-  Config(
-    ..config,
-    surface: Orchestration(
-      agency:,
-      spawn_ceiling: orchestration.default_spawn_ceiling,
-    ),
-  )
+  serving(config, OrchestrationOnly, over: agency)
 }
 
-/// The vetting allowlist a surface judges a submission against.
+/// The vetting allowlist one seam judges a submission against.
+///
+/// Indexed by the seam and not by the surface: a program is vetted
+/// against exactly the seam it named, so the refusal it reads is about
+/// the surface it asked for rather than about the host's default.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.surface_policy(codemode.Workspace) == vet_policy.default()
+/// // codemode.seam_policy(vet_policy.WorkspaceSeam) == vet_policy.default()
 /// ```
 ///
-pub fn surface_policy(surface: Surface) -> vet_policy.VetPolicy {
-  vet_policy.for_seam(surface_seam(surface))
+pub fn seam_policy(seam: vet_policy.Seam) -> vet_policy.VetPolicy {
+  vet_policy.for_seam(seam)
 }
 
-/// Which seam a surface is.
+/// Every seam a surface serves, the default first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.surface_seams(codemode.Workspace)
+///   == [vet_policy.WorkspaceSeam]
+/// ```
+///
+pub fn surface_seams(surface: Surface) -> List(vet_policy.Seam) {
+  case surface {
+    Workspace -> [vet_policy.WorkspaceSeam]
+    Orchestration(..) -> [vet_policy.OrchestrationSeam]
+    Both(..) -> [vet_policy.WorkspaceSeam, vet_policy.OrchestrationSeam]
+  }
+}
+
+/// The seam a submission that names none is judged against: the first one
+/// this surface serves.
 ///
 /// ## Examples
 ///
@@ -229,25 +300,25 @@ pub fn surface_policy(surface: Surface) -> vet_policy.VetPolicy {
 ///
 pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
   case surface {
-    Workspace -> vet_policy.WorkspaceSeam
+    Workspace | Both(..) -> vet_policy.WorkspaceSeam
     Orchestration(..) -> vet_policy.OrchestrationSeam
   }
 }
 
-/// The capability names a surface's router actually services. Published
+/// The capability names one seam's router actually services. Published
 /// through the seam so the tool's description tells the model the truth
 /// rather than a copy that can drift from the router.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert codemode.surface_caps(codemode.Workspace) == ["proc.run"]
+/// assert codemode.seam_caps(vet_policy.WorkspaceSeam) == ["proc.run"]
 /// ```
 ///
-pub fn surface_caps(surface: Surface) -> List(String) {
-  case surface {
-    Workspace -> serviced_caps
-    Orchestration(..) -> orchestration.serviced_caps
+pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
+  case seam {
+    vet_policy.WorkspaceSeam -> serviced_caps
+    vet_policy.OrchestrationSeam -> orchestration.serviced_caps
   }
 }
 
@@ -405,11 +476,69 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
     execute: fn(request) { execute(config, request) },
-    allowed_imports: vet_policy.allowed_imports(surface_policy(config.surface)),
-    serviced_caps: surface_caps(config.surface),
+    seams: offered_seams(config.surface),
     default_within_ms: config.default_within_ms,
     max_within_ms: config.max_within_ms,
   )
+}
+
+// What the tool may offer a model: exactly the seams this surface serves,
+// each carrying the allowlist `execute` will judge that seam's
+// submissions against and the capabilities its router will service. The
+// tool refuses anything else, so a model can never name a seam that would
+// arrive here unserved.
+//
+// `surface_seams` is non-empty for every surface, so the fallback below
+// is unreachable; it is a workspace-seam offer rather than a panic
+// because a `code_mode` that vanished would be a worse answer to a bug
+// than one that serves the narrower of the two.
+fn offered_seams(surface: Surface) -> codemode_tool.Seams {
+  case list.map(surface_seams(surface), seam_offer) {
+    [] -> codemode_tool.one_seam(seam_offer(vet_policy.WorkspaceSeam))
+    [default, ..alternates] -> codemode_tool.Seams(default:, alternates:)
+  }
+}
+
+fn seam_offer(seam: vet_policy.Seam) -> codemode_tool.SeamOffer {
+  codemode_tool.SeamOffer(
+    seam: tool_seam(seam),
+    allowed_imports: vet_policy.allowed_imports(seam_policy(seam)),
+    serviced_caps: seam_caps(seam),
+  )
+}
+
+/// One seam in the vocabulary the tool speaks. `tools` cannot see
+/// `codemode`, so the two `Seam` types are mirrors — the same arrangement
+/// `Outcome` and `Enforcement` already use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.tool_seam(vet_policy.WorkspaceSeam)
+///   == codemode_tool.WorkspaceSeam
+/// ```
+///
+pub fn tool_seam(seam: vet_policy.Seam) -> codemode_tool.Seam {
+  case seam {
+    vet_policy.WorkspaceSeam -> codemode_tool.WorkspaceSeam
+    vet_policy.OrchestrationSeam -> codemode_tool.OrchestrationSeam
+  }
+}
+
+/// And back: the seam a request named, in the pipeline's vocabulary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.vetting_seam(codemode_tool.WorkspaceSeam)
+///   == vet_policy.WorkspaceSeam
+/// ```
+///
+pub fn vetting_seam(seam: codemode_tool.Seam) -> vet_policy.Seam {
+  case seam {
+    codemode_tool.WorkspaceSeam -> vet_policy.WorkspaceSeam
+    codemode_tool.OrchestrationSeam -> vet_policy.OrchestrationSeam
+  }
 }
 
 /// Runs one submitted program end to end and reports what ran.
@@ -428,6 +557,19 @@ pub fn execute(
   config: Config,
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
+  // A seam this host does not serve, before anything is dispatched. The
+  // tool shell has already refused one, so this is for a caller that
+  // built its own `Request`: it must not be silently reinterpreted as the
+  // seam the host does serve, in either direction — one way that is a
+  // refusal naming an allowlist the submission never asked for, the other
+  // a widening nobody chose.
+  use <- bool.lazy_guard(
+    when: !list.contains(
+      surface_seams(config.surface),
+      vetting_seam(request.seam),
+    ),
+    return: fn() { unserved(config.surface, request.seam) },
+  )
   let root = exec_root(config, request)
   // The socket check first: it is pure, and failing it after creating the
   // directory would leave one behind for an execution that never ran.
@@ -461,6 +603,33 @@ pub fn execute(
       )
     }
   }
+}
+
+// Nothing started, and the reason names both the seam that was asked for
+// and the ones on offer. `StartFailed` rather than a vetting rejection
+// because the program was never judged at all: no allowlist was applied
+// to it, and saying one was would be the lie this whole path exists to
+// avoid.
+fn unserved(
+  surface: Surface,
+  seam: codemode_tool.Seam,
+) -> codemode_tool.Execution {
+  let served =
+    surface_seams(surface)
+    |> list.map(fn(one) { codemode_tool.seam_name(tool_seam(one)) })
+    |> string.join(", ")
+  codemode_tool.Execution(
+    result: codemode_tool.RunFailed(codemode_tool.StartFailed(
+      reason: "this host does not serve the "
+      <> codemode_tool.seam_name(seam)
+      <> " code-mode seam; it serves: "
+      <> served,
+    )),
+    enforcement: nothing_dispatched(
+      "the submission named a seam this host does not serve, so nothing "
+      <> "was dispatched",
+    ),
+  )
 }
 
 // A fresh directory per execution. `delete` first because a directory left
@@ -600,7 +769,7 @@ pub fn exec_config(
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
   pipeline.ExecConfig(
-    vet_policy: surface_policy(config.surface),
+    vet_policy: seam_policy(vetting_seam(request.seam)),
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
@@ -626,7 +795,7 @@ pub fn exec_config(
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
       router: surface_router(config.surface, request),
-      ceilings: surface_ceilings(config.surface),
+      ceilings: surface_ceilings(config.surface, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
     launch: launch.launcher(launch.LaunchConfig(
@@ -646,13 +815,22 @@ pub fn exec_config(
 // filled from the dispatching `Ctx` and never from the model's arguments
 // — so a program cannot claim to be another strand, and the addressing
 // rule the Agency enforces stays enforceable.
+//
+// The *surface* picks the router, and the request only chooses among the
+// seams the surface already serves. A host that wired one seam therefore
+// hands out that seam's router whatever a submission names, so nothing a
+// model says can widen what the operator wired; and the mismatch that
+// arrangement allows — vetted against one seam's imports, routed by the
+// other's — can only narrow, because a program that may not import
+// `cap/proc` cannot call `proc.run` however willing the router is.
 fn surface_router(
   surface: Surface,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  case surface {
-    Workspace -> satellite.default_router
-    Orchestration(agency:, spawn_ceiling: _) ->
+  case surface, vetting_seam(request.seam) {
+    Workspace, _seam -> satellite.default_router
+    Both(..), vet_policy.WorkspaceSeam -> satellite.default_router
+    Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
       orchestration.router(orchestration.Orchestration(
         agency:,
         strand: request.strand,
@@ -665,11 +843,20 @@ fn surface_router(
 // and the wall deadline already bound, and none of them *mints* anything
 // that outlives the execution. `strand.spawn` does, which is the whole
 // reason the orchestration seam needs one (`satellite.CapCeiling`).
-fn surface_ceilings(surface: Surface) -> List(satellite.CapCeiling) {
-  case surface {
-    Workspace -> []
-    Orchestration(agency: _, spawn_ceiling:) ->
-      orchestration.ceilings(spawn_ceiling)
+//
+// Read off the surface beside the router, and for the same reason: the
+// ceiling belongs to the router that can mint strands, so the two can
+// never be chosen apart.
+fn surface_ceilings(
+  surface: Surface,
+  request: codemode_tool.Request,
+) -> List(satellite.CapCeiling) {
+  case surface, vetting_seam(request.seam) {
+    Workspace, _seam -> []
+    Both(..), vet_policy.WorkspaceSeam -> []
+    Orchestration(spawn_ceiling:, ..), _seam
+    | Both(spawn_ceiling:, ..), _seam
+    -> orchestration.ceilings(spawn_ceiling)
   }
 }
 
