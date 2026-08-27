@@ -8,11 +8,30 @@
 //// outlive the satellite are written as artifacts with `emit`
 //// (`report.emit` over the wire), which returns a durable reference the
 //// `Outcome` can carry.
+////
+//// # Structured values, and why the builders live here
+////
+//// An `Outcome` carries a `Value`, and a `Value` is the wire's own value
+//// type. A submitted program cannot name that type's module: the vetting
+//// allowlist does not carry `core/msgpack`, and the hermetic build's
+//// `--warnings-as-errors` turns an import of a transitive dependency into
+//// a compile error, so `import core/msgpack` is refused twice over. Until
+//// this module grew builders, that left `report.text` as the only way a
+//// program could say anything at all — every structured result had to be
+//// flattened into prose, which is the exact loss the result contract
+//// (`tools/agent`'s `result_schema`) exists to stop.
+////
+//// So the constructors and the readers are here, in the one module every
+//// seam carries. `string`/`int`/`float`/`bool`/`list`/`object`/`null`
+//// build a `Value` and `field`/`as_string`/`as_int`/`as_bool`/`as_list`
+//// read one back, all total, so a program composes and inspects
+//// structured data without ever naming the module the type comes from.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
 import cap/internal/wire
 import core/msgpack.{type MsgPackValue}
+import gleam/list
 import gleam/result
 
 /// The result of a program. `Completed` carries a structured value;
@@ -25,6 +44,17 @@ pub type Outcome {
   /// The program failed in a controlled way.
   Errored(message: String, details: MsgPackValue)
 }
+
+/// A structured value: what an `Outcome` carries, what a blackboard note
+/// holds, and what a child's terminal result comes back as.
+///
+/// A re-export rather than a type of its own, so a value read off one
+/// capability can be handed straight to another without a conversion that
+/// could lose a case. The alias is what makes the type *nameable* by a
+/// program: `report.Value` resolves without an import the allowlist would
+/// refuse (see the module doc).
+pub type Value =
+  MsgPackValue
 
 /// A durable reference to an emitted artifact, returned by `emit`.
 pub type ArtifactRef {
@@ -70,6 +100,215 @@ pub fn to_msgpack(outcome: Outcome) -> MsgPackValue {
         #(msgpack.StringValue("message"), msgpack.StringValue(message)),
         #(msgpack.StringValue("details"), details),
       ])
+  }
+}
+
+// --- building a structured value -----------------------------------------
+//
+// Seven constructors and five readers, each a one-liner over the wire's
+// value type. They exist so a program can compose and inspect structured
+// data without naming `core/msgpack`, which the vetting allowlist and the
+// hermetic build both refuse it (see the module doc).
+
+/// A text value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_string(report.string("ok")) == Ok("ok")
+/// ```
+///
+pub fn string(text: String) -> Value {
+  msgpack.StringValue(text)
+}
+
+/// A whole-number value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_int(report.int(3)) == Ok(3)
+/// ```
+///
+pub fn int(number: Int) -> Value {
+  msgpack.IntValue(number)
+}
+
+/// A floating-point value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.float(1.5) != report.int(1)
+/// ```
+///
+pub fn float(number: Float) -> Value {
+  msgpack.FloatValue(number)
+}
+
+/// A boolean value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_bool(report.bool(True)) == Ok(True)
+/// ```
+///
+pub fn bool(flag: Bool) -> Value {
+  msgpack.BoolValue(flag)
+}
+
+/// A list value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_list(report.list([report.int(1)])) == Ok([report.int(1)])
+/// ```
+///
+pub fn list(items: List(Value)) -> Value {
+  msgpack.ArrayValue(items)
+}
+
+/// An object value: named fields, in the order given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let value = report.object([#("n", report.int(2))])
+/// assert report.field(value, "n") == Ok(report.int(2))
+/// ```
+///
+pub fn object(fields: List(#(String, Value))) -> Value {
+  msgpack.MapValue(
+    list.map(fields, fn(entry) { #(msgpack.StringValue(entry.0), entry.1) }),
+  )
+}
+
+/// The absent value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_string(report.null()) == Error(Nil)
+/// ```
+///
+pub fn null() -> Value {
+  msgpack.NilValue
+}
+
+// --- reading one back ------------------------------------------------------
+
+/// One field of an object value, or `Error(Nil)` when the value is not an
+/// object or has no such field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.field(report.object([]), "missing") == Error(Nil)
+/// ```
+///
+pub fn field(value: Value, key: String) -> Result(Value, Nil) {
+  case value {
+    msgpack.MapValue(entries:) ->
+      list.find_map(entries, fn(entry) {
+        case entry.0 == msgpack.StringValue(key) {
+          True -> Ok(entry.1)
+          False -> Error(Nil)
+        }
+      })
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..) -> Error(Nil)
+  }
+}
+
+/// A value's text, or `Error(Nil)` when it is not text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_string(report.int(1)) == Error(Nil)
+/// ```
+///
+pub fn as_string(value: Value) -> Result(String, Nil) {
+  case value {
+    msgpack.StringValue(text) -> Ok(text)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) -> Error(Nil)
+  }
+}
+
+/// A value's whole number, or `Error(Nil)` when it is not one. A float is
+/// *not* accepted: rounding silently is how a count becomes wrong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_int(report.float(1.0)) == Error(Nil)
+/// ```
+///
+pub fn as_int(value: Value) -> Result(Int, Nil) {
+  case value {
+    msgpack.IntValue(number) -> Ok(number)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) -> Error(Nil)
+  }
+}
+
+/// A value's boolean, or `Error(Nil)` when it is not one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_bool(report.string("true")) == Error(Nil)
+/// ```
+///
+pub fn as_bool(value: Value) -> Result(Bool, Nil) {
+  case value {
+    msgpack.BoolValue(flag) -> Ok(flag)
+    msgpack.NilValue
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) -> Error(Nil)
+  }
+}
+
+/// A value's items, or `Error(Nil)` when it is not a list.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_list(report.object([])) == Error(Nil)
+/// ```
+///
+pub fn as_list(value: Value) -> Result(List(Value), Nil) {
+  case value {
+    msgpack.ArrayValue(items:) -> Ok(items)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.MapValue(..) -> Error(Nil)
   }
 }
 
