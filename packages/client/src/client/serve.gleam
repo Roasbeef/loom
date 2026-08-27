@@ -48,8 +48,11 @@
 ////   scheduler count clamped to `[4, 16]`. This is the real ceiling on
 ////   how wide a parallel tool batch runs: helpers are OS processes
 ////   running bwrap and a jail, and a batch wider than the pool waits
-////   for a slot rather than failing. Lower it on a memory-tight host;
-////   the floor is one.
+////   for a slot rather than failing. An override is clamped to that
+////   same range, so a memory-tight host can come down to four and no
+////   further: below two code mode cannot run at all, and anywhere below
+////   the default a batch that no longer fits simply queues, so the
+////   smaller pool buys latency rather than headroom.
 ////
 //// ## Model configuration and precedence
 ////
