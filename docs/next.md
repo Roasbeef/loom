@@ -36,11 +36,11 @@ concurrency with no dispatch; `cap/proc` is already routed. The real surface
 is **thirteen capability names across five modules**: `fs` (4), `kv` (3),
 `lsp` (4), `net` (1), `report` (1).
 
-Of those, `lsp.*` is blocked on a real language-server client (#25) and cannot
-be argv-shaped — it is a protocol over a long-lived stdio peer, so no widening
-of `proc.run`'s one-shot exec reaches it. `net.request` is blocked on the
-egress proxy. **That leaves `fs.*`, `kv.*` and `report.emit` — eight names
-across three modules, and they are one mechanism, not eight units of work.**
+Of those, `lsp.*` **moved to phase five** with its client (#25) — it is a
+protocol over a long-lived stdio peer, so no widening of `proc.run`'s
+one-shot exec reaches it. `net.request` is blocked on the egress proxy.
+**That leaves `fs.*`, `kv.*` and `report.emit` — eight names across three
+modules, and they are one mechanism, not eight units of work.**
 
 ### The ruling, already made
 
@@ -120,12 +120,19 @@ Phase 3's remaining issues, in dependency order rather than numeric:
   `provider`'s two shipped stubs) is adjacent: routing that cannot walk a
   fallback chain to a real provider is not routing.
 - **#15** — a canonical session id in `core`.
-- **#25** — `lsp_*` over a sandboxed per-project language-server client. This
-  unblocks the `lsp.*` arm of #16, so doing #16's `lsp` row *first* would mean
-  stubbing it twice.
-- **#26** — `dap_*` over the same port seam.
+- **#106** — **MCP through code mode**, as generated per-server capability
+  modules (`import cap/mcp/github`), *not* as registered harness tools. This
+  is new in phase 3 and it took `lsp_*`/`dap_*`'s place. It is independent of
+  the #16 bridge — different seam, different mechanism — so the two can run
+  in parallel. Read `docs/design-notes/tool-search-and-code-mode.md` §"The
+  tension" before starting; the issue carries the decision and the open
+  questions.
 - **#27** — triggered rules (TTSR).
 - **#28**, **#29** — memory M1 and M2.
+
+**Phase 5** is the language-service tier: **#25** (`lsp_*` over a sandboxed
+per-project client) and **#26** (`dap_*` over the same port seam). Both need
+a long-lived stateful stdio peer that phase 3 deliberately does not build.
 
 Phase 4 is the promotion ladder (#30–#33, #100) and is built directly on the
 router being real, which is why #16 gates it.
@@ -207,6 +214,15 @@ filing's self-assessment, including when the filing sounds alarming.**
   The *reason* it is missing is what got better, not the mechanism.
 - **Code mode ships in the main release artifact**, with `DIST_CODEMODE=0` as
   the opt-out. See `docs/distribution.md` and #102.
+- **MCP is code-mode only** (#106): generated per-server modules, never a
+  generic `cap/tools.invoke` dispatcher. A generic dispatcher does not
+  falsify the vetting theorem — it collapses its discriminating power, since
+  the bound becomes "the whole registry, for every program", leaving one
+  layer where code mode was built to have two. The bound is per *server*, not
+  per tool, and that is deliberate: a human trusts a server. The unanswered
+  question is that `tools/list` is attacker-controlled JSON, and generating
+  Gleam from it means a hostile server influences source the harness compiles
+  and the allowlist admits — **nothing today vets harness-generated source.**
 - **R3 and R8 will never gate.** Both over-report by construction; they are
   censuses, and measuring rather than refusing is the point.
 

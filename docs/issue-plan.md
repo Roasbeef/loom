@@ -49,11 +49,34 @@ instead of the model spending a turn per spawn. The authorization model is
 reused rather than invented: the same `client/agency` closures the `agent_*`
 tools call, judged against the same `Caller`, with the same total refusals.
 
-**Phase three makes the harness competent at real code (M5).** `lsp_*` and
-`dap_*` as tools; role routing that actually walks its fallback chain;
-triggered rules; and memory that survives a compaction. It also pays the
-last M4 debt — eight of the nine cap modules vetting admits are refused by
-the shipped router — because the promotion ladder is built on top of them.
+**Phase three makes the harness competent at real code (M5).** Role routing
+that actually walks its fallback chain; triggered rules; memory that
+survives a compaction; and **MCP reached through code mode** (#106), as
+generated per-server capability modules rather than registered tools. It
+also pays the last M4 debt — the capability names vetting admits that the
+shipped router refuses (#16) — because the promotion ladder is built on top
+of them.
+
+> **Amended.** This phase originally led with `lsp_*` and `dap_*`. Both moved
+> to phase five (#25, #26) and MCP took their place. Each of those serves one
+> capability family and needs a long-lived stateful stdio peer that
+> `proc.run`'s one-shot exec cannot carry; MCP opens every server that
+> already exists, on a specified protocol, through a seam code mode already
+> has. The `lsp.*` arm of #16 — four of its thirteen names — moved to phase
+> five with #25 rather than being stubbed against a client that does not
+> exist.
+>
+> The count in the old wording was also wrong. It read "eight of the nine cap
+> modules"; counting modules that actually reach the harness through
+> `dispatch.call`, four of the nine need no router work at all, and the real
+> surface is thirteen capability names across five modules. The correction is
+> on #16.
+
+**Phase five is the language-service tier.** `lsp_*` over a sandboxed,
+per-project language-server client (#25), and `dap_*` over the same port
+seam (#26). Both need the long-lived stdio peer that phase three
+deliberately does not build, and the `lsp.*` capability names wait here for
+the client rather than being stubbed twice.
 
 **Phase four is the promotion ladder (M6, WP-M).** An agent writes a Gleam
 tool, saves it as a named skill, compiles it against a wider prelude, proves
