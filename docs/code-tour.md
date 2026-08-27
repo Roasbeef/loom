@@ -17,7 +17,7 @@ more depth the cross-reference is the depth.
 Paths follow the convention those docs use: a Gleam path is relative to
 its package's source root, so `runtime/api.gleam:251` is
 `packages/runtime/src/runtime/api.gleam` line 251; a Go path is relative
-to its module, so `internal/ui/model.go:367` is under `packages/tui` and
+to its module, so `internal/ui/model.go:382` is under `packages/tui` and
 `internal/jail/stage2.go:43` under `packages/sandbox`.
 
 ## The shape of the thing
@@ -101,7 +101,7 @@ binds.
 `Update` as a `tea.KeyMsg`. `Update` dispatches to `onKey`
 (`internal/ui/model.go:244`), which passes anything that is not a modal
 key or a navigation key to the text input — until enter, which routes to
-`onEnter` (`internal/ui/model.go:367`).
+`onEnter` (`internal/ui/model.go:382`).
 
 `onEnter` makes one decision, and it makes it from state the client
 already holds:
@@ -174,7 +174,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1203`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1188`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -591,7 +591,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1758`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1764`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.

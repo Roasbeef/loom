@@ -137,15 +137,15 @@ summary left behind by a navigation, say — and attributes it through the
 parent chain, falling back to the first strand. Usage rows are
 attributed through that same cache by their entry id.
 
-Escalation records get the weakest attribution of the three, and the
-code is honest about it: the hub names the strand whose live operation
-was open when the record surfaced, and if zero or several are open it
-sends empty strings for both `op` and `strand`. That was accurate when
-the gateway was written. It is now stale — `runtime/escalation.Escalation`
+Escalation records need no scan at all: `runtime/escalation.Escalation`
 carries a `CallScope` recording the exact `{operation, strand, step,
-source index, call id}` a denial was raised for, and the hub does not
-read it. The event still carries best-effort attribution today; wiring
-the scope through is an open item in `docs/spec-gaps.md`.
+source index, call id}` a denial was raised for, and the hub reads
+`op`/`strand` straight off it. Both are empty exactly when the record
+names no call — an escalation raised through the unscoped door — which
+is a different statement from the guess this replaced
+(`protocol-change/007`, issue #67), which named whichever single strand
+had an operation open for *every* record and named neither when zero or
+several did.
 
 **The hub commits nothing of its own.** Its reads go straight at the
 store handle, but every write it causes goes through the session's one

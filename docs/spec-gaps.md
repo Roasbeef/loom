@@ -790,10 +790,11 @@ the other side.
    approval of exactly the stored wanted diff, and the file the resumed
    command writes inside the jail.
 
-   Still open here: the gateway surfaces records without their scope
-   (`escalation_attribution` guesses the operation and strand from hub
-   state rather than reading `CallScope`), and the code-mode half is
-   issue #24 / WP-J 15.
+   Still open here: the code-mode half is issue #24 / WP-J 15. The
+   gateway's attribution gap is closed — `protocol-change/007` reads
+   `op`/`strand` off the record's own `CallScope`, carries the tool,
+   action digest and argument preview into the `escalation` body, and
+   makes `approve` echo the diff and the action it rendered.
 2. **No api entry points for compaction or navigation** — the gateway,
    like the conformance runner, builds acceptance plans itself and
    commits through the writer. Two copies of that pattern argue for
