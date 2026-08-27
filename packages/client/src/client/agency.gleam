@@ -756,19 +756,39 @@ fn check_capacity(
   let live =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
   let mine = list.filter(live, fn(cell) { cell.parent == caller.strand })
-  case list.length(mine) >= config.fan_out {
-    True ->
-      Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
-    False ->
-      case list.length(live) >= config.session_strands {
-        True ->
-          Error(agent.FanOutCapReached(
-            live: list.length(live),
-            cap: config.session_strands,
-          ))
-        False -> Ok(Nil)
-      }
-  }
+  // Both guards are lazy, and that is not a flourish: the count in the
+  // refusal is the one thing here that genuinely has to walk the list,
+  // and an eager `return:` would walk it on every admitted spawn to
+  // build a message nobody reads. The refusal path pays for its own
+  // number; the admission path pays for nothing.
+  use <- bool.lazy_guard(when: at_least(mine, config.fan_out), return: fn() {
+    Error(agent.FanOutCapReached(live: list.length(mine), cap: config.fan_out))
+  })
+  use <- bool.lazy_guard(
+    when: at_least(live, config.session_strands),
+    return: fn() {
+      Error(agent.FanOutCapReached(
+        live: list.length(live),
+        cap: config.session_strands,
+      ))
+    },
+  )
+  Ok(Nil)
+}
+
+// Whether `values` holds at least `bound` elements, answered at the bound
+// instead of by counting: `list.drop` stops as soon as it has dropped
+// that many, so a session holding a hundred live strands costs a check
+// the same as one holding `bound` of them.
+//
+// The `bound <= 0` arm is the arithmetic, not a defensive crumple zone.
+// "At least none" is true of every list, the empty one included, and the
+// drop spelling gets that case wrong twice over: `bound - 1` is negative,
+// and `list.drop` hands a negative count the whole list back, so an empty
+// ledger would read as *not* at a cap of zero. A host that sets `fan_out`
+// to zero means no spawns at all, and this is the line that says so.
+fn at_least(values: List(a), bound: Int) -> Bool {
+  bound <= 0 || list.drop(values, bound - 1) != []
 }
 
 fn deadline_of(
@@ -922,7 +942,16 @@ fn wait_loop(
       settle_handle(runtime, found, handle)
     })
   let #(now, _clock) = clock.read(config.clock)
-  case dict.size(settled) == list.length(handles) || now >= deadline {
+  // "Everything has settled" asked at the bound rather than by counting.
+  // Every key in `settled` is one of *these* handles' own — the fold
+  // above inserts under `handle_to_string` and nothing else puts a key in
+  // — so the dict can never outgrow the list, and "as many settled as
+  // there are handles" is the same question as "no handle sits past the
+  // ones that have settled". `dict.size` is a constant-time read of the
+  // map's own counter; `list.drop` stops at it. The alternative walked
+  // the handle list on every slice of every wait, which is the one loop
+  // in this module that runs on a timer.
+  case list.drop(handles, dict.size(settled)) == [] || now >= deadline {
     True ->
       list.map(handles, fn(handle) {
         case dict.get(settled, agent.handle_to_string(handle)) {
