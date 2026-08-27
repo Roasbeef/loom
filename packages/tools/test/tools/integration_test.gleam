@@ -131,6 +131,7 @@ fn run_echo(
       filesystem: fs.real_filesystem(),
       blob_root: workspace <> "/.blobs",
       clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
+      raise_refusal: tool.no_raise(),
     )
   bash.tool().run(
     ctx,

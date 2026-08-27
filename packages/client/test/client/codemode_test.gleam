@@ -20,6 +20,7 @@
 
 import broker/broker
 import broker/budget
+import broker/escalation
 import broker/exec
 import broker/framing
 import broker/policy
@@ -29,6 +30,7 @@ import client/serve
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/identity
+import codemode/launch
 import codemode/orchestration
 import codemode/satellite
 import codemode/vet
@@ -648,6 +650,7 @@ fn ctx_for(workspace: String) -> tool.Ctx {
     filesystem: dead_filesystem(),
     blob_root: workspace <> "/.blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    raise_refusal: tool.no_raise(),
   )
 }
 
@@ -1108,4 +1111,151 @@ fn counting_clock(from: Int, by: Int) -> Clock {
   clock.from_function(fn() {
     process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
   })
+}
+
+// --- what a refusal reports outward (#97) ----------------------------------
+
+// `launch_refusal` is the whole of the decision the watched launcher
+// makes, and the only part of it a hermetic test can hold still: a
+// `LaunchSpec` is a value, and "what does this base owe this node" is a
+// pure function of one. The pipeline's own half — that a narrowed base
+// really does refuse a real `erl` — is `make e2e-codemode`'s.
+
+fn a_launch_spec(
+  base: policy.SandboxPolicy,
+  grants: List(policy.Grant),
+) -> satellite.LaunchSpec {
+  let root = "/work/.codemode/one"
+  satellite.LaunchSpec(
+    artifact: compile.Artifact(
+      build_root: root,
+      beam_dir: root <> "/ebin",
+      entry_module: compile.entry_module,
+      manifest_hash: "sha256-deadbeef",
+    ),
+    token_path: root <> "/token",
+    cap_socket_path: root <> "/s",
+    identity: identity.run_phase(
+      identity.for_execution(
+        op_id: an_op(3),
+        step_id: "turn-1:tools",
+        budget: budget.Budget(max_outstanding: 6, deadline_ms: 9000),
+      )
+      |> identity.widened_by(grants:),
+    ),
+    base_policy: base,
+    env: [#("PATH", "/usr/bin")],
+    cwd: "/work",
+    wire: process.new_subject(),
+  )
+}
+
+// The base a code-mode execution actually runs under: a session base wide
+// enough to host a node, plus the two cap-channel names
+// `execution_policy` adds. Wide on purpose, so the narrowing below is the
+// only variable in these tests.
+fn hosting_base() -> policy.SandboxPolicy {
+  let base = policy.workspace_default("/work")
+  codemode.execution_policy(
+    policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: ["PATH"]),
+  )
+}
+
+// The same base with the cap socket's environment name dropped — the
+// narrowing the jailed end-to-end uses, and the sharpest one available:
+// without that name the satellite cannot find the channel it exists to
+// speak on, so it is a shortfall that genuinely stops the node rather
+// than one the jail would shrug off.
+fn without_the_cap_socket() -> policy.SandboxPolicy {
+  let base = hosting_base()
+  policy.SandboxPolicy(
+    ..base,
+    env_allow: list.filter(base.env_allow, fn(name) { name != launch.sock_env }),
+  )
+}
+
+pub fn a_base_that_hosts_a_node_refuses_nothing_test() {
+  // The negative half, and it earns its place: without it the test below
+  // would pass just as well against a function that reported a refusal
+  // whenever the launcher failed, whatever the reason.
+  assert codemode.launch_refusal(
+      a_launch_spec(hosting_base(), []),
+      1000,
+      "the launcher fell over for some other reason",
+      9000,
+    )
+    == codemode_tool.NothingRefused
+}
+
+pub fn a_narrowed_base_reports_the_diff_that_would_open_it_test() {
+  let assert codemode_tool.RunRefused(denial:, deadline_ms:) =
+    codemode.launch_refusal(
+      a_launch_spec(without_the_cap_socket(), []),
+      1000,
+      "the session base cannot host a satellite node: environment variable "
+        <> launch.sock_env,
+      9000,
+    )
+    as "a base missing the cap socket name must refuse the node"
+  // The wanted diff is what an approval grants against, so it has to be
+  // the grant that actually closes the shortfall rather than a
+  // description of one: `broker/escalation.approve` refuses anything
+  // outside it.
+  assert denial.wanted == [policy.GrantEnv(name: launch.sock_env)]
+  assert denial.source == escalation.PolicyDenial
+  // The launcher's own sentence, carried verbatim: it is what a human
+  // reads, and a paraphrase would be a second thing to keep in step.
+  assert string.contains(denial.reason, launch.sock_env)
+  // The refused execution's own budget deadline, which is what bounds the
+  // window a human is given to answer in.
+  assert deadline_ms == 9000
+}
+
+pub fn a_grant_that_closes_the_shortfall_reports_nothing_test() {
+  // The same narrowed base with the approval in hand. This is what stops
+  // the widened re-execution asking a second question about the thing a
+  // human has just answered: the grants ride the spec's identity, and the
+  // composition question is asked with them.
+  assert codemode.launch_refusal(
+      a_launch_spec(without_the_cap_socket(), [
+        policy.GrantEnv(name: launch.sock_env),
+      ]),
+      1000,
+      "unused",
+      9000,
+    )
+    == codemode_tool.NothingRefused
+}
+
+pub fn an_execution_that_never_reached_a_launch_refuses_nothing_test() {
+  // A build that cannot run mints nothing raisable. That is the decision
+  // `PolicyRefusal` encodes rather than documents: an approval widens the
+  // run phase and never the build — `identity.build_phase` drops this
+  // execution's grants before the build composes anything — so a build
+  // refused on policy is an operator's misconfiguration, and filing it
+  // would be filing a question nobody can answer.
+  //
+  // The seed root here is absent, which fails the build before a launcher
+  // exists. That is the same shape a build refused on policy has, since
+  // either way no launch is reached and there is nothing to report.
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  let broker_actor = idle_broker()
+  let config =
+    codemode.Config(
+      ..config_for(broker_actor),
+      work_root: here <> "/build/codemode-refusal-test",
+      seed_root: "/nonexistent/loom-seed",
+    )
+  let request =
+    codemode_tool.Request(
+      ..request_for("turn-8:tools"),
+      source: "import cap/report\n\npub fn main() -> report.Outcome {\n"
+        <> "  report.text(\"hi\")\n}\n",
+    )
+  let execution = codemode.execute(config, request)
+  let assert codemode_tool.CompileFailed(_failure) = execution.result
+    as "an absent seed must fail the build"
+  assert execution.refusal == codemode_tool.NothingRefused
+  broker.stop(broker_actor)
 }

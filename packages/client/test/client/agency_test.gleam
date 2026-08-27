@@ -470,6 +470,64 @@ pub fn the_fan_out_cap_counts_live_children_test() {
   close(harness)
 }
 
+// The capacity check answers a bounded question at the bound rather than
+// by counting the ledger, and an off-by-one in a capacity check is a real
+// bug rather than a slow one — so the arithmetic is pinned below the
+// bound, at it, and above it.
+//
+// The mutation that would go unnoticed without this is a single
+// character: `list.drop(live, bound)` in place of `list.drop(live, bound
+// - 1)` admits one child too many at every cap.
+pub fn the_fan_out_cap_admits_up_to_the_bound_and_no_further_test() {
+  let harness =
+    start_harness_with(Hangs, fn(config) { agency.Config(..config, fan_out: 2) })
+  // Below the bound, and at the last admission the bound allows.
+  let assert Ok(_first) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "the first child is below the cap"
+  let assert Ok(_second) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 1), a_spawn("two"))
+    as "the second child brings the caller *to* the cap"
+  // At the bound: the third is refused, and the refusal reports the count
+  // the caller actually holds rather than the cap it hit.
+  let assert Error(agent.FanOutCapReached(live: 2, cap: 2)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 2), a_spawn("three"))
+    as "the third child must be refused at a cap of two"
+  close(harness)
+}
+
+pub fn a_fan_out_cap_of_zero_admits_nothing_test() {
+  // The edge the drop spelling gets wrong if it is written without the
+  // guard: "at least none" is true of every list including the empty one,
+  // and `list.drop(xs, -1)` hands the whole list back — so an empty
+  // ledger would read as *not* at a cap of zero and the first spawn would
+  // be admitted. A host that sets `fan_out` to nothing means no spawns.
+  let harness =
+    start_harness_with(Hangs, fn(config) { agency.Config(..config, fan_out: 0) })
+  let assert Error(agent.FanOutCapReached(live: 0, cap: 0)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "a cap of zero must refuse the first child"
+  close(harness)
+}
+
+pub fn the_session_cap_is_reached_at_its_own_bound_test() {
+  // The second bound in the same check, which a fix to the first can
+  // silently break: `session_strands` counts every live spawned strand
+  // rather than one caller's own, so it has to be asked separately and at
+  // its own number.
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, fan_out: 8, session_strands: 1)
+    })
+  let assert Ok(_first) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("one"))
+    as "the first child is below the session cap"
+  let assert Error(agent.FanOutCapReached(live: 1, cap: 1)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 1), a_spawn("two"))
+    as "the second child must hit the session cap, not the fan-out cap"
+  close(harness)
+}
+
 // --- replay ----------------------------------------------------------------
 
 pub fn a_replayed_spawn_reconciles_onto_the_same_child_test() {
@@ -562,6 +620,12 @@ pub fn a_join_answers_every_handle_against_one_deadline_test() {
   let assert [first, second] = waited
   assert handle_of(first) == spawned.handle
   assert handle_of(second) == never
+  // The loop's exit condition is "as many settled as there are handles",
+  // asked at the bound (`list.drop(handles, dict.size(settled)) == []`)
+  // rather than by counting the list. This is the case that pins it: one
+  // handle settles and one never does, so a loop that stopped early would
+  // report the settled child, and a loop that never stopped would answer
+  // nothing at all.
   let assert agent.Pending(..) = second
   // The settled one carries the child's own final assistant text.
   let assert agent.Ready(outcome: agent.Completed, report:, ..) = first

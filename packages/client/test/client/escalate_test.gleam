@@ -21,6 +21,7 @@
 //// clock value, so a stepping clock would freeze.
 
 import broker/broker
+import broker/escalation as denial
 import broker/exec
 import broker/policy
 import broker/token
@@ -34,9 +35,10 @@ import core/clock.{type Clock}
 import core/ids
 import core/json
 import core/message
+import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/string
 import machine/operation
@@ -54,6 +56,7 @@ import runtime/effects
 import runtime/escalation
 import session/session
 import simplifile
+import tools/codemode as codemode_tool
 
 // --- the harness -----------------------------------------------------------
 
@@ -166,6 +169,7 @@ type Setup {
     plane: Bool,
     base: fn(String) -> policy.SandboxPolicy,
     seam_step_ms: Int,
+    code_mode: Option(codemode_tool.CodeMode),
   )
 }
 
@@ -176,6 +180,7 @@ fn setup() -> Setup {
     plane: True,
     base: policy.workspace_default,
     seam_step_ms: 10,
+    code_mode: None,
   )
 }
 
@@ -200,7 +205,8 @@ fn start_harness_with(
 }
 
 fn start(setup: Setup) -> Harness {
-  let Setup(interactive:, shape:, plane:, base:, seam_step_ms:) = setup
+  let Setup(interactive:, shape:, plane:, base:, seam_step_ms:, code_mode:) =
+    setup
   let workspace = workspace()
   let #(session_clock, _session_counter) = counting_clock(1_756_000_000_000, 1)
   let assert Ok(opened) = session.open_memory(session_clock)
@@ -244,7 +250,7 @@ fn start(setup: Setup) -> Harness {
       ),
       broker: helperless_broker(),
       broker_timeout_ms: 5000,
-      registry: serve.registry(None, None),
+      registry: serve.registry(None, code_mode),
       workspace:,
       blob_root: workspace <> "/.blobs",
       // Narrower than `bash` requires: it wants the whole filesystem
@@ -1307,4 +1313,321 @@ pub fn the_action_preview_is_bounded_test() {
   // Cut on a codepoint boundary: a truncation that split a two-byte
   // character would not be a string at all.
   assert string.contains(long, "éé")
+}
+
+// --- code mode: the door that had no raiser (#97) ---------------------------
+
+// Everything above this line is about a tool that meets a policy refusal
+// by getting one back from `Ctx.clear_call`. `code_mode` never does: its
+// clearances happen inside the code-mode pipeline, against the broker
+// that pipeline holds, so a refused execution used to reach no escalation
+// plane and no durable record at all. #24 threaded grants all the way
+// down to the run phase and the jailed end-to-end proved a widened
+// execution reaches what its unwidened twin is refused — but the test
+// supplied the grant by hand, because in production nothing could mint
+// one.
+//
+// These drive the same production seam the rest of the suite does —
+// `wiring.run_tool` over the real registry, the real `Ctx`, and the real
+// escalation plane — with the *pipeline* stood in for. What is being
+// proved is the loop around the pipeline, and the pipeline's own half is
+// `make e2e-codemode`'s.
+
+// The one grant that closes the shortfall. `LOOM_CAP_SOCK` is the
+// narrowing the jailed end-to-end uses too, and it is the sharpest one
+// available: without that name in the environment allowlist the satellite
+// cannot find the channel it exists to speak on, so a widening that fails
+// to reach the node cannot be mistaken for one that reached it.
+const wanted_env = "LOOM_CAP_SOCK"
+
+// What the launch says when composition refuses it: `launch`'s own
+// sentence, which is what `client/codemode` carries into the denial
+// verbatim.
+const launch_refused = "the session base cannot host a satellite node: environment variable LOOM_CAP_SOCK"
+
+// A deadline far past anything this suite's clocks reach, so the park's
+// budget bound never decides a test that is about something else. The
+// real value is the execution's own `now + within_ms`, computed by
+// `client/codemode` at the top of `execute`.
+const code_mode_deadline_ms = 1_756_000_600_000
+
+// The code-mode seam with an operator-narrowed base under it: the launch
+// is refused on policy until this call carries the grant, and succeeds
+// the moment it does.
+//
+// A stand-in rather than the pipeline, and the seam is exactly where the
+// line falls: `tools/codemode` sees an `Execution`, and an `Execution` is
+// a value. What the real `client/codemode` adds is deriving that value
+// from `policy.compose` over the launch's own requirements, which
+// `client/codemode_test` pins directly and `make e2e-codemode` runs for
+// real.
+fn narrowed_code_mode() -> codemode_tool.CodeMode {
+  codemode_tool.CodeMode(
+    execute: fn(request: codemode_tool.Request) {
+      case list.contains(request.grants, policy.GrantEnv(name: wanted_env)) {
+        True ->
+          codemode_tool.Execution(
+            result: codemode_tool.Ran(
+              outcome: codemode_tool.Completed(
+                value: msgpack.StringValue(program_output(request.source)),
+              ),
+              manifest_hash: "sha256-widened",
+            ),
+            enforcement: codemode_tool.Enforcement(
+              build: codemode_tool.Enforced(
+                applied: ["bwrap"],
+                skipped: [],
+                degraded: False,
+              ),
+              node: codemode_tool.Enforced(
+                applied: ["bwrap"],
+                skipped: [],
+                degraded: False,
+              ),
+            ),
+            refusal: codemode_tool.NothingRefused,
+          )
+        False ->
+          codemode_tool.Execution(
+            result: codemode_tool.RunFailed(codemode_tool.StartFailed(
+              reason: launch_refused,
+            )),
+            enforcement: codemode_tool.Enforcement(
+              build: codemode_tool.Enforced(
+                applied: ["bwrap"],
+                skipped: [],
+                degraded: False,
+              ),
+              node: codemode_tool.Unreported(reason: "no node was launched"),
+            ),
+            refusal: codemode_tool.RunRefused(
+              denial: denial.Denial(
+                reason: launch_refused,
+                source: denial.PolicyDenial,
+                wanted: [policy.GrantEnv(name: wanted_env)],
+              ),
+              deadline_ms: code_mode_deadline_ms,
+            ),
+          )
+      }
+    },
+    seams: codemode_tool.one_seam(
+      codemode_tool.SeamOffer(
+        seam: codemode_tool.WorkspaceSeam,
+        allowed_imports: ["cap/proc", "cap/report"],
+        serviced_caps: ["proc.run"],
+      ),
+    ),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+// A seam that counts what crossed it, so a test can say "once" rather
+// than "at least once". The count is the number of *executions*, which is
+// the number an approval is allowed to raise from one to two and never to
+// three.
+fn counting_code_mode(executions: Subject(String)) -> codemode_tool.CodeMode {
+  let inner = narrowed_code_mode()
+  codemode_tool.CodeMode(..inner, execute: fn(request: codemode_tool.Request) {
+    process.send(executions, request.source)
+    inner.execute(request)
+  })
+}
+
+// What the widened program reports, echoed back so a test can tell the
+// widened execution's result from the refused one's without reading a
+// status string.
+fn program_output(source: String) -> String {
+  "ran: " <> source
+}
+
+fn a_program() -> String {
+  "import cap/report\npub fn main() { report.text(\"one\") }"
+}
+
+fn another_program() -> String {
+  "import cap/report\npub fn main() { report.text(\"two\") }"
+}
+
+fn code_mode_arguments(program: String) -> json.JsonValue {
+  json.Object([#("program", json.String(program))])
+}
+
+fn code_mode_run(call_id: String, program: String) -> effects.ToolRun {
+  let #(operation, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+  let arguments = code_mode_arguments(program)
+  effects.ToolRun(
+    operation:,
+    step_id: "turn-1:tools",
+    source_index: 0,
+    strand: "main",
+    call: message.ToolCall(
+      id: call_id,
+      name: "code_mode",
+      arguments:,
+      thought_signature: None,
+      namespace: None,
+    ),
+    arguments:,
+    replay: operation.ReplayNever,
+    grants: [],
+  )
+}
+
+fn start_over_code_mode(
+  interactive: fn() -> Bool,
+  mode: codemode_tool.CodeMode,
+) -> Harness {
+  start(Setup(..setup(), interactive:, code_mode: Some(mode)))
+}
+
+fn drained(executions: Subject(String), taken: List(String)) -> List(String) {
+  case process.receive(executions, within: 0) {
+    Error(Nil) -> list.reverse(taken)
+    Ok(source) -> drained(executions, [source, ..taken])
+  }
+}
+
+// The acceptance, end to end: a code-mode execution refused under an
+// operator-narrowed base files a durable record; a human approves it; the
+// model retries the same program; the retry spends the grant and the
+// execution succeeds.
+//
+// Every step is the production path. The record is written by
+// `client/escalate` through `runtime/api`, the approval is committed the
+// way the gateway commits one, and the widening reaches the pipeline as
+// `Request.grants` — the field #24 added, arriving from a source that did
+// not exist before this.
+pub fn a_refused_execution_raises_and_the_retry_spends_it_test() {
+  let executions = process.new_subject()
+  let harness =
+    start_over_code_mode(fn() { True }, counting_code_mode(executions))
+
+  // Turn one, with nobody attached: the refusal settles in band and the
+  // record is filed for whoever turns up.
+  let first =
+    result_text(wiring.run_tool(
+      recording(harness),
+      code_mode_run("call_1", a_program()),
+    ))
+  assert string.contains(first, "the code-mode execution could not start")
+  assert !string.contains(first, program_output(a_program()))
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "the refused execution must raise exactly one record"
+  assert raised.status == escalation.Pending
+  assert raised.tool == Some("code_mode")
+  // The action a human is being asked about is the whole submission,
+  // which is what the client renders and what #65 binds consent to.
+  assert raised.action
+    == Some(escalate.action_digest(code_mode_arguments(a_program())))
+  let assert Ok(decoded) = grants.decode_denial(raised.denial)
+    as "the stored denial must decode"
+  assert decoded.wanted == [policy.GrantEnv(name: wanted_env)]
+  // One execution so far: the raise happens once for the whole
+  // submission, not once per clearance inside it.
+  assert drained(executions, []) == [a_program()]
+
+  approve_with_the_wanted_diff(harness.runtime)(raised.id)
+
+  // Turn two: the model retries the same program under a fresh call id,
+  // a human is attached, and the claim moves the approval onto the call
+  // standing at the door.
+  let retry =
+    result_text(wiring.run_tool(
+      harness.config,
+      code_mode_run("call_2", a_program()),
+    ))
+  assert string.contains(retry, program_output(a_program()))
+  assert !string.contains(retry, "the code-mode execution could not start")
+  let assert Ok([spent]) = api.escalations(harness.runtime)
+    as "the record must survive its spending"
+  assert spent.status == escalation.Consumed
+  // Twice, and no more: the refused attempt and the one re-execution
+  // design §5.3 grants. A third would be a retry loop wearing an
+  // approval's clothes.
+  assert drained(executions, []) == [a_program(), a_program()]
+}
+
+// The other half of #65's property, at the seam it would most easily leak
+// through: consent binds to the *program*, and a program is the whole of
+// a `code_mode` call's arguments.
+//
+// A human approves one submission; the model comes back with a different
+// one wanting the same policy diff — same strand, same tool, so the same
+// record id — and inherits nothing. The record re-opens as a fresh
+// question bound to what this call would actually run, and what the model
+// reads is the refusal a first denial produces.
+pub fn an_approval_never_widens_a_different_program_test() {
+  let harness = start_over_code_mode(fn() { True }, narrowed_code_mode())
+  let first =
+    result_text(wiring.run_tool(
+      recording(harness),
+      code_mode_run("call_1", a_program()),
+    ))
+  assert string.contains(first, "the code-mode execution could not start")
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "one record must exist"
+  approve_with_the_wanted_diff(harness.runtime)(raised.id)
+
+  let substituted =
+    result_text(wiring.run_tool(
+      wiring.Config(
+        ..harness.config,
+        escalations: escalate.seam(short_park(harness.escalations)),
+      ),
+      code_mode_run("call_z", another_program()),
+    ))
+  assert string.contains(substituted, "the code-mode execution could not start")
+  assert !string.contains(substituted, program_output(another_program()))
+
+  // One row throughout — the two submissions really did collide on one
+  // record id, which is what makes this the hole and not a miss.
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "still exactly one record"
+  assert record.id == raised.id
+  assert record.status == escalation.Pending
+  assert record.grants == []
+  assert record.action
+    == Some(escalate.action_digest(code_mode_arguments(another_program())))
+}
+
+// A refusal with nobody attached settles in band rather than hanging, and
+// still leaves the record behind. This is the ordinary first refusal: the
+// model reads an error it can act on in the same turn, and a human who
+// arrives later finds the question waiting.
+pub fn a_headless_refusal_settles_in_band_and_still_records_test() {
+  let executions = process.new_subject()
+  let harness =
+    start_over_code_mode(fn() { False }, counting_code_mode(executions))
+  let text =
+    result_text(wiring.run_tool(
+      harness.config,
+      code_mode_run("call_1", a_program()),
+    ))
+  assert string.contains(text, "the code-mode execution could not start")
+  assert string.contains(text, launch_refused)
+  let assert Ok([raised]) = api.escalations(harness.runtime)
+    as "a headless refusal still records"
+  assert raised.status == escalation.Pending
+  // Settled by the first execution: nothing was re-run for a decision
+  // nobody was there to make.
+  assert drained(executions, []) == [a_program()]
+}
+
+// A host with no escalation plane at all — `escalate.none()`, the seam a
+// test or an embedded host wires — settles exactly as code mode settled
+// before any of this existed: one execution, an in-band refusal, and no
+// record anywhere.
+pub fn a_session_without_the_plane_raises_nothing_from_code_mode_test() {
+  let executions = process.new_subject()
+  let harness =
+    start_over_code_mode(fn() { True }, counting_code_mode(executions))
+  let planeless = wiring.Config(..harness.config, escalations: escalate.none())
+  let text =
+    result_text(wiring.run_tool(planeless, code_mode_run("call_1", a_program())))
+  assert string.contains(text, "the code-mode execution could not start")
+  assert api.escalations(harness.runtime) == Ok([])
+  assert drained(executions, []) == [a_program()]
 }

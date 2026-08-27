@@ -12,6 +12,7 @@
 //// that pair is the execution the broker pools budget under.
 
 import broker/broker.{type CallEvent, type CallSpec, type Refusal}
+import broker/escalation
 import broker/exec
 import broker/policy
 import core/clock
@@ -50,6 +51,7 @@ fn ctx_for(step: String) -> Ctx {
     filesystem: dead_filesystem(),
     blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
+    raise_refusal: tool.no_raise(),
   )
 }
 
@@ -162,6 +164,7 @@ fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
           manifest_hash: "sha256-echo",
         ),
         enforcement: jailed(),
+        refusal: codemode.NothingRefused,
       )
     },
     seams:,
@@ -174,6 +177,7 @@ fn ran(outcome: codemode.Outcome) -> codemode.Execution {
   codemode.Execution(
     result: codemode.Ran(outcome:, manifest_hash: "sha256-abc"),
     enforcement: jailed(),
+    refusal: codemode.NothingRefused,
   )
 }
 
@@ -295,6 +299,7 @@ pub fn a_vetting_rejection_names_the_rule_and_the_import_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("import gleam/io"))],
     )
@@ -347,6 +352,7 @@ pub fn every_violation_is_listed_in_one_pass_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -371,6 +377,7 @@ pub fn a_parse_error_points_at_a_byte_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("pub fn main( {"))],
     )
@@ -400,6 +407,7 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
           ),
           node: codemode.Unreported("the program did not compile"),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -423,6 +431,7 @@ pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
           reason: "the helper pool is empty",
         )),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -447,6 +456,7 @@ pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
             degraded: False,
           ),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -472,6 +482,7 @@ pub fn an_unreported_jail_is_never_implied_test() {
           manifest_hash: "sha256-abc",
         ),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -541,6 +552,7 @@ pub fn a_degraded_stage_says_so_test() {
             degraded: True,
           ),
         ),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -702,6 +714,7 @@ pub fn a_rejection_names_the_seam_it_was_judged_against_test() {
         ),
       ]),
       enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -740,6 +753,7 @@ pub fn a_workspace_submission_is_judged_against_the_workspace_seam_test() {
         ),
       ]),
       enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -829,6 +843,7 @@ pub fn a_parse_rejection_says_what_the_parser_will_not_accept_test() {
           ),
         ]),
         enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
       )),
       [#("program", json.String("..."))],
     )
@@ -1010,4 +1025,179 @@ pub fn an_unapproved_request_carries_no_grants_test() {
       on: codemode.WorkspaceSeam,
     )
   assert built.grants == []
+}
+
+// --- raising a refusal the pipeline could not raise itself (#97) ------------
+
+// `code_mode` clears nothing through `Ctx.clear_call`: its clearances
+// happen inside the code-mode pipeline, against the broker that pipeline
+// holds. So a policy refusal there reached no escalation plane at all,
+// and grants could be spent in the pipeline with nothing able to mint
+// one. The shell's answer is `Ctx.raise_refusal` — raised once, for the
+// whole submission — and these pin what it does with each answer.
+
+const raised_grant = policy.GrantEnv(name: "LOOM_CAP_SOCK")
+
+// A seam that refuses the run phase until the call carries the grant, and
+// records every request that crossed it so a test can count executions
+// rather than infer them.
+fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(request: codemode.Request) {
+      process.send(crossings, request.grants)
+      case list.contains(request.grants, raised_grant) {
+        True ->
+          codemode.Execution(
+            result: codemode.Ran(
+              outcome: codemode.Completed(value: msgpack.StringValue("widened")),
+              manifest_hash: "sha256-widened",
+            ),
+            enforcement: jailed(),
+            refusal: codemode.NothingRefused,
+          )
+        False -> run_refused()
+      }
+    },
+    seams: codemode.one_seam(workspace_offer()),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+// A seam that refuses however wide the call gets: what the second refusal
+// after an approval looks like from the shell's side.
+fn always_refusing(
+  crossings: Subject(List(policy.Grant)),
+) -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(request: codemode.Request) {
+      process.send(crossings, request.grants)
+      run_refused()
+    },
+    seams: codemode.one_seam(workspace_offer()),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+fn run_refused() -> codemode.Execution {
+  codemode.Execution(
+    result: codemode.RunFailed(codemode.StartFailed(
+      reason: "the session base cannot host a satellite node",
+    )),
+    enforcement: nothing_ran(),
+    refusal: codemode.RunRefused(
+      denial: escalation.Denial(
+        reason: "the session base cannot host a satellite node",
+        source: escalation.PolicyDenial,
+        wanted: [raised_grant],
+      ),
+      deadline_ms: 9000,
+    ),
+  )
+}
+
+// A `Ctx` whose raise seam answers `answer` and reports what it was
+// asked. The whole point of the seam is that the *host* decides, so a
+// test drives it by being the host.
+fn raising_ctx(
+  answer: tool.Escalated,
+  asked: Subject(tool.RaisedRefusal),
+) -> Ctx {
+  tool.Ctx(..ctx_for("turn-1:tools"), raise_refusal: fn(refusal) {
+    process.send(asked, refusal)
+    answer
+  })
+}
+
+fn drained(inbox: Subject(a), taken: List(a)) -> List(a) {
+  case process.receive(inbox, within: 0) {
+    Error(Nil) -> list.reverse(taken)
+    Ok(item) -> drained(inbox, [item, ..taken])
+  }
+}
+
+fn submitted(seam: codemode.CodeMode, ctx: Ctx) -> tool.ToolOutcome {
+  codemode.tool_for(seam).run(
+    ctx,
+    json.Object([#("program", json.String("pub fn main() { todo }"))]),
+  )
+}
+
+pub fn a_run_refusal_is_raised_once_with_the_wanted_diff_test() {
+  // Once for the whole submission, not once per clearance inside it: a
+  // program makes many clearances, and a human asked about one of them
+  // would be answering about something no client rendered. The consent
+  // unit is the program, which is what the arguments are.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let _outcome =
+    submitted(widenable(crossings), raising_ctx(tool.Settle, asked))
+  let assert [refusal] = drained(asked, [])
+    as "exactly one refusal must reach the host"
+  assert refusal.denial.wanted == [raised_grant]
+  assert refusal.deadline_ms == 9000
+}
+
+pub fn an_approval_re_executes_the_submission_once_test() {
+  // Design §5.3 read literally: one re-execution under the widened
+  // policy. The grants are *appended* to what the call already carried,
+  // because a call can arrive holding an approval the driver consumed for
+  // it a turn earlier and this one is a second grant for the same call,
+  // not a replacement.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      widenable(crossings),
+      raising_ctx(tool.Resume(grants: [raised_grant]), asked),
+    )
+  assert !outcome.is_error
+  assert string.contains(text_of(outcome), "widened")
+  // Twice, and no more: the refused attempt, then the approved one.
+  assert drained(crossings, []) == [[], [raised_grant]]
+  assert list.length(drained(asked, [])) == 1
+}
+
+pub fn a_settled_refusal_executes_once_and_stands_test() {
+  // Nobody widened it — no plane, nobody attached, a denial, a window
+  // that closed. The model reads the refusal the first execution
+  // produced, and nothing ran a second time.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome = submitted(widenable(crossings), raising_ctx(tool.Settle, asked))
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "could not start")
+  assert drained(crossings, []) == [[]]
+}
+
+pub fn a_second_refusal_after_an_approval_stands_test() {
+  // The retry is not a loop. If the widened policy still does not satisfy
+  // the pipeline, the second refusal settles in band — it is not raised
+  // again, which would let one want drive a human round the same question
+  // for as long as the model kept submitting.
+  let crossings = process.new_subject()
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      always_refusing(crossings),
+      raising_ctx(tool.Resume(grants: [raised_grant]), asked),
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "could not start")
+  assert drained(crossings, []) == [[], [raised_grant]]
+  assert list.length(drained(asked, [])) == 1
+}
+
+pub fn an_execution_with_nothing_refused_never_asks_test() {
+  // The common case, and the one that would be most expensive to get
+  // wrong: a healthy execution must not put a question to anybody.
+  let asked = process.new_subject()
+  let outcome =
+    submitted(
+      scripted(ran(codemode.Completed(value: msgpack.StringValue("fine")))),
+      raising_ctx(tool.Settle, asked),
+    )
+  assert !outcome.is_error
+  assert drained(asked, []) == []
 }

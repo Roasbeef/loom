@@ -697,7 +697,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1157`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1099`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1151`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -1274,7 +1274,7 @@ provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam:1333`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:438`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:494`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
