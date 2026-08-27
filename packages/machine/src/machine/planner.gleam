@@ -2374,15 +2374,14 @@ fn stage_result(
   result: AgentMessage,
   terminate: Bool,
 ) -> Action {
-  use <- or_fault_unless(
-    result_is_tool_result(result),
+  use <- or_fault_unless(result_is_tool_result(result), fn() {
     corruption.report(
       at: "machine/planner.stage_result",
       on: build.op_key(op.id),
       expected: "a tool-result message",
       context: "a non-tool-result observation payload",
-    ),
-  )
+    )
+  })
   use found <- or_fault(find_call(batch, source_index))
   // A call may be staged once. Reaching here twice means an observation
   // was delivered for work the batch has already accounted for.
@@ -4721,17 +4720,21 @@ fn or_fault(
 /// ## Examples
 ///
 /// ```gleam
-/// // use <- or_fault_unless(is_tool_result(result), report)
+/// // use <- or_fault_unless(is_tool_result(result), fn() { report })
 /// ```
 ///
+/// The report is a thunk because it is an ordinary argument otherwise:
+/// building a `CorruptionReport` on every call, taken or not, is the
+/// hazard `bool.guard`'s `return:` has, and the reports here are not
+/// free — they format an op key and bound their context string.
 fn or_fault_unless(
   condition: Bool,
-  report: CorruptionReport,
+  report: fn() -> CorruptionReport,
   then: fn() -> Action,
 ) -> Action {
   case condition {
     True -> then()
-    False -> Fault(report:)
+    False -> Fault(report: report())
   }
 }
 
