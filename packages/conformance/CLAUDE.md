@@ -246,6 +246,23 @@ them from their own test mains.
 - **`let assert` is permitted in this package's `src`**, unlike everywhere
   else (spec §0.2). A suite or runner whose fixture will not construct has
   nothing to say; the module docs state the exemption where it is used.
+  Lint R4 (`panic`/`let assert` outside tests) now gates the whole tree at
+  **error** level, and it reaches this package's `src` the way it reaches
+  everyone's — so the exemption is named rather than implied:
+  `lint/policy.harness_packages` lists `conformance`, and `lint.check`
+  applies it from the path. Nothing else in the tree is on that list, and
+  adding to it is a decision to be argued in `packages/lint/CLAUDE.md`'s
+  Staging section, not a prefix that grows quietly. The ninety `let
+  assert`s here were a third of the whole lint census and carried no
+  signal, which is what kept the one rule the root `CLAUDE.md` states as
+  policy from being enforced anywhere.
+
+  The exemption covers the **construct and not the message**. Part IV rule
+  3 admits `panic`/`let assert` only "always with an `as \"message\"`"
+  naming the invariant; none of the ninety sites here carries one, R4
+  checks presence rather than message, and the checker for that half is a
+  separate rule nobody has written yet (issue #73, item F). So this list
+  excuses `let assert` in a test harness — it does not excuse a bare one.
 
 ## Deep Docs
 

@@ -1146,7 +1146,7 @@ corner would buy.
 ## 15. Code mode
 
 The other branch off a tool batch is a model that submits a *program*
-rather than a call. `codemode.execute` (`codemode/codemode.gleam:97`)
+rather than a call. `codemode.execute` (`codemode/codemode.gleam:111`)
 threads its source through three trust stages, short-circuiting at the
 first refusal:
 
@@ -1219,7 +1219,7 @@ in what a program may reach.
 
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam:1333`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:423`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:438`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
