@@ -122,6 +122,14 @@ over one session file. WP-L.
   two enforcement reports in the tool's vocabulary, and removes the
   directory again. `Config` carries no `vet_policy` of its own: it
   carries `surface`.
+- `client/codemode.launch_refusal` — what policy composition would
+  refuse a satellite launch for: `tools/codemode.RunRefused` carrying the
+  exact grants that would satisfy it, or `NothingRefused`. `execute`
+  wraps the pipeline's `satellite.Launcher` with it and reports the
+  answer outward beside the outcome, which is the whole of what makes an
+  escalation record *mintable* from inside code mode (#97). Public
+  because it is the wrapper's entire decision and the only part of it a
+  hermetic test can hold still.
 - `client/codemode.{Surface, Seams, serving, orchestrating,
   surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
   vetting_seam}` — which code-mode seams this host serves.
@@ -153,9 +161,12 @@ over one session file. WP-L.
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
   item 7). The conformance wiring/e2e suites still prove it.
   `Config.escalations` is the escalation seam a policy refusal goes
-  through; there is deliberately **no** session-wide grant list, because
-  a grant that cannot be attributed to the call in hand must widen
-  nothing.
+  through — from `escalating_runner` for a refusal the broker handed
+  back, and from the `Ctx.raise_refusal` seam for one a tool met
+  elsewhere; both build the same `escalate.Refused` from the same
+  `ToolRun`. There is deliberately **no** session-wide grant list,
+  because a grant that cannot be attributed to the call in hand must
+  widen nothing.
 - `client/wiring.{compaction_hooks, recording_summaries}` — the two
   halves of live compaction, separable so a host with its own provider
   surface can run the real ones. `compaction_hooks` builds the whole
@@ -478,6 +489,34 @@ over one session file. WP-L.
   that arrangement allows can only narrow: a program vetted against one
   seam's imports and routed by the other's cannot import the modules
   whose calls that router services, so it reaches nothing at all.
+- **A code-mode policy refusal is raised once, for the whole execution,
+  and only from the satellite launch.** Code mode clears through the
+  broker the pipeline holds rather than through `Ctx.clear_call`, so
+  until #97 a refused execution reached no escalation plane and nothing
+  could mint the grants #24 taught it to spend. `execute` now wraps the
+  pipeline's launcher, re-asks the launch's own composition question
+  (`launch.node_requirements` ⊕ the base ⊕ the identity's grants, so
+  there is nothing to drift), and reports the shortfall outward as
+  `tools/codemode.RunRefused`; `wiring.tool_context` supplies the raise
+  seam that turns it into a durable record, and the tool shell
+  re-executes once on an approval. Three clearance points, one raise: the
+  hermetic build composes with the grants already dropped, so no approval
+  can widen it and the question would be unanswerable; a capability call
+  refused inside a *running* program is refused after effects have
+  happened, and the one thing an approval buys is a re-execution, which
+  `replay: tool.Never` says must never happen. The launch is the only one
+  where nothing has run yet, so the re-execution repeats no effect and
+  the action a human consents to is still the whole submitted program.
+- **The action a code-mode approval binds to is the program.**
+  `wiring`'s raise builds `escalate.Refused` with `tool: "code_mode"` and
+  `arguments: run.arguments` — the same post-clearance arguments the
+  broker path uses — so `record_id` digests `{strand, "code_mode", wanted
+  diff}` and `action_digest` digests the submission. A retry of the same
+  program inherits the approval and spends it; a *different* program
+  wanting the same diff lands on the same record id, fails the action
+  binding, and re-opens the question with no grants (#65). That is the
+  seam where consent would most easily leak, because the want is coarse
+  and the program is everything.
 - **A code-mode execution runs under the calling strand's own
   `{op_id, step_id}`.** The hermetic build, the jailed `erl`, and every
   capability call the running program makes are dispatched under that one

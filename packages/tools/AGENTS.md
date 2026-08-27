@@ -42,8 +42,18 @@ can repair from.
   driver's own coordinates (`strand`, `op_id`, `step_id`,
   `source_index`), base policy and grants, enforcement demand, the
   constructed env, the clock, a `FileSystem` record of functions,
-  `blob_root`, and `clear_call` — the broker seam every jailed execution
-  flows through.
+  `blob_root`, `clear_call` — the broker seam every jailed execution
+  flows through — and `raise_refusal`, the other door onto the same
+  escalation plane.
+- `tools/tool.{RaisedRefusal, Escalated, no_raise}` — the raise seam a
+  tool knocks on when it met a policy refusal somewhere `clear_call` is
+  not. `RaisedRefusal` carries the broker's structured `Denial` (whose
+  `wanted` is the diff an approval may grant) and the refused work's own
+  budget deadline; `Escalated` is `Settle` or `Resume(grants:)`, the
+  mirror of `client/escalate.Decision` that `tools` cannot import;
+  `no_raise()` is the seam for a host with no escalation plane. It exists
+  for `code_mode`, whose clearances happen inside the code-mode pipeline
+  and so never pass `clear_call` (#97).
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
   `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
   tool's schema states. Every closure takes a `Caller` first and is
@@ -84,6 +94,11 @@ can repair from.
   `allowed_imports` and `serviced_caps`; `Seams` is what this host
   serves, as a named `default` plus `alternates`, so a host can never
   offer none and an unnamed submission never has an ambiguous seam.
+- `tools/codemode.{PolicyRefusal, Execution.refusal}` — whether policy
+  composition stopped this execution before it ran, and whether an
+  approval could overturn it. `NothingRefused` or `RunRefused(denial:,
+  deadline_ms:)`, and a *peer* of the enforcement report rather than a
+  field inside it, for the reason `codemode`'s `widening` is one.
 - `tools/codemode.{Request, Execution, ExecResult, Outcome, Rejection,
   Rule, Location, CompileFailure, RunFailure, Enforcement, Report}` — the
   vocabulary crossing that seam, mirroring `codemode/vet`,
@@ -331,6 +346,22 @@ can repair from.
   the text and exactly the details object it rendered before contracts
   existed. Surplus fields in a result are not a failure: the contract
   says what the child owes, not all it may say.
+- **A code-mode policy refusal is raised once, for the whole execution,
+  and only from the run phase.** The shell asks `Ctx.raise_refusal` at
+  most once per call and re-executes at most once on a `Resume`; a second
+  refusal stands in band. Per-clearance would park inside a live
+  satellite — the program's own capability call times out long before a
+  human answers, the pooled wall deadline runs down while they decide,
+  and the node holds one outstanding effect throughout — and, worse for
+  consent, would ask a human about a `cap_call` no client rendered, since
+  an approval binds to the *tool call's* arguments (#65) and a
+  `code_mode` call's arguments are the program. The other two clearance
+  points raise nothing: the hermetic build composes with this execution's
+  grants already dropped, so no approval can widen it, and a capability
+  call refused inside a *running* program is refused after effects have
+  happened, which is precisely what `replay: tool.Never` says must never
+  be repeated. Both are argued where the value is built
+  (`client/codemode`).
 - **`agent_send` is `ReplayNever`; the rest are `ReplaySafe`.** A send
   mints a fresh entry id per admission, so a replay would deliver twice;
   a spawn's name derives from persisted coordinates, so a replay
