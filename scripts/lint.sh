@@ -5,16 +5,19 @@
 #
 # The rules are R0 unparseable sources, R1 eager fallbacks, R2 `case` nesting
 # depth, R3 catch-all patterns, R4 `panic`/`let assert` in src, R5 O(n)
-# answers to bounded questions, and R6 the portable subset `core`, `machine`
-# and `prompt` are held to; `packages/lint/CLAUDE.md` says what each is for.
+# answers to bounded questions, R6 the portable subset `core`, `machine` and
+# `prompt` are held to, R7 a `let assert` that names no invariant, and R8 a
+# long signature with one caller; `packages/lint/CLAUDE.md` says what each
+# is for.
 #
 # R0, R2, R4 and R6 are at ERROR level and this script exits non-zero on any
-# of them; R1, R3 and R5 warn and cost nothing. A rule earns the error tier
-# by a census that is zero, decidable and argued — the staging
+# of them; R1, R3, R5, R7 and R8 warn and cost nothing. A rule earns the
+# error tier by a census that is zero, decidable and argued — the staging
 # scripts/doc_check.sh went through (D2, docs/design-notes/four-decisions.md)
 # — and the argument for each of the four is in `finding.error_by_default`.
-# R3 can never be promoted: it over-reports by construction. Promoting one of
-# the rest is a decision its census has to argue for, and costs one flag:
+# R3 and R8 can never be promoted: they over-report by construction.
+# Promoting one of the rest is a decision its census has to argue for, and
+# costs one flag:
 #
 #   scripts/lint.sh --error=R5
 #

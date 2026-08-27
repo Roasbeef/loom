@@ -66,12 +66,58 @@ pub fn eager_combinators() -> List(Eager) {
   ]
 }
 
-/// The module and function whose result R5 watches being compared to a
-/// literal.
-pub const length_module: String = "gleam/list"
+/// A counting call R5 watches being compared against a bound, and the
+/// bounded question to ask instead.
+///
+/// The two spellings of the same hazard: `list.length` walks a list to the
+/// end, `string.length` walks a string grapheme by grapheme, and either one
+/// answers "is this longer than k" by measuring the whole of it. `noun`,
+/// `unit`, `stop` and `empty` are what the finding says instead of guessing
+/// — the advice for a string is not `list.drop`.
+pub type Counted {
+  Counted(
+    /// The module path as imported, e.g. `gleam/string`.
+    module: String,
+    /// The counting function within it, e.g. `length`.
+    function: String,
+    /// What it walks, for the finding's prose: `list`, `string`.
+    noun: String,
+    /// What it walks over, for the finding's prose: `elements`, `graphemes`.
+    unit: String,
+    /// The bounded question, up to the bound: `list.drop(xs, `.
+    stop: String,
+    /// What the bounded question compares against: `[]`, `""`.
+    empty: String,
+  )
+}
 
-/// The function within `length_module`.
-pub const length_function: String = "length"
+/// The counting calls R5 watches.
+///
+/// `gleam/list.length` is the one the `core/json` regression was written
+/// with; `gleam/string.length` is the same rule in the spelling that hid
+/// two hot sites from the first census (issue #73, E) — a report built on
+/// every corruption, and a length test run per token of every scrubbed log
+/// line.
+pub fn counted_calls() -> List(Counted) {
+  [
+    Counted(
+      module: "gleam/list",
+      function: "length",
+      noun: "list",
+      unit: "elements",
+      stop: "list.drop(xs, ",
+      empty: "[]",
+    ),
+    Counted(
+      module: "gleam/string",
+      function: "length",
+      noun: "string",
+      unit: "graphemes",
+      stop: "string.drop_start(text, ",
+      empty: "\"\"",
+    ),
+  ]
+}
 
 /// How the rules are tuned for one run.
 pub type Policy {
@@ -84,6 +130,13 @@ pub type Policy {
     /// multi-subject catch-all stands for a matrix of combinations, and
     /// "you could enumerate it" is usually false.
     catch_all_multi_subject: Bool,
+    /// R7 requires every admitted `let assert` to name the invariant it
+    /// rests on. Off for test sources, where destructuring a fixture is
+    /// the house style and the test's own name is the message.
+    assert_message: Bool,
+    /// R8 fires on a private function with strictly more parameters than
+    /// this and exactly one caller.
+    lone_caller_arity: Int,
   )
 }
 
@@ -93,12 +146,28 @@ pub fn default() -> Policy {
     nesting_threshold: 3,
     allow_panic: False,
     catch_all_multi_subject: False,
+    assert_message: True,
+    lone_caller_arity: 7,
   )
 }
 
-/// The policy for a test source: everything but R4.
+/// The policy for a test source: everything but R4 and R7.
+///
+/// R7 goes off here for the reason R4 does. A test that destructures a
+/// fixture with `let assert` is naming the invariant in the test's own
+/// name, and the failure it produces is the report; the rule is about
+/// `src/`, where the crash reaches an operator instead.
 pub fn for_tests() -> Policy {
-  Policy(..default(), allow_panic: True)
+  for_tests_like(default())
+}
+
+/// The same relaxations, applied to a policy the command line built rather
+/// than to `default()`. Two functions because `lint/cli` must not lose a
+/// `--depth` while granting a test source its exemptions — and one place
+/// that decides what a test source is exempt from, rather than a copy in
+/// the CLI that a new rule would have to remember to update.
+pub fn for_tests_like(base: Policy) -> Policy {
+  Policy(..base, allow_panic: True, assert_message: False)
 }
 
 /// The packages whose `src/` tree is test infrastructure, and where R4
@@ -135,6 +204,9 @@ pub fn harness_packages() -> List(String) {
 /// here rather than in `lint/cli` so that the exemption is part of the
 /// library's answer about a path: a caller that asks `lint.check` about a
 /// `conformance` source gets the same verdict `make lint` does.
+/// R7 is deliberately not part of this exemption: `harness_packages`
+/// excuses the *construct*, never the missing message, and the harness is
+/// where all ninety of those are (issue #73, F).
 pub fn for_package(base: Policy, package: Option(String)) -> Policy {
   case is_harness(package) {
     True -> Policy(..base, allow_panic: True)

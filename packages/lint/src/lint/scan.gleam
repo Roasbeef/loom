@@ -17,7 +17,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import lint/finding.{type Rule}
-import lint/policy.{type Eager, type Policy}
+import lint/policy.{type Counted, type Eager, type Policy}
 
 /// One violation, located by byte offset. `lint` turns the offset into a
 /// line; the walk has no idea what a line is.
@@ -58,14 +58,25 @@ pub fn module(
   module: glance.Module,
   policy: Policy,
   own_path: String,
+  imported: List(Eager),
 ) -> List(Raw) {
   let names = names_of(module, own_path)
-  let locals = local_eager_rows(module, own_path)
-  list.flat_map(module.functions, fn(definition) {
-    let function = definition.definition
-    let ctx = Ctx(names:, policy:, function: function.name, locals:)
-    list.reverse(statements(function.body, ctx, nesting(function, ctx)))
-  })
+  // This file's own rows, plus the ones other files exported. A row keyed
+  // under `own_path` can only have come from this file, so dropping those
+  // from `imported` is what keeps a public combinator from being counted
+  // twice at its own call sites.
+  let locals =
+    list.append(
+      local_eager_rows(module, own_path),
+      list.filter(imported, fn(row) { row.module != own_path }),
+    )
+  let found =
+    list.flat_map(module.functions, fn(definition) {
+      let function = definition.definition
+      let ctx = Ctx(names:, policy:, function: function.name, locals:)
+      list.reverse(statements(function.body, ctx, nesting(function, ctx)))
+    })
+  list.append(found, lone_callers(module, policy))
 }
 
 /// R2, which is about the function rather than about anything inside it.
@@ -85,6 +96,75 @@ fn nesting(function: glance.Function, ctx: Ctx) -> List(Raw) {
           <> "); measured on the AST, so a wrapped literal is not depth",
       ),
     ]
+  }
+}
+
+// --- R8: a long signature with exactly one caller ---------------------------
+//
+// A private function with eleven parameters that one place calls is not a
+// hazard the way an eager fallback is; it is a shape, and this rule is a
+// census of that shape rather than a verdict about it. What it measures is
+// the thing a nesting metric rewards and never charges for: a block lifted
+// out of its caller with the caller's locals re-declared as a signature.
+// The tree gets shallower, the same state is threaded by hand through a
+// contract only one call site ever satisfies, and nothing but the argument
+// order checks it.
+//
+// It over-reports by construction — some of these are perfectly good
+// helpers that will grow a second caller next week — so it can never be
+// promoted past warning, exactly like R3. The number is the point: it would
+// have named `reconcile_orphaned_poll` (thirteen parameters, one caller) on
+// the commit that introduced it, and nothing did.
+//
+// "Caller" here means another function in this module whose body mentions
+// the name, which over-counts (a shadowed local of the same name reads as a
+// call) and so under-reports, and does not see a reference from a constant.
+// Recursion is not a caller: a function that calls itself and is called
+// once is the same shape as one that does not.
+
+fn lone_callers(module: glance.Module, policy: Policy) -> List(Raw) {
+  list.flat_map(module.functions, fn(definition) {
+    let function = definition.definition
+    case function.publicity, over_arity(function, policy.lone_caller_arity) {
+      glance.Private, True ->
+        lone_caller_finding(function, callers(module, function.name))
+      _, _ -> []
+    }
+  })
+}
+
+/// Strictly more parameters than the threshold — asked with `list.drop`
+/// rather than `list.length`, for R5's own reason.
+fn over_arity(function: glance.Function, threshold: Int) -> Bool {
+  list.drop(function.parameters, threshold) != []
+}
+
+/// How many other functions in this module mention this name.
+fn callers(module: glance.Module, name: String) -> Int {
+  module.functions
+  |> list.filter(fn(other) { other.definition.name != name })
+  |> list.count(fn(other) { mentions_in(other.definition.body, name) })
+}
+
+fn lone_caller_finding(function: glance.Function, callers: Int) -> List(Raw) {
+  case callers {
+    1 -> [
+      Raw(
+        rule: finding.LoneCallerArity,
+        offset: function.location.start,
+        function: function.name,
+        detail: "`"
+          <> function.name
+          <> "` takes "
+          <> int.to_string(list.length(function.parameters))
+          <> " parameters and one function calls it; a signature that long "
+          <> "with one caller is usually a block lifted out of that caller "
+          <> "with its locals re-declared as parameters, so nothing checks "
+          <> "the argument order but the types — group them into a record "
+          <> "the two share, or put the block back. A census, not a verdict",
+      ),
+    ]
+    _ -> []
   }
 }
 
@@ -227,11 +307,31 @@ fn eager_specs(ctx: Ctx, path: String, name: String) -> List(Eager) {
 // anyway), so the rule keeps reporting rather than gating, and stays a
 // warning.
 
+/// The rows a module *exports*: the same synthesis, restricted to the
+/// functions another file could call.
+///
+/// `tools/tool.or_outcome` has nineteen call sites and sixteen of them are
+/// in other modules, so a table built one file at a time was blind to the
+/// large majority of the lineage's uses — clean by luck rather than by
+/// coverage (issue #73, D). A row is keyed under the defining module's own
+/// path either way, which is exactly what a qualified call resolves to, so
+/// nothing in the lookup had to change: only where the rows come from.
+pub fn exported_eager_rows(
+  module: glance.Module,
+  own_path: String,
+) -> List(Eager) {
+  list.flat_map(module.functions, fn(definition) {
+    case definition.definition.publicity {
+      glance.Public -> combinator_rows(definition.definition, own_path)
+      glance.Private -> []
+    }
+  })
+}
+
 /// One synthesized `Eager` row per checkable parameter of every
-/// `use`-compatible function this module defines. Keyed under `own_path`,
-/// so a row here can only ever match a call inside the file that defines
-/// it — there is no cross-file combinator call to resolve in the first
-/// place (a private `fn` is not visible outside its module).
+/// `use`-compatible function this module defines, private ones included.
+/// Keyed under `own_path`, which is what a bare call inside this file and a
+/// qualified call from another one both resolve to.
 fn local_eager_rows(module: glance.Module, own_path: String) -> List(Eager) {
   list.flat_map(module.functions, fn(definition) {
     combinator_rows(definition.definition, own_path)
@@ -242,7 +342,7 @@ fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
   case list.reverse(function.parameters) {
     [last, ..reversed_rest] ->
       case
-        is_function_type(last.type_),
+        is_continuation(last, function.return),
         list.any(reversed_rest, fn(param) { is_function_type(param.type_) })
       {
         // Last parameter is `fn(…)`, and it is the only one — this is a
@@ -432,6 +532,80 @@ fn parameter_label(parameter: glance.FunctionParameter) -> String {
   }
 }
 
+/// Is this last parameter a *continuation* rather than a callback?
+///
+/// A continuation produces the combinator's own result — `or_fault(result,
+/// then: fn(a) -> Action) -> Action` — which is what makes the call
+/// `use`-compatible and what makes the parameters between subject and
+/// continuation look like fallbacks. A function that merely takes a closure
+/// last is doing something else with it: `call.try_call(subject, waiting:,
+/// sending: fn(reply) -> message) -> Result(reply, CallFault)` builds a
+/// request with `sending:` and uses `waiting:` unconditionally on every
+/// path that gets that far.
+///
+/// Left implicit while the table was built one file at a time, because a
+/// callback-taking function had to be defined beside its own call sites to
+/// be seen at all. Reading the whole tree's exports made it load-bearing:
+/// the first row the cross-module pass added was `try_call`'s, and it was
+/// wrong (issue #73, D).
+///
+/// Decided by the two types being *spelled* the same, which is syntactic
+/// and conservative in the direction everything here is: an unannotated
+/// return, or the same type written two ways, drops the rows instead of
+/// inventing them.
+fn is_continuation(
+  parameter: glance.FunctionParameter,
+  return: Option(glance.Type),
+) -> Bool {
+  case parameter.type_, return {
+    Some(glance.FunctionType(return: produced, ..)), Some(declared) ->
+      same_type(produced, declared)
+    _, _ -> False
+  }
+}
+
+/// Are these the same type, written twice?
+///
+/// `glance` puts a `Span` on every type node, so `==` also compares *where*
+/// each was written and a type is never equal to itself in another
+/// position. The catch-all is over combinations of two nodes rather than
+/// over a node, so it does not weaken the exhaustiveness this file keeps
+/// over `glance`'s types: a new type node is unrecognized on both sides and
+/// unrecognized already means "not the same", which drops rows rather than
+/// inventing them.
+fn same_type(left: glance.Type, right: glance.Type) -> Bool {
+  case left, right {
+    glance.NamedType(name: name, module: module, parameters: parameters, ..),
+      glance.NamedType(
+        name: other_name,
+        module: other_module,
+        parameters: other_parameters,
+        ..,
+      )
+    ->
+      name == other_name
+      && module == other_module
+      && same_types(parameters, other_parameters)
+    glance.TupleType(elements:, ..), glance.TupleType(elements: other, ..) ->
+      same_types(elements, other)
+    glance.FunctionType(parameters:, return:, ..),
+      glance.FunctionType(parameters: other, return: other_return, ..)
+    -> same_types(parameters, other) && same_type(return, other_return)
+    glance.VariableType(name:, ..), glance.VariableType(name: other, ..) ->
+      name == other
+    glance.HoleType(name:, ..), glance.HoleType(name: other, ..) ->
+      name == other
+    _, _ -> False
+  }
+}
+
+fn same_types(left: List(glance.Type), right: List(glance.Type)) -> Bool {
+  case list.strict_zip(left, right) {
+    Error(Nil) -> False
+    Ok(pairs) -> list.all(pairs, fn(pair) { same_type(pair.0, pair.1) })
+  }
+}
+
 fn is_function_type(type_: Option(glance.Type)) -> Bool {
   case type_ {
     Some(glance.FunctionType(..)) -> True
@@ -439,11 +613,14 @@ fn is_function_type(type_: Option(glance.Type)) -> Bool {
   }
 }
 
-fn is_length(target: Option(#(String, String))) -> Bool {
+/// Which of R5's counting calls this target names, if any.
+fn counted(target: Option(#(String, String))) -> Option(Counted) {
   case target {
     Some(#(path, name)) ->
-      path == policy.length_module && name == policy.length_function
-    None -> False
+      policy.counted_calls()
+      |> list.find(fn(call) { call.module == path && call.function == name })
+      |> option.from_result
+    None -> None
   }
 }
 
@@ -482,7 +659,7 @@ fn statement_(
         ]
         _, _ -> acc
       }
-      expression(value, ctx, acc)
+      expression(value, ctx, unnamed_assert(kind, location, ctx, acc))
     }
   }
 }
@@ -534,6 +711,40 @@ fn expression(value: glance.Expression, ctx: Ctx, acc: List(Raw)) -> List(Raw) {
     glance.Case(subjects:, clauses:, ..) -> case_(subjects, clauses, ctx, acc)
     glance.BinaryOperator(name:, left:, right:, ..) ->
       binary(name, left, right, ctx, acc)
+  }
+}
+
+/// R7. A `let assert` that is admitted — by the harness exemption or by an
+/// argument in review — still owes the reader the invariant it rests on.
+///
+/// This is R4's other half rather than a second opinion about R4's
+/// question. R4 asks whether the construct belongs in this file at all and
+/// `policy.harness_packages` answers "here, yes"; Part IV rule 3 then asks
+/// what the crash report will say, and a bare `let assert Ok(x) = …` answers
+/// with a pattern and a line number. When it fires in production the message
+/// is the only thing an operator gets, so the rule fires wherever the
+/// construct is allowed to live — the harness included, which is where all
+/// ninety of them are.
+fn unnamed_assert(
+  kind: glance.AssignmentKind,
+  location: glance.Span,
+  ctx: Ctx,
+  acc: List(Raw),
+) -> List(Raw) {
+  case kind, ctx.policy.assert_message {
+    glance.LetAssert(message: None), True -> [
+      Raw(
+        rule: finding.AssertWithoutMessage,
+        offset: location.start,
+        function: ctx.function,
+        detail: "`let assert` without `as \"…\"` crashes with a pattern and "
+          <> "a line number, which is the whole of what the operator gets; "
+          <> "name the invariant that was violated (gleam-style Part IV, "
+          <> "rule 3)",
+      ),
+      ..acc
+    ]
+    _, _ -> acc
   }
 }
 
@@ -905,52 +1116,69 @@ fn bounded(
   ctx: Ctx,
   acc: List(Raw),
 ) -> List(Raw) {
-  case length_call(left, ctx), length_call(right, ctx) {
+  case counted_call(left, ctx), counted_call(right, ctx) {
     Some(_), Some(_) -> acc
-    Some(span), None -> [bounded_finding(span, int_literal(right), ctx), ..acc]
-    None, Some(span) -> [bounded_finding(span, int_literal(left), ctx), ..acc]
+    Some(found), None -> [
+      bounded_finding(found, int_literal(right), ctx),
+      ..acc
+    ]
+    None, Some(found) -> [bounded_finding(found, int_literal(left), ctx), ..acc]
     None, None -> acc
   }
 }
 
-fn bounded_finding(span: glance.Span, bound: Option(String), ctx: Ctx) -> Raw {
-  let #(question, drop) = case bound {
+fn bounded_finding(
+  found: #(glance.Span, Counted),
+  bound: Option(String),
+  ctx: Ctx,
+) -> Raw {
+  let #(span, call) = found
+  let #(question, stop) = case bound {
     Some(literal) -> #(
       "a comparison against " <> literal,
-      "list.drop(xs, " <> literal <> ")",
+      call.stop <> literal <> ")",
     )
-    None -> #("a comparison against a bound", "list.drop(xs, bound)")
+    None -> #("a comparison against a bound", call.stop <> "bound)")
   }
   Raw(
     rule: finding.BoundedLength,
     offset: span.start,
     function: ctx.function,
-    detail: "`list.length` walks the whole list to answer "
+    detail: "`"
+      <> last_segment(call.module)
+      <> "."
+      <> call.function
+      <> "` walks the whole "
+      <> call.noun
+      <> " to answer "
       <> question
-      <> ", which only needs the elements up to it; test `"
-      <> drop
-      <> "` against `[]`, or match the list, and stop at the bound",
+      <> ", which only needs the "
+      <> call.unit
+      <> " up to it; test `"
+      <> stop
+      <> "` against `"
+      <> call.empty
+      <> "` and stop at the bound",
   )
 }
 
-/// The span of a `list.length` measurement, applied (`list.length(xs)`) or
-/// piped (`xs |> list.length`).
-fn length_call(value: glance.Expression, ctx: Ctx) -> Option(glance.Span) {
+/// The span of a counting measurement and which count it is, applied
+/// (`list.length(xs)`) or piped (`xs |> string.length`).
+fn counted_call(
+  value: glance.Expression,
+  ctx: Ctx,
+) -> Option(#(glance.Span, Counted)) {
   case value {
     glance.Call(function:, location:, ..) ->
-      case is_length(resolve(ctx.names, function)) {
-        True -> Some(location)
-        False -> None
-      }
+      counted(resolve(ctx.names, function))
+      |> option.map(fn(call) { #(location, call) })
     glance.BinaryOperator(name: glance.Pipe, right:, location:, ..) ->
-      case is_length(resolve(ctx.names, right)) {
-        True -> Some(location)
-        False -> None
-      }
+      counted(resolve(ctx.names, right))
+      |> option.map(fn(call) { #(location, call) })
     // `{ xs |> list.length } > cap` — a block around one expression is
     // punctuation, not work.
     glance.Block(statements: [glance.Expression(inner)], ..) ->
-      length_call(inner, ctx)
+      counted_call(inner, ctx)
     _ -> None
   }
 }
@@ -979,6 +1207,7 @@ fn case_(
   }
   let reportable =
     { single || ctx.policy.catch_all_multi_subject }
+    && !list.any(clauses, is_guarded)
     && !list.any(clauses, matches_a_primitive)
     && flat_variant_dispatch(clauses)
   let predicate = two_arm_predicate(clauses)
@@ -994,19 +1223,15 @@ fn clause_(
   ctx: Ctx,
   acc: List(Raw),
 ) -> List(Raw) {
-  let acc = case
-    reportable && clause.guard == None,
-    catch_all_span(clause.patterns)
-  {
-    True, Some(span) -> [
+  // No guard test here: a `case` with a guarded arm anywhere is not
+  // reportable at all, which `case_` has already decided.
+  let acc = case reportable, catch_all_of(clause.patterns) {
+    True, Some(spelling) -> [
       Raw(
         rule: finding.CatchAll,
-        offset: span.start,
+        offset: offset_of(spelling),
         function: ctx.function,
-        detail: "`_ ->` swallows every remaining shape, so the compiler "
-          <> "cannot tell you when a new variant needs handling here; "
-          <> "enumerate the variants if the subject is a type you own"
-          <> predicate_note(predicate),
+        detail: swallows(spelling, clause.body) <> predicate_note(predicate),
       ),
       ..acc
     ]
@@ -1015,24 +1240,95 @@ fn clause_(
   optional(clause.guard, ctx, expression(clause.body, ctx, acc))
 }
 
-/// The span of the arm's final alternative when every pattern in it is a
-/// discard — that is, when the arm matches regardless of the subject.
-fn catch_all_span(patterns: List(List(glance.Pattern))) -> Option(glance.Span) {
+/// A guarded arm cannot be the whole of its pattern, so the compiler
+/// demands a fallback arm however many variants are enumerated above it.
+/// The `_ ->` under a guarded sibling is therefore mandatory, and a finding
+/// about it is always wrong — twelve of them in the first census (issue
+/// #73, B). This is the third narrowing R3 makes without types.
+fn is_guarded(clause: glance.Clause) -> Bool {
+  clause.guard != None
+}
+
+/// How a catch-all arm is spelled. Both shapes match regardless of the
+/// subject and both disable the exhaustiveness check; they differ in what
+/// the reader has to do about it, so the finding says which one it found.
+type CatchAll {
+  /// `_ ->`.
+  Discarded(span: glance.Span)
+  /// `other ->`. A bare variable is a catch-all whatever it is called
+  /// (gleam-style Part III), and it is the spelling R3 could not see at
+  /// all until issue #73 — seventy-three arms as measured, including
+  /// every one of the serious ones the baseline review found, and all
+  /// nine of `core`'s.
+  Bound(span: glance.Span, name: String)
+}
+
+fn offset_of(spelling: CatchAll) -> Int {
+  case spelling {
+    Discarded(span:) | Bound(span:, ..) -> span.start
+  }
+}
+
+/// What the finding says, which is not the same sentence for the two
+/// spellings.
+///
+/// A `_ ->` can often be deleted and the variants enumerated in its place.
+/// An `other ->` whose body *reads* `other` cannot: each enumerated arm has
+/// to name the value it matched, so the reviewer is looking at a larger
+/// edit and wants to sort those apart from the rest. One whose body never
+/// reads it is a `_ ->` wearing a name, and says so.
+fn swallows(spelling: CatchAll, body: glance.Expression) -> String {
+  let swallowed =
+    " swallows every remaining shape, so the compiler cannot tell you when "
+    <> "a new variant needs handling here; "
+  case spelling {
+    Discarded(..) ->
+      "`_ ->`"
+      <> swallowed
+      <> "enumerate the variants if the subject is a type you own"
+    Bound(name:, ..) ->
+      "`"
+      <> name
+      <> " ->` is a catch-all with a name on it: it"
+      <> swallowed
+      <> case mentions(body, name) {
+        True ->
+          "the arm reads `"
+          <> name
+          <> "`, so enumerating the variants means naming the value in each"
+        False ->
+          "the arm never reads `"
+          <> name
+          <> "`, so this is `_ ->` with a label on it"
+      }
+  }
+}
+
+/// The arm's final alternative when every pattern in it matches regardless
+/// of the subject — a discard or a bare variable — and how it is spelled.
+fn catch_all_of(patterns: List(List(glance.Pattern))) -> Option(CatchAll) {
   case list.reverse(patterns) {
     [alternative, ..] ->
-      case list.all(alternative, is_discard), alternative {
-        True, [first, ..] -> Some(pattern_span(first))
+      case list.all(alternative, is_catch_all), alternative {
+        True, [first, ..] -> spelling(first)
         _, _ -> None
       }
     [] -> None
   }
 }
 
-fn is_discard(pattern: glance.Pattern) -> Bool {
+/// A discard or a bare variable: the two patterns that match anything.
+fn spelling(pattern: glance.Pattern) -> Option(CatchAll) {
   case pattern {
-    glance.PatternDiscard(..) -> True
-    _ -> False
+    glance.PatternDiscard(location:, ..) -> Some(Discarded(span: location))
+    glance.PatternVariable(location:, name:) ->
+      Some(Bound(span: location, name:))
+    _ -> None
   }
+}
+
+fn is_catch_all(pattern: glance.Pattern) -> Bool {
+  spelling(pattern) != None
 }
 
 /// The commonest benign catch-all: a two-arm predicate whose arms are both
@@ -1083,7 +1379,7 @@ fn predicate_note(predicate: Bool) -> String {
 /// and R3 will not say so.
 fn flat_variant_dispatch(clauses: List(glance.Clause)) -> Bool {
   let dispatching =
-    list.filter(clauses, fn(clause) { catch_all_span(clause.patterns) == None })
+    list.filter(clauses, fn(clause) { catch_all_of(clause.patterns) == None })
   case dispatching {
     [] -> False
     _ ->
@@ -1157,22 +1453,6 @@ fn is_primitive_pattern(pattern: glance.Pattern) -> Bool {
         }
       })
     glance.PatternDiscard(..) | glance.PatternVariable(..) -> False
-  }
-}
-
-fn pattern_span(pattern: glance.Pattern) -> glance.Span {
-  case pattern {
-    glance.PatternInt(location:, ..)
-    | glance.PatternFloat(location:, ..)
-    | glance.PatternString(location:, ..)
-    | glance.PatternDiscard(location:, ..)
-    | glance.PatternVariable(location:, ..)
-    | glance.PatternTuple(location:, ..)
-    | glance.PatternList(location:, ..)
-    | glance.PatternAssignment(location:, ..)
-    | glance.PatternConcatenate(location:, ..)
-    | glance.PatternBitString(location:, ..)
-    | glance.PatternVariant(location:, ..) -> location
   }
 }
 

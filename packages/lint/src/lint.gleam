@@ -47,7 +47,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
-import lint/policy.{type Policy}
+import lint/policy.{type Eager, type Policy}
 import lint/portable
 import lint/scan.{type Raw, Raw}
 import lint/source
@@ -71,6 +71,29 @@ import lint/source
 /// ```
 ///
 pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
+  check_with(path, code, policy, [])
+}
+
+/// `check`, plus the `use`-compatible combinators other files export.
+///
+/// R1's structural half synthesizes a row from a combinator's signature and
+/// body, and a row is keyed under the module that defines it — which is
+/// what both a bare call inside that file and a qualified call from another
+/// one resolve to. Given only its own file, the rule saw only the calls
+/// that happened to sit beside the definition: sixteen of `tool.or_outcome`'s
+/// nineteen call sites are elsewhere (issue #73, D). `lint/cli` collects
+/// `exported_combinators` over every source it is about to lint and passes
+/// the whole table to each one, which is the only reason this is two
+/// functions rather than one.
+///
+/// A single-file caller — a test, a doctest snippet — passes `[]` and gets
+/// exactly the previous behaviour.
+pub fn check_with(
+  path: String,
+  code: String,
+  policy: Policy,
+  combinators: List(Eager),
+) -> List(Finding) {
   let package = package_of(path)
   // R4 asks whether a file is a test by asking where it sits, and one
   // package's `src/` is a test harness that has to compile as a library.
@@ -88,7 +111,7 @@ pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
       ..locate(path, code, foreign)
     ]
     Ok(module) -> {
-      let found = scan.module(module, policy, module_path(path))
+      let found = scan.module(module, policy, module_path(path), combinators)
       let all =
         found
         |> list.append(backstop(found, code, policy))
@@ -96,6 +119,17 @@ pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
         |> list.append(portable.imports(package, module))
       locate(path, code, all)
     }
+  }
+}
+
+/// The `use`-compatible combinators this source exports, for the table
+/// `check_with` takes. A source that will not parse exports nothing: R0
+/// reports the file itself, and a missing row costs coverage rather than
+/// correctness.
+pub fn exported_combinators(path: String, code: String) -> List(Eager) {
+  case glance.module(code) {
+    Error(_) -> []
+    Ok(module) -> scan.exported_eager_rows(module, module_path(path))
   }
 }
 

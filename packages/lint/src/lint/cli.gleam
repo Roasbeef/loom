@@ -28,7 +28,7 @@ import gleam/result
 import gleam/string
 import lint
 import lint/finding.{type Finding, type Rule}
-import lint/policy.{type Policy}
+import lint/policy.{type Eager, type Policy}
 import simplifile
 
 /// Parsed command line.
@@ -50,7 +50,7 @@ usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
   --error=R1,R5   promote these rules to error level (R0, R2, R4, R6 are)
-  --tests         also lint test/ sources (R4 is off for them)
+  --tests         also lint test/ sources (R4 and R7 are off for them)
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
@@ -141,9 +141,18 @@ fn run(options: Options) -> Nil {
     |> list.flat_map(sources)
     |> list.filter(fn(path) { options.include_tests || !is_test(path) })
     |> list.sort(string.compare)
+  // Read once, lint twice. R1's structural half needs a table of every
+  // `use`-compatible combinator the run can see before it can judge any one
+  // call site: a combinator defined in `tools/tool` is called from sixteen
+  // other modules, and a per-file table saw none of them (issue #73, D).
+  let read = list.filter_map(files, contents)
+  let combinators =
+    list.flat_map(read, fn(source) {
+      lint.exported_combinators(display(source.0), source.1)
+    })
   let findings =
-    files
-    |> list.flat_map(fn(path) { lint_file(path, options) })
+    read
+    |> list.flat_map(fn(source) { lint_source(source, options, combinators) })
     |> list.append(list.flat_map(manifests_of(files), lint_manifest))
   case options.quiet {
     True -> Nil
@@ -153,17 +162,26 @@ fn run(options: Options) -> Nil {
   print_summary(findings, options.errors)
 }
 
-fn lint_file(path: String, options: Options) -> List(Finding) {
+/// A source and its text, or nothing when it cannot be read. A file that
+/// vanished between discovery and reading is not a finding.
+fn contents(path: String) -> Result(#(String, String), Nil) {
   case simplifile.read(path) {
-    Error(_) -> []
-    Ok(source) -> {
-      let file_policy = case is_test(path) {
-        True -> policy.Policy(..options.policy, allow_panic: True)
-        False -> options.policy
-      }
-      lint.check(display(path), source, file_policy)
-    }
+    Error(_) -> Error(Nil)
+    Ok(source) -> Ok(#(path, source))
   }
+}
+
+fn lint_source(
+  source: #(String, String),
+  options: Options,
+  combinators: List(Eager),
+) -> List(Finding) {
+  let #(path, code) = source
+  let file_policy = case is_test(path) {
+    True -> policy.for_tests_like(options.policy)
+    False -> options.policy
+  }
+  lint.check_with(display(path), code, file_policy, combinators)
 }
 
 fn lint_manifest(path: String) -> List(Finding) {
@@ -353,10 +371,17 @@ fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
   io.println("# " <> int.to_string(gated) <> " " <> int.to_string(warned))
 }
 
+/// A census cell, padded to its column — and a label already at or past
+/// the column keeps one space, so the row still reads as a row.
+///
+/// `pad_end` returns the text unchanged when it is already wide enough,
+/// which is the same question `string.length(text) >= width` asks and
+/// answers without walking a label to its end (R5, this tool's own rule).
 fn pad(text: String, width: Int) -> String {
-  case string.length(text) >= width {
+  let padded = string.pad_end(text, width, " ")
+  case padded == text {
     True -> text <> " "
-    False -> string.pad_end(text, width, " ")
+    False -> padded
   }
 }
 

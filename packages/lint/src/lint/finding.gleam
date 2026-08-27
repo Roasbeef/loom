@@ -40,13 +40,26 @@ pub type Rule {
   /// R4. `panic` or `let assert` outside tests. Loom policy forbids both in
   /// `src/` (CLAUDE.md, gleam-style Part IV).
   PanicInSource
-  /// R5. `list.length(xs)` compared against a literal — an O(n) answer to a
-  /// question that only needs the first `k+1` elements.
+  /// R5. A count — `list.length(xs)`, `string.length(text)` — compared
+  /// against a bound: an O(n) answer to a question settled by the first
+  /// `k+1` elements or graphemes. The bound need not be a literal.
   BoundedLength
   /// R6. `@external`, a BEAM-only import, or a BEAM-only dependency in one
   /// of the three packages held to the portable subset. What that subset is
   /// and what rests on it is argued in `lint/portable`.
   PortablePurity
+  /// R7. A `let assert` in `src/` with no `as "message"`. R4 asks whether
+  /// the construct is admitted here at all; this asks whether the one that
+  /// is admitted says what invariant it rests on, which is the other half
+  /// of the same house rule (gleam-style Part IV, rule 3) and the half
+  /// nothing checked.
+  AssertWithoutMessage
+  /// R8. A private function with more than the policy's parameters and
+  /// exactly one caller. Not a hazard — a census. It measures what a
+  /// depth metric rewards: a block lifted out of its caller with its
+  /// locals re-declared as a signature, which reads shallower and is not
+  /// simpler.
+  LoneCallerArity
 }
 
 /// Every rule, in report order.
@@ -59,6 +72,8 @@ pub fn rules() -> List(Rule) {
     PanicInSource,
     BoundedLength,
     PortablePurity,
+    AssertWithoutMessage,
+    LoneCallerArity,
   ]
 }
 
@@ -105,6 +120,15 @@ pub fn rules() -> List(Rule) {
 /// `CLAUDE.md` and gleam-style Part IV state in as many words, and until
 /// now the distance between a stated rule and an enforced one was exactly
 /// this promotion.
+///
+/// **R7 and R8 are not here and one of them never will be.** R7's census is
+/// ninety, every one of them in the harness `R4` exempts, which is Part IV
+/// rule 3 at nothing per cent — a rule cannot gate on a census it has never
+/// once been at zero for, and fixing ninety messages is a separate change
+/// from the flag that counts them. R8 over-reports by construction, the way
+/// R3 does: "more than seven parameters and one caller" is a shape worth
+/// looking at, never a verdict, and a linter that fails a build over a
+/// shape is a linter somebody turns off.
 pub fn error_by_default() -> List(Rule) {
   [Unparseable, NestingDepth, PanicInSource, PortablePurity]
 }
@@ -143,6 +167,8 @@ pub fn id(rule: Rule) -> String {
     PanicInSource -> "R4"
     BoundedLength -> "R5"
     PortablePurity -> "R6"
+    AssertWithoutMessage -> "R7"
+    LoneCallerArity -> "R8"
   }
 }
 
@@ -156,6 +182,8 @@ pub fn name(rule: Rule) -> String {
     PanicInSource -> "panic-in-src"
     BoundedLength -> "bounded-length"
     PortablePurity -> "portable-purity"
+    AssertWithoutMessage -> "assert-without-message"
+    LoneCallerArity -> "lone-caller-arity"
   }
 }
 

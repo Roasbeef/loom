@@ -36,12 +36,19 @@ fn gate_of(path: String, code: String) -> #(Int, Int) {
   |> finding.gate(finding.error_by_default())
 }
 
+fn catch_all_details(code: String) -> List(String) {
+  findings(code)
+  |> list.filter(fn(found) { found.rule == finding.CatchAll })
+  |> list.map(fn(found) { found.detail })
+}
+
 /// A module with the four stdlib modules the rules watch already imported.
 fn module(body: String) -> String {
   "import gleam/bool
 import gleam/list
 import gleam/option
 import gleam/result
+import gleam/string
 
 " <> body <> "
 "
@@ -485,6 +492,113 @@ pub fn r2_ignores_a_formatter_wrapped_literal_test() {
   |> should.be_false
 }
 
+// --- R1 across module boundaries --------------------------------------------
+
+/// A `use`-compatible combinator, as `tools/tool` exports one.
+const exported_combinator: String = "pub fn or_outcome(
+  result: Result(a, e),
+  failed: Outcome,
+  then: fn(a) -> Outcome,
+) -> Outcome {
+  case result {
+    Error(_) -> failed
+    Ok(value) -> then(value)
+  }
+}
+"
+
+/// Another module calling it, with an eagerly-built fallback.
+const calling_module: String = "import tools/tool
+
+fn run(result, cursor) {
+  use value <- tool.or_outcome(result, tool.failure(describe(cursor)))
+  value
+}
+"
+
+fn rows_of(path: String, code: String) -> List(policy.Eager) {
+  lint.exported_combinators(path, code)
+}
+
+/// Sixteen of `tool.or_outcome`'s nineteen call sites are in other modules,
+/// and a table built one file at a time saw none of them: clean by luck
+/// rather than by coverage (issue #73, D).
+pub fn r1_follows_an_exported_combinator_across_modules_test() {
+  let rows = rows_of("packages/tools/src/tools/tool.gleam", exported_combinator)
+  lint.check_with(
+    "packages/tools/src/tools/bash.gleam",
+    calling_module,
+    policy.default(),
+    rows,
+  )
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.EagerFallback)
+  |> should.be_true
+}
+
+/// And without the table it is invisible, which is what the second pass
+/// buys — the same source, the same rule, no rows.
+pub fn r1_is_blind_to_that_call_without_the_table_test() {
+  lint.check(
+    "packages/tools/src/tools/bash.gleam",
+    calling_module,
+    policy.default(),
+  )
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// A file's own public combinator reaches it twice — once as its own row,
+/// once as a row the run collected from every source including this one —
+/// and the same call site must still be one finding, not two. The run
+/// passes every file the whole table, so this is every public combinator in
+/// the tree and not an edge case.
+pub fn a_combinator_called_where_it_is_defined_is_one_finding_test() {
+  let path = "packages/tools/src/tools/tool.gleam"
+  let code = exported_combinator <> "
+fn run(result, cursor) {
+  use value <- or_outcome(result, failure(describe(cursor)))
+  value
+}
+"
+  lint.check_with(path, code, policy.default(), rows_of(path, code))
+  |> list.filter(fn(found) { found.rule == finding.EagerFallback })
+  |> list.length
+  |> should.equal(1)
+}
+
+/// A private combinator is not callable from another module, so it
+/// contributes nothing to the table other files are judged against.
+pub fn only_public_combinators_are_exported_test() {
+  rows_of(
+    "packages/tools/src/tools/tool.gleam",
+    string.replace(exported_combinator, "pub fn", "fn"),
+  )
+  |> should.equal([])
+}
+
+/// The narrowing the cross-module pass made load-bearing: a function whose
+/// last parameter is a closure is not a combinator unless that closure
+/// produces the function's own result. `call.try_call`'s `sending:` builds
+/// a request message and its `waiting:` is used unconditionally — reading
+/// the whole tree's exports, this was the first row the pass added and it
+/// was wrong.
+pub fn a_callback_is_not_a_continuation_test() {
+  let defining =
+    "pub fn try_call(
+  subject: Subject(message),
+  waiting timeout: Int,
+  sending make_request: fn(Subject(reply)) -> message,
+) -> Result(reply, CallFault) {
+  use callee <- or_gone(process.subject_owner(subject))
+  answer(callee, timeout, make_request)
+}
+"
+  rows_of("packages/broker/src/broker/internal/call.gleam", defining)
+  |> should.equal([])
+}
+
 // --- R3: catch-all patterns -------------------------------------------------
 
 pub fn r3_flags_a_flat_variant_dispatch_test() {
@@ -561,6 +675,98 @@ pub fn r3_leaves_a_multi_subject_case_alone_by_default_test() {
   |> rules_fired
   |> list.contains(finding.CatchAll)
   |> should.be_false
+}
+
+/// A bare variable matches everything a `_` does, so R3 has to see it —
+/// it was blind to sixty-eight of them, and the serious catch-alls in the
+/// tree were all in that hidden set (issue #73, A).
+pub fn r3_flags_a_named_catch_all_test() {
+  module(
+    "fn f(status) {
+  case status {
+    Pending -> Ok(Nil)
+    Granted -> Ok(Nil)
+    other -> Error(describe(other))
+  }
+}",
+  )
+  |> fired(finding.CatchAll)
+  |> should.be_true
+}
+
+/// The two spellings do not read the same to a reviewer: a `_ ->` can often
+/// be deleted and the variants written in its place, while an `other ->`
+/// whose arm reads `other` means every enumerated arm has to name the value.
+/// The finding says which one it found, so the census sorts on it.
+pub fn r3_distinguishes_the_two_spellings_test() {
+  let named =
+    module(
+      "fn f(status) {
+  case status {
+    Pending -> Ok(Nil)
+    other -> Error(describe(other))
+  }
+}",
+    )
+    |> catch_all_details
+  case named {
+    [only] -> {
+      should.be_true(string.contains(only, "`other ->` is a catch-all"))
+      should.be_true(string.contains(only, "the arm reads `other`"))
+    }
+    _ -> should.fail()
+  }
+
+  let discarded =
+    module(
+      "fn f(status) {
+  case status {
+    Pending -> Ok(Nil)
+    _ -> Error(Nil)
+  }
+}",
+    )
+    |> catch_all_details
+  case discarded {
+    [only] -> {
+      should.be_true(string.contains(only, "`_ ->`"))
+      should.be_false(string.contains(only, "catch-all with a name"))
+    }
+    _ -> should.fail()
+  }
+}
+
+/// A guarded arm cannot be exhaustive on its own, so the compiler *demands*
+/// the final arm and a finding about it is always wrong — twelve of them in
+/// the first census. Remove the guard check in `scan.case_` and this fails.
+pub fn r3_leaves_a_case_with_a_guarded_arm_alone_test() {
+  module(
+    "fn f(installed, owner) {
+  case installed {
+    Ok(found) if found == owner -> Ok(Nil)
+    Ok(_other) -> Error(Nil)
+    _ -> Error(Nil)
+  }
+}",
+  )
+  |> rules_fired
+  |> list.contains(finding.CatchAll)
+  |> should.be_false
+}
+
+/// The same `case` without the guard is reported, so the test above is
+/// pinning the guard and not some other narrowing.
+pub fn r3_flags_that_same_case_without_the_guard_test() {
+  module(
+    "fn f(installed) {
+  case installed {
+    Ok(found) -> Ok(found)
+    _ -> Error(Nil)
+  }
+}",
+  )
+  |> fired(finding.CatchAll)
+  |> should.be_true
 }
 
 pub fn r3_names_the_two_arm_predicate_shape_test() {
@@ -657,6 +863,166 @@ pub fn r5_leaves_an_uncompared_count_alone_test() {
   |> should.be_false
 }
 
+/// The other spelling of the same hazard, and the one that hid two hot
+/// sites from the first census (issue #73, E).
+pub fn r5_flags_the_string_spelling_test() {
+  module("fn f(word) { string.length(word) >= 32 }")
+  |> fired(finding.BoundedLength)
+  |> should.be_true
+}
+
+/// The advice has to be about the thing that was counted: `list.drop` is
+/// not a bounded question about a string.
+pub fn r5_advice_names_the_right_bounded_question_test() {
+  let detail = fn(code) {
+    findings(code)
+    |> list.filter(fn(found) { found.rule == finding.BoundedLength })
+    |> list.map(fn(found) { found.detail })
+  }
+  case detail(module("fn f(word) { string.length(word) >= 32 }")) {
+    [only] -> {
+      should.be_true(string.contains(only, "string.drop_start(text, 32)"))
+      should.be_true(string.contains(only, "graphemes"))
+    }
+    _ -> should.fail()
+  }
+  case detail(module("fn f(xs) { list.length(xs) > 24 }")) {
+    [only] -> {
+      should.be_true(string.contains(only, "list.drop(xs, 24)"))
+      should.be_true(string.contains(only, "elements"))
+    }
+    _ -> should.fail()
+  }
+}
+
+/// Two counts compared with each other, in the string spelling: neither
+/// side is a bound the other can stop at.
+pub fn r5_leaves_two_string_counts_alone_test() {
+  module("fn f(a, b) { string.length(a) == string.length(b) }")
+  |> rules_fired
+  |> list.contains(finding.BoundedLength)
+  |> should.be_false
+}
+
+/// The table is what the rule claims to watch; a test that did not
+/// enumerate it would pass against an empty one.
+pub fn the_counted_table_names_both_spellings_test() {
+  policy.counted_calls()
+  |> list.map(fn(call) { call.module <> "." <> call.function })
+  |> should.equal(["gleam/list.length", "gleam/string.length"])
+}
+
+// --- R7: an admitted `let assert` still names its invariant -----------------
+
+pub fn r7_flags_an_assert_with_no_message_test() {
+  module("fn f(value) { let assert Ok(inner) = value inner }")
+  |> fired(finding.AssertWithoutMessage)
+  |> should.be_true
+}
+
+pub fn r7_is_silent_when_the_invariant_is_named_test() {
+  module("fn f(value) { let assert Ok(inner) = value as \"decoded\" inner }")
+  |> rules_fired
+  |> list.contains(finding.AssertWithoutMessage)
+  |> should.be_false
+}
+
+/// R7 is R4's other half, not a second opinion about R4's question: where
+/// `harness_packages` admits the construct, this still asks what the crash
+/// will say. All eighty-four of the census live in exactly that place, so a
+/// rule that inherited R4's exemption would report nothing at all.
+pub fn r7_reaches_the_harness_package_r4_exempts_test() {
+  let rules =
+    in_package_at(
+      "conformance",
+      "conformance/runner",
+      module("fn f(value) { let assert Ok(inner) = value inner }"),
+    )
+    |> list.map(fn(found) { found.rule })
+  should.be_false(list.contains(rules, finding.PanicInSource))
+  should.be_true(list.contains(rules, finding.AssertWithoutMessage))
+}
+
+/// And it is off where `let assert` is the house style: a test that
+/// destructures a fixture names the invariant in the test's own name.
+pub fn r7_is_off_for_tests_test() {
+  lint.check(
+    "t_test.gleam",
+    module("fn f(value) { let assert Ok(inner) = value inner }"),
+    policy.for_tests(),
+  )
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.AssertWithoutMessage)
+  |> should.be_false
+}
+
+// --- R8: a long signature with exactly one caller ---------------------------
+
+/// Eight parameters threaded by hand into a private helper one place calls.
+pub fn r8_flags_a_lone_caller_test() {
+  module(
+    "fn caller(a) { wide(a, a, a, a, a, a, a, a) }
+
+fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
+  )
+  |> fired(finding.LoneCallerArity)
+  |> should.be_true
+}
+
+/// Two callers is a helper rather than a block that was moved out.
+pub fn r8_leaves_a_second_caller_alone_test() {
+  module(
+    "fn one(a) { wide(a, a, a, a, a, a, a, a) }
+
+fn two(a) { wide(a, a, a, a, a, a, a, a) }
+
+fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
+  )
+  |> rules_fired
+  |> list.contains(finding.LoneCallerArity)
+  |> should.be_false
+}
+
+/// A public function's callers are not all in this module, so counting them
+/// here answers nothing.
+pub fn r8_leaves_a_public_function_alone_test() {
+  module(
+    "fn caller(a) { wide(a, a, a, a, a, a, a, a) }
+
+pub fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
+  )
+  |> rules_fired
+  |> list.contains(finding.LoneCallerArity)
+  |> should.be_false
+}
+
+/// The threshold is a boundary, not a ceiling: seven is silent, eight is
+/// not. Change `lone_caller_arity` and this is what moves.
+pub fn r8_threshold_is_exclusive_test() {
+  module(
+    "fn caller(a) { wide(a, a, a, a, a, a, a) }
+
+fn wide(a, b, c, d, e, f, g) { #(a, b, c, d, e, f, g) }",
+  )
+  |> rules_fired
+  |> list.contains(finding.LoneCallerArity)
+  |> should.be_false
+
+  should.equal(policy.default().lone_caller_arity, 7)
+}
+
+/// Recursion is not a caller: a function that calls itself and is called
+/// from one place is the same shape as one that does not.
+pub fn r8_does_not_count_recursion_as_a_caller_test() {
+  module(
+    "fn caller(a) { wide(a, a, a, a, a, a, a, a) }
+
+fn wide(a, b, c, d, e, f, g, h) { wide(a, b, c, d, e, f, g, h) }",
+  )
+  |> fired(finding.LoneCallerArity)
+  |> should.be_true
+}
+
 // --- R6: the portable subset ------------------------------------------------
 
 /// A source at the path a package's file really has, so the rule can tell
@@ -664,6 +1030,19 @@ pub fn r5_leaves_an_uncompared_count_alone_test() {
 fn in_package(package: String, code: String) -> List(Finding) {
   lint.check(
     "packages/" <> package <> "/src/" <> package <> "/thing.gleam",
+    code,
+    policy.default(),
+  )
+}
+
+/// The same, for a package whose module path is not `<package>/thing`.
+fn in_package_at(
+  package: String,
+  module_path: String,
+  code: String,
+) -> List(Finding) {
+  lint.check(
+    "packages/" <> package <> "/src/" <> module_path <> ".gleam",
     code,
     policy.default(),
   )
@@ -886,10 +1265,13 @@ pub fn r2_gates_a_pyramid_test() {
   |> should.equal(#(1, 0))
 }
 
+/// The `as` is there so this pins R4's gate and nothing else: R4 is about
+/// the construct being present at all, so it fires on a `let assert` that
+/// carries a message, and R7 — which is about the message — does not.
 pub fn r4_gates_a_let_assert_in_src_test() {
   gate_of(
     "packages/core/src/core/thing.gleam",
-    module("fn f(value) { let assert Ok(inner) = value inner }"),
+    module("fn f(value) { let assert Ok(inner) = value as \"decoded\" inner }"),
   )
   |> should.equal(#(1, 0))
 }
@@ -899,7 +1281,8 @@ pub fn r4_gates_a_let_assert_in_src_test() {
 /// harness that has to compile as a library. Keyed by package, so it is one
 /// tree and not a prefix that could grow quietly.
 pub fn r4_does_not_reach_the_harness_package_test() {
-  let harness = module("fn f(value) { let assert Ok(inner) = value inner }")
+  let harness =
+    module("fn f(value) { let assert Ok(inner) = value as \"fixture\" inner }")
   gate_of("packages/conformance/src/conformance/runner.gleam", harness)
   |> should.equal(#(0, 0))
 
@@ -909,7 +1292,8 @@ pub fn r4_does_not_reach_the_harness_package_test() {
 /// The table is what the exemption claims to cover, and a neighbouring
 /// package must not inherit it.
 pub fn the_harness_exemption_is_one_package_test() {
-  let harness = module("fn f(value) { let assert Ok(inner) = value inner }")
+  let harness =
+    module("fn f(value) { let assert Ok(inner) = value as \"fixture\" inner }")
   gate_of("packages/machine/src/machine/planner.gleam", harness)
   |> should.equal(#(1, 0))
 }
@@ -920,6 +1304,27 @@ pub fn an_unpromoted_rule_still_only_warns_test() {
   gate_of(
     "packages/core/src/core/json.gleam",
     module("fn f(rest) { list.length(rest) > 24 }"),
+  )
+  |> should.equal(#(0, 1))
+}
+
+/// Neither new rule may touch the exit code. R7's census is eighty-four, in
+/// the one tree R4 exempts, so it has never once been at zero; R8 reports a
+/// shape rather than a defect and can never be promoted at all.
+pub fn the_new_rules_only_warn_test() {
+  gate_of(
+    "packages/conformance/src/conformance/runner.gleam",
+    module("fn f(value) { let assert Ok(inner) = value inner }"),
+  )
+  |> should.equal(#(0, 1))
+
+  gate_of(
+    "packages/core/src/core/wide.gleam",
+    module(
+      "fn caller(a) { wide(a, a, a, a, a, a, a, a) }
+
+fn wide(a, b, c, d, e, f, g, h) { #(a, b, c, d, e, f, g, h) }",
+    ),
   )
   |> should.equal(#(0, 1))
 }
