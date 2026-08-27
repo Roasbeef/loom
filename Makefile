@@ -191,6 +191,15 @@ deps: ## Download dependencies for every package
 gen-sql: ## Regenerate parrot-generated SQL modules (needs sqlite3; ADR-004)
 	@scripts/gen-sql.sh
 
+.PHONY: gen-prelude
+gen-prelude: ## Regenerate tools/prelude from packages/cap (needs gleam, python3)
+	@scripts/gen-prelude.sh
+
+.PHONY: prelude-check
+prelude-check: ## Check tools/prelude against packages/cap (no toolchain needed)
+	@scripts/gen-prelude.sh --check
+	@scripts/gen-prelude.sh --self-test
+
 .PHONY: docs
 docs: ## Build HexDocs-style API documentation for every Gleam package
 	@set -e; for p in $(PACKAGES); do \
