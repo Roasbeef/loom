@@ -64,6 +64,7 @@
 //// report came back at all. A tool result must never imply confinement
 //// that was not applied.
 
+import broker/escalation.{type Denial}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import core/ids.{type OpId}
@@ -314,10 +315,57 @@ pub type ExecResult {
   Ran(outcome: Outcome, manifest_hash: String)
 }
 
-/// One whole execution: how it settled, and what the kernel really did to
-/// each stage of it.
+/// Whether a policy refusal stopped this execution before it ran, and
+/// therefore whether there is anything a human could be asked about.
+///
+/// A named two-variant type rather than `Option(Denial)` because the
+/// question it answers is not "is there a denial here" but "is this one
+/// an approval can overturn" — and because a `deadline_ms` rides with the
+/// denial, which an `Option` would have nowhere to put.
+///
+/// The pipeline clears on policy in three places and only one of them is
+/// here. The hermetic build composes with this execution's grants already
+/// dropped, so no approval can widen it and a refusal there is an
+/// operator's misconfiguration reported in the ordinary `CompileFailed`
+/// result. A capability call refused inside a running program is refused
+/// after the program has performed effects, and `code_mode` is
+/// `replay: tool.Never` precisely because those effects have nothing to
+/// reconcile onto — so the one thing an approval buys, a re-execution, is
+/// the one thing that must not happen; that refusal is the program's to
+/// handle. The seam that fills this field argues both at length
+/// (`client/codemode`).
+pub type PolicyRefusal {
+  /// Nothing this seam offers for a decision. Either no stage was refused
+  /// on policy, or the one that was is not one an approval could widen.
+  /// The execution may still have failed for any other reason.
+  NothingRefused
+  /// The **run** phase was refused before the satellite serviced a single
+  /// capability call, so nothing of the program ran.
+  ///
+  /// `denial.wanted` is the exact diff that would let it — derived from
+  /// policy composition's own narrowings, never written by hand, because
+  /// a human approving a diff that satisfies nothing has been asked a
+  /// question with no useful answer. `deadline_ms` is the refused
+  /// execution's own budget deadline, the instant past which holding this
+  /// call open buys nothing.
+  RunRefused(denial: Denial, deadline_ms: Int)
+}
+
+/// One whole execution: how it settled, what the kernel really did to
+/// each stage of it, and whether policy composition is what stopped it.
+///
+/// `refusal` is a peer of `enforcement` rather than a field inside it,
+/// for the reason `codemode`'s `widening` is: an enforcement report is
+/// the helper's verbatim account of what the kernel did to a stage that
+/// *ran*, and a refusal is the harness deciding a stage may not run. A
+/// harness-side decision folded into that report is exactly the
+/// applied-versus-skipped confusion the report exists to prevent.
 pub type Execution {
-  Execution(result: ExecResult, enforcement: Enforcement)
+  Execution(
+    result: ExecResult,
+    enforcement: Enforcement,
+    refusal: PolicyRefusal,
+  )
 }
 
 /// The code-mode seam: everything this tool may do, as data.
@@ -736,9 +784,60 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use offer <- tool.with_arg(chosen_seam(mode.seams, named))
   case string.trim(program) {
     "" -> tool.failure("invalid arguments: `program` must not be empty")
-    _ ->
-      mode.execute(request(mode, ctx, program, within_ms, on: offer.seam))
-      |> render(ctx, offer, _)
+    _ -> {
+      let asked = request(mode, ctx, program, within_ms, on: offer.seam)
+      render(ctx, offer, once_more_if_approved(mode, ctx, asked))
+    }
+  }
+}
+
+// One execution, and — if a policy refusal stopped it and a human said
+// yes — exactly one more under what they granted.
+//
+// **Once, for the whole execution, and not per clearance.** A code-mode
+// program makes many clearances and a satellite services them while it is
+// alive, so raising per clearance would park inside a live node: the
+// program's own call times out long before a person answers, the pooled
+// wall deadline runs down while they think, and the node holds one
+// outstanding effect the whole time. Worse for consent — the human would
+// be asked about a `cap_call` that appears nowhere in what the client
+// rendered, because an approval binds to the *tool call's* arguments
+// (#65) and those arguments are the program. Asking once, about the whole
+// submission, makes the consent unit the thing that was actually shown.
+//
+// `RunRefused` is the only refusal offered, and it is offered before any
+// capability call was serviced: the re-execution therefore repeats no
+// effect, which matters because `code_mode` is `replay: tool.Never` and a
+// program's effects have nothing to reconcile onto. A build refusal names
+// itself in the result and raises nothing (`PolicyRefusal`), and a
+// capability call refused *inside* a running program stays the program's
+// business — the seam it is refused through hands it the reason, and a
+// harness that re-ran the whole submission to widen call number seven
+// would be replaying calls one through six.
+//
+// The retry is not a loop. A second refusal — of the same want or of a
+// new one — settles in band, which is design §5.3's "one re-execution
+// under the widened policy" read literally.
+fn once_more_if_approved(
+  mode: CodeMode,
+  ctx: Ctx,
+  asked: Request,
+) -> Execution {
+  let execution = mode.execute(asked)
+  case execution.refusal {
+    NothingRefused -> execution
+    RunRefused(denial:, deadline_ms:) ->
+      case ctx.raise_refusal(tool.RaisedRefusal(denial:, deadline_ms:)) {
+        tool.Settle -> execution
+        // Appended rather than substituted: an approval widens what this
+        // call already carried, and the grants the call arrived with are
+        // ones a human approved for it too — through the driver's own
+        // clearance path, one turn earlier.
+        tool.Resume(grants:) ->
+          mode.execute(
+            Request(..asked, grants: list.append(asked.grants, grants)),
+          )
+      }
   }
 }
 

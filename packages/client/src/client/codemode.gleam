@@ -74,10 +74,64 @@
 //// here" — and there is no session-wide grant list anywhere below, so an
 //// approval that cannot be attributed to one execution widens nothing.
 ////
-//// One link of that chain is still missing above this module, and
 //// `approved_grants` reads `Request.grants`, which `tools/codemode.request`
 //// fills from `tool.Ctx.grants` — so an approval consumed for this call
 //// reaches the run phase, and only the run phase.
+////
+//// ## Reporting a refusal outward, so that something can mint one
+////
+//// The paragraph above is the half of the loop that *spends* an approval.
+//// The other half is where one comes from, and for a long time there was
+//// nowhere: this module clears through the broker it holds rather than
+//// through `tool.Ctx.clear_call`, so a policy refusal inside a code-mode
+//// execution reached no escalation plane and no durable record, and there
+//// was nothing for a human to approve (#97).
+////
+//// So `execute` **watches** the one stage an approval could widen and
+//// reports what composition refused, as a `codemode_tool.PolicyRefusal`
+//// beside the outcome. It is a peer of the enforcement report and not a
+//// field inside it, for the reason `codemode`'s own `widening` is one: an
+//// enforcement report is the helper's verbatim account of a stage that
+//// *ran*, and a refusal is the harness deciding a stage may not.
+////
+//// That stage is the satellite **launch**, and it is the only one, which
+//// is a decision about what "a policy refusal for a whole execution"
+//// means rather than an omission. The pipeline clears on policy in three
+//// places and the other two are unraisable, each for its own reason.
+////
+//// The **hermetic build** clears with no grants at all:
+//// `identity.build_phase` drops this execution's approval before the
+//// build composes anything, because grants apply *after* the meet and one
+//// reaching the build would undo the offline, pinned property the build
+//// exists to have. A build refused on policy is therefore an operator's
+//// misconfiguration and no answer a human could give would change it —
+//// asking would be filing a decision nobody can act on. The model reads
+//// the build's own verbatim reason in `CompileFailed` regardless.
+////
+//// A **capability call** refused inside a running program is refused
+//// after the program has already performed effects. The one thing an
+//// approval buys is a re-execution (design §5.3), `code_mode` is
+//// `replay: tool.Never` precisely because a program's capability calls
+//// have nothing to reconcile onto, and re-running a submission to widen
+//// its seventh call would replay the first six. The consent unit would be
+//// wrong too: a human is asked about the *program*, and by then the
+//// program is half-spent. So that refusal is handed to the program, which
+//// is the party that can still route around it, and to the model in the
+//// outcome the program returns.
+////
+//// The launch is the one refusal with none of those problems: the node
+//// has not started, so no capability call has been serviced and nothing
+//// of the program has run. A re-execution under the widened policy
+//// repeats no effect, and the action a human consents to is still the
+//// whole submitted program.
+////
+//// The watching is done by wrapping the `satellite.Launcher` the pipeline
+//// already takes as an injected value, and asking — only once the launch
+//// has already refused — the same policy question the launch asked:
+//// `policy.compose` over the same base, the same requirements (through
+//// `launch.node_requirements`, the launch's own function, so there is
+//// nothing here to drift), and the same grants. Nothing is
+//// re-implemented and no reason text is parsed.
 ////
 //// ## The two env names, and why they are added here
 ////
@@ -113,6 +167,7 @@
 
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
+import broker/escalation
 import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/internal/ffi_os
@@ -131,6 +186,7 @@ import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
 import gleam/bool
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/result
@@ -598,19 +654,26 @@ pub fn execute(
           "the code-mode work directory could not be created, so nothing "
           <> "was dispatched",
         ),
+        refusal: codemode_tool.NothingRefused,
       )
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.clock)
       let deadline_ms = now + request.within_ms
+      let shortfalls = process.new_subject()
       let execution =
         pipeline.execute(
           request.source,
-          exec_config(
-            config,
-            request,
-            root,
-            deadline_ms,
-            widened_by: approved_grants(request),
+          watching(
+            exec_config(
+              config,
+              request,
+              root,
+              deadline_ms,
+              widened_by: approved_grants(request),
+            ),
+            config.clock,
+            reporting: shortfalls,
+            until: deadline_ms,
           ),
         )
       // The whole execution is over: the node is destroyed, the socket and
@@ -621,6 +684,7 @@ pub fn execute(
       codemode_tool.Execution(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
+        refusal: reported_refusal(shortfalls),
       )
     }
   }
@@ -630,29 +694,194 @@ pub fn execute(
 // call, which is what an execution re-run under an approval is allowed to
 // compose with.
 //
-// It is empty today, and the emptiness is a missing field rather than a
-// decision: `tool.Ctx.grants` already carries the grants this call's
-// clearance consumed — the runtime decodes them out of the durable record
-// and the workspace tool path spends them through `wiring.tool_context` —
-// but `tools/codemode.Request`, the only channel between the dispatching
-// `Ctx` and this module, has no field to carry them across. Adding
-// `grants: List(Grant)` to that record and filling it from `ctx.grants`
-// in `tools/codemode.request` is the whole of what is owed; this function
-// is then one line and the seam below is unchanged.
+// They ride the request rather than the surface because an approval
+// widens one re-execution of one action, never a session: a grant list
+// configured on the seam would outlive the call that was consented to.
+// And they are not folded into `request.base_policy` on the way past,
+// which would be a second widening path and would reach the hermetic
+// build — `identity.widened_by` puts them on the run phase alone
+// (`codemode/identity`, "The widening, and why it lives here").
 //
-// Deliberately *not* worked around. The two available shortcuts are both
-// the anti-pattern design §5.3 names: a grant list on `Config` would be a
-// session-wide widening no call is attributable to, and folding grants
-// into `request.base_policy` before composition would be a second
-// widening path that also reaches the hermetic build. An approval that
-// cannot be attributed to one execution widens nothing, and until the
-// field exists there is nothing here to attribute.
-// The grants an approval attributed to *this* call. They ride the
-// request rather than the surface because an approval widens one
-// re-execution of one action, never a session: a grant list configured
-// on the seam would outlive the call that was consented to.
+// Two ways in, one destination. A call arrives carrying grants when the
+// *driver* consumed an approval for it at clearance time (`Ctx.grants`,
+// through `tools/codemode.request`); a call acquires them mid-flight when
+// this module reported a refusal outward and a human answered, which
+// `tools/codemode` appends to the same field before executing once more.
+// Both are approvals attributed to this one call, so both compose in the
+// same place.
 fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
   request.grants
+}
+
+// --- watching the stage a human can widen ----------------------------------
+
+// The same execution configuration, with the satellite launcher wrapped
+// so that a launch refused on *policy* is reported outward as a
+// structured denial rather than only as the reason text the run settles
+// with.
+//
+// Wrapping is the whole trick, and it is what keeps this honest. The
+// pipeline flattens every refusal to prose on its way to the model — that
+// is right for a model and useless for consent, because an approval
+// grants `denial.wanted` and prose has no wanted. Rather than parse the
+// prose back, or re-derive what the node asks for, the wrapper calls
+// `launch`'s *own* public `node_requirements` against the spec the
+// pipeline actually built and asks `policy.compose` the same question the
+// launch asked. There is nothing here for the two to drift apart on: if
+// the node's requirements change, this changes with them.
+//
+// **The launch, and only the launch.** The hermetic build clears on
+// policy too, and it is deliberately unwatched. `identity.build_phase`
+// drops this execution's grants before the build composes anything —
+// grants apply *after* the meet, so one reaching the build would undo the
+// offline, pinned property the build exists to have — so a build refused
+// on policy is an operator's misconfiguration and no answer a human could
+// give would change it. Filing that as a question would be filing a
+// decision nobody can act on, and it would be inexact into the bargain:
+// the build prepares its seed before it clears, so "the build failed and
+// the base is narrow" is not the same statement as "the build was refused
+// on policy". The model reads the build's verbatim reason in
+// `CompileFailed` either way. A capability call refused inside a *running*
+// program is unwatched for a different reason, argued in the module doc:
+// by then the program has performed effects, and the one thing an
+// approval buys is a re-execution.
+fn watching(
+  exec: pipeline.ExecConfig,
+  session_clock: Clock,
+  reporting shortfalls: Subject(codemode_tool.PolicyRefusal),
+  until deadline_ms: Int,
+) -> pipeline.ExecConfig {
+  pipeline.ExecConfig(
+    ..exec,
+    launch: watched_launcher(
+      exec.launch,
+      session_clock,
+      shortfalls,
+      deadline_ms,
+    ),
+  )
+}
+
+// The satellite launch, watched.
+//
+// The composition is only run once the launcher has already refused.
+// That ordering costs nothing on a working execution and answers "was
+// policy the reason?" without a second oracle: `launch` composes `base ⊕
+// requirements ⊕ grants` before it binds a socket or spawns anything, so
+// a launch that failed *and* narrows is a launch that narrowed, and a
+// launch that failed on a socket it could not bind composes cleanly and
+// reports nothing.
+//
+// A plain `case` rather than a `result.map_error`: the error arm reports
+// on a subject, and a combinator that reads like a rename is the last
+// place a side effect should be hiding (`docs/gleam-style.md` Part III,
+// "Where the lineage stops").
+fn watched_launcher(
+  launcher: satellite.Launcher,
+  session_clock: Clock,
+  shortfalls: Subject(codemode_tool.PolicyRefusal),
+  deadline_ms: Int,
+) -> satellite.Launcher {
+  fn(spec) {
+    case launcher(spec) {
+      Ok(connection) -> Ok(connection)
+      Error(reason) -> {
+        let #(now, _clock) = clock.read(session_clock)
+        // Both variants named: a bare variable in the second arm would
+        // be a catch-all whatever it is called, and a third kind of
+        // refusal added later would start being reported here with
+        // nobody having decided that it should be.
+        case launch_refusal(spec, now, reason, deadline_ms) {
+          codemode_tool.NothingRefused -> Nil
+          codemode_tool.RunRefused(..) as refused ->
+            process.send(shortfalls, refused)
+        }
+        Error(reason)
+      }
+    }
+  }
+}
+
+/// What composition would refuse this satellite launch for, if anything:
+/// `RunRefused` carrying the exact grants that would satisfy it, or
+/// `NothingRefused` when the session base already covers the node.
+///
+/// Public because it is the whole of the decision `watched_launcher`
+/// makes, and the only part of it a test can hold still: a `LaunchSpec`
+/// is a value, and the answer to "what does this base owe this node" is a
+/// pure function of one.
+///
+/// `reason` is the launcher's own sentence, carried into the denial
+/// verbatim so a human reads "the session base cannot host a satellite
+/// node: environment variable LOOM_CAP_SOCK" rather than a paraphrase of
+/// it. The wanted diff is never taken from a caller: it can only come
+/// from `policy.wanted_grants` over the narrowings computed here, so
+/// nothing can offer a human a diff of its own invention.
+///
+/// `policy.narrow_unenforceable` is deliberately not applied. The node
+/// requires `NetworkOff`, composition takes the meet, and the one
+/// downgrade that rule performs turns `NetworkProxy` into `NetworkOff` —
+/// so it cannot fire here, and applying it would invite the belief that
+/// this is a second implementation of the broker's clearance rather than
+/// a re-run of the one question the launch already asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.launch_refusal(spec, now, reason, deadline_ms)
+/// //   == codemode_tool.RunRefused(denial:, deadline_ms:)
+/// ```
+///
+pub fn launch_refusal(
+  spec: satellite.LaunchSpec,
+  now_ms: Int,
+  reason: String,
+  deadline_ms: Int,
+) -> codemode_tool.PolicyRefusal {
+  let #(_effective, narrowings) =
+    policy.compose(
+      base: spec.base_policy,
+      requirements: launch.node_requirements(spec, now_ms),
+      grants: identity.grants(spec.identity),
+    )
+  case narrowings {
+    [] -> codemode_tool.NothingRefused
+    [_, ..] ->
+      codemode_tool.RunRefused(
+        denial: escalation.Denial(
+          reason:,
+          source: escalation.PolicyDenial,
+          wanted: policy.wanted_grants(narrowings),
+        ),
+        deadline_ms:,
+      )
+  }
+}
+
+// What the watcher reported, or that nothing did.
+//
+// The receive is bounded at zero and that is not optimism. The wrapper
+// runs on this very process — `satellite.run` calls the launcher from
+// `dispatch_launch`, before it starts waiting on anything — so by the
+// time `pipeline.execute` has returned, a report that was going to be
+// made is already in this mailbox. Should the pipeline ever move the
+// launch onto a process of its own, the report is simply lost and the
+// refusal settles in band with no record raised, which is the direction
+// every other failure in this seam falls.
+//
+// A subject rather than a return value because the launcher is a
+// callback: its shape is the pipeline's contract and its return type has
+// no room for anything but the connection. One report at most can arrive
+// — a launch happens once per execution.
+fn reported_refusal(
+  shortfalls: Subject(codemode_tool.PolicyRefusal),
+) -> codemode_tool.PolicyRefusal {
+  // The eager `unwrap` is right here: the fallback is a bare constructor
+  // over nothing, so computing it on every execution costs a word.
+  result.unwrap(
+    process.receive(shortfalls, within: 0),
+    codemode_tool.NothingRefused,
+  )
 }
 
 // Nothing started, and the reason names both the seam that was asked for
@@ -679,6 +908,7 @@ fn unserved(
       "the submission named a seam this host does not serve, so nothing "
       <> "was dispatched",
     ),
+    refusal: codemode_tool.NothingRefused,
   )
 }
 
