@@ -516,6 +516,19 @@ over one session file. WP-L.
   `api.consume_escalation_at`, which CASes at that seq, so a claim
   landing between the scope-and-action checks and the consume loses the
   commit instead of passing unseen (#68).
+- **And so is an approval's.** `approve` carries the diff and the action
+  digest the client *rendered*; `gateway.approve` reads one
+  `api.EscalationCell`, checks the echo against that value, and commits
+  the `Approved` write CAS-guarded at that same seq — which is why it
+  builds the transaction itself rather than calling
+  `api.approve_escalation`, whose own read the checks would not be about.
+  A refreshing claim is exactly what makes the check mean something: it
+  changes what the record wants and bumps the register seq, so it either
+  fails the echo or loses the commit. A mismatch answers
+  `stale_approval` with the fresh record in `details` and writes nothing
+  (`protocol-change/007`, #72). The record's `CallScope` is also what
+  `op`/`strand` on the wire now come from, in place of a guess at which
+  strand was busy (#67).
 - **A raise *claims* the record; the scope is the call standing at the
   door now.** The digest deliberately excludes the call id, so under a
   retry the row is already there when a refusal arrives — and the call
@@ -689,10 +702,13 @@ over one session file. WP-L.
 - [docs/architecture/durability.md](../../docs/architecture/durability.md)
   — seqs, write-once rows, and why the event stream needs no side index.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-L (`client`)":
-  escalation attribution, the missing compaction/navigation api entry
-  points, brief-less strand creation, protocol fork forking in place,
-  fixture-versus-codec drift, queued-versus-placed acks, and the provider
-  delta tap.
+  the missing compaction/navigation api entry points, brief-less strand
+  creation, protocol fork forking in place, fixture-versus-codec drift,
+  queued-versus-placed acks, and the provider delta tap.
+- [protocol-change/007-escalation-carries-the-action.md](../../protocol-change/007-escalation-carries-the-action.md)
+  — why `escalation` carries the tool, the action digest and a bounded
+  argument preview, why `approve` echoes them, and the rendering rules
+  that bind any client showing a preview.
 - [docs/design-notes/agent-comms-and-system-prompt.md](../../docs/design-notes/agent-comms-and-system-prompt.md)
   — Part B: the pack's sections, the stability contract, and why
   the prompt is pinned rather than re-derived.
