@@ -22,7 +22,7 @@ to its module, so `internal/ui/model.go:382` is under `packages/tui` and
 
 ## The shape of the thing
 
-Sixteen packages, fourteen Gleam and two Go, split across three planes.
+Eighteen packages, sixteen Gleam and two Go, split across three planes.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -44,6 +44,14 @@ the Go terminal client on the far side of the wire. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
 into the harness.
+
+Two more sit beside the planes rather than in one. `telemetry` is a leaf
+over `core`, so any impure package may log through it, and its
+correlation context travels as a value because `logger`'s process
+metadata does not survive a spawn and the effect sandwich is nothing but
+spawns. `lint` is Loom's own house-rule lint over Gleam source — seven
+rules, four of which gate `make check` at error level — and it depends on
+nothing in the harness at all.
 
 Purity is layered on purpose. `core`, `machine`, and `prompt` perform no
 I/O and declare no FFI; that is what makes the operation state space
@@ -700,7 +708,7 @@ runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 registry (`client/wiring.gleam:413`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:291`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:352`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
@@ -1114,6 +1122,14 @@ back; a cell recording anyone else's is refused rather than adopted,
 because adopting one would hand this spawn a strand already busy with
 somebody else's brief.
 
+A spawn may also state the *shape* it wants back. The request carries an
+optional result schema, which travels into the child's brief and is
+checked on the child's own terminal write: a result that does not match
+fails naming the schema, and a matching one comes back as typed JSON
+beside the prose report rather than as a sentence the parent would have to
+parse. That is what makes deterministic orchestration over children
+something other than a script that regexes prose.
+
 `api.create_strand` (`runtime/api.gleam:679`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
@@ -1164,7 +1180,34 @@ Vetting is a compiler-adjacent lint rather than a heuristic, and it works
 because pure Gleam cannot do I/O: a program's maximal capability set is
 the transitive closure of its imports plus its own `@external`
 declarations. `Vetted` is opaque, so only linted source can reach a
-build. The build is hermetic, pinned, and offline, with
+build.
+
+There is not one allowlist but two, and a submission is judged against
+exactly one of them. The **workspace seam** is the nine `cap` modules that
+orchestrate *effects* — `fs`, `proc`, `net`, `git`, `lsp`, `task`,
+`actor`, `kv`, `report`. The **orchestration seam** is `cap/strand` and
+`cap/report` and nothing else: a program that orchestrates *agents*,
+serviced by the same `client/agency` closures the `agent_*` tools call and
+judged against the same `Caller`, so descendant-only addressing, the depth
+and fan-out caps and the refusal names are the tools' rather than a second
+authorization model. Which capabilities travel together is the whole
+point — an orchestrator that could also write a file is a materially worse
+thing to hand a model — so the two sets share no module carrying
+authority, and a test pins the disjointness. The allowlist follows the
+*submission* (a program is refused against the seam it asked for, and the
+refusal says which) while the router follows the *host* (`--codemode-seams`;
+a surface serving one seam hands out that seam's router whatever a request
+says), so no submission reaches a capability an operator did not wire.
+
+The seam brings one rule that is new rather than inherited. `agent_spawn`
+is throttled by turn cost, and a loop pays nothing, so an implicit
+throttle removed became an explicit one: a hard ceiling on spawn
+admissions per execution, refused in band *at* the ceiling and naming it.
+It is enforced by the satellite host, because one host stands up per
+execution holding the one identity a caller may mint, so the tally is
+keyed to that identity by construction.
+
+The build is hermetic, pinned, and offline, with
 `--warnings-as-errors` doing real work — it turns Gleam's transitive
 dependency import warning into a compile error, so `gleam/erlang/*`,
 `gleam/otp/*` and `core/*` are closed by the compiler and not only by the
@@ -1217,6 +1260,18 @@ harness's own per-execution paths, minted by the launcher and never
 model-supplied, so the widening is in what the launcher may *state*, not
 in what a program may reach.
 
+The description carries more than the tool's arguments. A model writing a
+program authors blind, so a description listing only module *names* leaves
+the compiler as the only oracle for a signature — reachable only by being
+wrong first, at the cost of a whole hermetic build. `tools/prelude` is the
+rendered public surface of every module the offered seams admit, generated
+from `packages/cap` by `make gen-prelude` through the compiler's own
+`package-interface` output, filtered through each seam's `allowed_imports`
+so a module vetting will reject can never be advertised, and held to a
+digest by `scripts/gen-prelude.sh --check` inside `make check`. Each seam
+renders only what it adds, because tool bytes are the byte prefix of the
+provider's cached region and are paid on every request of the session.
+
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam:1333`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:438`) finds `gleam` and `erl`
@@ -1236,17 +1291,40 @@ strand for the life of the session.
 and the artifact for the caller to persist, which is what keeps the
 purity layering intact. `docs/architecture/code-mode.md` is the depth on
 all three layers and on what each one actually confines, and
-`make e2e-codemode` is where the whole pipeline runs for real — five
-scenarios against a live toolchain, the last of which reads
-`docs/examples/stale_symbol_sweep.gleam` verbatim and puts that file
-through vetting, a jailed `gleam build`, a real satellite, and five
-jailed processes behind `proc.run`. The sample is a migration chore, and
-the suite asserts on an instrumented fixture rather than on the outcome
-line alone: that the last sweep started before the first finished (the
-fan-out is really concurrent), that the sweeps report in input order
-while completing in the reverse of it (order preservation is really a
-property), and that the losing build strategy stops ticking within a
-bound (the race really kills, rather than abandoning).
+`make e2e-codemode` is where the whole pipeline runs for real against a
+live toolchain: five scenarios in `e2e_test` — the happy path, a
+transitive import the hermetic build refuses, a runaway program dying at
+its deadline, a type error coming back in band, and an approved
+escalation widening an execution its unwidened twin is refused — plus one
+suite per documented sample.
+
+Each sample is read from `docs/examples/` verbatim, so the documented
+artifact and the executed one cannot drift, and each is asserted on an
+instrumented fixture rather than on the outcome line alone. The migration
+sample, `stale_symbol_sweep.gleam`, sweeps a fixture repo behind five
+jailed processes and pins three properties the outcome line would pass
+without: that the last sweep started before the first finished (the
+fan-out is really concurrent), that the sweeps report in input order while
+completing in the reverse of it (order preservation is really a property),
+and that the losing build strategy stops ticking within a bound (the race
+really kills rather than abandoning). The orchestration sample,
+`fan_out_review.gleam`, fans out one reviewer strand per package on the
+orchestration seam and joins all three on one deadline; it pins that three
+*distinct* children were minted, that the join was one `wait` carrying
+three handles rather than three waits carrying one each, and that the
+counts come back as integers in the order the program listed the packages.
+Its Agency is scripted, because `codemode` cannot see a live runtime —
+everything between the program and that fake is real, and the
+authorization model it does not claim is proved on `client`'s side against
+a live runtime instead.
+
+One thing the router does not do is worth stating here rather than
+leaving to the depth. Of the nine modules the workspace seam admits,
+`satellite.default_router` maps exactly one capability, `proc.run`, onto a
+jailed `broker.clear_call`; every other name comes back `unsupported_cap`.
+That is a routing table still being filled in (issue #16), not a security
+property, and `cap/task` and `cap/actor` are the exception in kind — they
+run inside the satellite and compose whatever the router does service.
 
 ## 16. Where the BEAM earns its place
 
@@ -1374,9 +1452,21 @@ spent on a re-clearance the budget will refuse.
 Two things are deliberately *not* in the runtime. Which raised records
 interrupt a person is a client-surface decision — the hub emits escalation
 events and lists pending ones in its snapshot, and what a UI does with
-them is its own business. And code mode is still outside the loop: it
-clears through the broker directly rather than through `Ctx.clear_call`,
-so `docs/spec-gaps.md` under "From WP-J" still records item 15.
+them is its own business. And code mode is still half outside the loop.
+The *spending* half is closed: grants ride the one threaded execution
+identity, so an approved escalation composes onto the run phase and only
+the run phase — a network grant reaching the hermetic build would put the
+network back inside the one thing whose security property is being offline
+— and `make e2e-codemode` proves a widened execution reaches a capability
+its unwidened twin is refused. The *minting* half is not. Code mode clears
+through `config.broker` directly rather than through `Ctx.clear_call`, so
+a policy refusal inside it raises no escalation record at all and there is
+nothing for a human to approve. Grants can be spent here; nothing produces
+one (issue #97). The raiser belongs at the `code_mode` call rather than at
+each clearance, because the consent unit is the whole program — which is
+what the preview renders — and parking a single `cap_call` would park
+inside a live satellite that is holding an outstanding slot and burning a
+wall deadline while a human reads.
 
 ## 18. A reading order
 
@@ -1397,11 +1487,12 @@ that costs the least backtracking.
 | `client/gateway.gleam` | The outward face. `pull` (`:484`) and `run_command` (`:1078`) are the two halves. |
 | `conformance/src/conformance/` | What "correct" means, executably. |
 
-Each package also carries a `CLAUDE.md` that is denser and more current
-than any architecture document about that package specifically — its key
-types, its real dependency edges, its actor and register traffic with
-concrete type names, and the invariants that break things when violated.
-Read the one for the package you are about to change.
+Each package also carries a `README.md` — what it is for, and where in it
+to start — and a `CLAUDE.md` that is denser and more current than any
+architecture document about that package specifically: its key types, its
+real dependency edges, its actor and register traffic with concrete type
+names, and the invariants that break things when violated. Read the one
+for the package you are about to change.
 
 For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `messaging.md`,
