@@ -97,3 +97,39 @@ pub fn default() -> Policy {
 pub fn for_tests() -> Policy {
   Policy(..default(), allow_panic: True)
 }
+
+/// The packages R6 holds to the portable subset: no `@external`, no
+/// BEAM-only dependency, in source or in `gleam.toml`.
+///
+/// Data rather than a `case` in the rule for the same reason
+/// `eager_combinators` is: adding or removing a package is a one-line
+/// change, and the tests can enumerate what the rule claims to cover rather
+/// than trusting that it covers anything. `lint/portable` argues what the
+/// membership protects.
+pub fn portable_packages() -> List(String) {
+  ["core", "machine", "prompt"]
+}
+
+/// A dependency that exists only on the BEAM, named from both sides.
+pub type BeamOnly {
+  BeamOnly(
+    /// The dependency name as `gleam.toml` declares it, e.g. `gleam_otp`.
+    package: String,
+    /// The prefix its modules are imported under, e.g. `gleam/otp`.
+    module_prefix: String,
+  )
+}
+
+/// The BEAM-only dependencies R6 refuses. Two, and they are the two that
+/// decide the question: `gleam_otp` has no JavaScript target at all, and
+/// `gleam_erlang` is the process, atom and node surface underneath it.
+/// A package outside this table may still be BEAM-shaped in practice —
+/// `simplifile` is, in the sense that its JavaScript target is Node — but
+/// the rule refuses only what cannot compile at all, so that a finding is
+/// never a matter of opinion.
+pub fn beam_only_dependencies() -> List(BeamOnly) {
+  [
+    BeamOnly("gleam_erlang", "gleam/erlang"),
+    BeamOnly("gleam_otp", "gleam/otp"),
+  ]
+}

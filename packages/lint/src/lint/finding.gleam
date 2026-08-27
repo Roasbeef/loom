@@ -42,6 +42,10 @@ pub type Rule {
   /// R5. `list.length(xs)` compared against a literal — an O(n) answer to a
   /// question that only needs the first `k+1` elements.
   BoundedLength
+  /// R6. `@external`, a BEAM-only import, or a BEAM-only dependency in one
+  /// of the three packages held to the portable subset. What that subset is
+  /// and what rests on it is argued in `lint/portable`.
+  PortablePurity
 }
 
 /// Every rule, in report order.
@@ -53,7 +57,23 @@ pub fn rules() -> List(Rule) {
     CatchAll,
     PanicInSource,
     BoundedLength,
+    PortablePurity,
   ]
+}
+
+/// The rules that ship at error level rather than at warning level.
+///
+/// A rule earns the error tier by a census that is stable, decidable and
+/// argued — not by being written; that is `scripts/doc_check.sh`'s staging
+/// and the reason the other five warn (docs/design-notes/four-decisions.md,
+/// D2). R6 is the one rule whose census was zero on the day it was written
+/// and whose entire purpose is to keep it zero, which is precisely the
+/// condition under which promotion cannot fail correct code. Shipping it as
+/// a warning would file it among two hundred and sixty others and let the
+/// door it guards close unnoticed — which is the failure it exists to
+/// prevent, not a milder version of it.
+pub fn error_by_default() -> List(Rule) {
+  [PortablePurity]
 }
 
 /// The short identifier a report and a `--error` flag both use.
@@ -65,6 +85,7 @@ pub fn id(rule: Rule) -> String {
     CatchAll -> "R3"
     PanicInSource -> "R4"
     BoundedLength -> "R5"
+    PortablePurity -> "R6"
   }
 }
 
@@ -77,6 +98,7 @@ pub fn name(rule: Rule) -> String {
     CatchAll -> "catch-all"
     PanicInSource -> "panic-in-src"
     BoundedLength -> "bounded-length"
+    PortablePurity -> "portable-purity"
   }
 }
 

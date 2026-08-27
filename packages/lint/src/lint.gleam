@@ -38,10 +38,12 @@
 import glance
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
 import lint/policy.{type Policy}
+import lint/portable
 import lint/scan.{type Raw, Raw}
 import lint/source
 
@@ -64,27 +66,81 @@ import lint/source
 /// ```
 ///
 pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
+  let package = package_of(path)
+  // R6's `@external` half is lexed rather than parsed, so it survives a file
+  // `glance` cannot read: a policy rule that goes quiet on a parse failure is
+  // a hole in the policy, not a missed suggestion (`lint/portable`).
+  let foreign = portable.externals(package, source.external_offsets(code))
   case glance.module(code) {
-    Error(error) -> [parse_finding(path, code, error)]
+    Error(error) -> [
+      parse_finding(path, code, error),
+      ..locate(path, code, foreign)
+    ]
     Ok(module) -> {
       let found = scan.module(module, policy, module_path(path))
-      let all = list.append(found, backstop(found, code, policy))
-      let ordered = list.sort(all, fn(a, b) { int.compare(a.offset, b.offset) })
-      let lines =
-        source.lines_of(
-          source.line_starts(code),
-          list.map(ordered, fn(raw) { raw.offset }),
-        )
-      list.map2(ordered, lines, fn(raw, line) {
-        Finding(
-          rule: raw.rule,
-          path:,
-          line:,
-          function: raw.function,
-          detail: raw.detail,
-        )
-      })
+      let all =
+        found
+        |> list.append(backstop(found, code, policy))
+        |> list.append(foreign)
+        |> list.append(portable.imports(package, module))
+      locate(path, code, all)
     }
+  }
+}
+
+/// Lint a package manifest. R6 is the only rule with anything to say about
+/// one, and only for the packages `policy.portable_packages` names; every
+/// other manifest yields nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let toml = "[dependencies]\ngleam_otp = \">= 1.0.0\"\n"
+/// let assert [found] = lint.check_manifest("packages/core/gleam.toml", toml)
+/// assert found.line == 2
+/// ```
+///
+pub fn check_manifest(path: String, code: String) -> List(Finding) {
+  locate(path, code, portable.manifest(package_of(path), code))
+}
+
+/// Turn offset-carrying violations into findings, in offset order.
+///
+/// One merged pass over the file's line index: the cost is the file, not the
+/// file once per finding, which is why the walk never learns what a line is.
+fn locate(path: String, code: String, raw: List(Raw)) -> List(Finding) {
+  let ordered = list.sort(raw, fn(a, b) { int.compare(a.offset, b.offset) })
+  let lines =
+    source.lines_of(
+      source.line_starts(code),
+      list.map(ordered, fn(raw) { raw.offset }),
+    )
+  list.map2(ordered, lines, fn(raw, line) {
+    Finding(
+      rule: raw.rule,
+      path:,
+      line:,
+      function: raw.function,
+      detail: raw.detail,
+    )
+  })
+}
+
+/// The package a path belongs to — `core` for anything under
+/// `packages/core/`, manifest or source. `None` when the path names no
+/// package: a doctest snippet, a scratch file, anything outside the tree's
+/// layout.
+pub fn package_of(path: String) -> Option(String) {
+  case string.split_once(path, "packages/") {
+    Error(Nil) -> None
+    Ok(#(_, rest)) -> first_segment(rest)
+  }
+}
+
+fn first_segment(rest: String) -> Option(String) {
+  case string.split(rest, "/") {
+    [name, _, ..] -> Some(name)
+    _ -> None
   }
 }
 

@@ -582,6 +582,209 @@ pub fn r5_leaves_an_uncompared_count_alone_test() {
   |> should.be_false
 }
 
+// --- R6: the portable subset ------------------------------------------------
+
+/// A source at the path a package's file really has, so the rule can tell
+/// which package it is looking at.
+fn in_package(package: String, code: String) -> List(Finding) {
+  lint.check(
+    "packages/" <> package <> "/src/" <> package <> "/thing.gleam",
+    code,
+    policy.default(),
+  )
+}
+
+fn r6_in(package: String, code: String) -> Bool {
+  in_package(package, code)
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.PortablePurity)
+}
+
+const erlang_external: String = "@external(erlang, \"erlang\", \"phash2\")
+pub fn hash(term: String) -> Int
+"
+
+pub fn r6_flags_an_erlang_external_test() {
+  r6_in("core", erlang_external)
+  |> should.be_true
+}
+
+/// The rule names no target on purpose. A JavaScript external keeps the
+/// portable half and breaks the BEAM build instead, which is the target Loom
+/// actually ships on, and it is still foreign code where the purity claim is.
+pub fn r6_flags_a_javascript_external_too_test() {
+  r6_in(
+    "machine",
+    "@external(javascript, \"./ffi.mjs\", \"hash\")
+pub fn hash(term: String) -> Int
+",
+  )
+  |> should.be_true
+}
+
+/// Elsewhere `@external` is confined, not forbidden; R6 has nothing to say.
+pub fn r6_leaves_an_external_outside_the_three_alone_test() {
+  r6_in("broker", erlang_external)
+  |> should.be_false
+}
+
+/// The `@external` half is lexed rather than parsed, so a file `glance`
+/// cannot read still reports its externals instead of going quiet at R0. A
+/// policy rule that a parse failure silences is a hole in the policy.
+pub fn r6_survives_an_unparseable_source_test() {
+  let fired =
+    in_package("core", erlang_external <> "\npub fn ( { ")
+    |> list.map(fn(found) { found.rule })
+  should.be_true(list.contains(fired, finding.Unparseable))
+  should.be_true(list.contains(fired, finding.PortablePurity))
+}
+
+/// Tokens, not text: the word inside a string lexes to a single token that
+/// never decomposes into `@` followed by `external`.
+pub fn r6_leaves_the_word_in_a_string_alone_test() {
+  r6_in("core", "pub const banner = \"@external\"\n")
+  |> should.be_false
+}
+
+pub fn r6_leaves_the_word_in_a_comment_alone_test() {
+  r6_in("core", "// no @external here\npub fn f() { 1 }\n")
+  |> should.be_false
+}
+
+pub fn r6_flags_a_beam_only_import_test() {
+  r6_in("prompt", "import gleam/otp/actor\n\npub fn f() { 1 }\n")
+  |> should.be_true
+}
+
+/// The package's root module counts as much as anything beneath it.
+pub fn r6_flags_the_bare_erlang_module_test() {
+  r6_in("core", "import gleam/erlang\n\npub fn f() { 1 }\n")
+  |> should.be_true
+}
+
+/// A prefix is a path segment, not a substring.
+pub fn r6_leaves_a_near_miss_import_alone_test() {
+  r6_in("core", "import gleam/erlangish/thing\n\npub fn f() { 1 }\n")
+  |> should.be_false
+}
+
+pub fn r6_leaves_an_ordinary_portable_source_alone_test() {
+  r6_in("machine", "import gleam/list\n\npub fn f(xs) { list.first(xs) }\n")
+  |> should.be_false
+}
+
+const portable_manifest: String = "name = \"core\"
+version = \"0.1.0\"
+
+[dependencies]
+gleam_stdlib = \">= 1.0.0 and < 2.0.0\"
+gleam_otp = \">= 1.0.0 and < 2.0.0\"
+
+[dev_dependencies]
+gleeunit = \">= 1.0.0 and < 2.0.0\"
+"
+
+pub fn r6_flags_a_beam_only_dependency_test() {
+  case lint.check_manifest("packages/core/gleam.toml", portable_manifest) {
+    [only] -> {
+      should.equal(only.rule, finding.PortablePurity)
+      should.equal(only.line, 6)
+    }
+    _ -> should.fail()
+  }
+}
+
+/// A dev dependency counts. It is what makes the package's own suite
+/// unrunnable on the other target, which is where a lapsed property would
+/// first be noticed — and the line scan could not tell the tables apart
+/// without a TOML parser bought for three lines.
+pub fn r6_flags_a_beam_only_dev_dependency_test() {
+  lint.check_manifest(
+    "packages/prompt/gleam.toml",
+    "[dev_dependencies]\ngleam_erlang = \">= 1.0.0\"\n",
+  )
+  |> list.length
+  |> should.equal(1)
+}
+
+/// A line scan, but keyed on the key: a comment mentioning the name is not a
+/// declaration, and neither is a path inside a value.
+pub fn r6_leaves_a_commented_dependency_alone_test() {
+  lint.check_manifest(
+    "packages/core/gleam.toml",
+    "[dependencies]\n# gleam_otp = \">= 1.0.0\"\n",
+  )
+  |> should.equal([])
+}
+
+pub fn r6_leaves_another_package_manifest_alone_test() {
+  lint.check_manifest("packages/broker/gleam.toml", portable_manifest)
+  |> should.equal([])
+}
+
+/// A path outside the tree's layout is not a guess at which package it might
+/// have been: the doctest snippets every other test here uses must stay
+/// silent under R6.
+pub fn r6_says_nothing_about_a_pathless_source_test() {
+  findings(erlang_external)
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.PortablePurity)
+  |> should.be_false
+}
+
+/// The message has to teach. A refusal naming the violation and not the
+/// reason leaves the reader no way to judge whether their case is the
+/// exception worth arguing, and both properties have to appear or the half
+/// that was never written down stays unwritten.
+pub fn r6_names_what_it_protects_test() {
+  let details =
+    list.append(
+      in_package("core", erlang_external),
+      lint.check_manifest("packages/core/gleam.toml", portable_manifest),
+    )
+    |> list.filter(fn(found) { found.rule == finding.PortablePurity })
+    |> list.map(fn(found) { found.detail })
+  should.equal(list.length(details), 2)
+  list.each(details, fn(detail) {
+    list.each(
+      [
+        "property-testable without spawning processes", "JavaScript target",
+        "never to run the harness", "`core`",
+      ],
+      fn(phrase) { should.be_true(string.contains(detail, phrase)) },
+    )
+  })
+}
+
+/// The staging decision, pinned: R6 gates, the other five warn. Its census
+/// was zero the day it was written and its whole job is to keep it there,
+/// which is the one condition under which promotion cannot fail correct code.
+pub fn r6_gates_by_default_test() {
+  should.equal(finding.error_by_default(), [finding.PortablePurity])
+}
+
+/// The table is what the rule claims to cover; a test that did not enumerate
+/// it would pass just as well against an empty one.
+pub fn the_portable_table_names_the_three_test() {
+  should.equal(policy.portable_packages(), ["core", "machine", "prompt"])
+}
+
+pub fn the_beam_only_table_names_both_test() {
+  policy.beam_only_dependencies()
+  |> list.map(fn(dependency) { dependency.package })
+  |> should.equal(["gleam_erlang", "gleam_otp"])
+}
+
+pub fn external_offsets_finds_the_attribute_test() {
+  source.external_offsets(erlang_external)
+  |> should.equal([0])
+}
+
+pub fn external_offsets_ignores_a_string_test() {
+  source.external_offsets("const c = \"@external\"\n")
+  |> should.equal([])
+}
+
 // --- R0 and totality --------------------------------------------------------
 
 pub fn r0_reports_a_parse_failure_rather_than_crashing_test() {
