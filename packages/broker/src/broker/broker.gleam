@@ -228,6 +228,7 @@ pub opaque type Msg {
   Settle(call_id: Int)
   RelayDown(down: process.Down)
   QueryRelay(handle: CallHandle, reply: Subject(Result(Pid, Nil)))
+  QueryEpochs(reply: Subject(Int))
   StopBroker
 }
 
@@ -274,6 +275,35 @@ type State {
     // every teardown, the successful ones included. What the count is
     // for is telling a *resumed* clearance from a fresh one; see
     // `clear_awaiting_helper`.
+    //
+    // Entries are never removed, and that is a decision (#104). An
+    // entry cannot be dropped without dropping the refusal it encodes:
+    // a missing key reads as epoch 0, and a waiter that took its first
+    // attempt before any abort of its operation holds `Some(0)`, so
+    // pruning that operation's entry is exactly what makes its retry
+    // compare 0 against 0 and be *admitted* — the resumption across an
+    // abort this table exists to refuse, back again and now invisible.
+    // (A waiter that started after two aborts holds `Some(2)` and takes
+    // the opposite spurious answer, so pruning is not fail-safe in
+    // either direction.) `release_slot` can delete a ledger with
+    // nothing outstanding because absence and emptiness mean the same
+    // thing there; here absence means "never aborted", which is the one
+    // thing a pruned entry is not.
+    //
+    // What is left is the size, and it is small and bounded. This grows
+    // by one entry per *operation ever aborted*, not per abort: repeat
+    // aborts of one operation `upsert` its counter, so code mode's
+    // abort-on-every-teardown — the only production caller of `abort` —
+    // costs one entry per operation that ran code mode at all, however
+    // many times it ran it. An entry measures ~110 bytes, and the
+    // broker's lifetime is exactly one `loom-server` process serving
+    // one session (its death is fatal to the server; nothing restarts
+    // it), so ten thousand such operations in a session hold about a
+    // megabyte — against a conversation store that has committed
+    // durable rows for every one of those turns. The alternative was a
+    // retention window the broker would have to take as configuration,
+    // whose wrong value in the short direction is not a crash but a
+    // silent hole in exactly the confinement above.
     abort_epochs: Dict(OpId, Int),
     // The broker's own subject, handed to relays for Settle reports.
     self: Subject(Msg),
@@ -528,6 +558,16 @@ pub fn pid(broker: Broker) -> Result(Pid, Nil) {
   process.subject_owner(broker.subject)
 }
 
+/// How many operations the broker holds an abort epoch for. Exists so
+/// a test can pin the growth law of that table — one entry per
+/// operation *ever aborted*, not one per abort — which is the whole of
+/// the answer to whether it needs pruning (#104, and the comment on the
+/// field). Not part of the broker's API.
+@internal
+pub fn abort_epoch_count(broker: Broker, waiting timeout: Int) -> Int {
+  process.call(broker.subject, waiting: timeout, sending: QueryEpochs)
+}
+
 /// The pid of a cleared call's relay process, or `Error(Nil)` once the
 /// call settled. Exists so tests can kill a relay and prove the broker
 /// reclaims the call's budget slot, token, and helper; not part of the
@@ -653,6 +693,10 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
         }
       }
     RelayDown(down:) -> handle_relay_down(state, down)
+    QueryEpochs(reply:) -> {
+      process.send(reply, dict.size(state.abort_epochs))
+      actor.continue(state)
+    }
     QueryRelay(handle:, reply:) -> {
       case dict.get(state.active, handle.id) {
         Ok(active) -> process.send(reply, Ok(active.relay_pid))

@@ -8,6 +8,7 @@ import broker/token
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 
@@ -683,6 +684,65 @@ pub fn a_waiter_outliving_the_broker_refuses_rather_than_panicking_test() {
   process.sleep(80)
   broker.stop(started)
   assert process.receive(verdicts, 3000) == Ok(Error(broker.BrokerUnavailable))
+}
+
+// --- what the abort epoch table costs ------------------------------------
+
+// `count` distinct operation ids, minted from one generator.
+fn ops(count: Int) -> List(ids.OpId) {
+  let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 11)
+  mint_ops(generator, count, [])
+}
+
+fn mint_ops(
+  generator: ids.Generator,
+  remaining: Int,
+  minted: List(ids.OpId),
+) -> List(ids.OpId) {
+  case remaining <= 0 {
+    True -> minted
+    False -> {
+      let #(op_id, generator) = ids.mint_op(generator)
+      mint_ops(generator, remaining - 1, [op_id, ..minted])
+    }
+  }
+}
+
+/// The abort epoch table's growth law, pinned: one entry per operation
+/// *ever aborted*, and none per abort. The two are easy to confuse and
+/// three orders of magnitude apart — code mode is the only production
+/// caller of `abort` and calls it on every teardown, the successful ones
+/// included, so a table that grew per abort would track a strand's
+/// code-mode usage while this one tracks its operations.
+///
+/// The table is never pruned, and this test is half of why that is
+/// affordable rather than a leak (the other half is the size of an
+/// entry, on the field's own comment). Pruning is not available at any
+/// price: a missing key reads as epoch 0, which is exactly what a
+/// waiter that took its first attempt before any abort is holding, so
+/// dropping an operation's entry admits the retry the epoch exists to
+/// refuse — see `an_abort_during_a_congestion_wait_refuses_the_retry`,
+/// which is the test that catches it.
+pub fn abort_epochs_grow_once_per_operation_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { Error(exec.AllBusy(size: 0)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  assert broker.abort_epoch_count(started, waiting: 1000) == 0
+  // Fifty aborts of one operation are one operation's worth of table.
+  let repeated = op()
+  list.each(list.repeat(Nil, 50), fn(_i) { broker.abort(started, repeated) })
+  assert broker.abort_epoch_count(started, waiting: 1000) == 1
+  // Fifty operations are fifty entries — the growth that is real, and
+  // the one the arithmetic on the field is about.
+  list.each(ops(50), fn(op_id) { broker.abort(started, op_id) })
+  assert broker.abort_epoch_count(started, waiting: 1000) == 51
+  broker.stop(started)
 }
 
 // --- the broker outlives what it borrows from ---------------------------
