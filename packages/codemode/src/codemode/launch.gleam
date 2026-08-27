@@ -1035,6 +1035,7 @@ fn refusal_text(refusal: broker.Refusal) -> String {
     broker.BudgetRefused(refusal: _) -> "the pooled budget refused it"
     broker.MintRefused(error: _) -> "the broker could not mint a token"
     broker.NoHelper(error: _) -> "no sandbox helper was available"
+    broker.OperationAborted -> "the operation was aborted"
     broker.BrokerUnavailable -> "the tool broker is unavailable"
   }
 }

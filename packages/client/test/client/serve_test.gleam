@@ -85,6 +85,7 @@ fn settings_under(root: String) -> serve.Settings {
     // Never spawned: nothing in this test runs a tool, and the pool
     // spawns helpers lazily at first checkout.
     helper_path: "/bin/sh",
+    helper_pool_size: 2,
     session_id: "session",
     demand: exec.BestEffort,
     gateway: scripted_gateway(),

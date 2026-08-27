@@ -836,13 +836,22 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let surfaces = surface.build(ctl, vc, script, schedule, raw, strand:)
   let events: process.Subject(writer.Event) = process.new_subject()
   let base = api.default_options(configuration())
-  // A parallel script runs its tool batches under Parallel settings, so
+  // The script's flag *chooses* the mode rather than opting into one:
+  // a parallel script runs its tool batches under `Parallel`, so
   // multi-call batches genuinely overlap their effects and the per-call
-  // clearance frontier is driven under the fault schedule.
+  // clearance frontier is driven under the fault schedule, and a
+  // non-parallel one runs under `Sequential`. Naming both is what keeps
+  // the oracle covering two modes now that `Parallel` is the shipped
+  // default — inheriting the default here would quietly make every seed
+  // a parallel seed.
   let settings = case script.parallel {
     True ->
       operation.RunSettings(..base.settings, tool_execution: operation.Parallel)
-    False -> base.settings
+    False ->
+      operation.RunSettings(
+        ..base.settings,
+        tool_execution: operation.Sequential,
+      )
   }
   let options =
     api.Options(

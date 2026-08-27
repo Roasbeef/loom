@@ -839,8 +839,17 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
       failure("execution budget refused the call: " <> budget_text(refusal))
     broker.MintRefused(error: _) ->
       failure("the broker could not mint a capability token")
+    // Reaching the model at all means the clearance already waited out
+    // its whole budget on a full pool (`broker.clear_call`), so this is
+    // sustained saturation rather than an ordinary wide batch.
     broker.NoHelper(error:) ->
       failure("no sandbox helper available: " <> checkout_text(error))
+    // The strand aborted this operation while the call was still
+    // clearing. The synthetic interrupted result is the runtime's to
+    // write; this text exists so nothing renders blank if one reaches
+    // the model anyway.
+    broker.OperationAborted ->
+      failure("the operation was aborted before the call was dispatched")
     broker.BrokerUnavailable -> failure("the tool broker is unavailable")
   }
 }

@@ -248,10 +248,17 @@ can repair from.
   case: identity forgery, name squatting, and namespace escape.
 - **The unit of waiting is the call, not the handle.** `agent_wait` takes
   an array and the Agency waits it against one deadline. Declaring the
-  tool `Concurrent` is honest — it only reads — but `Exclusive` /
-  `Concurrent` is consulted only under `tool_execution: Parallel`, which
-  is not the shipped default, so nothing about a fan-out story may rest
-  on it.
+  tool `Concurrent` is honest — it only reads — and under the shipped
+  `tool_execution: Parallel` it is consulted for real, so single-handle
+  waits in one batch do overlap. The array is still the unit, for three
+  reasons the setting cannot touch: a session may set `tool_execution`
+  back to `sequential` through the gateway config key; one `Exclusive`
+  sibling (`bash`, `fs_write`, `code_mode`) fences the whole batch and
+  brings the serial deadline windows back; and eight waits are eight
+  effect processes with eight intents, settlements and deadlines to
+  reconcile where the array needs one of each. Overlap makes the
+  degenerate case cheaper — it does not carry the fan-out story, and no
+  invariant here rests on it.
 - **The agent tools ask the broker for nothing.** Their `requirements`
   are the empty policy: no writable roots, no readable roots, no env,
   network off. They touch no filesystem and spawn no process, so they

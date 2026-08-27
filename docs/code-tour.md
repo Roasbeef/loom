@@ -71,8 +71,11 @@ broker-side clock, and the M2 integration found that misaligned eras made
 the broker refuse every call as already expired. One clock, one era.
 
 Then the session file opens under a fenced writer lease
-(`session.open_sqlite`, 60-second TTL), a pool of two `loom-exec` helpers
-starts, and the broker starts over that pool. Then the two hub
+(`session.open_sqlite`, 60-second TTL), a pool of `loom-exec` helpers
+starts — sized from `LOOM_HELPER_POOL` or the node's scheduler count
+clamped to `[4, 16]`, since every helper is an OS process running bwrap
+and a jail and the number is also the ceiling on how wide a parallel
+tool batch runs — and the broker starts over that pool. Then the two hub
 composition seams are created *before* the runtime, because both need to
 be addressable by name before the process they talk to exists: a commit
 forwarder actor whose subject goes into `api.open`'s `subscribers`, and a
@@ -204,7 +207,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:271`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:282`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:270`), and its shape is the shape of every admission
 in the system.
@@ -731,7 +734,7 @@ through this door and no other.
 
 ### Through the door
 
-`broker.clear_call` (`broker/broker.gleam:279`) is a call into the broker
+`broker.clear_call` (`broker/broker.gleam:334`) is a call into the broker
 actor, and from the moment it succeeds the caller is guaranteed exactly
 one settlement event, whatever happens downstream. Five steps, in order
 (`broker/broker.gleam:479` and `:519`):
@@ -753,7 +756,14 @@ one settlement event, whatever happens downstream. Five steps, in order
 3. **Mint** — 32 bytes of injected entropy bound to
    `{op_id, step_id, policy, deadline}`, compared in constant time, spent
    once, revoked at settlement.
-4. **Checkout** — a helper from the pool.
+4. **Checkout** — a helper from the pool, waiting out a full one. A
+   batch wider than the pool is congestion rather than a verdict, so
+   `clear_call` retries within the caller's clearance budget instead of
+   handing the model a resource error. The wait lives in the borrower's
+   process on purpose: the broker checks helpers out inside its own
+   message handler and back in from `Settle`, so a broker that parked on
+   a checkout would be waiting for something only its own message loop
+   could release.
 5. **Dispatch** — an `exec_start` frame over the framing channel, with a
    relay process owning the event subject, enforcing the wall deadline,
    and reporting settlement back.
@@ -768,7 +778,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1344`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1350`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1130,7 +1140,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:679`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:690`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1141,7 +1151,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:900`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:911`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:4633`). Keying
@@ -1234,7 +1244,7 @@ crash mid-execution can only synthesize an interrupted result. Execution
 is `tool.Exclusive`, and the workspace it may mutate is the lesser half
 of the reason. The broker opens an execution's pooled ledger on the
 *first* clearance under a `{op_id, step_id}`, with that call's budget
-(`broker/broker.gleam:594`) — so a concurrent call in the same step both
+(`broker/broker.gleam:688`) — so a concurrent call in the same step both
 sets the budget the program will live under and holds a slot the program
 needs, and a satellite needs two outstanding slots to launch at all: one
 the node holds for its whole life, one for the capability call it is
@@ -1273,7 +1283,7 @@ renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1333`) appends the tool only when
+`serve.registry` (`client/serve.gleam:1368`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:494`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

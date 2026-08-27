@@ -45,7 +45,7 @@ settlement event, whatever happens downstream.
     ├─ validate   absolute paths, non-negative limits
     ├─ reserve    one slot against the pooled cap and deadline
     ├─ mint       32 random bytes bound to {op, step, policy, deadline}
-    ├─ checkout   a helper from the pool
+    ├─ checkout   a helper from the pool (waiting out a full one)
     └─ dispatch   exec_start over the framing channel
                         │
    caller  <──  relay  ─┴─  exec_out ...  exec_exit
@@ -91,6 +91,46 @@ test runs share one account and are refused past the cap, however
 reasonable each request looks alone. Settling with nothing outstanding is
 a no-op rather than an error, since settlement can race a crash-driven
 cleanup and double-settling must never underflow into free budget.
+
+**The pool is a different ceiling from the budget, and a full one is
+congestion rather than a verdict.** `max_outstanding` refuses
+amplification; the pool says how many jails this host can actually
+afford at once, since every helper is an OS process running bwrap and a
+jail. It is sized from the node's scheduler count, clamped to `[4, 16]`
+and overridable with `LOOM_HELPER_POOL` — a number, never a literal,
+because it is also the real ceiling on how wide a parallel tool batch
+runs. A batch wider than the pool therefore *waits* for a slot instead
+of handing the model a resource error for its third call: `clear_call`
+retries within the caller's own clearance budget.
+
+That wait happens in the borrower's process, and where it happens is the
+whole of its correctness. The broker checks a helper out synchronously
+inside its own message handler and checks one back in only from
+`Settle` — a message it can process solely while it is not blocked. A
+queueing pool that deferred its checkout reply, or a broker that parked
+on one, would be waiting for a resource that only its own message loop
+could release. Retrying from outside cannot reach that state, and
+nothing is held across the wait: the checkout-failure path hands back
+the reserved budget slot and revokes the minted token before it answers,
+so a waiter owns no ledger slot, no token and no helper. Progress
+depends only on running executions ending, which their wall deadlines
+guarantee. The wait is bounded rather than indefinite, so a nested
+borrower — a code-mode satellite holding one helper while its capability
+calls ask for another — degrades into the refusal it always got instead
+of into a stall.
+
+**Every waiter leaves with a verdict**, which is a second property and
+takes its own machinery. The loop reserves a window it believes the
+broker could answer in and stops rather than issuing an exchange with a
+few milliseconds left, because the broker is serial and a clearance it
+grants blocks it for a relay handshake, a helper handshake and a
+checkout. And the exchange itself answers instead of crashing: an
+ordinary `process.call` faults its caller on a timeout and on a dead
+callee, and the caller here is a strand effect process holding the very
+refusal the model was meant to read. What no floor covers — a broker
+slower than the caller's whole budget, or one stopped underneath a
+parked waiter — comes back as `BrokerUnavailable` rather than faulting
+the strand.
 
 Each dispatched call gets a **relay** process owning the execution's
 event subject: it forwards output, enforces the wall deadline, and

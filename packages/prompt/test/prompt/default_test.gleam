@@ -126,9 +126,10 @@ pub fn delegation_says_a_wait_holds_the_operation_open_test() {
 }
 
 pub fn delegation_says_to_wait_on_the_batch_test() {
-  // `agent_wait` takes an array against one deadline precisely because
-  // the shipped `tool_execution` is Sequential: eight one-handle waits
-  // are eight serial windows.
+  // `agent_wait` takes an array against one deadline whatever
+  // `tool_execution` says: a session can set it back to sequential, and
+  // one `Exclusive` sibling fences a parallel batch, either of which
+  // turns eight one-handle waits into eight serial windows.
   let rendered = phrases(pack.FullyEnforced)
   assert string.contains(rendered, "spawn the batch, then wait on the batch")
   assert string.contains(

@@ -51,7 +51,7 @@ already names remote pools among its intended carriers
 frames is a helper, whatever it is running on.
 
 **The channel is already a seam with two implementations.**
-`Transport` (`packages/broker/src/broker/exec.gleam:210`) has exactly two
+`Transport` (`packages/broker/src/broker/exec.gleam:212`) has exactly two
 variants: `PortTransport`, a real OS port onto a spawned helper, and
 `ChannelTransport`, an in-process fake the tests drive the same actor
 with. A vsock or virtio-serial transport is a third variant of a type
@@ -60,20 +60,25 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:1466`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:1521`)
 takes a `spawn` closure and hands helpers out through `checkout`
-(`packages/broker/src/broker/exec.gleam:1478`) and `checkin`
-(`packages/broker/src/broker/exec.gleam:1487`). "One microVM per helper"
+(`packages/broker/src/broker/exec.gleam:1533`) and `checkin`
+(`packages/broker/src/broker/exec.gleam:1542`). "One microVM per helper"
 and "a warm pool of snapshot-restored VMs" are both descriptions of what
 that closure does. Its own doc comment already flags the place a warm
-pool would change things: spawning runs inside the pool actor, so a slow
-spawn delays concurrent checkouts — "acceptable at pool sizes of a
-handful; revisit with pre-warming if it ever is not." A VM boot is
-exactly the slow spawn that sentence was written for.
+pool would change things. Spawning runs inside the pool actor, which
+costs the pool's one run-time borrower nothing — the broker is serial,
+so there is never a second checkout waiting behind a spawn — but it
+costs the broker a helper handshake for every slot the pool has not
+filled yet, so a session's first wide batch dispatches behind a short
+series of spawns, and "pre-warming is the fix if that ever shows up in a
+trace; it has not." A VM boot is exactly the slow spawn that sentence
+was written for, and it arrives with the multiplier: a handshake of
+milliseconds becomes one of hundreds, once per cold slot.
 
 **Driver choice is a wiring decision, not a broker one.** Production
 injects the pool into the broker as two closures — `checkout` at
-`packages/client/src/client/serve.gleam:830`, `checkin` on the line below
+`packages/client/src/client/serve.gleam:906`, `checkin` on the line below
 — so a session could be wired to a VM-backed pool without the broker, the
 tools, or the runtime being recompiled against a different type.
 
@@ -95,19 +100,19 @@ the failure model — are the parts that genuinely are a driver swap.
 This is the largest item, and the one that most directly threatens the
 sandbox package's central promise: *degraded means degraded, out loud*.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:794`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:800`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
 when the network is off or proxied, `cgroup-v2` under a memory or pid
 ceiling, `rlimit-cpu` under a CPU ceiling, `rlimit-fsize` under a
 file-size ceiling. `unapplied_layers`
-(`packages/broker/src/broker/exec.gleam:824`) subtracts what the report
+(`packages/broker/src/broker/exec.gleam:830`) subtracts what the report
 shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
-(`packages/broker/src/broker/exec.gleam:839`) so that `landlock:abi=5`
+(`packages/broker/src/broker/exec.gleam:845`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:855`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:861`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -134,10 +139,10 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:952`), and today
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:958`), and today
 that list is consulted for exactly one thing: whether it contains
 `"degraded"` (`degraded_features`,
-`packages/broker/src/broker/exec.gleam:764`). Issue #64 already proposes
+`packages/broker/src/broker/exec.gleam:770`). Issue #64 already proposes
 putting a protocol version in that frame and explicitly raises the
 adjacent question — "what is versioned, the frame protocol as a whole, or
 a feature set the client can negotiate against?" — while noting that
@@ -150,7 +155,7 @@ strict. Doing this without a VM tier is a refactor; doing it with one is
 a prerequisite.
 
 There is a companion trap. `host_platform_for`
-(`packages/broker/src/broker/exec.gleam:1236`) answers `JailedHost` for
+(`packages/broker/src/broker/exec.gleam:1242`) answers `JailedHost` for
 `"linux"` and `UnjailedHost` for everything else, mirroring the helper's
 own `jail.PlatformFor` — which, as `packages/sandbox/CLAUDE.md` is
 careful to say, is "not a probe of the kernel but a fact about the
@@ -314,7 +319,7 @@ stay truthful, which means it is still set from the driver's own state
 machine and never inferred from how the guest exited. And `abort` must
 still leave nothing running, which for a VM means the janitor pattern
 applies unchanged: `watch_cleanup`
-(`packages/broker/src/broker/exec.gleam:1413`) spawns an unlinked process
+(`packages/broker/src/broker/exec.gleam:1419`) spawns an unlinked process
 that runs an idempotent cleanup when a pid dies, "including a brutal kill
 that skips every in-actor path" — exactly the guarantee a VM handle
 needs, since a leaked microVM is a leaked *machine*, not a leaked
@@ -390,12 +395,16 @@ executor pools) over the same protocol: a pool of VM-backed helpers on a
 build server, reached over the framing protocol through a tunnel, is the
 two tracks composed rather than two separate projects.
 
-**6. Snapshot-boot warm pools.** Track 3's own words, and the mechanism
-that would let the helper pool grow past the `size: 2` production wires
-today (`start_pool`, `packages/client/src/client/serve.gleam:861`).
-Snapshot restore is fast enough that a warm pool's checkout can beat a
-cold process spawn. This is a performance benefit, and it is ranked last
-deliberately.
+**6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
+the one cost lazy spawning still carries. The production pool is no
+longer a literal: it is the node's scheduler count clamped to `[4, 16]`
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:1496`), wired
+through `LOOM_HELPER_POOL` (`start_pool`,
+`packages/client/src/client/serve.gleam:894`), which means there are
+several cold slots to fill rather than one, and a wide first batch pays
+for each of them in turn. Snapshot restore is fast enough that a warm
+pool's checkout can beat a cold process spawn. This is a performance
+benefit, and it is ranked last deliberately.
 
 ---
 
@@ -406,7 +415,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:1236`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:1242`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

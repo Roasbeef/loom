@@ -48,6 +48,7 @@
 //// caller.
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
+import broker/internal/call
 import broker/internal/ffi_crypto
 import broker/internal/ffi_os
 import broker/internal/ffi_port
@@ -57,6 +58,7 @@ import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/port.{type Port}
 import gleam/erlang/process.{type Pid, type Subject, type Timer}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -431,7 +433,11 @@ pub fn await_ready(
   process.call(helper.commands, waiting: timeout, sending: AwaitReady)
 }
 
-/// The helper's current lifecycle position.
+/// The helper's current lifecycle position. Panics if the helper does
+/// not answer within `timeout` or has already died — `process.call`'s
+/// contract, and the right one for a caller whose next step needs the
+/// answer. The pool's own readiness probe deliberately does not use
+/// this: see `helper_ready`.
 pub fn status(helper: Helper, waiting timeout: Int) -> HelperStatus {
   process.call(helper.commands, waiting: timeout, sending: QueryStatus)
 }
@@ -1457,12 +1463,61 @@ type PoolState {
   )
 }
 
+/// The pool ceiling a host gets when it names no other: the node's
+/// scheduler count, clamped by `pool_size_for`. Every helper is an OS
+/// process running bwrap and a jail, so this is a real resource limit
+/// rather than a policy dial — but it is also the ceiling on how wide a
+/// parallel tool batch can actually run, so `2` was never a considered
+/// value for it.
+pub fn default_pool_size() -> Int {
+  pool_size_for(schedulers: ffi_os.schedulers_online())
+}
+
+/// The default pool ceiling for a node with `schedulers` schedulers
+/// online: the scheduler count, floored at four and capped at sixteen.
+///
+/// The floor is the point of the derivation. A helper spends nearly all
+/// its life blocked on a child process rather than on a scheduler, so
+/// scheduler count is a proxy for how big the machine is, not for how
+/// much work the pool can carry — a single-core CI box still wants room
+/// for a batch of a few concurrent reads. The cap is the other half:
+/// sixteen simultaneous jails is already far more memory and pid
+/// pressure than any batch we have seen ask for, and a 96-core build
+/// server should not silently offer ninety-six.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert exec.pool_size_for(schedulers: 1) == 4
+/// assert exec.pool_size_for(schedulers: 8) == 8
+/// assert exec.pool_size_for(schedulers: 96) == 16
+/// ```
+///
+pub fn pool_size_for(schedulers schedulers: Int) -> Int {
+  int.clamp(schedulers, min: min_pool_size, max: max_pool_size)
+}
+
+/// The smallest default pool: enough for a handful of concurrent reads
+/// even on a one-scheduler node.
+pub const min_pool_size = 4
+
+/// The largest default pool. See `pool_size_for`.
+pub const max_pool_size = 16
+
 /// Starts a pool of up to `size` helpers, spawned lazily with `spawn`
 /// (a seam: production passes `exec.spawn_helper` applied to a
-/// `SpawnConfig`; tests pass a fake-transport spawner). Spawning runs
-/// inside the pool actor, so a slow spawn delays concurrent checkouts —
-/// acceptable at pool sizes of a handful; revisit with pre-warming if
-/// it ever is not.
+/// `SpawnConfig`; tests pass a fake-transport spawner).
+///
+/// Spawning runs inside the pool actor, which is deliberate rather than
+/// merely tolerated: the pool has exactly one borrower at run time —
+/// the broker's `checkout` seam — and the broker is a serial actor, so
+/// there is never a second checkout in flight to be delayed behind a
+/// spawn. (`client/serve.degraded` borrows once more, at boot, before
+/// the broker serves anything.) What growing the pool *does* cost is
+/// paid by the broker: it blocks for one helper handshake per slot the
+/// pool has not filled yet, so the first wide batch of a session
+/// dispatches behind a short series of spawns. Pre-warming is the fix
+/// if that ever shows up in a trace; it has not.
 pub fn start_pool(
   size size: Int,
   spawn spawn: fn() -> Result(Helper, SpawnError),
@@ -1560,13 +1615,44 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
   }
 }
 
+// Whether an idle helper is still fit to lend. The probe round-trip
+// runs inside the pool actor, so its timeout is time the next checkout
+// may wait — but an idle helper is by construction running nothing and
+// answers in microseconds, and one that cannot answer within
+// `ready_probe_ms` is wedged, which is exactly what this is here to
+// catch. The cost is therefore bounded by the number of *wedged*
+// helpers and paid once each: an unanswered probe retires the helper
+// (`next_helper` shuts it down and moves on, `handle_checkin` refuses
+// to take it back), so it is never probed again. Shortening the timeout
+// to make a larger pool cheaper would trade that for retiring healthy
+// helpers under load, which is the worse failure.
+//
+// That accounting is only true because the probe is a `try_call`. The
+// public `status` is an ordinary `process.call`, which panics on a
+// timeout — inside the pool actor that is not a retired helper, it is a
+// dead pool, and a dead pool kills the broker with it, since the broker
+// borrows through a `process.call` of its own. A question about one
+// helper's health must not be answerable with the pool's death.
 fn helper_ready(helper: Helper) -> Bool {
   case process.is_alive(helper.pid) {
     False -> False
     True ->
-      case status(helper, waiting: 1000) {
-        StatusReady(_) -> True
-        StatusStarting | StatusDead(_) -> False
+      case
+        call.try_call(
+          helper.commands,
+          waiting: ready_probe_ms,
+          sending: QueryStatus,
+        )
+      {
+        Ok(StatusReady(_)) -> True
+        Ok(StatusStarting)
+        | Ok(StatusDead(_))
+        | Error(call.NoReply)
+        | Error(call.CalleeGone) -> False
       }
   }
 }
+
+// How long an idle helper has to answer a readiness probe before the
+// pool treats it as wedged. See `helper_ready`.
+const ready_probe_ms = 1000

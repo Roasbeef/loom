@@ -24,6 +24,13 @@ protocol (spec Part 1.4). WP-G.
   `{op_id, step_id, policy, deadline}`, checked in constant time.
 - `broker/budget.{Budget, Ledger}` — pure pooled accounting, one ledger per
   live `{op_id, step_id}`.
+- `broker/exec.{default_pool_size, pool_size_for, min_pool_size,
+  max_pool_size}` — the default helper-pool ceiling and the pure
+  derivation behind it (schedulers online, clamped).
+- `broker/internal/call.{try_call, CallFault}` — `process.call` without
+  the panic: `NoReply` on a timeout, `CalleeGone` on a dead or ownerless
+  callee. Used where the caller is holding a verdict it must deliver —
+  the congestion loop and the pool's readiness probe — and nowhere else.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
   EnforcementDemand, Transport}` — the helper actor, the pool, and the
   transport seam (`PortTransport` real, `ChannelTransport` for tests).
@@ -53,6 +60,8 @@ protocol (spec Part 1.4). WP-G.
   `clear_call`), `conformance` (wiring and the jailed e2e).
 - **FFI**: `broker/internal/ffi_crypto` — `crypto:strong_rand_bytes` and
   `crypto:hash_equals` for token entropy and constant-time comparison.
+  `broker/internal/ffi_os` — `os:type/0` for the host platform and
+  `erlang:system_info(schedulers_online)` for the default pool size.
   `broker/internal/ffi_port` — port open/send/close, OS pid lookup and
   kill, and private-file writes for fd-3 policy delivery. Both are backed
   by `broker_ffi.erl`; the rest of the package takes them as injected
@@ -73,6 +82,8 @@ protocol (spec Part 1.4). WP-G.
     `CancelDeadline(exec_id)`, `HandshakeDeadline`, `HeartbeatTick`,
     `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`.
   - `exec.PoolMsg` — `Checkout(reply)`, `Checkin(helper)`, `StopPool`.
+    `Checkout` answers immediately, `AllBusy` included: it never defers a
+    reply, because its one run-time borrower is the broker actor.
   - Outbound to callers: `broker.CallEvent` (`CallOutput`, `CallSettled`)
     and `exec.ExecEvent` (`Output`, `Exited`, `Failed`).
 - **Commits / registers**: none. The broker persists nothing; durability of
@@ -122,6 +133,48 @@ protocol (spec Part 1.4). WP-G.
   phase, so the hermetic build's clearance is structurally unwidenable —
   which matters here because `compose` applies grants after the meet and
   would otherwise let one overrule the build's own `network: NetworkOff`.
+- **A full pool is congestion, and the wait for one happens in the
+  borrower's process.** `clear_call` retries a `NoHelper(AllBusy(..))`
+  clearance within the caller's own `waiting` budget instead of handing
+  it back, so a tool batch wider than the pool queues rather than
+  failing. The wait cannot move inside the broker: the broker calls its
+  `checkout` seam synchronously inside its own message handler and only
+  reaches `checkin` from `Settle` / `RelayDown`, so a broker (or a
+  queueing pool it blocks on) would be waiting for a resource that only
+  its own message loop can release. Nothing is held across the wait —
+  the checkout-failure path releases the budget slot and revokes the
+  token before answering — so progress depends only on running
+  executions ending, which their wall deadlines guarantee. `AllBusy(size:
+  0)` is not congestion and never waits: a pool that lends nothing has
+  nothing to check back in.
+- **Every waiter leaves within its own budget *and with a verdict*.**
+  The second half is not free. The loop reserves `min_retry_window_ms`
+  of the caller's budget for its last attempt rather than issuing
+  exchanges with a nap's worth of window left, because the broker is
+  serial and a clearance it grants blocks it for a relay handshake, a
+  helper handshake and a checkout seam. And the exchange is
+  `internal/call.try_call`, not `process.call`: the latter panics on a
+  timeout and on a dead callee, and the caller is a strand effect
+  process whose death becomes a synthetic zero-usage abort in place of
+  the in-band refusal the model can act on. A broker slower than the
+  caller's whole budget, or one stopped underneath a parked waiter,
+  answers `BrokerUnavailable`.
+- **A helper the pool cannot get an answer out of is retired, not
+  fatal.** `helper_ready` probes an idle helper before lending it, from
+  inside the pool actor — so a probe that faulted on a timeout would take
+  the pool down, and the broker with it, since the broker borrows through
+  a call of its own. The probe is `try_call` for that reason, which is
+  also what makes the cost accounting true: one timeout per wedged
+  helper, paid once, because the helper is shut down and never probed
+  again. The public `exec.status` keeps `process.call`'s panicking
+  contract and is not what the pool uses.
+- **The pool size is a resource budget, not a policy dial.** Every
+  helper is an OS process running bwrap and a jail.
+  `exec.pool_size_for` clamps the node's scheduler count to `[4, 16]`
+  and `client/serve` lets `LOOM_HELPER_POOL` override it; the pool is
+  the ceiling on real parallelism, while the pooled `max_outstanding`
+  below is the anti-amplification cap. They answer different questions
+  and neither substitutes for the other.
 - **Reservations cannot leak.** They are released on settlement, freed
   wholesale on `abort`, and reclaimed when a call's relay process dies
   unsettled (every relay is monitored). Releases are generation-checked, so
@@ -134,6 +187,20 @@ protocol (spec Part 1.4). WP-G.
   cancel ladder. Presented bytes are compared in constant time and the
   check scans every entry without early exit, so a match's position leaks
   nothing either.
+- **A clearance cannot resume across an abort.** `abort` is a *scoped*
+  cancel, not a verdict that an operation is over: code mode runs its
+  satellite under the strand's own `{op_id, step_id}` precisely so
+  `abort` reaches it, and calls it on every teardown including the
+  successful one — so a strand goes on clearing calls under the same key
+  afterwards, and blanket-refusing an aborted operation would brick every
+  strand after its first `code_mode`. What must not survive is a
+  clearance that *began before* the sweep and finished after it: since
+  `clear_call` waits out a congested pool, a retry could otherwise
+  compose a fresh policy, open a fresh ledger, mint a token `revoke_all`
+  never saw, and start the one jailed execution the abort could not
+  reach. So the broker counts aborts per operation, a retry states the
+  epoch it last saw, and a mismatch is `OperationAborted`. A first
+  attempt carries no epoch and is judged on its own merits.
 - **Unenforceable policy narrows, never widens.** The egress proxy sidecar
   does not exist, so `narrow_unenforceable` downgrades `NetworkProxy` to
   `NetworkOff` and reports it as an ordinary `Narrowing` before every

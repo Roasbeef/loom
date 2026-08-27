@@ -793,6 +793,7 @@ fn settings() -> serve.Settings {
     // for, and demanding a working `loom-exec` here would make the
     // highest-value assertion in this suite skip on hosts without one.
     helper_path: "/bin/sh",
+    helper_pool_size: 2,
     session_id:,
     demand: exec.BestEffort,
     gateway: catalog.gateway(
