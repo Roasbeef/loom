@@ -1096,9 +1096,9 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:356`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:401`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
-are already durable in the intent (`client/agency.gleam:406`):
+are already durable in the intent (`client/agency.gleam:451`):
 `sub:{parent}/{slug}-{step}-{index}`. The model never supplies a name, so
 it cannot claim `main`, shadow an operator's convention, or collide with
 a sibling — and the determinism is exactly what makes a replayed spawn
