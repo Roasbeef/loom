@@ -402,20 +402,14 @@ fn clear_awaiting_helper(
   // for minutes.
   let #(answered, clock) = clock.read(clock)
   let remaining = remaining - int.max(0, answered - started)
-  let nap = int.min(remaining, helper_wait_interval_ms)
-  use <- bool.guard(
-    when: remaining - nap < min_retry_window_ms,
-    return: outcome,
-  )
-  process.sleep(nap)
-  clear_awaiting_helper(
-    broker,
-    spec,
-    events,
-    clock,
-    remaining - nap,
-    Some(epoch),
-  )
+  // The nap is always a whole interval: the guard has to clear a floor
+  // that is itself far larger than one, so there is no tail here where
+  // a caller sleeps for a fraction of an interval to reach a window it
+  // cannot use.
+  let after_nap = remaining - helper_wait_interval_ms
+  use <- bool.guard(when: after_nap < min_retry_window_ms, return: outcome)
+  process.sleep(helper_wait_interval_ms)
+  clear_awaiting_helper(broker, spec, events, clock, after_nap, Some(epoch))
 }
 
 // use #(outcome, epoch) <- or_unavailable(call.try_call(..))
