@@ -105,7 +105,10 @@ over one session file. WP-L.
   fan-out caps, the multi-handle wait loop, the lineage ledger's four
   reconciliation branches, the lazy deadline reap, the result contract a
   spawn's `result_schema` writes and the child is judged against, and the
-  framing that marks another agent's text as data.
+  framing that marks another agent's text as data. `child_name` mints
+  `sub:{parent}/{slug}-{digest}`, the digest being
+  `agent.call_site_digest` over the caller's coordinates and the `Minter`
+  inside them.
 - `client/codemode.{Config, Toolchain, seam, discover, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
@@ -417,6 +420,23 @@ over one session file. WP-L.
   mid-restart would otherwise evaporate and the child would run until the
   session closed. The mark is written once and every later observation
   re-issues the abort.
+- **A spawn adopts an existing child on a name match only when the ledger
+  says this caller minted it.** Handing an existing child back is the
+  reconciliation path that makes `agent_spawn` `ReplaySafe`, and it is
+  worth keeping — but a name is *derived* and a lineage cell is
+  *recorded*, and only the second is evidence. So `minted_by` is compared
+  against the caller's own call site — the operation, `agent.minting_step`
+  (the step with the minter folded in, since `lineage.CallSite` has no
+  field for a program's ordinal) and the source index — and a mismatch is
+  refused as `agent.NameAlreadyMinted`, never adopted. Adoption without
+  that check is an ownership transfer rather than a reconciliation: the
+  adopting spawn's brief, tools, `within_ms`, `detach` and `result_schema`
+  are all discarded (`write_result_schema` runs only on the minting
+  branch), `check_capacity` is skipped so the adopted child costs nothing
+  against `fan_out`, and the caller goes on to wait on a strand doing
+  somebody else's work and report its answer as the answer to a question
+  it never asked. The name derivation is what makes a collision
+  unreachable; this is what makes one harmless if it were reached.
 - **The blackboard is clamped on both sides.** `agent_note` writes under
   `agent/{caller}/`; `agent_notes` with no prefix reads `agent/` and not
   the whole non-reserved fact namespace, which is what

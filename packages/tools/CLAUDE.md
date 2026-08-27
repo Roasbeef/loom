@@ -63,6 +63,13 @@ reported failure into something a model can repair from.
 - `tools/agent.{slug, handle_to_string, parse_handle}` — the name and
   handle grammar: `[a-z0-9-]`, capped, `/` and `#` rejected, and a total
   parse back from `{strand}#{operation}`.
+- `tools/agent.{Minter, minting_step, call_site_digest}` — who, inside
+  one planned tool call, minted a child. `ToolCall` is a model's own
+  `agent_spawn`; `Program(ordinal:)` is a code-mode program on its
+  `ordinal`-th spawn admission, which is a fact `{operation, step_id,
+  source_index}` has nowhere to put. `minting_step` is the step a spawn
+  is *recorded* under and reconciled against, and `call_site_digest` is
+  the constant-width, model-proof half of a minted child's name.
 - `tools/codemode.CodeMode` — the code-mode seam: `execute`, plus the
   published `seams`, `default_within_ms` and `max_within_ms` the tool's
   description and schema state, so the sentence the model is charged for
@@ -188,11 +195,25 @@ reported failure into something a model can repair from.
   policy's `env_allow` even if the broker sent it.
 - **Timeouts are clamped tool-side** — `default_timeout_ms` 120 s,
   `max_timeout_ms` 600 s for bash; 60 s for grep.
+- **A minted name's discriminating half has a constant width and no
+  model input.** A child's name is `sub:{parent}/{slug}-{digest}`: the
+  slug is the purpose, bounded, and decorative, while the digest is
+  sixteen hex characters over `{operation, minting step, source index}`
+  and is the whole of who owns the child. The split is what closes two
+  ways of colliding two minters onto one name. A discriminator appended
+  to a *slugged* field is erased by that field's cap — a production step
+  id is a 36-character UUID and the slug cap is 24, which is exactly how
+  a `-program` step suffix came to reach no name at all — and a
+  constant-width field has no cap left to be truncated against. And a
+  discriminator sharing a field with model text can be steered by
+  choosing the text, which is why the digest takes none. Lengthening the
+  slug cap fixes neither; `agency_test`'s
+  `a_step_slug_cannot_carry_a_discriminator_test` is the arithmetic.
 - **A model never supplies its own identity, a strand name, or a
   blackboard prefix.** `agent.caller` is built from `Ctx` alone, so a
   model that names another strand in its arguments does not become it;
   `agent_spawn` takes a *purpose* and the Agency mints
-  `sub:{parent}/{slug}-{step}-{index}` from the call's own durable
+  `sub:{parent}/{slug}-{digest}` from the call's own durable
   coordinates; `agent_note` writes under `agent/{caller}/` and
   `agent_notes` reads under `agent/`. Each closes a class rather than a
   case: identity forgery, name squatting, and namespace escape.

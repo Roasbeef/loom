@@ -1099,11 +1099,20 @@ where a live runtime is visible.
 `spawn` (`client/agency.gleam:401`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:451`):
-`sub:{parent}/{slug}-{step}-{index}`. The model never supplies a name, so
-it cannot claim `main`, shadow an operator's convention, or collide with
-a sibling — and the determinism is exactly what makes a replayed spawn
-find its own child instead of minting a second one. If the ledger already
-has a cell for the minted name, the same handle comes straight back.
+`sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
+the digest is sixteen fixed hex characters over the operation, the
+minting step and the source index. The model never supplies a name, so it
+cannot claim `main`, shadow an operator's convention, or collide with a
+sibling — and the determinism is exactly what makes a replayed spawn find
+its own child instead of minting a second one. The split of labour is the
+point: the half a model influences may be truncated, the half that says
+whose child this is has a constant width and takes no model input, so
+neither a long purpose nor a chosen one can collapse two minters onto one
+name. If the ledger already has a cell for the minted name *and it
+records this caller's own call site*, the same handle comes straight
+back; a cell recording anyone else's is refused rather than adopted,
+because adopting one would hand this spawn a strand already busy with
+somebody else's brief.
 
 `api.create_strand` (`runtime/api.gleam:679`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the

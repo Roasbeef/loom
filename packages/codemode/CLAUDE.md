@@ -51,7 +51,7 @@ strand roots, and can reach neither the disk, the network, nor a process.
   variants, so "which capabilities travel together" is a decision this
   package owns and a host selects from rather than assembles.
 - `codemode/orchestration.{Orchestration, router, ceilings, serviced_caps,
-  refusal_code, program_step_suffix, default_spawn_ceiling}` — the
+  refusal_code, default_spawn_ceiling}` — the
   orchestration seam's capability router. It decodes a `strand.*` frame
   into `tools/agent`'s vocabulary, hands it to one of the six `Agency`
   closures under a `Caller` derived from the threaded `PhaseIdentity`, and
@@ -163,17 +163,25 @@ strand roots, and can reach neither the disk, the network, nor a process.
   identity by construction; a router, which a caller could build twice,
   never holds it. Refused *at* the ceiling, in band, naming the number and
   saying that joining will not free a slot.
-- **A code-mode spawn's call site is derived, never the tool call's own.**
-  A child's name is minted from `{parent, purpose slug, step slug, source
-  index}`, and a whole execution is one tool call — so every spawn in a
-  program would otherwise share a step and an index, mint one name twice,
-  and reconcile the second onto the first child. `CapRequest.ordinal`
-  supplies the index (this capability's admissions so far, which is what
-  `tool.Ctx.source_index` is for an assistant message) and
-  `program_step_suffix` distinguishes the step from the batch's own, so a
-  program's children cannot collide with an `agent_spawn`'s. The
-  *operation* is threaded through untouched, which is what keeps a run
-  end reaping what the program spawned.
+- **A code-mode spawn says who minted it, in a field of its own.** A
+  child's name is minted from `{parent, purpose slug, call-site digest}`,
+  and a whole execution is one planned tool call — so every spawn in a
+  program arrives under one `{operation, step_id, source_index}` and
+  would otherwise mint one name repeatedly, the second reconciling onto
+  the first child. `CapRequest.ordinal` separates them and travels as
+  `agent.Minter.Program(ordinal:)`; `Caller.source_index` stays the
+  *dispatching* `code_mode` call's own index. Two fields for two facts,
+  because they answer different questions and each is load-bearing on its
+  own: the ordinal separates one program's spawns from each other, and
+  the source index separates this execution from every other call in its
+  batch — an `agent_spawn` at index 0 and, decisively, a second
+  `code_mode` call, which shares this one's operation, step and ordinal
+  tally alike. The predecessor spent `source_index` on the ordinal and
+  distinguished the rest with a `-program` suffix on the step; the suffix
+  reached no name at all, because the name slugged the step and the slug
+  cap is shorter than a step id. The *operation* is threaded through
+  untouched, which is what keeps a run end reaping what the program
+  spawned.
 - **A program's module name is chosen by the compile service, never by the
   source.** `program_module` is a path, and a Gleam module is named by its
   path, so prelude shadowing is structurally impossible.
@@ -271,8 +279,8 @@ strand roots, and can reach neither the disk, the network, nor a process.
   doc names — a public record an injected router could fill with invented
   coordinates — is untouched by this seam rather than widened by it. The
   `{op_id, step_id}` it hands the Agency come off the threaded
-  `PhaseIdentity`; the one thing it derives is the call site's step
-  suffix, and that never becomes a ledger key.
+  `PhaseIdentity`; the one thing it derives is the call site's `Minter`,
+  and that never becomes a ledger key.
 - **The default router refuses what it does not service.** `proc.run` is
   the only capability it maps today; every other `cap` name comes back
   `unsupported_cap` until the harness-side tool bridge lands, and a caller
