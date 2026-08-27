@@ -68,6 +68,7 @@ import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/enforcement
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import codemode/seed
@@ -456,14 +457,20 @@ const mask_64 = 18_446_744_073_709_551_615
 /// the production launcher.
 ///
 /// Public because the identity threading is the property worth pinning in
-/// a test: `exec_id` and the build's `{op_id, step_id}` are the caller's,
-/// and both stages share one `Budget`.
+/// a test: one `ExecIdentity` is minted here from the caller's own
+/// coordinates, and both stages derive their phase from it rather than
+/// being handed coordinates of their own.
+///
+/// The build shares the run's ledger. Production has always built under
+/// the unsuffixed step id, so this is today's behaviour spelled in the
+/// type rather than a change: `with_own_build_ledger` is the e2e's
+/// deliberate split, not the default.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.exec_config(config, request, root, deadline, reports).exec_id
-/// //   == satellite.ExecId(op_id: request.op_id, step_id: request.step_id)
+/// // identity.ledger_keys(exec_config(c, r, root, ms).identity)
+/// //   == [#(r.op_id, r.step_id)]
 /// ```
 ///
 pub fn exec_config(
@@ -479,13 +486,16 @@ pub fn exec_config(
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
-      build: build.builder(build_config(config, request, deadline_ms)),
+      build: build.builder(build_config(config, request)),
     ),
     broker: config.broker,
-    exec_id: satellite.ExecId(op_id: request.op_id, step_id: request.step_id),
+    identity: identity.for_execution(
+      op_id: request.op_id,
+      step_id: request.step_id,
+      budget: pooled,
+    ),
     satellite: satellite.SatelliteConfig(
       base_policy:,
-      budget: pooled,
       demand: request.demand,
       // The program's own children inherit the driver's constructed
       // environment, not the build's: what a program shells out to is the
@@ -510,32 +520,30 @@ pub fn exec_config(
   )
 }
 
-/// The hermetic build's configuration, under the caller's own identity and
-/// the same pooled budget the satellite runs on.
+/// The hermetic build's configuration. It carries no operation, step or
+/// budget of its own any more: those arrive with the `PhaseIdentity` the
+/// pipeline derives, which is what stops a second set of coordinates from
+/// being written here.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.build_config(config, request, deadline, reports).step_id
-/// //   == request.step_id
+/// // codemode.build_config(config, request).timeout_ms
+/// //   == config.build_timeout_ms
 /// ```
 ///
 pub fn build_config(
   config: Config,
   request: codemode_tool.Request,
-  deadline_ms: Int,
 ) -> build.BuildConfig {
   build.BuildConfig(
     broker: config.broker,
-    op_id: request.op_id,
-    step_id: request.step_id,
     seed_root: config.seed_root,
     gleam_path: config.gleam_path,
     base_policy: execution_policy(request.base_policy),
     // The Gleam and Erlang toolchains live outside the workspace; the
     // build root is the only thing it may write.
     toolchain_roots: ["/"],
-    budget: pooled_budget(config, deadline_ms),
     demand: request.demand,
     env: [#("PATH", config.toolchain_path)],
     dependencies: compile.default_dependencies(),

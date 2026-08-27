@@ -1137,7 +1137,7 @@ corner would buy.
 ## 15. Code mode
 
 The other branch off a tool batch is a model that submits a *program*
-rather than a call. `codemode.execute` (`codemode/codemode.gleam:88`)
+rather than a call. `codemode.execute` (`codemode/codemode.gleam:97`)
 threads its source through three trust stages, short-circuiting at the
 first refusal:
 

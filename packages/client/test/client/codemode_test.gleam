@@ -17,6 +17,7 @@ import client/codemode
 import client/serve
 import codemode/codemode as pipeline
 import codemode/compile
+import codemode/identity
 import codemode/satellite
 import codemode/vet
 import core/clock
@@ -94,11 +95,12 @@ pub fn both_jailed_stages_run_under_the_callers_identity_test() {
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
   let built = codemode.exec_config(config, request, "/work/x", 9000)
-  assert built.exec_id
-    == satellite.ExecId(op_id: request.op_id, step_id: "turn-4:tools")
-  let build = codemode.build_config(config, request, 9000)
-  assert build.op_id == request.op_id
-  assert build.step_id == "turn-4:tools"
+  // One identity, and the keys it answers are the caller's own. Asserting
+  // on `ledger_keys` rather than on a field pins the stronger property:
+  // the build no longer carries coordinates that could disagree, so this
+  // is the whole set of executions the broker will pool budget under.
+  assert identity.ledger_keys(built.identity)
+    == [#(request.op_id, "turn-4:tools")]
   broker.stop(broker_actor)
 }
 
@@ -107,14 +109,15 @@ pub fn one_pooled_budget_covers_the_build_and_the_node_test() {
   let config = config_for(broker_actor)
   let request = request_for("turn-4:tools")
   let built = codemode.exec_config(config, request, "/work/x", 9000)
-  let build = codemode.build_config(config, request, 9000)
-  // One ledger: same cap, same deadline, and the deadline is the one the
-  // caller's `within_ms` produced rather than one this module invented.
-  assert built.satellite.budget == build.budget
-  assert built.satellite.budget.deadline_ms == 9000
+  // One ledger, now by construction: both phases derive from one identity,
+  // so the budget cannot differ between them and the deadline is the one
+  // the caller's `within_ms` produced rather than one this module invented.
+  let pooled = identity.pooled_budget(identity.run_phase(built.identity))
+  assert pooled == identity.pooled_budget(identity.build_phase(built.identity))
+  assert pooled.deadline_ms == 9000
   // The node holds one outstanding effect for its whole life, so anything
   // below two starves the program's first capability call.
-  assert built.satellite.budget.max_outstanding >= codemode.minimum_outstanding
+  assert pooled.max_outstanding >= codemode.minimum_outstanding
   broker.stop(broker_actor)
 }
 
@@ -174,7 +177,7 @@ pub fn the_pipeline_is_handed_the_widened_base_test() {
   let built = codemode.exec_config(config, request, "/work/x", 9000)
   assert built.satellite.base_policy
     == codemode.execution_policy(request.base_policy)
-  assert codemode.build_config(config, request, 9000).base_policy
+  assert codemode.build_config(config, request).base_policy
     == codemode.execution_policy(request.base_policy)
   broker.stop(broker_actor)
 }
