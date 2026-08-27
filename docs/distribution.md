@@ -205,18 +205,31 @@ For comparison, what the tree produced before any of this: an 11 MB
 shipment plus 26.6 MB of unstripped Go binaries, which needed an OTP
 installation on top.
 
-## Code mode is absent from a release, on purpose
+## Code mode is absent from a release, and that is a gap (#102)
 
 The server registers the `code_mode` tool only on a host that has
 `gleam` and `erl` on `PATH` *and* a build seed whose dependency table
-matches the compile service's. A machine running a release has none of
-those unless it also happens to be a development machine, so the server
-prints the reason once at boot and ships no `code_mode` definition at
-all — which is the existing behaviour and the right one, since a tool
-definition is paid for on every request of every strand for the life of
-the session. Every other tool works normally. Turning that around would
-mean shipping a Gleam compiler and an offline package cache inside the
-artifact; nobody has argued for it.
+matches the compile service's. A release satisfies **one** of those and
+is not asked the right question about it:
+
+| prerequisite | in the release |
+|---|---|
+| `erl` | **yes** — `erts-.../bin/erl` ships in the tarball, but is not on `PATH`, so discovery misses it |
+| `gleam` | no, 29 MB |
+| build seed | no, 5.8 MB |
+
+So a released Loom drops the tool this milestone was built to deliver,
+and one of the three reasons is a discovery failure rather than a
+missing file — the same shape as the helper ladder above.
+
+The mechanism is right and stays: the server prints the reason once at
+boot and ships no `code_mode` definition, because a tool definition is
+a cache prefix paid on every request of every strand for the life of the
+session, and advertising a tool that cannot run is worse than omitting
+it. What is wrong is treating the omission as settled. Bundling the
+compiler and the seed roughly doubles the artifact, from 29 MB unpacked
+to about 64 MB; that is a real cost and it is the cost of shipping the
+thing the project is about. #102 carries the decision.
 
 ## What is wanted from the source and was not changed here
 
