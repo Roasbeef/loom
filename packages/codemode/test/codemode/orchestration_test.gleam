@@ -40,7 +40,16 @@ import tools/agent
 
 const t = 1_700_000_000_000
 
-const step = "turn-4:tools"
+// The step every request in this suite runs under, in the shape the
+// planner mints one: a canonical thirty-six character UUIDv7, not a short
+// literal. A twelve-character literal survives every slug cap in the tree
+// intact, so a suite built on one cannot observe a truncation at all —
+// and a truncation is what erased this seam's previous discriminator.
+fn step() -> String {
+  let #(entry, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: t), seed: 23))
+  ids.entry_id_to_string(entry)
+}
 
 fn op_id() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: t), seed: 23)
@@ -51,7 +60,7 @@ fn op_id() -> ids.OpId {
 fn phase() -> PhaseIdentity {
   identity.run_phase(identity.for_execution(
     op_id: op_id(),
-    step_id: step,
+    step_id: step(),
     budget: budget.Budget(max_outstanding: 8, deadline_ms: t + 60_000),
   ))
 }
@@ -74,7 +83,19 @@ fn request(
 }
 
 fn seam(agency: agent.Agency) -> orchestration.Orchestration {
-  orchestration.Orchestration(agency:, strand: "main")
+  seam_at(agency, 0)
+}
+
+// The same seam for a `code_mode` call sitting at `source_index` in its
+// own batch. Every call in a batch shares an operation and a step, so
+// this is the only durable coordinate that tells two executions in one
+// step apart — which is why the router carries it and why a test can vary
+// it.
+fn seam_at(
+  agency: agent.Agency,
+  source_index: Int,
+) -> orchestration.Orchestration {
+  orchestration.Orchestration(agency:, strand: "main", source_index:)
 }
 
 // Routes one call and runs the plan it produced, which is what the host's
@@ -135,6 +156,31 @@ fn spawn_args(purpose: String) -> MsgPackValue {
   ])
 }
 
+// The same spawn as `spawn_args`, already decoded — for the tests that
+// are about the name a caller derives rather than about carriage.
+fn a_spawn_request(purpose: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(
+    purpose:,
+    brief: "do the thing",
+    tools: option.None,
+    within_ms: option.None,
+    result_schema: option.None,
+    context: agent.Fresh,
+    detach: False,
+  )
+}
+
+// A caller in the shape one arrives in, for a chosen minter and index.
+fn a_caller(source_index: Int, minter: agent.Minter) -> agent.Caller {
+  agent.Caller(
+    strand: "main",
+    operation: op_id(),
+    step_id: step(),
+    source_index:,
+    minter:,
+  )
+}
+
 fn recorder() -> Subject(Seen) {
   process.new_subject()
 }
@@ -178,27 +224,91 @@ pub fn the_operation_is_the_threaded_one_test() {
   let assert [fake_agency.SawSpawn(caller:, ..)] = fake_agency.drain(seen)
     as "the spawn must reach the Agency"
   assert caller.operation == op_id()
-  assert string.starts_with(caller.step_id, step)
+  assert caller.step_id == step()
 }
 
-pub fn a_programs_call_site_is_its_own_test() {
-  // The derived suffix is what keeps a program's children from colliding
-  // with the children of an `agent_spawn` in the same step, which would
-  // otherwise share the step *and* the index and so mint one name twice.
+pub fn a_programs_call_site_says_a_program_made_it_test() {
+  // What tells a program's spawn from the model's own `agent_spawn` in
+  // the same step: the `Minter`, in its own field, where nothing
+  // truncates it and nothing model-supplied shares a field with it. The
+  // step and the source index are carried through untouched — the step is
+  // the threaded identity's and the index is the dispatching `code_mode`
+  // call's — so the router invents exactly one thing and it is this.
   let seen = recorder()
   let agency = fake_agency.admitting(seen, fake_agency.always_completed)
   let _outcome = serviced(agency, "strand.spawn", spawn_args("review core"), 0)
   let assert [fake_agency.SawSpawn(caller:, ..)] = fake_agency.drain(seen)
     as "the spawn must reach the Agency"
-  assert caller.step_id == step <> orchestration.program_step_suffix
-  assert caller.step_id != step
+  assert caller.minter == agent.Program(ordinal: 0)
+  assert caller.step_id == step()
+  assert caller.source_index == 0
 }
 
-pub fn each_spawn_gets_its_own_source_index_test() {
+pub fn a_program_and_an_agent_spawn_in_one_step_mint_two_names_test() {
+  // Sequence 1. `tool.Exclusive` forbids a *concurrent* start and nothing
+  // more, so one batch may hold an `agent_spawn` at source index 0 and a
+  // `code_mode` call at index 1, back to back, under one step id. Give
+  // them the same purpose and the same step and the only thing left to
+  // separate their children is who minted them.
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let _outcome = serviced(agency, "strand.spawn", spawn_args("review core"), 0)
+  let assert [fake_agency.SawSpawn(caller: program, request:)] =
+    fake_agency.drain(seen)
+    as "the spawn must reach the Agency"
+  // The model's own call, at the same step, the same index, the same
+  // purpose, and the same operation — everything but the minter.
+  let by_hand = a_caller(0, agent.ToolCall)
+  assert by_hand.operation == program.operation
+  assert by_hand.step_id == program.step_id
+  assert by_hand.source_index == program.source_index
+  assert fake_agency.minted(program, request)
+    != fake_agency.minted(by_hand, request)
+}
+
+pub fn two_programs_in_one_step_mint_two_names_test() {
+  // Sequence 2. Two `code_mode` calls in one batch share an operation and
+  // a step, and each satellite host starts its own ordinal tally at zero
+  // — so neither the step nor the ordinal separates them and a
+  // discriminator derived from either would put both programs' first
+  // children under one name. The dispatching source index is what is
+  // left, which is why the seam carries it.
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let assert Ok(satellite.ServedHere(serve: first)) =
+    orchestration.router(seam_at(agency, 0))(request(
+      "strand.spawn",
+      spawn_args("review core"),
+      0,
+    ))
+    as "the first program's spawn must be served here"
+  let assert Ok(satellite.ServedHere(serve: second)) =
+    orchestration.router(seam_at(agency, 1))(request(
+      "strand.spawn",
+      spawn_args("review core"),
+      0,
+    ))
+    as "the second program's spawn must be served here"
+  let _first = first()
+  let _second = second()
+  let assert [
+    fake_agency.SawSpawn(caller: one, request: one_request),
+    fake_agency.SawSpawn(caller: two, request: two_request),
+  ] = fake_agency.drain(seen)
+    as "both spawns must reach the Agency"
+  assert one.step_id == two.step_id
+  assert one.minter == two.minter
+  assert one_request.purpose == two_request.purpose
+  assert fake_agency.minted(one, one_request)
+    != fake_agency.minted(two, two_request)
+}
+
+pub fn each_spawn_gets_its_own_ordinal_test() {
   // The reason the ordinal exists at all. A child's name is minted from
-  // the caller's coordinates and the purpose, so two spawns in one
-  // program sharing an index would mint one name twice and the second
-  // would reconcile onto the first child — a silent wrong answer.
+  // the caller's coordinates and the purpose, and a whole execution is
+  // one tool call — so two spawns in one program sharing an ordinal would
+  // mint one name twice and the second would reconcile onto the first
+  // child, a silent wrong answer.
   let seen = recorder()
   let agency = fake_agency.admitting(seen, fake_agency.always_completed)
   let _first = serviced(agency, "strand.spawn", spawn_args("review"), 0)
@@ -208,11 +318,37 @@ pub fn each_spawn_gets_its_own_source_index_test() {
     fake_agency.SawSpawn(caller: second, request: two),
   ] = fake_agency.drain(seen)
     as "both spawns must reach the Agency"
-  assert first.source_index == 0
-  assert second.source_index == 1
+  assert first.minter == agent.Program(ordinal: 0)
+  assert second.minter == agent.Program(ordinal: 1)
+  // The dispatching call's index is the *same* for both: it names the
+  // execution, not the spawn.
+  assert first.source_index == second.source_index
   // Same purpose, same step, and still two distinct children.
   assert one.purpose == two.purpose
   assert fake_agency.minted(first, one) != fake_agency.minted(second, two)
+}
+
+pub fn a_chosen_ordinal_reaches_no_agent_spawns_child_test() {
+  // Sequence 3. A program picks its own ordinal by spawning throwaways
+  // first, so it can land on any index an `agent_spawn` used in this
+  // step. The ordinal is in `Minter` and the model's spawns are
+  // `ToolCall`, so there is no ordinal to reach with: every index a
+  // program can pay its way to derives a name no `agent_spawn` at that
+  // index derives.
+  let request = a_spawn_request("review core")
+  let indices = [0, 1, 2, 3, 7]
+  let chosen =
+    list.map(indices, fn(ordinal) {
+      fake_agency.minted(a_caller(0, agent.Program(ordinal:)), request).strand
+    })
+  let reachable =
+    list.map(indices, fn(index) {
+      fake_agency.minted(a_caller(index, agent.ToolCall), request).strand
+    })
+  assert list.all(chosen, fn(name) { !list.contains(reachable, name) })
+  // And padding buys the program nothing against itself either: every
+  // ordinal is its own child.
+  assert list.length(list.unique(chosen)) == list.length(indices)
 }
 
 // --- what crosses, and what comes back ------------------------------------
@@ -224,7 +360,12 @@ pub fn a_spawn_answers_with_a_durable_handle_test() {
     serviced(agency, "strand.spawn", spawn_args("review core"), 0)
     as "an admitted spawn must answer"
   assert field(value, "strand")
-    == text("sub:main/review-core-turn-4-tools-program-0")
+    == text(
+      fake_agency.minted(
+        a_caller(0, agent.Program(ordinal: 0)),
+        a_spawn_request("review core"),
+      ).strand,
+    )
   assert field(value, "operation")
     == text(ids.op_id_to_string(fake_agency.op_id(0)))
 }

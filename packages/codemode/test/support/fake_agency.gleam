@@ -23,7 +23,6 @@ import core/clock
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/erlang/process.{type Subject}
-import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import tools/agent.{
@@ -132,29 +131,39 @@ pub fn always_completed(handle: Handle) -> Waited {
 }
 
 /// The child name a spawn mints, in the shape `client/agency.child_name`
-/// mints it — the parent, the slugged purpose, the slugged step, and the
-/// call's source index.
+/// mints it — the parent, the slugged purpose, and the call-site digest.
 ///
-/// Restated rather than imported: `codemode` cannot see `client`. It is
-/// the *shape* the tests here care about, and the real derivation is
-/// pinned on the other side by `client/test/client/agency_test.gleam`.
+/// `codemode` cannot see `client`, so the concatenation is restated here;
+/// the part that decides *identity* is not, because
+/// `agent.call_site_digest` lives in `tools` and both sides call it. That
+/// is deliberate. The previous version of this helper restated the
+/// discriminating half too — the slugged step and the source index — and
+/// so agreed with a derivation that could not tell two minters apart,
+/// which is exactly the sort of agreement a fake should not be able to
+/// reach on its own. The real derivation is pinned on the other side by
+/// `client/test/client/agency_test.gleam`.
 pub fn minted(caller: Caller, request: SpawnRequest) -> Handle {
   let assert Ok(slug) = agent.slug(request.purpose)
     as "a test purpose must slug"
-  let step = case agent.slug(caller.step_id) {
-    Ok(slugged) -> slugged
-    Error(Nil) -> "step"
-  }
   let name =
     "sub:"
     <> caller.strand
     <> "/"
     <> slug
     <> "-"
-    <> step
-    <> "-"
-    <> int.to_string(caller.source_index)
-  agent.Handle(strand: name, operation: op_id(caller.source_index))
+    <> agent.call_site_digest(caller)
+  agent.Handle(strand: name, operation: op_id(ordinal_of(caller)))
+}
+
+// The fake's operation ids are per-spawn, so they have to vary with
+// whatever varies per spawn. Within one execution that is the minter's
+// ordinal; a caller minting as the tool call itself has only its source
+// index.
+fn ordinal_of(caller: Caller) -> Int {
+  case caller.minter {
+    agent.ToolCall -> caller.source_index
+    agent.Program(ordinal:) -> ordinal
+  }
 }
 
 /// A deterministic operation id, distinct per `seed`.

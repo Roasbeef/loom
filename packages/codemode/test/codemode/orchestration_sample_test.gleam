@@ -85,9 +85,15 @@ import tools/agent
 /// runner starts in.
 const sample_path = "../../docs/examples/fan_out_review.gleam"
 
-/// The step the execution runs under. The children's call site is this
-/// plus `orchestration.program_step_suffix`.
-const step = "turn-7"
+/// The step the execution runs under, in the shape the planner mints one
+/// — a canonical thirty-six character UUIDv7 rather than a short literal,
+/// because the name derivation the children's call site feeds has to
+/// survive the production length and a short fixture cannot ask it to.
+fn step() -> String {
+  let #(entry, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 7))
+  ids.entry_id_to_string(entry)
+}
 
 /// What the fixture holds: `packages/core` mentions the symbol in two
 /// files, `packages/broker` in one, `packages/runtime` in none. The
@@ -187,16 +193,30 @@ fn assert_the_fan_out_was_three_distinct_children(recorded: List(Seen)) -> Nil {
   // Three distinct children, from three distinct call ordinals. Two
   // spawns sharing an ordinal would mint one name twice and the second
   // would reconcile onto the first child.
+  //
+  // The names have to differ on the ordinal alone: every other coordinate
+  // is the same for all three, and the ordinal is the only one this
+  // program can move. Varying it is the axis that always worked, which is
+  // why this check on its own never saw the collisions — the ones that
+  // matter are in `orchestration_test`, over the axes that were fixed.
   let names =
     list.map(spawns, fn(one) { fake_agency.minted(one.0, one.1).strand })
   assert list.length(list.unique(names)) == 3
-  assert list.map(spawns, fn(one) { one.0.source_index }) == [0, 1, 2]
+  // The dispatching call's index is one execution's, so it is the same
+  // for all three; the ordinal is what counts the spawns.
+  assert list.all(spawns, fn(one) { one.0.source_index == 0 })
   // And every one of them was judged as the strand that dispatched the
   // `code_mode` call, under the operation the pipeline threaded.
   assert list.all(spawns, fn(one) { one.0.strand == "main" })
-  assert list.all(spawns, fn(one) {
-    one.0.step_id == step <> orchestration.program_step_suffix
-  })
+  // The step is the threaded identity's, carried through untouched, and
+  // what marks these as a program's children is the minter beside it.
+  assert list.all(spawns, fn(one) { one.0.step_id == step() })
+  assert list.map(spawns, fn(one) { one.0.minter })
+    == [
+      agent.Program(ordinal: 0),
+      agent.Program(ordinal: 1),
+      agent.Program(ordinal: 2),
+    ]
 }
 
 fn assert_the_join_was_one_call_on_one_deadline(recorded: List(Seen)) -> Nil {
@@ -367,7 +387,7 @@ fn exec_config(
     broker: live.broker,
     identity: identity.for_execution(
       op_id: op_id(now),
-      step_id: step,
+      step_id: step(),
       budget: pooled,
     )
       |> identity.with_own_build_ledger,
@@ -384,6 +404,7 @@ fn exec_config(
       router: orchestration.router(orchestration.Orchestration(
         agency: reviewing_agency(live.workspace, seen),
         strand: "main",
+        source_index: 0,
       )),
       ceilings: orchestration.ceilings(orchestration.default_spawn_ceiling),
       call_timeout_ms: 60_000,

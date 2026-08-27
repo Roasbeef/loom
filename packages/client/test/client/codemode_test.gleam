@@ -101,6 +101,7 @@ fn request_on(seam: codemode_tool.Seam, step: String) -> codemode_tool.Request {
     strand: "sub:main/sweep-1-0",
     op_id: an_op(3),
     step_id: step,
+    source_index: 0,
     workspace: "/work",
     base_policy: policy.workspace_default("/work"),
     demand: exec.FullEnforcement,
@@ -826,6 +827,7 @@ fn orchestrated(
     orchestration.router(orchestration.Orchestration(
       agency: live.seam,
       strand: from,
+      source_index: 0,
     ))
   let request =
     satellite.CapRequest(
