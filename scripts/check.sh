@@ -36,9 +36,10 @@ for pkg in "${targets[@]}"; do
     && gleam build --warnings-as-errors \
     && gleam test)
 done
-# Loom's own lint runs last and, for now, only reports: every rule is at
-# warning level while the census settles (packages/lint/CLAUDE.md). It fails
-# the build only for rules promoted with --error.
+# Loom's own lint runs last. R0, R2, R4 and R6 gate — each has a census of
+# zero that the promotion exists to keep (packages/lint/CLAUDE.md, Staging)
+# — while R1, R3 and R5 report a census that is still settling. It fails the
+# build on a gating rule, or on one promoted for the run with --error.
 if [ $# -eq 0 ]; then
   echo "==> lint (house rules)"
   scripts/lint.sh --quiet

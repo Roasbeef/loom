@@ -202,17 +202,30 @@ fn eager_specs(ctx: Ctx, path: String, name: String) -> List(Eager) {
 // continuation) contributes nothing to check, which is why this rule adds
 // findings without flooding the report across the whole lineage.
 //
-// It still over-reports, the same way R3 does and for the same root cause:
-// deciding whether a *middle* parameter is genuinely wasted when the
-// continuation is skipped, versus merely used unconditionally by the
-// combinator's own body (`claimed_effect`'s `key:` drives the claim check
-// itself, not a fallback the check discards), needs the callee's control
-// flow, and `glance` gives this walk no dataflow to read it from. A
-// structural match is reported regardless — a false positive here is a
-// parameter that happens to sit between the subject and the continuation
-// without being a discarded fallback, not a fabricated call site — and,
-// exactly as R3 does, it stays a warning rather than pretending the
-// distinction does not exist.
+// The signature alone is not enough, and the first census proved it: nine
+// of R1's thirty-three findings were parameters that merely *sat* between
+// the subject and the continuation and were used unconditionally by the
+// callee — `session.read_cell`'s `key:` goes straight into the register
+// read, `claimed_effect`'s `key:` drives the claim check itself. Nothing
+// about those is a discarded fallback (issue #73, C).
+//
+// So the body is read as well as the signature, and the question asked of
+// it is the one the rule actually means: **does this combinator branch on
+// its subject, and is the parameter outside that branch?** The decision is
+// the subject of a leading `case` or the first argument of a leading `use
+// <- guard(…)`; a combinator that branches on nothing, or on something
+// other than its own first parameter, is not the shape this rule knows and
+// contributes nothing. A parameter named in the decision is not a fallback:
+// the combinator has already used it by the time it chooses, so evaluating
+// it eagerly costs nothing that was not going to be spent.
+//
+// Both halves of that are decidable without types — a name appears in an
+// expression or it does not — and both are conservative in the same
+// direction: an unrecognized body shape drops the rows rather than
+// inventing them. What is left is still not a proof that the argument is
+// wasted (a `case` arm that ignores the continuation may use the parameter
+// anyway), so the rule keeps reporting rather than gating, and stays a
+// warning.
 
 /// One synthesized `Eager` row per checkable parameter of every
 /// `use`-compatible function this module defines. Keyed under `own_path`,
@@ -235,17 +248,159 @@ fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
         // Last parameter is `fn(…)`, and it is the only one — this is a
         // candidate. Anything else with a second function-typed parameter
         // (`or_fail`'s `to_error`, say) is a different shape and left alone.
-        True, False ->
-          list.reverse(reversed_rest)
-          |> list.index_map(fn(param, index) { #(param, index) })
-          |> list.filter(fn(pair) { pair.1 > 0 })
-          |> list.map(fn(pair) {
-            eager_row(function.name, own_path, pair.0, pair.1)
-          })
+        True, False -> {
+          let leading = list.reverse(reversed_rest)
+          case decision(function.body, leading) {
+            None -> []
+            Some(subject) ->
+              leading
+              |> list.index_map(fn(param, index) { #(param, index) })
+              |> list.filter(fn(pair) { pair.1 > 0 })
+              // A parameter the decision reads is not a fallback: the
+              // combinator has already used it by the time it chooses.
+              |> list.filter(fn(pair) { !mentions(subject, binding(pair.0)) })
+              |> list.map(fn(pair) {
+                eager_row(function.name, own_path, pair.0, pair.1)
+              })
+          }
+        }
         _, _ -> []
       }
     [] -> []
   }
+}
+
+/// The expression this combinator branches on, when it branches on its own
+/// subject — the parameter at position 0.
+///
+/// Two shapes, which are the two ways the house pattern writes a
+/// short-circuit: the subject of a leading single-subject `case`
+/// (`or_fault`, `or_fault_unless`), and the first argument of a leading
+/// `use <- guard(…)` (`claimed_effect`, and every `use x <- result.try(…)`
+/// that opens a function). Anything else — a `let` first, a body that
+/// branches on something other than its subject — is `None`, and the rows
+/// are dropped rather than guessed at.
+fn decision(
+  body: List(glance.Statement),
+  parameters: List(glance.FunctionParameter),
+) -> Option(glance.Expression) {
+  use subject <- option.then(branch_of(body))
+  use first <- option.then(option.from_result(list.first(parameters)))
+  case mentions(subject, binding(first)) {
+    True -> Some(subject)
+    False -> None
+  }
+}
+
+/// The leading `case`'s subject or the leading `use`'s first argument.
+///
+/// The catch-all is over *combinations* — a list, a statement, an
+/// expression and another list at once — not over an AST node, so it does
+/// not weaken the exhaustiveness this package keeps over `glance`'s types:
+/// a new syntax node adds a shape this cannot recognize, and an
+/// unrecognized shape is already `None`.
+fn branch_of(body: List(glance.Statement)) -> Option(glance.Expression) {
+  case body {
+    [glance.Expression(glance.Case(subjects: [subject], ..)), ..] ->
+      Some(subject)
+    [glance.Use(function: glance.Call(arguments: [first, ..], ..), ..), ..] ->
+      case first {
+        glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+          Some(item)
+        // `guard(when:)` given as shorthand names a variable this walk
+        // would have to synthesize a node for; drop the rows instead.
+        glance.ShorthandField(..) -> None
+      }
+    _ -> None
+  }
+}
+
+/// The name a parameter is bound to inside the body, which is what a
+/// mention would spell — never its label, which the caller spells.
+/// A discarded parameter cannot be mentioned at all.
+fn binding(parameter: glance.FunctionParameter) -> String {
+  case parameter.name {
+    glance.Named(name) -> name
+    glance.Discarded(name) -> "_" <> name
+  }
+}
+
+/// Does `name` appear as a variable anywhere in this expression?
+///
+/// Over-approximates in the safe direction: a shadowing binding inside a
+/// closure counts as a mention, which drops a row rather than inventing
+/// one. Exhaustive over `glance.Expression` for the reason everything in
+/// this file is — a new syntax node must fail to compile here rather than
+/// quietly stop being searched.
+fn mentions(value: glance.Expression, name: String) -> Bool {
+  case value {
+    glance.Int(..) | glance.Float(..) | glance.String(..) -> False
+    glance.Variable(name: found, ..) -> found == name
+    glance.NegateInt(value: inner, ..) | glance.NegateBool(value: inner, ..) ->
+      mentions(inner, name)
+    glance.Block(statements: body, ..) -> mentions_in(body, name)
+    glance.Panic(message:, ..) | glance.Todo(message:, ..) ->
+      mentions_optional(message, name)
+    glance.Echo(expression: inner, message:, ..) ->
+      mentions_optional(inner, name) || mentions_optional(message, name)
+    glance.Tuple(elements:, ..) ->
+      list.any(elements, fn(element) { mentions(element, name) })
+    glance.List(elements:, rest:, ..) ->
+      list.any(elements, fn(element) { mentions(element, name) })
+      || mentions_optional(rest, name)
+    glance.Fn(body:, ..) -> mentions_in(body, name)
+    glance.RecordUpdate(record:, fields:, ..) ->
+      mentions(record, name)
+      || list.any(fields, fn(field) { mentions_optional(field.item, name) })
+    glance.FieldAccess(container:, ..) -> mentions(container, name)
+    glance.Call(function:, arguments:, ..) ->
+      mentions(function, name) || mentions_fields(arguments, name)
+    glance.TupleIndex(tuple:, ..) -> mentions(tuple, name)
+    glance.FnCapture(function:, arguments_before:, arguments_after:, ..) ->
+      mentions(function, name)
+      || mentions_fields(arguments_before, name)
+      || mentions_fields(arguments_after, name)
+    glance.BitString(segments:, ..) ->
+      list.any(segments, fn(segment) { mentions(segment.0, name) })
+    glance.Case(subjects:, clauses:, ..) ->
+      list.any(subjects, fn(subject) { mentions(subject, name) })
+      || list.any(clauses, fn(clause) { mentions(clause.body, name) })
+    glance.BinaryOperator(left:, right:, ..) ->
+      mentions(left, name) || mentions(right, name)
+  }
+}
+
+fn mentions_in(body: List(glance.Statement), name: String) -> Bool {
+  list.any(body, fn(statement) {
+    case statement {
+      glance.Use(function:, ..) -> mentions(function, name)
+      glance.Expression(value) -> mentions(value, name)
+      glance.Assert(expression: value, message:, ..) ->
+        mentions(value, name) || mentions_optional(message, name)
+      glance.Assignment(value:, ..) -> mentions(value, name)
+    }
+  })
+}
+
+fn mentions_optional(value: Option(glance.Expression), name: String) -> Bool {
+  case value {
+    Some(inner) -> mentions(inner, name)
+    None -> False
+  }
+}
+
+fn mentions_fields(
+  arguments: List(glance.Field(glance.Expression)),
+  name: String,
+) -> Bool {
+  list.any(arguments, fn(field) {
+    case field {
+      glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
+        mentions(item, name)
+      // `f(key:)` is a use of the variable `key`.
+      glance.ShorthandField(label:, ..) -> label == name
+    }
+  })
 }
 
 fn eager_row(
@@ -259,8 +414,10 @@ fn eager_row(
     function:,
     label: parameter_label(parameter),
     position:,
-    lazy: "a thunk — this parameter is built on every call, taken or not, "
-      <> "the same hazard `bool.guard`'s `return:` has",
+    // The detail this lands in already says an eager argument is built on
+    // every call; a whole sentence here rendered as backticks inside
+    // backticks (issue #73, report quality).
+    lazy: "a thunk in place of the value",
   )
 }
 

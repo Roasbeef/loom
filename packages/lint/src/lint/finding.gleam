@@ -5,6 +5,7 @@
 //// census, and the tests all name a violation the same way.
 
 import gleam/int
+import gleam/list
 import gleam/string
 
 /// The house rules this linter knows. Each is a separate promotion decision:
@@ -65,15 +66,71 @@ pub fn rules() -> List(Rule) {
 ///
 /// A rule earns the error tier by a census that is stable, decidable and
 /// argued — not by being written; that is `scripts/doc_check.sh`'s staging
-/// and the reason the other five warn (docs/design-notes/four-decisions.md,
-/// D2). R6 is the one rule whose census was zero on the day it was written
-/// and whose entire purpose is to keep it zero, which is precisely the
+/// and the reason the rest warn (docs/design-notes/four-decisions.md, D2).
+/// R6 is the one rule whose census was zero on the day it was written and
+/// whose entire purpose is to keep it zero, which is precisely the
 /// condition under which promotion cannot fail correct code. Shipping it as
 /// a warning would file it among two hundred and sixty others and let the
 /// door it guards close unnoticed — which is the failure it exists to
 /// prevent, not a milder version of it.
+///
+/// The other three arrived at that same condition by measurement rather
+/// than by construction, so each carries its own census and its own reason
+/// for staying at zero.
+///
+/// **R0** is zero because `glance` 7 parses every file in the tree, and it
+/// is decidable in the strictest sense available here: the parser either
+/// returned a module or it did not. What promotion protects is the rest of
+/// this list. Every rule but R6's token half is *silent* about a file that
+/// will not parse, so an unparseable file is a linter turned off for that
+/// file — and at warning level nobody decided to turn it off, which is the
+/// difference between an exception and an accident.
+///
+/// **R2** is zero at threshold 3 across all sixteen packages: no function
+/// nests `case` more than three deep, which is the de-nesting sweep's one
+/// verifiable result rather than a rule nothing has tested — thirty-seven
+/// functions sit at exactly 3, so the threshold is a boundary the tree
+/// leans on and not a ceiling far overhead. It is decidable without types,
+/// on the AST, so a wide literal the formatter wrapped is not depth.
+/// Promotion protects a property that is only ever lost one `case` at a
+/// time, each of which reads as reasonable on the day it lands.
+///
+/// **R4** is zero once `policy.harness_packages` exempts `conformance`,
+/// whose `src/` is a test harness that has to compile as a library; the
+/// ninety findings it held were a third of the whole census and none of
+/// them was signal. `panic` and `let assert` are syntax, so the rule is
+/// decidable, and `lint`'s token backstop means a construct the parser
+/// dropped is reported rather than assumed inert — a policy rule that goes
+/// quiet on a parse gap is a hole in the policy. This is also the one rule
+/// `CLAUDE.md` and gleam-style Part IV state in as many words, and until
+/// now the distance between a stated rule and an enforced one was exactly
+/// this promotion.
 pub fn error_by_default() -> List(Rule) {
-  [PortablePurity]
+  [Unparseable, NestingDepth, PanicInSource, PortablePurity]
+}
+
+/// How a run's findings divide into the ones that fail a build and the ones
+/// that only report: `#(errors, warnings)`, which is the `# <errors>
+/// <warnings>` line `lint/cli` prints last and `scripts/lint.sh` reads to
+/// choose its exit code.
+///
+/// Public because a promotion is only real if it moves this number. A test
+/// that asserts a rule *fires* has not tested the gate — the rule fired
+/// before the promotion too, into a report nothing reads — and the
+/// difference between an error and a warning is the whole of what
+/// `error_by_default` decides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let counts = finding.gate(findings, finding.error_by_default())
+/// assert counts == #(0, 12)
+/// ```
+///
+pub fn gate(findings: List(Finding), errors: List(Rule)) -> #(Int, Int) {
+  let #(gated, warned) =
+    list.partition(findings, fn(found) { list.contains(errors, found.rule) })
+  #(list.length(gated), list.length(warned))
 }
 
 /// The short identifier a report and a `--error` flag both use.

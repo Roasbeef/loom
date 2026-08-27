@@ -14,12 +14,17 @@
 ////
 //// # Staging
 ////
-//// Every rule ships at **warning** level. A lint that fails correct code
-//// gets disabled, and the false-positive rate of these five rules on this
-//// corpus is a thing to measure before gating on it — the same staging
-//// `scripts/doc_check.sh` went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). Promotion is per rule, via
-//// `lint/cli`'s `--error`, and the census is the argument for or against.
+//// A rule ships at **warning** level until its census argues it onto the
+//// error tier: zero findings, decidable without types, and a reason
+//// promotion protects something. A lint that fails correct code gets
+//// disabled, so the false-positive rate on this corpus is a thing to
+//// measure before gating on it — the same staging `scripts/doc_check.sh`
+//// went through, and for the same reason
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4 and R6 have made
+//// that argument and gate; R1 and R5 have a census to clear first; R3
+//// over-reports by construction and warns forever. The decision is data,
+//// in `finding.error_by_default`, which is where each argument is written
+//// down; `lint/cli`'s `--error` promotes one for a single run.
 ////
 //// # Totality
 ////
@@ -67,6 +72,12 @@ import lint/source
 ///
 pub fn check(path: String, code: String, policy: Policy) -> List(Finding) {
   let package = package_of(path)
+  // R4 asks whether a file is a test by asking where it sits, and one
+  // package's `src/` is a test harness that has to compile as a library.
+  // `policy.for_package` is where that exemption is named, and applying it
+  // here rather than in `lint/cli` is what makes it the library's answer
+  // about a path rather than the command line's.
+  let policy = policy.for_package(policy, package)
   // R6's `@external` half is lexed rather than parsed, so it survives a file
   // `glance` cannot read: a policy rule that goes quiet on a parse failure is
   // a hole in the policy, not a missed suggestion (`lint/portable`).

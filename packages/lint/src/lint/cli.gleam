@@ -3,12 +3,12 @@
 ////
 //// This is the only module in the package that does I/O. It also applies
 //// the staging decision: **every rule warns except the ones
-//// `finding.error_by_default` names**, which is R6 alone and which that
-//// function argues. `scripts/lint.sh` reads the trailing `# <errors>
-//// <warnings>` line to decide its exit code, exactly as
-//// `scripts/doc_check.sh` does. Promoting one of the other five is
-//// `--error=R4` and nothing else; the census is what argues for or against
-//// doing so.
+//// `finding.error_by_default` names** — R0, R2, R4 and R6, each with its
+//// census and its argument in that function. `scripts/lint.sh` reads the
+//// trailing `# <errors> <warnings>` line to decide its exit code, exactly
+//// as `scripts/doc_check.sh` does. Promoting one of the remaining three is
+//// `--error=R5` and nothing else; the census is what argues for or against
+//// doing so, and for R3 it argues permanently against.
 ////
 //// Manifests are linted too, and are found rather than given: `make lint`
 //// points at `packages/*/src`, so R6's `gleam.toml` half would never be
@@ -49,14 +49,14 @@ const usage: String = "loom lint — the house rules gleam check does not know
 usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
-  --error=R1,R4   promote these rules to error level (R6 already is one)
+  --error=R1,R5   promote these rules to error level (R0, R2, R4, R6 are)
   --tests         also lint test/ sources (R4 is off for them)
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
 
-Every rule is a warning unless named by --error, except R6, which gates by
-default and whose census must stay zero. The last line of output is
+R0, R2, R4 and R6 gate by default and their censuses must stay zero; every
+other rule warns unless named by --error. The last line of output is
 `# <errors> <warnings>`, which is what the wrapper script reads.
 "
 
@@ -331,8 +331,7 @@ fn count(
 }
 
 fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
-  let #(gated, warned) =
-    list.partition(findings, fn(found) { list.contains(errors, found.rule) })
+  let #(gated, warned) = finding.gate(findings, errors)
   io.println("")
   case errors {
     [] ->
@@ -346,12 +345,12 @@ fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
   }
   io.println(
     "lint: "
-    <> count_text(gated)
+    <> int.to_string(gated)
     <> " error(s), "
-    <> count_text(warned)
+    <> int.to_string(warned)
     <> " warning(s)",
   )
-  io.println("# " <> count_text(gated) <> " " <> count_text(warned))
+  io.println("# " <> int.to_string(gated) <> " " <> int.to_string(warned))
 }
 
 fn pad(text: String, width: Int) -> String {

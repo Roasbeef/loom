@@ -6,6 +6,9 @@
 //// combinator is a one-line change and so that the tests can enumerate what
 //// the linter claims to know about.
 
+import gleam/list
+import gleam/option.{type Option, None, Some}
+
 /// One eager combinator and the argument it evaluates unconditionally.
 pub type Eager {
   Eager(
@@ -96,6 +99,54 @@ pub fn default() -> Policy {
 /// The policy for a test source: everything but R4.
 pub fn for_tests() -> Policy {
   Policy(..default(), allow_panic: True)
+}
+
+/// The packages whose `src/` tree is test infrastructure, and where R4
+/// therefore does not reach.
+///
+/// R4 asks whether a file is a test by asking whether it sits under
+/// `test/`, which is true of every package here but one. `conformance` is
+/// a test harness that compiles as a library: the simulation runner and
+/// the storage suite are `src/` because the packages under test depend on
+/// them being importable, not because they are harness code, and their
+/// `let assert`s are fixture destructuring in a process whose crash *is*
+/// the failure report. Ninety findings with no signal in them are worse
+/// than none: they were a third of the census, and they are what kept the
+/// one rule `CLAUDE.md` states as policy from being enforced anywhere.
+///
+/// The exemption is about *presence* and nothing else. Part IV rule 3 also
+/// requires every admitted `let assert` to carry an `as "message"` naming
+/// the invariant, none of these ninety do, and no rule checks it — so this
+/// list excuses the construct here, never the missing message (issue #73,
+/// item F).
+///
+/// Keyed by package rather than by path prefix for the reason
+/// `portable_packages` is: membership is a decision someone made, so it
+/// should read as one line of data that the tests can enumerate.
+pub fn harness_packages() -> List(String) {
+  ["conformance"]
+}
+
+/// `base`, with R4 off when the source belongs to a package whose `src/`
+/// is a test harness. `None` — a path outside the tree's layout — is never
+/// exempt.
+///
+/// This is `for_tests` keyed by package instead of by directory. It lives
+/// here rather than in `lint/cli` so that the exemption is part of the
+/// library's answer about a path: a caller that asks `lint.check` about a
+/// `conformance` source gets the same verdict `make lint` does.
+pub fn for_package(base: Policy, package: Option(String)) -> Policy {
+  case is_harness(package) {
+    True -> Policy(..base, allow_panic: True)
+    False -> base
+  }
+}
+
+fn is_harness(package: Option(String)) -> Bool {
+  case package {
+    Some(name) -> list.contains(harness_packages(), name)
+    None -> False
+  }
 }
 
 /// The packages R6 holds to the portable subset: no `@external`, no

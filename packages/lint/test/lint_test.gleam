@@ -28,6 +28,14 @@ fn fired(code: String, rule: Rule) -> Bool {
   list.contains(rules_fired(code), rule)
 }
 
+/// What `scripts/lint.sh` would read from a run over this one source:
+/// `#(errors, warnings)` under the default staging. The path matters —
+/// R4's exemption and R6 both key on the package it names.
+fn gate_of(path: String, code: String) -> #(Int, Int) {
+  lint.check(path, code, policy.default())
+  |> finding.gate(finding.error_by_default())
+}
+
 /// A module with the four stdlib modules the rules watch already imported.
 fn module(body: String) -> String {
   "import gleam/bool
@@ -257,6 +265,73 @@ fn f(compute_result: fn() -> Result(Int, Err), describe: fn(Err) -> ProviderErro
   Continue(value)
 }
 "
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// Issue #73, C: nine of the first census's thirty-three R1 findings were
+/// this shape — `session/session.read_cell(session, ns, key, decode)`,
+/// whose `key` merely sits between the subject and the continuation while
+/// the body hands it straight to the register read. A parameter the
+/// combinator has already used by the time it decides anything is not a
+/// discarded fallback, and there is nothing to make lazy.
+pub fn r1_leaves_a_parameter_used_before_the_decision_alone_test() {
+  module(
+    "fn read_cell(session, ns, key, decode: fn(a) -> Result(b, c)) {
+  use found <- result.try(get_register(session, ns, key))
+  case found {
+    None -> Ok(None)
+    Some(value) -> decode(value)
+  }
+}
+
+fn op_meta(session, id) {
+  read_cell(session, OpMeta, op_id_to_string(id), decode_meta)
+}",
+  )
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// The same shape once more, in the spelling that produced five of the
+/// nine: `claimed_effect(ctl, key, on_claim)`, where `key` is what the
+/// guard's own condition is computed from.
+pub fn r1_leaves_a_parameter_the_guard_reads_alone_test() {
+  module(
+    "fn claimed_effect(ctl, key, on_claim: fn() -> Fate) -> Fate {
+  use <- bool.guard(when: !claim(ctl, key), return: Ran)
+  on_claim()
+}
+
+fn effect_fault(ctl, op) {
+  use <- claimed_effect(ctl, \"fault:\" <> op)
+  Faulted
+}",
+  )
+  |> rules_fired
+  |> list.contains(finding.EagerFallback)
+  |> should.be_false
+}
+
+/// A body that branches on something other than its own subject is not the
+/// shape this rule knows, and an unrecognized shape drops its rows rather
+/// than guessing at them.
+pub fn r1_leaves_a_combinator_that_branches_elsewhere_alone_test() {
+  module(
+    "fn or_something(subject, report, then: fn() -> Action) -> Action {
+  case ambient_state() {
+    True -> then()
+    False -> Fault(subject, report)
+  }
+}
+
+fn stage(ok, cursor) {
+  use <- or_something(ok, build_report(cursor))
+  Continue
+}",
+  )
   |> rules_fired
   |> list.contains(finding.EagerFallback)
   |> should.be_false
@@ -756,11 +831,97 @@ pub fn r6_names_what_it_protects_test() {
   })
 }
 
-/// The staging decision, pinned: R6 gates, the other five warn. Its census
-/// was zero the day it was written and its whole job is to keep it there,
-/// which is the one condition under which promotion cannot fail correct code.
-pub fn r6_gates_by_default_test() {
-  should.equal(finding.error_by_default(), [finding.PortablePurity])
+// --- the staging decision ---------------------------------------------------
+//
+// A rule is promoted when its census is zero, decidable and argued, and the
+// promotion is only real if a violation stops a build. `finding.gate` is
+// the number `scripts/lint.sh` turns into an exit code, so every test here
+// asks for the count of *errors* rather than for the rule firing: the rule
+// fired before the promotion too, into a report nothing reads.
+
+/// The staging decision, pinned: R0, R2, R4 and R6 gate, and R1, R3 and R5
+/// warn. R3 can never join them and R1 and R5 have a census to clear first,
+/// so a change here is a change of policy, not of implementation.
+pub fn the_gating_rules_are_pinned_test() {
+  should.equal(finding.error_by_default(), [
+    finding.Unparseable,
+    finding.NestingDepth,
+    finding.PanicInSource,
+    finding.PortablePurity,
+  ])
+}
+
+/// A source `glance` cannot read is a linter switched off for that file.
+/// At warning level nobody decided to switch it off, which is the whole
+/// distinction promotion buys.
+pub fn r0_gates_an_unparseable_source_test() {
+  gate_of("packages/core/src/core/broken.gleam", "fn f( {")
+  |> should.equal(#(1, 0))
+}
+
+pub fn r2_gates_a_pyramid_test() {
+  gate_of(
+    "packages/core/src/core/deep.gleam",
+    module(
+      "fn f(a, b, c, d) {
+  case a {
+    Ok(x) ->
+      case b {
+        Ok(y) ->
+          case c {
+            Ok(z) ->
+              case d {
+                Ok(w) -> Ok(#(x, y, z, w))
+                Error(e) -> Error(e)
+              }
+            Error(e) -> Error(e)
+          }
+        Error(e) -> Error(e)
+      }
+    Error(e) -> Error(e)
+  }
+}",
+    ),
+  )
+  |> should.equal(#(1, 0))
+}
+
+pub fn r4_gates_a_let_assert_in_src_test() {
+  gate_of(
+    "packages/core/src/core/thing.gleam",
+    module("fn f(value) { let assert Ok(inner) = value inner }"),
+  )
+  |> should.equal(#(1, 0))
+}
+
+/// The exemption, from both sides: the same source gates under `core` and
+/// reports nothing at all under `conformance`, whose `src/` is a test
+/// harness that has to compile as a library. Keyed by package, so it is one
+/// tree and not a prefix that could grow quietly.
+pub fn r4_does_not_reach_the_harness_package_test() {
+  let harness = module("fn f(value) { let assert Ok(inner) = value inner }")
+  gate_of("packages/conformance/src/conformance/runner.gleam", harness)
+  |> should.equal(#(0, 0))
+
+  should.equal(policy.harness_packages(), ["conformance"])
+}
+
+/// The table is what the exemption claims to cover, and a neighbouring
+/// package must not inherit it.
+pub fn the_harness_exemption_is_one_package_test() {
+  let harness = module("fn f(value) { let assert Ok(inner) = value inner }")
+  gate_of("packages/machine/src/machine/planner.gleam", harness)
+  |> should.equal(#(1, 0))
+}
+
+/// A rule that is not promoted must still only warn — the promotion is per
+/// rule, and a run of R5 findings has to leave the exit code alone.
+pub fn an_unpromoted_rule_still_only_warns_test() {
+  gate_of(
+    "packages/core/src/core/json.gleam",
+    module("fn f(rest) { list.length(rest) > 24 }"),
+  )
+  |> should.equal(#(0, 1))
 }
 
 /// The table is what the rule claims to cover; a test that did not enumerate
