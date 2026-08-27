@@ -195,8 +195,12 @@ over one session file. WP-L.
 - `client/serve.Settings.helper_pool_size` — how many `loom-exec`
   helpers may run at once, and therefore the real ceiling on how wide a
   parallel tool batch runs. `resolve` fills it from `LOOM_HELPER_POOL`
-  or `exec.default_pool_size()` (schedulers online, clamped to
-  `[4, 16]`), never a literal; a batch wider than it waits for a slot
+  or `exec.default_pool_size()` (schedulers online), never a literal, and
+  clamps *both* to `[exec.min_pool_size, exec.max_pool_size]` = `[4, 16]`.
+  Both ends are load-bearing: below two, code mode cannot run at all (a
+  satellite holds one helper for the node while the program's capability
+  calls ask for another), and above sixteen an operator's typo would ask
+  the host for that many live bwrap jails. A batch wider than it waits for a slot
   inside `broker.clear_call` rather than coming back as a resource
   error. Distinct from the broker's pooled `max_outstanding`, which
   refuses amplification rather than describing what the host affords.

@@ -504,10 +504,18 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       })
   })
   use helper_path <- result.try(find_helper(flags.helper))
-  // A pool of one still runs every tool, one at a time; a pool of zero
-  // could only refuse, so the floor is one whatever the environment says.
+  // The override is clamped to the same range the derived default is,
+  // and both ends are load-bearing. A pool must hold at least two
+  // helpers or code mode cannot run at all: a satellite holds one for
+  // the node itself while the program's capability calls ask for
+  // another, so a one-slot pool would make every cap call wait out its
+  // whole budget against a helper that is never coming back, then
+  // refuse. `min_pool_size` is well above that. At the other end each
+  // slot is a live bwrap jail, so an operator's typo must not be able
+  // to ask the host for ten thousand of them.
   let helper_pool_size =
-    int.max(1, env_int_or("LOOM_HELPER_POOL", exec.default_pool_size()))
+    env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
+    |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
   use catalogue <- result.try(load_catalog(flags.config))
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
