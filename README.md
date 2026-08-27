@@ -462,57 +462,38 @@ can check whether it is still true.
   has failed at job startup, so every claim of green in this repository
   still means green under `make check` on one Linux development container.
 
-## Building and running
+## Running Loom
 
-You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or newer
-for the sandbox helper and the terminal client. Nothing is published to
-Hex; the packages are monorepo-internal and are built where they sit.
+Two downloads, per platform: the **server**, which is a tarball carrying
+the BEAM runtime system and the sandbox helper, and the **client**, which
+is a single Go binary. Nothing else has to be installed — in particular
+not Erlang, which the server bundles.
+
+Nothing is published yet. `make dist` builds both, and the sizes below
+are what it produced on a Linux x86_64 development container:
 
 ```
-make check            # the full gate: format check, warning-free build, tests, lint
-make lint             # the house rules on their own (lint-<package> narrows it)
-make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
-make server-shipment  # the server: build/erlang-shipment + bin/loom-server
-make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
-make e2e              # the jailed end-to-end against a freshly built helper
-make codemode-seed    # the offline package cache a code-mode build clones
-make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
-make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
-make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
-make help             # everything else
+dist/loom-0.1.0-linux-x86_64.tar.gz    11 MB   the server (29 MB unpacked)
+dist/loom-tui-0.1.0-linux-x86_64       16 MB   the terminal client
+dist/SHA256SUMS
 ```
 
-`make check` is exactly what CI runs, and `make check-<package>` narrows
-it to one package. It ends with `make lint` — Loom's own house-rule lint,
-seven rules of which R0 (unparseable source), R2 (`case` nesting depth),
-R4 (`panic` and `let assert` outside tests) and R6 (the portable subset
-`core`, `machine` and `prompt` are held to) fail the build; R1, R3 and R5
-report a census that is still settling and cost nothing. A rule earns the
-error tier by a census that is zero and argued, not by taste.
+The server tarball unpacks to a directory holding `bin/loom` (the
+launcher), `bin/loom-exec` (the sandbox helper, a file beside it — Loom
+never extracts an executable at run time), the runtime system, the
+compiled applications, and a `SHA256SUMS` over every executable in the
+tree that `sha256sum -c` will check.
 
-Two generated artifacts have gates rather than regeneration steps in the
-build. `make gen-prelude` re-renders the capability prelude's public
-surface into `packages/tools/src/tools/prelude.gleam` — the signatures the
-`code_mode` description carries — and needs `gleam` and `python3`; `make prelude-check` is the
-digest comparison `make check` runs, which needs neither. `make gen-sql`
-is the same arrangement for the generated SQL modules, and needs
-`sqlite3`.
-
-Run `make selftest` on the kernel you actually intend to run agents on:
-the sandbox is only as strong as the layers that machine provides, and the
-self-test is how you find out which ones those are.
-
-Three binaries come out of a build. `bin/loom-exec` is the Go sandbox
-helper the broker spawns into jails. `bin/loom-tui` is the Go terminal
-client; it depends on nothing but the wire protocol, and `bin/loom-tui
---demo` runs it against an in-process fake with a canned session — no
-server, no network, a fine first thing to try. `bin/loom-server` is the
-session server: `make server-shipment` exports the Gleam `client` package
-as an Erlang shipment into `build/erlang-shipment` and writes the
-launcher. A shipment bundles compiled BEAM files, not the runtime system,
-so running it needs an Erlang/OTP installation on the machine — where
-that is unwanted, `make run-server` runs the same server from source
-through Gleam instead.
+A release is built for one platform and cannot be otherwise: it carries
+this machine's runtime system and `esqlite3_nif.so`, which is compiled C.
+`make release` refuses a `GOOS`/`GOARCH` that is not the host rather than
+producing a tree whose name lies about what is in it. Only the Linux
+x86_64 artifact has been built and smoke-tested; the macOS one would ship
+a helper with no jail, which refuses to serve without
+`--allow-unenforced`, so packaging is not what is missing there.
+`docs/distribution.md` is the whole argument — the mechanism, what was
+rejected, why the helper ships beside the server rather than inside it,
+and every size above with how it was measured.
 
 ### Running a session
 
@@ -525,12 +506,13 @@ terminals:
 
 ```
 # terminal 1 — the server owns the session
-bin/loom-server --session ~/sessions/myproj.db --workspace ~/src/myproj
+loom-0.1.0-linux-x86_64/bin/loom \
+  --session ~/sessions/myproj.db --workspace ~/src/myproj
 # prints: loom-server: session myproj listening on ws://127.0.0.1:44123/v1/ws
 #         (token file ~/sessions/myproj.db.token)
 
 # terminal 2 — a client attaches
-bin/loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
+loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
   --token "$(cat ~/sessions/myproj.db.token)"
 ```
 
@@ -538,26 +520,27 @@ The session file is created if absent; the session name clients subscribe
 with is the file's base name. The bearer token is minted at startup into
 a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
-over their own transport. `make run-server SESSION=path` and
-`make run-tui ADDR=... SESSION=...` wrap the two halves; `make dev` does
-the whole loop in one command — builds the binaries, starts a server on a
-scratch session (or `$SESSION`), waits for the port line, attaches the
-TUI, and tears the server down when the TUI exits. `make dev` is
-interactive and wants a real terminal; `scripts/dev.sh --smoke` is the
-non-interactive variant that boots, probes the endpoints, and verifies a
-clean shutdown.
+over their own transport.
 
-What the server needs: the `loom-exec` helper (found on `PATH` or in
-`./bin`, or named with `--helper`), an Erlang/OTP installation if run
-from the shipment, and — optionally — a provider key. `ANTHROPIC_API_KEY`
-is read from the environment at dispatch time; without it the server
-boots and serves normally and generation requests fail in-band, which is
-enough to inspect a session, replay history, or develop a client. By
-default the server demands full sandbox enforcement, under which a
-kernel that cannot provide the jail layers gets its tool calls refused;
-`--best-effort` accepts a degraded helper for development machines, and
-`make selftest` tells you honestly which of the two postures your kernel
-can back.
+`loom-tui --demo` runs the client against an in-process fake with a
+canned session — no server, no network, a fine first thing to try.
+
+What the server needs beyond itself: optionally a provider key.
+`ANTHROPIC_API_KEY` is read from the environment at dispatch time;
+without it the server boots and serves normally and generation requests
+fail in-band, which is enough to inspect a session, replay history, or
+develop a client. The `loom-exec` helper is found beside the launcher; a
+different one can be named with `--helper`.
+
+Run `loom-exec --self-test` on the kernel you actually intend to run
+agents on. The sandbox is only as strong as the layers that machine
+provides, and the self-test is how you find out which ones those are —
+it prints ENFORCED or SKIPPED per probe and summarizes the two
+separately, so a green run in a neutered container cannot be mistaken for
+a verified sandbox. By default the server demands full enforcement, under
+which a kernel that cannot provide the jail layers gets its tool calls
+refused; `--best-effort` accepts a degraded helper for development
+machines.
 
 The server's full configuration surface, flags first:
 
@@ -566,7 +549,7 @@ The server's full configuration surface, flags first:
 --bind host:port       listen address (default 127.0.0.1:0 — port printed)
 --token-file <path>    bearer token file (default <session>.token, mode 0600)
 --workspace <dir>      the jail's writable root (default: current directory)
---helper <path>        loom-exec location (default: PATH, then ./bin)
+--helper <path>        loom-exec location (default: beside the launcher)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
 --codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed)
 --codemode-seams <s>   workspace, orchestration, or both (default workspace)
@@ -575,11 +558,11 @@ The server's full configuration surface, flags first:
 
 `code_mode` is registered only when this host has `gleam` and `erl` on
 `PATH` *and* a build seed whose dependency table matches the one the
-compile service generates — `make codemode-seed` writes one. A host
-failing any of the three prints the reason once and ships no `code_mode`
-definition at all, rather than one that always refuses: a tool definition
-renders ahead of the system prompt and is paid for on every request of
-every strand for the life of the session.
+compile service generates. A machine running a release has none of those,
+so it prints the reason once and ships no `code_mode` definition at all,
+rather than one that always refuses: a tool definition renders ahead of
+the system prompt and is paid for on every request of every strand for
+the life of the session. Every other tool works normally.
 
 Environment: `ANTHROPIC_API_KEY` (optional, read at dispatch),
 `LOOM_MODEL` (default `claude-opus-5`), `LOOM_BASE_URL`,
@@ -597,6 +580,65 @@ entirely, and without it those variables act as a one-entry catalogue.
 API keys never live in the file — each entry's `api_key_env` names the
 environment variable to read at dispatch. The TUI lists the catalogue
 with `:models` and switches the active strand's model by name.
+
+## Working on Loom
+
+You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or
+newer for the sandbox helper and the terminal client. `make release`
+additionally needs `rebar3` and `strip`; nothing else does. Nothing is
+published to Hex — the packages are monorepo-internal and are built where
+they sit.
+
+```
+make check            # the full gate: format check, warning-free build, tests, lint
+make lint             # the house rules on their own (lint-<package> narrows it)
+make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
+make dev              # build, start a server on a scratch session, attach the TUI
+make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
+make e2e              # the jailed end-to-end against a freshly built helper
+make codemode-seed    # the offline package cache a code-mode build clones
+make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
+make release          # the self-contained server into build/release/loom (needs rebar3)
+make dist             # dist/: the server tarball, the client, SHA256SUMS
+make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
+make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
+make help             # everything else
+```
+
+`make check` is exactly what CI runs, and `make check-<package>` narrows
+it to one package. It ends with `make lint` — Loom's own house-rule lint,
+seven rules of which R0 (unparseable source), R2 (`case` nesting depth),
+R4 (`panic` and `let assert` outside tests) and R6 (the portable subset
+`core`, `machine` and `prompt` are held to) fail the build; R1, R3 and R5
+report a census that is still settling and cost nothing. A rule earns the
+error tier by a census that is zero and argued, not by taste.
+
+Two generated artifacts have gates rather than regeneration steps in the
+build. `make gen-prelude` re-renders the capability prelude's public
+surface into `packages/tools/src/tools/prelude.gleam` — the signatures the
+`code_mode` description carries — and needs `gleam` and `python3`;
+`make prelude-check` is the digest comparison `make check` runs, which
+needs neither. `make gen-sql` is the same arrangement for the generated
+SQL modules, and needs `sqlite3`.
+
+`make dev` is the one-command loop: it builds the binaries, starts a
+server on a scratch session (or `$SESSION`), waits for the port line,
+attaches the TUI, and tears the server down when the TUI exits. It is
+interactive and wants a real terminal; `scripts/dev.sh --smoke` is the
+non-interactive variant that boots, probes the endpoints, and verifies a
+clean shutdown. `make run-server SESSION=path` runs the server from
+source through Gleam, and `make run-tui ADDR=... SESSION=...` attaches to
+it. `make server-shipment` exports the `client` package as an Erlang
+shipment into `build/erlang-shipment` behind a thin `bin/loom-server`
+launcher — a shipment bundles compiled BEAM files and not the runtime
+system, so it needs an Erlang/OTP installation to run, which is exactly
+the gap `make release` closes.
+
+Every Go build in the tree goes through `scripts/go-build.sh` with the
+same flags, so `bin/loom-exec`, `packages/sandbox/loom-exec` and the
+helper inside a release are byte-identical. That is what lets `make
+selftest`'s verdict say something about the artifact rather than about a
+development build of it.
 
 ## Reading further
 
@@ -623,6 +665,11 @@ with `:models` and switches the active strand's model by name.
 - `docs/code-tour.md` — one request followed from a key press to an answer
   on screen, with a file and a line for every step. The cheapest way to
   learn where things live.
+- `docs/distribution.md` — how the downloadable server is built and why:
+  the release mechanism and what was rejected, why the sandbox helper is
+  a file beside the server instead of a blob inside it, why the terminal
+  client is a separate download, and every size in this README with how
+  it was measured.
 - Every package carries a `README.md` — what it is for and where to start
   reading it — beside a `CLAUDE.md` that is denser and more current than
   any top-level document about that package: its key types, its real
