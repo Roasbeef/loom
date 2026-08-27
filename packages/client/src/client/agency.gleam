@@ -71,6 +71,37 @@
 //// fix: every other caller of `api.await_strand_result` still has the
 //// floor, and `docs/notebook.md`'s item stays open.
 ////
+//// ## Where a result contract is enforced, and why there
+////
+//// A spawn may carry a `result_schema`. Two places could check it, and
+//// they are not equivalent. Checking it here, in the parent's `wait`,
+//// lets the child finish successfully and then tells the parent its
+//// child was useless — a verdict delivered to the one party that cannot
+//// act on it, one context window away from the model that wrote the
+//// value, after the run that could have fixed it has ended. Checking it
+//// on the child's own `agent_note` call refuses the write to the model
+//// that made it, in the turn it made it, with the tools and the context
+//// still in hand; the child sees what was expected, what it sent, and
+//// tries again. So the enforcement point is the child, and the whole of
+//// the reason is attributability: a failure belongs to whoever can
+//// repair it.
+////
+//// The parent's `wait` still validates, and that is not a second
+//// authorization. The cell is read back out of the durable store, and
+//// the house rule for a value crossing that boundary is that it is
+//// decoded rather than trusted — a schema rewritten between the write
+//// and the read, or a cell seeded before a contract existed, has to
+//// come back as `ResultUnusable` naming the schema rather than as a
+//// value a program will branch on.
+////
+//// The schema itself lives in its own fact cell, `result-schema/{child}`,
+//// written before the lineage cell so a crash between the two can only
+//// leave a schema with no child, never a child whose contract vanished.
+//// It sits outside `agent/` on purpose: `agent_note` prepends
+//// `agent/{caller}/` to every key a model supplies and `agent_notes`
+//// reads under `agent/` alone, so a child can neither rewrite the
+//// contract it is judged against nor discover its siblings'.
+////
 //// And `send` upward into a parent that has *finished* is refused rather
 //// than delivered, because `api.send_to_strand` falls back to accepting a
 //// fresh run when the target is idle — which would wake a finished parent
@@ -87,6 +118,7 @@ import core/entry
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -104,8 +136,8 @@ import runtime/writer
 import session/session
 import tools/agent.{
   type Agency, type Caller, type Delivery, type Handle, type Outcome, type Peer,
-  type Refusal, type Spawned, type Waited, Aborted, Completed, Failed, Handle,
-  Pending, Ready, Spawned,
+  type Refusal, type ResultSchema, type Spawned, type TerminalResult,
+  type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
 
 /// The name prefix every minted subagent strand carries. It is what
@@ -113,6 +145,19 @@ import tools/agent.{
 /// the tree's second strand factory, so a subagent crash loop cannot
 /// spend the restart budget protecting the strand a human is talking to.
 pub const subagent_prefix = "sub:"
+
+/// Where a child's result contract lives: one `fact.custom` cell per
+/// child with a schema, at `result-schema/{child strand}`.
+///
+/// Deliberately outside `agent/`. `agent_note` forces every model-supplied
+/// key under `agent/{caller}/` and `agent_notes` lists under `agent/`
+/// alone, so this corner is unreachable from the model's own tools in
+/// both directions: a child cannot rewrite the contract it is held to,
+/// and cannot read what its siblings were asked for. It is not one of the
+/// runtime's four *reserved* prefixes, which would be a change to
+/// `runtime/api` rather than to this seam; what keeps it safe is that
+/// nothing a model can reach ever addresses it.
+pub const result_schema_prefix = "result-schema/"
 
 /// How far a descendant walk will climb before giving up. A cycle would
 /// require a strand name to have been claimed twice, and `seed_strand`
@@ -485,12 +530,61 @@ fn reconcile(
       detached: request.detach,
       reaped: False,
     )
+  // Before the lineage cell, not after: the replay path keys on the
+  // lineage cell and returns early when it finds one, so a crash between
+  // these two commits must be able to leave a schema with no child and
+  // never a child whose contract went missing.
+  use Nil <- result.try(write_result_schema(
+    runtime,
+    name,
+    request.result_schema,
+  ))
   use Nil <- result.try(write_cell(runtime, cell))
   Ok(Spawned(
     handle: Handle(strand: name, operation: brief),
     strand: name,
     tools:,
   ))
+}
+
+fn write_result_schema(
+  runtime: api.Runtime,
+  strand: String,
+  schema: Option(ResultSchema),
+) -> Result(Nil, Refusal) {
+  case schema {
+    None -> Ok(Nil)
+    Some(schema) ->
+      api.put_fact(
+        runtime,
+        result_schema_prefix <> strand,
+        agent.render_result_schema(schema),
+      )
+      |> result.map_error(fn(error) {
+        agent.PlaneFailed(reason: describe_api(error))
+      })
+  }
+}
+
+// The contract, read back. `render_result_schema` is the canonical form
+// and `parse_result_schema` is total over it, so a cell that will not
+// decode — corrupt, or hand-written by an operator — degrades into "no
+// contract" rather than faulting a join nobody inside the session could
+// repair. Failing open is safe *here* in a way it is not in the lineage
+// ledger, and the difference is worth stating: a missing lineage fact
+// would grant an addressing right, while a missing contract grants
+// nothing. It costs a join that reports `NoResultAsked` when a schema
+// was in fact asked for — a wrong answer, but a legible one that names
+// no authority the caller did not have.
+fn read_result_schema(
+  runtime: api.Runtime,
+  strand: String,
+) -> Option(ResultSchema) {
+  case api.fact(runtime, result_schema_prefix <> strand) {
+    Error(_error) -> None
+    Ok(None) -> None
+    Ok(Some(payload)) -> option.from_result(agent.parse_result_schema(payload))
+  }
 }
 
 // The registers are seeded but the brief run was never accepted, or was
@@ -515,7 +609,7 @@ fn recover_brief(
         Some(last) -> Ok(api.result_operation(last))
         None ->
           api.adopt_strand(runtime, named: name, brief: [
-            brief_message(config, caller, request.brief),
+            brief_message(config, caller, request),
           ])
           |> result.map_error(fn(error) {
             agent.PlaneFailed(reason: describe_create(error))
@@ -549,7 +643,7 @@ fn create(
       active_tool_names: tools,
     ),
     at: fork_point,
-    brief: [brief_message(config, caller, request.brief)],
+    brief: [brief_message(config, caller, request)],
   )
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_create(error))
@@ -641,18 +735,56 @@ fn deadline_of(
 fn brief_message(
   config: Config,
   caller: Caller,
-  brief: String,
+  request: agent.SpawnRequest,
 ) -> AgentMessage {
   let #(now, _clock) = clock.read(config.clock)
   message.UserMessage(
     content: [
       message.UserText(
-        text: frame_brief(from: caller.strand, body: brief),
+        text: frame_brief(from: caller.strand, body: request.brief)
+          <> result_contract(request.result_schema),
         text_signature: None,
       ),
     ],
     timestamp: now,
   )
+}
+
+/// The child's half of the result contract, in the harness's own voice.
+///
+/// It sits *after* the brief's closing marker rather than inside it, and
+/// the placement is the point: the brief is model-authored text framed
+/// as data, while this is the harness telling the child what its run
+/// owes. Putting the instruction inside the quoted region would file it
+/// under the sender's authority, which is the authority the framing
+/// exists to withhold.
+///
+/// The schema is quoted from `render_result_schema` rather than from
+/// whatever the parent typed, so what the child reads is exactly what
+/// its notes will be judged against, and a parent cannot smuggle prose
+/// through a schema field: names are alphabet-checked at spawn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.result_contract(option.Some(schema))
+/// ```
+///
+pub fn result_contract(schema: Option(ResultSchema)) -> String {
+  case schema {
+    None -> ""
+    Some(schema) ->
+      "\n[result contract, from the harness and not from the sender]\n"
+      <> "Before you finish, record your result with agent_note under the "
+      <> "key `"
+      <> agent.result_note_key
+      <> "`, matching this schema exactly:\n"
+      <> json.to_string(agent.render_result_schema(schema))
+      <> "\nA note that does not match is refused and tells you why, so "
+      <> "write it while you still have the work in hand. Write your "
+      <> "prose answer as well: the schema is what your parent branches "
+      <> "on, the prose is what a human reads.\n[end result contract]"
+  }
 }
 
 // --- wait ------------------------------------------------------------------
@@ -759,12 +891,45 @@ fn wait_loop(
 }
 
 fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
+  let notes =
+    notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/")
   Ready(
     handle:,
     outcome: outcome_of(last),
     report: report_of(runtime, last),
-    notes: notes_under(runtime, agent.blackboard_prefix <> handle.strand <> "/"),
+    // The notes are already in hand, so the contract costs one point read
+    // for the schema and no second listing: the result cell *is* a note,
+    // which is the whole reason the blackboard was the right place to put
+    // it rather than a channel of its own.
+    result: terminal_result(runtime, handle.strand, notes),
+    notes:,
   )
+}
+
+fn terminal_result(
+  runtime: api.Runtime,
+  strand: String,
+  notes: List(#(String, JsonValue)),
+) -> TerminalResult {
+  case read_result_schema(runtime, strand) {
+    None -> agent.NoResultAsked
+    Some(schema) ->
+      case list.key_find(notes, result_key(strand)) {
+        Error(Nil) -> agent.ResultAbsent(schema:)
+        Ok(value) -> judged(schema, value)
+      }
+  }
+}
+
+fn judged(schema: ResultSchema, value: JsonValue) -> TerminalResult {
+  case agent.validate_result(schema, value) {
+    Ok(Nil) -> agent.ResultGiven(value:)
+    Error(mismatch) -> agent.ResultUnusable(schema:, received: value, mismatch:)
+  }
+}
+
+fn result_key(strand: String) -> String {
+  agent.blackboard_prefix <> strand <> "/" <> agent.result_note_key
 }
 
 fn outcome_of(last: LastResult) -> Outcome {
@@ -931,6 +1096,7 @@ fn note(
 ) -> Result(Nil, Refusal) {
   use runtime <- result.try(borrow(config))
   use key <- result.try(validate_key(key))
+  use Nil <- result.try(check_result_contract(runtime, caller, key, value))
   // The prefix is built here and the key is only ever appended to it, so
   // no argument can escape the namespace. `put_fact` refuses every
   // reserved prefix underneath, so forging a lineage cell or an approval
@@ -940,6 +1106,27 @@ fn note(
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_api(error))
   })
+}
+
+// The enforcement point for a result contract — see the module doc for
+// why it is the child's own write and not the parent's read. The schema
+// is looked up only for the one key that owes one, so an ordinary note
+// pays nothing for the feature.
+fn check_result_contract(
+  runtime: api.Runtime,
+  caller: Caller,
+  key: String,
+  value: JsonValue,
+) -> Result(Nil, Refusal) {
+  use <- bool.guard(when: key != agent.result_note_key, return: Ok(Nil))
+  case read_result_schema(runtime, caller.strand) {
+    None -> Ok(Nil)
+    Some(schema) ->
+      agent.validate_result(schema, value)
+      |> result.map_error(fn(mismatch) {
+        agent.ResultSchemaUnmet(schema:, received: value, mismatch:)
+      })
+  }
 }
 
 fn notes(

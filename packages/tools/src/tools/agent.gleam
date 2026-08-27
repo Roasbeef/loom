@@ -119,6 +119,30 @@ pub const max_slug_length = 24
 /// than the wall-clock cost.
 pub const max_handles = 32
 
+/// The blackboard key, relative to the child's own namespace, under
+/// which a child records the structured result its brief asked for. The
+/// cell lands at `agent/{child}/result` and is an ordinary note — the
+/// blackboard already carries typed `JsonValue` cells across this seam
+/// intact, so the contract needed a key and a check, not a new channel.
+pub const result_note_key = "result"
+
+/// Most fields one result schema may declare. A schema is rendered into
+/// the child's brief on every one of its requests, so its size is paid
+/// for repeatedly and is bounded here rather than by the parent's taste.
+pub const max_result_fields = 32
+
+/// Longest declared field name, in characters.
+pub const max_field_name_length = 64
+
+/// How deep `{"type": "array", "items": ...}` may nest before a schema
+/// is refused. Four is past anything a result shape needs and short of
+/// anything that makes rendering expensive.
+pub const max_schema_depth = 4
+
+// Longest rendered JSON value quoted back inside a message. A result
+// cell is model-written and unbounded; the sentence naming it is not.
+const max_excerpt = 240
+
 // --- what crosses the seam -------------------------------------------------
 
 /// Who is calling, in the driver's own durable coordinates.
@@ -152,19 +176,137 @@ pub type Provenance {
   MyConversation
 }
 
+/// The shape a parent may demand of a child's terminal result.
+///
+/// ## What a schema is here, and why it is not JSON Schema
+///
+/// A parent that wants to branch on `found.files` has to state the shape
+/// up front and the child has to be held to it. Otherwise a
+/// deterministic orchestrator regexes prose, which is strictly worse
+/// than the model it replaced — which is why this lands before the
+/// orchestration seam rather than alongside it.
+///
+/// Loom has no JSON Schema dependency and taking one is not a decision
+/// this seam may make. It does not need one. `tools/tool.object_schema`
+/// already emits a JSON-Schema-shaped dialect for every tool definition
+/// the model reads on every request — `{"type": "object", "properties":
+/// {...}, "required": [...]}`, with `{"type": "string"}` and `{"type":
+/// "array", "items": {...}}` underneath — so the parent states the shape
+/// in the notation it is already fluent in, and the harness decodes
+/// exactly the subset it can enforce: a flat list of named fields, one
+/// closed-set type each, required or not.
+///
+/// The subset is enforced by refusal rather than by omission. A schema
+/// carrying `oneOf`, `$ref`, `pattern`, `enum` or a numeric bound is
+/// rejected at spawn naming the key, because a schema that quietly means
+/// less than it says is worse than no schema at all: the parent would
+/// write a constraint, read it back in the brief, and never learn that
+/// nothing was checking it.
+///
+/// Extra keys in a *result*, on the other hand, are allowed, and the
+/// rendered schema says so by leaving `additionalProperties` out — which
+/// is the JSON Schema default. The contract is a lower bound on the
+/// shape: a child that reports more than it owed has still reported what
+/// it owed, and failing it would turn a harmless surplus into a failed
+/// run.
+///
+/// Constructor invariants: opaque, because `fields` has a validity
+/// condition — at least one field, at most `max_result_fields`, every
+/// name matching `[A-Za-z0-9._-]` within `max_field_name_length`, and
+/// every `required` name declared. `parse_result_schema` is the only way
+/// in and it is total.
+pub opaque type ResultSchema {
+  ResultSchema(fields: List(ResultField))
+}
+
+/// One declared field of a result schema.
+///
+/// Constructor invariants: `name` has passed `parse_result_schema`'s
+/// alphabet and length check, which is not cosmetic — a field name is
+/// rendered back into the child's brief and into the refusal a mismatch
+/// produces, so an unbounded one carrying newlines could imitate the
+/// harness's own framing markers.
+pub type ResultField {
+  ResultField(name: String, expects: FieldType, required: Bool)
+}
+
+/// The closed set of types a declared field may have — the JSON Schema
+/// `type` vocabulary, minus what this harness does not enforce.
+pub type FieldType {
+  /// `{"type": "string"}`.
+  StringField
+  /// `{"type": "integer"}`: a JSON number with no fraction or exponent.
+  IntegerField
+  /// `{"type": "number"}`: any JSON number, integral or not.
+  NumberField
+  /// `{"type": "boolean"}`.
+  BooleanField
+  /// `{"type": "object"}`. The keys underneath are not described: this
+  /// is the smallest thing that says "an object with these keys of these
+  /// types", and nesting a second level of that is a schema language.
+  ObjectField
+  /// `{"type": "array", "items": {...}}`, or `{"type": "array"}` with
+  /// `items` absent, which is an array of anything.
+  ArrayField(items: FieldType)
+  /// A property object with no `type` at all — the shape
+  /// `tool.any_property` emits. Anything matches, `null` included.
+  AnyField
+}
+
+/// Why a value did not match its schema. Every variant names both what
+/// was wanted and what arrived: a refusal that says only "did not match"
+/// is the anonymous-refusal pattern this repository has been bitten by
+/// three times, and it costs the reader a round trip to learn what it
+/// could have been told outright.
+pub type Mismatch {
+  /// The result was not a JSON object at all.
+  NotAnObject(received: String)
+  /// A required field was not there.
+  FieldMissing(name: String, expects: FieldType)
+  /// A field was there and had the wrong type.
+  FieldWrongType(name: String, expects: FieldType, received: String)
+}
+
+/// The verdict on the structured result a `Ready` handle owed.
+///
+/// Four variants rather than a `Result(JsonValue, String)`, because
+/// there are four distinct facts here and three of them are not
+/// failures. Collapsing them costs the one property compatibility rests
+/// on: with `NoResultAsked` as its own variant, a spawn that named no
+/// schema renders exactly the bytes it rendered before this existed —
+/// no invented value, no "no schema" sentinel to strip.
+pub type TerminalResult {
+  /// The spawn asked for no schema. Nothing is rendered for it.
+  NoResultAsked
+  /// The child recorded a result and it matched.
+  ResultGiven(value: JsonValue)
+  /// A schema was asked for and the child's run ended without recording
+  /// anything under `result_note_key`.
+  ResultAbsent(schema: ResultSchema)
+  /// A result cell is there and does not match. Reachable even though
+  /// the write is checked, because the cell is read back out of the
+  /// durable store, and a value crossing that boundary is decoded rather
+  /// than trusted.
+  ResultUnusable(schema: ResultSchema, received: JsonValue, mismatch: Mismatch)
+}
+
 /// One `agent_spawn` request, decoded.
 ///
 /// Constructor invariants: `purpose` is model text the Agency slugs into
 /// part of a name and never uses verbatim as a key; `tools`, when present,
 /// may only *narrow* the caller's own active set; `within_ms`, when
 /// present, is a relative budget the Agency converts to an absolute
-/// deadline at spawn.
+/// deadline at spawn; `result_schema`, when present, is already parsed —
+/// a malformed one never reaches the seam, because the parent is told
+/// about its own mistake in the turn it made it rather than after
+/// waiting on a child that was never going to satisfy it.
 pub type SpawnRequest {
   SpawnRequest(
     purpose: String,
     brief: String,
     tools: Option(List(String)),
     within_ms: Option(Int),
+    result_schema: Option(ResultSchema),
     context: Provenance,
     detach: Bool,
   )
@@ -189,12 +331,20 @@ pub type Outcome {
 pub type Waited {
   /// The operation settled; `report` is the child's final assistant text,
   /// empty when the child ended without one (a failure, an abort, or a
-  /// run completed by terminated tools), and `notes` are its blackboard
-  /// cells.
+  /// run completed by terminated tools), `result` is the verdict on the
+  /// structured result the spawn asked for, and `notes` are its
+  /// blackboard cells.
+  ///
+  /// `report` and `result` are both here on purpose. Prose is what a
+  /// human and a reading model want; typed JSON is what a program
+  /// branching on `found.files` wants. Neither replaces the other, so
+  /// removing the prose to make room for the JSON would trade one
+  /// audience for the other.
   Ready(
     handle: Handle,
     outcome: Outcome,
     report: String,
+    result: TerminalResult,
     notes: List(#(String, JsonValue)),
   )
   /// The deadline expired first. Not an error: call again, or do other
@@ -264,6 +414,16 @@ pub type Refusal {
   /// finished parent burns tokens with no human present, which is the
   /// exact property auto-enqueued results were rejected over.
   ParentRunEnded(strand: String)
+  /// A child's terminal result did not match the schema its parent asked
+  /// for. Refused to the *child*, on the child's own `agent_note` call:
+  /// the child is the party that can fix it, and it can fix it now,
+  /// inside the run that produced the value, with its whole context
+  /// still live.
+  ResultSchemaUnmet(
+    schema: ResultSchema,
+    received: JsonValue,
+    mismatch: Mismatch,
+  )
   /// The durable plane refused or failed — a commit, a read, a decode.
   PlaneFailed(reason: String)
 }
@@ -463,6 +623,477 @@ fn trim_dashes(text: String) -> String {
   }
 }
 
+// --- the result contract ---------------------------------------------------
+
+/// Parses a parent-supplied result schema. Total: every malformed shape
+/// comes back as a reason the parent can read and repair, never a crash
+/// and never a silently narrowed contract.
+///
+/// This runs at spawn, in the parent's own turn, so a parent that writes
+/// a bad schema learns it immediately instead of after joining a child
+/// that could never have satisfied it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent.parse_result_schema(json.Object([
+/// //   #("type", json.String("object")),
+/// //   #("properties", json.Object([#("ok", json.Object([
+/// //     #("type", json.String("boolean")),
+/// //   ]))])),
+/// //   #("required", json.Array([json.String("ok")])),
+/// // ]))
+/// ```
+///
+pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
+  use fields <- result.try(case value {
+    json.Object(fields:) -> Ok(fields)
+    other -> Error("must be a JSON object, not `" <> type_name(other) <> "`")
+  })
+  use Nil <- result.try(only_keys(fields, envelope_keys, "a result schema"))
+  use Nil <- result.try(case list.key_find(fields, "type") {
+    Ok(json.String("object")) -> Ok(Nil)
+    Ok(_other) | Error(Nil) ->
+      Error("must declare `\"type\": \"object\"` at its top level")
+  })
+  use properties <- result.try(case list.key_find(fields, "properties") {
+    Ok(json.Object(fields: properties)) -> Ok(properties)
+    Ok(other) ->
+      Error("`properties` must be an object, not `" <> type_name(other) <> "`")
+    Error(Nil) -> Error("must carry a `properties` object")
+  })
+  use required <- result.try(required_names(fields))
+  use declared <- result.try(list.try_map(properties, parse_property))
+  use Nil <- result.try(case declared {
+    [] -> Error("must declare at least one property to be worth demanding")
+    [_, ..] -> Ok(Nil)
+  })
+  // `list.drop` answers a question about the first `max_result_fields`
+  // entries without walking whatever a model pasted after them.
+  use Nil <- result.try(case list.drop(declared, max_result_fields) {
+    [] -> Ok(Nil)
+    [_, ..] ->
+      Error(
+        "may declare at most "
+        <> int.to_string(max_result_fields)
+        <> " properties",
+      )
+  })
+  use Nil <- result.try(
+    list.try_each(required, fn(name) {
+      case list.key_find(declared, name) {
+        Ok(_type) -> Ok(Nil)
+        Error(Nil) ->
+          Error(
+            "lists `"
+            <> name
+            <> "` as required without declaring it in `properties`",
+          )
+      }
+    }),
+  )
+  Ok(
+    ResultSchema(
+      fields: list.map(declared, fn(pair) {
+        ResultField(
+          name: pair.0,
+          expects: pair.1,
+          required: list.contains(required, pair.0),
+        )
+      }),
+    ),
+  )
+}
+
+/// The declared fields of a schema, in the order the parent wrote them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // list.map(agent.result_fields(schema), fn(field) { field.name })
+/// ```
+///
+pub fn result_fields(schema: ResultSchema) -> List(ResultField) {
+  schema.fields
+}
+
+/// Renders a schema back to the dialect it was parsed from. This is the
+/// canonical form: it is what the child's brief quotes, what a refusal
+/// names, and what the Agency stores durably, so a schema read back out
+/// of the store parses to the value that was written.
+///
+/// `additionalProperties` is deliberately absent — JSON Schema's default
+/// is to allow extra keys, and that is exactly what validation does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // json.to_string(agent.render_result_schema(schema))
+/// ```
+///
+pub fn render_result_schema(schema: ResultSchema) -> JsonValue {
+  json.Object([
+    #("type", json.String("object")),
+    #(
+      "properties",
+      json.Object(
+        list.map(schema.fields, fn(field) {
+          #(field.name, render_field_type(field.expects))
+        }),
+      ),
+    ),
+    #(
+      "required",
+      json.Array(
+        schema.fields
+        |> list.filter(fn(field) { field.required })
+        |> list.map(fn(field) { json.String(field.name) }),
+      ),
+    ),
+  ])
+}
+
+/// Checks one value against a schema.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(Nil) = agent.validate_result(schema, value)
+/// ```
+///
+pub fn validate_result(
+  schema: ResultSchema,
+  value: JsonValue,
+) -> Result(Nil, Mismatch) {
+  use fields <- result.try(case value {
+    json.Object(fields:) -> Ok(fields)
+    other -> Error(NotAnObject(received: type_name(other)))
+  })
+  list.try_each(schema.fields, fn(field) { check_field(fields, field) })
+}
+
+/// A mismatch as one neutral sentence. Neutral rather than second person
+/// because both sides read it: the child that wrote the value, and the
+/// parent that joined the child and found the cell unusable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent.describe_mismatch(agent.NotAnObject(received: "array"))
+///   == "a result must be a JSON object, not `array`"
+/// ```
+///
+pub fn describe_mismatch(mismatch: Mismatch) -> String {
+  case mismatch {
+    NotAnObject(received:) ->
+      "a result must be a JSON object, not `" <> received <> "`"
+    FieldMissing(name:, expects:) ->
+      "`"
+      <> name
+      <> "` is required and was not recorded; it must be `"
+      <> field_type_name(expects)
+      <> "`"
+    FieldWrongType(name:, expects:, received:) ->
+      "`"
+      <> name
+      <> "` must be `"
+      <> field_type_name(expects)
+      <> "`, not `"
+      <> received
+      <> "`"
+  }
+}
+
+// The envelope keys a result schema may carry. `description` rides along
+// because a parent writing a schema for a model to read will want one,
+// and it changes nothing this side enforces.
+const envelope_keys = ["type", "properties", "required", "description"]
+
+// The keys one property object may carry — and the whole of the refusal
+// rule for the unsupported half of JSON Schema. `oneOf`, `$ref`,
+// `pattern`, `enum`, `minimum` and the rest are not on this list, so a
+// schema using them is refused naming the key rather than accepted with
+// the constraint quietly dropped.
+const property_keys = ["type", "items", "description"]
+
+fn only_keys(
+  fields: List(#(String, JsonValue)),
+  allowed: List(String),
+  what: String,
+) -> Result(Nil, String) {
+  case list.find(fields, fn(pair) { !list.contains(allowed, pair.0) }) {
+    Error(Nil) -> Ok(Nil)
+    Ok(pair) ->
+      Error(
+        what
+        <> " may not carry `"
+        <> pair.0
+        <> "`; this harness enforces only "
+        <> string.join(allowed, ", "),
+      )
+  }
+}
+
+fn required_names(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(String), String) {
+  case list.key_find(fields, "required") {
+    Error(Nil) -> Ok([])
+    Ok(json.Array(items:)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          json.String(value:) -> Ok(value)
+          other ->
+            Error(
+              "`required` must hold strings; it holds `"
+              <> type_name(other)
+              <> "`",
+            )
+        }
+      })
+    Ok(other) ->
+      Error("`required` must be an array, not `" <> type_name(other) <> "`")
+  }
+}
+
+fn parse_property(
+  property: #(String, JsonValue),
+) -> Result(#(String, FieldType), String) {
+  let #(name, described) = property
+  use Nil <- result.try(case usable_field_name(name) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "declares an unusable property name `"
+        <> excerpt(name)
+        <> "`; names hold letters, digits, `.`, `-` and `_`, up to "
+        <> int.to_string(max_field_name_length)
+        <> " characters",
+      )
+  })
+  use expects <- result.try(
+    parse_field_type(described, 0)
+    |> result.map_error(fn(reason) { "property `" <> name <> "` " <> reason }),
+  )
+  Ok(#(name, expects))
+}
+
+// A field name is rendered into the child's brief and into the sentence
+// a mismatch produces, so its shape is checked rather than trusted: an
+// unbounded name carrying newlines could imitate the harness's own
+// framing markers in the very text framing exists to make legible.
+fn usable_field_name(name: String) -> Bool {
+  name != ""
+  && string.length(name) <= max_field_name_length
+  && list.all(string.to_graphemes(name), fn(character) {
+    string.contains(field_name_alphabet, character)
+  })
+}
+
+const field_name_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+
+fn parse_field_type(
+  described: JsonValue,
+  depth: Int,
+) -> Result(FieldType, String) {
+  use <- bool.lazy_guard(when: depth > max_schema_depth, return: fn() {
+    Error(
+      "nests `items` deeper than "
+      <> int.to_string(max_schema_depth)
+      <> " levels",
+    )
+  })
+  use fields <- result.try(case described {
+    json.Object(fields:) -> Ok(fields)
+    other ->
+      Error(
+        "must be an object like {\"type\": \"string\"}, not `"
+        <> type_name(other)
+        <> "`",
+      )
+  })
+  use Nil <- result.try(only_keys(fields, property_keys, "a property"))
+  case list.key_find(fields, "type") {
+    Error(Nil) -> Ok(AnyField)
+    Ok(json.String("string")) -> Ok(StringField)
+    Ok(json.String("integer")) -> Ok(IntegerField)
+    Ok(json.String("number")) -> Ok(NumberField)
+    Ok(json.String("boolean")) -> Ok(BooleanField)
+    Ok(json.String("object")) -> Ok(ObjectField)
+    Ok(json.String("array")) -> parse_array_type(fields, depth)
+    Ok(other) ->
+      Error(
+        "has an unusable `type` "
+        <> excerpt(json.to_string(other))
+        <> "; it must be one of string, integer, number, boolean, object, "
+        <> "array, or absent for any value",
+      )
+  }
+}
+
+fn parse_array_type(
+  fields: List(#(String, JsonValue)),
+  depth: Int,
+) -> Result(FieldType, String) {
+  case list.key_find(fields, "items") {
+    Error(Nil) -> Ok(ArrayField(items: AnyField))
+    Ok(described) ->
+      parse_field_type(described, depth + 1)
+      |> result.map(fn(items) { ArrayField(items:) })
+  }
+}
+
+fn render_field_type(expects: FieldType) -> JsonValue {
+  case expects {
+    AnyField -> json.Object([])
+    StringField -> json.Object([#("type", json.String("string"))])
+    IntegerField -> json.Object([#("type", json.String("integer"))])
+    NumberField -> json.Object([#("type", json.String("number"))])
+    BooleanField -> json.Object([#("type", json.String("boolean"))])
+    ObjectField -> json.Object([#("type", json.String("object"))])
+    ArrayField(items:) ->
+      json.Object([
+        #("type", json.String("array")),
+        #("items", render_field_type(items)),
+      ])
+  }
+}
+
+fn check_field(
+  fields: List(#(String, JsonValue)),
+  field: ResultField,
+) -> Result(Nil, Mismatch) {
+  case list.key_find(fields, field.name) {
+    Ok(value) -> check_type(field, value)
+    Error(Nil) ->
+      case field.required {
+        True -> Error(FieldMissing(name: field.name, expects: field.expects))
+        False -> Ok(Nil)
+      }
+  }
+}
+
+fn check_type(field: ResultField, value: JsonValue) -> Result(Nil, Mismatch) {
+  case matches(field.expects, value) {
+    True -> Ok(Nil)
+    False ->
+      Error(FieldWrongType(
+        name: field.name,
+        expects: field.expects,
+        received: received_name(field.expects, value),
+      ))
+  }
+}
+
+// The type test runs through `type_name` rather than re-matching the
+// constructors, so the vocabulary a mismatch is reported in and the
+// vocabulary it is judged in cannot drift apart.
+fn matches(expects: FieldType, value: JsonValue) -> Bool {
+  case expects {
+    AnyField -> True
+    StringField -> type_name(value) == "string"
+    IntegerField -> type_name(value) == "integer"
+    NumberField -> type_name(value) == "integer" || type_name(value) == "number"
+    BooleanField -> type_name(value) == "boolean"
+    ObjectField -> type_name(value) == "object"
+    ArrayField(items:) ->
+      case value {
+        json.Array(items: values) -> list.all(values, matches(items, _))
+        json.String(..)
+        | json.Int(..)
+        | json.Float(..)
+        | json.Bool(..)
+        | json.Object(..)
+        | json.Null -> False
+      }
+  }
+}
+
+// What actually arrived, said in the vocabulary the expectation is said
+// in — and, for an array, said about the first element that broke the
+// promise rather than about the array as a whole, because "array" is not
+// the news when an array is what was asked for.
+fn received_name(expects: FieldType, value: JsonValue) -> String {
+  case expects {
+    ArrayField(items:) -> received_array_name(items, value)
+    AnyField
+    | StringField
+    | IntegerField
+    | NumberField
+    | BooleanField
+    | ObjectField -> type_name(value)
+  }
+}
+
+fn received_array_name(items: FieldType, value: JsonValue) -> String {
+  case value {
+    json.Array(items: values) ->
+      case list.find(values, fn(item) { !matches(items, item) }) {
+        Ok(offender) -> "array containing " <> type_name(offender)
+        Error(Nil) -> type_name(value)
+      }
+    json.String(..)
+    | json.Int(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Object(..)
+    | json.Null -> type_name(value)
+  }
+}
+
+/// The JSON type of a value, in the schema's own vocabulary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent.type_name(json.Array([])) == "array"
+/// ```
+///
+pub fn type_name(value: JsonValue) -> String {
+  case value {
+    json.String(..) -> "string"
+    json.Int(..) -> "integer"
+    json.Float(..) -> "number"
+    json.Bool(..) -> "boolean"
+    json.Object(..) -> "object"
+    json.Array(..) -> "array"
+    json.Null -> "null"
+  }
+}
+
+/// A declared type in the same vocabulary, so an expectation and what
+/// arrived can be set side by side without one of them reading oddly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent.field_type_name(agent.ArrayField(items: agent.StringField))
+///   == "array of string"
+/// ```
+///
+pub fn field_type_name(expects: FieldType) -> String {
+  case expects {
+    AnyField -> "any JSON value"
+    StringField -> "string"
+    IntegerField -> "integer"
+    NumberField -> "number"
+    BooleanField -> "boolean"
+    ObjectField -> "object"
+    ArrayField(items:) -> "array of " <> field_type_name(items)
+  }
+}
+
+// A rendered value quoted inside a message, bounded. `string.slice`
+// answers the question the bound asks; comparing the slice back against
+// the whole says whether anything was cut without measuring the rest.
+fn excerpt(text: String) -> String {
+  let cut = string.slice(text, at_index: 0, length: max_excerpt)
+  case cut == text {
+    True -> text
+    False -> cut <> "…"
+  }
+}
+
 /// A refusal as one line of model-facing prose.
 ///
 /// ## Examples
@@ -505,6 +1136,14 @@ pub fn describe(refusal: Refusal) -> String {
       <> "` has finished its run; a message now would start a new one with "
       <> "nobody watching, so it was not delivered. Put this in your own "
       <> "final answer instead"
+    ResultSchemaUnmet(schema:, received:, mismatch:) ->
+      "your result does not match the schema your brief asked for: "
+      <> describe_mismatch(mismatch)
+      <> ". The schema is "
+      <> json.to_string(render_result_schema(schema))
+      <> " and you recorded "
+      <> excerpt(json.to_string(received))
+      <> ". Nothing was written; fix the value and write the note again"
     PlaneFailed(reason:) -> "the messaging plane failed: " <> reason
   }
 }
@@ -582,6 +1221,20 @@ pub fn spawn_tool(agency: Agency) -> Tool {
           ),
         ),
         #(
+          "result_schema",
+          tool.any_property(
+            "the shape you want the child's result in, as a JSON schema "
+            <> "object: {\"type\": \"object\", \"properties\": {\"files\": "
+            <> "{\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, "
+            <> "\"required\": [\"files\"]}. Property types are string, "
+            <> "integer, number, boolean, object, array, or omitted for "
+            <> "anything. The child is told to record a matching result and "
+            <> "is refused if it does not; agent_wait then hands you the "
+            <> "value as JSON instead of prose. Omit it for a prose-only "
+            <> "child",
+          ),
+        ),
+        #(
           "context",
           tool.enum_property(
             ["fresh", "my_conversation"],
@@ -611,6 +1264,7 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use brief <- tool.with_arg(tool.required_string(args, "brief"))
   use tools <- tool.with_arg(tool.optional_string_list(args, "tools"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
+  use result_schema <- tool.with_arg(decode_result_schema(args))
   use context <- tool.with_arg(decode_provenance(args))
   use detach <- tool.with_arg(tool.optional_bool(args, "detach"))
   let request =
@@ -619,6 +1273,7 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
       brief:,
       tools:,
       within_ms:,
+      result_schema:,
       context:,
       detach: option.unwrap(detach, False),
     )
@@ -640,6 +1295,24 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
           #("tools", json.Array(list.map(spawned.tools, json.String))),
         ]),
       )
+  }
+}
+
+// The schema is parsed in the shell, before the Agency mints anything.
+// A malformed schema is the parent's own mistake and nothing about it
+// needs a runtime to diagnose, so the parent is told in the turn it made
+// the mistake rather than after waiting on a child it had already paid
+// for.
+fn decode_result_schema(
+  args: JsonValue,
+) -> Result(Option(ResultSchema), String) {
+  use described <- result.try(tool.optional_value(args, "result_schema"))
+  case described {
+    None | Some(json.Null) -> Ok(None)
+    Some(value) ->
+      parse_result_schema(value)
+      |> result.map(Some)
+      |> result.map_error(fn(reason) { "`result_schema` " <> reason })
   }
 }
 
@@ -747,14 +1420,36 @@ fn waited_text(waited: Waited) -> String {
       <> " still working after "
       <> int.to_string(waited_ms)
       <> "ms]"
-    Ready(handle:, outcome:, report:, notes:) ->
+    Ready(handle:, outcome:, report:, result:, notes:) ->
       "["
       <> handle.strand
       <> " "
       <> outcome_text(outcome)
       <> "]\n"
       <> report_text(report)
+      <> result_suffix(result)
       <> notes_suffix(notes)
+  }
+}
+
+// The result section, or nothing at all when the spawn named no schema —
+// which is what keeps a schema-less join rendering exactly the bytes it
+// rendered before result contracts existed.
+fn result_suffix(result: TerminalResult) -> String {
+  case result {
+    NoResultAsked -> ""
+    ResultGiven(value:) -> "\n[result] " <> json.to_string(value)
+    ResultAbsent(schema:) ->
+      "\n[no result] this child owed a result matching "
+      <> json.to_string(render_result_schema(schema))
+      <> " and recorded none"
+    ResultUnusable(schema:, received:, mismatch:) ->
+      "\n[unusable result] "
+      <> describe_mismatch(mismatch)
+      <> "; the schema was "
+      <> json.to_string(render_result_schema(schema))
+      <> " and the cell holds "
+      <> excerpt(json.to_string(received))
   }
 }
 
@@ -799,15 +1494,60 @@ fn waited_json(waited: Waited) -> JsonValue {
         #("state", json.String("pending")),
         #("waited_ms", json.Int(waited_ms)),
       ])
-    Ready(handle:, outcome:, report:, notes:) ->
-      json.Object([
-        #("handle", json.String(handle_to_string(handle))),
-        #("strand", json.String(handle.strand)),
-        #("state", json.String("ready")),
-        #("outcome", outcome_json(outcome)),
-        #("report", json.String(report)),
-        #("notes", json.Object(notes)),
-      ])
+    Ready(handle:, outcome:, report:, result:, notes:) ->
+      json.Object(list.append(
+        [
+          #("handle", json.String(handle_to_string(handle))),
+          #("strand", json.String(handle.strand)),
+          #("state", json.String("ready")),
+          #("outcome", outcome_json(outcome)),
+          #("report", json.String(report)),
+          #("notes", json.Object(notes)),
+        ],
+        result_json(result),
+      ))
+  }
+}
+
+// Zero fields or one. A spawn that asked for no schema appends nothing,
+// so its details object is byte for byte what it was before — the
+// compatibility floor this feature is only allowed to stand on.
+//
+// The outcome above is left alone deliberately: it says how the child's
+// *run* ended, and a run that completed did complete even when the value
+// it left behind is unusable. Folding the contract verdict into it would
+// make the one field a waiter reads to decide "did this crash" answer a
+// different question than it advertises.
+fn result_json(result: TerminalResult) -> List(#(String, JsonValue)) {
+  case result {
+    NoResultAsked -> []
+    ResultGiven(value:) -> [
+      #(
+        "result",
+        json.Object([#("state", json.String("given")), #("value", value)]),
+      ),
+    ]
+    ResultAbsent(schema:) -> [
+      #(
+        "result",
+        json.Object([
+          #("state", json.String("absent")),
+          #("schema", render_result_schema(schema)),
+          #("reason", json.String("the run ended without recording a result")),
+        ]),
+      ),
+    ]
+    ResultUnusable(schema:, received:, mismatch:) -> [
+      #(
+        "result",
+        json.Object([
+          #("state", json.String("unusable")),
+          #("schema", render_result_schema(schema)),
+          #("received", received),
+          #("reason", json.String(describe_mismatch(mismatch))),
+        ]),
+      ),
+    ]
   }
 }
 
@@ -890,7 +1630,11 @@ pub fn note_tool(agency: Agency) -> Tool {
     name: "agent_note",
     description: "Write one cell to the shared blackboard, under your own "
       <> "namespace. Other agents in this session can read it with "
-      <> "agent_notes; the write itself notifies nobody.",
+      <> "agent_notes; the write itself notifies nobody. If your brief "
+      <> "states a result schema, the key `"
+      <> result_note_key
+      <> "` is where your final structured result goes, and it is checked "
+      <> "against that schema before it is written.",
     schema: tool.object_schema(
       [
         #(
