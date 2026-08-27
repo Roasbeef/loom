@@ -59,6 +59,37 @@
 //// one execution and a standing permission is a wider base policy, not
 //// an approval that never expires.
 ////
+//// ## The want is not the action
+////
+//// A record id is deliberately coarse, and consent must not be. Two
+//// calls on one strand through one tool asking for one policy diff
+//// digest identically however different the commands behind them, so a
+//// claim decided on the id alone would let `bash "curl -T ~/.ssh/id_rsa
+//// …"` inherit the yes a human gave to `bash "true"` — a different
+//// operation, arbitrarily later in the session (#65). Design §5.3 grants
+//// one re-execution *of the denied action*.
+////
+//// So a raise carries an `action_digest` of the call's **effective
+//// arguments** — the same `JsonValue` a resumed call re-executes with —
+//// alongside the record id, and an approval is inherited only by a
+//// claimant that digests the same. Anything else re-opens the record as
+//// a fresh `Pending` question bound to the new action, and the model
+//// sees the byte-identical in-band refusal a first denial produces; it
+//// must never be able to tell that an approval existed and was set
+//// aside. The digest is computed here rather than in the runtime because
+//// this is where the arguments and `blob.ref_for` both are, and because
+//// the runtime storing an opaque string is what keeps tool semantics out
+//// of the consent layer.
+////
+//// Arguments are canonicalised before digesting — every object's fields
+//// stable-sorted by key, arrays left in the order they are in, since an
+//// array is ordered and a JSON object is not — so re-serialisation
+//// cannot cause a re-prompt while *any* value difference does. There is
+//// no excluded field and no per-tool normalisation: every field the
+//// consent layer decided to overlook would be a field the model may vary
+//// after consent. A retry that changes only a timeout re-prompts once,
+//// which is correct, and `Config.max_asks` is what keeps it once.
+////
 //// ## The two deadlines
 ////
 //// A park is bounded by the smaller of the configured window and *the
@@ -93,25 +124,29 @@
 ////
 //// ## Spending, and the two orderings it inherits
 ////
-//// An approval is spent through `runtime/api.consume_escalation`, whose
-//// CAS moves the record `Approved -> Consumed` before this module hands
-//// the grants to anything — the same consume-before-clear ordering the
+//// An approval is spent through `runtime/api.consume_escalation_at`,
+//// whose CAS moves the record `Approved -> Consumed` before this module
+//// hands the grants to anything — the consume-before-clear ordering the
 //// driver's own clearance path uses, for the same reason: the capability
 //// is *exercised* the moment the grants compose into a policy, so the
 //// commit that makes it single-use has to win before that moment, not
-//// after it. And the record's `CallScope` is checked against the call in
-//// hand first — exact equality, unchanged — so an approval whose claim
-//// another call has taken over widens nothing here. Both directions fail
-//// safe: a lost CAS, a claim lost to another call, a closed budget
-//// window, an unattributable record, a decode failure and a crash all
-//// end in the in-band refusal.
+//// after it. And the record's `CallScope` and bound action are both
+//// checked against the call in hand first — exact equality, unchanged —
+//// so an approval whose claim another call has taken over, or which
+//// names a different action, widens nothing here. The consume itself is
+//// CAS-guarded by the seq those checks were made at
+//// (`api.consume_escalation_at`), so a claim landing between the check
+//// and the commit loses the commit instead of passing unseen (#68).
+//// Every direction fails safe: a lost CAS, a claim lost to another call,
+//// a closed budget window, an unattributable record, a decode failure
+//// and a crash all end in the in-band refusal.
 
 import broker/escalation.{type Denial}
 import broker/policy.{type Grant}
 import client/grants
 import core/clock.{type Clock}
 import core/ids.{type OpId}
-import core/json
+import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
@@ -147,7 +182,9 @@ pub type Message {
 /// `holder_timeout_ms` bounds the call that borrows the runtime, and a
 /// holder that misses it is treated as absent rather than fatal;
 /// `max_records` is the most *distinct* wants a session will ever file,
-/// past which a refusal that would open a new record settles in band.
+/// past which a refusal that would open a new record settles in band;
+/// `max_asks` is the most questions any one record may put to a human,
+/// past which it stays terminal and its claimants settle in band.
 pub type Config {
   Config(
     name: Name(Message),
@@ -158,6 +195,7 @@ pub type Config {
     rest: fn(Int) -> Nil,
     holder_timeout_ms: Int,
     max_records: Int,
+    max_asks: Int,
   )
 }
 
@@ -179,6 +217,14 @@ pub type Config {
 /// scan on every commit hint. Reaching it is a sign something is
 /// generating refusals rather than a sign of a busy session.
 ///
+/// The ask cap is a third kind again, and it is small on purpose. Every
+/// re-opening of a record is a question a *person* has to answer, and
+/// the party that provokes them is the party this whole mechanism exists
+/// to constrain: a model that varies its arguments after each decision
+/// re-opens the record each time (#66), and binding consent to the
+/// action added that edge. Three is the first ask, one re-ask for a
+/// changed action, and one more.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -195,6 +241,7 @@ pub fn default_config(name: Name(Message), clock: Clock) -> Config {
     rest: process.sleep,
     holder_timeout_ms: 5000,
     max_records: 256,
+    max_asks: 3,
   )
 }
 
@@ -243,9 +290,11 @@ pub fn start(
 /// context carries them from `effects.ToolRun`, never from anything the
 /// model supplied — so the scope an approval is attributed to names one
 /// real call in the tree; `denial` is the broker's structured refusal,
-/// whose `wanted` is the exact diff an approval may grant; `deadline_ms`
-/// is the call's own budget deadline, past which no re-clearance can
-/// reserve.
+/// whose `wanted` is the exact diff an approval may grant; `arguments`
+/// is the call's post-clearance effective arguments, which is what a
+/// resumption re-executes with and therefore what the consent is bound
+/// to; `deadline_ms` is the call's own budget deadline, past which no
+/// re-clearance can reserve.
 pub type Refused {
   Refused(
     operation: OpId,
@@ -255,6 +304,7 @@ pub type Refused {
     call_id: String,
     tool: String,
     denial: Denial,
+    arguments: JsonValue,
     deadline_ms: Int,
   )
 }
@@ -383,7 +433,139 @@ fn limit_field(field: policy.LimitField) -> String {
   }
 }
 
+// --- what the consent is about ---------------------------------------------
+
+/// The digest of the *action* a refusal is asking permission for: the
+/// call's effective arguments, canonicalised and hashed.
+///
+/// This is what an approval is bound to, and it is deliberately not part
+/// of `record_id`. The id is the identity of the *question* and has to
+/// stay coarse, or a retry loop mints one row and one prompt per attempt
+/// (#45/#50). The digest is the identity of the *answer*: `claimed`
+/// hands an approval on only to a claimant that digests the same, and
+/// anything else re-opens the question (#65).
+///
+/// The arguments are the post-clearance `effects.ToolRun.arguments` —
+/// the exact `JsonValue` a resumed call re-executes with — so the digest
+/// binds the bytes that will actually run rather than a summary of them.
+/// Both sides of every comparison come through the same canonicalise →
+/// render pipeline, so field order and whitespace cannot re-prompt and
+/// any value difference does. Nothing is excluded: a field the consent
+/// layer overlooks is a field the model may vary after consent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.action_digest(run.arguments)
+/// ```
+///
+pub fn action_digest(arguments: JsonValue) -> String {
+  let rendered = json.to_string(canonical(arguments))
+  let digest = blob.ref_for(bit_array.from_string(rendered))
+  // Truncated exactly as `record_id` is, and for the same reason: 128
+  // bits is far past what a session's escalation set can collide in.
+  string.slice(digest, at_index: 7, length: 32)
+}
+
+// Arguments in a form two encoders cannot disagree about: every object's
+// fields stable-sorted by key, recursively. Arrays keep their order —
+// a JSON array is semantically ordered and reordering one would make two
+// genuinely different actions digest alike.
+fn canonical(value: JsonValue) -> JsonValue {
+  case value {
+    json.Object(fields:) ->
+      fields
+      |> list.map(fn(field) { #(field.0, canonical(field.1)) })
+      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+      |> json.Object
+    json.Array(items:) -> json.Array(list.map(items, canonical))
+    json.String(..)
+    | json.Int(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Null -> value
+  }
+}
+
+/// A bounded human rendering of a call's arguments: the canonicalised
+/// JSON, cut at two kilobytes on a codepoint boundary and marked with
+/// what it cost.
+///
+/// Display only — it is never compared, and `action_digest` is what
+/// decides anything. The bound is not cosmetic: the record it is stored
+/// in is decoded on two constantly running paths, a tool clearance
+/// looking for approvals and the gateway's pull turning records into
+/// events, so an unbounded field there is a cost the model chooses. The
+/// whole arguments stay durable in the `OpToolArgs` register under the
+/// scope's `{op, step, source index}`, for a client that wants to fetch
+/// them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.action_preview(run.arguments)
+/// ```
+///
+pub fn action_preview(arguments: JsonValue) -> String {
+  let rendered = json.to_string(canonical(arguments))
+  let bytes = bit_array.from_string(rendered)
+  let size = bit_array.byte_size(bytes)
+  case size <= preview_bytes {
+    True -> rendered
+    False -> {
+      let head = utf8_prefix(bytes, preview_bytes)
+      let kept = bit_array.byte_size(bit_array.from_string(head))
+      head <> "… [" <> grouped(kept) <> " of " <> grouped(size) <> " bytes]"
+    }
+  }
+}
+
+const preview_bytes = 2048
+
+// The longest prefix of `bytes` that is whole UTF-8 and no longer than
+// `max`. A cut inside a multi-byte codepoint steps back and retries,
+// which terminates within three bytes; the recursion is why this is a
+// plain `case` rather than an `unwrap` fallback.
+fn utf8_prefix(bytes: BitArray, max: Int) -> String {
+  case bit_array.slice(bytes, at: 0, take: max) {
+    Error(Nil) -> ""
+    Ok(head) ->
+      case bit_array.to_string(head) {
+        Ok(text) -> text
+        Error(Nil) -> utf8_prefix(bytes, max - 1)
+      }
+  }
+}
+
+// A byte count a person can read at a glance rather than count digits
+// of, which is the only reason the marker carries one.
+fn grouped(number: Int) -> String {
+  number
+  |> int.to_string
+  |> string.to_graphemes
+  |> list.reverse
+  |> list.sized_chunk(into: 3)
+  |> list.map(fn(chunk) { chunk |> list.reverse |> string.join(with: "") })
+  |> list.reverse
+  |> string.join(with: ",")
+}
+
 // --- deciding one refusal --------------------------------------------------
+
+// One park's fixed coordinates, unchanged from the first slice to the
+// last: which record, which call holds the claim, what that call would
+// run, what the broker refused, and the instant the window shuts. They
+// travel together because every step of the loop needs all of them and
+// none of them ever moves.
+type Parked {
+  Parked(
+    id: String,
+    scope: durable.CallScope,
+    action: durable.Action,
+    refused: Refused,
+    until: Int,
+  )
+}
 
 fn decide(config: Config, refused: Refused) -> Decision {
   case borrow(config) {
@@ -398,10 +580,20 @@ fn decide(config: Config, refused: Refused) -> Decision {
           source_index: refused.source_index,
           call_id: refused.call_id,
         )
-      case raise(config, runtime, id, refused, scope) && config.interactive() {
+      // Digested once per refusal and carried down: the park loop and
+      // the spend both compare against it, and hashing the arguments
+      // again per poll would be a cost the model chooses.
+      let action =
+        durable.Action(
+          tool: refused.tool,
+          digest: action_digest(refused.arguments),
+          preview: action_preview(refused.arguments),
+        )
+      let parked =
+        Parked(id:, scope:, action:, refused:, until: until(config, refused))
+      case raise(config, runtime, parked) && config.interactive() {
         False -> Settle
-        True ->
-          park(config, runtime, id, scope, refused, until(config, refused))
+        True -> park(config, runtime, parked)
       }
     }
   }
@@ -419,26 +611,28 @@ fn decide(config: Config, refused: Refused) -> Decision {
 // would watch an approved record do nothing for the rest of the session.
 //
 // Anything else — a commit fault, a lost writer, a set already at its
-// cap — means there is no durable record this call can spend, so there
-// is nothing to park on and the refusal settles in band, exactly as it
-// did before any of this existed.
-fn raise(
-  config: Config,
-  runtime: api.Runtime,
-  id: String,
-  refused: Refused,
-  scope: durable.CallScope,
-) -> Bool {
+// cap, a record that has already asked its last question — means there
+// is no durable record this call can spend, so there is nothing to park
+// on and the refusal settles in band, exactly as it did before any of
+// this existed. A model watching from the other side cannot tell those
+// apart, and must not be able to: `Exhausted` in particular has to look
+// exactly like a first refusal, or the absence of a prompt becomes a
+// signal that an approval is sitting there.
+fn raise(config: Config, runtime: api.Runtime, parked: Parked) -> Bool {
+  let Parked(id:, scope:, action:, refused:, until: _) = parked
   use <- bool.guard(when: !within_cap(config, runtime, id), return: False)
   case
     api.claim_escalation(
       runtime,
       id,
       tool.denial_to_json(refused.denial),
-      scope: scope,
+      action:,
+      scope:,
+      max_asks: config.max_asks,
     )
   {
-    Ok(_record) -> True
+    Ok(durable.Claimed(_record)) -> True
+    Ok(durable.Exhausted(_record)) -> False
     Error(_error) -> False
   }
 }
@@ -478,24 +672,19 @@ fn until(config: Config, refused: Refused) -> Int {
 // re-reads the record, so a disconnect, a denial, a decision by another
 // path, a claim taken over by another call, and the window closing all
 // un-park the call at the next slice.
-fn park(
-  config: Config,
-  runtime: api.Runtime,
-  id: String,
-  scope: durable.CallScope,
-  refused: Refused,
-  until: Int,
-) -> Decision {
+fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
   let #(now, _clock) = clock.read(config.clock)
-  case now >= until {
+  case now >= parked.until {
     True -> Settle
     False ->
-      case api.escalation(runtime, id) {
+      // The *cell*, not just the record: whatever this slice decides is
+      // a statement about the record at that seq, and the consume that
+      // acts on it has to assert the same seq (#68).
+      case api.escalation_cell(runtime, parked.id) {
         // The record went away underneath the park (a reset store, a
         // read fault). Nothing to wait for.
         Error(_error) -> Settle
-        Ok(record) ->
-          park_on_record(config, runtime, id, scope, refused, until, record)
+        Ok(cell) -> park_on_record(config, runtime, parked, cell)
       }
   }
 }
@@ -511,43 +700,53 @@ fn park(
 fn park_on_record(
   config: Config,
   runtime: api.Runtime,
-  id: String,
-  scope: durable.CallScope,
-  refused: Refused,
-  until: Int,
-  record: durable.Escalation,
+  parked: Parked,
+  cell: api.EscalationCell,
 ) -> Decision {
-  use <- bool.guard(when: !durable.scoped_to(record, scope), return: Settle)
+  let record = cell.record
+  use <- bool.guard(
+    when: !durable.scoped_to(record, parked.scope),
+    return: Settle,
+  )
   case record.status {
-    durable.Approved -> spend(config, runtime, id, record, scope, refused)
+    durable.Approved -> spend(config, runtime, parked, cell)
     durable.Rejected | durable.Consumed -> Settle
-    durable.Pending -> park_pending(config, runtime, id, scope, refused, until)
+    durable.Pending -> park_pending(config, runtime, parked)
   }
 }
 
 fn park_pending(
   config: Config,
   runtime: api.Runtime,
-  id: String,
-  scope: durable.CallScope,
-  refused: Refused,
-  until: Int,
+  parked: Parked,
 ) -> Decision {
   case config.interactive() {
     False -> Settle
     True -> {
       config.rest(config.poll_interval_ms)
-      park(config, runtime, id, scope, refused, until)
+      park(config, runtime, parked)
     }
   }
 }
 
-// Consume, then hand over — never the other way round. Two checks come
+// Consume, then hand over — never the other way round. Three checks come
 // before the CAS, and the order is the whole of this function.
 //
 // **The scope**, because an approval that names a different call must
 // widen nothing; skipping a record can only narrow what this call
 // receives, which is the safe direction.
+//
+// **The bound action**, because §5.3 authorizes one re-execution of the
+// *denied action* and the record id is only the want. This should be
+// unreachable — the claim door already refuses to hand an approval to a
+// claimant that digests differently, so an `Approved` record scoped to
+// this call is bound to this call's action by construction. It stays
+// because the last several review rounds each broke a single-point "by
+// construction" argument, and one string comparison is not a price. A
+// failure here settles in band and leaves the record **untouched**:
+// refusing to widen while leaving the evidence in place is what a
+// should-not-happen deserves, rather than mutating on the strength of a
+// state nothing understands.
 //
 // **The budget deadline**, because the CAS is a writer round trip and
 // the slice that admitted this poll may have been the last one inside
@@ -566,16 +765,23 @@ fn park_pending(
 fn spend(
   config: Config,
   runtime: api.Runtime,
-  id: String,
-  record: durable.Escalation,
-  scope: durable.CallScope,
-  refused: Refused,
+  parked: Parked,
+  cell: api.EscalationCell,
 ) -> Decision {
-  use <- bool.guard(when: !durable.scoped_to(record, scope), return: Settle)
+  let record = cell.record
+  use <- bool.guard(
+    when: !durable.scoped_to(record, parked.scope),
+    return: Settle,
+  )
+  use <- bool.guard(
+    when: !durable.bound_to(record, parked.action.digest),
+    return: Settle,
+  )
   let #(now, _clock) = clock.read(config.clock)
-  use <- bool.guard(when: now >= refused.deadline_ms, return: Settle)
-  case api.consume_escalation(runtime, id) {
-    // A concurrent consumer won the CAS: one approval is worth one
+  use <- bool.guard(when: now >= parked.refused.deadline_ms, return: Settle)
+  case api.consume_escalation_at(runtime, cell) {
+    // A concurrent consumer won the CAS, or a claim moved the record out
+    // from under the three checks above: one approval is worth one
     // widened execution, and it was not this one.
     Error(_error) -> Settle
     Ok(payloads) ->

@@ -1066,6 +1066,11 @@ fn escalating_runner(
             call_id: run.call.id,
             tool: run.call.name,
             denial:,
+            // The post-clearance arguments, which is what a resumption
+            // re-executes with and therefore what a human's consent is
+            // bound to — never `run.call.arguments`, which a clearance
+            // hook may have rewritten out from under the execution.
+            arguments: run.arguments,
             deadline_ms: spec.budget.deadline_ms,
           )
         case config.escalations.refused(refused) {

