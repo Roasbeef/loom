@@ -104,6 +104,24 @@ prefix keeps it out of `put_fact`'s reach. `session/` joins
 session's identity. The register is the **only** truth; both backends
 carry it identically, which is what keeps memory sessions first-class.
 
+**A corrupt cell refuses the open, permanently.** `session.id` decodes
+through `parse_session_id`, so a `session/id` holding anything but a
+canonical UUID is a `SessionCorrupt` report rather than a crash —
+and `ensure_id` propagates it, which fails `api.open` and keeps failing
+it. That is the chosen posture: a session whose name cannot be read must
+not be quietly re-named, because the bus, the search index and any parent
+edge already key by the old one. The way out is the rewrite tooling —
+`repo.rewrite_sqlite`'s `ValueRewrite` reaches `fact.custom` payloads like
+every other register cell — not a self-heal in the open path.
+
+**A byte copy duplicates the identity.** The id lives in the file, so `cp
+session.db copy.db` makes two files that are one session: both publish
+into the same bus group, and their search cursors fight over one
+`search_cursor` row, each dropping and re-indexing what the other just
+wrote. Copy a session file for archival if you like, but open only one
+copy. A copy that is meant to become a separate session is what
+`session/repo.fork` is for, and a fork mints.
+
 **How `parent_session_id` gets written.** The SQLite `session` catalog
 row carries a *projection* of those two cells: `parent_session_id` in
 the column the spec reserved for it, and the session's own id in the
@@ -165,6 +183,20 @@ is a rebuildable projection whose cursor is dropped and re-indexed on any
 mismatch, so the old string's only trace disappears when the process
 restarts and the index re-syncs under the id. The SQLite catalog row of
 such a session is repaired at the same open.
+
+**A pre-id session that already wrote under `session/`.** The reservation
+is new, so an application could have put its own `fact.custom` keys there
+first. Two sub-cases, stated honestly. A `session/id` cell whose value
+parses as a canonical UUID is **adopted**: `ensure_id` cannot tell it from
+one it minted and does not try, so that string becomes the session's name.
+Anything else under that key **refuses the open** as corruption, per the
+posture above, with the rewrite tooling as the way out. Other
+`session/`-prefixed keys are left alone by `ensure_id` but stop being
+reachable through the model-facing doors — `put_fact` refuses them and
+`facts` hides them — so an application that kept state there loses its
+access to it without losing the data. No session is known to do any of
+this: the prefix has never been documented as writable, which is why the
+reservation lands without a migration.
 
 ## Impact
 

@@ -343,6 +343,10 @@ fn project_identity(
   id: SessionId,
 ) -> Result(Nil, SessionError) {
   use parent <- result.map(parent_id(session))
+  // The discard is deliberate and the silence is accepted: this package
+  // reaches no logger (its dependencies are `core`, `storage` and
+  // `machine`), and a failed projection is repaired by the next open, so
+  // the only cost is a stale catalog row until then.
   let _ = session.record_identity(id, parent)
   Nil
 }

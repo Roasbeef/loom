@@ -369,7 +369,8 @@ pub fn op_id_timestamp_ms(id: OpId) -> Int {
 }
 
 /// Reads the 48-bit mint-time prefix of a `SessionId` as Unix
-/// milliseconds — when the session was created.
+/// milliseconds — when its id was minted: session creation, except for a
+/// session that predates the id.
 ///
 /// ## Examples
 ///
