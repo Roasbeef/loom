@@ -1094,8 +1094,9 @@ fn verify_rewrite_lease(
     |> result.map_error(rewrite_fail),
   )
   case rows {
-    [#(owner, held_fence, _)] if owner == rewrite_owner && held_fence == fence ->
-      Ok(Nil)
+    [#(owner, held_fence, _)]
+      if owner == rewrite_owner && held_fence == fence
+    -> Ok(Nil)
     [#(owner, _, expires_at_ms), ..] ->
       Error(RewriteLeaseHeld(owner:, expires_at_ms:))
     [] -> Error(RewriteFailed(reason: "writer lease vanished during rewrite"))

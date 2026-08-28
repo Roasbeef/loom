@@ -282,6 +282,7 @@ fn expect_same_ledger(
 ) -> Nil {
   case crashed.usage_total == base.usage_total {
     True -> Nil
-    False -> panic as { "ledger diverged in " <> harness.context("scenario", k) }
+    False ->
+      panic as { "ledger diverged in " <> harness.context("scenario", k) }
   }
 }

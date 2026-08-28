@@ -110,7 +110,8 @@ pub fn simulation_coverage_test() {
     list.filter(required_paths, fn(path) { !list.contains(reached, path) })
   case missing {
     [] -> Nil
-    paths -> panic as { "the sweep never reached: " <> string.join(paths, ", ") }
+    paths ->
+      panic as { "the sweep never reached: " <> string.join(paths, ", ") }
   }
 }
 
