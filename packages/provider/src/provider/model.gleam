@@ -116,9 +116,17 @@ pub type ToolSpec {
 /// dispatch and walks it on retryable failure; `ForResolved` dispatches to
 /// exactly the given identity with no fallback — the shape used when the
 /// machine re-dispatches a durably stored resolved identity.
+///
+/// `ForRole.thinking` is the caller's reasoning-budget overlay
+/// (`protocol-change/009`). `None` leaves each walked target's own static
+/// level in force — the route entry's declared `thinking`, which is what a
+/// summarization route configured `off` means. `Some(level)` overlays that
+/// level onto **every** target the walk attempts, so a turn that raised or
+/// lowered its budget reaches the fallback with the same budget it would
+/// have reached the head with.
 pub type RequestTarget {
   /// Resolve the role's chain at dispatch time.
-  ForRole(role: Role)
+  ForRole(role: Role, thinking: Option(ThinkingLevel))
   /// Dispatch to a previously resolved identity, no fallback.
   ForResolved(resolved: ResolvedModel)
 }

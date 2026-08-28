@@ -17,8 +17,12 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
 - `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
   ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
   static model facts an adapter needs: context window, output ceiling,
-  thinking level. `RequestTarget` is `ForRole` (resolve at dispatch) or
-  `ForResolved` (dispatch to exactly this identity).
+  thinking level. `RequestTarget` is `ForRole(role, thinking)` (resolve
+  at dispatch and walk) or `ForResolved` (dispatch to exactly this
+  identity). `ForRole.thinking` is the caller's reasoning-budget
+  overlay (`protocol-change/009`): `None` leaves each walked entry's own
+  declared level in force, `Some(level)` applies that level to **every**
+  target the walk attempts.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
   `Failed`, and nothing after it.
@@ -89,8 +93,18 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
 - **The fallback chain walks only on retryable failures.** A terminal
   error, or an exhausted chain, delivers the failure in-band as `Failed`
   preserving retryability. A *settled* response never falls back, and
-  `ForResolved` never falls back at all — that is the recovery path, where
-  the machine re-dispatches exactly what it stored.
+  `ForResolved` never falls back at all — that is the exact-identity
+  path, which `client/wiring` takes for every deferred poll and for any
+  strand whose captured identity heads no configured role.
+- **A walk's reasoning budget is decided once, before the first
+  attempt.** `ForRole.thinking` is overlaid onto the whole usable chain
+  in `dispatch_role`, not per attempt, so a fallback is asked for the
+  budget the *caller* asked for and cannot quietly differ from the head.
+  A session-server generation carries `Some(the strand's per-turn
+  level)`; a structural summary carries `None`, leaving the
+  summarization entry's own declared level standing.
+  `protocol-change/009` argues why the field is optional rather than
+  required.
 - **Overflow is checked before retry.** The machine's classification order
   puts overflow ahead of retryable error (an oversized request must
   compact, not retry unchanged), which is why the overflow patterns live

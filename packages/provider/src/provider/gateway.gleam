@@ -14,7 +14,9 @@
 ////   it: an attempt that fails with a *retryable* error (per
 ////   `retry.classify`) moves to the next target; a terminal error, or an
 ////   exhausted chain, delivers the failure in-band as `Failed`. A
-////   settled response never falls back.
+////   settled response never falls back. `ForRole.thinking` overlays one
+////   reasoning budget onto every target of the walk, or `None` leaves
+////   each entry's own static level in force (`protocol-change/009`).
 //// - `request` with `ForResolved` dispatches to exactly that identity —
 ////   the recovery path, where the machine re-dispatches what it stored.
 ////
@@ -26,12 +28,13 @@
 import core/clock.{type Clock}
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import provider/adapter/anthropic
 import provider/adapter/openai
 import provider/http.{type Transport}
 import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
-  ForResolved, ForRole, MissingIdentity,
+  type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
 }
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
@@ -243,7 +246,8 @@ fn pump(
 ) -> Nil {
   case request.target {
     ForResolved(resolved:) -> attempt(gateway, request, now, [resolved], events)
-    ForRole(role:) -> dispatch_role(gateway, request, now, role, events)
+    ForRole(role:, thinking:) ->
+      dispatch_role(gateway, request, now, role, thinking, events)
   }
 }
 
@@ -256,12 +260,30 @@ fn dispatch_role(
   request: ProviderRequest,
   now: Int,
   role: Role,
+  thinking: Option(ThinkingLevel),
   events: process.Subject(StreamEvent),
 ) -> Nil {
   case usable_chain(gateway, role) {
     [] ->
       process.send(events, Failed(NoIdentity(role: model.role_to_string(role))))
-    chain -> attempt(gateway, request, now, chain, events)
+    chain -> attempt(gateway, request, now, overlaid(chain, thinking), events)
+  }
+}
+
+// The caller's reasoning-budget overlay, applied to the *whole* chain
+// before the walk starts (`protocol-change/009`). Applying it here rather
+// than per attempt is the point: a fallback target must be asked for the
+// budget the turn asked for, not for whatever its own route row declares,
+// or a walk would silently change how hard the model thinks. `None` is the
+// other half of the contract — each target keeps its own static level.
+fn overlaid(
+  chain: List(ResolvedModel),
+  thinking: Option(ThinkingLevel),
+) -> List(ResolvedModel) {
+  case thinking {
+    None -> chain
+    Some(level) ->
+      list.map(chain, fn(target) { ResolvedModel(..target, thinking: level) })
   }
 }
 
