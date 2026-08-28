@@ -97,9 +97,10 @@ pub const cap_prefix = "mcp."
 /// seam; a host with none allows neither it nor any façade.
 pub const vocabulary_module = "cap/mcp"
 
-/// The in-band code for a server that is not running, not configured on
-/// this host, or whose client has gone. `cap/mcp` reads it as a denial
-/// carrying this code verbatim.
+/// The in-band code for a server that is not running or whose client
+/// has gone. A server this host never configured is refused earlier, at
+/// plan time, as `unsupported_cap`. The cap side reads this code back
+/// into its own `ServerUnavailable` variant.
 pub const unavailable_code = "mcp_unavailable"
 
 /// The in-band code for a `tools/call` that did not settle in time.
