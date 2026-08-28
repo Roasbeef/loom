@@ -43,8 +43,12 @@ thing to hand a model than one that cannot.
   `cap/internal/mcp.invoke`, which sends `{tool, arguments}` — `tool`
   the server's original name verbatim — under the per-server capability
   `"mcp." <> server`, and being internal it is reachable only through a
-  generated façade the vetting allowlist names. On no seam yet
-  (`harness_only_cap_modules`) until the generated-module path lands.
+  generated façade the vetting allowlist names. On no *static* seam
+  (`harness_only_cap_modules`), and that is now permanent rather than a
+  wait: a façade exists only where a server is configured, so a host with
+  MCP servers widens the workspace seam's allowlist at boot with
+  `cap/mcp` and each generated module (`client/codemode.seam_allowlist`),
+  and a host with none allows neither.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   the orchestration seam. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_tools`/`expecting` build a spawn; `spawn`,

@@ -143,6 +143,14 @@ over one session file. WP-L.
   escalation record *mintable* from inside code mode (#97). Public
   because it is the wrapper's entire decision and the only part of it a
   hermetic test can hold still.
+- `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
+  configured MCP server does to the seam a model is offered. One
+  `Config.mcp` field, for the reason `surface` is one field: a server
+  widens the workspace seam's *allowlist*, its rendered *description*,
+  the *generated table* the hermetic build takes, and the capability
+  *router*, and a host that could set those apart would eventually set
+  them apart. The orchestration seam is widened by none of it, ever —
+  which capabilities travel together is the whole of what the split buys.
 - `client/codemode.{Surface, Seams, serving, orchestrating,
   surface_seams, surface_seam, seam_policy, seam_caps, tool_seam,
   vetting_seam}` — which code-mode seams this host serves.
@@ -160,6 +168,20 @@ over one session file. WP-L.
   so what the model may ask for and what will judge it cannot drift.
   `tool_seam` / `vetting_seam` are the two directions of the mirror
   between `vet/policy.Seam` and the tool's own `Seam`.
+- `client/mcp.{Layer, Server, Refusal, Options, none, serving, start,
+  stop, routing, allowed_imports, surfaces, generated, serviced_caps,
+  listings, sha256_hex}` — the MCP layer (#106): the configured servers
+  this host actually reached. `start` spawns each `catalog.McpServer`
+  over `mcp/transport.PortTransport`, hand-shakes, lists its tools and
+  generates its `cap/mcp/<server>` façade, keeping the client **running**
+  for the session because dispatch is the same client; each failing step
+  refuses *that* server with a worded `Refusal` and the boot goes on
+  without it. `routing` is the capability arm: a cap under `mcp.` is
+  answered as `satellite.ServedHere` — no `CallSpec`, no jail, no policy
+  — and everything else is handed to the router beneath untouched. The
+  client actors are started from a throwaway unlinked process on purpose,
+  so a third-party server's client cannot fell the server; `Layer` is
+  then the only handle on them, and `serve.shutdown` is what stops them.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -295,6 +317,8 @@ over one session file. WP-L.
   `codemode` (the vetting policy, the hermetic compile service, the
   production builder and launcher, and the satellite host — the pipeline
   `client/codemode` fills the `tools/codemode` seam with),
+  `mcp` (the JSON-RPC codecs, the stdio client actor, the façade
+  generator and the value interchange `client/mcp` wires into code mode),
   `telemetry` (the JSON handler this entry point installs, and the
   logger it injects into `api.Options`),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
@@ -597,6 +621,26 @@ over one session file. WP-L.
   an AF_UNIX path is capped near 108 bytes — a socket that would exceed
   the limit is refused in band, naming the workspace, instead of failing
   as an opaque `einval` from `listen`.
+- **MCP reaches a model through code mode, and a host with no code mode
+  starts no MCP server.** A server's tools are a *module* a program may
+  import, never a registered tool, so a host that registers no
+  `code_mode` has nothing that could ever call one — and spawning
+  third-party server processes for it would be cost and attack surface
+  bought for no capability. One `mcp.unavailable` line says so, naming
+  the servers that were skipped. Per server, every failing step —
+  a missing executable, a refused handshake, an unset `api_key_env`, a
+  listing the generator will not accept — is one more `mcp.unavailable`
+  line and no boot failure, and it is the only thing anybody will ever
+  see about it: a refused server has no module, so a program importing it
+  is refused by vetting with no word about why the module is absent. A
+  working layer logs `mcp.ready` with each server's name and tool count.
+- **An `api_key_env` is a variable name, and the value is read at spawn
+  and never held.** It is resolved from the harness's own environment
+  through the same `provider/secret` seam every other configured secret
+  goes through, put into the child's environment under the same name, and
+  never stored in a record, a log line, or a refusal message. A
+  configured variable that is unset refuses that server *before* anything
+  is spawned.
 - **Registration is gated on the seam, for both families.** A host with
   no messaging plane ships no `agent_*` tools and a host with no
   toolchain or no prepared build seed ships no `code_mode` — the boot
