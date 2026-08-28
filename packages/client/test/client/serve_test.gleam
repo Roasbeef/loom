@@ -144,6 +144,35 @@ pub fn boot_serves_healthz_and_ws_subscribe_test() {
   serve.shutdown(booted)
 }
 
+// --- which seams can reach an MCP server ------------------------------------
+
+/// A host serving the orchestration seam alone starts no MCP server,
+/// however many are configured. A server's tools are a module only a
+/// *workspace* program can import — the orchestration seam is widened by
+/// none of it, ever — so `[mcp.*]` beside `--codemode-seams
+/// orchestration` would spawn third-party processes, each holding a
+/// configured secret in its environment, that no program could ever
+/// call. The boot says so on one `mcp.unavailable` line instead.
+pub fn orchestration_only_seams_cannot_reach_an_mcp_server_test() {
+  let orchestrating =
+    serve.Settings(
+      ..settings(),
+      codemode_seams: codemode.OrchestrationOnly,
+      catalog: catalog.Catalog(..scripted_catalog(), mcp_servers: [
+        catalog.McpServer(
+          name: "github",
+          command: ["mcp-server-github"],
+          api_key_env: Some("GITHUB_TOKEN"),
+        ),
+      ]),
+    )
+  assert !serve.mcp_reachable(orchestrating.codemode_seams)
+  // And both seams that do serve a workspace program reach one, so this
+  // is a gate on reachability rather than on MCP.
+  assert serve.mcp_reachable(codemode.WorkspaceOnly)
+  assert serve.mcp_reachable(codemode.BothSeams)
+}
+
 // --- the pinned system prompt ----------------------------------------------
 
 const prompt_root = "build/serve-test-prompt"

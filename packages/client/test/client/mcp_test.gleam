@@ -27,10 +27,13 @@ import core/clock
 import core/ids
 import core/json
 import core/msgpack
+import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
 import mcp/client as mcp_client
 import mcp/codegen
+import mcp/protocol
 import support/fake_mcp
 
 const t = 1_700_000_000_000
@@ -353,6 +356,80 @@ pub fn a_structured_value_that_does_not_cross_fails_the_result_test() {
   mcp.stop(layer)
 }
 
+// --- one hostile answer costs one call, not the channel ---------------------
+
+// The deepest structured value one `cap_result` frame can carry: the
+// msgpack decoder's own ceiling, less the two containers of the frame
+// envelope (`{v, id, kind, body}` holding `{ok, value}`) and the one of
+// the result map the value sits in.
+const deepest_carriable = 253
+
+// Both depths below survive `core/json.parse` on the way in — a JSON-RPC
+// response costs two levels before `structuredContent`, and 254 + 2 is
+// the parser's own ceiling — which is the whole point: what a server can
+// legally *say* is deeper than what this wire can legally carry.
+pub fn a_result_too_deep_for_one_frame_is_refused_test() {
+  let layer = layer_of(always(fake_mcp.Answers(nested(deepest_carriable + 1))))
+  let assert framing.CapErr(code:, message:) =
+    served(layer, request("mcp.alpha", invocation("search", [])))
+    as "a result the satellite could not decode is refused, not sent"
+  assert code == mcp.malformed_code
+  assert string.contains(message, "nests deeper")
+  mcp.stop(layer)
+}
+
+pub fn a_result_at_the_frame_depth_limit_still_crosses_test() {
+  let layer = layer_of(always(fake_mcp.Answers(nested(deepest_carriable))))
+  let assert framing.CapOk(value: _) =
+    served(layer, request("mcp.alpha", invocation("search", [])))
+    as "the deepest carriable answer is carried"
+  mcp.stop(layer)
+}
+
+// The size half. Driven through `tool_result` directly because the ways
+// in are all bounded below the ceiling: a fake server's line has to
+// survive `mcp/stdio`'s own 16 MiB cap, and it is the *re-encoding* that
+// grows past the frame cap.
+pub fn a_result_too_large_for_one_frame_is_refused_test() {
+  let assert framing.CapErr(code:, message:) =
+    mcp.tool_result(protocol.CallToolResult(
+      content: [protocol.Text(text: grown("loom", mcp.max_result_bytes()))],
+      is_error: False,
+      structured_content: option.None,
+    ))
+    as "a result past the frame cap is refused rather than dropped unsent"
+  assert code == mcp.malformed_code
+  assert string.contains(message, int.to_string(mcp.max_result_bytes()))
+}
+
+pub fn the_frame_margin_leaves_room_for_the_envelope_test() {
+  assert mcp.max_result_bytes() < framing.max_frame_bytes
+}
+
+// A structured answer nested `depth` containers deep.
+fn nested(depth: Int) -> json.JsonValue {
+  json.Object([
+    #("content", json.Array([])),
+    #("structuredContent", chain(depth)),
+  ])
+}
+
+fn chain(depth: Int) -> json.JsonValue {
+  case depth <= 0 {
+    True -> json.Int(1)
+    False -> json.Array([chain(depth - 1)])
+  }
+}
+
+// A string of at least `bytes` bytes, grown by doubling: a per-grapheme
+// repeat of sixteen million would build a list that long first.
+fn grown(seed: String, bytes: Int) -> String {
+  case string.byte_size(seed) >= bytes {
+    True -> seed
+    False -> grown(seed <> seed, bytes)
+  }
+}
+
 // --- the denial codes -------------------------------------------------------
 
 // The vocabulary a program reads through `cap/mcp.McpDenied`. Pinned
@@ -366,6 +443,14 @@ pub fn the_denial_codes_are_pinned_test() {
   assert mcp.unsupported_cap_code == "unsupported_cap"
   assert mcp.invalid_argument_code == "invalid_argument"
   assert mcp.cap_prefix == "mcp."
+}
+
+pub fn the_mcp_call_timeout_wins_the_race_test() {
+  // The MCP bound must be the one that fires. A `ServedHere` call the
+  // satellite host gives up on is *dropped*, so if the host's bound came
+  // first a program that asked a server a question would get silence
+  // where the seam promises it `mcp_timeout`.
+  assert mcp.default_call_timeout_ms < codemode.default_call_timeout_ms
 }
 
 pub fn a_jsonrpc_error_carries_its_own_code_test() {
@@ -483,9 +568,12 @@ fn idle_broker() -> broker.Broker {
   started
 }
 
-fn host(layer: mcp.Layer) -> codemode.Config {
+// The host configuration a layer produces, and the broker behind it, so
+// the caller can stop what it started — the cleanup discipline every
+// `mcp.stop(layer)` above already follows.
+fn host(broker_actor: broker.Broker, layer: mcp.Layer) -> codemode.Config {
   codemode.default_config(
-    broker: idle_broker(),
+    broker: broker_actor,
     clock: clock.fixed(at: t),
     workspace: "/work",
     toolchain: codemode.Toolchain(
@@ -500,9 +588,10 @@ fn host(layer: mcp.Layer) -> codemode.Config {
 pub fn a_configured_server_widens_the_workspace_allowlist_test() {
   let layer =
     layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
+  let broker_actor = idle_broker()
   let allowed =
     vet_policy.allowed_imports(codemode.seam_allowlist(
-      host(layer),
+      host(broker_actor, layer),
       vet_policy.WorkspaceSeam,
     ))
   // The façade and the vocabulary it imports, both of which are on no
@@ -511,13 +600,15 @@ pub fn a_configured_server_widens_the_workspace_allowlist_test() {
   assert list.contains(allowed, "cap/mcp")
   // Nothing the seam already allowed has gone.
   assert list.contains(allowed, "cap/proc")
+  broker.stop(broker_actor)
   mcp.stop(layer)
 }
 
 pub fn the_orchestration_seam_is_widened_by_nothing_test() {
   let layer =
     layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
-  let config = host(layer)
+  let broker_actor = idle_broker()
+  let config = host(broker_actor, layer)
   let allowed =
     vet_policy.allowed_imports(codemode.seam_allowlist(
       config,
@@ -530,20 +621,24 @@ pub fn the_orchestration_seam_is_widened_by_nothing_test() {
   assert !list.contains(allowed, "cap/mcp")
   assert codemode.seam_caps_on(config, vet_policy.OrchestrationSeam)
     == codemode.seam_caps(vet_policy.OrchestrationSeam)
+  broker.stop(broker_actor)
   mcp.stop(layer)
 }
 
 pub fn a_configured_server_is_named_in_what_the_seam_services_test() {
   let layer =
     layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
-  let config = host(layer)
+  let broker_actor = idle_broker()
+  let config = host(broker_actor, layer)
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
     == ["proc.run", "mcp.alpha"]
+  broker.stop(broker_actor)
   mcp.stop(layer)
 }
 
 pub fn a_host_with_no_servers_offers_exactly_what_it_did_before_test() {
-  let config = host(mcp.none())
+  let broker_actor = idle_broker()
+  let config = host(broker_actor, mcp.none())
   assert vet_policy.allowed_imports(codemode.seam_allowlist(
       config,
       vet_policy.WorkspaceSeam,
@@ -551,4 +646,5 @@ pub fn a_host_with_no_servers_offers_exactly_what_it_did_before_test() {
     == vet_policy.allowed_imports(codemode.seam_policy(vet_policy.WorkspaceSeam))
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
     == codemode.seam_caps(vet_policy.WorkspaceSeam)
+  broker.stop(broker_actor)
 }

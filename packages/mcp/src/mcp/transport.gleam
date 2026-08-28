@@ -8,9 +8,12 @@
 //// `loom-exec` helper — can change without rewriting the actor.
 //// `PortTransport` is the mechanism: a child OS process on an Erlang
 //// port, stdin/stdout as the wire. **Who gets to spawn a real server
-//// binary is the harness wiring's decision, made elsewhere** (the
-//// pipeline-integration slice of issue #106); an unjailed spawn here is
-//// the production primitive, not the final security posture.
+//// binary is the harness wiring's decision, made elsewhere**; an
+//// unjailed spawn here is the production primitive, not the final
+//// security posture. Whether an MCP server should run inside a jail at
+//// all is an open decision rather than a deferred implementation — it
+//// is recorded as such in `docs/next.md`, and this seam is where the
+//// answer would attach.
 ////
 //// The child's stderr is deliberately **not** merged into stdout:
 //// `stderr_to_stdout` would interleave the server's diagnostics into
