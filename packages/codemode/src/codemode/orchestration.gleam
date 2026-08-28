@@ -89,6 +89,7 @@
 //// the harness would quote into a child's brief without ever checking.
 
 import broker/framing.{type CapOutcome}
+import codemode/artifact.{type Emit}
 import codemode/identity
 import codemode/satellite.{
   type CapCeiling, type CapDenial, type CapPlan, type CapRequest, type CapRouter,
@@ -123,11 +124,28 @@ pub const notes_cap = "strand.notes"
 /// The capability a program reads its lineage with.
 pub const roster_cap = "strand.roster"
 
+/// The capability a program mints a durable artifact with — `cap/report`,
+/// the one module both seams carry.
+///
+/// It is serviced here by the *same* mechanism the workspace seam uses
+/// (`codemode/artifact`), against the same closure, under the same byte
+/// bound and the same ceiling. Two implementations of one capability
+/// would be two byte bounds and two content-addressing schemes for
+/// something whose whole value is that an id means one thing.
+///
+/// Before this, `cap/report` was on the orchestration allowlist and
+/// `serviced_caps` omitted `emit`, so the module's one effectful function
+/// always came back `unsupported_cap` on this seam — a capability
+/// advertised in the description a model is charged for on every request
+/// and refused every time it was used (issue #91, item 1).
+pub const emit_cap = artifact.emit_cap
+
 /// Every capability this router services, in the order `cap/strand`
-/// declares them. Published so the tool description a model reads states
-/// the real set rather than a copy that can drift.
+/// declares them, and then `cap/report`'s one. Published so the tool
+/// description a model reads states the real set rather than a copy that
+/// can drift.
 pub const serviced_caps = [
-  spawn_cap, wait_cap, send_cap, note_cap, notes_cap, roster_cap,
+  spawn_cap, wait_cap, send_cap, note_cap, notes_cap, roster_cap, emit_cap,
 ]
 
 /// The default lifetime ceiling on spawn admissions in one execution.
@@ -219,14 +237,30 @@ pub const admission_ceiling_code = "admission_ceiling"
 /// is what tells this execution apart from every other call in its batch,
 /// including another `code_mode` call, and a spawn's name has to say
 /// which execution minted it. See the module doc.
+/// `emit` and `emit_ceiling` are the `cap/report` half, and they are the
+/// same two values `codemode/workspace` holds: one host builds one
+/// closure and hands it to whichever seam it wired, so an artifact minted
+/// by an orchestration program and one minted by a workspace program land
+/// in one store under one addressing scheme.
 pub type Orchestration {
-  Orchestration(agency: Agency, strand: String, source_index: Int)
+  Orchestration(
+    agency: Agency,
+    strand: String,
+    source_index: Int,
+    emit: Emit,
+    emit_ceiling: Int,
+  )
 }
 
 /// The lifetime admission ceilings an orchestration execution runs under:
-/// four of the six capabilities, sized by what each one costs. See
-/// `satellite.CapCeiling` for the test a capability has to meet to earn a
-/// ceiling at all, and for why the unit is the execution.
+/// four of the six `strand.*` capabilities plus `report.emit`, sized by
+/// what each one costs. See `satellite.CapCeiling` for the test a
+/// capability has to meet to earn a ceiling at all, and for why the unit
+/// is the execution.
+///
+/// The emit ceiling is `codemode/artifact`'s, not this seam's: the
+/// capability is shared with the workspace seam and so is the number, for
+/// the reason the closure is.
 ///
 /// `strand.wait` and `strand.roster` have none, and their absence is a
 /// decision rather than an omission. A `wait`'s whole cost is time, which
@@ -245,10 +279,13 @@ pub type Orchestration {
 /// ## Examples
 ///
 /// ```gleam
-/// // orchestration.ceilings(32) |> list.length == 4
+/// // orchestration.ceilings(32, emit_admissions: 64) |> list.length == 5
 /// ```
 ///
-pub fn ceilings(spawn_admissions: Int) -> List(CapCeiling) {
+pub fn ceilings(
+  spawn_admissions: Int,
+  emit_admissions emit_admissions: Int,
+) -> List(CapCeiling) {
   [
     CapCeiling(
       cap: spawn_cap,
@@ -270,6 +307,7 @@ pub fn ceilings(spawn_admissions: Int) -> List(CapCeiling) {
       admissions: notes_ceiling,
       code: admission_ceiling_code,
     ),
+    artifact.ceiling(emit_admissions),
   ]
 }
 
@@ -300,6 +338,7 @@ pub fn router(seam: Orchestration) -> CapRouter {
       "strand.note" -> note_plan(seam, request)
       "strand.notes" -> notes_plan(seam, request)
       "strand.roster" -> roster_plan(seam, request)
+      "report.emit" -> artifact.plan(seam.emit, request)
       other ->
         Error(CapDenial(
           code: "unsupported_cap",

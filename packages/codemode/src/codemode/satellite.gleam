@@ -264,9 +264,11 @@ pub type CapRequest {
 /// process, a file, a socket — and goes through `broker.clear_call` into
 /// a jail. `ServedHere` is a request the *harness itself* answers, under
 /// its own policy, touching nothing outside the VM: the orchestration
-/// seam's calls onto the Agency are the first of these, and the
-/// harness-side `fs`/`kv`/`report` rows of `default_router`'s table will
-/// be the next.
+/// seam's calls onto the Agency were the first of these, and the
+/// workspace seam's `fs.read`, `fs.list`, `kv.*` and `report.emit`
+/// (`codemode/workspace`) are the same shape — a harness-side read, a
+/// process-local store, a blob write, none of them an effect a jail
+/// could contain because none of them leaves the VM.
 ///
 /// The distinction is not cosmetic. A `ClearedCall` carries a `CallSpec`,
 /// and a `CallSpec` carries `{op_id, step_id, budget}` a router writes by
@@ -1386,23 +1388,38 @@ fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
 
 /// The default capability router.
 ///
-/// It services the process-spawning capabilities that map cleanly onto a
-/// jailed `broker.clear_call` — today `proc.run`, whose argv is the
-/// command to run. The full cap→tool table the satellite ultimately serves
-/// is:
+/// It services the one capability that maps cleanly onto a jailed
+/// `broker.clear_call`: `proc.run`, whose argv is the command to run.
+/// Everything else is somebody else's arm, and the table below says
+/// whose — because "the default router refuses it" and "nothing in the
+/// tree services it" are different facts and only the first is true of
+/// most of these rows.
 ///
-/// | cap | maps to | via |
+/// | cap | serviced by | via |
 /// |---|---|---|
-/// | `proc.run` | the jailed executor (bash-style argv) | `clear_call` |
-/// | `git.*` / `lsp.*` | their CLIs as argv | `clear_call` |
-/// | `fs.read`/`write`/`list`/`edit` | the harness-side `tools/fs` tools | direct (not a jailed exec) |
-/// | `net.*` | the egress-proxied executor | `clear_call` (proxy pending) |
-/// | `report.emit` / `kv.*` | harness-side stores | direct |
+/// | `proc.run` | this router — the jailed executor (bash-style argv) | `clear_call` |
+/// | `fs.read`, `fs.list` | `codemode/workspace`, over `tools/fs`'s own resolution | `ServedHere` |
+/// | `kv.get`/`set`/`delete` | `codemode/workspace`, over the host's ephemeral scratch store | `ServedHere` |
+/// | `report.emit` | `codemode/artifact`, over the session's blob store | `ServedHere` |
+/// | `git.*` | **nothing here, and nothing is owed**: `cap/git` composes `proc.run` inside the satellite | the row above |
+/// | `fs.write`, `fs.edit` | nobody yet — write waits on the protected-path check (#105), edit on a contract decision (#16) | — |
+/// | `net.request` | nobody yet — gated on the egress proxy | would be `clear_call` |
+/// | `lsp.*` | nobody yet — gated on the long-lived stdio client (#25) | not `clear_call`: a protocol, not a one-shot exec |
+/// | `mcp.<server>` | `client/mcp`, per configured server (#106) | `ServedHere` |
+/// | `strand.*` | `codemode/orchestration` — the *other* seam, never this one | `ServedHere` |
 ///
-/// The rows beyond `proc.run` need the harness-side tool bridge that lands
-/// with the fuller runtime; until then they are refused in-band, and
-/// callers inject a fuller router. The result-shape of each `cap_result`
-/// is the cap module's contract in `packages/cap`.
+/// The `git.*` row is the one worth reading twice. `cap/git` holds no
+/// capability of its own: every function in it builds a `cap/proc`
+/// command and runs it, so it has worked since the day `proc.run` was
+/// routed and there is no `git.*` name for any router to map. An earlier
+/// version of this table promised one as pending, which over-counted the
+/// harness-side bridge by a whole module (issue #16's scoping).
+///
+/// A caller holding the harness-side seams injects a fuller router by
+/// wrapping this one (`codemode/workspace.routing`, `client/mcp.routing`);
+/// what this one does not map, it refuses in band as `unsupported_cap`.
+/// The result-shape of each `cap_result` is the cap module's contract in
+/// `packages/cap`.
 pub fn default_router(request: CapRequest) -> Result(CapPlan, CapDenial) {
   case request.cap {
     "proc.run" -> proc_plan(request)

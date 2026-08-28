@@ -56,6 +56,7 @@
 import broker/budget
 import broker/exec
 import broker/token
+import codemode/artifact
 import codemode/build
 import codemode/codemode
 import codemode/compile
@@ -406,8 +407,16 @@ fn exec_config(
         agency: reviewing_agency(live.workspace, seen),
         strand: "main",
         source_index: 0,
+        // The sample orchestrates strands and emits nothing; the closure
+        // is here because the seam is one record, and a sample that
+        // called it would be `workspace_test`'s job.
+        emit: fn(_artifact) { Error(artifact.StoreFailed("no store here")) },
+        emit_ceiling: artifact.default_emit_ceiling,
       )),
-      ceilings: orchestration.ceilings(orchestration.default_spawn_ceiling),
+      ceilings: orchestration.ceilings(
+        orchestration.default_spawn_ceiling,
+        emit_admissions: artifact.default_emit_ceiling,
+      ),
       call_timeout_ms: 60_000,
     ),
     launch: launch.launcher(launch.LaunchConfig(

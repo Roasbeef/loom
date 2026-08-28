@@ -19,6 +19,7 @@ import broker/exec
 import broker/framing
 import broker/policy
 import broker/token
+import codemode/artifact
 import codemode/compile
 import codemode/identity.{type PhaseIdentity}
 import codemode/orchestration
@@ -95,7 +96,17 @@ fn seam_at(
   agency: agent.Agency,
   source_index: Int,
 ) -> orchestration.Orchestration {
-  orchestration.Orchestration(agency:, strand: "main", source_index:)
+  orchestration.Orchestration(
+    agency:,
+    strand: "main",
+    source_index:,
+    // `report.emit` is `codemode/artifact`'s and is proved there and in
+    // `workspace_test`; what this suite is about is `strand.*` carriage,
+    // so the closure here answers a fixed address and the ceiling is the
+    // shipped one.
+    emit: fn(_artifact) { Ok(emitted_id) },
+    emit_ceiling: artifact.default_emit_ceiling,
+  )
 }
 
 // Routes one call and runs the plan it produced, which is what the host's
@@ -723,7 +734,7 @@ pub fn the_router_never_builds_a_clearance_test() {
         Error(_denial) -> False
       }
     })
-  assert served == [True, True, True, True, True, True]
+  assert served == [True, True, True, True, True, True, True]
 }
 
 // Well-formed arguments for each capability, so the plan-shape check
@@ -739,6 +750,12 @@ fn arguments(cap: String) -> MsgPackValue {
     "strand.send" -> map([#("to", text("main")), #("text", text("hi"))])
     "strand.note" -> map([#("key", text("k")), #("value", text("v"))])
     "strand.notes" -> map([#("prefix", msgpack.NilValue)])
+    "report.emit" ->
+      map([
+        #("name", text("note.txt")),
+        #("content_type", text("text/plain")),
+        #("bytes", msgpack.BinaryValue(<<"hello":utf8>>)),
+      ])
     _ -> map([])
   }
 }
@@ -824,11 +841,24 @@ fn capped() -> List(Capped) {
       bound: orchestration.notes_ceiling,
       code: "admission_ceiling",
     ),
+    // `cap/report` is the one module both seams carry, so `report.emit`
+    // is the one ceiling both seams declare — the same number and the
+    // same code, from `codemode/artifact` rather than from either seam.
+    Capped(
+      cap: orchestration.emit_cap,
+      bound: artifact.default_emit_ceiling,
+      code: "admission_ceiling",
+    ),
   ]
 }
 
+const emitted_id = "sha256-0000000000000000000000000000000000000000000000000000000000000000"
+
 fn production_ceilings() -> List(satellite.CapCeiling) {
-  orchestration.ceilings(orchestration.default_spawn_ceiling)
+  orchestration.ceilings(
+    orchestration.default_spawn_ceiling,
+    emit_admissions: artifact.default_emit_ceiling,
+  )
 }
 
 /// Each capped capability admits exactly its own number and then refuses,
@@ -867,7 +897,19 @@ pub fn every_capped_capability_refuses_at_its_own_bound_test() {
     assert string.contains(refusal, "lifetime")
     // And the Agency saw exactly the admitted ones: a refused call never
     // reached the messaging plane at all.
-    assert list.length(fake_agency.drain(seen)) == row.bound
+    //
+    // `report.emit` is the row where "the plane" is a different plane:
+    // it is serviced by `codemode/artifact`'s injected closure, not by
+    // the Agency, so the Agency must see *none* of its admissions. That
+    // asymmetry is the point of the row being in this table at all — it
+    // proves the shared capability is ceilinged by the same host
+    // mechanism while reaching somewhere else entirely.
+    let reached_agency = list.length(fake_agency.drain(seen))
+    let owed = case row.cap == orchestration.emit_cap {
+      True -> 0
+      False -> row.bound
+    }
+    assert reached_agency == owed
   })
 }
 
@@ -898,13 +940,15 @@ pub fn the_uncapped_calls_are_uncapped_test() {
   })
 }
 
-/// The table is exactly the four calls that mint something outliving the
-/// execution, in the numbers their own docs argue.
+/// The table is exactly the calls that mint something outliving the
+/// execution, in the numbers their own docs argue: four of the six
+/// `strand.*` calls, plus the `report.emit` this seam shares with the
+/// workspace one.
 ///
 /// Pinned as a whole because the numbers are load-bearing together:
 /// `note` and `notes` bound a quadratic between them, and relaxing either
 /// alone puts the superlinear term back.
-pub fn the_ceiling_table_is_the_four_that_mint_test() {
+pub fn the_ceiling_table_is_the_calls_that_mint_test() {
   let rows =
     list.map(production_ceilings(), fn(entry) {
       Capped(cap: entry.cap, bound: entry.admissions, code: entry.code)
@@ -912,6 +956,12 @@ pub fn the_ceiling_table_is_the_four_that_mint_test() {
   assert rows == capped()
   assert orchestration.note_ceiling == 256
   assert orchestration.notes_ceiling == 64
+  // The two seams' ceiling codes are the same word, and they must stay
+  // that way: `cap/report`'s `map_error` carries any code verbatim, so a
+  // program at the emit ceiling on one seam and at the note ceiling on
+  // the other reads one refusal vocabulary. The constants are restated
+  // rather than shared, so this is the thing that holds them equal.
+  assert artifact.emit_ceiling_code == orchestration.admission_ceiling_code
 }
 
 // A peer that calls one capability `attempts` times, reporting `"ok"` for
@@ -1034,7 +1084,15 @@ fn run_peer(
   agency: agent.Agency,
   script: fn(PeerCtx) -> Nil,
 ) -> Result(List(String), String) {
-  run_peer_with(dir, agency, orchestration.ceilings(ceiling), script)
+  run_peer_with(
+    dir,
+    agency,
+    orchestration.ceilings(
+      ceiling,
+      emit_admissions: artifact.default_emit_ceiling,
+    ),
+    script,
+  )
 }
 
 // Runs one peer against a real satellite host under the orchestration

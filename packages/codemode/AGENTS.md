@@ -12,9 +12,13 @@ orchestration seam.
 There are **two seams over one pipeline**, and a submission is vetted
 against exactly one of them (`vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
-`satellite.default_router`. The *orchestration* seam is `cap/strand` +
-`cap/report` and nothing else, routed by `codemode/orchestration` onto the
-Agency closures the `agent_*` tools call. Which capabilities travel
+`satellite.default_router` for the jailed `proc.run` and by
+`codemode/workspace` for the harness-side `fs.read`, `fs.list` and
+`kv.*`. The *orchestration* seam is `cap/strand` + `cap/report` and
+nothing else, routed by `codemode/orchestration` onto the Agency closures
+the `agent_*` tools call. `report.emit` is the one capability **both**
+seams service, by one mechanism (`codemode/artifact`), because
+`cap/report` is the one module both allowlists carry. Which capabilities travel
 together is the whole of what the separation buys: a compromised
 orchestration program can spawn and message within the lineage its own
 strand roots, and can reach neither the disk, the network, nor a process.
@@ -71,13 +75,42 @@ strand roots, and can reach neither the disk, the network, nor a process.
   package owns and a host selects from rather than assembles.
 - `codemode/orchestration.{Orchestration, router, ceilings, serviced_caps,
   refusal_code, default_spawn_ceiling, send_ceiling, note_ceiling,
-  notes_ceiling, spawn_ceiling_code, admission_ceiling_code}` — the
-  orchestration seam's capability router. It decodes a `strand.*` frame
-  into `tools/agent`'s vocabulary, hands it to one of the six `Agency`
-  closures under a `Caller` derived from the threaded `PhaseIdentity`, and
-  carries the answer — or the refusal, under the tools' own name — back.
+  notes_ceiling, spawn_ceiling_code, admission_ceiling_code, emit_cap}` —
+  the orchestration seam's capability router. It decodes a `strand.*`
+  frame into `tools/agent`'s vocabulary, hands it to one of the six
+  `Agency` closures under a `Caller` derived from the threaded
+  `PhaseIdentity`, and carries the answer — or the refusal, under the
+  tools' own name — back. Its seventh arm is `report.emit`, over the same
+  `codemode/artifact` closure the workspace seam holds (issue #91 item 1:
+  `cap/report` was on this allowlist and `serviced_caps` omitted `emit`,
+  so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
+- `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal, routing,
+  ceilings, serviced_caps, unserviced_caps, max_list_entries, fs_denial,
+  kv_denial}` — the workspace seam's *harness-side* capability router
+  (issue #16). A record of six injected closures — `fs_read`, `fs_list`,
+  `kv_get`, `kv_set`, `kv_delete`, `emit` — wrapped in front of an inner
+  router, the same shape `client/mcp.routing` has. Every plan is
+  `satellite.ServedHere`: a workspace read, a process-local store write
+  and a blob mint leave no VM, so there is nothing a jail could contain
+  and a composed `SandboxPolicy` would have no enforcer. It builds **no
+  `broker.CallSpec`** and holds **no path logic** — containment is
+  `tools/fs.resolve_real`'s and the large-file guard is
+  `fs.read_text_file`'s, called by the injected closures
+  `client/codemode.workspace_seam` builds. `fs.write` and `fs.edit` have
+  no slot in the record and are refused by name: write waited on the
+  protected-path check (#105) and edit is an open contract question, the
+  satellite side carrying neither anchors nor a digest.
+- `codemode/artifact.{Artifact, Emit, EmitRefusal, plan, answer, ceiling,
+  emit_cap, max_emit_bytes, default_emit_ceiling, emit_ceiling_code}` —
+  the `report.emit` mechanism, shared by both seams. One byte bound per
+  emission (1 MiB, refused in band — the 16 MiB frame cap is the wrong
+  number because a frame is transient and an artifact is a durable mint),
+  one lifetime admission ceiling (64, because every call writes something
+  that outlives the execution), one content address. Its own module
+  rather than a member of either seam's, so neither seam module imports
+  the other for it.
 - `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
   Compiled, Builder, Dependency, CompileConfig, generated_path}` — the
   hermetic compile service. `Builder` is
@@ -123,7 +156,9 @@ strand roots, and can reach neither the disk, the network, nor a process.
 
 - **Depends on**: `broker` (`clear_call`, `framing`, `policy`, `token`,
   `budget`, `exec`), `core` (msgpack, ids, clock), `tools` (`tool.Collected`
-  and the `blob` content address), `glance` + `glexer` (vetting parses and
+  and the `blob` content address; `codemode/workspace` additionally names
+  `tools/fs`'s `PathError` and `ReadError` so a refusal keeps the
+  harness's own vocabulary), `glance` + `glexer` (vetting parses and
   token-scans), `simplifile` + `filepath`, `gleam_erlang`, `gleam_otp`.
 - **Deliberately does not depend on `cap`.** `cap` is the prelude compiled
   *into* the satellite; linking it into the harness would put
@@ -427,10 +462,17 @@ strand roots, and can reach neither the disk, the network, nor a process.
   affordance that would change this is "approve similar for this
   session" (§5.3, filed as #79), which is a session-policy change and
   not a grant.
-- **The default router refuses what it does not service.** `proc.run` is
-  the only capability it maps today; every other `cap` name comes back
-  `unsupported_cap` until the harness-side tool bridge lands, and a caller
-  holding that bridge injects a fuller router. Even within `proc.run`, a
+- **The default router refuses what it does not service, and its doc
+  table says who does.** `proc.run` is the only capability it maps: it is
+  the one that becomes a jailed clearance. `fs.read`, `fs.list`, `kv.*`
+  and `report.emit` are `codemode/workspace`'s and `codemode/artifact`'s,
+  wrapped in front of it by `client/codemode`; `mcp.<server>` is
+  `client/mcp`'s. **`git.*` is nobody's and never will be** — `cap/git`
+  composes `proc.run` inside the satellite, so there is no `git.*` name
+  for any router to map, and the table promising one as pending
+  over-counted the bridge by a whole module (issue #16's scoping). What
+  is genuinely owed is `net.request` (the egress proxy), `lsp.*` (#25),
+  and `fs.write`/`fs.edit`. Even within `proc.run`, a
   call carrying `cwd`, `stdin`, `env`, or `timeout_ms` is denied in band
   rather than run without them, and output is rendered as msgpack *text*
   because `cap/proc` decodes it into a `String`.
