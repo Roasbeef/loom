@@ -3,10 +3,12 @@
 //// deterministically, and the built gateway resolves the routed chains.
 
 import client/catalog
+import client/mcp
 import core/clock
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import mcp/name
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -355,6 +357,68 @@ pub fn ordinary_mcp_name_parses_test() {
   let assert Ok(parsed) = catalog.parse(text)
   assert parsed.mcp_servers
     == [catalog.McpServer(name: "github", command: ["x"], api_key_env: None)]
+}
+
+// --- the drift gate: catalog's restated rules against the mangler ------------
+//
+// `client/catalog` may not import `mcp/name` — this package's parser is
+// reached before any server exists and the mangler's rules are restated
+// there instead: a keyword list, a doubled-underscore rule, a trailing-
+// underscore rule, and a 32-character bound. The promise those four make
+// is a *joint* one with `mcp/name`: on every name the catalogue accepts,
+// mangling is the identity, so the `[mcp.<key>]` key really does name the
+// `cap/mcp/<key>` module a code-mode program imports.
+//
+// A test can see both sides, so this is where they are held together. For
+// every shape the catalogue refuses on mangling grounds, the mangler must
+// really rewrite it; for names it accepts, the mangler must really leave
+// them alone. Drop a keyword from `catalog.gleam`'s list and the first
+// test fails on the parse; add one to `mcp/name`'s (or move either
+// bound) and it fails on the mangle.
+//
+// The keyword list below is deliberately a *third* copy rather than an
+// import of either. It is the referee, and a referee reading one of the
+// two lists it is comparing could not tell them apart.
+const mangling_keywords = [
+  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
+  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
+  "test", "todo", "type", "use",
+]
+
+// The production digest, not a stub: the suffix's eight characters are
+// what make a rewritten name distinct, and a constant stub would let a
+// mangle that changed nothing else still look like a change.
+fn digest(text: String) -> String {
+  mcp.sha256_hex(text)
+}
+
+pub fn every_refused_server_name_is_one_mangling_would_rewrite_test() {
+  list.each(mangling_keywords, refused_and_rewritten)
+  refused_and_rewritten("a__b")
+  refused_and_rewritten("foo_")
+  // One past the bound both sides restate.
+  refused_and_rewritten(string.repeat("a", 33))
+}
+
+fn refused_and_rewritten(shape: String) -> Nil {
+  let assert Error(_reason) =
+    catalog.parse(with_mcp_server(shape, "command = [\"x\"]"))
+    as "the catalogue must refuse a server name mangling would rewrite"
+  assert name.mangle(shape, digest) != shape
+}
+
+pub fn every_accepted_server_name_survives_mangling_test() {
+  // A plain name, a digit inside one, an underscore inside one, and the
+  // bound itself — the shapes nearest the four rules above.
+  list.each(["github", "a2", "x_y", string.repeat("a", 32)], accepted_intact)
+}
+
+fn accepted_intact(shape: String) -> Nil {
+  let assert Ok(parsed) =
+    catalog.parse(with_mcp_server(shape, "command = [\"x\"]"))
+    as "the catalogue must accept a server name mangling leaves alone"
+  assert list.map(parsed.mcp_servers, fn(server) { server.name }) == [shape]
+  assert name.mangle(shape, digest) == shape
 }
 
 pub fn duplicate_mcp_name_refused_by_toml_test() {

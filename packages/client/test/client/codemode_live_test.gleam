@@ -25,7 +25,9 @@ import broker/escalation
 import broker/exec
 import broker/policy
 import broker/token
+import client/catalog
 import client/codemode
+import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
 import core/clock
@@ -439,6 +441,333 @@ fn live_layer() -> mcp_wiring.Layer {
     ],
     call_timeout_ms: 30_000,
   )
+}
+
+// --- a real MCP server process, end to end (#106) ----------------------------
+
+// What the program sends and what the fixture server must hand back
+// byte for byte. Neither value is a Gleam identifier and neither is
+// touched by anything on the way: the *wire* names are what travel, and
+// the mangled Gleam names are display artifacts. This is the assertion
+// `mcp/codegen`'s whole wire-fidelity invariant reduces to, made against
+// a real pipe rather than an in-process peer.
+const wire_message = "loom-mcp-wire-fidelity"
+
+const wire_tag = "Tag-With_Mixed.Case"
+
+// The three tools `test/support/mcp_fixture.escript` lists.
+const fixture_tools = 3
+
+// The catalogue key, which is also the `cap/mcp/<name>` module segment
+// and the `mcp.<name>` capability suffix.
+const fixture_server = "fixture"
+
+/// The program a model would write against a configured MCP server: one
+/// typed façade call carrying a required argument and an optional one,
+/// and a report that reads the server's structured answer back out
+/// field by field. What it prints is what crossed.
+pub fn mcp_process_program_source() -> String {
+  "import cap/mcp\n"
+  <> "import cap/mcp/"
+  <> fixture_server
+  <> "\n"
+  <> "import cap/report\n"
+  <> "import gleam/option\n"
+  <> "import gleam/result\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case "
+  <> fixture_server
+  <> ".echo_args(\n"
+  <> "    message: \""
+  <> wire_message
+  <> "\",\n"
+  <> "    options: [#(\"tag\", report.string(\""
+  <> wire_tag
+  <> "\"))],\n"
+  <> "  ) {\n"
+  <> "    Error(_error) -> report.failure(\"the mcp call did not settle\")\n"
+  <> "    Ok(found) -> report.text(mcp.text(found) <> \" \" <> echoed(found))\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn echoed(found: mcp.ToolResult) -> String {\n"
+  <> "  let read = {\n"
+  <> "    use echo_of <- result.try(option.to_result(found.structured, Nil))\n"
+  <> "    use message <- result.try(report.field(echo_of, \"message\"))\n"
+  <> "    use message <- result.try(report.as_string(message))\n"
+  <> "    use tag <- result.try(report.field(echo_of, \"tag\"))\n"
+  <> "    use tag <- result.try(report.as_string(tag))\n"
+  <> "    Ok(\"message=\" <> message <> \" tag=\" <> tag)\n"
+  <> "  }\n"
+  <> "  case read {\n"
+  <> "    Ok(rendered) -> rendered\n"
+  <> "    Error(Nil) -> \"the structured echo did not carry both fields\"\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+pub fn a_program_reaches_a_real_mcp_server_process_test() {
+  case mcp_process_rig() {
+    Error(reason) ->
+      io.println("SKIP a_program_reaches_a_real_mcp_server_process: " <> reason)
+    Ok(rig) -> run_mcp_process(rig)
+  }
+}
+
+// Everything the fixture-server run needs beyond the live rig: the
+// `escript` that will run the server and the checked-in server itself.
+type Fixture {
+  Fixture(ready: Ready, escript: String, script: String)
+}
+
+// The whole of #106 against a real third party: a real `escript` child
+// process on a real pipe, spawned by `client/mcp.start` from a real
+// `catalog.McpServer`, hand-shaken and listed by the production client,
+// generated into a real `cap/mcp/fixture` module, vendored into a real
+// hermetic build, imported by a vetted program, and called through the
+// cap channel and the router back out to that child.
+//
+// `a_program_calls_a_configured_mcp_server_test` above proves the same
+// pipeline with the *transport* faked. What this adds is the one thing
+// that fake cannot: an OS process, its stdio framing, its argv and its
+// death.
+fn run_mcp_process(fixture: Fixture) -> Nil {
+  // Short on purpose: the execution's cap socket sits under this root
+  // and an AF_UNIX path is capped near 100 bytes, which the tree already
+  // refuses in band rather than failing as an opaque `einval`.
+  let root = fixture.ready.root <> "-mcp-live"
+  let workspace = root <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the live rig must have a workspace"
+  let base_policy = base_policy(root)
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      exec.spawn_helper(exec.SpawnConfig(
+        helper_path: fixture.ready.helper_path,
+        shell_path: "/bin/sh",
+        base_policy:,
+        helper_args: [],
+        tmp_dir: workspace <> "/tmp",
+        handshake_timeout_ms: 5000,
+        cancel_grace_ms: 3000,
+        heartbeat_interval_ms: 0,
+      ))
+    })
+    as "the helper pool must start"
+  let assert Ok(broker_actor) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: broker_entropy(),
+        clock: wall_clock(),
+        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    as "the broker must start"
+  let assert Ok(toolchain) = codemode.discover(fixture.ready.seed_root)
+    as "the toolchain must be located"
+  // The pid file is the child's own account of itself, written before it
+  // answers anything, so a completed handshake means it is there.
+  let pid_file = root <> "/server.pid"
+  let _ = simplifile.delete(pid_file)
+  let configured =
+    catalog.McpServer(
+      name: fixture_server,
+      command: [fixture.escript, fixture.script, pid_file],
+      api_key_env: option.None,
+    )
+  // The production boot: a real spawn, a real handshake, a real
+  // `tools/list`, a real generated module.
+  let #(layer, refusals) =
+    mcp_wiring.start([configured], mcp_wiring.default_options())
+  assert refusals == []
+  assert mcp_wiring.serving(layer)
+  // The `mcp.ready` payload: the server answered and listed all three.
+  assert mcp_wiring.listings(layer) == [#(fixture_server, fixture_tools)]
+  assert mcp_wiring.serviced_caps(layer) == ["mcp." <> fixture_server]
+  let assert [#("cap/mcp/fixture", generated_source)] =
+    mcp_wiring.generated(layer)
+    as "one server generates one module"
+  let assert [surface] = mcp_wiring.surfaces(layer)
+    as "one server renders one surface"
+  assert_generated_names(generated_source, surface)
+  let seam =
+    codemode.seam(
+      codemode.default_config(
+        broker: broker_actor,
+        clock: wall_clock(),
+        workspace:,
+        toolchain:,
+      )
+      |> codemode.over_mcp(layer),
+    )
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(workspace, base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(mcp_process_program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error
+  // (a) The wire-fidelity assertion. Both values crossed the generated
+  // façade, `cap/internal/mcp`, the cap channel, the router, a real pipe
+  // into another OS process and all the way back — under their original
+  // parameter names, since the server echoes the `arguments` object it
+  // received and the program reads it back by wire name. "ok" is the
+  // server's own text block, so the whole line is the server's answer.
+  assert string.contains(
+    text,
+    "ok message=" <> wire_message <> " tag=" <> wire_tag,
+  )
+  // (c) And stopping the layer takes the child down. Alive first, so a
+  // fixture that had already exited could not pass this by default.
+  let pid = recorded_pid(pid_file)
+  assert alive(pid)
+  mcp_wiring.stop(layer)
+  assert gone_within(pid, teardown_polls)
+  io.println(
+    "code-mode mcp e2e: a real escript MCP server answered through the "
+    <> "generated façade, and stopping the layer reaped pid "
+    <> pid,
+  )
+  broker.stop(broker_actor)
+  exec.stop_pool(pool)
+}
+
+// (b) What the generator made of a hostile listing, in the two artifacts
+// that reach a model and the compiler. The wire names are intact in the
+// source; the Gleam names are mangled and digested; and the two never
+// travel as each other.
+fn assert_generated_names(source: String, surface: String) -> Nil {
+  // The ordinary tool: a legal Gleam name survives whole, so the label
+  // and the wire name coincide and nothing is digested.
+  assert string.contains(source, "pub fn echo_args(")
+  assert string.contains(source, "  message message: String,")
+  assert string.contains(source, "\"echo_args\",")
+  // The hostile tool name mangles *and* digests — `create_issue` alone
+  // would be a name two different originals could reach.
+  let renamed = digested("create_issue", "Create-Issue!")
+  assert string.contains(source, "pub fn " <> renamed <> "(")
+  assert string.contains(surface, "pub fn " <> renamed <> "(")
+  // …and the *wire* name is what the body sends. This is the pair the
+  // whole invariant is about: a display name that changed, beside a wire
+  // name that did not.
+  assert string.contains(source, "\"Create-Issue!\",")
+  assert !string.contains(source, "\"" <> renamed <> "\",")
+  // The tier-2 parameter: a nested object schema is one structured
+  // value, and its hostile name mangles into the label while the wire
+  // name stays in the marshalling line.
+  let label = digested("target_repo", "Target-Repo")
+  assert string.contains(
+    source,
+    "  " <> label <> " " <> label <> ": report.Value,",
+  )
+  assert string.contains(source, "#(\"Target-Repo\", " <> label <> "),")
+  Nil
+}
+
+// A renamed identifier as `mcp/name` builds it: the mangled base, then
+// eight characters of the digest of the *original*.
+fn digested(base: String, original: String) -> String {
+  base <> "_" <> string.slice(mcp_wiring.sha256_hex(original), 0, 8)
+}
+
+// --- locating the fixture and its interpreter -------------------------------
+
+fn mcp_process_rig() -> Result(Fixture, String) {
+  use ready <- result.try(prerequisites())
+  use Nil <- result.try(observable_processes())
+  use escript <- result.try(escript_path())
+  use script <- result.try(fixture_script())
+  Ok(Fixture(ready:, escript:, script:))
+}
+
+// `escript`, looked for the way `client/install` looks for every other
+// component of Loom's own tree: beside the emulator this VM is actually
+// running before `PATH`. OTP ships `escript` in the same `erts-<vsn>/bin`
+// as `erl` and again in the installation's `bin`, so the first two rungs
+// find the interpreter belonging to *this* OTP rather than whichever one
+// a shell profile points at — the same argument `install.erl` makes for
+// the emulator. `PATH` is the last rung, for a host that installed OTP
+// some other way.
+fn escript_path() -> Result(String, String) {
+  install.first_of([
+    fn() { install.existing_file(erts_bin(escript_name)) },
+    fn() { install.existing_file(install.root() <> "/bin/" <> escript_name) },
+    fn() { ffi_os.find_executable(escript_name) },
+  ])
+  |> result.replace_error(
+    "no "
+    <> escript_name
+    <> " beside "
+    <> install.erl()
+    <> " or on PATH; the fixture MCP server is an OTP escript",
+  )
+}
+
+const escript_name = "escript"
+
+// The sibling of `install.erl()`, built the same way it is rather than
+// by cutting its last segment off.
+fn erts_bin(name: String) -> String {
+  install.root() <> "/erts-" <> ffi_os.erts_version() <> "/bin/" <> name
+}
+
+fn fixture_script() -> Result(String, String) {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  let path = here <> "/test/support/mcp_fixture.escript"
+  install.existing_file(path)
+  |> result.replace_error("no MCP fixture server at " <> path)
+}
+
+// --- watching a child die ----------------------------------------------------
+
+// Whether a pid can be observed at all on this host. The teardown claim
+// is "the OS process is gone", and the only thing in reach that can say
+// so without an FFI of its own is `/proc`; a host without it skips
+// loudly rather than asserting something weaker under the same name.
+fn observable_processes() -> Result(Nil, String) {
+  install.existing_directory(proc_root)
+  |> result.replace(Nil)
+  |> result.replace_error(
+    "no "
+    <> proc_root
+    <> " on this host, so a stopped server's death cannot be observed by pid",
+  )
+}
+
+const proc_root = "/proc"
+
+const poll_interval_ms = 50
+
+// Two seconds of polling. `mcp/transport`'s close shuts the child's
+// stdin and then signals it, and neither the exit nor the reap is
+// synchronous with the call that asked for them.
+const teardown_polls = 40
+
+fn recorded_pid(pid_file: String) -> String {
+  let assert Ok(contents) = simplifile.read(pid_file)
+    as "the fixture server must record its OS pid before it answers"
+  string.trim(contents)
+}
+
+fn alive(pid: String) -> Bool {
+  simplifile.is_directory(proc_root <> "/" <> pid) == Ok(True)
+}
+
+fn gone_within(pid: String, polls: Int) -> Bool {
+  case alive(pid), polls <= 0 {
+    False, _ -> True
+    True, True -> False
+    True, False -> {
+      process.sleep(poll_interval_ms)
+      gone_within(pid, polls - 1)
+    }
+  }
 }
 
 // --- the rig ---------------------------------------------------------------

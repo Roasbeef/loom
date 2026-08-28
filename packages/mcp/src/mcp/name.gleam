@@ -30,6 +30,17 @@ import gleam/string
 
 /// Every Gleam keyword: a mangled name landing on one of these gains a
 /// trailing underscore (and, having changed, a digest suffix).
+///
+/// **Mirrored, deliberately.** `client/catalog.mcp_server_name` restates
+/// this list and `max_length` below, because that parser runs before any
+/// server exists and this package is not in its reach; it refuses every
+/// `[mcp.<key>]` key mangling would rewrite, so a configured key really
+/// does name the `cap/mcp/<key>` module a program imports. Two lists that
+/// must agree are two lists that will drift, so the agreement is a gate
+/// rather than a comment: `catalog_test`'s
+/// `every_refused_server_name_is_one_mangling_would_rewrite_test` and
+/// `every_accepted_server_name_survives_mangling_test` fail if either
+/// side moves alone. Change this list or the bound and expect them red.
 const keywords = [
   "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
   "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
@@ -38,6 +49,9 @@ const keywords = [
 
 /// A mangled name longer than this is truncated before the digest suffix
 /// is appended, so no generated identifier grows without bound.
+///
+/// Mirrored by `client/catalog`'s `max_mangled_length`, under the same
+/// drift gate as `keywords` above.
 const max_length = 32
 
 /// Mangles an original tool or server name into a Gleam function or
