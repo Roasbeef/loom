@@ -131,6 +131,10 @@ pub type Transport {
 /// Must run in the process that will select — the port case opens the
 /// port there, because port messages go to the opener.
 ///
+/// The error is a worded reason carrying the spawn failure's own cause,
+/// so a caller can tell an absent executable (`"…: enoent"`) from a port
+/// that could not be opened for any other cause.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -154,7 +158,12 @@ pub fn open(
           spawn.directory,
         )
       {
-        Error(Nil) -> Error("mcp server process could not be spawned")
+        // The FFI's own reason travels: "enoent" for an absent
+        // executable is what tells a caller — the port tests included —
+        // that the host lacks the binary rather than that the spawn
+        // itself is broken.
+        Error(reason) ->
+          Error("mcp server process could not be spawned: " <> reason)
         Ok(opened) -> {
           let os_pid = option.from_result(ffi_port.port_os_pid(opened))
           let selector =
@@ -237,17 +246,67 @@ fn split_holding(
 ) -> Result(#(String, BitArray), Nil) {
   use <- bool.guard(when: drop > max_held_tail_bytes, return: Error(Nil))
   let size = bit_array.byte_size(bytes)
-  use <- bool.guard(when: drop >= size, return: Ok(#("", bytes)))
-  case bit_array.slice(bytes, 0, size - drop) {
-    Error(Nil) -> Error(Nil)
-    Ok(prefix) ->
-      case
-        bit_array.to_string(prefix),
-        bit_array.slice(bytes, size - drop, drop)
-      {
-        Ok(text), Ok(tail) -> Ok(#(text, tail))
-        Ok(_), Error(Nil) -> Error(Nil)
-        Error(Nil), _ -> split_holding(bytes, drop + 1)
+  case drop >= size {
+    True -> held_tail("", bytes)
+    False ->
+      case bit_array.slice(bytes, 0, size - drop) {
+        Error(Nil) -> Error(Nil)
+        Ok(prefix) ->
+          case
+            bit_array.to_string(prefix),
+            bit_array.slice(bytes, size - drop, drop)
+          {
+            Ok(text), Ok(tail) -> held_tail(text, tail)
+            Ok(_), Error(Nil) -> Error(Nil)
+            Error(Nil), _ -> split_holding(bytes, drop + 1)
+          }
       }
+  }
+}
+
+// Holds a tail only when more bytes could still complete it. A tail that
+// can never decode — a non-lead first byte, or continuations the lead
+// does not declare — used to be held until the next chunk arrived, so a
+// garbage-then-silence peer read as healthy; it fails now instead.
+fn held_tail(text: String, tail: BitArray) -> Result(#(String, BitArray), Nil) {
+  case plausible_truncation(tail) {
+    True -> Ok(#(text, tail))
+    False -> Error(Nil)
+  }
+}
+
+// Whether `tail` is a prefix of some multi-byte UTF-8 character: a lead
+// byte declaring strictly more bytes than are held, followed only by
+// continuation bytes.
+fn plausible_truncation(tail: BitArray) -> Bool {
+  case tail {
+    <<>> -> True
+    <<lead, rest:bytes>> ->
+      declared_length(lead) > bit_array.byte_size(tail) && continuations(rest)
+    _ -> False
+  }
+}
+
+// How many bytes a UTF-8 lead byte declares; 0 for a byte that can
+// never begin a multi-byte character (ASCII would have decoded already,
+// and 0xC0/0xC1/0xF5+ are not legal leads at all).
+fn declared_length(lead: Int) -> Int {
+  case
+    lead >= 0xc2 && lead <= 0xdf,
+    lead >= 0xe0 && lead <= 0xef,
+    lead >= 0xf0 && lead <= 0xf4
+  {
+    True, _, _ -> 2
+    _, True, _ -> 3
+    _, _, True -> 4
+    False, False, False -> 0
+  }
+}
+
+fn continuations(bytes: BitArray) -> Bool {
+  case bytes {
+    <<>> -> True
+    <<byte, rest:bytes>> -> byte >= 0x80 && byte <= 0xbf && continuations(rest)
+    _ -> False
   }
 }

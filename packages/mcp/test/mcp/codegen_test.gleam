@@ -473,6 +473,35 @@ pub fn sanitize_flattens_controls_and_bidi_test() {
   assert codegen.sanitize("café 名前") == "café 名前"
 }
 
+// The rest of the invisible set, each a way of writing text a model
+// reads and a human reviewing the same rendered comment does not: the
+// Arabic letter mark, the word joiner, the soft hyphen, a variation
+// selector, and the tag-character plane (U+E0000–U+E007F), which spells
+// ASCII invisibly.
+pub fn sanitize_flattens_the_invisible_set_test() {
+  assert codegen.sanitize("a\u{061C}b") == "a b"
+  assert codegen.sanitize("a\u{2060}b") == "a b"
+  assert codegen.sanitize("a\u{00AD}b") == "a b"
+  assert codegen.sanitize("a\u{FE0F}b") == "a b"
+  assert codegen.sanitize("a\u{E0041}\u{E0042}b") == "a  b"
+}
+
+// And the same codepoints cannot reach a generated doc comment: what the
+// renderer writes is the sanitized text, so the description's own bytes
+// are absent from the source.
+pub fn invisible_description_text_never_reaches_the_source_test() {
+  let hostile = "look\u{061C}\u{2060}\u{00AD}\u{FE0F}\u{E0041}\u{E0042} here"
+  let assert Ok(generated) = gen("srv", [tool("t", Some(hostile), no_params())])
+    as "a description of invisible characters should still generate"
+  assert string.contains(generated.source, "look")
+  assert !string.contains(generated.source, "\u{061C}")
+  assert !string.contains(generated.source, "\u{2060}")
+  assert !string.contains(generated.source, "\u{00AD}")
+  assert !string.contains(generated.source, "\u{FE0F}")
+  assert !string.contains(generated.source, "\u{E0041}")
+  assert !string.contains(generated.source, "\u{E0042}")
+}
+
 pub fn escape_is_total_over_hostile_text_test() {
   assert codegen.escape("a\"b\\c") == "a\\\"b\\\\c"
   assert codegen.escape("名") == "\\u{540D}"

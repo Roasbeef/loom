@@ -122,7 +122,9 @@ pub fn options(client_version: String) -> Options {
 /// ```
 ///
 pub fn with_handshake_timeout(options: Options, ms: Int) -> Options {
-  Options(..options, handshake_timeout_ms: ms)
+  // Clamped to at least one millisecond: a non-positive delay would
+  // reach process.send_after, which raises on negatives.
+  Options(..options, handshake_timeout_ms: int.max(ms, 1))
 }
 
 /// Why a call produced no usable result. Plain data, always in-band:
@@ -256,7 +258,12 @@ pub fn list_tools(
   client: Client,
   timeout_ms: Int,
 ) -> Result(List(ToolDescriptor), ClientError) {
-  list_pages(client, timeout_ms, None, [], max_tool_pages)
+  // Transient memory is bounded but not small: up to `max_tool_pages`
+  // pages of up to `stdio.max_line_bytes` each accumulate before the
+  // listing flattens — a ceiling near a gigabyte, documented as the
+  // decision rather than hidden. `timeout_ms` is clamped to at least
+  // one millisecond; process.send_after raises on negatives.
+  list_pages(client, int.max(timeout_ms, 1), None, [], max_tool_pages)
 }
 
 /// Calls one tool by its server-declared name. `arguments` is passed
@@ -274,8 +281,14 @@ pub fn call_tool(
   arguments: JsonValue,
   timeout_ms: Int,
 ) -> Result(CallToolResult, ClientError) {
+  // Clamped for the same reason as list_tools: send_after raises on a
+  // negative delay, and a config typo should not kill the client.
   use value <- result.try(
-    request(client, timeout_ms, protocol.call_tool_request(_, name, arguments)),
+    request(client, int.max(timeout_ms, 1), protocol.call_tool_request(
+      _,
+      name,
+      arguments,
+    )),
   )
   protocol.decode_call_tool_result(value)
   |> result.map_error(malformed)
@@ -395,10 +408,9 @@ fn exchange(
       // Demonitoring flushes a DOWN that arrived after the wait, so the
       // only thing this exchange can leave behind is a late reply.
       process.demonitor_process(monitor)
-      result.unwrap(
-        answer,
-        Error(Unavailable(reason: "mcp client did not answer")),
-      )
+      result.lazy_unwrap(answer, fn() {
+        Error(Unavailable(reason: "mcp client did not answer"))
+      })
     }
   }
 }

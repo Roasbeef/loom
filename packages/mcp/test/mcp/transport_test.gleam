@@ -1,13 +1,16 @@
 //// The transport seam: the pure UTF-8 chunk splitter, and the
 //// port-backed production transport against real child processes.
 ////
-//// The real-port tests are feature-detected: on a host without the
-//// spawned binary they print a loud SKIP line instead of failing, the
-//// same pattern as codemode's jailed e2e suite. `/bin/echo`, `/bin/cat`
-//// and `/bin/sh` are the children — tiny, universal, and enough to
-//// prove the port FFI writes, reads, delivers the exit, and threads
-//// argv, env and the working directory. A real MCP fixture server is
-//// another slice's work.
+//// The real-port tests are feature-detected, but narrowly: a spawn that
+//// failed because the host has no such executable (`enoent`) prints a
+//// loud SKIP line, and **every other failure fails the test**. Skipping
+//// on any error at all is how a broken `open_port` option list — caught
+//// in the FFI, returned as an error — would have read as a green suite
+//// on a host that simply lacked `/bin/cat`. `/bin/echo`, `/bin/cat` and
+//// `/bin/sh` are the children — tiny, universal, and enough to prove the
+//// port FFI writes, reads, delivers the exit, and threads argv, env and
+//// the working directory — so in practice these tests always run. A real
+//// MCP fixture server is another slice's work.
 
 import gleam/bit_array
 import gleam/erlang/process
@@ -49,7 +52,44 @@ pub fn utf8_prefix_refuses_bytes_that_are_not_utf8_test() {
   assert transport.utf8_prefix(<<0xff, 0xfe, "abc":utf8>>) == Error(Nil)
 }
 
+// A chunk that is *entirely* impossible bytes settles at once. Held back
+// three at a time it would decode as an empty prefix and a garbage tail,
+// which is how a peer emitting junk and then falling silent used to read
+// as healthy.
+pub fn utf8_prefix_refuses_a_chunk_of_only_impossible_bytes_test() {
+  assert transport.utf8_prefix(<<0xff, 0xff, 0xff>>) == Error(Nil)
+}
+
+// A bare continuation byte begins no character, so no later chunk can
+// complete it: a fault rather than a held tail.
+pub fn utf8_prefix_refuses_a_bare_continuation_tail_test() {
+  assert transport.utf8_prefix(<<"a":utf8, 0x80>>) == Error(Nil)
+}
+
+// A lead byte declaring more bytes than are held is a genuine
+// truncation, and is still held — this is the case the refusals above
+// must not swallow.
+pub fn utf8_prefix_still_holds_a_genuinely_truncated_character_test() {
+  assert transport.utf8_prefix(<<"a":utf8, 0xf0, 0x9f, 0x92>>)
+    == Ok(#("a", <<0xf0, 0x9f, 0x92>>))
+}
+
 // --- the real port ----------------------------------------------------------
+
+// The absent-executable reason the FFI reports; the only failure a port
+// test is allowed to skip on.
+const missing_executable = "enoent"
+
+// A real-port test's one legal skip. Anything other than an absent
+// binary is a regression in the port FFI or the transport, and must be
+// loud: a silent skip on every failure is what made this suite able to
+// pass while spawning nothing at all.
+fn skip_only_if_absent(name: String, reason: String) -> Nil {
+  case string.contains(reason, missing_executable) {
+    True -> io.println("SKIP " <> name <> ": " <> reason)
+    False -> panic as { "the port transport failed: " <> reason }
+  }
+}
 
 fn open_for_test(
   spawn: transport.Spawn,
@@ -105,7 +145,7 @@ fn receive_line(
 pub fn a_real_childs_output_and_exit_arrive_as_events_test() {
   case open_for_test(transport.spawn("/bin/echo", ["hi"])) {
     Error(reason) ->
-      io.println("SKIP a_real_childs_output_and_exit: " <> reason)
+      skip_only_if_absent("a_real_childs_output_and_exit", reason)
     Ok(#(connection, selector)) -> {
       let #(bytes, closed) = drain(selector, <<>>)
       assert bytes == <<"hi\n":utf8>>
@@ -120,7 +160,7 @@ pub fn a_line_written_to_a_real_child_comes_back_test() {
   // read from its stdout, proving the port writes and reads for real.
   case open_for_test(transport.spawn("/bin/cat", [])) {
     Error(reason) ->
-      io.println("SKIP a_line_written_to_a_real_child: " <> reason)
+      skip_only_if_absent("a_line_written_to_a_real_child", reason)
     Ok(#(connection, selector)) -> {
       let assert Ok(Nil) = connection.send("{\"ping\":1}\n")
       assert receive_line(selector, "") == "{\"ping\":1}\n"
@@ -138,7 +178,7 @@ pub fn env_and_directory_reach_a_real_child_test() {
     |> transport.with_env([#("LOOM_MCP_PROBE", "probe-value")])
     |> transport.in_directory("/")
   case open_for_test(spawn) {
-    Error(reason) -> io.println("SKIP env_and_directory: " <> reason)
+    Error(reason) -> skip_only_if_absent("env_and_directory", reason)
     Ok(#(connection, selector)) -> {
       let #(bytes, closed) = drain(selector, <<>>)
       assert bytes == <<"/ probe-value\n":utf8>>
@@ -162,7 +202,7 @@ pub fn the_client_over_a_real_port_answers_method_not_found_test() {
     )
   case outcome {
     Error(client.TransportFailed(reason:)) ->
-      io.println("SKIP the_client_over_a_real_port: " <> reason)
+      skip_only_if_absent("the_client_over_a_real_port", reason)
     Error(client.HandshakeFailed(error: client.ServerError(code:, ..))) -> {
       assert code == client.method_not_found_code
     }

@@ -30,9 +30,11 @@
 //// façade's one `options` argument, keyed by original wire name.
 
 import core/json.{type JsonValue}
+import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 
 /// The four scalar shapes the typed subset admits.
 pub type Scalar {
@@ -110,11 +112,20 @@ pub type Plan {
 pub fn plan(input_schema: JsonValue) -> Plan {
   case top_level(input_schema) {
     Error(reason) -> WholeValue(reason:)
-    Ok(#(properties, required)) ->
+    Ok(#(properties, required)) -> {
+      // A hostile schema can hold hundreds of thousands of names inside
+      // one listing line, so both lookups are built once — membership
+      // over `required`, first declaration over `properties` — and every
+      // per-name step is a keyed lookup rather than a list scan. Scans
+      // here made `plan` quadratic in attacker-controlled input, which
+      // is CPU exhaustion in the harness during generation.
+      let declared = first_declarations(properties)
+      let required_names = set.from_list(required)
       Typed(
-        params: list.map(required, required_param(_, properties)),
-        optionals: optionals(properties, required),
+        params: list.map(required, required_param(_, declared)),
+        optionals: optionals(properties, required_names),
       )
+    }
   }
 }
 
@@ -162,24 +173,40 @@ fn required_names(
 
 // A name `required` lists twice is one wire parameter; the first
 // occurrence keeps its place and the rest are dropped rather than minting
-// a duplicate argument.
+// a duplicate argument. Membership is a set, not a scan of the kept list,
+// so a million-name `required` costs n log n rather than n².
 fn dedupe(names: List(String)) -> List(String) {
-  list.fold(names, [], fn(kept, name) {
-    case list.contains(kept, name) {
-      True -> kept
-      False -> [name, ..kept]
+  let #(_seen, kept) =
+    list.fold(names, #(set.new(), []), fn(state, name) {
+      let #(seen, kept) = state
+      case set.contains(seen, name) {
+        True -> state
+        False -> #(set.insert(seen, name), [name, ..kept])
+      }
+    })
+  list.reverse(kept)
+}
+
+// `json.Object` keeps a duplicate key as repeated pairs, and the list
+// scan this replaces answered with the *first* — a dict built by blind
+// insert would keep the last, silently changing which declaration wins.
+// The fold inserts only names not yet present, so first still wins.
+fn first_declarations(
+  properties: List(#(String, JsonValue)),
+) -> Dict(String, JsonValue) {
+  list.fold(properties, dict.new(), fn(declared, entry) {
+    let #(name, value) = entry
+    case dict.has_key(declared, name) {
+      True -> declared
+      False -> dict.insert(declared, name, value)
     }
   })
-  |> list.reverse
 }
 
 // --- required parameters -----------------------------------------------------
 
-fn required_param(
-  name: String,
-  properties: List(#(String, JsonValue)),
-) -> Param {
-  case list.key_find(properties, name) {
+fn required_param(name: String, declared: Dict(String, JsonValue)) -> Param {
+  case dict.get(declared, name) {
     // Tier 2 by decree: `required` names it, `properties` never declared
     // it, and dropping a parameter is the one thing this module must
     // never do.
@@ -273,11 +300,11 @@ fn enum_of(fields: List(#(String, JsonValue))) -> List(String) {
 
 fn optionals(
   properties: List(#(String, JsonValue)),
-  required: List(String),
+  required: Set(String),
 ) -> List(Optional) {
   list.filter_map(properties, fn(entry) {
     let #(name, declared) = entry
-    case list.contains(required, name) {
+    case set.contains(required, name) {
       True -> Error(Nil)
       False -> Ok(Optional(original: name, note: declared_note(declared)))
     }

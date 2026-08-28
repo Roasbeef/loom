@@ -384,13 +384,20 @@ pub fn a_server_notification_is_dropped_test() {
         }
       }),
     )
-  let assert Ok(result) =
+  let assert Ok(first) =
     client.call_tool(connected, "echo", json.Object([]), 1000)
-  assert result.content == [protocol.Text("ok")]
-  // The notification produced no answer: the client has written exactly
-  // initialize, initialized, and the one tools/call.
-  process.sleep(20)
-  assert list.length(fake_server.seen(fake)) == 3
+  assert first.content == [protocol.Text("ok")]
+  // A second full round trip is what proves the absence, and it proves
+  // it causally rather than by waiting. Any answer the notification had
+  // provoked would have been written to the fake *before* this call's
+  // tools/call — same sender, same mailbox, so ordered — and the fake
+  // records every line it takes off that mailbox before it replies. So
+  // once this call has returned, an extra line would already be counted.
+  let assert Ok(second) =
+    client.call_tool(connected, "echo", json.Object([]), 1000)
+  assert second.content == [protocol.Text("ok")]
+  // Exactly initialize, initialized, and the two tools/call requests.
+  assert list.length(fake_server.seen(fake)) == 4
   client.stop(connected)
 }
 

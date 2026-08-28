@@ -596,10 +596,11 @@ fn surface_signature(facade: Facade) -> String {
 // --- server text hygiene -----------------------------------------------------
 
 /// Replaces every invisible or direction-changing codepoint with one
-/// space: C0 and C1 controls (`\n`, `\r`, `\t` included), U+2028/U+2029,
-/// U+200B–U+200F, U+202A–U+202E, U+2061–U+2069 and U+FEFF. All other
-/// Unicode passes. This is what keeps attacker prose inside the one
-/// comment line the generator wrote it into.
+/// space: C0 and C1 controls (`\n`, `\r`, `\t` included), U+00AD,
+/// U+061C, U+2028/U+2029, U+200B–U+200F, U+202A–U+202E, U+2060–U+2069,
+/// U+FE00–U+FE0F, U+FEFF and the tag-character plane U+E0000–U+E007F.
+/// All other Unicode passes. This is what keeps attacker prose inside
+/// the one comment line the generator wrote it into.
 ///
 /// ## Examples
 ///
@@ -618,16 +619,26 @@ pub fn sanitize(text: String) -> String {
   |> string.concat
 }
 
+// C0/C1 controls, line/paragraph separators, the zero-width and
+// direction-control sets (bidi overrides, the Arabic letter mark, the
+// word joiner and invisible operators), the soft hyphen, variation
+// selectors, the BOM, and the tag-character plane — the last being the
+// classic vector for instructions visible to a model and invisible to a
+// human reading the same rendered text.
 fn invisible(code: Int) -> Bool {
   code < 0x20
   || code == 0x7F
   || { code >= 0x80 && code <= 0x9F }
+  || code == 0xAD
+  || code == 0x061C
   || code == 0x2028
   || code == 0x2029
   || { code >= 0x200B && code <= 0x200F }
   || { code >= 0x202A && code <= 0x202E }
-  || { code >= 0x2061 && code <= 0x2069 }
+  || { code >= 0x2060 && code <= 0x2069 }
+  || { code >= 0xFE00 && code <= 0xFE0F }
   || code == 0xFEFF
+  || { code >= 0xE0000 && code <= 0xE007F }
 }
 
 /// Caps text at `max` characters, cutting on a codepoint boundary and

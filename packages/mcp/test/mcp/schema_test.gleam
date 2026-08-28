@@ -1,4 +1,5 @@
 import core/json.{type JsonValue}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import mcp/schema
@@ -321,6 +322,95 @@ pub fn optionals_keep_properties_order_test() {
     )
   let assert schema.Typed(params: [_], optionals:) = plan
   assert list.map(optionals, fn(optional) { optional.original }) == ["z", "a"]
+}
+
+// --- hostile size and duplicate declarations --------------------------------
+
+// The regression trip-wire for the quadratic `plan`. Before the fix,
+// `required` membership was a scan of the kept list and each required
+// name was a `list.key_find` over the `properties` pairs — two nested
+// walks of the same attacker-controlled list. The size is chosen against
+// the per-test budget rather than for roundness — 50s, eunit's 5s default
+// times gleeunit's `scale_timeouts` of 10. Measured on this tree: keyed,
+// `plan` over 100,000 names costs 0.37s; scanned, it costs 4.3s at 20,000
+// and 20.7s at 40,000 (quadratic) and at 100,000 it does not finish, so
+// the reverted shape ends this test as a eunit timeout rather than as a
+// suite that is merely seconds slower. Built programmatically — a parsed
+// string of this size would measure the parser instead.
+const hostile_param_count = 100_000
+
+pub fn a_huge_required_list_plans_in_linear_time_test() {
+  // ["p0", … , "p99999"], counted down so every step is one prepend.
+  let names =
+    int.range(from: hostile_param_count - 1, to: -1, with: [], run: fn(acc, i) {
+      ["p" <> int.to_string(i), ..acc]
+    })
+  let properties = list.map(names, fn(name) { #(name, typed("string")) })
+  let assert schema.Typed(params:, optionals: []) =
+    schema.plan(object_schema(properties, names))
+    as "a large well-formed object schema should plan as typed"
+  assert list.length(params) == hostile_param_count
+  // Every one is Tier 1, and the `required` order is kept end to end.
+  assert list.all(params, fn(param) {
+    param.kind == schema.Simple(scalar: schema.ScalarString)
+  })
+  assert list.first(params) == Ok(simple("p0", schema.ScalarString))
+  assert list.last(params) == Ok(simple("p99999", schema.ScalarString))
+}
+
+// `json.Object` keeps a duplicate key as repeated pairs, and the plan
+// answers with the *first* declaration in both dimensions: the first
+// `required` occurrence fixes the parameter's position, the first
+// `properties` pair fixes its type. A dict built by blind insert would
+// have kept the `integer`.
+pub fn the_first_declaration_of_a_duplicated_name_wins_test() {
+  let input_schema =
+    json.Object([
+      #("type", json.String("object")),
+      #(
+        "properties",
+        json.Object([
+          #("a", typed("string")),
+          #("a", typed("integer")),
+          #("b", typed("integer")),
+        ]),
+      ),
+      #(
+        "required",
+        json.Array([json.String("a"), json.String("b"), json.String("a")]),
+      ),
+    ])
+  assert schema.plan(input_schema)
+    == schema.Typed(
+      params: [
+        simple("a", schema.ScalarString),
+        simple("b", schema.ScalarInt),
+      ],
+      optionals: [],
+    )
+}
+
+// The other dimension of the same duplication, pinned as it stands: an
+// optional key declared twice surfaces once per pair. Optionals are
+// documented pass-through keys rather than arguments, so a repeat costs
+// a duplicated doc line and nothing else.
+pub fn a_duplicated_optional_key_surfaces_per_pair_test() {
+  let input_schema =
+    json.Object([
+      #("type", json.String("object")),
+      #(
+        "properties",
+        json.Object([
+          #("x", described("string", "first")),
+          #("x", described("integer", "second")),
+        ]),
+      ),
+    ])
+  assert schema.plan(input_schema)
+    == schema.Typed(params: [], optionals: [
+      schema.Optional(original: "x", note: Some("first")),
+      schema.Optional(original: "x", note: Some("second")),
+    ])
 }
 
 // A duplicated `required` name is one wire parameter, not two arguments.
