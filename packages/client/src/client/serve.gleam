@@ -953,25 +953,12 @@ fn code_mode_seam(
       log.warn(logger, "codemode.unavailable", [
         field.text(key: "reason", value: reason),
       ])
-      case settings.catalog.mcp_servers {
-        [] -> Nil
-        servers ->
-          log.warn(logger, "mcp.unavailable", [
-            field.text(
-              key: "servers",
-              value: string.join(
-                list.map(servers, fn(server) { server.name }),
-                ",",
-              ),
-            ),
-            field.text(
-              key: "reason",
-              value: "MCP servers are reached from code-mode programs only, "
-                <> "and this host registers no code_mode tool, so none was "
-                <> "started",
-            ),
-          ])
-      }
+      skipped_mcp(
+        settings.catalog.mcp_servers,
+        logger,
+        "MCP servers are reached from code-mode programs only, and this "
+          <> "host registers no code_mode tool, so none was started",
+      )
       #(None, mcp_wiring.none())
     }
     Ok(toolchain) -> {
@@ -983,7 +970,8 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      let layer = start_mcp(settings.catalog.mcp_servers, logger)
+      let layer =
+        start_mcp(settings.codemode_seams, settings.catalog.mcp_servers, logger)
       #(
         Some(
           codemode_wiring.default_config(
@@ -1009,7 +997,66 @@ fn code_mode_seam(
   }
 }
 
-// Every configured server started, and one line each way.
+/// Whether the seams this server offers can reach an MCP server at all.
+///
+/// A server's tools are a module a **workspace** program may import, and
+/// the orchestration seam is widened by none of it, ever
+/// (`client/codemode.over_mcp`) — so a host serving orchestration alone
+/// holds nothing that could ever call one, and starting third-party
+/// server processes for it, each with a configured secret in its
+/// environment, would be cost and attack surface bought for no
+/// capability. The same argument the absent-`code_mode` arm above makes,
+/// one decision further in.
+///
+/// A function rather than an inline `case` because it is the whole of
+/// the decision and the only part of this boot a hermetic test can hold
+/// still.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.mcp_reachable(codemode.WorkspaceOnly)
+/// ```
+///
+pub fn mcp_reachable(seams: codemode_wiring.Seams) -> Bool {
+  case seams {
+    codemode_wiring.WorkspaceOnly | codemode_wiring.BothSeams -> True
+    codemode_wiring.OrchestrationOnly -> False
+  }
+}
+
+// One `mcp.unavailable` line naming every server that was configured and
+// not started, and why. Worded as the layer's own refusals are: a
+// skipped server has no module, so a program importing it is refused by
+// vetting with no word about the absence, and this line is the only
+// thing an operator will ever see about it.
+fn skipped_mcp(
+  servers: List(catalog.McpServer),
+  logger: Logger,
+  reason: String,
+) -> Nil {
+  case servers {
+    [] -> Nil
+    configured ->
+      log.warn(logger, "mcp.unavailable", [
+        field.text(
+          key: "servers",
+          value: string.join(
+            list.map(configured, fn(server) { server.name }),
+            ",",
+          ),
+        ),
+        field.text(key: "reason", value: reason),
+      ])
+  }
+}
+
+// Every configured server this host can reach started, and one line
+// each way.
+//
+// The seam gate lives here rather than at the call site so there is one
+// place a server can be started from, and it is the place that asks
+// whether anything could call one.
 //
 // `mcp.ready` names the servers that answered and how many tools each
 // listed, because "how many" is the number that decides what the
@@ -1020,6 +1067,25 @@ fn code_mode_seam(
 // program importing it is refused by vetting with no word about why the
 // module is absent.
 fn start_mcp(
+  seams: codemode_wiring.Seams,
+  servers: List(catalog.McpServer),
+  logger: Logger,
+) -> mcp_wiring.Layer {
+  case mcp_reachable(seams) {
+    True -> started_mcp(servers, logger)
+    False -> {
+      skipped_mcp(
+        servers,
+        logger,
+        "MCP servers are reached from the workspace seam only, and this "
+          <> "host serves the orchestration seam alone, so none was started",
+      )
+      mcp_wiring.none()
+    }
+  }
+}
+
+fn started_mcp(
   servers: List(catalog.McpServer),
   logger: Logger,
 ) -> mcp_wiring.Layer {

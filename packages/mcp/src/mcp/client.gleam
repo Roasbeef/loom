@@ -62,7 +62,12 @@ import mcp/transport.{type Transport}
 
 /// How long the client actor's initialiser (which opens the transport)
 /// may take before start fails.
-const init_timeout_ms = 5000
+///
+/// Public because it is the first of the two budgets `start` spends —
+/// this one, then `Options.handshake_timeout_ms` — and a caller that
+/// bounds its own wait on `start` has to know the sum rather than guess
+/// at a number near it.
+pub const init_timeout_ms = 5000
 
 /// Slack added to a call's own deadline before the caller gives up
 /// waiting for the actor to answer: the actor enforces the real deadline

@@ -89,46 +89,17 @@ type Ready {
 }
 
 fn run_live(ready: Ready) -> Nil {
-  let workspace = ready.root <> "/work"
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
-    as "the live rig must have a workspace"
-  let base_policy = base_policy(ready.root)
-  let assert Ok(pool) =
-    exec.start_pool(size: 3, spawn: fn() {
-      exec.spawn_helper(exec.SpawnConfig(
-        helper_path: ready.helper_path,
-        shell_path: "/bin/sh",
-        base_policy:,
-        helper_args: [],
-        tmp_dir: workspace <> "/tmp",
-        handshake_timeout_ms: 5000,
-        cancel_grace_ms: 3000,
-        heartbeat_interval_ms: 0,
-      ))
-    })
-    as "the helper pool must start"
-  let assert Ok(broker_actor) =
-    broker.start(
-      broker.BrokerConfig(
-        entropy: broker_entropy(),
-        clock: wall_clock(),
-        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
-    as "the toolchain must be located"
+  let rig = rig(ready, under: ready.root)
   let seam =
     codemode.seam(codemode.default_config(
-      broker: broker_actor,
+      broker: rig.broker,
       clock: wall_clock(),
-      workspace:,
-      toolchain:,
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
     ))
   let outcome =
     codemode_tool.tool_for(seam).run(
-      live_ctx(workspace, base_policy, wall_clock()),
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
       json.Object([
         #("program", json.String(program_source())),
         #("within_ms", json.Int(600_000)),
@@ -163,8 +134,7 @@ fn run_live(ready: Ready) -> Nil {
   // Printed, so a degraded run is visible rather than silently green:
   // *which* layers held is a property of this kernel, not of the harness.
   io.println("code-mode tool e2e: " <> sandbox)
-  broker.stop(broker_actor)
-  exec.stop_pool(pool)
+  stop_rig(rig)
 }
 
 fn sandbox_line(text: String) -> String {
@@ -209,43 +179,13 @@ pub fn a_narrowed_base_mints_an_approval_the_retry_spends_test() {
 // record for a human to answer. The assertion on `raised.denial.wanted`
 // is the one that was impossible.
 fn run_escalating(ready: Ready) -> Nil {
-  let root = ready.root <> "-escalation"
-  let workspace = root <> "/work"
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
-    as "the live rig must have a workspace"
-  let base_policy = base_policy(root)
-  let assert Ok(pool) =
-    exec.start_pool(size: 3, spawn: fn() {
-      exec.spawn_helper(exec.SpawnConfig(
-        helper_path: ready.helper_path,
-        shell_path: "/bin/sh",
-        base_policy:,
-        helper_args: [],
-        tmp_dir: workspace <> "/tmp",
-        handshake_timeout_ms: 5000,
-        cancel_grace_ms: 3000,
-        heartbeat_interval_ms: 0,
-      ))
-    })
-    as "the helper pool must start"
-  let assert Ok(broker_actor) =
-    broker.start(
-      broker.BrokerConfig(
-        entropy: broker_entropy(),
-        clock: wall_clock(),
-        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
-    as "the toolchain must be located"
+  let rig = rig(ready, under: ready.root <> "-escalation")
   let seam =
     codemode.seam(codemode.default_config(
-      broker: broker_actor,
+      broker: rig.broker,
       clock: wall_clock(),
-      workspace:,
-      toolchain:,
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
     ))
   // The host, standing in for `client/wiring` plus a human at a client:
   // it records what it was asked and answers with exactly the diff the
@@ -255,7 +195,7 @@ fn run_escalating(ready: Ready) -> Nil {
   let asked = process.new_subject()
   let ctx =
     tool.Ctx(
-      ..live_ctx(workspace, base_policy, wall_clock()),
+      ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
       env: [
         #("PATH", "/usr/local/bin:/usr/bin:/bin"),
         #(unallowed_env, "probe"),
@@ -291,8 +231,7 @@ fn run_escalating(ready: Ready) -> Nil {
     <> unallowed_env
     <> "]; the approved re-execution ran",
   )
-  broker.stop(broker_actor)
-  exec.stop_pool(pool)
+  stop_rig(rig)
 }
 
 // --- a configured MCP server, end to end (#106) ------------------------------
@@ -339,37 +278,7 @@ pub fn a_program_calls_a_configured_mcp_server_test() {
 // what the fake replaces, and it is the one part of this path that has
 // no bearing on whether a generated façade compiles and dispatches.
 fn run_mcp(ready: Ready) -> Nil {
-  let root = ready.root <> "-mcp"
-  let workspace = root <> "/work"
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
-    as "the live rig must have a workspace"
-  let base_policy = base_policy(root)
-  let assert Ok(pool) =
-    exec.start_pool(size: 3, spawn: fn() {
-      exec.spawn_helper(exec.SpawnConfig(
-        helper_path: ready.helper_path,
-        shell_path: "/bin/sh",
-        base_policy:,
-        helper_args: [],
-        tmp_dir: workspace <> "/tmp",
-        handshake_timeout_ms: 5000,
-        cancel_grace_ms: 3000,
-        heartbeat_interval_ms: 0,
-      ))
-    })
-    as "the helper pool must start"
-  let assert Ok(broker_actor) =
-    broker.start(
-      broker.BrokerConfig(
-        entropy: broker_entropy(),
-        clock: wall_clock(),
-        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
-    as "the toolchain must be located"
+  let rig = rig(ready, under: ready.root <> "-mcp")
   let layer = live_layer()
   // The generated module is the real artifact: the façade the model
   // writes against and the source the build compiles are the same
@@ -385,16 +294,16 @@ fn run_mcp(ready: Ready) -> Nil {
   let seam =
     codemode.seam(
       codemode.default_config(
-        broker: broker_actor,
+        broker: rig.broker,
         clock: wall_clock(),
-        workspace:,
-        toolchain:,
+        workspace: rig.workspace,
+        toolchain: rig.toolchain,
       )
       |> codemode.over_mcp(layer),
     )
   let outcome =
     codemode_tool.tool_for(seam).run(
-      live_ctx(workspace, base_policy, wall_clock()),
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
       json.Object([
         #("program", json.String(mcp_program_source())),
         #("within_ms", json.Int(600_000)),
@@ -411,8 +320,7 @@ fn run_mcp(ready: Ready) -> Nil {
     <> "prelude and reached its server",
   )
   mcp_wiring.stop(layer)
-  broker.stop(broker_actor)
-  exec.stop_pool(pool)
+  stop_rig(rig)
 }
 
 // The layer a host would have after `mcp.start`, minus the spawn: a real
@@ -462,10 +370,26 @@ const fixture_tools = 3
 // and the `mcp.<name>` capability suffix.
 const fixture_server = "fixture"
 
+// What the fixture's one failing tool says, verbatim, and the label the
+// program puts in front of it when it read the failure as `ToolFailed`.
+// `isError: true` is a *tool* verdict on a call that settled, so the
+// whole claim is that the program branched on it as such rather than on
+// a transport error — a distinction nothing below the program can make
+// for it.
+const wire_failure = "the issue tracker refused"
+
+const tool_failed_label = "tool-failed "
+
+const wrong_failure = "the failing tool failed the wrong way"
+
+const no_failure = "the failing tool did not fail"
+
 /// The program a model would write against a configured MCP server: one
 /// typed façade call carrying a required argument and an optional one,
-/// and a report that reads the server's structured answer back out
-/// field by field. What it prints is what crossed.
+/// a report that reads the server's structured answer back out field by
+/// field, and a second call to the tool that answers `isError: true`,
+/// whose failure the program has to read as `mcp.ToolFailed` rather than
+/// as a call that did not settle. What it prints is what crossed.
 pub fn mcp_process_program_source() -> String {
   "import cap/mcp\n"
   <> "import cap/mcp/"
@@ -487,7 +411,31 @@ pub fn mcp_process_program_source() -> String {
   <> "\"))],\n"
   <> "  ) {\n"
   <> "    Error(_error) -> report.failure(\"the mcp call did not settle\")\n"
-  <> "    Ok(found) -> report.text(mcp.text(found) <> \" \" <> echoed(found))\n"
+  <> "    Ok(found) ->\n"
+  <> "      report.text(\n"
+  <> "        mcp.text(found) <> \" \" <> echoed(found) <> \" \" <> refused(),\n"
+  <> "      )\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn refused() -> String {\n"
+  <> "  case "
+  <> fixture_server
+  <> "."
+  <> digested("create_issue", "Create-Issue!")
+  <> "(title: \"anything\", options: []) {\n"
+  <> "    Ok(_result) -> \""
+  <> no_failure
+  <> "\"\n"
+  // Written out rather than as label shorthand: vetting parses a
+  // slightly narrower Gleam than the compiler, and `message:` in a
+  // pattern is one of the things it does not take.
+  <> "    Error(mcp.ToolFailed(message: message, content: _content)) -> \""
+  <> tool_failed_label
+  <> "\" <> message\n"
+  <> "    Error(_other) -> \""
+  <> wrong_failure
+  <> "\"\n"
   <> "  }\n"
   <> "}\n"
   <> "\n"
@@ -536,40 +484,10 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
   // Short on purpose: the execution's cap socket sits under this root
   // and an AF_UNIX path is capped near 100 bytes, which the tree already
   // refuses in band rather than failing as an opaque `einval`.
-  let root = fixture.ready.root <> "-mcp-live"
-  let workspace = root <> "/work"
-  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
-    as "the live rig must have a workspace"
-  let base_policy = base_policy(root)
-  let assert Ok(pool) =
-    exec.start_pool(size: 3, spawn: fn() {
-      exec.spawn_helper(exec.SpawnConfig(
-        helper_path: fixture.ready.helper_path,
-        shell_path: "/bin/sh",
-        base_policy:,
-        helper_args: [],
-        tmp_dir: workspace <> "/tmp",
-        handshake_timeout_ms: 5000,
-        cancel_grace_ms: 3000,
-        heartbeat_interval_ms: 0,
-      ))
-    })
-    as "the helper pool must start"
-  let assert Ok(broker_actor) =
-    broker.start(
-      broker.BrokerConfig(
-        entropy: broker_entropy(),
-        clock: wall_clock(),
-        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(fixture.ready.seed_root)
-    as "the toolchain must be located"
+  let rig = rig(fixture.ready, under: fixture.ready.root <> "-mcp-live")
   // The pid file is the child's own account of itself, written before it
   // answers anything, so a completed handshake means it is there.
-  let pid_file = root <> "/server.pid"
+  let pid_file = rig.root <> "/server.pid"
   let _ = simplifile.delete(pid_file)
   let configured =
     catalog.McpServer(
@@ -595,16 +513,16 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
   let seam =
     codemode.seam(
       codemode.default_config(
-        broker: broker_actor,
+        broker: rig.broker,
         clock: wall_clock(),
-        workspace:,
-        toolchain:,
+        workspace: rig.workspace,
+        toolchain: rig.toolchain,
       )
       |> codemode.over_mcp(layer),
     )
   let outcome =
     codemode_tool.tool_for(seam).run(
-      live_ctx(workspace, base_policy, wall_clock()),
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
       json.Object([
         #("program", json.String(mcp_process_program_source())),
         #("within_ms", json.Int(600_000)),
@@ -622,7 +540,16 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
     text,
     "ok message=" <> wire_message <> " tag=" <> wire_tag,
   )
-  // (c) And stopping the layer takes the child down. Alive first, so a
+  // (c) A tool-level failure, across the same boundary. The call
+  // settled; the *tool* said no, and `is_error` carried that verdict
+  // through the router, the cap wire and `cap/internal/mcp` to reach the
+  // program as `ToolFailed` with the server's own text as its message.
+  // Asserted on what the program composed, because the claim is that the
+  // program observed the failure — not that the harness saw one.
+  assert string.contains(text, tool_failed_label <> wire_failure)
+  assert !string.contains(text, wrong_failure)
+  assert !string.contains(text, no_failure)
+  // (d) And stopping the layer takes the child down. Alive first, so a
   // fixture that had already exited could not pass this by default.
   let pid = recorded_pid(pid_file)
   assert alive(pid)
@@ -630,11 +557,11 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
   assert gone_within(pid, teardown_polls)
   io.println(
     "code-mode mcp e2e: a real escript MCP server answered through the "
-    <> "generated façade, and stopping the layer reaped pid "
+    <> "generated façade, answered one call `isError: true`, and stopping "
+    <> "the layer reaped pid "
     <> pid,
   )
-  broker.stop(broker_actor)
-  exec.stop_pool(pool)
+  stop_rig(rig)
 }
 
 // (b) What the generator made of a hostile listing, in the two artifacts
@@ -930,6 +857,74 @@ pub fn freshness_accepts_a_binary_at_least_as_new_as_every_source_test() {
 
 pub fn freshness_with_no_sources_is_current_test() {
   assert freshness(0, []) == Current
+}
+
+// Everything the four live runs stand up before they can execute
+// anything: a workspace and its tmp directory, the session base, a
+// helper pool over the checked-in `loom-exec`, a broker over that pool,
+// and the located toolchain. One helper because the four wanted exactly
+// the same rig and said so four times over.
+//
+// Each run still names its own root, and that is load-bearing rather
+// than tidiness: a run's build directory, its cap socket and its token
+// file all live under it, and the launcher's janitor runs teardown
+// asynchronously — two runs sharing a root would race each other's
+// cleanup (issue #87).
+type Rig {
+  Rig(
+    root: String,
+    workspace: String,
+    base_policy: policy.SandboxPolicy,
+    pool: exec.Pool,
+    broker: broker.Broker,
+    toolchain: codemode.Toolchain,
+  )
+}
+
+fn rig(ready: Ready, under root: String) -> Rig {
+  let workspace = root <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the live rig must have a workspace"
+  let base = base_policy(root)
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      exec.spawn_helper(exec.SpawnConfig(
+        helper_path: ready.helper_path,
+        shell_path: "/bin/sh",
+        base_policy: base,
+        helper_args: [],
+        tmp_dir: workspace <> "/tmp",
+        handshake_timeout_ms: 5000,
+        cancel_grace_ms: 3000,
+        heartbeat_interval_ms: 0,
+      ))
+    })
+    as "the helper pool must start"
+  let assert Ok(broker_actor) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: broker_entropy(),
+        clock: wall_clock(),
+        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    as "the broker must start"
+  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
+    as "the toolchain must be located"
+  Rig(
+    root:,
+    workspace:,
+    base_policy: base,
+    pool:,
+    broker: broker_actor,
+    toolchain:,
+  )
+}
+
+fn stop_rig(rig: Rig) -> Nil {
+  broker.stop(rig.broker)
+  exec.stop_pool(rig.pool)
 }
 
 // The session base a live code-mode execution runs under: its own root

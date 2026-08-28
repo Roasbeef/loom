@@ -56,6 +56,13 @@
 //// handle, and a normal exit is not a signal any linked process acts
 //// on, so what is left is an actor no link reaches. The handle in the
 //// `Layer` is the only way to stop it, which `shutdown` does.
+////
+//// That is also why the boot's own wait has a watcher between it and
+//// the starter. A start that lands after the boot has given up would
+//// otherwise hand its client to nobody — an actor and a server process
+//// with no handle anywhere, alive for the life of the VM — so the
+//// watcher holds the reply subject, answers the boot inside the window,
+//// and stops a late arrival itself.
 
 import broker/framing.{type CapOutcome}
 import client/catalog
@@ -373,10 +380,11 @@ fn server_env(
   }
 }
 
-// The client actor, started from a process of its own so that no link
-// reaches back here. See the module doc; the receive is bounded well
-// past what `mcp/client.start` bounds itself by, so a timeout here means
-// the starter itself died rather than that a server was slow.
+// The client actor, started from processes of its own so that no link
+// reaches back here. See the module doc; the receive is bounded past
+// everything `mcp/client.start` bounds itself by, so a timeout here
+// means the starter died or the host is wedged rather than that a server
+// was merely slow.
 fn start_client(
   configured: catalog.McpServer,
   env: List(#(String, String)),
@@ -386,31 +394,90 @@ fn start_client(
   let client_options =
     mcp_client.options(options.client_version)
     |> mcp_client.with_handshake_timeout(options.handshake_timeout_ms)
-  let replies = process.new_subject()
-  let _starter =
+  let window = start_window_ms(options.handshake_timeout_ms)
+  let verdicts = process.new_subject()
+  let _watcher =
     process.spawn_unlinked(fn() {
-      process.send(replies, mcp_client.start(spec, client_options))
+      watch_start(spec, client_options, window, verdicts)
     })
-  case
-    process.receive(
-      replies,
-      within: options.handshake_timeout_ms + start_margin_ms,
-    )
-  {
-    Ok(started) -> started
-    Error(Nil) ->
-      Error(mcp_client.TransportFailed(
-        reason: "the client did not answer within "
-        <> int.to_string(options.handshake_timeout_ms + start_margin_ms)
-        <> "ms",
-      ))
+  case process.receive(verdicts, within: window + hop_margin_ms) {
+    Ok(verdict) -> verdict
+    // The watcher answers inside `window` either way, so reaching this
+    // is the watcher itself having died.
+    Error(Nil) -> Error(mcp_client.TransportFailed(reason: too_slow(window)))
   }
 }
 
-// Slack over the handshake budget before the starter is given up on.
-// `mcp/client.start` bounds its own initialiser and its own handshake,
-// so this covers only a starter that died between the two.
+// The window a start is given: `mcp/client.start` opens the transport
+// inside its own initialiser and *then* runs the handshake, so the two
+// budgets are consecutive and the window is their sum plus real slack.
+// Stated as the relationship rather than as a number near it — the
+// window used to be the handshake budget alone plus five seconds, which
+// is *shorter* than the worst case it was meant to cover.
+fn start_window_ms(handshake_timeout_ms: Int) -> Int {
+  mcp_client.init_timeout_ms + handshake_timeout_ms + start_margin_ms
+}
+
+// Slack over the two budgets `mcp/client.start` spends, covering the
+// margin it adds to its own handshake reply and a host under load.
 const start_margin_ms = 5000
+
+// One message hop: the watcher decides at `window` and forwards, so this
+// only has to cover the send landing here.
+const hop_margin_ms = 1000
+
+// Runs `mcp/client.start` on a process of its own and answers inside
+// `window` whatever happens.
+//
+// The drain is the point. A start that lands *after* the window would
+// otherwise leave a client actor — and the third-party server process
+// under it — running for the life of the VM with nothing holding a
+// handle on it, because `Layer` is the only handle and this server never
+// reached one. It has to be drained here rather than by the caller: a
+// `Subject` is read only by the process that created it, so the only
+// process that can receive a late `started` is the one that made it.
+fn watch_start(
+  spec: transport.Transport,
+  client_options: mcp_client.Options,
+  window: Int,
+  verdicts: process.Subject(Result(mcp_client.Client, mcp_client.StartError)),
+) -> Nil {
+  let started = process.new_subject()
+  let _starter =
+    process.spawn_unlinked(fn() {
+      process.send(started, mcp_client.start(spec, client_options))
+    })
+  case process.receive(started, within: window) {
+    Ok(verdict) -> process.send(verdicts, verdict)
+    Error(Nil) -> {
+      process.send(
+        verdicts,
+        Error(mcp_client.TransportFailed(reason: too_slow(window))),
+      )
+      drain_late_start(started)
+    }
+  }
+}
+
+fn drain_late_start(
+  started: process.Subject(Result(mcp_client.Client, mcp_client.StartError)),
+) -> Nil {
+  case process.receive(started, within: drain_window_ms) {
+    Ok(Ok(client)) -> mcp_client.stop(client)
+    Ok(Error(_refused)) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+// How long the drainer waits for a start that already missed its window.
+// Bounded rather than forever: the watcher is unlinked, and a process
+// waiting on a subject nobody will ever write to is itself the leak this
+// exists to prevent.
+const drain_window_ms = 120_000
+
+fn too_slow(window: Int) -> String {
+  "the client did not answer within " <> int.to_string(window) <> "ms"
+}
 
 // A configured argv, executable first. `catalog` guarantees it is
 // non-empty, and a shell string is not a thing `transport.Spawn` can
@@ -585,11 +652,26 @@ fn arguments_json(args: MsgPackValue) -> Result(JsonValue, CapDenial) {
 
 // --- rendering an answer ----------------------------------------------------
 
-// The pinned result shape `cap/internal/mcp` decodes:
-// `{content: [<block>...], is_error: Bool, structured?: <value>}`.
-// `structured` is present only when the server sent one, which is what
-// `wire.optional_field` reads as `None`.
-fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
+/// The `cap_result` outcome one `tools/call` answer becomes: the pinned
+/// result shape `cap/internal/mcp` decodes,
+/// `{content: [<block>...], is_error: Bool, structured?: <value>}`.
+/// `structured` is present only when the server sent one, which is what
+/// `wire.optional_field` reads as `None`.
+///
+/// Public because it is the whole of what a server's answer turns into
+/// and the only part of the answer path a hermetic test can hold still:
+/// the two ceilings below are reachable from a hostile server but not
+/// from a fake one, whose own answer has to survive `core/json.parse`
+/// and `mcp/stdio`'s line cap on the way in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.tool_result(protocol.CallToolResult(content: [], is_error: False,
+/// //   structured_content: None))
+/// ```
+///
+pub fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
   case structured_value(answer.structured_content) {
     Error(fault) ->
       framing.CapErr(
@@ -599,8 +681,8 @@ fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
           <> interchange.describe(fault),
       )
     Ok(structured) ->
-      framing.CapOk(
-        value: msgpack.MapValue(list.append(
+      carriable(
+        msgpack.MapValue(list.append(
           [
             #(
               msgpack.StringValue("content"),
@@ -614,6 +696,112 @@ fn tool_result(answer: protocol.CallToolResult) -> CapOutcome {
           structured,
         )),
       )
+  }
+}
+
+// One hostile answer must cost one call, not the channel.
+//
+// A `tools/call` result is bounded by everything upstream at *JSON* size
+// and *JSON* depth, and neither bound is the one the cap channel
+// enforces. A legal line just under `mcp/stdio.max_line_bytes` can
+// re-encode larger — a JSON `0.1` is three bytes and a msgpack float64
+// is nine — and the frame the host builds around this value is two
+// containers deep, so a structured value at the JSON parser's own
+// ceiling clears `core/msgpack.max_depth` once wrapped. An oversized
+// `cap_result` is dropped unsent by `codemode/satellite`, which leaves
+// the program blocked on an answer that will never come until its wall
+// deadline; an over-deep one decodes as an `inbound.Fault` on the
+// satellite, which settles every in-flight call and closes the channel.
+// Both are the whole execution paying for one call.
+//
+// So the value is measured here, where it is still a refusal a program
+// reads. The encode is bought rather than free — its bytes are thrown
+// away and the host encodes the frame again — but asking "will this
+// frame fit" any other way means estimating, and it happens at most once
+// per MCP call.
+fn carriable(value: MsgPackValue) -> CapOutcome {
+  case fits_depth(value, msgpack.max_depth - envelope_depth) {
+    False ->
+      framing.CapErr(
+        code: malformed_code,
+        message: "the server's answer nests deeper than the "
+          <> int.to_string(msgpack.max_depth)
+          <> " levels one capability frame carries",
+      )
+    True ->
+      case msgpack.encode(value) {
+        Error(_unencodable) ->
+          framing.CapErr(
+            code: malformed_code,
+            message: "the server's answer has no msgpack encoding",
+          )
+        Ok(bytes) -> carriable_size(value, bit_array.byte_size(bytes))
+      }
+  }
+}
+
+fn carriable_size(value: MsgPackValue, size: Int) -> CapOutcome {
+  case size > max_result_bytes() {
+    True ->
+      framing.CapErr(
+        code: malformed_code,
+        message: "the server's answer encodes to "
+          <> int.to_string(size)
+          <> " bytes, past the "
+          <> int.to_string(max_result_bytes())
+          <> " one capability frame carries",
+      )
+    False -> framing.CapOk(value:)
+  }
+}
+
+/// The largest a rendered result may encode to: the cap channel's own
+/// frame cap (`broker/framing.max_frame_bytes`, which is what
+/// `codemode/satellite` measures an outbound frame against) less room
+/// for the frame the host wraps it in.
+///
+/// Read from that constant rather than restated, so the two cannot
+/// drift. The margin is deliberately far larger than the envelope it
+/// covers — a version, an id, a kind and two short keys — because what
+/// it must never do is let a value through that the frame encoder then
+/// refuses, and 64 KiB of slack costs a hostile server nothing it could
+/// have used.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert mcp.max_result_bytes() < framing.max_frame_bytes
+/// ```
+///
+pub fn max_result_bytes() -> Int {
+  framing.max_frame_bytes - envelope_margin_bytes
+}
+
+const envelope_margin_bytes = 65_536
+
+// The frame the host builds is a map (`{v, id, kind, body}`) holding a
+// map (`{ok, value}`), so the value itself starts two containers down
+// and may nest that much less than `core/msgpack.max_depth`.
+const envelope_depth = 2
+
+// Whether `value` nests within `budget` container levels, short-circuit:
+// a hostile value is refused as soon as it runs past the budget rather
+// than after it has been walked to the bottom.
+fn fits_depth(value: MsgPackValue, budget: Int) -> Bool {
+  case value {
+    msgpack.ArrayValue(items:) ->
+      budget > 0 && list.all(items, fits_depth(_, budget - 1))
+    msgpack.MapValue(entries:) ->
+      budget > 0
+      && list.all(entries, fn(entry) {
+        fits_depth(entry.0, budget - 1) && fits_depth(entry.1, budget - 1)
+      })
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..) -> True
   }
 }
 

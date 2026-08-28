@@ -32,7 +32,11 @@
 %%                   wire-fidelity oracle, and the tier-1 typed façade.
 %%   Create-Issue! — a hostile name, which mangles *and* digests, so the
 %%                   generated surface and the wire name can be told
-%%                   apart.
+%%                   apart. It is also the one tool that answers
+%%                   `isError: true`, so a program can be shown reading a
+%%                   tool-level failure as `cap/mcp.ToolFailed` across the
+%%                   real boundary — an in-band verdict from a settled
+%%                   call, never a transport error.
 %%   nested        — a required parameter whose schema is a nested
 %%                   object: `mcp/schema` tier 2, a `report.Value`
 %%                   argument. Its name is hostile too, so the generated
@@ -172,16 +176,33 @@ called(Id, Params) ->
     Arguments = maps:get(<<"arguments">>, Params, #{}),
     case lists:any(fun(Tool) -> maps:get(<<"name">>, Tool) =:= Name end, tools()) of
         true ->
-            reply(Id, #{
-                <<"content">> => [
-                    #{<<"type">> => <<"text">>, <<"text">> => <<"ok">>}
-                ],
-                <<"isError">> => false,
-                <<"structuredContent">> => Arguments
-            });
+            reply(Id, result_for(Name, Arguments));
         false ->
             reply_error(Id, -32602, <<"no such tool: ", Name/binary>>)
     end.
+
+%% The in-band failure leg. `isError` is a *tool* verdict on a call that
+%% succeeded, not a transport or protocol error, and the whole of what
+%% distinguishes them on the far side is that this one arrives as
+%% `cap/mcp.ToolFailed` carrying the joined text.
+result_for(<<"Create-Issue!">>, _Arguments) ->
+    #{
+        <<"content">> => [
+            #{
+                <<"type">> => <<"text">>,
+                <<"text">> => <<"the issue tracker refused">>
+            }
+        ],
+        <<"isError">> => true
+    };
+result_for(_Name, Arguments) ->
+    #{
+        <<"content">> => [
+            #{<<"type">> => <<"text">>, <<"text">> => <<"ok">>}
+        ],
+        <<"isError">> => false,
+        <<"structuredContent">> => Arguments
+    }.
 
 reply(Id, Result) ->
     emit(#{

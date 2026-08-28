@@ -93,6 +93,27 @@ pub fn the_msgpack_integer_bounds_are_inclusive_test() {
     == Ok(msgpack.IntValue(interchange.min_msgpack_int))
 }
 
+/// The bounds this module restates are the encoder's own. `core/msgpack`
+/// is where an integer is actually accepted or refused, and these two
+/// constants are a copy of its range written down somewhere else — so
+/// the copy is bound to the original here rather than left to be true by
+/// having once been read correctly. Gleam integers are arbitrary
+/// precision, which is exactly why the copy can be wrong without anything
+/// noticing: `max + 1` is a perfectly ordinary `IntValue` to build.
+pub fn the_restated_bounds_are_the_encoders_own_test() {
+  let assert Ok(_max) =
+    msgpack.encode(msgpack.IntValue(interchange.max_msgpack_int))
+    as "the largest integer this module admits must encode"
+  let assert Ok(_min) =
+    msgpack.encode(msgpack.IntValue(interchange.min_msgpack_int))
+    as "the smallest integer this module admits must encode"
+
+  assert msgpack.encode(msgpack.IntValue(interchange.max_msgpack_int + 1))
+    == Error(msgpack.IntegerOutOfRange(value: interchange.max_msgpack_int + 1))
+  assert msgpack.encode(msgpack.IntValue(interchange.min_msgpack_int - 1))
+    == Error(msgpack.IntegerOutOfRange(value: interchange.min_msgpack_int - 1))
+}
+
 pub fn an_out_of_range_integer_fails_the_whole_result_test() {
   // Never wrapped, never clamped, never turned into a float: the whole
   // conversion refuses, and the path names the field that did it.
