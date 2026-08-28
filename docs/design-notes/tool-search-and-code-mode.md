@@ -7,6 +7,22 @@ demand instead of loaded up front — and ends with three verdicts: one for
 the model's own tool surface, one for code mode, and one for what the
 deferred MCP work in `docs/spec-gaps.md` should become.
 
+**Status, 2026-08-28: the MCP half is superseded; the tool-search half
+stands.** Issue #106 decided and shipped what this note only proposed —
+per-server generated `cap/mcp/<server>` modules, no registry entries and
+no generic dispatcher — so read `docs/architecture/mcp.md` for the living
+account of how a server reaches a model, and this note only for how the
+question was arrived at. Two things below are stale on their face: the
+MCP specification citations are pinned to revision 2025-06-18, which was
+current when this was written and is now two revisions behind, and the
+open questions about whether a generated module rebuilds cleanly inside a
+vendored prelude have been answered by building it. The verdicts about
+tool search itself — that Loom needs none for its own tool surface, and
+that the module namespace is the index while the compiler is the oracle —
+are unchanged, and the signature-oracle gap the note names has since been
+closed by rendering the prelude's surface into the `code_mode`
+description. Nothing in the body below has been rewritten.
+
 External claims are sourced. Where I could not verify something, it is
 marked, and the estimates are labelled as estimates rather than dressed
 up as measurements.

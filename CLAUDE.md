@@ -165,8 +165,8 @@ one.
 - **Design and spec** — `docs/loom-design.md`,
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
 - **Architecture, per plane and subsystem** — `docs/architecture/`:
-  `durability`, `orchestration`, `effects`, `code-mode`, `messaging`,
-  `compaction`, `events`, `client`, `models`, `simulation`.
+  `durability`, `orchestration`, `effects`, `code-mode`, `mcp`,
+  `messaging`, `compaction`, `events`, `client`, `models`, `simulation`.
 - **Decisions** — `docs/adr/`, `protocol-change/`.
 - **Design notes** (explorations, not commitments) — `docs/design-notes/`.
 - **Review waves** — `docs/review/`, one file per wave with its triage.

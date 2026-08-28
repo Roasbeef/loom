@@ -217,6 +217,11 @@ built out of.
 - [README.md](README.md) — the design stance in prose: why MCP is
   code-mode only, how a hostile `tools/list` is held, and what the module
   map looks like.
+- [docs/architecture/mcp.md](../../docs/architecture/mcp.md) — the
+  subsystem end to end, including the half this package does not hold:
+  one `[mcp.<name>]` table through boot and codegen to one
+  `mcp.<server>` capability call, the denial codes a program reads, and
+  the worked surface and program a model sees.
 - [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md)
   — the vetting theorem the per-server module granularity rests on, and
   what each layer confines.
@@ -229,6 +234,7 @@ built out of.
   decoders) and §4 (FFI confinement), the rules this package is shaped
   by.
 - [docs/next.md](../../docs/next.md) — the #106 design rulings and what
-  the pipeline-integration slice still owes.
+  the work still owes: the adversarial corpus for hostile `tools/list`
+  input, and the open decision about jailing a server.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc
   graph.
