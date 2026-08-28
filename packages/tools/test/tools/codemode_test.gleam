@@ -84,6 +84,7 @@ fn workspace_offer() -> codemode.SeamOffer {
     seam: codemode.WorkspaceSeam,
     allowed_imports: allowlist,
     serviced_caps: ["proc.run"],
+    extra_surfaces: [],
   )
 }
 
@@ -92,6 +93,7 @@ fn orchestration_offer() -> codemode.SeamOffer {
     seam: codemode.OrchestrationSeam,
     allowed_imports: orchestration_allowlist,
     serviced_caps: ["strand.spawn", "strand.wait"],
+    extra_surfaces: [],
   )
 }
 
@@ -977,6 +979,60 @@ pub fn a_single_seam_description_still_opens_exactly_as_it_did_test() {
   // is `packages/cap`'s business rather than this rendering's.
   let assert [prose, ..] = string.split(described, "Each module's public")
   assert !string.contains(prose, "seam")
+}
+
+pub fn a_generated_surface_is_rendered_after_the_committed_ones_test() {
+  // A `cap/mcp/<server>` façade is generated from one host's configured
+  // server (issue #106), so it can never be in the committed artifact
+  // `make gen-prelude` produces. It is rendered the same way and read
+  // the same way; only where the bytes came from differs.
+  let generated = "### cap/mcp/github\n\npub fn create_issue(title: String)"
+  let offer =
+    codemode.SeamOffer(..workspace_offer(), extra_surfaces: [generated])
+  let described = codemode.description(echoing_over(codemode.one_seam(offer)))
+  assert string.contains(described, generated)
+  // After the committed blocks, not instead of them.
+  let assert [_before, after] = string.split(described, "### cap/mcp/github")
+    as "the generated block appears exactly once"
+  assert !string.contains(after, "### cap/proc")
+  assert string.contains(described, "### cap/proc")
+}
+
+pub fn a_host_that_generated_nothing_renders_exactly_what_it_did_test() {
+  // The empty list is the ordinary case, and it must cost nothing: an
+  // empty block joined into the rendering would leave a stray blank line
+  // in the provider's cached prefix on every host in the world.
+  let with_none =
+    codemode.description(
+      echoing_over(codemode.one_seam(
+        codemode.SeamOffer(..workspace_offer(), extra_surfaces: []),
+      )),
+    )
+  assert with_none == codemode.description(echoing())
+}
+
+pub fn a_generated_surface_is_never_shared_between_seams_test() {
+  // A generated module belongs to exactly the seam whose allowlist names
+  // it, so it renders under that seam's heading and never under the
+  // shared one — where it would read as a claim about the other seam
+  // that no host makes.
+  let generated = "### cap/mcp/github"
+  let seams =
+    codemode.Seams(
+      default: codemode.SeamOffer(..workspace_offer(), extra_surfaces: [
+        generated,
+      ]),
+      alternates: [orchestration_offer()],
+    )
+  let described = codemode.description(echoing_over(seams))
+  let assert [_shared, workspace_and_after] =
+    string.split(described, "## Only on the `workspace` seam")
+    as "the workspace section is rendered"
+  assert string.contains(workspace_and_after, generated)
+  let assert [workspace, _orchestration] =
+    string.split(workspace_and_after, "## Only on the `orchestration` seam")
+    as "the orchestration section follows it"
+  assert string.contains(workspace, generated)
 }
 
 pub fn two_seams_state_a_shared_module_once_test() {

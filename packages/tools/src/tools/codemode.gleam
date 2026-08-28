@@ -130,6 +130,22 @@ pub type SeamOffer {
     /// The capability names this seam's router services today; every
     /// other one compiles and then answers `unsupported_cap`.
     serviced_caps: List(String),
+    /// Rendered module surfaces this host generated at boot, appended
+    /// after the committed ones.
+    ///
+    /// The committed artifact (`tools/prelude`) is the public surface of
+    /// the *shipped* prelude, generated at build time and gated by
+    /// `make prelude-check`. A per-server `cap/mcp/<server>` façade
+    /// cannot be in it: it is generated from one host's configured
+    /// server's own `tools/list`, so it exists only where that server is
+    /// configured. Both are rendered the same way and read the same way
+    /// by a model; the split is about where the bytes come from, not
+    /// about what they are.
+    ///
+    /// The entries are already-rendered blocks, in the order the host
+    /// wants them read. Empty on a host that generated nothing, which is
+    /// every host until an operator configures an MCP server.
+    extra_surfaces: List(String),
   )
 }
 
@@ -649,7 +665,7 @@ fn render_section(section: #(String, String)) -> String {
 // word anywhere about a seam it cannot choose.
 fn signature_sections(seams: Seams) -> List(#(String, String)) {
   case seams.alternates {
-    [] -> [#("", surface_text(seams.default.allowed_imports))]
+    [] -> [#("", seam_surface(seams.default, seams.default.allowed_imports))]
     _alternates -> {
       let offers = offered(seams)
       let shared = shared_imports(offers)
@@ -661,12 +677,25 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
             })
           #(
             "## Only on the `" <> seam_name(offer.seam) <> "` seam",
-            surface_text(own),
+            seam_surface(offer, own),
           )
         })
       [#("## On every seam", surface_text(shared)), ..added]
     }
   }
+}
+
+// One seam's rendered surface: the committed blocks for the prelude
+// modules it admits, then whatever this host generated for it.
+//
+// The host's blocks come last and are never folded into the shared
+// section, however many seams are offered. A generated module belongs to
+// exactly the seam whose allowlist names it — nothing generates onto two
+// — so "shared" would be a claim about the other seam that no host makes.
+fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
+  [surface_text(modules), ..offer.extra_surfaces]
+  |> list.filter(fn(block) { block != "" })
+  |> string.join("\n")
 }
 
 // The prelude blocks for exactly the modules in `allowed`, in the
