@@ -117,7 +117,7 @@ pub fn change_seq_orders_the_merged_stream_test() {
 /// hint only prompts a pull and every pull reads everything owed.
 pub fn lost_events_converge_via_catch_up_test() {
   let bus = bus.start()
-  let session = "projection-lossy"
+  let session = bus.unidentified_key(name: "projection-lossy")
   let store = fixtures.open_store()
   let assert Ok(started) =
     projection.start(projection.Options(
@@ -173,7 +173,7 @@ pub fn total_event_loss_still_converges_test() {
 
 pub fn hint_triggers_catch_up_test() {
   let bus = bus.start()
-  let session = "projection-hinted"
+  let session = bus.unidentified_key(name: "projection-hinted")
   let store = fixtures.open_store()
   let assert Ok(started) =
     projection.start(projection.Options(

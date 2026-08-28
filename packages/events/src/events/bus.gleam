@@ -14,13 +14,21 @@
 //// no per-session processes. Cross-node fan-out (clustered `pg`) is
 //// follow-up track 4 and changes nothing here but the member list.
 ////
+//// The session half of that key is a `SessionKey`, not a bare string
+//// (`protocol-change/008`). `key(of:)` builds one from the canonical
+//// `SessionId` and is what a session-backed publisher must use;
+//// `unidentified_key(name:)` builds one from a caller-supplied string,
+//// for a publisher that has no session id yet. The two render into
+//// disjoint prefixes — `id:` and `name:` — so a caller-supplied string
+//// can never collide with, or impersonate, a canonical id.
+////
 //// The writer bridge: the runtime's StorageWriter publishes its own
 //// minimal `Committed` pub/sub today. `bridge` is the adoption seam —
 //// it turns any subscription-shaped event source into bus publishes
 //// without this package importing the runtime (the mapping closure is
 //// written by the composition layer, which knows both types).
 
-import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
+import core/ids.{type EntryId, type OpId, type Seq, type SessionId, type UsageId}
 import events/internal/ffi_pg.{type Scope}
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/otp/actor
@@ -83,7 +91,67 @@ pub type Event {
 /// Constructor invariants: `session` is the session key the event was
 /// published under; `event`'s topic is the group topic it was sent to.
 pub type Published {
-  Published(session: String, event: Event)
+  Published(session: SessionKey, event: Event)
+}
+
+/// Which session's stream a publish or subscription belongs to.
+///
+/// Two constructors, deliberately: `key(of:)` for a session that has its
+/// canonical `SessionId` (`protocol-change/008`), and
+/// `unidentified_key(name:)` for a publisher that has none — a session
+/// file already open from before the id existed, or a bridge standing up
+/// before boot bookkeeping has run. Refusing the second would mean the
+/// bus could carry no hint until the id existed, which trades a naming
+/// defect for a correctness one; keeping it *marked* leaves every such
+/// caller greppable and the two key spaces disjoint.
+pub opaque type SessionKey {
+  Identified(id: SessionId)
+  Unidentified(name: String)
+}
+
+/// The stream of the session with this canonical id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bus.publish(bus, session: bus.key(of: id), event:)
+/// ```
+///
+pub fn key(of session: SessionId) -> SessionKey {
+  Identified(id: session)
+}
+
+/// The stream of a publisher that has no canonical session id — see
+/// `SessionKey`. The name shares no key space with `key(of:)`, so an
+/// unidentified caller cannot land on an identified session's group
+/// however its string is chosen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bus.subscribe_all(bus, session: bus.unidentified_key(name: "review"))
+/// ```
+///
+pub fn unidentified_key(name name: String) -> SessionKey {
+  Unidentified(name:)
+}
+
+/// The `pg` group key's session half, and the display form of a
+/// `SessionKey`. The `id:`/`name:` prefixes are what keeps the two key
+/// spaces disjoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert bus.key_to_string(bus.unidentified_key(name: "review"))
+///   == "name:review"
+/// ```
+///
+pub fn key_to_string(key: SessionKey) -> String {
+  case key {
+    Identified(id:) -> "id:" <> ids.session_id_to_string(id)
+    Unidentified(name:) -> "name:" <> name
+  }
 }
 
 /// The topic an event belongs to — the group key `publish` sends it to.
@@ -162,10 +230,14 @@ pub fn supervised() -> ChildSpecification(Bus) {
 /// // bus.publish(bus, "session-1", bus.Committed(seqs: [4, 5], ts: now))
 /// ```
 ///
-pub fn publish(bus: Bus, session session: String, event event: Event) -> Nil {
+pub fn publish(
+  bus: Bus,
+  session session: SessionKey,
+  event event: Event,
+) -> Nil {
   ffi_pg.publish(
     bus.scope,
-    #(session, topic_of(event)),
+    #(key_to_string(session), topic_of(event)),
     Published(session:, event:),
   )
 }
@@ -188,8 +260,12 @@ pub fn publish(bus: Bus, session session: String, event event: Event) -> Nil {
 /// // bus.subscribe(bus, session: "session-1", topic: bus.Commits)
 /// ```
 ///
-pub fn subscribe(bus: Bus, session session: String, topic topic: Topic) -> Nil {
-  let group = #(session, topic)
+pub fn subscribe(
+  bus: Bus,
+  session session: SessionKey,
+  topic topic: Topic,
+) -> Nil {
+  let group = #(key_to_string(session), topic)
   case ffi_pg.is_member(bus.scope, group) {
     True -> Nil
     False -> ffi_pg.join(bus.scope, group)
@@ -206,11 +282,15 @@ pub fn subscribe(bus: Bus, session session: String, topic topic: Topic) -> Nil {
 /// // bus.subscribe_all(bus, session: "session-1")
 /// ```
 ///
-pub fn subscribe_all(bus: Bus, session session: String) -> Nil {
+pub fn subscribe_all(bus: Bus, session session: SessionKey) -> Nil {
   subscribe_all_loop(bus, session, all_topics())
 }
 
-fn subscribe_all_loop(bus: Bus, session: String, topics: List(Topic)) -> Nil {
+fn subscribe_all_loop(
+  bus: Bus,
+  session: SessionKey,
+  topics: List(Topic),
+) -> Nil {
   case topics {
     [] -> Nil
     [topic, ..rest] -> {
@@ -231,10 +311,10 @@ fn subscribe_all_loop(bus: Bus, session: String, topics: List(Topic)) -> Nil {
 ///
 pub fn unsubscribe(
   bus: Bus,
-  session session: String,
+  session session: SessionKey,
   topic topic: Topic,
 ) -> Nil {
-  ffi_pg.leave(bus.scope, #(session, topic))
+  ffi_pg.leave(bus.scope, #(key_to_string(session), topic))
 }
 
 /// The number of local subscribers on one topic of one session — an
@@ -249,10 +329,10 @@ pub fn unsubscribe(
 ///
 pub fn subscriber_count(
   bus: Bus,
-  session session: String,
+  session session: SessionKey,
   topic topic: Topic,
 ) -> Int {
-  ffi_pg.member_count(bus.scope, #(session, topic))
+  ffi_pg.member_count(bus.scope, #(key_to_string(session), topic))
 }
 
 /// Extends a selector to receive the bus events this process subscribed
@@ -305,7 +385,7 @@ pub fn select_published(
 ///
 pub fn bridge(
   bus: Bus,
-  session session: String,
+  session session: SessionKey,
   map map: fn(incoming) -> Event,
 ) -> actor.StartResult(Subject(incoming)) {
   case

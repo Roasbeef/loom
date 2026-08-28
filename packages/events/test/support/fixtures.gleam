@@ -6,7 +6,7 @@ import core/entry.{
   type Entry, type UsageRow, CompactionEntry, CustomEntry, MessageEntry,
   UsageRow,
 }
-import core/ids.{type EntryId, type UsageId}
+import core/ids.{type EntryId, type SessionId, type UsageId}
 import core/message.{Usage, UsageCost, UserMessage, UserText}
 import core/tx.{InsertEntry, InsertUsage, Tx}
 import gleam/erlang/process.{type Subject}
@@ -48,6 +48,12 @@ pub fn mint_usage(ctx: Ctx) -> #(UsageId, Ctx) {
 /// Mints an operation id.
 pub fn mint_op(ctx: Ctx) -> #(ids.OpId, Ctx) {
   let #(id, generator) = ids.mint_op(ctx.generator)
+  #(id, Ctx(generator:))
+}
+
+/// Mints a session id.
+pub fn mint_session(ctx: Ctx) -> #(SessionId, Ctx) {
+  let #(id, generator) = ids.mint_session(ctx.generator)
   #(id, Ctx(generator:))
 }
 

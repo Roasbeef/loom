@@ -16,7 +16,7 @@
 
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type Seq}
-import events/bus.{type Bus}
+import events/bus.{type Bus, type SessionKey}
 import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -261,7 +261,7 @@ fn apply_stats(stats: SessionStats, change: Change) -> SessionStats {
 pub type Hints {
   /// Subscribe to every topic of `session` on `bus`; any received event
   /// prompts a catch-up pull. The events themselves are discarded.
-  FromBus(bus: Bus, session: String)
+  FromBus(bus: Bus, session: SessionKey)
   /// No subscription — the driver pulls only on `poke`/`sync` and at
   /// start. For tests and batch use.
   NoHints
@@ -331,7 +331,8 @@ type DriverState(state, handle) {
 /// ```gleam
 /// // projection.start(projection.Options(store: fn() { store },
 /// //   generation: fn() { 0 }, projection: stats_projection(),
-/// //   checkpoint: projection.ephemeral(), hints: projection.FromBus(bus, "s1")))
+/// //   checkpoint: projection.ephemeral(),
+/// //   hints: projection.FromBus(bus, bus.key(of: session_id))))
 /// ```
 ///
 pub fn start(
