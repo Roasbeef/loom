@@ -9,17 +9,20 @@ worth more than any status comment.
 
 ---
 
-## State, as of `8b08ed6`
+## State, as of the head of `codemode/mcp`
 
-`main` is green and pushed. `make check` passes end to end (format, warning-free
-build, every package's tests, and the lint at 0 errors). `make dist` builds a
-58 MB release tree / 21 MB tarball whose smoke test boots with no `erl` on
-`PATH` and registers `code_mode` from the bundled toolchain.
+The branch `codemode/mcp` holds **issue #106's first increment, complete**:
+MCP through code mode, wired end to end and proved against a real server
+process. `make check` passes on it end to end (format, warning-free build,
+every package's tests, the lint at 0 errors), and every slice went through
+independent verification plus two full adversarial-review cycles
+(`/advisor-review`: review → verified fixes → re-verify by the same
+reviewer). It is ready to merge to `main` once the owner agrees the exit
+criteria are met.
 
-**Phases 1 and 2 are done.** Phase 2's orchestration seam landed, and the debt
-wave behind it closed #73, #75, #87, #88, #90, #95, #102, #103 and #104.
+`main` itself is green at `9923340`, where phases 1 and 2 stand done.
 
-**Phase 3 is open and unstarted.**
+**Phase 3 is open: #106's first increment is done; #16 is unstarted.**
 
 ---
 
@@ -120,53 +123,43 @@ Phase 3's remaining issues, in dependency order rather than numeric:
   `provider`'s two shipped stubs) is adjacent: routing that cannot walk a
   fallback chain to a real provider is not routing.
 - **#15** — a canonical session id in `core`.
-- **#106** — **MCP through code mode**, as generated per-server capability
-  modules (`import cap/mcp/github`), *not* as registered harness tools. New
-  in phase 3, in `lsp_*`/`dap_*`'s place. Independent of the #16 bridge —
-  different seam, different mechanism — so the two can run in parallel.
-  **The pipeline is wired end to end**: `packages/mcp` holds the protocol,
-  the stdio client, the façade generator and `mcp/interchange`;
-  `client/catalog` parses `[mcp.<name>]`; `client/mcp` starts a client per
-  configured server at boot, generates its module, widens the workspace
-  seam's allowlist and description, and answers `mcp.<server>` as a
-  `ServedHere` plan; `codemode.execute` narrows the generated table to the
-  vetted program's own imports and the builder vendors them into the
-  prelude after the seed clone. What is still owed: the **adversarial
-  corpus** for hostile `tools/list` input (the long pole, below), an
-  end-to-end against a real server binary, and a decision about whether an
-  MCP server should be spawned inside a jail — `mcp/transport`'s
-  `PortTransport` spawns unjailed today and the seam is where jailing
-  would attach. Research is done and **the answers are on the issue**;
-  read them before `docs/design-notes/tool-search-and-code-mode.md`, which
-  is now partly stale. The short version:
-  - **No tool search.** Code mode already solves it structurally — the model
-    sees a rendered module surface, not tool JSON, so a module costs the same
-    whether the server has 3 tools or 300. The scaling lever is operator-side
-    server enablement, not model-side discovery.
-  - **Our spec citation is two revisions behind.** The design note cites
-    2025-06-18; current is 2026-07-28, which is stateless with **no
-    `initialize`**, and deprecates Sampling, Roots and Logging. Target the
-    `initialize`-based lifecycle for v1 anyway — that is what servers speak —
-    and **never declare `sampling` or `roots`**, which retires the
-    trust-inversion worry with upstream cover.
-  - **Config is `[mcp.<name>]` in `loom.toml`**, matching the model
-    catalogue, `api_key_env` for secrets, file only — no CLI, no
-    auto-discovered project file that a headless session would silently
-    trust.
-  - **`seed.verify` is not invalidated** by generated modules (verified by
-    building it), and the measured cost of 50 servers is +0.38 s, not the
-    multi-second penalty assumed. `cap.config_fingerprint` is Gleam's own
-    bookkeeping, not our hook — zero references in our source.
-  - **Build "scale with imports, not configuration" from the start**: filter
-    the clone by the *vetted* program's actual imports, which `vet.Vetted`
-    already carries.
-  - **The long pole is the adversarial corpus** for hostile `tools/list`
-    input, not the codegen.
+- **#106** — **MCP through code mode: the first increment is done.**
+  `docs/architecture/mcp.md` is the living account; the rulings and their
+  reasons are on the issue. The shape: generated per-server capability
+  modules (`import cap/mcp/github`), never registered harness tools and
+  never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
+  `packages/mcp` holds the protocol codecs, the stdio client actor, the
+  façade generator and the value interchange; `client/mcp` starts one
+  client per configured server at boot, widens the workspace seam's
+  allowlist/description/generated-table/router as one field, and answers
+  `mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
+  table to the vetted program's own imports before the builder vendors
+  them into the prelude — fifty configured servers cost an unimporting
+  program nothing. A checked-in `escript` fixture proves it against a real
+  server process over a real pipe, wire names byte-identical end to end,
+  including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
+  corpus is **built, not owed**: mangling digests on any change and a
+  collision refuses the server; description text is stripped of every
+  control/direction codepoint and a `glexer`-shaped `@` backstop asserts
+  the cage held; schema reading is three-tier and total with nothing
+  silently dropped; tool count, surface bytes, listing pages, result size
+  and result depth are all capped with worded refusals.
 
-  One finding worth carrying into phase 5: **an MCP stdio client and an LSP
-  client are the same missing piece** — a supervised long-lived stdio
-  subprocess. Phase 3 therefore builds the substrate #25 needs, which makes
-  phase 5 cheaper rather than independent.
+  Still open on #106, deliberately: the **jail decision** for MCP server
+  processes — `mcp/transport.PortTransport` spawns unjailed and the seam
+  is where jailing would attach; this is undesigned, not merely unbuilt —
+  an e2e against a third-party server from the wild, and the deliberate
+  v1 cuts with their reversal triggers (HTTP transport, OAuth,
+  elicitation, `listChanged`, restart supervision; see the architecture
+  doc). **#107** (filed this increment) is the async-code-mode question —
+  kept-alive satellite versus continuation handles versus a
+  replay-with-memoized-effects shape; its comments carry the
+  state-machine-expansion argument and the prior art.
+
+  The finding carried into phase 5 held: the MCP stdio client **is** the
+  supervised long-lived stdio substrate #25 needs, and it now exists
+  (`mcp/client` + `mcp/transport`), so phase 5 starts from something
+  rather than nothing.
 - **#27** — triggered rules (TTSR).
 - **#28**, **#29** — memory M1 and M2.
 
@@ -259,10 +252,13 @@ filing's self-assessment, including when the filing sounds alarming.**
   falsify the vetting theorem — it collapses its discriminating power, since
   the bound becomes "the whole registry, for every program", leaving one
   layer where code mode was built to have two. The bound is per *server*, not
-  per tool, and that is deliberate: a human trusts a server. The unanswered
-  question is that `tools/list` is attacker-controlled JSON, and generating
-  Gleam from it means a hostile server influences source the harness compiles
-  and the allowlist admits — **nothing today vets harness-generated source.**
+  per tool, and that is deliberate: a human trusts a server. The
+  once-unanswered question — `tools/list` is attacker-controlled JSON
+  compiled into allowlisted source — is now answered structurally in
+  `mcp/codegen`: server text reaches a module only as sanitized comments
+  and escaped literals, names mangle with a digest and collide into
+  refusal, and a backstop scan proves per module that the cage held.
+  `docs/architecture/mcp.md` carries the whole argument.
 - **R3 and R8 will never gate.** Both over-report by construction; they are
   censuses, and measuring rather than refusing is the point.
 
@@ -272,8 +268,10 @@ filing's self-assessment, including when the filing sounds alarming.**
 
 - **CI has never completed a run** (#99) — all jobs die in under four seconds.
   This is owner-action; local `make check` is the real gate today.
-- **`make lint` reports ~306 warnings at 0 errors.** That is the designed
-  state. R5's promotion is five one-line fixes away (#73 names the files).
+- **`make lint` reports ~322 warnings at 0 errors.** That is the designed
+  state. R5's promotion is five one-line fixes away (#73 names the files);
+  the growth over the old ~306 is the mcp work's R3 census entries, the
+  same `_ ->`-over-`JsonValue` shape `client/protocol` carries.
 - **Jail and sandbox tests degrade in this container** — no cgroup v2, no
   Landlock. `make selftest` says what the host actually enforces. Failures
   there are environmental until run on a real host; #62 is that nobody has
@@ -288,3 +286,14 @@ pattern, the briefing checklist, the verification standard, and the hazards
 that have already cost time — including the two that will catch you first: a
 verification worktree under `/tmp` breaks code mode, and `make check > log;
 echo $?` reports the exit code of `tail`, not of `make`.
+
+Three skills now live in `.claude/skills/` and earned their keep on the
+#106 work: `/advisor` (a read-only design consult before code), `/advisor-review`
+(the closing gate — one independent top-tier pass over a pinned diff:
+invariants, simplification, live variants of the shapes just fixed; verify
+every finding yourself, fix, then re-verify through the *same* reviewer),
+and `/technical-writing` (read all six references before writing prose).
+The two review cycles on this branch each returned real findings — a
+quadratic over attacker-controlled schema input, an invisible-character
+gap, servers spawned that nothing could reach — that same-author review
+had read past. Treat the closing review as part of finishing, not polish.
