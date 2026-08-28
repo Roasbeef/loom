@@ -3,6 +3,8 @@
 //// used three ways — to build the provider gateway's registry, to
 //// answer the protocol's `models` command, and to resolve `set_config`
 //// model switches by catalogue *name* instead of raw provider facts.
+//// The same file optionally carries the MCP server tables code mode
+//// exposes as generated `cap/mcp/<name>` modules.
 ////
 //// The catalogue is a thin, declarative front-end over the registry the
 //// provider gateway already has: each `[models.<name>]` entry becomes
@@ -14,8 +16,8 @@
 ////
 //// ## The file format
 ////
-//// A TOML document with exactly two top-level tables (see
-//// `docs/examples/loom.toml` for a worked, commented example):
+//// A TOML document with two required top-level tables and one optional
+//// one (see `docs/examples/loom.toml` for a worked, commented example):
 ////
 //// ```toml
 //// [models.<name>]
@@ -30,11 +32,26 @@
 //// [roles]
 //// main = ["<name>", "<fallback-name>", ...]
 //// # likewise: subagent, plan, summarize, vision
+////
+//// [mcp.<name>]                       # optional; one table per server
+//// command = ["server-binary", "arg"] # the stdio server's argv
+//// api_key_env = "SOME_API_KEY"       # optional; env var *name*
 //// ```
 ////
 //// API keys never live in the file: `api_key_env` names an environment
 //// variable, which the provider secret store reads at dispatch — the
 //// same missing-key-fails-in-band story as the env-only configuration.
+//// An MCP server's `api_key_env` is the same discipline at spawn time:
+//// the *name* is read from the host environment when the server process
+//// starts and injected into its child environment under that name.
+////
+//// The `[mcp.<name>]` table key becomes the `cap/mcp/<name>` Gleam
+//// module a code-mode program imports, so it must be a single legal
+//// lowercase-ASCII identifier segment (`[a-z][a-z0-9_]*`, no slashes) —
+//// the same grammar `codemode/vet/policy` holds every import to, which
+//// is where the check is borrowed from. There is no CLI surface, no
+//// auto-discovery, and no live reload: an operator editing this file
+//// and restarting the server *is* the trust decision.
 ////
 //// Parsing is total and strict: any malformed document, unknown key,
 //// unknown dialect/role, or dangling chain name is a worded `Error`
@@ -44,10 +61,12 @@
 //// as a spec gap), and Baseten's OpenAI-compatible endpoints need only
 //// the bearer key this format already carries.
 
+import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/gateway as provider_gateway
@@ -96,19 +115,44 @@ pub type CatalogModel {
   )
 }
 
-/// The parsed catalogue: entries plus the role → fallback-chain table.
+/// One configured MCP server: the stdio process code mode reaches as
+/// the generated `cap/mcp/<name>` module.
+///
+/// Constructor invariants: `name` is unique within the catalogue and is
+/// a legal lowercase-ASCII module segment (`[a-z][a-z0-9_]*`), because
+/// it becomes the `cap/mcp/<name>` module name a program imports;
+/// `command` is a non-empty argv whose every element is a non-empty
+/// string; `api_key_env` is an environment variable *name*, never a key
+/// value — read from the host environment at server spawn and injected
+/// into the child environment under the same name.
+pub type McpServer {
+  McpServer(
+    /// The table key — the `<name>` in `cap/mcp/<name>`.
+    name: String,
+    /// The stdio server's argv, executable first.
+    command: List(String),
+    /// The environment variable holding the server's API key, if any.
+    api_key_env: Option(String),
+  )
+}
+
+/// The parsed catalogue: entries plus the role → fallback-chain table,
+/// plus any configured MCP servers.
 ///
 /// Constructor invariants (guaranteed by `parse`, owed by any direct
 /// construction): entry names are unique; every chain is non-empty and
-/// names only existing entries; `model.Main` is routed; `models` and
-/// `roles` are in the deterministic orders `parse` produces (entries
-/// sorted by name, roles in the five-role canonical order).
+/// names only existing entries; `model.Main` is routed; `models`,
+/// `roles` and `mcp_servers` are in the deterministic orders `parse`
+/// produces (entries and servers sorted by name, roles in the five-role
+/// canonical order).
 pub type Catalog {
   Catalog(
     /// The entries, sorted by name.
     models: List(CatalogModel),
     /// Ordered fallback chains, best entry first, per routed role.
     roles: List(#(model.Role, List(String))),
+    /// The MCP servers, sorted by name; `[]` when `[mcp]` is absent.
+    mcp_servers: List(McpServer),
   )
 }
 
@@ -146,7 +190,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   )
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["models", "roles"],
+    ["models", "roles", "mcp"],
     "the top level",
   ))
   use model_tables <- result.try(
@@ -161,7 +205,8 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   )
   use models <- result.try(parse_models(model_tables))
   use roles <- result.try(parse_roles(role_table, models))
-  Ok(Catalog(models:, roles:))
+  use mcp_servers <- result.try(parse_mcp_servers(document))
+  Ok(Catalog(models:, roles:, mcp_servers:))
 }
 
 // tom renders a TOML parse failure as a structured value; the server
@@ -317,6 +362,114 @@ fn parse_thinking(
         <> other
         <> "\"",
       )
+  }
+}
+
+// The optional [mcp] table: absent parses to no servers, present it
+// must be a table of [mcp.<name>] entries. Sorted by name for the same
+// reason models are — the TOML dict loses file order, and everything
+// derived from the catalogue must be deterministic. Duplicate names
+// cannot reach here: tom refuses a repeated `[mcp.<name>]` header as
+// KeyAlreadyInUse before this parser runs.
+fn parse_mcp_servers(
+  document: Dict(String, tom.Toml),
+) -> Result(List(McpServer), String) {
+  use tables <- result.try(case dict.get(document, "mcp") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      Ok(dict.to_list(entries))
+    Ok(_other) -> Error("mcp must be a table of [mcp.<name>] entries")
+    Error(Nil) -> Ok([])
+  })
+  tables
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.try_map(fn(entry) { parse_mcp_server(entry.0, entry.1) })
+}
+
+fn parse_mcp_server(
+  name: String,
+  value: tom.Toml,
+) -> Result(McpServer, String) {
+  let place = "mcp." <> name
+  use Nil <- result.try(mcp_server_name(name))
+  use fields <- result.try(case value {
+    tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
+    _ -> Error(place <> " must be a table")
+  })
+  // Same strictness as models: a typoed `api_key_env` silently ignored
+  // would spawn the server with no key and fail confusingly at its
+  // first request.
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["command", "api_key_env"],
+    place,
+  ))
+  use command <- result.try(mcp_command(fields, place))
+  use api_key_env <- result.try(
+    case optional_string(fields, place, "api_key_env") {
+      Ok(Ok("")) -> Error(place <> ".api_key_env must be non-empty")
+      Ok(Ok(env_name)) -> Ok(Some(env_name))
+      Ok(Error(Nil)) -> Ok(None)
+      Error(message) -> Error(message)
+    },
+  )
+  Ok(McpServer(name:, command:, api_key_env:))
+}
+
+// The table key becomes the `cap/mcp/<name>` module a code-mode program
+// imports, so it must be one legal lowercase-ASCII identifier segment —
+// judged by the same grammar gate the vetting policy holds every import
+// to (`vet_policy.is_legal_module_name`), with the slash excluded here
+// because a server name is exactly one segment. "internal" is refused
+// by name: `cap/internal/*` is the unimportable marshaling layer, and a
+// `cap/mcp/internal` would sit confusingly beside it.
+fn mcp_server_name(name: String) -> Result(Nil, String) {
+  let legal =
+    !string.contains(name, "/") && vet_policy.is_legal_module_name(name)
+  case name, legal {
+    "internal", _ ->
+      Error(
+        "mcp.internal is reserved: cap/internal/* is the capability"
+        <> " marshaling layer, and a cap/mcp/internal module would sit"
+        <> " confusingly beside it; pick another server name",
+      )
+    _, True -> Ok(Nil)
+    _, False ->
+      Error(
+        "mcp."
+        <> name
+        <> " is not a legal server name: the key becomes the cap/mcp/<name>"
+        <> " module code-mode programs import, so it must be a single"
+        <> " lowercase-ASCII identifier segment ([a-z][a-z0-9_]*)",
+      )
+  }
+}
+
+// The server's argv: a TOML array of non-empty strings, executable
+// first, so at least one element.
+fn mcp_command(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(List(String), String) {
+  use items <- result.try(case dict.get(fields, "command") {
+    Ok(tom.Array(items)) -> Ok(items)
+    Ok(_other) ->
+      Error(place <> ".command must be an array of strings (the argv)")
+    Error(Nil) -> Error(place <> ".command is required")
+  })
+  use argv <- result.try(
+    list.try_map(items, fn(item) {
+      case item {
+        tom.String("") ->
+          Error(place <> ".command elements must be non-empty strings")
+        tom.String(text) -> Ok(text)
+        _other ->
+          Error(place <> ".command must be an array of strings (the argv)")
+      }
+    }),
+  )
+  case argv {
+    [] -> Error(place <> ".command must name at least the executable")
+    _some -> Ok(argv)
   }
 }
 

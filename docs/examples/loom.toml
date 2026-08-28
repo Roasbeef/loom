@@ -58,3 +58,18 @@ max_output_tokens = 32000
 main = ["baseten-oss", "anthropic-opus"]
 subagent = ["baseten-oss"]
 summarize = ["anthropic-opus"]
+
+# MCP servers, one [mcp.<name>] table per server. The table key becomes
+# the `cap/mcp/<name>` Gleam module code-mode programs import, so it
+# must be a single lowercase-ASCII identifier segment ([a-z][a-z0-9_]*)
+# — no slashes, no uppercase, no leading digit. `command` is the stdio
+# server's argv, executable first. `api_key_env` follows the same rule
+# as the model tables: it names a host environment variable, read at
+# server spawn and injected into the child environment under the same
+# name — the secret value itself NEVER lives in this file. There is no
+# CLI flag, no auto-discovery, and no live reload for these tables:
+# adding a server is an operator trust decision, made by editing this
+# file and restarting the server.
+[mcp.github]
+command = ["mcp-server-github", "--stdio"]
+api_key_env = "GITHUB_TOKEN"
