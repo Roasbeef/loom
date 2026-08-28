@@ -143,6 +143,35 @@ over one session file. WP-L.
   escalation record *mintable* from inside code mode (#97). Public
   because it is the wrapper's entire decision and the only part of it a
   hermetic test can hold still.
+- `client/codemode.{workspace_seam, over_scratch, into_blobs,
+  blob_directory}` — the harness-side capability bridge (issue #16), and
+  the half of it that lives on this side of the seam. `workspace_seam`
+  builds the six closures `codemode/workspace`'s router calls: `fs_read`
+  and `fs_list` over `tools/fs.resolve_real` and `fs.read_text_file` —
+  the harness's *own* path boundary and *own* large-file guard, never a
+  second resolution — `kv_*` over the session's `client/scratch` store,
+  and `emit` over the session's blob root. `blob_directory` is the one
+  place `.blobs` is written down, read by both this module and
+  `client/serve`, so an artifact a program emits and an oversized `bash`
+  output that overflowed land in one store under one address. Listing is
+  the one operation with no counterpart in the tool set — `tool.FileSystem`
+  has no primitive for it — so the enumeration is `simplifile`'s, on a
+  path `resolve_real` has already contained, bounded before it is
+  classified and answered with lstat semantics so a symlink is never
+  called a directory.
+- `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
+  none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
+  reads and writes: a session-scoped actor, addressed by process name the
+  way the Agency is, holding string keys to bytes. Three bounds, each on
+  a different way to grow: 256 KiB per entry (refused in band), 8 MiB
+  total and 1024 entries (both **evicted**, least-recently-written, which
+  is what `cap/kv`'s "may be evicted or reset between calls" contract
+  asks for). Gone on restart, deliberately — a store a program can write
+  across sessions is a channel from one execution's model output into a
+  later execution's input. `none()` is the seam a host with no store
+  hands out, and it *refuses* rather than silently succeeding: a `set`
+  answering `Ok` into nothing reads to a program as an eviction and it
+  loops.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
@@ -594,6 +623,34 @@ over one session file. WP-L.
   `tools/codemode.Report`, splitting the helper's `skip:` entries out of
   the applied list so no renderer can present a skipped layer as an
   enforced one (issue #5).
+- **The harness-side capability bridge builds no clearance, and
+  re-derives no authorization.** `fs.read`, `fs.list`, `kv.*` and
+  `report.emit` are answered as `satellite.ServedHere` — no
+  `broker.CallSpec`, no jail, no composed policy — because none of them
+  leaves the VM and a policy whose enforcer is not present is not a
+  check (issue #16). What contains them instead is `tools/fs`'s own
+  `resolve_real`, called by the injected closure: the *same* function
+  `fs_read` calls, so a symlink planted inside the workspace and pointing
+  out of it is refused for the bridge exactly as it is for the model's
+  own tool. Writing a second resolution here would be a second boundary
+  to keep correct, and the one that got it wrong would be the one nobody
+  was reading. The write arms are deliberately absent rather than wired:
+  `fs.write` waited on the protected-path check (#105), without which a
+  vetted program would have held strictly more filesystem authority than
+  its own jailed `proc.run`, and `fs.edit` is an open contract question
+  since the satellite side carries neither anchors nor a digest.
+- **`report.emit` is one mechanism on two seams, and the one workspace
+  capability with a ceiling.** `cap/report` is the only module both
+  vetting allowlists carry, so both routers answer `emit` — from the same
+  closure, into the same blob root, under the same content address and
+  the same 64-per-execution ceiling (`codemode/artifact`). It earns a
+  ceiling where `fs.*` and `kv.*` do not because every admitted call
+  writes something that *outlives the execution*, which is
+  `satellite.CapCeiling`'s test; the scratch store is bounded store-side
+  by bytes with eviction instead, which is the right instrument for
+  something that must not grow rather than something that must not be
+  called often. So the workspace seam's ceiling list is no longer empty,
+  and the comment saying it was is gone.
 - **The only thing the code-mode wiring adds to a session base is two
   environment *names*.** `LOOM_CAP_SOCK` and `LOOM_CAP_TOKEN_FILE` are
   set by the launcher and cannot be shadowed by a caller's `env`, but

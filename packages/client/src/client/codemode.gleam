@@ -183,6 +183,8 @@ import broker/token
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/scratch
+import codemode/artifact
 import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
@@ -194,6 +196,7 @@ import codemode/satellite
 import codemode/seed
 import codemode/vet
 import codemode/vet/policy as vet_policy
+import codemode/workspace
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
@@ -205,7 +208,10 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/agent.{type Agency}
+import tools/blob
 import tools/codemode as codemode_tool
+import tools/fs
+import tools/tool
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
 /// the node holds one for its whole life, so anything less starves the
@@ -243,6 +249,26 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// Where the session keeps its content-addressed blobs, and
+    /// therefore where a `report.emit` artifact lands.
+    ///
+    /// The *same* directory `tool.Ctx.blob_root` names, deliberately: an
+    /// artifact a program emitted and an oversized `bash` output that
+    /// overflowed are the same kind of thing under the same addressing
+    /// scheme, and two stores would mean an id that means one thing here
+    /// and another there. `default_config` derives it from the workspace
+    /// exactly as `client/serve` does, through the one shared
+    /// `blob_directory` constant, so the two cannot drift.
+    blob_root: String,
+    /// The ephemeral scratch store `kv.*` reads and writes.
+    ///
+    /// A seam over a process name rather than a store of its own: the
+    /// store is session-scoped and supervised, and this configuration is
+    /// assembled before it is started (`client/scratch`). A host that
+    /// wired none hands out `scratch.none()`, whose calls refuse in band
+    /// naming the reason — never a silent success, which a program would
+    /// read as an eviction and loop on.
+    scratch: Scratch,
     /// The MCP servers this host reached at boot, if any.
     ///
     /// One field for the same reason `surface` is one: a configured
@@ -273,6 +299,43 @@ pub type Config {
 /// site.
 pub type McpLayer =
   mcp_wiring.Layer
+
+/// The scratch-store seam a host serves `kv.*` over: `client/scratch`'s
+/// own type, aliased for the reason `McpLayer` is.
+pub type Scratch =
+  scratch.Scratch
+
+/// The same host configuration, serving `kv.*` over a running scratch
+/// store.
+///
+/// A host that never calls this serves `scratch.none()`, and every
+/// `kv.*` call refuses in band saying so. That is the honest default: a
+/// store nobody started cannot hold anything, and answering `Ok` to a
+/// `set` that vanished is worse than refusing it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.over_scratch(scratch.seam(name, timeout_ms: 1000))
+/// ```
+///
+pub fn over_scratch(config: Config, store: Scratch) -> Config {
+  Config(..config, scratch: store)
+}
+
+/// The same host configuration, writing `report.emit` artifacts into a
+/// blob root other than the one derived from the workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.into_blobs(config, "/var/lib/loom/blobs")
+/// ```
+///
+pub fn into_blobs(config: Config, blob_root: String) -> Config {
+  Config(..config, blob_root:)
+}
 
 /// Which of the two code-mode seams a host serves, and what the
 /// orchestration one needs to be served with.
@@ -475,13 +538,23 @@ pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
 ///
 /// ## Examples
 ///
+/// The workspace seam's list is two routers' worth: `satellite.default_
+/// router`'s jailed `proc.run`, and `codemode/workspace`'s harness-side
+/// arm. Both are read off the modules that answer them rather than
+/// written out here, so a capability that stops being serviced stops
+/// being advertised in the same commit.
+///
+/// ## Examples
+///
 /// ```gleam
-/// assert codemode.seam_caps(vet_policy.WorkspaceSeam) == ["proc.run"]
+/// // codemode.seam_caps(vet_policy.WorkspaceSeam)
+/// //   == ["proc.run", "fs.read", "fs.list", "kv.get", …]
 /// ```
 ///
 pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
   case seam {
-    vet_policy.WorkspaceSeam -> serviced_caps
+    vet_policy.WorkspaceSeam ->
+      list.append(serviced_caps, workspace.serviced_caps)
     vet_policy.OrchestrationSeam -> orchestration.serviced_caps
   }
 }
@@ -535,6 +608,17 @@ pub const default_call_timeout_ms = 120_000
 /// workspace. Inside it, so the session base already makes it writable.
 pub const work_directory = ".codemode"
 
+/// Where the session's content-addressed blobs live, relative to the
+/// workspace.
+///
+/// Stated once, here, and read by both the place that fills
+/// `tool.Ctx.blob_root` (`client/serve`) and the place that fills
+/// `Config.blob_root`. Two literals would be two stores the day one of
+/// them moved, and an artifact id that resolves in one and not the other
+/// is the worst shape that failure could take — it would look like a
+/// missing artifact rather than like a misconfiguration.
+pub const blob_directory = ".blobs"
+
 /// The shipped configuration for a located toolchain: the vetting default,
 /// the pooled budget, the timeouts, and a work root inside the workspace.
 ///
@@ -565,6 +649,8 @@ pub fn default_config(
     erl_path: toolchain.erl_path,
     toolchain_path: toolchain_path(toolchain),
     surface: Workspace,
+    blob_root: workspace <> "/" <> blob_directory,
+    scratch: scratch.none(),
     mcp: mcp_wiring.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
@@ -580,9 +666,15 @@ pub type Toolchain {
   Toolchain(gleam_path: String, erl_path: String, seed_root: String)
 }
 
-/// The capability names the shipped router actually services. Published
-/// through the seam so the tool's description tells the model the truth
-/// rather than a copy that can drift from `satellite.default_router`.
+/// The capability names the shipped *default* router services — the ones
+/// that become a jailed clearance. Published through the seam so the
+/// tool's description tells the model the truth rather than a copy that
+/// can drift from `satellite.default_router`.
+///
+/// This is not the whole workspace seam: `seam_caps` appends
+/// `codemode/workspace.serviced_caps`, the harness-side arm, and
+/// `seam_caps_on` appends one `mcp.<server>` per configured server. Three
+/// routers, three lists, each read off its own module.
 pub const serviced_caps = ["proc.run"]
 
 // --- discovery -------------------------------------------------------------
@@ -1304,7 +1396,7 @@ pub fn exec_config(
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
       router: surface_router(config, request),
-      ceilings: surface_ceilings(config.surface, request),
+      ceilings: surface_ceilings(config, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
     launch: launch.launcher(launch.LaunchConfig(
@@ -1337,59 +1429,255 @@ fn surface_router(
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
   case config.surface, vetting_seam(request.seam) {
-    Workspace, _seam -> workspace_router(config)
-    Both(..), vet_policy.WorkspaceSeam -> workspace_router(config)
+    Workspace, _seam -> workspace_router(config, request)
+    Both(..), vet_policy.WorkspaceSeam -> workspace_router(config, request)
     Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
       orchestration.router(orchestration.Orchestration(
         agency:,
         strand: request.strand,
         source_index: request.source_index,
+        // `cap/report` is on both allowlists, so `report.emit` is
+        // serviced on both seams — by the same closure, writing into the
+        // same store under the same content address. An orchestration
+        // program that could not emit had `cap/report`'s one effectful
+        // function refused on every call (issue #91, item 1).
+        emit: workspace_seam(config, request).emit,
+        emit_ceiling: artifact.default_emit_ceiling,
       ))
   }
 }
 
-// The workspace seam's router: the MCP arm in front of the shipped
-// table.
+// The workspace seam's router: three arms over the shipped table.
 //
-// The arm answers `mcp.<server>` and hands every other capability to
-// `satellite.default_router` untouched, so nothing about `proc.run` or
-// about what the default table refuses changes shape. Its plans are
-// always `ServedHere` — no `CallSpec` is built, no jail is entered, no
-// policy is composed — which is the same reason the orchestration seam
-// returns them (`codemode/orchestration`): an MCP call is a request the
-// harness answers over a socket it already owns.
+// Outermost is the harness-side bridge — `fs.read`, `fs.list`, `kv.*`,
+// `report.emit` — then the MCP arm answering `mcp.<server>`, then
+// `satellite.default_router`, which clears `proc.run` into a jail and
+// refuses everything it does not know. Each arm hands what it does not
+// answer to the one beneath, so nothing about `proc.run` or about what
+// the default table refuses changes shape.
 //
-// The layer is read off the *host*, like every other router choice
-// here, so a submission that named the orchestration seam on a
-// workspace-only host is still routed by this one — and reaches nothing
-// through it, because a program vetted against the orchestration
-// allowlist cannot import a façade.
-fn workspace_router(config: Config) -> satellite.CapRouter {
-  mcp_wiring.routing(config.mcp, over: satellite.default_router)
+// Only the innermost arm builds a `broker.CallSpec`. The other two
+// return `satellite.ServedHere` plans exclusively: a workspace read, a
+// process-local store write and a blob mint are requests the harness
+// answers itself, entering no jail and composing no policy, for the
+// reason `codemode/workspace`'s module doc argues at length — a policy
+// whose enforcer is not present is not a check.
+//
+// The layer, the store and the blob root are all read off the *host*,
+// like every other router choice here, so a submission that named the
+// orchestration seam on a workspace-only host is still routed by this
+// one — and reaches nothing through it, because a program vetted against
+// the orchestration allowlist cannot import the modules whose calls
+// these arms service.
+fn workspace_router(
+  config: Config,
+  request: codemode_tool.Request,
+) -> satellite.CapRouter {
+  workspace.routing(
+    workspace_seam(config, request),
+    over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+  )
 }
 
-// The lifetime admission ceilings the execution runs under. The workspace
-// seam declares none: its capabilities perform effects the pooled budget
-// and the wall deadline already bound, and none of them *mints* anything
-// that outlives the execution. Four of the orchestration seam's six do —
-// a child strand, a durable message that can start a run, a durable
-// register, and the scan that reads them — which is the whole reason it
-// needs ceilings (`satellite.CapCeiling`, `orchestration.ceilings`).
+/// The harness-side closures the workspace seam's router calls, bound to
+/// one execution's workspace root and this host's stores.
+///
+/// Public because it is the whole of what the bridge authorizes, and a
+/// test that wants to prove a path is contained should be able to hold
+/// exactly these six functions still rather than standing up a satellite
+/// to reach them.
+///
+/// **Every filesystem decision here is `tools/fs`'s.** `resolve_real` is
+/// the harness's sole path boundary and `read_text_file` is `fs_read`'s
+/// own large-file guard and UTF-8 rule; nothing about either is restated.
+/// The one operation with no counterpart in the tool set is *listing* a
+/// directory, which the `tool.FileSystem` seam has no primitive for — so
+/// the enumeration is `simplifile`'s, exactly as `fs.real_filesystem`'s
+/// other primitives are, and it happens only on a path `resolve_real` has
+/// already resolved and contained.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.workspace_seam(config, request).fs_read("src/main.gleam")
+/// ```
+///
+pub fn workspace_seam(
+  config: Config,
+  request: codemode_tool.Request,
+) -> workspace.Workspace {
+  let filesystem = fs.real_filesystem()
+  let root = request.workspace
+  workspace.Workspace(
+    fs_read: fn(path) { read_in(filesystem, root, path) },
+    fs_list: fn(path) { list_in(filesystem, root, path) },
+    kv_get: config.scratch.get,
+    kv_set: config.scratch.set,
+    kv_delete: config.scratch.delete,
+    emit: emitting(filesystem, config.blob_root),
+    emit_ceiling: artifact.default_emit_ceiling,
+  )
+}
+
+// `fs.read`: resolve, then read, with both refusals kept structured.
+// This is the whole of it — every decision belongs to one of the two
+// `tools/fs` functions called here, and the bridge's contribution is to
+// name the seam the failure came from.
+fn read_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  path: String,
+) -> Result(String, workspace.FsRefusal) {
+  use resolved <- result.try(
+    fs.resolve_real(filesystem:, workspace: root, path:)
+    |> result.map_error(workspace.PathRefused),
+  )
+  fs.read_text_file(filesystem:, resolved:)
+  |> result.map_error(workspace.ReadRefused)
+}
+
+// `fs.list`: resolve through the same boundary, then enumerate.
+//
+// Two properties are worth stating because neither is obvious.
+//
+// The listing is bounded *before* it is built: `simplifile.read_directory`
+// hands back every name, and the count is checked against
+// `workspace.max_list_entries` before a single entry is classified, so a
+// directory with a hundred thousand files costs one readdir rather than a
+// hundred thousand `read_link` calls followed by a refusal.
+//
+// `is_directory` is answered with lstat semantics, through the seam's own
+// `read_link`: a symlink is reported as **not** a directory whatever it
+// points at. That is the safe direction — the answer says nothing about a
+// target that may lie outside the workspace — and the honest one, since
+// `fs.read` through that link would be refused by `resolve_real` anyway.
+fn list_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  path: String,
+) -> Result(List(workspace.DirEntry), workspace.FsRefusal) {
+  use resolved <- result.try(
+    fs.resolve_real(filesystem:, workspace: root, path:)
+    |> result.map_error(workspace.PathRefused),
+  )
+  use names <- result.try(
+    simplifile.read_directory(resolved)
+    |> result.map_error(fn(error) {
+      workspace.ListRefused(tool.FsFailure(
+        path: resolved,
+        reason: simplifile.describe_error(error),
+      ))
+    }),
+  )
+  use bounded <- result.try(within_listing_bound(names))
+  Ok(list.map(bounded, fn(name) { classify(filesystem, resolved, name) }))
+}
+
+// The count check, kept as its own function so the O(n) walk it needs is
+// visible: `list.length` over a directory listing is a walk of exactly
+// the thing being bounded, which is the one shape where it is the right
+// answer rather than lint R5's.
+fn within_listing_bound(
+  names: List(String),
+) -> Result(List(String), workspace.FsRefusal) {
+  let count = list.length(names)
+  case count > workspace.max_list_entries {
+    True ->
+      Error(workspace.TooManyEntries(count:, limit: workspace.max_list_entries))
+    False -> Ok(names)
+  }
+}
+
+fn classify(
+  filesystem: tool.FileSystem,
+  directory: String,
+  name: String,
+) -> workspace.DirEntry {
+  let child = directory <> "/" <> name
+  let is_directory = case filesystem.read_link(child) {
+    // A symlink, a path that vanished between the readdir and this call,
+    // or a seam that would not answer: none of them is a directory this
+    // listing should send a program into.
+    Ok(tool.LinkTarget(..)) | Ok(tool.LinkMissing) | Error(_) -> False
+    Ok(tool.NotALink) -> filesystem.is_file(child) == Ok(False)
+  }
+  workspace.DirEntry(name:, is_directory:)
+}
+
+// `report.emit`: the same content-addressed write `tools/blob` performs
+// for an overflowed tool output, into the same store.
+//
+// Idempotent by construction, which is why nothing here checks for a
+// prior emission: the id *is* the SHA-256 of the bytes, so emitting the
+// same artifact twice answers the same id and writes the file once. The
+// `is_file` probe before the write is not a correctness guard — it saves
+// rewriting bytes that are already there, exactly as `blob.bound` does.
+fn emitting(filesystem: tool.FileSystem, blob_root: String) -> artifact.Emit {
+  fn(art: artifact.Artifact) {
+    let ref = blob.ref_for(art.bytes)
+    let path = blob.ref_path(blob_root, ref)
+    use Nil <- result.try(
+      filesystem.create_directory_all(blob_root)
+      |> result.map_error(store_failed),
+    )
+    use present <- result.try(
+      filesystem.is_file(path) |> result.map_error(store_failed),
+    )
+    use Nil <- result.try(case present {
+      True -> Ok(Nil)
+      False ->
+        filesystem.write(path, art.bytes) |> result.map_error(store_failed)
+    })
+    Ok(ref)
+  }
+}
+
+fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
+  artifact.StoreFailed(reason: case error {
+    tool.FsNotFound(path:) -> "the blob store is missing: " <> path
+    tool.FsPermissionDenied(path:) -> "the blob store is not writable: " <> path
+    tool.FsFailure(path:, reason:) ->
+      "the blob store would not take the artifact (" <> path <> "): " <> reason
+  })
+}
+
+// The lifetime admission ceilings the execution runs under.
+//
+// **Both seams declare one, and they overlap in exactly one capability.**
+// The test a capability has to meet is `satellite.CapCeiling`'s: does a
+// call *mint something that outlives the execution*. On the orchestration
+// seam four of the six `strand.*` calls do — a child strand, a durable
+// message that can start a run, a durable register, and the scan that
+// reads them. On the workspace seam none of `fs.read`, `fs.list` or
+// `kv.*` does: two are reads bounded by their own size guards, and the
+// scratch store is bounded store-side by a byte cap with eviction, which
+// is the right instrument for something that must not *grow* rather than
+// something that must not be called often.
+//
+// `report.emit` is the one that meets the test on both seams, because it
+// is the one capability both allowlists carry: every admitted call writes
+// a content-addressed file into a store that outlives the session. So the
+// workspace seam's ceiling list is not empty — it was, and this comment
+// said so, until `report.emit` routed.
 //
 // Read off the surface beside the router, and for the same reason: the
 // ceilings belong to the router whose calls mint things, so the two can
 // never be chosen apart. Only the spawn number is a surface setting; the
-// other three are the seam's own constants.
+// rest are the seams' own constants.
 fn surface_ceilings(
-  surface: Surface,
+  config: Config,
   request: codemode_tool.Request,
 ) -> List(satellite.CapCeiling) {
-  case surface, vetting_seam(request.seam) {
-    Workspace, _seam -> []
-    Both(..), vet_policy.WorkspaceSeam -> []
+  case config.surface, vetting_seam(request.seam) {
+    Workspace, _seam | Both(..), vet_policy.WorkspaceSeam ->
+      workspace.ceilings(workspace_seam(config, request))
     Orchestration(spawn_ceiling:, ..), _seam
     | Both(spawn_ceiling:, ..), _seam
-    -> orchestration.ceilings(spawn_ceiling)
+    ->
+      orchestration.ceilings(
+        spawn_ceiling,
+        emit_admissions: artifact.default_emit_ceiling,
+      )
   }
 }
 

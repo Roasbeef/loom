@@ -630,8 +630,12 @@ pub fn a_configured_server_is_named_in_what_the_seam_services_test() {
     layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
   let broker_actor = idle_broker()
   let config = host(broker_actor, layer)
+  // The server's name lands *after* the seam's own capabilities, so a
+  // configured server widens the list rather than reordering it.
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
-    == ["proc.run", "mcp.alpha"]
+    == list.append(codemode.seam_caps(vet_policy.WorkspaceSeam), [
+      "mcp.alpha",
+    ])
   broker.stop(broker_actor)
   mcp.stop(layer)
 }

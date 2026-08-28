@@ -30,6 +30,7 @@ import client/codemode
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/scratch
 import core/clock
 import core/ids
 import core/json
@@ -44,6 +45,8 @@ import mcp/client as mcp_client
 import mcp/codegen
 import simplifile
 import support/fake_mcp
+import tools/agent
+import tools/blob
 import tools/codemode as codemode_tool
 import tools/tool
 
@@ -695,6 +698,308 @@ fn gone_within(pid: String, polls: Int) -> Bool {
       gone_within(pid, polls - 1)
     }
   }
+}
+
+// --- the harness-side capability bridge, end to end (#16) --------------------
+
+// The fixture the program reads, and therefore what has to survive
+// `resolve_real`, the closure, the cap channel and `cap/fs`'s own result
+// decoding to come back out as a tool result.
+const bridged_file = "notes/fixture.txt"
+
+const bridged_contents = "loom-workspace-bridge"
+
+// What the program stashes and reads back, and what it emits. The
+// artifact's bytes are asserted on disk afterwards, at the content
+// address `cap/report` handed the program.
+const bridged_key = "seen"
+
+const bridged_artifact = "loom-bridge-artifact\n"
+
+/// A program of the kind a model would submit against the harness-side
+/// bridge: one read, one listing, a scratch round trip and an artifact,
+/// composed into a single structured outcome.
+///
+/// Written to exercise all four capabilities in one execution
+/// deliberately. They are one mechanism — one router, one seam record,
+/// one set of injected closures — and a suite that reached them one at a
+/// time would not notice a seam whose second arm was wired to the first
+/// one's closure.
+pub fn bridge_program_source() -> String {
+  "import cap/fs\n"
+  <> "import cap/kv\n"
+  <> "import cap/report\n"
+  <> "import gleam/list\n"
+  <> "import gleam/option\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case fs.read(\""
+  <> bridged_file
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"fs.read did not settle\")\n"
+  <> "    Ok(contents) -> after_read(contents)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_read(contents: String) -> report.Outcome {\n"
+  <> "  case fs.list(\"notes\") {\n"
+  <> "    Error(_error) -> report.failure(\"fs.list did not settle\")\n"
+  <> "    Ok(entries) -> after_list(contents, entries)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_list(contents: String, entries: List(fs.DirEntry)) -> report.Outcome {\n"
+  <> "  let names = list.map(entries, fn(entry) { entry.name })\n"
+  <> "  case kv.set(\""
+  <> bridged_key
+  <> "\", <<\"stashed\":utf8>>) {\n"
+  <> "    Error(_error) -> report.failure(\"kv.set did not settle\")\n"
+  <> "    Ok(Nil) -> after_set(contents, list.length(names))\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_set(contents: String, listed: Int) -> report.Outcome {\n"
+  <> "  case kv.get(\""
+  <> bridged_key
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"kv.get did not settle\")\n"
+  <> "    Ok(option.None) -> report.failure(\"kv.get lost the value\")\n"
+  <> "    Ok(option.Some(stashed)) -> emitting(contents, listed, stashed)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn emitting(contents: String, listed: Int, stashed: BitArray) -> report.Outcome {\n"
+  <> "  case\n"
+  <> "    report.emit(\n"
+  <> "      name: \"bridge.txt\",\n"
+  <> "      content_type: \"text/plain\",\n"
+  <> "      bytes: <<\""
+  <> bridged_artifact_literal()
+  <> "\":utf8>>,\n"
+  <> "    )\n"
+  <> "  {\n"
+  <> "    Error(_error) -> report.failure(\"report.emit did not settle\")\n"
+  <> "    Ok(reference) ->\n"
+  <> "      report.value(\n"
+  <> "        report.object([\n"
+  <> "          #(\"contents\", report.string(contents)),\n"
+  <> "          #(\"listed\", report.int(listed)),\n"
+  <> "          #(\"stashed\", report.int(byte_count(stashed))),\n"
+  <> "          #(\"artifact\", report.string(reference.id)),\n"
+  <> "        ]),\n"
+  <> "      )\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  // `gleam/bit_array` is not on the seam's stdlib allowlist, so the
+  // program counts its own bytes rather than importing a module vetting
+  // would refuse. What it is proving is that the bytes crossed at all.
+  <> "fn byte_count(bytes: BitArray) -> Int {\n"
+  <> "  case bytes {\n"
+  <> "    <<_byte, rest:bits>> -> 1 + byte_count(rest)\n"
+  <> "    _empty -> 0\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+// The artifact's bytes as a Gleam string literal: the trailing newline
+// has to reach the source as an escape rather than as a line break.
+fn bridged_artifact_literal() -> String {
+  string.replace(bridged_artifact, "\n", "\\n")
+}
+
+pub fn a_program_reaches_the_harness_side_capability_bridge_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println(
+        "SKIP a_program_reaches_the_harness_side_capability_bridge: " <> reason,
+      )
+    Ok(ready) -> run_bridge(ready)
+  }
+}
+
+// The whole of #16's first slice against the real pipeline: a real vet
+// against the workspace allowlist, a real hermetic build, a real jailed
+// satellite, and four capabilities answered by the harness itself rather
+// than by a jail — over `tools/fs`'s own path resolution, the session's
+// own scratch store, and the session's own blob root.
+//
+// The decisive assertion is the last one. A program is told an artifact's
+// content address; this reads the file *at that address* off the disk and
+// compares its bytes. An id a program cannot resolve to bytes is a
+// capability that reported success and did nothing.
+fn run_bridge(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root <> "-bridge")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(rig.workspace <> "/notes")
+    as "the fixture directory must be creatable"
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/" <> bridged_file, bridged_contents)
+    as "the fixture file must be writable"
+  let store = process.new_name(prefix: "loom_scratch_e2e")
+  let assert Ok(_started) = scratch.start(store, scratch.default_bounds())
+    as "the scratch store must start"
+  let seam =
+    codemode.seam(
+      codemode.default_config(
+        broker: rig.broker,
+        clock: wall_clock(),
+        workspace: rig.workspace,
+        toolchain: rig.toolchain,
+      )
+      |> codemode.over_scratch(scratch.seam(
+        store,
+        timeout_ms: scratch.default_timeout_ms,
+      )),
+    )
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(bridge_program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error
+  // The file's own bytes, through `resolve_real`, the closure, the cap
+  // channel and `cap/fs`'s result decoding.
+  assert string.contains(text, bridged_contents)
+  // The listing found the one fixture, and the scratch store handed back
+  // the seven bytes the program stashed.
+  // The listing found the one fixture file, and the scratch store handed
+  // back exactly the seven bytes the program stashed — not a truncation,
+  // not an eviction, and not a `None` the program had to route around.
+  assert string.contains(text, "\"listed\":1")
+  assert string.contains(text, "\"stashed\":7")
+  let id = artifact_id(outcome)
+  assert string.starts_with(id, "sha256-")
+  // The artifact is a real file, at the address the program was told, in
+  // the blob root this host derives from the workspace — the same one
+  // `tool.Ctx.blob_root` names.
+  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
+  // And the id really is the content address of those bytes rather than
+  // a name the harness invented, which is what makes a re-emission free.
+  assert id == blob.ref_for(<<bridged_artifact:utf8>>)
+  io.println(
+    "code-mode bridge e2e: fs.read + fs.list + kv.set/get + report.emit "
+    <> "through the real pipeline; the artifact is on disk at "
+    <> id,
+  )
+  scratch.stop(store)
+  stop_rig(rig)
+}
+
+// The `artifact` field of the program's structured outcome, read out of
+// the rendered result text. The tool renders a completed program's value
+// as JSON, so this is a search rather than a decode — what is being
+// proved is that the id crossed, not how the tool renders one.
+fn artifact_id(outcome: tool.ToolOutcome) -> String {
+  let text = rendered_text(outcome)
+  case string.split(text, "sha256-") {
+    [_before, rest, ..] ->
+      "sha256-"
+      <> string.slice(rest, 0, 64)
+      |> string.replace("\"", "")
+    _other -> "no artifact id in " <> text
+  }
+}
+
+// --- report.emit on the orchestration seam (#91 item 1) ----------------------
+
+/// The smallest program that proves the shared capability: an
+/// orchestration submission that emits an artifact and reports its id.
+///
+/// `cap/report` is on both vetting allowlists and is the only module they
+/// share, but `orchestration.serviced_caps` used to omit `emit` — so the
+/// module's one effectful function was advertised in the description a
+/// model is charged for on every request and refused every time it was
+/// called. This is the test that would have caught that.
+pub fn orchestration_emit_program_source() -> String {
+  "import cap/report\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case\n"
+  <> "    report.emit(\n"
+  <> "      name: \"orchestrated.txt\",\n"
+  <> "      content_type: \"text/plain\",\n"
+  <> "      bytes: <<\""
+  <> bridged_artifact_literal()
+  <> "\":utf8>>,\n"
+  <> "    )\n"
+  <> "  {\n"
+  <> "    Error(_error) -> report.failure(\"report.emit did not settle\")\n"
+  <> "    Ok(reference) -> report.text(reference.id)\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+pub fn an_orchestration_program_emits_an_artifact_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println("SKIP an_orchestration_program_emits_an_artifact: " <> reason)
+    Ok(ready) -> run_orchestration_emit(ready)
+  }
+}
+
+// The orchestration seam, over an Agency that can do nothing at all. That
+// is the point: the program touches no strand, so what is being proved is
+// that `report.emit` is serviced *on this seam* rather than that the
+// messaging plane works — which `orchestration_sample_test` proves
+// elsewhere, against a real one.
+fn run_orchestration_emit(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root <> "-orch-emit")
+  let seam =
+    codemode.seam(
+      codemode.default_config(
+        broker: rig.broker,
+        clock: wall_clock(),
+        workspace: rig.workspace,
+        toolchain: rig.toolchain,
+      )
+      |> codemode.orchestrating(over: unreachable_agency()),
+    )
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(orchestration_emit_program_source())),
+        #("within_ms", json.Int(600_000)),
+        #("seam", json.String("orchestration")),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error
+  let id = artifact_id(outcome)
+  assert id == blob.ref_for(<<bridged_artifact:utf8>>)
+  // Same store, same address: an artifact minted from an orchestration
+  // program and one minted from a workspace program are the same kind of
+  // thing, which is what "one mechanism" has to mean to be worth saying.
+  let path = blob.ref_path(rig.workspace <> "/" <> codemode.blob_directory, id)
+  assert simplifile.read_bits(path) == Ok(<<bridged_artifact:utf8>>)
+  assert string.contains(text, id)
+  io.println(
+    "code-mode orchestration e2e: report.emit is serviced on the "
+    <> "orchestration seam and wrote "
+    <> id,
+  )
+  stop_rig(rig)
+}
+
+// An Agency that refuses everything. The emitting program never asks it
+// anything; a seam that had wired `report.emit` onto a `strand.*` arm by
+// mistake would come back `strands_unavailable` rather than with an id.
+fn unreachable_agency() -> agent.Agency {
+  agent.Agency(
+    spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
+    wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
+    notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    roster: fn(_caller) { Error(agent.AgencyUnavailable) },
+    max_wait_ms: 30_000,
+  )
 }
 
 // --- the rig ---------------------------------------------------------------

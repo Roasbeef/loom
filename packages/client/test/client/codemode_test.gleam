@@ -27,6 +27,7 @@ import broker/policy
 import client/agency
 import client/codemode
 import client/serve
+import codemode/artifact
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/identity
@@ -553,7 +554,11 @@ pub fn the_seam_publishes_the_policy_the_program_is_judged_against_test() {
   assert list.contains(offered.allowed_imports, "cap/report")
   assert list.contains(offered.allowed_imports, "cap/proc")
   assert !list.contains(offered.allowed_imports, "gleam/io")
-  assert offered.serviced_caps == codemode.serviced_caps
+  // Two routers' worth, read off the two modules that answer them: the
+  // jailed `proc.run` and the harness-side bridge.
+  assert offered.serviced_caps == codemode.seam_caps(vet_policy.WorkspaceSeam)
+  assert list.contains(offered.serviced_caps, "proc.run")
+  assert list.contains(offered.serviced_caps, "fs.read")
   // A host serving one seam offers one, so the model is charged for no
   // choice it cannot make.
   assert seam.seams.alternates == []
@@ -717,7 +722,7 @@ pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   let workspace = codemode.seam(config_for(broker_actor)).seams.default
   assert list.contains(workspace.allowed_imports, "cap/proc")
   assert !list.contains(workspace.allowed_imports, "cap/strand")
-  assert workspace.serviced_caps == codemode.serviced_caps
+  assert workspace.serviced_caps == codemode.seam_caps(vet_policy.WorkspaceSeam)
   broker.stop(broker_actor)
 }
 
@@ -725,8 +730,11 @@ pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
   // A call is throttled by turn cost and a loop pays nothing, so the seam
   // that replaces the turn with a loop is the one that needs explicit
   // ceilings — on every call that mints something outliving the
-  // execution, which is four of its six. The workspace seam mints nothing
-  // that outlives its execution and declares none.
+  // execution, which is four of the orchestration seam's six `strand.*`
+  // calls. The workspace seam's `fs.*` and `kv.*` mint nothing that
+  // outlives their execution; `report.emit` does, on both seams, so it is
+  // the one ceiling they share and the reason the workspace list is no
+  // longer empty.
   let broker_actor = idle_broker()
   let request = request_for("turn-9:tools")
   let orchestrated =
@@ -738,7 +746,10 @@ pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
       widened_by: [],
     )
   assert orchestrated.satellite.ceilings
-    == orchestration.ceilings(orchestration.default_spawn_ceiling)
+    == orchestration.ceilings(
+      orchestration.default_spawn_ceiling,
+      emit_admissions: artifact.default_emit_ceiling,
+    )
   let plain =
     codemode.exec_config(
       config_for(broker_actor),
@@ -747,7 +758,10 @@ pub fn only_the_orchestration_surface_carries_admission_ceilings_test() {
       9000,
       widened_by: [],
     )
-  assert plain.satellite.ceilings == []
+  assert plain.satellite.ceilings
+    == [
+      artifact.ceiling(artifact.default_emit_ceiling),
+    ]
   broker.stop(broker_actor)
 }
 
@@ -978,6 +992,8 @@ fn orchestrated(
       agency: live.seam,
       strand: from,
       source_index: 0,
+      emit: fn(_artifact) { Ok("sha256-unused") },
+      emit_ceiling: artifact.default_emit_ceiling,
     ))
   let request =
     satellite.CapRequest(

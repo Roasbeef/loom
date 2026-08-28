@@ -173,6 +173,7 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/scratch
 import client/server
 import client/summaries
 import client/system_prompt
@@ -947,6 +948,7 @@ fn code_mode_seam(
   broker_actor: Broker,
   clock: Clock,
   agency_seam: Agency,
+  scratch_seam: codemode_wiring.Scratch,
 ) -> #(Option(codemode_tool.CodeMode), mcp_wiring.Layer) {
   case codemode_wiring.discover(settings.codemode_seed) {
     Error(reason) -> {
@@ -985,6 +987,10 @@ fn code_mode_seam(
           // the `agent_*` tools call — one messaging plane, reached two
           // ways.
           |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+          // `kv.*` is answered by the session's one scratch store, which
+          // starts under the service supervisor below. The seam is a
+          // name, so it can be built here and resolved per call.
+          |> codemode_wiring.over_scratch(scratch_seam)
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
@@ -1121,7 +1127,7 @@ fn assemble(
   logger: Logger,
   stops: Subject(host.Stop),
 ) -> Result(Booted, String) {
-  let blob_root = settings.workspace <> "/.blobs"
+  let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
   // One clock function, therefore one era, across session, broker,
@@ -1213,8 +1219,22 @@ fn assemble(
   // prepared build seed on this host. A host without them says so once
   // here and registers no `code_mode` tool, rather than shipping a
   // definition in the cached prefix that can only ever refuse.
+  // The scratch store `cap/kv` reads and writes: session-scoped,
+  // byte-capped, and gone when the session is. Reached through a name
+  // for the reason the Agency is — the seam is built while this
+  // configuration is assembled and the store starts under the service
+  // supervisor further down — though the knot here is only ordering,
+  // since the store closes over no runtime at all.
+  let scratch_name = process.new_name(prefix: "loom_scratch")
   let #(code_mode, mcp_layer) =
-    code_mode_seam(settings, logger, broker_actor, clock, agency_seam)
+    code_mode_seam(
+      settings,
+      logger,
+      broker_actor,
+      clock,
+      agency_seam,
+      scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
+    )
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
@@ -1367,6 +1387,12 @@ fn assemble(
     |> sup.add(
       supervision.worker(fn() { escalate.start(escalate_config, runtime) }),
     )
+    // The scratch store is here rather than among the fatal children
+    // because it is addressed by *name* and holds nothing a restart
+    // cannot do without: `cap/kv` requires every caller to tolerate a
+    // vanished value, so an emptied store costs a running program a
+    // cache miss it was already written to handle.
+    |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
