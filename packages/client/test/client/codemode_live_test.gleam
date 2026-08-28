@@ -906,6 +906,256 @@ fn artifact_id(outcome: tool.ToolOutcome) -> String {
   }
 }
 
+// --- the bridge's write arms, end to end (#16, #105) -------------------------
+
+// The file the program creates, edits and re-reads. At the workspace
+// root on purpose: `fs.write` writes whole files and creates no parent
+// directories, so a path needing one would be testing `simplifile`'s
+// `enoent` rather than the bridge.
+const written_file = "written.txt"
+
+const written_contents = "loom-bridge-write:alpha"
+
+// The one replacement the edit leg makes, and the text it must produce.
+// `alpha` occurs exactly once in the file, which is what
+// `apply_replacements` requires and what makes the *second* attempt at
+// the same find a stale one rather than an ambiguous one.
+const edit_find = "alpha"
+
+const edit_replace = "omega"
+
+const edited_contents = "loom-bridge-write:omega"
+
+// The protected directory, and the path inside it the program tries to
+// write. A repository's hooks are the canonical reason the never-writable
+// list exists: a file dropped here executes on the *human's* next
+// checkout, outside every jail this tree builds.
+const protected_dir = ".git"
+
+const protected_hook = ".git/hooks/post-checkout"
+
+const hook_contents = "#!/bin/sh"
+
+// What the program reports having observed on each of the two refusal
+// legs. Every branch is labelled, including the ones that must not
+// happen, so a leg that succeeded and a leg that failed the wrong way are
+// distinguishable in the outcome text rather than both reading as "the
+// expected label is absent".
+const stale_label = "stale-content"
+
+const denied_label = "permission-denied"
+
+const not_refused = "not-refused"
+
+const wrong_refusal = "wrong-refusal"
+
+/// A program of the kind a model would submit against the bridge's write
+/// arms: a write, a read back, an edit, a read back, an edit whose `find`
+/// no longer matches, and a write at a protected path. Both refusals are
+/// pattern-matched on the *variant* and reported by label, because the
+/// claim is that the program observed `StaleContent` and
+/// `PermissionDenied` — not that the harness produced them.
+///
+/// One program for all six legs, for the reason `bridge_program_source`
+/// gives: they are one seam record and one router, and a suite reaching
+/// them one at a time would not notice an arm wired to its neighbour's
+/// closure.
+pub fn write_bridge_program_source() -> String {
+  "import cap/fs\n"
+  <> "import cap/report\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case fs.write(\""
+  <> written_file
+  <> "\", \""
+  <> written_contents
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"fs.write did not settle\")\n"
+  <> "    Ok(Nil) -> after_write()\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_write() -> report.Outcome {\n"
+  <> "  case fs.read(\""
+  <> written_file
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"the read back did not settle\")\n"
+  <> "    Ok(written) -> after_read(written)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_read(written: String) -> report.Outcome {\n"
+  <> "  case fs.edit(\""
+  <> written_file
+  <> "\", ["
+  <> replacement(edit_find, edit_replace)
+  <> "]) {\n"
+  <> "    Error(_error) -> report.failure(\"fs.edit did not settle\")\n"
+  <> "    Ok(Nil) -> after_edit(written)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_edit(written: String) -> report.Outcome {\n"
+  <> "  case fs.read(\""
+  <> written_file
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"the re-read did not settle\")\n"
+  <> "    Ok(edited) -> reporting(written, edited)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn reporting(written: String, edited: String) -> report.Outcome {\n"
+  <> "  let stale = stale_edit()\n"
+  <> "  let protected = refused_write()\n"
+  <> "  report.text(\n"
+  <> "    \"wrote=\"\n"
+  <> "    <> written\n"
+  <> "    <> \" edited=\"\n"
+  <> "    <> edited\n"
+  <> "    <> \" stale=\"\n"
+  <> "    <> stale\n"
+  <> "    <> \" protected=\"\n"
+  <> "    <> protected,\n"
+  <> "  )\n"
+  <> "}\n"
+  <> "\n"
+  // The same find again, against text that no longer holds it: zero
+  // matches, which the ruling in `codemode/workspace`'s module doc gives
+  // the honest meaning "the file no longer contains your text".
+  <> "fn stale_edit() -> String {\n"
+  <> "  case fs.edit(\""
+  <> written_file
+  <> "\", ["
+  <> replacement(edit_find, edit_replace)
+  <> "]) {\n"
+  <> "    Ok(Nil) -> \""
+  <> not_refused
+  <> "\"\n"
+  // Written out rather than as label shorthand: vetting parses a
+  // slightly narrower Gleam than the compiler does.
+  <> "    Error(fs.StaleContent(path: _path, message: _message)) -> \""
+  <> stale_label
+  <> "\"\n"
+  <> "    Error(_other) -> \""
+  <> wrong_refusal
+  <> "\"\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn refused_write() -> String {\n"
+  <> "  case fs.write(\""
+  <> protected_hook
+  <> "\", \""
+  <> hook_contents
+  <> "\") {\n"
+  <> "    Ok(Nil) -> \""
+  <> not_refused
+  <> "\"\n"
+  <> "    Error(fs.PermissionDenied(path: _path)) -> \""
+  <> denied_label
+  <> "\"\n"
+  <> "    Error(_other) -> \""
+  <> wrong_refusal
+  <> "\"\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+// One `fs.Replacement` as a Gleam expression.
+fn replacement(find: String, replace_with: String) -> String {
+  "fs.Replacement(find: \""
+  <> find
+  <> "\", replace_with: \""
+  <> replace_with
+  <> "\")"
+}
+
+pub fn a_program_writes_edits_and_is_refused_a_protected_path_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println(
+        "SKIP a_program_writes_edits_and_is_refused_a_protected_path: "
+        <> reason,
+      )
+    Ok(ready) -> run_write_bridge(ready)
+  }
+}
+
+// The bridge's write half against the real pipeline: a real vet, a real
+// hermetic build, a real jailed satellite, and four `cap/fs` calls the
+// harness answers itself over `tools/fs.resolve_writable` and
+// `codemode/workspace.apply_replacements`.
+//
+// The decisive leg is the last one. `fs.write` at `.git/hooks/…` is the
+// case that made bridging a write wait for the protected-path check
+// (#105): without it a vetted program would hold *strictly more*
+// filesystem authority than its own jailed `proc.run`, whose bwrap masks
+// honour the never-writable list. So the refusal is asserted twice over —
+// on the text the program composed, because the claim is that the program
+// met `PermissionDenied` and could branch on it, and on the disk
+// afterwards, because a refusal that reported itself and wrote the file
+// anyway would satisfy the first assertion alone.
+fn run_write_bridge(ready: Ready) -> Nil {
+  let root = ready.root <> "-write"
+  let workspace = workspace_in(root)
+  let protected = workspace <> "/" <> protected_dir
+  // Made before the rig, so the path the base policy protects — and the
+  // jail therefore masks — exists by the time the first helper spawns.
+  // The hooks directory in particular is what makes the refusal load
+  // bearing: without it the write would fail for want of a parent, which
+  // is a different sentence about a different thing.
+  let assert Ok(Nil) = simplifile.create_directory_all(protected <> "/hooks")
+    as "the protected fixture directory must be creatable"
+  // A rig root outlives the run that made it, so the hook is removed
+  // before rather than after: the closing assertion is "this file does
+  // not exist", and a file some earlier run left there would otherwise
+  // make it fail — or, worse, an earlier run that wrote it would make a
+  // *later* one pass on a stale absence.
+  let _ = simplifile.delete(workspace <> "/" <> protected_hook)
+  let rig = rig_protecting(ready, under: root, protected: [protected])
+  let seam =
+    codemode.seam(codemode.default_config(
+      broker: rig.broker,
+      clock: wall_clock(),
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
+    ))
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(write_bridge_program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error
+  // (1) The round trip: the bytes the program wrote came back through a
+  // second call, so the write reached a real file rather than being
+  // answered `Ok` by a closure that did nothing.
+  assert string.contains(text, "wrote=" <> written_contents)
+  // (2) The edit applied, and the program read the edited text.
+  assert string.contains(text, "edited=" <> edited_contents)
+  // (3) and (4): both refusals, as the program itself classified them.
+  assert string.contains(text, "stale=" <> stale_label)
+  assert string.contains(text, "protected=" <> denied_label)
+  assert !string.contains(text, not_refused)
+  assert !string.contains(text, wrong_refusal)
+  // On disk: the legitimate file holds the *edited* bytes — so the second
+  // edit really was all-or-nothing and left nothing behind — and the hook
+  // the program was refused does not exist.
+  assert simplifile.read(rig.workspace <> "/" <> written_file)
+    == Ok(edited_contents)
+  assert simplifile.is_file(rig.workspace <> "/" <> protected_hook) == Ok(False)
+  io.println(
+    "code-mode bridge e2e: fs.write + fs.read + fs.edit through the real "
+    <> "pipeline; a stale find and a write at "
+    <> protected_hook
+    <> " were both refused in band",
+  )
+  stop_rig(rig)
+}
+
 // --- report.emit on the orchestration seam (#91 item 1) ----------------------
 
 /// The smallest program that proves the shared capability: an
@@ -1186,11 +1436,27 @@ type Rig {
   )
 }
 
+// The workspace inside a rig root. Named rather than inlined because a
+// run that has to state a path *inside* the workspace in the base policy
+// it hands the rig — the protected-path run below — needs the derivation
+// before the rig exists.
+fn workspace_in(root: String) -> String {
+  root <> "/work"
+}
+
 fn rig(ready: Ready, under root: String) -> Rig {
-  let workspace = root <> "/work"
+  rig_protecting(ready, under: root, protected: [])
+}
+
+fn rig_protecting(
+  ready: Ready,
+  under root: String,
+  protected protected: List(String),
+) -> Rig {
+  let workspace = workspace_in(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the live rig must have a workspace"
-  let base = base_policy(root)
+  let base = policy.SandboxPolicy(..base_policy(root), protected:)
   let assert Ok(pool) =
     exec.start_pool(size: 3, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
