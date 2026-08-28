@@ -1416,6 +1416,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
         seam: codemode_tool.WorkspaceSeam,
         allowed_imports: ["cap/proc", "cap/report"],
         serviced_caps: ["proc.run"],
+        extra_surfaces: [],
       ),
     ),
     default_within_ms: 300_000,

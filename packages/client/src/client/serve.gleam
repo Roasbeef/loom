@@ -172,11 +172,13 @@ import client/gateway as hub
 import client/host
 import client/install
 import client/internal/ffi_os
+import client/mcp as mcp_wiring
 import client/server
 import client/summaries
 import client/system_prompt
 import client/wiring
-import core/clock
+import core/clock.{type Clock}
+import gleam/bool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/io
@@ -202,7 +204,7 @@ import telemetry/context
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
-import tools/agent
+import tools/agent.{type Agency}
 import tools/bash
 import tools/codemode as codemode_tool
 import tools/fs
@@ -320,6 +322,11 @@ pub type Booted {
     /// jail this session builds, and the ladder that chose it has four
     /// rungs.
     helper_path: String,
+    /// The MCP servers this boot started, held so `shutdown` can stop
+    /// them. Each owns a child OS process, and nothing else in the tree
+    /// has a handle on one: the client actors are deliberately unlinked
+    /// (`client/mcp`), so this record is the only way they are reached.
+    mcp: mcp_wiring.Layer,
   )
 }
 
@@ -922,6 +929,127 @@ fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
   }
 }
 
+// Code mode, and the MCP servers it reaches — one decision, because the
+// second is unreachable without the first.
+//
+// A host without a toolchain or a prepared build seed registers no
+// `code_mode` tool at all (`codemode_wiring.discover` says which is
+// missing and how to supply it), and on such a host **configured MCP
+// servers are not started**: MCP reaches a model through code mode and
+// through nothing else, so spawning third-party server processes that
+// nothing could ever call would be cost and attack surface bought for
+// no capability. One line says so, because an operator who configured a
+// server and sees nothing would otherwise have only the absent
+// `code_mode` line to reason from.
+fn code_mode_seam(
+  settings: Settings,
+  logger: Logger,
+  broker_actor: Broker,
+  clock: Clock,
+  agency_seam: Agency,
+) -> #(Option(codemode_tool.CodeMode), mcp_wiring.Layer) {
+  case codemode_wiring.discover(settings.codemode_seed) {
+    Error(reason) -> {
+      log.warn(logger, "codemode.unavailable", [
+        field.text(key: "reason", value: reason),
+      ])
+      case settings.catalog.mcp_servers {
+        [] -> Nil
+        servers ->
+          log.warn(logger, "mcp.unavailable", [
+            field.text(
+              key: "servers",
+              value: string.join(
+                list.map(servers, fn(server) { server.name }),
+                ",",
+              ),
+            ),
+            field.text(
+              key: "reason",
+              value: "MCP servers are reached from code-mode programs only, "
+                <> "and this host registers no code_mode tool, so none was "
+                <> "started",
+            ),
+          ])
+      }
+      #(None, mcp_wiring.none())
+    }
+    Ok(toolchain) -> {
+      // Which `gleam`, which `erl`, which seed — because the ladder now
+      // has more than one rung and "code mode is on" is a much less
+      // useful thing to know than which toolchain it will build with.
+      log.info(logger, "codemode.ready", [
+        field.text(key: "gleam", value: toolchain.gleam_path),
+        field.text(key: "erl", value: toolchain.erl_path),
+        field.text(key: "seed", value: toolchain.seed_root),
+      ])
+      let layer = start_mcp(settings.catalog.mcp_servers, logger)
+      #(
+        Some(
+          codemode_wiring.default_config(
+            broker: broker_actor,
+            clock:,
+            workspace: settings.workspace,
+            toolchain:,
+          )
+          // Which seams this server offers is the operator's decision, and
+          // the Agency the orchestration one routes onto is the same seam
+          // the `agent_*` tools call — one messaging plane, reached two
+          // ways.
+          |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+          // The MCP layer widens the workspace seam's allowlist, its
+          // description and its router together; an empty layer widens
+          // nothing, so this is unconditional.
+          |> codemode_wiring.over_mcp(layer)
+          |> codemode_wiring.seam,
+        ),
+        layer,
+      )
+    }
+  }
+}
+
+// Every configured server started, and one line each way.
+//
+// `mcp.ready` names the servers that answered and how many tools each
+// listed, because "how many" is the number that decides what the
+// description costs. `mcp.unavailable` names one server and its reason
+// — a missing executable, a refused handshake, an unset `api_key_env`,
+// a listing this generator will not accept — and is the only thing
+// anybody will ever see about it: a refused server has no module, so a
+// program importing it is refused by vetting with no word about why the
+// module is absent.
+fn start_mcp(
+  servers: List(catalog.McpServer),
+  logger: Logger,
+) -> mcp_wiring.Layer {
+  use <- bool.lazy_guard(when: servers == [], return: mcp_wiring.none)
+  let #(layer, refusals) =
+    mcp_wiring.start(servers, mcp_wiring.default_options())
+  list.each(refusals, fn(refusal) {
+    log.warn(logger, "mcp.unavailable", [
+      field.text(key: "server", value: refusal.server),
+      field.text(key: "reason", value: refusal.reason),
+    ])
+  })
+  case mcp_wiring.listings(layer) {
+    [] -> Nil
+    listings ->
+      log.info(logger, "mcp.ready", [
+        field.text(
+          key: "servers",
+          value: string.join(
+            list.map(listings, fn(listing) {
+              listing.0 <> "=" <> int.to_string(listing.1)
+            }),
+            ",",
+          ),
+        ),
+      ])
+  }
+  layer
+}
+
 fn assemble(
   settings: Settings,
   logger: Logger,
@@ -1019,38 +1147,8 @@ fn assemble(
   // prepared build seed on this host. A host without them says so once
   // here and registers no `code_mode` tool, rather than shipping a
   // definition in the cached prefix that can only ever refuse.
-  let code_mode = case codemode_wiring.discover(settings.codemode_seed) {
-    Ok(toolchain) -> {
-      // Which `gleam`, which `erl`, which seed — because the ladder now
-      // has more than one rung and "code mode is on" is a much less
-      // useful thing to know than which toolchain it will build with.
-      log.info(logger, "codemode.ready", [
-        field.text(key: "gleam", value: toolchain.gleam_path),
-        field.text(key: "erl", value: toolchain.erl_path),
-        field.text(key: "seed", value: toolchain.seed_root),
-      ])
-      Some(
-        codemode_wiring.default_config(
-          broker: broker_actor,
-          clock:,
-          workspace: settings.workspace,
-          toolchain:,
-        )
-        // Which seams this server offers is the operator's decision, and
-        // the Agency the orchestration one routes onto is the same seam
-        // the `agent_*` tools call — one messaging plane, reached two
-        // ways.
-        |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
-        |> codemode_wiring.seam,
-      )
-    }
-    Error(reason) -> {
-      log.warn(logger, "codemode.unavailable", [
-        field.text(key: "reason", value: reason),
-      ])
-      None
-    }
-  }
+  let #(code_mode, mcp_layer) =
+    code_mode_seam(settings, logger, broker_actor, clock, agency_seam)
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
@@ -1248,6 +1346,7 @@ fn assemble(
     bind_host: settings.bind_host,
     prompt: assembled,
     helper_path: settings.helper_path,
+    mcp: mcp_layer,
   ))
 }
 
@@ -1278,6 +1377,12 @@ pub fn shutdown(booted: Booted) -> Nil {
   broker.stop(booted.broker)
   exec.stop_pool(booted.pool)
   summaries.stop(booted.summaries)
+  // Last, and after the runtime: an MCP client owns a child OS process,
+  // and stopping one closes that child's stdin and kills it. Nothing can
+  // still be calling by here — the drivers stopped with the runtime —
+  // and the stop is a cast, so a client that has already died costs
+  // nothing.
+  mcp_wiring.stop(booted.mcp)
 }
 
 /// How many restarts the service supervisor allows within

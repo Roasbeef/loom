@@ -182,6 +182,7 @@ import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/install
 import client/internal/ffi_os
+import client/mcp as mcp_wiring
 import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
@@ -242,6 +243,16 @@ pub type Config {
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
     surface: Surface,
+    /// The MCP servers this host reached at boot, if any.
+    ///
+    /// One field for the same reason `surface` is one: a configured
+    /// server widens the workspace seam's allowlist, adds its rendered
+    /// module surface to the description, puts its generated source in
+    /// the hermetic build, and adds a router arm — four halves of one
+    /// decision, and a host that could set them apart would eventually
+    /// set them apart. `mcp.none()` is the empty layer every host has
+    /// until an operator configures a server.
+    mcp: McpLayer,
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -256,6 +267,12 @@ pub type Config {
     max_within_ms: Int,
   )
 }
+
+/// The MCP layer a host serves code mode over: `client/mcp`'s own type,
+/// aliased so a `Config` reads without a second import at every call
+/// site.
+pub type McpLayer =
+  mcp_wiring.Layer
 
 /// Which of the two code-mode seams a host serves, and what the
 /// orchestration one needs to be served with.
@@ -337,6 +354,24 @@ pub fn orchestrating(config: Config, over agency: Agency) -> Config {
   serving(config, OrchestrationOnly, over: agency)
 }
 
+/// The same host configuration, serving the workspace seam over the MCP
+/// servers this host reached at boot.
+///
+/// A layer with no servers changes nothing — no module is allowed, no
+/// surface rendered, no arm routed — so a host may call this
+/// unconditionally with whatever `client/mcp.start` returned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.default_config(broker, clock, workspace, toolchain)
+/// // |> codemode.over_mcp(layer)
+/// ```
+///
+pub fn over_mcp(config: Config, layer: McpLayer) -> Config {
+  Config(..config, mcp: layer)
+}
+
 /// The vetting allowlist one seam judges a submission against.
 ///
 /// Indexed by the seam and not by the surface: a program is vetted
@@ -351,6 +386,53 @@ pub fn orchestrating(config: Config, over agency: Agency) -> Config {
 ///
 pub fn seam_policy(seam: vet_policy.Seam) -> vet_policy.VetPolicy {
   vet_policy.for_seam(seam)
+}
+
+/// The vetting allowlist *this host* judges a submission against: the
+/// seam's own, widened by the capability modules the MCP layer
+/// generated at boot.
+///
+/// The widening is per host and cannot be otherwise. A generated
+/// `cap/mcp/<server>` façade exists only where that server is
+/// configured, so no static list in `codemode/vet/policy` could name
+/// one; `cap/mcp` — the types-only vocabulary the façades import — stays
+/// off every static seam for the same reason, and is allowed here
+/// beside them (`vet_policy.harness_only_cap_modules`).
+///
+/// It widens nothing on a host with no servers, which is every host
+/// until an operator configures one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // vet_policy.allowed_imports(codemode.seam_allowlist(config, seam))
+/// ```
+///
+pub fn seam_allowlist(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> vet_policy.VetPolicy {
+  mcp_wiring.allowed_imports(seam_mcp(config, seam))
+  |> list.fold(seam_policy(seam), vet_policy.allow)
+}
+
+// The MCP layer one seam sees, and the one place that decision is made.
+//
+// **The orchestration seam sees none of it, ever.** Which capabilities
+// travel together is the whole of what the two-seam split buys: an
+// orchestrator that could also call out to a third-party MCP server is
+// a materially worse thing to hand a model than one that cannot, and
+// the disjointness a test pins is over the two allowlists — so a
+// per-host widening that reached both would walk straight past it.
+// Every derived thing an MCP server contributes — the allowlist entry,
+// the rendered surface, the generated source, the serviced capability
+// name — reads its layer through here, so there is one arm to get wrong
+// rather than four.
+fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
+  case seam {
+    vet_policy.WorkspaceSeam -> config.mcp
+    vet_policy.OrchestrationSeam -> mcp_wiring.none()
+  }
 }
 
 /// Every seam a surface serves, the default first.
@@ -402,6 +484,25 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
     vet_policy.WorkspaceSeam -> serviced_caps
     vet_policy.OrchestrationSeam -> orchestration.serviced_caps
   }
+}
+
+/// The capability names one seam's router services *on this host*: the
+/// seam's own, plus one `mcp.<server>` per MCP server the layer
+/// reached.
+///
+/// Read off the running layer rather than copied, for the reason
+/// `seam_caps` is: the sentence the model is charged for on every
+/// request must not be able to drift from the router that answers it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
+/// //   == ["proc.run", "mcp.github"]
+/// ```
+///
+pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
+  list.append(seam_caps(seam), mcp_wiring.serviced_caps(seam_mcp(config, seam)))
 }
 
 /// The pooled outstanding-effect cap one execution runs under. Above the
@@ -464,6 +565,7 @@ pub fn default_config(
     erl_path: toolchain.erl_path,
     toolchain_path: toolchain_path(toolchain),
     surface: Workspace,
+    mcp: mcp_wiring.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -624,7 +726,7 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 pub fn seam(config: Config) -> codemode_tool.CodeMode {
   codemode_tool.CodeMode(
     execute: fn(request) { execute(config, request) },
-    seams: offered_seams(config.surface),
+    seams: offered_seams(config),
     default_within_ms: config.default_within_ms,
     max_within_ms: config.max_within_ms,
   )
@@ -640,18 +742,26 @@ pub fn seam(config: Config) -> codemode_tool.CodeMode {
 // is unreachable; it is a workspace-seam offer rather than a panic
 // because a `code_mode` that vanished would be a worse answer to a bug
 // than one that serves the narrower of the two.
-fn offered_seams(surface: Surface) -> codemode_tool.Seams {
-  case list.map(surface_seams(surface), seam_offer) {
-    [] -> codemode_tool.one_seam(seam_offer(vet_policy.WorkspaceSeam))
+fn offered_seams(config: Config) -> codemode_tool.Seams {
+  case list.map(surface_seams(config.surface), seam_offer(config, _)) {
+    [] -> codemode_tool.one_seam(seam_offer(config, vet_policy.WorkspaceSeam))
     [default, ..alternates] -> codemode_tool.Seams(default:, alternates:)
   }
 }
 
-fn seam_offer(seam: vet_policy.Seam) -> codemode_tool.SeamOffer {
+// Everything a seam offers, read off this host's running configuration:
+// the allowlist `execute` will judge that seam's submissions against,
+// the capabilities its router will service, and the module surfaces the
+// host generated rather than shipped.
+fn seam_offer(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> codemode_tool.SeamOffer {
   codemode_tool.SeamOffer(
     seam: tool_seam(seam),
-    allowed_imports: vet_policy.allowed_imports(seam_policy(seam)),
-    serviced_caps: seam_caps(seam),
+    allowed_imports: vet_policy.allowed_imports(seam_allowlist(config, seam)),
+    serviced_caps: seam_caps_on(config, seam),
+    extra_surfaces: mcp_wiring.surfaces(seam_mcp(config, seam)),
   )
 }
 
@@ -1160,11 +1270,17 @@ pub fn exec_config(
 ) -> pipeline.ExecConfig {
   let pooled = pooled_budget(config, deadline_ms)
   let base_policy = execution_policy(request.base_policy)
+  let seam = vetting_seam(request.seam)
   pipeline.ExecConfig(
-    vet_policy: seam_policy(vetting_seam(request.seam)),
+    vet_policy: seam_allowlist(config, seam),
     compile: compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
+      // The whole table this host generated; `pipeline.execute` narrows
+      // it to the vetted program's own imports before a byte is
+      // written, so a configured server a program never names costs it
+      // no build time at all.
+      generated: mcp_wiring.generated(seam_mcp(config, seam)),
       build: build.builder(build_config(config, request)),
     ),
     broker: config.broker,
@@ -1187,7 +1303,7 @@ pub fn exec_config(
       clock: config.clock,
       write_token_file: satellite.private_token_writer(root <> "/token"),
       unlink_token_file: satellite.unlink_token_file,
-      router: surface_router(config.surface, request),
+      router: surface_router(config, request),
       ceilings: surface_ceilings(config.surface, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
@@ -1217,12 +1333,12 @@ pub fn exec_config(
 // other's — can only narrow, because a program that may not import
 // `cap/proc` cannot call `proc.run` however willing the router is.
 fn surface_router(
-  surface: Surface,
+  config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  case surface, vetting_seam(request.seam) {
-    Workspace, _seam -> satellite.default_router
-    Both(..), vet_policy.WorkspaceSeam -> satellite.default_router
+  case config.surface, vetting_seam(request.seam) {
+    Workspace, _seam -> workspace_router(config)
+    Both(..), vet_policy.WorkspaceSeam -> workspace_router(config)
     Orchestration(agency:, ..), _seam | Both(agency:, ..), _seam ->
       orchestration.router(orchestration.Orchestration(
         agency:,
@@ -1230,6 +1346,26 @@ fn surface_router(
         source_index: request.source_index,
       ))
   }
+}
+
+// The workspace seam's router: the MCP arm in front of the shipped
+// table.
+//
+// The arm answers `mcp.<server>` and hands every other capability to
+// `satellite.default_router` untouched, so nothing about `proc.run` or
+// about what the default table refuses changes shape. Its plans are
+// always `ServedHere` — no `CallSpec` is built, no jail is entered, no
+// policy is composed — which is the same reason the orchestration seam
+// returns them (`codemode/orchestration`): an MCP call is a request the
+// harness answers over a socket it already owns.
+//
+// The layer is read off the *host*, like every other router choice
+// here, so a submission that named the orchestration seam on a
+// workspace-only host is still routed by this one — and reaches nothing
+// through it, because a program vetted against the orchestration
+// allowlist cannot import a façade.
+fn workspace_router(config: Config) -> satellite.CapRouter {
+  mcp_wiring.routing(config.mcp, over: satellite.default_router)
 }
 
 // The lifetime admission ceilings the execution runs under. The workspace

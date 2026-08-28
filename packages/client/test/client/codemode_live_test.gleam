@@ -27,6 +27,7 @@ import broker/policy
 import broker/token
 import client/codemode
 import client/internal/ffi_os
+import client/mcp as mcp_wiring
 import core/clock
 import core/ids
 import core/json
@@ -37,7 +38,10 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam/string
+import mcp/client as mcp_client
+import mcp/codegen
 import simplifile
+import support/fake_mcp
 import tools/codemode as codemode_tool
 import tools/tool
 
@@ -287,6 +291,154 @@ fn run_escalating(ready: Ready) -> Nil {
   )
   broker.stop(broker_actor)
   exec.stop_pool(pool)
+}
+
+// --- a configured MCP server, end to end (#106) ------------------------------
+
+// What the fake server answers, and therefore what has to survive a real
+// generated façade, a real hermetic build, the cap channel and the
+// router to reach the tool result.
+const mcp_answer = "loom-mcp-round-trip"
+
+/// A program of the kind a model would submit against a configured MCP
+/// server: one typed façade call and a structured report. The signature
+/// is `mcp/codegen`'s — every parameter is labelled, and optionals ride
+/// in `options` by wire name.
+pub fn mcp_program_source() -> String {
+  "import cap/mcp\n"
+  <> "import cap/mcp/alpha\n"
+  <> "import cap/report\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case alpha.search(query: \"loom\", options: []) {\n"
+  <> "    Ok(found) -> report.text(mcp.text(found))\n"
+  <> "    Error(_error) -> report.failure(\"the mcp call did not settle\")\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+pub fn a_program_calls_a_configured_mcp_server_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println("SKIP a_program_calls_a_configured_mcp_server: " <> reason)
+    Ok(ready) -> run_mcp(ready)
+  }
+}
+
+// The whole #106 pipeline against the real one: a real `mcp/codegen`
+// module generated from a real `tools/list`, vendored into the real
+// prelude inside a real hermetic build, imported by a vetted program,
+// and called through the cap channel to a server the harness holds.
+//
+// What is fake is the server's *transport* and nothing else: the client
+// actor, the handshake, the framing, the JSON-RPC correlation and the
+// result decoding are the production ones, over
+// `mcp/transport.ChannelTransport`. Spawning a third-party binary is
+// what the fake replaces, and it is the one part of this path that has
+// no bearing on whether a generated façade compiles and dispatches.
+fn run_mcp(ready: Ready) -> Nil {
+  let root = ready.root <> "-mcp"
+  let workspace = root <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
+    as "the live rig must have a workspace"
+  let base_policy = base_policy(root)
+  let assert Ok(pool) =
+    exec.start_pool(size: 3, spawn: fn() {
+      exec.spawn_helper(exec.SpawnConfig(
+        helper_path: ready.helper_path,
+        shell_path: "/bin/sh",
+        base_policy:,
+        helper_args: [],
+        tmp_dir: workspace <> "/tmp",
+        handshake_timeout_ms: 5000,
+        cancel_grace_ms: 3000,
+        heartbeat_interval_ms: 0,
+      ))
+    })
+    as "the helper pool must start"
+  let assert Ok(broker_actor) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: broker_entropy(),
+        clock: wall_clock(),
+        checkout: fn() { exec.checkout(pool, waiting: 20_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    as "the broker must start"
+  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
+    as "the toolchain must be located"
+  let layer = live_layer()
+  // The generated module is the real artifact: the façade the model
+  // writes against and the source the build compiles are the same
+  // bytes, produced by `mcp/codegen` from the server's own listing.
+  let assert [#("cap/mcp/alpha", generated_source)] =
+    mcp_wiring.generated(layer)
+    as "one server generates one module"
+  assert string.contains(
+    generated_source,
+    "import cap/internal/mcp as internal",
+  )
+  assert string.contains(generated_source, "pub fn search(")
+  let seam =
+    codemode.seam(
+      codemode.default_config(
+        broker: broker_actor,
+        clock: wall_clock(),
+        workspace:,
+        toolchain:,
+      )
+      |> codemode.over_mcp(layer),
+    )
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(workspace, base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(mcp_program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  // The server's own text, through `cap/internal/mcp`, the cap channel,
+  // the router, a real JSON-RPC round trip, and back out as a tool
+  // result.
+  assert !outcome.is_error
+  assert string.contains(text, mcp_answer)
+  io.println(
+    "code-mode mcp e2e: a generated façade compiled inside the vendored "
+    <> "prelude and reached its server",
+  )
+  mcp_wiring.stop(layer)
+  broker.stop(broker_actor)
+  exec.stop_pool(pool)
+}
+
+// The layer a host would have after `mcp.start`, minus the spawn: a real
+// client over the fake transport, a real `tools/list`, and a real
+// generated module.
+fn live_layer() -> mcp_wiring.Layer {
+  let assert Ok(client) =
+    mcp_client.start(
+      fake_mcp.seam(
+        tools: [fake_mcp.tool("search", ["query"])],
+        call: fn(_name, _arguments) {
+          fake_mcp.Answers(fake_mcp.text_result(mcp_answer, False))
+        },
+      ),
+      mcp_client.options("live"),
+    )
+    as "the fake server completes the handshake"
+  let assert Ok(tools) = mcp_client.list_tools(client, 5000)
+    as "the fake server lists its tools"
+  let assert Ok(generated) =
+    codegen.generate("alpha", tools, mcp_wiring.sha256_hex)
+    as "a one-tool listing generates"
+  mcp_wiring.Layer(
+    servers: [
+      mcp_wiring.Server(name: "alpha", client:, generated:, tools: 1),
+    ],
+    call_timeout_ms: 30_000,
+  )
 }
 
 // --- the rig ---------------------------------------------------------------
