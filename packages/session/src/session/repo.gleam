@@ -29,7 +29,9 @@ import core/entry.{type Entry}
 import core/ids.{type EntryId, type Generator, type SessionId}
 import core/json.{type JsonValue}
 import core/register
-import core/tx.{type CommitError, InsertEntry, InsertUsage, SetRegister, Tx}
+import core/tx.{
+  type CommitError, Expect, InsertEntry, InsertUsage, SetRegister, Tx,
+}
 import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -87,7 +89,10 @@ pub type ForkError {
   /// The destination already holds entries — forking must never splice
   /// two histories together.
   ForkDestinationNotEmpty
-  /// The single copy transaction was refused by the destination.
+  /// The single copy transaction was refused by the destination. A
+  /// `StaleExpectation` on `session/id` means the destination was already
+  /// identified by an earlier open — entry-empty but not fresh, which a
+  /// fork must not overwrite.
   ForkCopyFailed(error: CommitError)
 }
 
@@ -142,7 +147,18 @@ pub fn fork(
         list.map(entries, fn(entry) { InsertEntry(entry:) }),
         list.append(registers, identity_writes(minted, parent)),
       )
-    storage.commit(destination.store, Tx(writes:, expected: []))
+    // The destination must be unidentified as well as entry-empty:
+    // `require_empty` only looks at entries, and a session file that a
+    // prior open identified but never wrote an entry into would other-
+    // wise have its id silently re-minted here. Expecting the cell
+    // absent turns that misuse into a `ForkCopyFailed(StaleExpectation)`
+    // with the destination's own id left standing.
+    storage.commit(
+      destination.store,
+      Tx(writes:, expected: [
+        Expect(ns: register.FactCustom, key: session.session_id_key, seq: None),
+      ]),
+    )
     |> result.map_error(ForkCopyFailed)
     |> result.replace(destination)
   }
@@ -151,7 +167,11 @@ pub fn fork(
       // The catalog projection is written after the copy commits, so a
       // refused copy leaves no identity behind. It failing is not a fork
       // failure: the register cells are the truth and the next open
-      // repairs the row.
+      // repairs the row. The discard is deliberate and the silence is
+      // accepted — this package depends on `core`, `storage` and
+      // `machine` and has no logger to reach, and threading one through
+      // an admin surface to narrate a self-repairing write would cost
+      // more than the breadcrumb is worth.
       let _ = forked.record_identity(minted, parent)
       Ok(forked)
     }

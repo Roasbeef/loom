@@ -432,6 +432,52 @@ pub fn a_sqlite_fork_writes_parent_session_id_test() {
     ))
 }
 
+pub fn a_fork_into_an_already_identified_destination_is_refused_test() {
+  let path = fresh_path("fork_identified_destination")
+  // A destination an earlier open already named, but never wrote an entry
+  // into: `require_empty` sees nothing to object to, so only the copy
+  // transaction's expectation stands between this and a session file
+  // whose id silently changed under it.
+  let assert Ok(destination) =
+    session.open_sqlite(
+      path:,
+      owner: "prior-writer",
+      lease_ttl_ms: 5000,
+      clock: clock.stepping(from: 10_000, by: 1),
+    )
+    as "the destination file opens"
+  let assert Ok(#(already, _)) =
+    session.ensure_id(destination, ids.generator(clock.fixed(at: 900), seed: 4))
+  let assert Ok(Nil) = session.close(destination)
+
+  let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
+  let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
+  let ctx = drive.new_ctx(source, 24)
+  let #(ctx, at) =
+    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+  let assert Error(repo.ForkCopyFailed(error: tx.StaleExpectation(..))) =
+    repo.fork(
+      source: ctx.session,
+      scope: repo.ForkBranch(strand: "main", at:),
+      into: repo.ForkIntoSqlite(path:, owner: "fork-writer", lease_ttl_ms: 5000),
+      clock: clock.stepping(from: 20_000, by: 1),
+      generator: fork_generator(),
+    )
+
+  // The destination is exactly as it was: same id, still no entries.
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path:,
+      owner: "after-the-refusal",
+      lease_ttl_ms: 5000,
+      clock: clock.stepping(from: 30_000, by: 1),
+    )
+    as "the destination file reopens"
+  assert session.id(reopened) == Ok(Some(already))
+  let assert Ok([]) = storage.scan_entries(reopened.store, storage.entry_scan())
+  let assert Ok(Nil) = session.close(reopened)
+}
+
 // --- projection equivalence (seeded property) ------------------------------
 
 pub fn branch_fork_projection_equals_source_property_test() {
