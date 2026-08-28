@@ -193,6 +193,17 @@ pub type Config {
     max_slice_ms: Int,
     rest: fn(Int) -> Nil,
     holder_timeout_ms: Int,
+    /// The identity and seed thinking level a spawned child is
+    /// configured with — the host's `subagent` route, resolved.
+    /// `Error(Nil)` means the host routes no subagent model, and the
+    /// child inherits its parent's configuration wholesale, which is what
+    /// every child did before the role was wired.
+    ///
+    /// A closure for the same reason `rest` and `clock` are: the Agency
+    /// is built before `api.open` and must not capture a gateway's
+    /// answer at that moment rather than the host's seam.
+    subagent_model: fn() ->
+      Result(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel), Nil),
   )
 }
 
@@ -234,6 +245,10 @@ pub fn default_config(name: Name(Message), clock: Clock) -> Config {
     max_slice_ms: 250,
     rest: process.sleep,
     holder_timeout_ms: 5000,
+    // No subagent route by default: a child inherits its parent, which is
+    // what children did before roles reached the seam. `client/serve`
+    // fills this from the gateway.
+    subagent_model: fn() { Error(Nil) },
   )
 }
 
@@ -693,16 +708,38 @@ fn create(
   api.create_strand(
     runtime,
     named: name,
-    configuration: machine_strand.StrandConfiguration(
-      ..parent_configuration,
-      active_tool_names: tools,
-    ),
+    configuration: child_configuration(config, parent_configuration, tools),
     at: fork_point,
     brief: [brief_message(config, caller, request)],
   )
   |> result.map_error(fn(error) {
     agent.PlaneFailed(reason: describe_create(error))
   })
+}
+
+// The configuration a child is seeded with: the parent's, narrowed to the
+// child's tool set, with the model and its seed thinking level replaced by
+// the host's `subagent` route when there is one.
+//
+// Role follows identity, and the identity is chosen once, here, at
+// creation — never per request. A child's durable configuration is what
+// every later dispatch, admission and compaction reads, so seeding it is
+// what makes "subagents run on the subagent model" true across a crash,
+// a reboot and a `set_config` the operator makes afterwards. An unrouted
+// subagent role inherits rather than refusing: a host that named no
+// subagent model has not asked for a different one.
+fn child_configuration(
+  config: Config,
+  parent: machine_strand.StrandConfiguration,
+  tools: List(String),
+) -> machine_strand.StrandConfiguration {
+  let narrowed =
+    machine_strand.StrandConfiguration(..parent, active_tool_names: tools)
+  case config.subagent_model() {
+    Ok(#(model, thinking_level)) ->
+      machine_strand.StrandConfiguration(..narrowed, model:, thinking_level:)
+    Error(Nil) -> narrowed
+  }
 }
 
 // A child may narrow its parent's tool set and never widen it: a name the

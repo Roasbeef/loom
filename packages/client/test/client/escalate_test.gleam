@@ -234,6 +234,7 @@ fn start(setup: Setup) -> Harness {
     wiring.Config(
       gateway: routed_gateway(),
       role: model.Main,
+      facts: fn(_identity) { Error(Nil) },
       system: None,
       api: "acme-api",
       fallback_context_window: 111_000,

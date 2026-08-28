@@ -416,6 +416,61 @@ pub fn a_child_does_not_inherit_the_spawn_tool_test() {
   close(harness)
 }
 
+// --- role follows identity at the seed (issue #14, ruling 2) ---------------
+
+// A host that routes a `subagent` model seeds its children with that
+// model and with the entry's own thinking level, once, at creation. Every
+// later dispatch, admission and compaction reads the child's durable
+// configuration, so seeding it is what makes "subagents run on the
+// subagent model" survive a crash and a reboot — there is no per-request
+// rerouting anywhere, and a mutable role registry is deliberately not
+// built.
+pub fn a_child_is_seeded_from_the_subagent_route_test() {
+  let harness =
+    start_harness_with(Settles("done"), fn(config) {
+      agency.Config(..config, subagent_model: fn() {
+        Ok(#(
+          machine_strand.ModelIdentity(
+            provider: "acme-cheap",
+            model_id: "loom-mini",
+          ),
+          machine_strand.ThinkingMedium,
+        ))
+      })
+    })
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("review"))
+    as "the spawn must be accepted"
+  let assert Ok(Some(session.Cell(value: child, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.strand)
+  assert child.model
+    == machine_strand.ModelIdentity(
+      provider: "acme-cheap",
+      model_id: "loom-mini",
+    )
+  assert child.thinking_level == machine_strand.ThinkingMedium
+  // The parent is untouched: a spawn configures a child, not a session.
+  let assert Ok(Some(session.Cell(value: parent, ..))) =
+    session.strand_configuration(harness.runtime.session, "main")
+  assert parent.model == configuration().model
+  close(harness)
+}
+
+// …and an unrouted subagent role inherits rather than refusing. A host
+// that named no subagent model has not asked for a different one, and
+// this is what every child did before the role reached the seam.
+pub fn an_unrouted_subagent_role_inherits_the_parent_test() {
+  let harness = start_harness(Settles("done"))
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("review"))
+    as "the spawn must be accepted"
+  let assert Ok(Some(session.Cell(value: child, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.strand)
+  assert child.model == configuration().model
+  assert child.thinking_level == configuration().thinking_level
+  close(harness)
+}
+
 pub fn a_spawn_may_narrow_its_tools_but_never_widen_them_test() {
   let harness = start_harness(Settles("done"))
   let caller = caller_on("main", "turn-1:tools", 0)

@@ -84,6 +84,7 @@ import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
 }
+import client/wiring
 import core/clock
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type OpId}
@@ -2390,9 +2391,10 @@ fn seed_and_reply(
   connection: Int,
   id: Int,
   name: String,
-  configuration: machine_strand.StrandConfiguration,
+  copied: machine_strand.StrandConfiguration,
   leaf: Option(EntryId),
 ) -> State {
+  let configuration = seeded_thinking(state, copied)
   case
     api.create_idle_strand(state.runtime, named: name, configuration:, at: leaf)
   {
@@ -2429,6 +2431,41 @@ fn seed_and_reply(
       state
     }
   }
+}
+
+// A seeded strand's per-turn thinking level comes from the catalogue
+// entry its identity names — the entry in force for the model it will
+// dispatch to — and not from the level the source strand happened to be
+// sitting at when it was copied.
+//
+// The two differ for a reason worth keeping: a strand's per-turn level is
+// a property of the conversation someone was having on it, raised or
+// lowered mid-run through `set_config`, while a *new* strand has had no
+// conversation yet. Seeding from the entry is the same rule `client/serve`
+// applies to `main` and `client/agency` applies to a spawned child, so all
+// three creation points agree. An identity the catalogue does not know —
+// or a hub serving no catalogue at all — keeps what was copied, because
+// there is nothing better to say.
+fn seeded_thinking(
+  state: State,
+  configuration: machine_strand.StrandConfiguration,
+) -> machine_strand.StrandConfiguration {
+  case entry_in_force(state, configuration.model.provider) {
+    Ok(entry) ->
+      machine_strand.StrandConfiguration(
+        ..configuration,
+        thinking_level: wiring.strand_thinking_level(entry.thinking),
+      )
+    Error(Nil) -> configuration
+  }
+}
+
+fn entry_in_force(
+  state: State,
+  provider: String,
+) -> Result(catalog.CatalogModel, Nil) {
+  use catalogue <- result.try(option.to_result(state.catalog, Nil))
+  catalog.find(catalogue, provider)
 }
 
 fn strands_snapshot(state: State) -> WireEvent {
@@ -2782,6 +2819,12 @@ fn json_string_item(item: JsonValue) -> Result(String, String) {
 
 // `model_name`'s change: the catalogue entry's identity, applied to one
 // strand's configuration when named, or to every strand's otherwise.
+//
+// **It does not touch `thinking_level`,** even though the entry declares
+// one. A catalogue's `thinking` seeds a strand at creation; the per-turn
+// level afterwards belongs to whoever is having the conversation, and
+// switching model mid-run is not a request to un-raise a reasoning budget
+// somebody deliberately raised. A client that wants both sends both keys.
 fn model_name_change(
   state: State,
   strand: Option(String),

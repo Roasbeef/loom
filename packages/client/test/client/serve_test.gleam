@@ -159,6 +159,92 @@ pub fn boot_serves_healthz_and_ws_subscribe_test() {
   serve.shutdown(booted)
 }
 
+// --- the catalogue's thinking level, seeded (issue #14, ruling 3) ----------
+
+const thinking_root = "build/serve-test-thinking"
+
+// A catalogue entry's `thinking` is not decoration and it is not a
+// dispatch override: it *seeds* the strand the boot creates. What the
+// server then puts on the wire is the strand's own per-turn level, which
+// is why the boot has to get the seed right — nothing downstream will
+// re-derive it, and `set_config thinking_level` is the only thing that
+// moves it afterwards.
+pub fn a_boot_seeds_the_main_strand_from_the_entrys_thinking_test() {
+  let _stale = simplifile.delete(thinking_root)
+  let bodies = process.new_subject()
+  let catalogue = thinking_catalog(model.ThinkingHigh)
+  let assert Ok(booted) =
+    serve.boot(
+      serve.Settings(
+        ..settings_under(thinking_root),
+        catalog: catalogue,
+        gateway: recording_gateway(catalogue, bodies),
+      ),
+    )
+    as "the server must boot"
+
+  // The seed landed durably…
+  let assert Ok(Some(session.Cell(value: seeded, ..))) =
+    session.strand_configuration(booted.runtime.session, "main")
+    as "the main strand's configuration must read cleanly"
+  assert seeded.thinking_level == machine_strand.ThinkingHigh
+
+  // …and it is what the *first dispatch* actually asks the provider for.
+  // Driven through the whole real stack — the boot's own wiring, gateway
+  // and Anthropic adapter — so this is the bytes on the wire and not a
+  // restatement of the seed. High is `budget_tokens: 16384`.
+  let assert Ok(_op) = api.prompt(booted.runtime, [user("think hard")])
+    as "the prompt must be accepted"
+  let assert Ok(body) = process.receive(bodies, within: 10_000)
+    as "the boot must dispatch one generation"
+  assert string.contains(body, "\"budget_tokens\":16384")
+
+  serve.shutdown(booted)
+}
+
+fn user(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+  )
+}
+
+fn thinking_catalog(level: model.ThinkingLevel) -> catalog.Catalog {
+  let assert [entry] = scripted_catalog().models
+    as "the scripted catalogue must have exactly one entry"
+  catalog.Catalog(..scripted_catalog(), models: [
+    catalog.CatalogModel(..entry, thinking: level),
+  ])
+}
+
+// A gateway whose transport reports the request body it was handed and
+// then fails the attempt terminally, so the run drains at once instead of
+// waiting out a provider timeout. The subject belongs to the test
+// process, which is what lets the body be read after the fact.
+fn recording_gateway(
+  catalogue: catalog.Catalog,
+  bodies: Subject(String),
+) -> provider_gateway.Gateway {
+  catalog.gateway(
+    catalogue,
+    transport: http.Transport(
+      send_streaming: fn(request: http.HttpRequest, out) {
+        process.send(bodies, request.body)
+        process.send(out, http.ResponseStatus(status: 400, headers: []))
+        process.send(
+          out,
+          http.ResponseChunk(chunk: <<
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
+          >>),
+        )
+        process.send(out, http.ResponseEnd)
+      },
+    ),
+    secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
+    clock: clock.fixed(at: 0),
+  )
+}
+
 // --- which seams can reach an MCP server ------------------------------------
 
 /// A host serving the orchestration seam alone starts no MCP server,

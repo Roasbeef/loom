@@ -469,6 +469,7 @@ fn wiring_config(system: Option(String)) -> wiring.Config {
   wiring.Config(
     gateway: dead_gateway(),
     role: model.Main,
+    facts: fn(_identity) { Error(Nil) },
     system:,
     api: "test-api",
     fallback_context_window: 100_000,

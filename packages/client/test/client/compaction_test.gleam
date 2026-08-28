@@ -249,6 +249,7 @@ fn wiring_config(
     wiring.Config(
       gateway: routed_gateway(),
       role: model.Main,
+      facts: fn(_identity) { Error(Nil) },
       system: Some("you are an agent"),
       api: "acme-api",
       fallback_context_window: window,

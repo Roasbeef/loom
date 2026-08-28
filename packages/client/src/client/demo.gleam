@@ -1007,37 +1007,38 @@ fn compaction_wiring(
     |> result.map_error(fn(_) { "the demo broker did not start" }),
   )
   let workspace = "/nonexistent/loom-demo"
-  Ok(
-    wiring.Config(
-      gateway: demo_gateway(),
-      role: model.Main,
-      system: None,
-      api: "demo",
-      fallback_context_window: demo_context_window,
-      fallback_max_output_tokens: 1_000_000,
-      provider_timeout_ms: 4000,
-      summary_role: model.Summarize,
-      summary_pack: pack,
-      summaries: summary_sink,
-      session:,
-      compaction: operation.CompactionSettings(
-        enabled: True,
-        reserve_tokens: 1,
-        keep_recent_tokens: 1,
-      ),
-      broker: broker_actor,
-      broker_timeout_ms: 1000,
-      registry: serve.registry(None, None),
-      workspace:,
-      blob_root: workspace <> "/.blobs",
-      base_policy: policy.workspace_default(workspace),
-      escalations: escalate.none(),
-      demand: exec.BestEffort,
-      env: [],
-      clock: clock.fixed(at: 0),
-      entropy: fn() { 7 },
+  Ok(wiring.Config(
+    gateway: demo_gateway(),
+    role: model.Main,
+    // No catalogue in the demo: every identity takes the fallback
+    // counts and the config's api, which is what they describe.
+    facts: fn(_identity) { Error(Nil) },
+    system: None,
+    api: "demo",
+    fallback_context_window: demo_context_window,
+    fallback_max_output_tokens: 1_000_000,
+    provider_timeout_ms: 4000,
+    summary_role: model.Summarize,
+    summary_pack: pack,
+    summaries: summary_sink,
+    session:,
+    compaction: operation.CompactionSettings(
+      enabled: True,
+      reserve_tokens: 1,
+      keep_recent_tokens: 1,
     ),
-  )
+    broker: broker_actor,
+    broker_timeout_ms: 1000,
+    registry: serve.registry(None, None),
+    workspace:,
+    blob_root: workspace <> "/.blobs",
+    base_policy: policy.workspace_default(workspace),
+    escalations: escalate.none(),
+    demand: exec.BestEffort,
+    env: [],
+    clock: clock.fixed(at: 0),
+    entropy: fn() { 7 },
+  ))
 }
 
 // Wide enough that the demo's scripted turns never cross the threshold:
