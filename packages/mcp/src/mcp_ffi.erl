@@ -3,9 +3,10 @@
 %% externals in mcp/internal/ffi_port.gleam).
 %%
 %% Each shim converts to Gleam conventions at the boundary: exceptions
-%% are caught and returned as {ok, X} | {error, nil}, and raw terms are
-%% normalized into the tuple shapes of the Gleam types declared on the
-%% other side of the external.
+%% are caught and returned as {ok, X} | {error, Reason} — nil where the
+%% caller can do nothing with a reason, a short lowercase binary where it
+%% can — and raw terms are normalized into the tuple shapes of the Gleam
+%% types declared on the other side of the external.
 -module(mcp_ffi).
 
 -export([
@@ -47,7 +48,34 @@ open_stdio(Executable, Args, Env, Cd) ->
         ),
         {ok, Port}
     catch
-        _:_ -> {error, nil}
+        Class:Reason -> {error, spawn_reason(Class, Reason)}
+    end.
+
+%% Why the spawn failed, as a short lowercase binary for the Gleam side to
+%% carry: an atom reason is its own name (`error:enoent` -> <<"enoent">>),
+%% anything else is the class and a bounded ~p of the term. A blanket
+%% {error, nil} here used to reach the port tests as an indistinguishable
+%% "could not spawn", so an FFI regression read as a host without the
+%% binary and skipped the suite silently.
+spawn_reason(_Class, Reason) when is_atom(Reason) ->
+    bounded(string:lowercase(atom_to_binary(Reason, utf8)));
+spawn_reason(Class, Reason) ->
+    %% Depth-limited (~0P with a depth of 8) so a deep term is cut by the
+    %% formatter rather than by the byte cap below.
+    Formatted = io_lib:format("~s: ~0P", [Class, Reason, 8]),
+    case unicode:characters_to_binary(Formatted) of
+        Text when is_binary(Text) -> bounded(string:lowercase(Text));
+        _ -> <<"unknown spawn failure">>
+    end.
+
+%% Bounded so a spawn failure carrying a large term cannot become a large
+%% string threaded through the client's error and into a log line. Cut with
+%% string:slice/3, which counts characters, so the result stays valid UTF-8
+%% and is a legal Gleam String.
+bounded(Text) ->
+    case string:length(Text) > 200 of
+        true -> <<(string:slice(Text, 0, 200))/binary, "...">>;
+        false -> Text
     end.
 
 env_pairs(Env) ->

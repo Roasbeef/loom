@@ -31,13 +31,20 @@ pub type PortEvent {
 /// Uses `erlang:open_port/2` with `spawn_executable`; there is no other
 /// non-NIF way to stream to a child process from the BEAM. argv is a
 /// list, never a shell string, so nothing here is shell-interpretable.
+///
+/// The error carries the failure's own reason as a short lowercase
+/// string — `"enoent"` for a missing executable, `"eacces"` for one that
+/// cannot be run, the class and a bounded term for anything else. That
+/// distinction is load-bearing rather than cosmetic: the port tests skip
+/// on an absent binary, and a blanket `Error(Nil)` let an FFI regression
+/// wear the same clothes as a host without `/bin/cat`.
 @external(erlang, "mcp_ffi", "open_stdio")
 pub fn open_stdio(
   executable: String,
   args: List(String),
   env: List(#(String, String)),
   directory: Option(String),
-) -> Result(Port, Nil)
+) -> Result(Port, String)
 
 /// Writes one already-framed line to the server's stdin. Errors once the
 /// port is closed, so a dead server settles in-band rather than crashing

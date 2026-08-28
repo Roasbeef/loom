@@ -6,6 +6,7 @@ import client/catalog
 import core/clock
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -311,6 +312,49 @@ pub fn empty_mcp_name_refused_test() {
 pub fn internal_mcp_name_refused_test() {
   let text = with_mcp_server("internal", "command = [\"x\"]")
   let assert Error("mcp.internal is reserved" <> _rest) = catalog.parse(text)
+}
+
+// The four shapes that pass the identifier grammar and still do not
+// survive mangling: the generator digests any name it has to change, so
+// each of these would become cap/mcp/<name>_<8hex> rather than the
+// cap/mcp/<name> a code-mode program imports by this key.
+
+pub fn keyword_mcp_name_refused_test() {
+  let text = with_mcp_server("test", "command = [\"x\"]")
+  let assert Error("mcp.test is a Gleam keyword" <> _rest) = catalog.parse(text)
+}
+
+pub fn doubled_underscore_mcp_name_refused_test() {
+  let text = with_mcp_server("a__b", "command = [\"x\"]")
+  let assert Error("mcp.a__b contains a doubled underscore" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn trailing_underscore_mcp_name_refused_test() {
+  let text = with_mcp_server("foo_", "command = [\"x\"]")
+  let assert Error("mcp.foo_ ends with an underscore" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn overlong_mcp_name_refused_test() {
+  // 33 characters: one past the mangler's truncation bound.
+  let text = with_mcp_server(string.repeat("a", 33), "command = [\"x\"]")
+  let assert Error("mcp." <> rest) = catalog.parse(text)
+  assert string.contains(rest, "is longer than 32 characters")
+  // And the bound itself still parses.
+  let at_bound = with_mcp_server(string.repeat("a", 32), "command = [\"x\"]")
+  let assert Ok(parsed) = catalog.parse(at_bound)
+  assert list.map(parsed.mcp_servers, fn(server) { server.name })
+    == [string.repeat("a", 32)]
+}
+
+// An ordinary name is untouched: mangling is the identity on it, so the
+// key names its module unchanged.
+pub fn ordinary_mcp_name_parses_test() {
+  let text = with_mcp_server("github", "command = [\"x\"]")
+  let assert Ok(parsed) = catalog.parse(text)
+  assert parsed.mcp_servers
+    == [catalog.McpServer(name: "github", command: ["x"], api_key_env: None)]
 }
 
 pub fn duplicate_mcp_name_refused_by_toml_test() {

@@ -432,7 +432,7 @@ fn mcp_server_name(name: String) -> Result(Nil, String) {
         <> " marshaling layer, and a cap/mcp/internal module would sit"
         <> " confusingly beside it; pick another server name",
       )
-    _, True -> Ok(Nil)
+    _, True -> mcp_name_survives_mangling(name)
     _, False ->
       Error(
         "mcp."
@@ -441,6 +441,50 @@ fn mcp_server_name(name: String) -> Result(Nil, String) {
         <> " module code-mode programs import, so it must be a single"
         <> " lowercase-ASCII identifier segment ([a-z][a-z0-9_]*)",
       )
+  }
+}
+
+// The Gleam keywords a module segment may not be. The generator's name
+// mangler digests any name it has to change, so a key it would change
+// becomes cap/mcp/<name>_<8hex> — not the cap/mcp/<name> this module's
+// doc promises. Refusing every mangle-altered shape here keeps that
+// contract provable: on every config-legal name, mangling is the
+// identity.
+const gleam_keywords = [
+  "as", "assert", "auto", "case", "const", "delegate", "derive", "echo", "else",
+  "fn", "if", "implement", "import", "let", "macro", "opaque", "panic", "pub",
+  "test", "todo", "type", "use",
+]
+
+// The mangler's own bound (`mcp/name`'s `max_length`), past which a name
+// is truncated and digested. Restated rather than imported because this
+// package does not depend on `mcp`; the tests hold both ends to 32.
+const max_mangled_length = 32
+
+fn mcp_name_survives_mangling(name: String) -> Result(Nil, String) {
+  let refuse = fn(what: String) {
+    Error(
+      "mcp."
+      <> name
+      <> " "
+      <> what
+      <> ", which module-name mangling would rewrite — the key must name"
+      <> " the cap/mcp/<name> module unchanged",
+    )
+  }
+  case
+    list.contains(gleam_keywords, name),
+    string.contains(name, "__"),
+    string.ends_with(name, "_"),
+    // Asks whether the name is longer than the bound without walking a
+    // pathological key to its end (lint R5).
+    string.drop_start(name, max_mangled_length) != ""
+  {
+    True, _, _, _ -> refuse("is a Gleam keyword")
+    _, True, _, _ -> refuse("contains a doubled underscore")
+    _, _, True, _ -> refuse("ends with an underscore")
+    _, _, _, True -> refuse("is longer than 32 characters")
+    False, False, False, False -> Ok(Nil)
   }
 }
 
