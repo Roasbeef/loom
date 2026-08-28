@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(core storage session machine prompt telemetry runtime provider broker tools cap codemode events client conformance lint sandbox tui)
+packages=(core storage session machine prompt telemetry runtime provider broker mcp tools cap codemode events client conformance lint sandbox tui)
 targets=("${@:-${packages[@]}}")
 
 # The `code_mode` description carries the capability prelude's public
