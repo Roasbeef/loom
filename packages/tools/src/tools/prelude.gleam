@@ -29,6 +29,7 @@
 ////   87d4d708a7feb5e0155c7af7b67d2744c71002c324e4e07afc8e66d4cfd4e502  packages/cap/src/cap/git.gleam
 ////   ef852f2a91c6bb9e8523d58c3466eb644c14f34fc1e210cb6e6dff5f00bd9fb6  packages/cap/src/cap/kv.gleam
 ////   16975eb1a575e4e43a9c2892a7c40586bcab49ccb8674d4cf1e49d9aae6786cd  packages/cap/src/cap/lsp.gleam
+////   70452020e0ebba2d4c0f5ff364980d502f5857996f650c2c08dbbdfd2692c4b7  packages/cap/src/cap/mcp.gleam
 ////   4af4fb4773f4fb7281cc0361762cca202c92af24d4e191fdb17ba3f09f383e41  packages/cap/src/cap/net.gleam
 ////   449f69c2ca5b09c6c2f5d12cb86ae4bc7c1e90e9ead2c6fe8aaaebbb6be9e14f  packages/cap/src/cap/proc.gleam
 ////   fbd196f1cab01e6ace75d87514d13376a1fb6f7726c103d43c6e15b40adad626  packages/cap/src/cap/report.gleam
@@ -37,7 +38,7 @@
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): daaf7e5c05335ebce49a6dc0dd2d4b586a94dc80c30ce6f0f47ba516c51269cb
+//// Body digest (every line after the marker): 39034b2ec91a17cf74b6cde2f64cf649006d49ff1d90e641dc15c5561c4e5029
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -288,6 +289,50 @@ pub fn references(Location) -> Result(List(Location), LspError)
 ///
 /// Capability: `lsp.rename`.
 pub fn rename(Location, String) -> Result(List(TextEdit), LspError)
+",
+  ),
+  #(
+    "cap/mcp",
+    "### cap/mcp
+`cap/mcp` — the shared vocabulary for the generated `cap/mcp/<server>`
+modules: what an MCP tool call returns, and the ways it can fail.
+
+/// One block of a tool result's content. MCP servers answer with a list
+/// of typed blocks; text is the kind a program reads, and every other
+/// kind is carried by name only in v1 (`Other`), so a result holding an
+/// image or a resource still decodes rather than failing the call.
+pub type Content {
+  /// A text block: `{type: \"text\", text}` on the wire.
+  Text(text: String)
+  /// Any other block kind, carried as its `type` string verbatim.
+  Other(kind: String)
+}
+/// Why an MCP call failed. Descriptive variants for the causes a program
+/// branches on; `McpDenied` carries any other broker code verbatim;
+/// `ServerUnavailable` is a transport or reachability failure.
+pub type McpError {
+  /// The server ran the tool and the tool reported failure (`is_error:
+  /// true`). `message` is the joined text content; the full blocks ride
+  /// along for a caller that wants more than prose.
+  ToolFailed(message: String, content: List(Content))
+  /// The capability channel could not carry the call, or the harness
+  /// router says the server is not running.
+  ServerUnavailable(reason: String)
+  /// Any other in-band broker or router refusal, code preserved verbatim
+  /// (`unsupported_cap`, a ceiling, …).
+  McpDenied(code: String, message: String)
+  /// The `cap_result` did not match the pinned result shape.
+  ResultMalformed(reason: String)
+}
+/// What a successful MCP tool call returns: the content blocks, plus the
+/// tool's optional structured output (`structuredContent` in MCP terms)
+/// when the server sent one.
+pub type ToolResult {
+  ToolResult(content: List(Content), structured: option.Option(report.Value))
+}
+/// A result's text content: every `Text` block, joined with newlines —
+/// the common read for a tool whose answer is prose.
+pub fn text(ToolResult) -> String
 ",
   ),
   #(
