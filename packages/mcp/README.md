@@ -8,7 +8,11 @@ generator that turns a server's tool listing into a Gleam module a
 code-mode program can import. It is phase-3 work for issue #106, and it
 stops at the package boundary: reading `loom.toml`, starting a client
 per configured server, and routing `mcp.<server>` capability calls are
-harness wiring, done elsewhere.
+harness wiring — and that wiring exists. `client/catalog` parses the
+`[mcp.<name>]` tables, and `client/mcp` starts a client per configured
+server at boot, generates its module, widens the workspace seam and
+answers its capability calls. `docs/architecture/mcp.md` follows the
+whole path from one table to one call.
 
 The package targets MCP revision 2025-06-18, the `initialize`-based
 lifecycle, and accepts `2025-03-26` and `2024-11-05` as well. The
@@ -117,7 +121,10 @@ why every client behaviour is provable without an OS process.
 port spawn here is the primitive, not the final security posture; the
 decision to run a server through the `loom-exec` helper inside a jail
 belongs to the harness wiring that configures servers, and the seam is
-what lets that land without rewriting the actor.
+what lets that land without rewriting the actor. Whether a server should
+be jailed at all is an *open decision* rather than a deferred
+implementation — nobody has designed it — and `docs/next.md` records it
+as one.
 
 The child's stderr is deliberately not merged into stdout. Merging would
 interleave the server's diagnostics into the newline-delimited JSON-RPC
@@ -155,6 +162,7 @@ forgotten and a late response for it is dropped silently.
 | `mcp/schema` | The three-tier reading of a raw `inputSchema` into a parameter plan. |
 | `mcp/name` | Mangling a server-chosen name into a Gleam identifier, with the digest rule that keeps two originals distinct. |
 | `mcp/codegen` | The generator: one `cap/mcp/<server>` module plus its rendered surface, and every refusal that stops one being written. |
+| `mcp/interchange` | msgpack ↔ JSON between the capability wire and the MCP wire, total both ways: a msgpack integer always fits JSON, a JSON integer outside `[-2^63, 2^64 - 1]` fails the whole conversion rather than wrapping, a msgpack binary and a non-string map key are refused in an argument, and `NilValue` and `Null` are each other. |
 | `mcp/internal/ffi_port` | The port externals over `mcp_ffi.erl` — this package's complete inventory of impurity. |
 
 Paths are relative to `packages/mcp/src/` — `mcp/codegen` is
@@ -201,6 +209,10 @@ SKIP line rather than failing.
 - [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
   key types, real dependency edges, the client's traffic, and the
   invariants that break things when violated. Read it before editing.
+- [`docs/architecture/mcp.md`](../../docs/architecture/mcp.md) — the
+  subsystem end to end: one `[mcp.<name>]` table through boot, codegen
+  and the router to one call, with the hostile-input posture and the
+  worked examples a model actually sees.
 - [`docs/architecture/code-mode.md`](../../docs/architecture/code-mode.md)
   — the vetting theorem, the prelude, and what each layer confines.
 - [`packages/cap/CLAUDE.md`](../cap/CLAUDE.md) — the other end of what
@@ -210,4 +222,5 @@ SKIP line rather than failing.
   `client/protocol`, the house pattern for strict-envelope,
   tolerant-content wire codecs these decoders follow.
 - [`docs/next.md`](../../docs/next.md) — the #106 design rulings, and
-  what the pipeline-integration slice still owes.
+  what this work still owes: the adversarial corpus for hostile
+  `tools/list` input, and the open decision about jailing a server.

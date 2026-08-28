@@ -22,7 +22,7 @@ to its module, so `internal/ui/model.go:382` is under `packages/tui` and
 
 ## The shape of the thing
 
-Eighteen packages, sixteen Gleam and two Go, split across three planes.
+Nineteen packages, seventeen Gleam and two Go, split across three planes.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -36,7 +36,8 @@ tree that carries out what that function returns.
 
 **The effect plane** touches the world: `provider` (the model SDK),
 `broker` (the one door), `sandbox` (the Go jailer), `tools` (the tool
-set), plus `codemode` and `cap` for programs the model writes.
+set), plus `codemode` and `cap` for programs the model writes, and `mcp`
+for the third-party servers those programs can be handed.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
 the production wiring, and the `loom-server` entry point — and `tui` is
@@ -1283,7 +1284,7 @@ renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam:1564`) appends the tool only when
+`serve.registry` (`client/serve.gleam`) appends the tool only when
 `codemode.discover` (`client/codemode.gleam:616`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
@@ -1335,6 +1336,35 @@ jailed `broker.clear_call`; every other name comes back `unsupported_cap`.
 That is a routing table still being filled in (issue #16), not a security
 property, and `cap/task` and `cap/actor` are the exception in kind — they
 run inside the satellite and compose whatever the router does service.
+
+### MCP servers, which are more modules
+
+The router's other arm is the nineteenth package. An MCP server — a
+third-party program speaking JSON-RPC 2.0 down a pipe — reaches a model
+through code mode and nowhere else: one `[mcp.<name>]` table in
+`loom.toml` becomes one generated Gleam module, and a program calls its
+tools by writing `import cap/mcp/github`. Nothing about MCP is a
+registered tool, so the model's tool array and its cached prefix do not
+grow with a server's tool count, and trust is per server because the
+vetting allowlist names one module per configured server.
+
+At boot, `client/mcp` spawns each server over `mcp/transport`'s port
+transport with its `api_key_env` resolved from the harness's own
+environment, hand-shakes, lists its tools, and hands the listing to
+`mcp/codegen`, which renders a module of typed façades plus the surface
+the `code_mode` description carries. A server that fails any of those
+steps is one `mcp.unavailable` line and no boot failure. The listing is
+attacker-controlled JSON, so the generator's discretion stops at names
+and signatures: every body closes over the original tool and parameter
+names as escaped literals and calls `cap/internal/mcp.invoke`, which a
+program cannot import, and a backstop refuses the whole server if a
+single `@` survives outside a comment or a literal. A call then travels
+as the capability `mcp.<server>` carrying `{tool, arguments}`, served by
+the harness over the socket it already owns — no jail, no policy, bounded
+by the pooled effect cap, the wall deadline and one call timeout.
+`docs/architecture/mcp.md` is the depth, including the worked program a
+model would write and the decision about jailing a server, which is open
+rather than merely unbuilt.
 
 ## 16. Where the BEAM earns its place
 
@@ -1506,7 +1536,8 @@ for the package you are about to change.
 
 For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `messaging.md`,
-`events.md`, `models.md`, `code-mode.md`, `simulation.md`. For intent,
+`events.md`, `models.md`, `code-mode.md`, `mcp.md`, `simulation.md`. For
+intent,
 `docs/loom-design.md`; for the frozen interfaces and normative
 conventions, `docs/loom-implementation-spec.md`; and for every place the
 implementation refined the spec, `docs/spec-gaps.md`.
