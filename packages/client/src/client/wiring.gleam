@@ -190,11 +190,11 @@ pub type Config {
   Config(
     /// The provider gateway, fully routed.
     gateway: Gateway,
-    /// The role whose route serves this strand's requests when the
-    /// captured identity does not head one of the routable roles itself.
-    /// Dispatch derives the role from the identity (`request_target`);
-    /// this is what `resolution` asks about and the first candidate the
-    /// derivation tries.
+    /// The role `resolution` asks the gateway about when the summary
+    /// role does not resolve. Dispatch does not read it: the role a
+    /// request is served under is derived from the captured identity
+    /// (`request_target`), in canonical order — `Main` first, then
+    /// `Subagent` — whatever this field names.
     role: Role,
     /// The static model facts an identity's own catalogue entry declares:
     /// its resolved form and the adapter api its dialect speaks.
@@ -742,6 +742,14 @@ pub fn summary_progress(
 /// saying so here fails the operation in band instead of at the
 /// transport.
 ///
+/// The honest limit: the configuration argument is unread today — the
+/// answer is about the configured *roles*, not about the identity in
+/// hand — so an off-route strand whose provider vanished from the
+/// catalogue passes this check and fails at dispatch as an unknown
+/// provider rather than as the in-band `model_unavailable` this hook
+/// exists to produce. Reading the identity here is the fix when that
+/// gap earns its change.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -788,13 +796,18 @@ fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
         context_window: resolved.context_window,
         max_output_tokens: resolved.max_output_tokens,
       )
-    Error(Nil) ->
-      ModelFacts(
-        api: config.api,
-        context_window: config.fallback_context_window,
-        max_output_tokens: config.fallback_max_output_tokens,
-      )
+    Error(Nil) -> fallback_facts(config)
   }
+}
+
+// The figures for an identity nobody stands behind: the config's own
+// declared fallbacks, stated once so the two readers cannot drift.
+fn fallback_facts(config: Config) -> ModelFacts {
+  ModelFacts(
+    api: config.api,
+    context_window: config.fallback_context_window,
+    max_output_tokens: config.fallback_max_output_tokens,
+  )
 }
 
 // One strand's facts, read from its durable configuration. A strand whose

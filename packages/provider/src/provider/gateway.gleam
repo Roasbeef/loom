@@ -221,7 +221,7 @@ fn find_provider(
 ///
 /// ```gleam
 /// // let handle = gateway.request(gw, model.ProviderRequest(
-/// //   target: model.ForRole(model.Main),
+/// //   target: model.ForRole(model.Main, thinking: option.None),
 /// //   system: option.Some("You are ..."),
 /// //   messages: projected,
 /// //   tools: tools,
