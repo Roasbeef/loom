@@ -42,6 +42,30 @@ pub fn usage_and_op_ids_mint_test() {
   assert ids.op_id_timestamp_ms(op_id) == 55
 }
 
+pub fn session_ids_mint_test() {
+  let generator = fresh(at: 55, seed: 3)
+  let #(session_id, generator) = ids.mint_session(generator)
+  let #(second, _generator) = ids.mint_session(generator)
+  assert ids.session_id_timestamp_ms(session_id) == 55
+  // Two mints off one generator are distinct: the state advances.
+  assert session_id != second
+}
+
+pub fn session_ids_are_unique_across_the_generator_test() {
+  let #(minted, _seed) =
+    generate.list_of(generate.seed(4242), 200, generate.session_id)
+  let texts = list.map(minted, ids.session_id_to_string)
+  assert list.length(list.unique(texts)) == 200
+}
+
+pub fn session_id_roundtrip_test() {
+  let #(session_ids, _seed) =
+    generate.list_of(generate.seed(31), 50, generate.session_id)
+  list.each(session_ids, fn(id) {
+    assert ids.parse_session_id(ids.session_id_to_string(id)) == Ok(id)
+  })
+}
+
 pub fn text_form_shape_test() {
   let #(id, _) = ids.mint_entry(fresh(at: 1000, seed: 1))
   let text = ids.entry_id_to_string(id)
@@ -194,5 +218,6 @@ pub fn parse_rejects_invalid_test() {
     let assert Error(_report) = ids.parse_entry_id(text)
     let assert Error(_report) = ids.parse_usage_id(text)
     let assert Error(_report) = ids.parse_op_id(text)
+    let assert Error(_report) = ids.parse_session_id(text)
   })
 }

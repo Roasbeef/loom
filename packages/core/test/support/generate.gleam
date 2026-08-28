@@ -6,7 +6,7 @@
 
 import core/clock
 import core/entry
-import core/ids.{type EntryId, type OpId, type UsageId}
+import core/ids.{type EntryId, type OpId, type SessionId, type UsageId}
 import core/json.{type JsonValue}
 import core/message.{
   type AgentMessage, type AssistantBlock, type ToolResultBlock, type Usage,
@@ -176,6 +176,15 @@ pub fn op_id(seed: Seed) -> #(OpId, Seed) {
   let #(id_seed, seed) = next(seed)
   let #(id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: ts), seed: id_seed))
+  #(id, seed)
+}
+
+/// Mints a random `SessionId` from the seed.
+pub fn session_id(seed: Seed) -> #(SessionId, Seed) {
+  let #(ts, seed) = timestamp(seed)
+  let #(id_seed, seed) = next(seed)
+  let #(id, _generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: ts), seed: id_seed))
   #(id, seed)
 }
 

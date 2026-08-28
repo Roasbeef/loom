@@ -10,11 +10,13 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 
 ## Key Types
 
-- `core/ids.{EntryId, UsageId, OpId}` — distinct opaque UUIDv7 wrappers, so
-  an `EntryId` can never be passed where an `OpId` belongs. `Generator`
-  mints them purely from an injected `Clock` plus a seeded SplitMix64
-  state; `mint_follower` reuses a parent's 48-bit time prefix with a fresh
-  random tail.
+- `core/ids.{EntryId, UsageId, OpId, SessionId}` — distinct opaque UUIDv7
+  wrappers, so an `EntryId` can never be passed where an `OpId` belongs.
+  `Generator` mints them purely from an injected `Clock` plus a seeded
+  SplitMix64 state; `mint_follower` reuses a parent's 48-bit time prefix
+  with a fresh random tail. `SessionId` (`protocol-change/008`) names a
+  whole session rather than a row in one — minted once at session
+  creation, persisted by `session`, and what the event bus keys by.
 - `core/entry.Entry` — the four write-once row shapes (`MessageEntry`,
   `CompactionEntry`, `BranchSummaryEntry`, `CustomEntry`), placement fields
   and payload together. `UsageRow` is the ledger row.
