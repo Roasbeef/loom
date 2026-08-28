@@ -322,9 +322,6 @@ pub fn the_seam_reports_the_caps_the_router_services_test() {
   list.each(workspace.serviced_caps, fn(cap) {
     assert list.contains(caps, cap)
   })
-  list.each(workspace.unserviced_caps, fn(cap) {
-    assert !list.contains(caps, cap)
-  })
 }
 
 pub fn the_kv_arms_come_from_the_configured_store_test() {
@@ -357,6 +354,100 @@ pub fn a_host_with_no_store_refuses_kv_rather_than_pretending_test() {
     as "a host with no store refuses a set"
 }
 
+// --- the write arms ------------------------------------------------------------
+
+pub fn a_write_lands_and_reads_back_through_the_seam_test() {
+  let root = fresh("write")
+  let seam = seam_over(root)
+  let assert Ok(Nil) = seam.fs_write("out.txt", "written through the bridge")
+    as "a legitimate write is serviced"
+  assert seam.fs_read("out.txt") == Ok("written through the bridge")
+}
+
+pub fn a_write_onto_a_protected_path_is_refused_and_nothing_lands_test() {
+  // THE test issue #105 demanded and could not have until both pieces
+  // existed: the bridge write arm meets the same protected-path refusal
+  // the model's own fs_write does, from the same resolve_writable.
+  let root = fresh("write-protected")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/.git/hooks")
+    as "the fixture needs a .git"
+  let seam = protected_seam_over(root)
+  let assert Error(workspace.PathRefused(fs.ProtectedPath(..))) =
+    seam.fs_write(".git/hooks/post-checkout", "#!/bin/sh\necho pwned")
+    as "a protected write is refused"
+  assert simplifile.is_file(root <> "/.git/hooks/post-checkout") == Ok(False)
+}
+
+pub fn a_symlink_onto_a_protected_path_is_refused_through_the_bridge_test() {
+  // The ordering property, observed through the bridge: the protected
+  // check runs on the *resolved* path, so a workspace-internal symlink
+  // onto .git/config cannot walk through it.
+  let root = fresh("write-symlink")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/.git")
+    as "the fixture needs a .git"
+  let assert Ok(Nil) = simplifile.write(root <> "/.git/config", "[core]\n")
+    as "the fixture needs a config"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: ".git/config", from: root <> "/innocent.txt")
+    as "the fixture needs the symlink"
+  let seam = protected_seam_over(root)
+  let assert Error(workspace.PathRefused(fs.ProtectedPath(..))) =
+    seam.fs_write("innocent.txt", "overwritten")
+    as "the symlink resolves onto the protected entry and is refused"
+  assert simplifile.read(root <> "/.git/config") == Ok("[core]\n")
+}
+
+pub fn a_write_outside_the_workspace_is_refused_test() {
+  let seam = seam_over(fresh("write-outside"))
+  let assert Error(workspace.PathRefused(fs.EscapesWorkspace(..))) =
+    seam.fs_write("../elsewhere.txt", "no")
+    as "a write outside the workspace is refused"
+}
+
+pub fn an_edit_applies_in_one_closure_and_reads_back_test() {
+  let root = fresh("edit")
+  let seam = seam_over(root)
+  let assert Ok(Nil) = seam.fs_write("code.txt", "let value = old_name")
+    as "the fixture write must land"
+  let edits = [
+    workspace.Replacement(find: "old_name", replace_with: "new_name"),
+  ]
+  let assert Ok(Nil) = seam.fs_edit("code.txt", edits)
+    as "a matching edit is serviced"
+  assert seam.fs_read("code.txt") == Ok("let value = new_name")
+}
+
+pub fn a_stale_edit_leaves_the_file_untouched_test() {
+  let root = fresh("edit-stale")
+  let seam = seam_over(root)
+  let assert Ok(Nil) = seam.fs_write("code.txt", "current text")
+    as "the fixture write must land"
+  let edits = [
+    workspace.Replacement(find: "current", replace_with: "first"),
+    workspace.Replacement(find: "vanished", replace_with: "second"),
+  ]
+  let assert Error(workspace.EditRefused(workspace.StaleFind(..))) =
+    seam.fs_edit("code.txt", edits)
+    as "a missed find is stale"
+  // All-or-nothing: the first replacement matched, and still nothing
+  // landed.
+  assert seam.fs_read("code.txt") == Ok("current text")
+}
+
+pub fn an_edit_of_a_protected_path_is_refused_before_reading_test() {
+  let root = fresh("edit-protected")
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/.git")
+    as "the fixture needs a .git"
+  let assert Ok(Nil) = simplifile.write(root <> "/.git/config", "[core]\n")
+    as "the fixture needs a config"
+  let seam = protected_seam_over(root)
+  let edits = [workspace.Replacement(find: "[core]", replace_with: "[evil]")]
+  let assert Error(workspace.PathRefused(fs.ProtectedPath(..))) =
+    seam.fs_edit(".git/config", edits)
+    as "a protected edit is refused"
+  assert simplifile.read(root <> "/.git/config") == Ok("[core]\n")
+}
+
 // --- the rig ---------------------------------------------------------------------
 
 fn seam_over(root: String) -> workspace.Workspace {
@@ -367,6 +458,21 @@ fn seam_over(root: String) -> workspace.Workspace {
 // can check nothing out: the closures under test clear nothing — that is
 // the whole of what `ServedHere` means — so a broker that answered would
 // be proving something no capability call here can reach.
+// The seam over a request whose base policy protects the workspace's
+// .git — the shape a production base carries and `workspace_default`
+// deliberately does not.
+fn protected_seam_over(root: String) -> workspace.Workspace {
+  let request = request_over(root)
+  let base = request.base_policy
+  codemode.workspace_seam(
+    config_over(root),
+    codemode_tool.Request(
+      ..request,
+      base_policy: policy.SandboxPolicy(..base, protected: [root <> "/.git"]),
+    ),
+  )
+}
+
 fn config_over(root: String) -> codemode.Config {
   let assert Ok(broker_actor) =
     broker.start(

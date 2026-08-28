@@ -1508,9 +1508,19 @@ pub fn workspace_seam(
 ) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
   let root = request.workspace
+  // The protected list rides the request's own base policy — the same
+  // value the launch composes against — so the bridge's write boundary
+  // and the jail's mask are fed from one source.
+  let protected = request.base_policy.protected
   workspace.Workspace(
     fs_read: fn(path) { read_in(filesystem, root, path) },
     fs_list: fn(path) { list_in(filesystem, root, path) },
+    fs_write: fn(path, contents) {
+      write_in(filesystem, root, protected, path, contents)
+    },
+    fs_edit: fn(path, edits) {
+      edit_in(filesystem, root, protected, path, edits)
+    },
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
     kv_delete: config.scratch.delete,
@@ -1534,6 +1544,56 @@ fn read_in(
   )
   fs.read_text_file(filesystem:, resolved:)
   |> result.map_error(workspace.ReadRefused)
+}
+
+// `fs.write`: resolve through `resolve_writable` — containment plus the
+// protected-path refusal, the same one function the model's own
+// `fs_write` calls (#105) — then write whole through the seam. Both
+// decisions are `tools/fs`'s; the bridge's contribution is the seam name
+// on the refusal.
+fn write_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  protected: List(String),
+  path: String,
+  contents: String,
+) -> Result(Nil, workspace.FsRefusal) {
+  use resolved <- result.try(
+    fs.resolve_writable(filesystem:, workspace: root, protected:, path:)
+    |> result.map_error(workspace.PathRefused),
+  )
+  filesystem.write(resolved, <<contents:utf8>>)
+  |> result.map_error(workspace.WriteRefused)
+}
+
+// `fs.edit`: read-apply-write inside this one closure, which is the
+// tightest window the seam can offer (the module doc of
+// `codemode/workspace` carries the ruling). The read reuses
+// `read_text_file`, so an edit of a too-large or non-text file is
+// refused with the same guards a read is; the apply is
+// `workspace.apply_replacements`, pure and corpus-pinned; the write goes
+// through the same resolved, protected-checked path the read used.
+fn edit_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  protected: List(String),
+  path: String,
+  edits: List(workspace.Replacement),
+) -> Result(Nil, workspace.FsRefusal) {
+  use resolved <- result.try(
+    fs.resolve_writable(filesystem:, workspace: root, protected:, path:)
+    |> result.map_error(workspace.PathRefused),
+  )
+  use text <- result.try(
+    fs.read_text_file(filesystem:, resolved:)
+    |> result.map_error(workspace.ReadRefused),
+  )
+  use edited <- result.try(
+    workspace.apply_replacements(text, edits)
+    |> result.map_error(workspace.EditRefused),
+  )
+  filesystem.write(resolved, <<edited:utf8>>)
+  |> result.map_error(workspace.WriteRefused)
 }
 
 // `fs.list`: resolve through the same boundary, then enumerate.

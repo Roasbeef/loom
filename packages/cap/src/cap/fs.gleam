@@ -42,9 +42,14 @@ pub type DirEntry {
   DirEntry(name: String, is_directory: Bool)
 }
 
-/// One find/replace edit for `edit`. The broker applies replacements
-/// with the same anchor discipline as the harness `fs_edit` tool and
-/// rejects a stale target as `StaleContent`.
+/// One find/replace edit for `edit`. `find` is matched as an exact
+/// substring and must match **exactly once**: zero matches refuses the
+/// whole edit as `StaleContent` — the file no longer contains your text —
+/// and more than one refuses it as `InvalidArgument`, because a
+/// replacement carries no position to say which occurrence was meant;
+/// include enough surrounding text to be unique. There are no anchors and
+/// no digest on this wire: staleness here means the find text itself, not
+/// a pin.
 pub type Replacement {
   Replacement(find: String, replace_with: String)
 }
@@ -91,8 +96,15 @@ pub fn list(path: String) -> Result(List(DirEntry), FsError) {
   })
 }
 
-/// Applies find/replace edits to a file atomically. A replacement whose
-/// `find` no longer matches yields `StaleContent` and applies nothing.
+/// Applies find/replace edits to a file, all-or-nothing: replacements
+/// apply in order, each against the text the previous one produced, and
+/// any refusal — a `find` that misses (`StaleContent`), one that matches
+/// more than once, an empty one — leaves the file untouched. The
+/// read-apply-write happens inside one harness-side call, a tighter
+/// window than composing `read` and `write` across two calls; a
+/// concurrent writer of the same file within the same execution can
+/// still interleave, so a program racing itself should serialize its own
+/// edits.
 ///
 /// Capability: `fs.edit`.
 pub fn edit(

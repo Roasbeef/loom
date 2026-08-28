@@ -43,25 +43,40 @@
 //// therefore holds no path logic whatever: it decodes a frame, calls a
 //// closure, and names the refusal that comes back.
 ////
-//// # What is not here yet, and why
+//// # The write arms, and the edit ruling
 ////
-//// `fs.write` and `fs.edit` are refused as `unsupported_cap`, and the
-//// seam record has no slot for them — an absent field is a decision a
-//// reader can see, where a field wired to a refusal is one they have to
-//// go looking for.
+//// `fs.write` landed once the protected-path check did (#105): without
+//// it, bridging a write would have handed a vetted program **strictly
+//// more filesystem authority than its own jailed `proc.run`**, whose
+//// bwrap masks honour the never-writable list. The closure resolves
+//// through `tools/fs.resolve_writable` — `resolve_real` and then the
+//// protected refusal, the same one function the model's own `fs_write`
+//// calls — so the two enforcement points cannot drift.
 ////
-//// `fs.write` waited on the protected-path check (#105): until the
-//// harness-side write path enforced the base policy's never-writable
-//// list, bridging it would have handed a vetted program **strictly more
-//// filesystem authority than its own jailed `proc.run`**, whose bwrap
-//// masks honour that list. `fs.edit` is a live design question rather
-//// than plumbing: the satellite side is `Replacement(find, replace_with)`
-//// with no anchors and no digest, while the harness `fs_edit` is
-//// anchor-and-digest-bound, and a satellite cannot construct a
-//// harness-shaped hunk because `cap/fs.read` hands back plain string
-//// contents. Bridging it would mean the bridge *synthesising* the
-//// anchors and the digest on the program's behalf — inventing a safety
-//// property rather than checking one the caller committed to.
+//// `fs.edit` was a design question rather than plumbing, and the ruling
+//// is recorded here because this module carries its semantics. The
+//// satellite side is `Replacement(find, replace_with)` with no anchors
+//// and no digest, while the harness `fs_edit` is anchor-and-digest
+//// bound; a satellite cannot construct a harness-shaped hunk because
+//// `cap/fs.read` hands back plain string contents, so bridging *that*
+//// contract would mean synthesising the pin on the program's behalf —
+//// inventing a safety property rather than checking one the caller
+//// committed to. The ruling: bridge it with **honest whole-file
+//// find/replace semantics instead**. Each `find` must match its text
+//// exactly once — zero matches is `StaleFind`, which gives
+//// `StaleContent` a real, mintable meaning ("the file no longer
+//// contains your text") where a synthesised digest would have given it
+//// a fake one; more than one match is refused as ambiguous, because a
+//// `Replacement` carries no position to disambiguate with. Replacements
+//// apply in order, each against the text the previous one produced,
+//// all-or-nothing, and the read-apply-write happens inside **one served
+//// call** — a strictly tighter window than the read-then-write a
+//// program would otherwise hand-roll across two channel round trips.
+//// The residual race against a concurrent writer of the same file
+//// within one execution is the same class the harness's own editor
+//// carries between its digest check and its write. Real pins — a
+//// `fs.read` that returns a digest an edit can commit to — remain open
+//// as a later layer; nothing here forecloses them.
 ////
 //// # Every boundary decodes totally
 ////
@@ -78,10 +93,12 @@ import codemode/satellite.{
   CapDenial, ServedHere,
 }
 import core/msgpack.{type MsgPackValue}
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import tools/fs
 import tools/tool
 
@@ -92,6 +109,13 @@ pub const read_cap = "fs.read"
 
 /// The capability a program lists a workspace directory with.
 pub const list_cap = "fs.list"
+
+/// The capability a program writes a workspace file with.
+pub const write_cap = "fs.write"
+
+/// The capability a program edits a workspace file with — whole-file
+/// find/replace semantics, per the module doc's ruling.
+pub const edit_cap = "fs.edit"
 
 /// The capability a program reads a scratch key with.
 pub const kv_get_cap = "kv.get"
@@ -106,16 +130,12 @@ pub const kv_delete_cap = "kv.delete"
 /// **both** seams, by one mechanism (`codemode/artifact`).
 pub const emit_cap = artifact.emit_cap
 
-/// The two `cap/fs` capabilities this seam does not service yet, refused
-/// by name rather than by falling through to a router that would say
-/// only "not routed". See the module doc for what each is waiting on.
-pub const unserviced_caps = ["fs.write", "fs.edit"]
-
 /// Every capability this router services, in the order a program meets
 /// them. Published so the tool description a model reads states the real
 /// set rather than a copy that can drift.
 pub const serviced_caps = [
-  read_cap, list_cap, kv_get_cap, kv_set_cap, kv_delete_cap, emit_cap,
+  read_cap, list_cap, write_cap, edit_cap, kv_get_cap, kv_set_cap, kv_delete_cap,
+  emit_cap,
 ]
 
 /// The most entries one `fs.list` may answer with.
@@ -164,6 +184,12 @@ pub const too_large_code = "too_large"
 /// a symlink chain past the resolution budget.
 pub const unresolvable_code = "unresolvable"
 
+/// An edit whose `find` text no longer matches the file. `cap/fs`
+/// decodes it to `StaleContent` — which under the module doc's ruling
+/// means exactly "the file no longer contains your text", not a pin
+/// going stale, because nothing was ever pinned.
+pub const stale_content_code = "stale_content"
+
 /// Any other filesystem failure, with the backend's own description.
 pub const fs_failure_code = "fs_failure"
 
@@ -196,7 +222,8 @@ pub type DirEntry {
 /// `read_text_file` — except the two that are properties of *listing*, an
 /// operation the harness's own tool set does not have.
 pub type FsRefusal {
-  /// `resolve_real` refused the path.
+  /// `resolve_real` refused the path — or, on the write arms,
+  /// `resolve_writable` did, which adds the protected-path refusal.
   PathRefused(error: fs.PathError)
   /// The path resolved and the read did not produce text.
   ReadRefused(error: fs.ReadError)
@@ -204,6 +231,73 @@ pub type FsRefusal {
   ListRefused(error: tool.FsError)
   /// The directory holds more than `max_list_entries` entries.
   TooManyEntries(count: Int, limit: Int)
+  /// The path resolved, the check passed, and the write itself failed.
+  WriteRefused(error: tool.FsError)
+  /// The replacements could not be applied; nothing was written.
+  EditRefused(refusal: EditRefusal)
+}
+
+/// One find/replace edit, as `cap/fs.Replacement` marshals it. Restated
+/// rather than imported for the reason every wire shape here is: the two
+/// packages are the ends of one wire, not peers.
+pub type Replacement {
+  Replacement(find: String, replace_with: String)
+}
+
+/// Why a replacement list could not be applied. All-or-nothing: any of
+/// these means the file was not touched.
+pub type EditRefusal {
+  /// A `find` matched nothing. The stale case, and the honest meaning of
+  /// `StaleContent` under this contract: the text the program committed
+  /// to is no longer there.
+  StaleFind(find: String)
+  /// A `find` matched more than once. A `Replacement` carries no
+  /// position, so which occurrence was meant is unknowable; refused
+  /// rather than guessed.
+  AmbiguousFind(find: String, count: Int)
+  /// A `find` was empty, which matches everywhere and means nothing.
+  EmptyFind
+}
+
+/// Applies `edits` in order, each against the text the previous one
+/// produced, all-or-nothing. Pure — the effectful halves (resolve, read,
+/// write) belong to the injected closure, and keeping the semantics here
+/// is what lets one corpus pin them for every host.
+///
+/// Each `find` must match **exactly once** at the moment it applies.
+/// Sequential application is the stated contract: an earlier replacement
+/// may create or destroy a later one's match, and "in order, against the
+/// current text" is the reading a program can predict.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let edits = [workspace.Replacement(find: "a", replace_with: "b")]
+/// assert workspace.apply_replacements("a", edits) == Ok("b")
+/// ```
+///
+/// ```gleam
+/// let edits = [workspace.Replacement(find: "x", replace_with: "y")]
+/// assert workspace.apply_replacements("a", edits)
+///   == Error(workspace.StaleFind(find: "x"))
+/// ```
+///
+pub fn apply_replacements(
+  text: String,
+  edits: List(Replacement),
+) -> Result(String, EditRefusal) {
+  list.try_fold(edits, text, fn(current, edit) {
+    let Replacement(find:, replace_with:) = edit
+    use <- bool.guard(when: find == "", return: Error(EmptyFind))
+    // Occurrences counted by splitting: n parts means n - 1 matches.
+    // Non-overlapping, which is also `string.replace`'s reading, so the
+    // count and the replacement agree about what a match is.
+    case list.length(string.split(current, find)) - 1 {
+      0 -> Error(StaleFind(find:))
+      1 -> Ok(string.replace(current, each: find, with: replace_with))
+      count -> Error(AmbiguousFind(find:, count:))
+    }
+  })
 }
 
 /// Why a scratch-store call could not be answered.
@@ -229,8 +323,6 @@ pub type KvRefusal {
 /// closure, and carries the answer — or the refusal, under a name
 /// `packages/cap` decodes — back.
 ///
-/// There is deliberately **no slot for `fs.write` or `fs.edit`**. See the
-/// module doc: an absent field is a decision a reader can see.
 pub type Workspace {
   Workspace(
     /// Reads a workspace-relative path as text.
@@ -238,6 +330,13 @@ pub type Workspace {
     /// Lists a workspace-relative directory, bounded by
     /// `max_list_entries`.
     fs_list: fn(String) -> Result(List(DirEntry), FsRefusal),
+    /// Writes a workspace-relative path whole, through
+    /// `resolve_writable` — containment plus the protected-path refusal.
+    fs_write: fn(String, String) -> Result(Nil, FsRefusal),
+    /// Applies `apply_replacements` to a file and writes the result,
+    /// read-apply-write inside this one call, through the same boundary
+    /// as `fs_write`.
+    fs_edit: fn(String, List(Replacement)) -> Result(Nil, FsRefusal),
     /// Reads a scratch key, or `None` when it is absent or was evicted.
     kv_get: fn(String) -> Result(Option(BitArray), KvRefusal),
     /// Writes a scratch key, replacing any prior value.
@@ -300,30 +399,15 @@ pub fn routing(seam: Workspace, over inner: CapRouter) -> CapRouter {
     case request.cap {
       "fs.read" -> read_plan(seam, request)
       "fs.list" -> list_plan(seam, request)
+      "fs.write" -> write_plan(seam, request)
+      "fs.edit" -> edit_plan(seam, request)
       "kv.get" -> kv_get_plan(seam, request)
       "kv.set" -> kv_set_plan(seam, request)
       "kv.delete" -> kv_delete_plan(seam, request)
       "report.emit" -> artifact.plan(seam.emit, request)
-      "fs.write" -> Error(unserviced("fs.write", write_reason))
-      "fs.edit" -> Error(unserviced("fs.edit", edit_reason))
       _other -> inner(request)
     }
   }
-}
-
-// Why each unserviced `cap/fs` name is refused, in one sentence a model
-// can act on: what is missing, and what to do instead. A program that
-// reads "not routed" learns nothing; one that reads this reaches for
-// `proc.run` and gets on with it.
-const write_reason = "writing through the capability bridge is not serviced "
-  <> "yet; write the file with proc.run instead"
-
-const edit_reason = "editing through the capability bridge is not serviced "
-  <> "yet — the harness's own editor is anchor-and-digest bound and this "
-  <> "wire carries neither; read the file, and write it whole with proc.run"
-
-fn unserviced(cap: String, reason: String) -> CapDenial {
-  CapDenial(code: unsupported_cap_code, message: cap <> ": " <> reason)
 }
 
 // --- fs ---------------------------------------------------------------------
@@ -359,6 +443,68 @@ fn list_plan(
       }
     }),
   )
+}
+
+fn write_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use path <- result.try(string_arg(request.args, "path"))
+  use contents <- result.try(string_arg(request.args, "contents"))
+  Ok(
+    ServedHere(fn() {
+      case seam.fs_write(path, contents) {
+        Error(refusal) -> fs_refused(refusal)
+        Ok(Nil) -> answered([])
+      }
+    }),
+  )
+}
+
+fn edit_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use path <- result.try(string_arg(request.args, "path"))
+  use edits <- result.try(edits_arg(request.args))
+  Ok(
+    ServedHere(fn() {
+      case seam.fs_edit(path, edits) {
+        Error(refusal) -> fs_refused(refusal)
+        Ok(Nil) -> answered([])
+      }
+    }),
+  )
+}
+
+// The replacement list, exactly as `cap/fs.edit` marshals it: an array
+// under `edits` of maps carrying `find` and `replace_with`. Empty is
+// refused at plan time — an edit that edits nothing is a mistake to
+// repair, not a success to fake.
+fn edits_arg(value: MsgPackValue) -> Result(List(Replacement), CapDenial) {
+  use found <- result.try(msgpack_field(value, "edits"))
+  use entries <- result.try(case found {
+    msgpack.ArrayValue(items:) -> Ok(items)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.MapValue(..) ->
+      Error(invalid("`edits` must be an array of replacements"))
+  })
+  use replacements <- result.try(list.try_map(entries, replacement_arg))
+  case replacements {
+    [] -> Error(invalid("`edits` must hold at least one replacement"))
+    _ -> Ok(replacements)
+  }
+}
+
+fn replacement_arg(value: MsgPackValue) -> Result(Replacement, CapDenial) {
+  use find <- result.try(string_arg(value, "find"))
+  use replace_with <- result.try(string_arg(value, "replace_with"))
+  Ok(Replacement(find:, replace_with:))
 }
 
 fn entry_value(entry: DirEntry) -> MsgPackValue {
@@ -469,6 +615,47 @@ pub fn fs_denial(refusal: FsRefusal) -> CapDenial {
           <> " one fs.list may answer with; list a subdirectory, or walk it "
           <> "with proc.run",
       )
+    WriteRefused(error:) ->
+      CapDenial(code: fs_error_code(error), message: fs_error_text(error))
+    EditRefused(refusal:) -> edit_denial(refusal)
+  }
+}
+
+// The find text is program-controlled and can be a whole file, so the
+// excerpt quoted back is bounded; the program has the full value.
+fn edit_denial(refusal: EditRefusal) -> CapDenial {
+  case refusal {
+    StaleFind(find:) ->
+      CapDenial(
+        code: stale_content_code,
+        message: "the file no longer contains `"
+          <> excerpt(find)
+          <> "`; re-read it and edit against what is there now",
+      )
+    AmbiguousFind(find:, count:) ->
+      CapDenial(
+        code: invalid_argument_code,
+        message: "`"
+          <> excerpt(find)
+          <> "` matches "
+          <> int.to_string(count)
+          <> " times and a replacement carries no position; include enough "
+          <> "surrounding text to match exactly once",
+      )
+    EmptyFind ->
+      CapDenial(
+        code: invalid_argument_code,
+        message: "a replacement's `find` must not be empty",
+      )
+  }
+}
+
+const excerpt_chars = 80
+
+fn excerpt(text: String) -> String {
+  case string.length(text) > excerpt_chars {
+    False -> text
+    True -> string.slice(text, at_index: 0, length: excerpt_chars) <> "…"
   }
 }
 

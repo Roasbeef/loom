@@ -419,12 +419,27 @@ fn normalize(path: String) -> String {
 /// reimplementing half of it. A second implementation is how two
 /// enforcement points drift.
 pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
-  use resolved <- result.try(resolve_real(
+  resolve_writable(
     filesystem: ctx.filesystem,
     workspace: ctx.workspace,
+    protected: ctx.base_policy.protected,
     path:,
-  ))
-  case list.find(ctx.base_policy.protected, covers_target(ctx, _, resolved)) {
+  )
+}
+
+/// The same boundary with its seams spelled out, for a caller holding
+/// write authority but no `Ctx` — the capability bridge's `fs.write` and
+/// `fs.edit` closures. One implementation behind both doors: everything
+/// `resolve_for_write`'s doc promises is promised here, because it *is*
+/// this function.
+pub fn resolve_writable(
+  filesystem filesystem: FileSystem,
+  workspace workspace: String,
+  protected protected: List(String),
+  path path: String,
+) -> Result(String, PathError) {
+  use resolved <- result.try(resolve_real(filesystem:, workspace:, path:))
+  case list.find(protected, covers_target(filesystem, _, resolved)) {
     Error(Nil) -> Ok(resolved)
     Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
   }
@@ -440,9 +455,13 @@ pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
 // miss exactly the case `resolve_real` exists for (a symlinked
 // workspace root, say). Where the two agree, which is the ordinary
 // case, this is one comparison twice.
-fn covers_target(ctx: Ctx, entry: String, resolved: String) -> Bool {
+fn covers_target(
+  filesystem: FileSystem,
+  entry: String,
+  resolved: String,
+) -> Bool {
   let lexical = normalize(entry)
-  let real = walk(ctx.filesystem, lexical) |> result.unwrap(or: lexical)
+  let real = walk(filesystem, lexical) |> result.unwrap(or: lexical)
   covers(lexical, resolved) || covers(real, resolved)
 }
 

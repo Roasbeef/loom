@@ -55,6 +55,8 @@ type Seen {
   SetAsked(key: String, bytes: Int)
   DeleteAsked(key: String)
   EmitAsked(name: String, bytes: Int)
+  WriteAsked(path: String, contents: String)
+  EditAsked(path: String, edits: Int)
 }
 
 const file_contents = "the file's own bytes\n"
@@ -101,6 +103,14 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
     },
     kv_delete: fn(key) {
       process.send(seen, DeleteAsked(key))
+      Ok(Nil)
+    },
+    fs_write: fn(path, contents) {
+      process.send(seen, WriteAsked(path, contents))
+      Ok(Nil)
+    },
+    fs_edit: fn(path, edits) {
+      process.send(seen, EditAsked(path, list.length(edits)))
       Ok(Nil)
     },
     emit: fn(art: artifact.Artifact) {
@@ -500,24 +510,110 @@ pub fn a_store_failure_is_in_band_and_named_test() {
 
 // --- what this seam does not service ------------------------------------------
 
-pub fn the_write_arms_are_unsupported_and_say_what_to_do_test() {
-  // Refused *here*, by name, rather than falling through to the default
-  // router — a program that reads "not routed by the default router"
-  // learns nothing it can act on, and one that reads this reaches for
-  // `proc.run`.
+pub fn a_write_routes_to_the_closure_with_both_arguments_test() {
   let seen = recorder()
-  list.each(workspace.unserviced_caps, fn(cap) {
-    let denial =
-      refused(
-        answering(seen),
-        cap,
-        map([#("path", text("a")), #("contents", text("b"))]),
-      )
-    assert denial.code == workspace.unsupported_cap_code
-    assert string.contains(denial.message, cap)
-    assert string.contains(denial.message, "proc.run")
-  })
+  let assert framing.CapOk(..) =
+    serviced(
+      answering(seen),
+      "fs.write",
+      map([#("path", text("out.txt")), #("contents", text("hello"))]),
+    )
+    as "a well-formed write is serviced"
+  assert drain(seen) == [WriteAsked("out.txt", "hello")]
+}
+
+pub fn an_edit_routes_with_the_decoded_replacements_test() {
+  let seen = recorder()
+  let assert framing.CapOk(..) =
+    serviced(answering(seen), "fs.edit", well_formed("fs.edit"))
+    as "a well-formed edit is serviced"
+  assert drain(seen) == [EditAsked("out.txt", 1)]
+}
+
+pub fn an_empty_edit_list_is_refused_at_plan_time_test() {
+  // An edit that edits nothing is a mistake to repair, not a success to
+  // fake — and it is refused before any closure runs.
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "fs.edit",
+      map([#("path", text("a")), #("edits", msgpack.ArrayValue([]))]),
+    )
+  assert denial.code == workspace.invalid_argument_code
   assert drain(seen) == []
+}
+
+// --- the edit semantics --------------------------------------------------------
+//
+// `apply_replacements` is the whole of the fs.edit ruling, pure, so the
+// corpus lives here and every host inherits it.
+
+pub fn a_single_replacement_applies_test() {
+  let edits = [workspace.Replacement(find: "old", replace_with: "new")]
+  assert workspace.apply_replacements("one old line", edits)
+    == Ok("one new line")
+}
+
+pub fn replacements_apply_in_order_against_the_current_text_test() {
+  // The second find only exists because the first replacement created
+  // it: sequential application is the stated contract.
+  let edits = [
+    workspace.Replacement(find: "a", replace_with: "b"),
+    workspace.Replacement(find: "bb", replace_with: "c"),
+  ]
+  assert workspace.apply_replacements("ab", edits) == Ok("c")
+}
+
+pub fn a_missed_find_is_stale_and_applies_nothing_test() {
+  let edits = [
+    workspace.Replacement(find: "present", replace_with: "changed"),
+    workspace.Replacement(find: "absent", replace_with: "x"),
+  ]
+  assert workspace.apply_replacements("present", edits)
+    == Error(workspace.StaleFind(find: "absent"))
+}
+
+pub fn an_ambiguous_find_is_refused_with_its_count_test() {
+  let edits = [workspace.Replacement(find: "a", replace_with: "b")]
+  assert workspace.apply_replacements("a a a", edits)
+    == Error(workspace.AmbiguousFind(find: "a", count: 3))
+}
+
+pub fn an_empty_find_is_refused_test() {
+  let edits = [workspace.Replacement(find: "", replace_with: "b")]
+  assert workspace.apply_replacements("text", edits)
+    == Error(workspace.EmptyFind)
+}
+
+pub fn a_stale_find_travels_as_stale_content_test() {
+  // The other half of the contract is `cap/fs.map_error`, which turns
+  // this code back into `StaleContent` — the variant whose honest
+  // meaning the module doc's ruling pinned.
+  let denial =
+    workspace.fs_denial(
+      workspace.EditRefused(workspace.StaleFind(find: "gone")),
+    )
+  assert denial.code == workspace.stale_content_code
+  assert string.contains(denial.message, "gone")
+}
+
+pub fn an_ambiguous_find_travels_as_invalid_argument_test() {
+  let denial =
+    workspace.fs_denial(
+      workspace.EditRefused(workspace.AmbiguousFind(find: "x", count: 2)),
+    )
+  assert denial.code == workspace.invalid_argument_code
+  assert string.contains(denial.message, "2")
+}
+
+pub fn a_long_find_is_excerpted_in_the_refusal_test() {
+  // The find text is program-controlled and can be a whole file; the
+  // sentence quoted back is bounded, the program has the full value.
+  let long = string.repeat("y", 500)
+  let denial =
+    workspace.fs_denial(workspace.EditRefused(workspace.StaleFind(find: long)))
+  assert string.length(denial.message) < 200
 }
 
 pub fn every_serviced_cap_routes_and_none_builds_a_clearance_test() {
@@ -538,7 +634,7 @@ pub fn every_serviced_cap_routes_and_none_builds_a_clearance_test() {
       }
     })
   assert served == list.repeat(True, list.length(workspace.serviced_caps))
-  assert list.length(workspace.serviced_caps) == 6
+  assert list.length(workspace.serviced_caps) == 8
 }
 
 pub fn an_unrouted_cap_is_handed_to_the_inner_router_test() {
@@ -558,6 +654,17 @@ pub fn an_unrouted_cap_is_handed_to_the_inner_router_test() {
 fn well_formed(cap: String) -> MsgPackValue {
   case cap {
     "fs.read" | "fs.list" -> map([#("path", text("src"))])
+    "fs.write" -> map([#("path", text("out.txt")), #("contents", text("x"))])
+    "fs.edit" ->
+      map([
+        #("path", text("out.txt")),
+        #(
+          "edits",
+          msgpack.ArrayValue([
+            map([#("find", text("a")), #("replace_with", text("b"))]),
+          ]),
+        ),
+      ])
     "kv.get" | "kv.delete" -> map([#("key", text("k"))])
     "kv.set" ->
       map([#("key", text("k")), #("value", msgpack.BinaryValue(<<1, 2>>))])

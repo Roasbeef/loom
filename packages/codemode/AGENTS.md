@@ -87,21 +87,26 @@ strand roots, and can reach neither the disk, the network, nor a process.
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal, routing,
-  ceilings, serviced_caps, unserviced_caps, max_list_entries, fs_denial,
+  ceilings, serviced_caps, max_list_entries, fs_denial,
   kv_denial}` — the workspace seam's *harness-side* capability router
-  (issue #16). A record of six injected closures — `fs_read`, `fs_list`,
-  `kv_get`, `kv_set`, `kv_delete`, `emit` — wrapped in front of an inner
-  router, the same shape `client/mcp.routing` has. Every plan is
+  (issue #16). A record of eight injected closures — `fs_read`,
+  `fs_list`, `fs_write`, `fs_edit`, `kv_get`, `kv_set`, `kv_delete`,
+  `emit` — wrapped in front of an inner router, the same shape
+  `client/mcp.routing` has. Every plan is
   `satellite.ServedHere`: a workspace read, a process-local store write
   and a blob mint leave no VM, so there is nothing a jail could contain
   and a composed `SandboxPolicy` would have no enforcer. It builds **no
   `broker.CallSpec`** and holds **no path logic** — containment is
   `tools/fs.resolve_real`'s and the large-file guard is
   `fs.read_text_file`'s, called by the injected closures
-  `client/codemode.workspace_seam` builds. `fs.write` and `fs.edit` have
-  no slot in the record and are refused by name: write waited on the
-  protected-path check (#105) and edit is an open contract question, the
-  satellite side carrying neither anchors nor a digest.
+  `client/codemode.workspace_seam` builds. The write arms landed with #105:
+  `fs_write` resolves through `tools/fs.resolve_writable` — containment
+  plus the protected-path refusal, the same one function the model's own
+  tool calls — and `fs_edit` carries the module's own ruling: honest
+  whole-file find/replace (each `find` exactly once, in order,
+  all-or-nothing, `apply_replacements` is the pure corpus-pinned core),
+  where `StaleContent` finally means something mintable — the file no
+  longer contains your text — instead of a synthesised pin.
 - `codemode/artifact.{Artifact, Emit, EmitRefusal, plan, answer, ceiling,
   emit_cap, max_emit_bytes, default_emit_ceiling, emit_ceiling_code}` —
   the `report.emit` mechanism, shared by both seams. One byte bound per

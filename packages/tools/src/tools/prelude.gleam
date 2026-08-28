@@ -25,7 +25,7 @@
 //// names the file that moved:
 ////
 ////   02ab7f303e9459d9c9779837b6512df519b0e9940fdcc09e3163c6c0a89ede2a  packages/cap/src/cap/actor.gleam
-////   e4860b65729d1027acde233490233433fbfe22c77217cbd918d119a590d841b3  packages/cap/src/cap/fs.gleam
+////   58758fa6ed33f2390e4b3bbf0dd34a87bbc63a69d83ec0ca2a2cded6fd639d2e  packages/cap/src/cap/fs.gleam
 ////   87d4d708a7feb5e0155c7af7b67d2744c71002c324e4e07afc8e66d4cfd4e502  packages/cap/src/cap/git.gleam
 ////   ef852f2a91c6bb9e8523d58c3466eb644c14f34fc1e210cb6e6dff5f00bd9fb6  packages/cap/src/cap/kv.gleam
 ////   16975eb1a575e4e43a9c2892a7c40586bcab49ccb8674d4cf1e49d9aae6786cd  packages/cap/src/cap/lsp.gleam
@@ -38,7 +38,7 @@
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 9daa1fa4d4e1ce3a3d28d1084236bf9f5d8be95c06719de3362940431e50b765
+//// Body digest (every line after the marker): b600620fc4336e6effca317742182d633729d045ef49d87c85bed991ab9530e5
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -143,14 +143,25 @@ pub type FsError {
   /// The capability channel could not carry the call.
   FsUnavailable(reason: String)
 }
-/// One find/replace edit for `edit`. The broker applies replacements with
-/// the same anchor discipline as the harness `fs_edit` tool and rejects a
-/// stale target as `StaleContent`.
+/// One find/replace edit for `edit`. `find` is matched as an exact
+/// substring and must match **exactly once**: zero matches refuses the
+/// whole edit as `StaleContent` — the file no longer contains your text —
+/// and more than one refuses it as `InvalidArgument`, because a
+/// replacement carries no position to say which occurrence was meant;
+/// include enough surrounding text to be unique. There are no anchors and
+/// no digest on this wire: staleness here means the find text itself, not
+/// a pin.
 pub type Replacement {
   Replacement(find: String, replace_with: String)
 }
-/// Applies find/replace edits to a file atomically. A replacement whose
-/// `find` no longer matches yields `StaleContent` and applies nothing.
+/// Applies find/replace edits to a file, all-or-nothing: replacements
+/// apply in order, each against the text the previous one produced, and
+/// any refusal — a `find` that misses (`StaleContent`), one that matches
+/// more than once, an empty one — leaves the file untouched. The read-
+/// apply-write happens inside one harness-side call, a tighter window
+/// than composing `read` and `write` across two calls; a concurrent
+/// writer of the same file within the same execution can still
+/// interleave, so a program racing itself should serialize its own edits.
 ///
 /// Capability: `fs.edit`.
 pub fn edit(String, List(Replacement)) -> Result(Nil, FsError)

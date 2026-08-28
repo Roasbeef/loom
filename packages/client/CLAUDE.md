@@ -146,8 +146,9 @@ over one session file. WP-L.
 - `client/codemode.{workspace_seam, over_scratch, into_blobs,
   blob_directory}` — the harness-side capability bridge (issue #16), and
   the half of it that lives on this side of the seam. `workspace_seam`
-  builds the six closures `codemode/workspace`'s router calls: `fs_read`
-  and `fs_list` over `tools/fs.resolve_real` and `fs.read_text_file` —
+  builds the eight closures `codemode/workspace`'s router calls: `fs_read`
+  and `fs_list` over `tools/fs.resolve_real` and `fs.read_text_file`,
+  `fs_write` and `fs_edit` over `fs.resolve_writable` —
   the harness's *own* path boundary and *own* large-file guard, never a
   second resolution — `kv_*` over the session's `client/scratch` store,
   and `emit` over the session's blob root. `blob_directory` is the one
@@ -634,11 +635,14 @@ over one session file. WP-L.
   out of it is refused for the bridge exactly as it is for the model's
   own tool. Writing a second resolution here would be a second boundary
   to keep correct, and the one that got it wrong would be the one nobody
-  was reading. The write arms are deliberately absent rather than wired:
-  `fs.write` waited on the protected-path check (#105), without which a
-  vetted program would have held strictly more filesystem authority than
-  its own jailed `proc.run`, and `fs.edit` is an open contract question
-  since the satellite side carries neither anchors nor a digest.
+  was reading. The write arms are wired through the same discipline:
+  `fs.write` resolves through `resolve_writable`, so a satellite program
+  meets the protected-path refusal (#105) exactly where the model's own
+  `fs_write` does, and `fs.edit` is read-apply-write inside one served
+  call under `codemode/workspace.apply_replacements`' exactly-once
+  find/replace ruling — the tightest window the seam can offer, and a
+  strictly tighter one than the two-round-trip composition a program
+  would otherwise hand-roll.
 - **`report.emit` is one mechanism on two seams, and the one workspace
   capability with a ceiling.** `cap/report` is the only module both
   vetting allowlists carry, so both routers answer `emit` — from the same
