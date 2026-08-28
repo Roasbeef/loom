@@ -205,6 +205,14 @@ pub const fs_failure_code = "fs_failure"
 /// `KvDenied`, so the message is what a program reads.
 pub const kv_unavailable_code = "kv_unavailable"
 
+/// The session's protected-path list holds an entry that cannot be
+/// applied, so no write is judged at all. Deliberately not
+/// `permission_denied`: `cap/fs` decodes that to a variant carrying only
+/// the path, while an unlearned code arrives as `FsFailed` with the code
+/// and the whole sentence verbatim — and the sentence, naming an
+/// operator misconfiguration, is the diagnosis.
+pub const protection_misconfigured_code = "protection_misconfigured"
+
 /// A capability name this seam does not service.
 pub const unsupported_cap_code = "unsupported_cap"
 
@@ -748,14 +756,16 @@ fn path_denial(error: fs.PathError) -> CapDenial {
         message: "path `" <> path <> "` could not be resolved: " <> reason,
       )
     // The session's own `protected` list cannot be applied, so the write
-    // is refused without being judged. A permission denial rather than
-    // an invalid argument, because nothing is wrong with what the
-    // program asked for and there is no argument it could change: the
-    // policy is the thing that has to move, and only an operator can
-    // move it.
+    // is refused without being judged. Its own code rather than
+    // `permission_denied`, and the choice is about what survives the
+    // wire: `cap/fs` decodes `permission_denied` to a variant carrying
+    // only the path, discarding the sentence, while an unknown code
+    // falls through to `FsFailed(code:, message:)` with both verbatim —
+    // and this sentence, naming an operator misconfiguration, is the
+    // one thing a program (and whoever reads its outcome) needs.
     fs.ProtectionMisconfigured(path:, protected:) ->
       CapDenial(
-        code: permission_denied_code,
+        code: protection_misconfigured_code,
         message: "path `"
           <> path
           <> "` was not written: this session's protected-path list holds "

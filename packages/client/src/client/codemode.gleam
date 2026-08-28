@@ -1704,10 +1704,12 @@ fn classify(
     // cannot separate them — it answers link / not-a-link / missing —
     // and the seam has no `is_directory`, so the honest answer is not
     // reachable from what this function is handed. The consequence is
-    // bounded and self-correcting: a program that follows the listing
-    // into one gets `NotADirectory` from `fs.list` and `WrongKind` from
-    // `fs.read`, both naming the path. Widening the seam is the fix if
-    // this ever costs anything real.
+    // bounded: a program that follows the listing into one gets
+    // `NotADirectory` from `fs.list` naming the path. An `fs.read` of a
+    // FIFO is worse than a refusal — `file:read_file` on a reader-less
+    // pipe blocks, so the call hangs against its own timeout rather
+    // than answering `WrongKind`. Widening the seam is the fix if this
+    // ever costs anything real.
     Ok(tool.NotALink) -> filesystem.is_file(child) == Ok(False)
   }
   workspace.DirEntry(name:, is_directory:)

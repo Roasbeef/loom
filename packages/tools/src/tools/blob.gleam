@@ -151,6 +151,12 @@ pub fn temp_path(root: String, ref: String, tag: String) -> String {
 ///
 /// Idempotency is unaffected — the destination is the content address
 /// either way, and the caller's `is_file` probe still skips the work.
+///
+/// The claim is exact for a *process* crash: the page cache survives,
+/// so a completed rename names complete bytes. Power loss is outside
+/// it — nothing fsyncs before the rename, and some filesystems can
+/// persist the rename ahead of the data — which matches the harness's
+/// threat model, not a stronger one.
 pub fn write_addressed(
   filesystem filesystem: FileSystem,
   path path: String,

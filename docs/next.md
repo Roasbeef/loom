@@ -9,127 +9,66 @@ worth more than any status comment.
 
 ---
 
-## State, as of the head of `codemode/mcp`
+## State, as of the head of `bridge/workspace-caps`
 
-The branch `codemode/mcp` holds **issue #106's first increment, complete**:
-MCP through code mode, wired end to end and proved against a real server
-process. `make check` passes on it end to end (format, warning-free build,
-every package's tests, the lint at 0 errors), and every slice went through
-independent verification plus two full adversarial-review cycles
-(`/advisor-review`: review → verified fixes → re-verify by the same
-reviewer). It is ready to merge to `main` once the owner agrees the exit
-criteria are met.
+Two bodies of work are complete and merged or ready to merge.
 
-`main` itself is green at `9923340`, where phases 1 and 2 stand done.
+**#106 — MCP through code mode — is done and on `main`** (merged at
+`0f4dfac`'s lineage): generated per-server capability modules, wired end
+to end, proved against a real server process, documented in
+`docs/architecture/mcp.md`, closed on the issue with the rulings. Its
+follow-ups are filed: #108 (HTTP+OAuth), #109 (the server-jail decision,
+undesigned), #110 (wild-server e2e), #111 (elicitation), #112
+(listChanged), and #107 (async code mode, with the state-machine
+argument and Claude Code's replay-continuation prior art on the issue).
 
-**Phase 3 is open: #106's first increment is done; #16 is unstarted.**
+**#16 + #105 + #91 item 1 — the harness-side capability bridge — is
+complete on this branch.** All eight workspace capabilities route:
+`fs.read`, `fs.list`, `fs.write`, `fs.edit`, `kv.get`/`set`/`delete`
+and `report.emit`, as `satellite.ServedHere` through
+`codemode/workspace` — a seam record of injected closures wrapped in
+front of the MCP arm and `satellite.default_router`, zero broker
+changes, no `CallSpec` anywhere on the path. The closures are built
+from `tools/fs`'s own boundaries: reads through `resolve_real` +
+`read_text_file`, writes through `resolve_writable` — `resolve_real`
+plus the protected-path refusal #105 added to the shared write path, so
+the model's own `fs_write` gained it in the same commit and a satellite
+write to `.git/hooks/post-checkout` is refused in band (proved through
+a real jailed program, with the mutation run leaving the hook on disk
+when the policy entry is removed). `kv.*` is `client/scratch`,
+ephemeral and bounded three ways; `report.emit` is `codemode/artifact`,
+one closure on **both** seams (#91 item 1) with a 1 MiB per-emit bound
+and a 64-admission ceiling, content-addressed into the session's one
+blob store — which the base policy now protects from jailed
+pre-planting.
 
----
+**The `fs.edit` ruling is made and implemented** (recorded in
+`codemode/workspace`'s module doc): honest whole-file find/replace —
+each `find` exactly once (zero → `StaleContent`, which now means "the
+file no longer contains your text"; several → refused ambiguous), in
+order, all-or-nothing, read-apply-write inside one served call. The
+harness editor's anchor discipline was **not** synthesised on the
+program's behalf; `cap/fs.Replacement`'s doc stopped lying. Real pins
+remain open as a later layer.
 
-## Start here: the harness-side capability bridge
+The branch went through a full adversarial-review cycle (review →
+verified fixes → re-verify by the same reviewer). Its findings are
+worth knowing: a relative `protected` entry used to fail open on the
+harness path (now refused in band *and* at boot via
+`serve.base_policy_fault`); the component-prefix predicate existed as
+three copies (now one public `policy.covers`); blobs are now
+established by atomic rename, never direct write. `make check` passes
+end to end at the head.
 
-Phase 3's first body of work is #16, and **it is smaller than its filing
-says**. The correction is a comment on the issue; the summary:
-
-Counting modules that actually reach the harness through `dispatch.call` —
-rather than modules on an allowlist — four of the nine need no router work at
-all. `cap/git` composes `proc.run` inside the satellite and has worked since
-the day `proc.run` was routed; `cap/task` and `cap/actor` are in-satellite
-concurrency with no dispatch; `cap/proc` is already routed. The real surface
-is **thirteen capability names across five modules**: `fs` (4), `kv` (3),
-`lsp` (4), `net` (1), `report` (1).
-
-Of those, `lsp.*` **moved to phase five** with its client (#25) — it is a
-protocol over a long-lived stdio peer, so no widening of `proc.run`'s
-one-shot exec reaches it. `net.request` is blocked on the egress proxy.
-**That leaves `fs.*`, `kv.*` and `report.emit` — eight names across three
-modules, and they are one mechanism, not eight units of work.**
-
-### The ruling, already made
-
-An advisor settled the design; the argument is on #16 in full. The decisions:
-
-**Route them as `satellite.ServedHere`, not through `clear_call`.** The
-mechanism already exists and is in production for all six `strand.*` caps.
-Build a workspace router shaped like `codemode/orchestration.gleam`, with a
-seam record of injected closures, wired through `client/codemode.surface_router`.
-
-**Zero broker changes.** `CallSpec` stays frozen — not one field, not one
-variant, not one refusal arm. Forcing a harness-side read through a machine
-built for jailed argv would compose a `SandboxPolicy` that *nothing enforces*,
-because its enforcer is the jail and there is no jail here. It would also add
-eight new `CallSpec` construction sites to the most security-sensitive dispatch
-in the tree; `ServedHere` builds none, which is why the orchestration seam
-chose it.
-
-**Build the closures out of `tools/fs`'s own functions** — `resolve_real`, its
-refusal vocabulary, its size caps — never a parallel path resolution. This is
-the condition the ruling rests on. The orchestration seam's rule applies:
-nothing about the authorization model is re-derived.
-
-**Budget:** the pooled outstanding-effect cap and the wall deadline already
-apply to every admitted call including `ServedHere`, so `fs.*` needs no new
-budget. `report.emit` is the one member that earns a #88-style lifetime
-ceiling — it mints a durable artifact per call — plus a per-emit byte bound.
-`kv` gets a store-side byte cap with eviction, not an admission ceiling.
-
-**Done, on `bridge/workspace-caps`.** `fs.read`, `fs.list`, `kv.get`/`set`/
-`delete` and `report.emit` route as `ServedHere` through
-`codemode/workspace`, a seam record of six injected closures wrapped in
-front of the MCP arm and `satellite.default_router`;
-`client/codemode.workspace_seam` builds the closures out of
-`tools/fs.resolve_real` and `fs.read_text_file`, the session's
-`client/scratch` store and the session's blob root. `report.emit` is
-`codemode/artifact`, serviced on **both** seams by one closure — which is
-#91 item 1, closed in the same change. `client/codemode.gleam`'s comment
-saying the workspace seam declares no ceilings was duly false and is
-fixed: it declares exactly one, the emit ceiling. `fs.write` and `fs.edit`
-are still refused, by name, with a sentence saying what to reach for
-instead.
-
-**Cut from the first implementation:** durable kv (keep it ephemeral,
-byte-capped, gone on restart), per-call journalling, any escalation door from
-the bridge, streaming reads, and `fs.edit`.
-
-### Settle #105 before the write arms
-
-`grep -rn protected packages/tools/src` returns **zero**. `base_policy.protected`
-— the never-writable `.git`/`.env` list — is unioned during policy composition
-and enforced *only inside jails*. The harness's own `fs_write` checks workspace
-containment and nothing else, so `.git/hooks/post-checkout` is writable today.
-
-Human supervision is the only thing containing that. Bridge `fs.write` to a
-satellite loop and a vetted program holds **strictly more filesystem authority
-than its own `proc.run`**, whose jail honours the list. The fix belongs in the
-shared harness-side write path so the model's own `fs_write` gains it too, and
-it must be checked *after* `resolve_real` or a symlink walks through it.
-
-`fs.read`, `fs.list`, `kv.*` and `report.emit` do not depend on this. The
-`fs.write`/`fs.edit` arms do.
-
-### `fs.edit` lands second and alone
-
-The two contracts do not line up, and it is a real design decision rather than
-plumbing. The satellite side is `Replacement(find, replace_with)` — no anchors,
-no digest. The harness `fs_edit` is anchor-and-digest-bound: hunks reference
-`{line, anchor}` pairs from `fs_read`, plus a whole-file digest, and staleness
-rejects the whole edit.
-
-A satellite **cannot construct a harness-shaped hunk**, because `cap/fs.read`
-returns plain string contents rather than anchored windows. So bridging `edit`
-means the bridge synthesises anchors and a digest on the program's behalf —
-inventing the safety property rather than checking one the caller committed to.
-And `StaleContent` has no meaning when nothing was ever pinned.
-
-Note that `cap/fs.Replacement`'s doc comment already claims the broker "applies
-replacements with the same anchor discipline as the harness `fs_edit` tool",
-which nothing can currently honour. Resolving that is part of this work.
+`main` holds phases 1 and 2 plus #106. **Phase 3 remaining: #14+#19,
+#15, #27, #28/#29 — and #91 items 2–5 are still open** (item 1 closed
+with the bridge).
 
 ---
 
-## After the bridge
+## Start here: the phase-3 remainder
 
-Phase 3's remaining issues, in dependency order rather than numeric:
+In dependency order rather than numeric:
 
 - **#14** — the wiring seam's four model-routing questions. **#19** (replace
   `provider`'s two shipped stubs) is adjacent: routing that cannot walk a

@@ -1652,9 +1652,18 @@ pub const shell_path = "/bin/sh"
 /// ```
 ///
 pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(..policy.workspace_default(workspace), readable_roots: [
-    "/",
-  ])
+  policy.SandboxPolicy(
+    ..policy.workspace_default(workspace),
+    readable_roots: ["/"],
+    // The blob store is content-addressed, and an address is only worth
+    // something if nothing can be reached under it but the content it
+    // names — which a jailed `proc.run` inside the writable workspace
+    // could otherwise defeat by pre-planting bytes at a future address.
+    // Protecting the directory masks it from every jail; the harness's
+    // own blob writes never pass `resolve_writable`, so they cost
+    // nothing, and the bridge's `fs.write` is refused there, correctly.
+    protected: [workspace <> "/" <> codemode_wiring.blob_directory],
+  )
 }
 
 /// Why this server will not boot on the base policy it was given, worded

@@ -457,7 +457,7 @@ pub fn a_relative_protected_entry_refuses_a_bridge_edit_test() {
   assert seam_over(root).fs_read("code.txt") == Ok("let value = old_name")
 }
 
-pub fn a_relative_protected_entry_travels_as_permission_denied_test() {
+pub fn a_relative_protected_entry_travels_under_its_own_code_test() {
   // What a program actually reads. `cap/fs.map_error` turns this code
   // into `PermissionDenied`, which is honest: nothing is wrong with the
   // call, and there is no argument the program could change.
@@ -466,7 +466,12 @@ pub fn a_relative_protected_entry_travels_as_permission_denied_test() {
       path: "src/main.gleam",
       protected: ".git",
     ))
-  assert workspace.fs_denial(refusal).code == workspace.permission_denied_code
+  // Its own code, deliberately: `cap/fs` decodes `permission_denied` to
+  // a variant carrying only the path, while an unlearned code arrives as
+  // `FsFailed` with the code and the whole sentence verbatim — and the
+  // sentence, naming an operator misconfiguration, is the diagnosis.
+  assert workspace.fs_denial(refusal).code
+    == workspace.protection_misconfigured_code
   assert string.contains(workspace.fs_denial(refusal).message, ".git")
 }
 
