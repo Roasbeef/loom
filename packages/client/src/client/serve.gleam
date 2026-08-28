@@ -654,6 +654,44 @@ fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
   )
 }
 
+// The wiring's model-facts source: an identity's own catalogue entry.
+//
+// The lookup is by the identity's *provider* half, because a catalogue
+// entry's name is its provider name and therefore the durable handle
+// (`docs/architecture/models.md`, "The name is the durable handle"). An
+// identity naming no entry — a session written against a catalogue this
+// boot no longer has — falls through to the wiring's fallback counts
+// rather than refusing, which is what keeps such a session running.
+fn catalogue_facts(
+  catalogue: catalog.Catalog,
+) -> fn(machine_strand.ModelIdentity) ->
+  Result(#(model.ResolvedModel, String), Nil) {
+  fn(identity: machine_strand.ModelIdentity) {
+    use entry <- result.map(catalog.find(catalogue, identity.provider))
+    #(catalog.resolved(entry), adapter_api(entry.dialect))
+  }
+}
+
+// The per-turn thinking level a freshly seeded strand starts at: the
+// declared `thinking` of the catalogue entry the configured identity
+// names, lifted onto the machine's seven-point scale.
+//
+// This is the one place a route's static thinking configuration takes
+// effect, and it is *creation* — the same rule `client/gateway`'s
+// fork/create_strand seeding and `client/agency`'s child seeding follow,
+// so all three creation points agree. Dispatch never consults it: the
+// per-turn level is the strand's own and absolute there
+// (`client/wiring.request_target`), because a turn that raised its
+// reasoning budget must reach the provider with exactly that budget. An
+// identity the catalogue does not know starts at off, which is where
+// every strand started before the field was read at all.
+fn seed_thinking(settings: Settings) -> machine_strand.ThinkingLevel {
+  case catalog.find(settings.catalog, settings.model.provider) {
+    Ok(entry) -> wiring.strand_thinking_level(entry.thinking)
+    Error(Nil) -> machine_strand.ThinkingOff
+  }
+}
+
 // Which adapter a catalogue dialect dispatches through. The api name is
 // captured durably into every generation intent, so it must be the
 // adapter's own constant rather than a word chosen here.
@@ -1203,7 +1241,27 @@ fn assemble(
   // indirection `hub.commit_forwarder` uses four lines above — and the
   // holder is started under that name once the open has returned.
   let agency_name = process.new_name(prefix: "loom_agency")
-  let agency_config = agency.default_config(agency_name, clock)
+  let agency_config =
+    agency.Config(
+      ..agency.default_config(agency_name, clock),
+      // Role follows identity: a spawned child is seeded from the
+      // `subagent` route when the catalogue routes one, and inherits its
+      // parent when it does not. Resolved at spawn from the gateway built
+      // at boot, so the answer is a function of durable configuration.
+      subagent_model: fn() {
+        use resolved <- result.map(
+          provider_gateway.resolve(settings.gateway, model.Subagent)
+          |> result.replace_error(Nil),
+        )
+        #(
+          machine_strand.ModelIdentity(
+            provider: resolved.provider,
+            model_id: resolved.model_id,
+          ),
+          wiring.strand_thinking_level(resolved.thinking),
+        )
+      },
+    )
   let agency_seam = agency.seam(agency_config)
   // The escalation plane has the same knot and the same answer: a name
   // now, a holder under it after the open. `interactive` is a question
@@ -1290,7 +1348,7 @@ fn assemble(
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
-      thinking_level: machine_strand.ThinkingOff,
+      thinking_level: seed_thinking(settings),
       // `tool.names` is sorted, which is what a durable active list must
       // be: the render order of the tool array is the provider cache's
       // byte prefix (see `gateway.canonical_tool_names`).
@@ -1300,6 +1358,7 @@ fn assemble(
     wiring.build_effects(wiring.Config(
       gateway: settings.gateway,
       role: model.Main,
+      facts: catalogue_facts(settings.catalog),
       system: Some(assembled.text),
       api: settings.api,
       fallback_context_window: settings.context_window,

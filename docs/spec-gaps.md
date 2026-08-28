@@ -20,15 +20,13 @@ work someone must do to meet a stated criterion is listed here.
 Items are cited as section plus the number as written in the list
 (`WP-J 14`, `M3 runtime wave 11`).
 
-### Deferred work with a home (7)
+### Deferred work with a home (5)
 
 | Item | The work | Scheduled at |
 |---|---|---|
 | WP-A 3 | somewhere to put pi's optional `details` payloads | Part 5 track 6 |
 | WP-B/T 6 | the JSONL/format-4 import shim | Part 5 track 6 |
 | M2 integration 3 | a provider surface for deferred polls | M5 — the structural-summaries half shipped in Stage C0 (`client/wiring.summary_provider_request`); polls remain unwired |
-| M3 runtime wave 11 | commit the role, or have recovery consult the chain in force at commit time, so the fallback chain is actually walked | M5, whose acceptance names the chain |
-| M3 runtime wave 12 | dispatch on the `subagent`/`plan`/`summarize`/`vision` roles, not `main` alone | M5 |
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
 
@@ -514,34 +512,43 @@ the other side.
 6. **Parallel dispatch adds per-tool exclusivity only**; the broker's
    pooled budget remains the concurrency ceiling underneath.
 
-11. **The fallback chain is never walked by the session server.** The
-    catalogue lets an operator write an ordered chain per role, and the
-    gateway implements the walk — but `client/wiring.request_target`
-    always returns `ForResolved`, never `ForRole`, and the module doc
-    gives the reason at the call site: recovery must re-dispatch exactly
-    what was committed, and a fallback walk would let it come back on a
-    different model than the durable record names. Durable exactness won.
-    The consequence is that a retryably-failing request retries the same
-    identity through the machine's retry ladder; the chain tail is parsed,
-    validated, and inert. This is a real tension, not an oversight, but
-    `effects.md`, the design doc, and the comment in
-    `docs/examples/loom.toml` all still read as though the chain engages.
-    Resolving it properly means either committing the *role* rather than
-    the resolved identity, or having recovery consult the chain that was
-    in force at commit time. Deferred, recorded so it is decided.
+11. **The fallback chain is walked — on route (issue #14, closed).** The
+    tension recorded here was between durable exactness and a chain that
+    was parsed, validated and inert. It is resolved by narrowing what
+    exactness has to mean. Recovery never re-dispatches a request that is
+    still in flight: it orphans it, settles it synthetically, and
+    re-attempts from the checkpoint — so what must agree across a crash is
+    the *decision*, not the socket. `client/wiring.request_target` makes
+    that decision a pure function of durable state and boot config: an
+    identity that **heads** a routable role's chain dispatches
+    `ForRole(role, …)` and the gateway walks the chain inside the attempt;
+    an identity no role heads dispatches `ForResolved` to exactly what was
+    captured. Deferred polls stay `ForResolved` unconditionally, because a
+    handle belongs to the identity that minted it (ORCH-L4). The one
+    accepted cost — a deferred handle settled by a fallback target fails
+    its identity check and drains as failure — is written down in
+    `protocol-change/009`, and nothing settles `Deferred` today.
 
-12. **Only the `main` role is dispatched on.** `client/serve` builds one
-    wiring config with `role: Main` for the whole session, so the
-    `subagent`, `plan`, `summarize`, and `vision` rows are parsed,
-    validated, registered, and listed while selecting nothing. Consistent
-    with role routing being an M5 concern; stated here because nothing
-    else says it as an as-built fact.
+12. **`plan` and `vision` are reserved vocabulary.** `main` and
+    `subagent` are dispatched on (the derivation in
+    `wiring.request_target`, plus the child seeding in `client/agency`),
+    and `summarize` is dispatched on by every structural summary. `plan`
+    and `vision` are parsed, validated, registered and listed while
+    selecting nothing — and deliberately so: the harness has no
+    plan-generation step and no image-bearing request path, so wiring a
+    dispatch site would mean inventing the caller as well as the route.
+    They stay routable in the catalogue because an operator declaring
+    intent early costs nothing and the rows become live the day a caller
+    exists. Stated here as an as-built fact, not as pending work.
 
-13. **A catalogue entry's `thinking` never reaches the wire.**
-    `request_target` overwrites it with the strand's per-turn thinking
-    level on both branches, so the field is validated and then discarded.
-    Either the entry's value should be the default the strand overrides,
-    or the field should be refused like `headers` is.
+13. **A catalogue entry's `thinking` seeds a strand rather than reaching
+    the wire (closed).** The field is not an override at dispatch — the
+    per-turn level is absolute there, because a turn that raised its
+    budget must reach the provider with exactly that budget. It is the
+    *seed*: `client/wiring.strand_thinking_level` lifts it onto the
+    machine's scale at all three strand-creation points (`client/serve`'s
+    `main`, the hub's `fork`/`create_strand`, and an Agency's child).
+    `set_config model_name` deliberately does not disturb it.
 
 ## From the planner navigability pass (`machine`, `conformance`)
 

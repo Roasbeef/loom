@@ -157,7 +157,8 @@ fn encode_int(value: Int) -> Result(BytesTree, EncodeError) {
     _ if value > 0 && value <= 0xff -> Ok(<<0xcc, value:size(8)>>)
     _ if value > 0 && value <= 0xffff -> Ok(<<0xcd, value:size(16)>>)
     _ if value > 0 && value <= 0xffffffff -> Ok(<<0xce, value:size(32)>>)
-    _ if value > 0 && value <= 0xffffffffffffffff -> Ok(<<0xcf, value:size(64)>>)
+    _ if value > 0 && value <= 0xffffffffffffffff ->
+      Ok(<<0xcf, value:size(64)>>)
     _ if value < 0 && value >= -128 -> Ok(<<0xd0, value:size(8)>>)
     _ if value < 0 && value >= -32_768 -> Ok(<<0xd1, value:size(16)>>)
     _ if value < 0 && value >= -2_147_483_648 -> Ok(<<0xd2, value:size(32)>>)

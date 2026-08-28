@@ -1,5 +1,7 @@
 import core/clock
 import core/message
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/fixture.{sse_event}
@@ -88,7 +90,7 @@ fn two_provider_gateway(transport: http.Transport) -> gateway.Gateway {
 
 fn main_request() -> model.ProviderRequest {
   model.ProviderRequest(
-    target: model.ForRole(model.Main),
+    target: model.ForRole(model.Main, None),
     system: Some("Be terse."),
     messages: [
       message.UserMessage(
@@ -209,10 +211,89 @@ pub fn terminal_failure_does_not_walk_the_chain_test() {
 pub fn unroutable_role_fails_in_band_test() {
   let gw = two_provider_gateway(fixture.transport([]))
   let request =
-    model.ProviderRequest(..main_request(), target: model.ForRole(model.Vision))
+    model.ProviderRequest(
+      ..main_request(),
+      target: model.ForRole(model.Vision, None),
+    )
   let handle = gateway.request(gw, request)
   let assert Ok(#([], stream.Failed(stream.NoIdentity(role: "vision")))) =
     stream.await_terminal(handle, within: 2000)
+}
+
+// --- the reasoning-budget overlay (protocol-change/009) --------------------
+//
+// A role walk may reach a target whose route row declares a different
+// reasoning budget than the head's. `ForRole.thinking` decides which
+// budget every attempt is made at: `Some(level)` overlays that level onto
+// the whole chain, `None` leaves each entry's own. Both halves are pinned
+// here because the wire cost of getting either wrong is silent — a turn
+// that asked to think hard settling on a fallback that thought not at all.
+
+// Main's chain with the two ends declaring *different* static levels, so
+// an overlay and an absent overlay cannot produce the same bytes.
+fn thinking_chain_gateway(transport: http.Transport) -> gateway.Gateway {
+  two_provider_gateway(transport)
+  |> gateway.route(model.Main, [
+    model.ResolvedModel(
+      ..target("primary", "model-a"),
+      thinking: model.ThinkingHigh,
+    ),
+    model.ResolvedModel(
+      ..target("backup", "model-b"),
+      thinking: model.ThinkingOff,
+    ),
+  ])
+}
+
+// Every request body the walk put on the wire, in attempt order. The
+// subject is owned by the calling test process, so the pump's sends queue
+// in its own mailbox and can be drained after the terminal arrives.
+fn walk_bodies(thinking: option.Option(model.ThinkingLevel)) -> List(String) {
+  let bodies = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request: http.HttpRequest) {
+      process.send(bodies, request.body)
+      case string.contains(request.url, "primary.test") {
+        True -> overloaded_response()
+        False -> fixture.ok_response(happy_transcript("From backup"))
+      }
+    })
+  let request =
+    model.ProviderRequest(
+      ..main_request(),
+      target: model.ForRole(model.Main, thinking),
+    )
+  let handle = gateway.request(thinking_chain_gateway(transport), request)
+  let assert Ok(#(_deltas, stream.Settled(..))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the walk must reach backup and settle"
+  drain(bodies, [])
+}
+
+fn drain(subject: process.Subject(String), seen: List(String)) -> List(String) {
+  case process.receive(subject, within: 500) {
+    Ok(body) -> drain(subject, [body, ..seen])
+    Error(Nil) -> list.reverse(seen)
+  }
+}
+
+pub fn for_role_overlays_one_thinking_level_on_every_attempt_test() {
+  // The head declares high and the fallback declares off; a turn asking
+  // for medium must reach *both* at medium.
+  let assert [head, fallback] = walk_bodies(Some(model.ThinkingMedium))
+    as "the walk must have attempted both targets"
+  assert string.contains(head, "\"budget_tokens\":8192")
+  assert string.contains(fallback, "\"budget_tokens\":8192")
+}
+
+pub fn for_role_without_an_overlay_uses_each_entrys_own_level_test() {
+  let assert [head, fallback] = walk_bodies(None)
+    as "the walk must have attempted both targets"
+  // The head's own declared high…
+  assert string.contains(head, "\"budget_tokens\":16384")
+  // …and the fallback's own off, which sends no thinking field at all.
+  assert !string.contains(fallback, "budget_tokens")
+  assert !string.contains(fallback, "\"thinking\"")
 }
 
 pub fn for_resolved_dispatches_exactly_once_test() {

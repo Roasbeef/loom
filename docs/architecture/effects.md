@@ -510,10 +510,18 @@ identity durable state stores. `request` with a role resolves the chain
 at dispatch and walks it, moving to the next target only on a
 *retryably*-classified failure; a terminal error surfaces immediately, an
 exhausted chain delivers the last real error rather than a summary, and a
-settled response never falls back. `request` with an already-resolved
-identity dispatches to exactly that identity and never walks, which is
-what recovery needs: re-dispatching a committed intent must not silently
-reach a different model.
+settled response never falls back. The role target also carries an
+optional reasoning-budget overlay (`protocol-change/009`), applied to the
+whole chain before the walk starts, so a fallback is asked for the budget
+the caller asked for rather than for whatever its own route row declares.
+`request` with an already-resolved identity dispatches to exactly that
+identity and never walks.
+
+Which of the two a live session uses is the model plane's decision, not
+the gateway's, and `docs/architecture/models.md` has it: role follows
+identity, so a generation whose captured identity heads a routable role's
+chain goes out as a role and walks, while an off-route identity and every
+deferred poll go out already resolved.
 
 Streaming follows the sans-io shape. The parser for server-sent events —
 the framing every provider streams over — is **pure**: bytes in, events

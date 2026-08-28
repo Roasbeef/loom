@@ -34,7 +34,8 @@ import gleam/string
 import machine/operation
 import machine/planner
 import machine/strand.{
-  type StrandConfiguration, ModelIdentity, StrandConfiguration,
+  type ModelIdentity, type StrandConfiguration, ModelIdentity,
+  StrandConfiguration,
 }
 import prompt/pack
 import provider/gateway
@@ -84,6 +85,21 @@ fn routed_model(model_id: String, context_window: Int) -> model.ResolvedModel {
   )
 }
 
+// The host's model-facts source, as `client/serve` builds it from the
+// catalogue: an identity's own entry, or `Error(Nil)` for one the
+// catalogue does not know.
+fn entry_facts(
+  identity: ModelIdentity,
+) -> Result(#(model.ResolvedModel, String), Nil) {
+  list.key_find(
+    [
+      #("loom-1", #(routed_model("loom-1", routed_context_window), "acme-api")),
+      #(summary_model_id, #(routed_model(summary_model_id, 40_000), "acme-api")),
+    ],
+    identity.model_id,
+  )
+}
+
 fn helperless_broker() -> broker.Broker {
   let assert Ok(broker_actor) =
     broker.start(
@@ -106,6 +122,7 @@ fn config() -> wiring.Config {
   wiring.Config(
     gateway: routed_gateway(),
     role: model.Main,
+    facts: entry_facts,
     system: None,
     api: "acme-api",
     fallback_context_window: 111_000,
@@ -527,15 +544,20 @@ fn zero_usage() -> message.Usage {
 }
 
 // Summaries route through the `Summarize` role when one is configured —
-// the whole reason the role exists — and fall back to the strand's own
-// captured identity when it is not.
+// the whole reason the role exists — as a *role*, so a busy summarizer
+// falls to the next entry in that chain instead of failing the
+// compaction. `thinking: None` is what leaves the summarization entry's
+// own declared level in force: a one-shot prompt has no per-turn budget
+// to inherit from the conversation being summarized.
 pub fn a_summary_goes_out_on_the_summarize_route_test() {
   let assert Ok(request) =
     wiring.summary_provider_request(
       config(),
       summary_spec(Some(compaction_preparation(None))),
     )
-  let assert model.ForResolved(resolved:) = request.target
+  assert request.target == model.ForRole(role: model.Summarize, thinking: None)
+  // …and that role really is the cheaper entry, not the strand's own.
+  let assert Ok(resolved) = gateway.resolve(routed_gateway(), model.Summarize)
   assert resolved.model_id == summary_model_id
 }
 
@@ -556,6 +578,8 @@ pub fn a_session_with_no_summarize_route_summarizes_with_its_own_model_test() {
       wiring.Config(..config(), gateway: unrouted),
       summary_spec(Some(compaction_preparation(None))),
     )
+  // No summarize route and no main route either: the strand's own
+  // captured identity, dispatched to exactly and with no walk.
   let assert model.ForResolved(resolved:) = request.target
   assert resolved.model_id == "loom-1"
 }

@@ -55,9 +55,9 @@ import machine/codec
 import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
   type PendingEntry, type StructuralPreparation, type SummaryGeneration,
-  AwaitingDeferred, Compacting, CompactionState, DeferredEffectPending,
-  DeferredSuspended, Generating, NavigationState, RunState, SummarizedNavigation,
-  Tools,
+  Assistant, AwaitingDeferred, Compacting, CompactionState,
+  DeferredEffectPending, DeferredSuspended, Generating, GenerationReady,
+  NavigationState, RunState, SummarizedNavigation, Tools,
 }
 import machine/planner.{type Observation, NoObservation}
 import machine/queue
@@ -922,7 +922,7 @@ fn resolve_key(
             operation:,
             step_id:,
             attempt:,
-            configuration: loaded.configuration,
+            configuration: admission_configuration(loaded),
             stream_options: state.stream_options,
           )),
         ),
@@ -1087,6 +1087,27 @@ fn summary_key(
           loaded.configuration,
         )),
       )
+  }
+}
+
+// The configuration an admission describes: the step-start snapshot the
+// dispatch will read (`GenerationContext.configuration`), never the
+// strand's live register. The two can differ — a `set_config` lands on a
+// strand mid-run, between a retry wait and its next attempt — and the
+// three durable values admission mints (intended output limit, context
+// window, `request_api`) must describe the identity the request actually
+// reaches, or overflow classification judges the wrong ceiling. The
+// planner only asks `AdmissionKey` from `GenerationReady`, so the
+// fallback arm is unreachable today; it answers from the live register,
+// which is every admission's source before the snapshot was threaded
+// here, rather than inventing a refusal for a state that cannot ask.
+// The poll sibling (`PollAdmissionKey`) is left on the live register
+// deliberately: `resolution` reads no facts from its argument at all.
+fn admission_configuration(loaded: Loaded) -> StrandConfiguration {
+  case loaded.op_state {
+    RunState(phase: Assistant(generation: GenerationReady(context:, ..)), ..) ->
+      context.configuration
+    _ -> loaded.configuration
   }
 }
 

@@ -20,6 +20,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/operation as machine_operation
+import machine/planner
 import machine/strand.{ModelIdentity, StrandConfiguration}
 import prompt/pack
 import provider/gateway
@@ -62,6 +63,41 @@ fn routed_model() -> model.ResolvedModel {
     thinking: model.ThinkingOff,
     context_window: 200_000,
     max_output_tokens: 8192,
+  )
+}
+
+// A second entry the host's catalogue knows but no role heads — the
+// switched-to model in the off-route tests. Its figures differ from both
+// the route's and the config's fallbacks, so an assertion can say which
+// of the three answered.
+const off_route_context_window = 333_000
+
+const off_route_max_output_tokens = 3333
+
+const off_route_api = "acme-openai-api"
+
+fn off_route_model() -> model.ResolvedModel {
+  model.ResolvedModel(
+    provider: "acme",
+    model_id: "loom-0",
+    thinking: model.ThinkingOff,
+    context_window: off_route_context_window,
+    max_output_tokens: off_route_max_output_tokens,
+  )
+}
+
+// The host's model-facts source, as `client/serve` builds it from the
+// catalogue: an identity's own entry, or `Error(Nil)` for one the
+// catalogue does not know.
+fn entry_facts(
+  identity: strand.ModelIdentity,
+) -> Result(#(model.ResolvedModel, String), Nil) {
+  list.key_find(
+    [
+      #("loom-1", #(routed_model(), "acme-api")),
+      #("loom-0", #(off_route_model(), off_route_api)),
+    ],
+    identity.model_id,
   )
 }
 
@@ -109,6 +145,7 @@ fn config(base_policy: policy.SandboxPolicy) -> wiring.Config {
   wiring.Config(
     gateway: routed_gateway(),
     role: model.Main,
+    facts: entry_facts,
     system: Some("unit-test system prompt"),
     api: "acme-api",
     fallback_context_window: 111_000,
@@ -195,51 +232,55 @@ fn user(text: String) -> message.AgentMessage {
 
 // --- RequestSpec -> ProviderRequest ---------------------------------------
 
-pub fn request_target_uses_gateway_facts_when_identity_matches_test() {
-  // The captured identity agrees with the role's resolution, so the
-  // dispatch target carries the gateway's model facts — except thinking,
-  // which is always the strand's per-turn level (here ThinkingMax →
+pub fn request_target_walks_the_role_when_on_route_test() {
+  // The captured identity heads `main`'s chain, so the dispatch is
+  // `ForRole` and the gateway walks that chain within the attempt — a
+  // rate-limited head costs a fallback, not the machine's retry ladder.
+  // The overlay is the strand's per-turn level (here ThinkingMax →
   // ThinkingHigh), never the route's static configuration.
   let target =
     wiring.request_target(wide_config(), configuration_for("acme", "loom-1"))
   assert target
-    == model.ForResolved(
-      resolved: model.ResolvedModel(
-        ..routed_model(),
-        thinking: model.ThinkingHigh,
-      ),
-    )
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
 }
 
 pub fn request_target_carries_per_turn_thinking_level_test() {
   // The route's static config says ThinkingOff; a turn that raises its
   // level must reach the provider with that raised level, and a turn
-  // that switches thinking off must not inherit a route budget.
+  // that switches thinking off must not inherit a route budget. On route
+  // that travels as the walk's overlay…
   let configuration = configuration_for("acme", "loom-1")
   let medium =
     strand.StrandConfiguration(
       ..configuration,
       thinking_level: strand.ThinkingMedium,
     )
-  let assert model.ForResolved(resolved:) =
-    wiring.request_target(wide_config(), medium)
-  assert resolved.thinking == model.ThinkingMedium
+  assert wiring.request_target(wide_config(), medium)
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingMedium))
   let off =
     strand.StrandConfiguration(
       ..configuration,
       thinking_level: strand.ThinkingOff,
     )
+  assert wiring.request_target(wide_config(), off)
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingOff))
+  // …and off route it travels on the resolved target itself.
   let assert model.ForResolved(resolved:) =
-    wiring.request_target(wide_config(), off)
-  assert resolved.thinking == model.ThinkingOff
-  // The other model facts still come from the gateway's resolution.
-  assert resolved.context_window == 200_000
-  assert resolved.max_output_tokens == 8192
+    wiring.request_target(
+      wide_config(),
+      strand.StrandConfiguration(
+        ..configuration_for("acme", "loom-0"),
+        thinking_level: strand.ThinkingMedium,
+      ),
+    )
+  assert resolved.thinking == model.ThinkingMedium
 }
 
-pub fn request_target_identity_mismatch_keeps_captured_identity_test() {
-  // A routing change after the intent was committed must not redirect
-  // the dispatch: the captured identity wins, with fallback facts.
+pub fn request_target_off_route_keeps_captured_identity_test() {
+  // An identity no role heads — a strand switched to another catalogue
+  // entry — must not be redirected by a walk: the captured identity
+  // wins, dispatched to exactly, and the *entry's own* window and
+  // ceiling ride along rather than the main chain head's.
   let target =
     wiring.request_target(wide_config(), configuration_for("acme", "loom-0"))
   assert target
@@ -247,18 +288,98 @@ pub fn request_target_identity_mismatch_keeps_captured_identity_test() {
       provider: "acme",
       model_id: "loom-0",
       thinking: model.ThinkingHigh,
-      context_window: 111_000,
-      max_output_tokens: 2222,
+      context_window: off_route_context_window,
+      max_output_tokens: off_route_max_output_tokens,
     ))
 }
 
-pub fn request_target_unroutable_role_falls_back_test() {
-  let unrouted = wiring.Config(..wide_config(), role: model.Vision)
+pub fn request_target_unknown_identity_falls_back_to_the_config_test() {
+  // An identity neither routed nor in the catalogue — a session written
+  // against a catalogue this boot no longer has — keeps running on the
+  // config's declared fallbacks rather than being refused.
   let assert model.ForResolved(resolved:) =
-    wiring.request_target(unrouted, configuration_for("acme", "loom-1"))
+    wiring.request_target(wide_config(), configuration_for("ghost", "phantom"))
+  assert resolved.provider == "ghost"
+  assert resolved.model_id == "phantom"
+  assert resolved.context_window == 111_000
+  assert resolved.max_output_tokens == 2222
+}
+
+pub fn a_deferred_poll_never_walks_a_chain_test() {
+  // On route, so a *generation* would dispatch `ForRole`. A poll must
+  // not: the handle it fetches was minted by one identity and ORCH-L4
+  // validates the settlement against exactly that captured value.
+  let configuration = configuration_for("acme", "loom-1")
+  let assert model.ForRole(..) =
+    wiring.request_target(wide_config(), configuration)
+  let request =
+    wiring.provider_request(
+      wide_config(),
+      effects.PollRequest(
+        operation: op_id(),
+        step_id: "poll-1",
+        poll: 1,
+        handle: message.DeferredHandle(
+          provider: "acme",
+          model_id: "loom-1",
+          api: "anthropic-messages",
+          id: "deferred-1",
+          expires_at: None,
+          poll_after_ms: None,
+          data: None,
+        ),
+        configuration:,
+        stream_options: json.Object([]),
+      ),
+    )
+  let assert model.ForResolved(resolved:) = request.target
   assert resolved.provider == "acme"
   assert resolved.model_id == "loom-1"
-  assert resolved.context_window == 111_000
+}
+
+// --- per-query admission ---------------------------------------------------
+
+// Admission answers from the *query's own* configuration, so a strand
+// switched to another catalogue entry is admitted against that entry's
+// window, ceiling and dialect. All three are captured durably into the
+// generation intent: the window and ceiling decide overflow
+// classification, and the api is what a deferred handle is later
+// validated against (ORCH-L4). A boot-frozen answer would name the main
+// chain head's figures — and its dialect — for every strand alive.
+pub fn admission_reads_the_switched_strands_own_entry_test() {
+  let hooks = wiring.compaction_hooks(wide_config())
+  let admitted = fn(configuration) {
+    hooks.admission(effects.AdmissionQuery(
+      operation: op_id(),
+      step_id: "turn-1",
+      attempt: 1,
+      configuration:,
+      stream_options: json.Object([]),
+    ))
+  }
+  let assert planner.Admitted(
+    intended_output_limit: 8192,
+    context_window: 200_000,
+    api: "acme-api",
+    ..,
+  ) = admitted(configuration_for("acme", "loom-1"))
+  let assert planner.Admitted(
+    intended_output_limit: limit,
+    context_window: window,
+    api:,
+    ..,
+  ) = admitted(configuration_for("acme", "loom-0"))
+  assert window == off_route_context_window
+  assert limit == off_route_max_output_tokens
+  assert api == off_route_api
+  // An identity the catalogue does not know still admits, on the
+  // config's declared fallbacks.
+  let assert planner.Admitted(
+    intended_output_limit: 2222,
+    context_window: 111_000,
+    api: "acme-api",
+    ..,
+  ) = admitted(configuration_for("ghost", "phantom"))
 }
 
 pub fn thinking_level_collapses_onto_provider_scale_test() {
@@ -281,12 +402,7 @@ pub fn provider_request_field_mapping_test() {
   assert request.system == Some("unit-test system prompt")
   assert request.max_output_tokens == None
   assert request.target
-    == model.ForResolved(
-      resolved: model.ResolvedModel(
-        ..routed_model(),
-        thinking: model.ThinkingHigh,
-      ),
-    )
+    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
   // Active names are rendered from the registry; the unregistered
   // "ghost" is omitted.
   assert list.map(request.tools, fn(spec) { spec.name }) == ["bash", "fs_read"]

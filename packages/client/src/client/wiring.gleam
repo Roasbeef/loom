@@ -13,21 +13,40 @@
 ////
 //// - **Provider identity.** Effect intents capture a durable
 ////   `ModelIdentity` (spec §1.5: durable state stores the resolved
-////   `{provider, model_id}`), so every dispatch uses `ForResolved` —
-////   never `ForRole`, whose fallback walk would let recovery re-dispatch
-////   to a different identity than the one committed in the intent. The
-////   gateway's `resolve` on the configured role supplies the full model
-////   facts (context window, output ceiling, thinking) when it agrees
-////   with the captured identity; when it disagrees or fails, the
-////   captured identity is kept and the config's fallback facts fill the
-////   gaps, so a stored identity keeps working after a routing change.
+////   `{provider, model_id}`), and the contract that identity carries is
+////   narrower than "the same endpoint answers". Recovery never
+////   re-dispatches a request that is still in flight: an orphaned
+////   generation settles synthetically and the machine re-attempts from
+////   the checkpoint. What must therefore agree across a crash is not the
+////   socket but the *decision*, and the decision here is a pure function
+////   of durable state and boot configuration — the strand's captured
+////   identity, plus routes and a catalogue that were fixed before the
+////   session opened — so a re-attempt chooses exactly what the original
+////   attempt chose. Two consequences. A generation whose captured
+////   identity **heads a configured role's chain** dispatches `ForRole`,
+////   so a retryable failure walks that chain inside the one attempt
+////   rather than burning the machine's ladder against a rate-limited
+////   endpoint; an identity no role heads dispatches `ForResolved` to
+////   exactly what was captured, which is what keeps a strand switched
+////   off-route running. And a **deferred poll** is always `ForResolved`:
+////   the handle is bound to the identity that minted it and ORCH-L4
+////   validates it against exactly that captured value, so a poll that
+////   walked a chain would fetch a continuation nobody issued. The
+////   residual cost is stated and accepted in `protocol-change/009` — a
+////   deferred handle settled by a *fallback* target fails ORCH-L4 and
+////   drains as failure — and nothing settles `Deferred` today.
 //// - **Thinking levels.** The machine's seven-point scale collapses onto
 ////   the provider's four-point scale: off→off, minimal/low→low,
 ////   medium→medium, high/xhigh/max→high. The strand's per-turn level is
-////   carried onto the dispatch target on every path — including when the
-////   gateway's role resolution supplies the other model facts — so a
-////   route's static thinking configuration never overrides what the
-////   turn asked for.
+////   carried onto the dispatch target on every generation path, as an
+////   overlay onto every target a role walk attempts, so neither a
+////   route's static configuration nor a fallback entry's can override
+////   what the turn asked for. The catalogue's own `thinking` is not
+////   dead: it *seeds* a strand's per-turn level at creation (see
+////   `strand_thinking_level`), which is where a static configuration
+////   belongs. A structural summary is the one dispatch with no per-turn
+////   level to carry, and it routes with no overlay so the summarization
+////   route's own declared level applies.
 //// - **Context and options.** `GenerationRequest.context` is already the
 ////   projected conversation, oldest first, and maps verbatim onto
 ////   `ProviderRequest.messages`. `stream_options` is the runtime's opaque
@@ -50,11 +69,16 @@
 ////   ladder is not burned on a permanently-absent surface. Nothing
 ////   reaches it today — resolution always succeeds but responses never
 ////   settle `Deferred`. Recorded as a spec gap.
-//// - **Summaries.** A `SummaryRequest` becomes a real generation
-////   against the `Summarize` role: the frozen `op.preparation` register
+//// - **Summaries.** A `SummaryRequest` becomes a real generation against
+////   the `Summarize` role, carrying the frozen `op.preparation` register
 ////   serialized by `prompt/summary`, the ported summarization prompts
 ////   from the summary pack, and **nothing else** — no system prompt, no
-////   tool array. That shape is the cache decision, not an omission. The
+////   tool array. It is the one dispatch made `ForRole` unconditionally,
+////   chain walk and all: a summary is published as text rather than as a
+////   response attributed to a model, so there is no durable identity
+////   contract to honour and a cheaper fallback is pure gain.
+////
+////   The omissions are the cache decision, not an oversight. The
 ////   Anthropic adapter hangs its two one-hour breakpoints on the tool
 ////   array and the system block, so a request carrying neither writes
 ////   no long-lived cache entry and cannot disturb the session's own
@@ -84,10 +108,14 @@
 ////   and current declarations must both say safe); an unregistered name
 ////   is never safe.
 //// - **Hooks** are built through `runtime/hooks` from real facts, not
-////   `effects.default_hooks()`. `admission` reports the gateway's
-////   resolved context window and output ceiling under the adapter's own
-////   api name, so the accounting a threshold needs is the provider's
-////   rather than a fiction; `threshold` and `overflow_preparation`
+////   `effects.default_hooks()`. `admission` is asked **per query** and
+////   answers from the catalogue entry the *query's own* strand
+////   configuration names, so a strand switched to another entry is
+////   admitted against that entry's window, ceiling and dialect rather
+////   than against the main chain head's — the api it captures is the one
+////   the request will actually be dispatched to, which is what ORCH-L4
+////   later validates a deferred handle against; `threshold` and
+////   `overflow_preparation`
 ////   share one preparation builder over the strand's *durable*
 ////   projection, read from the session store (hooks must decide from
 ////   durable state so a decision taken before a crash is taken again
@@ -125,16 +153,17 @@ import machine/operation.{
   OperationError,
 }
 import machine/planner.{
-  type ModelResolution, type SummaryProgress, ModelResolved, ModelUnresolved,
-  SummaryFailed, SummaryProduced, VerdictGenerate,
+  type ModelResolution, type RequestAdmission, type SummaryProgress, Admitted,
+  ModelResolved, ModelUnresolved, SummaryFailed, SummaryProduced,
+  VerdictGenerate,
 }
-import machine/strand.{type StrandConfiguration}
+import machine/strand.{type ModelIdentity, type StrandConfiguration}
 import prompt/pack.{type Pack}
 import prompt/summary
 import provider/gateway.{type Gateway}
 import provider/model.{
-  type ProviderRequest, type RequestTarget, type Role, type ToolSpec,
-  ForResolved, ProviderRequest, ResolvedModel, ToolSpec,
+  type ProviderRequest, type RequestTarget, type ResolvedModel, type Role,
+  type ToolSpec, ForResolved, ForRole, ProviderRequest, ResolvedModel, ToolSpec,
 }
 import provider/retry
 import provider/stream.{type StreamHandle}
@@ -156,25 +185,39 @@ import tools/tool.{type Registry}
 /// within a session's lifetime (spec-gaps WP-E item 6) — production
 /// derives it from strong randomness or a monotonic unique source;
 /// `fallback_context_window` and `fallback_max_output_tokens` are
-/// positive token counts used only when the configured role does not
-/// resolve to the captured identity.
+/// positive token counts used only for an identity `facts` does not know.
 pub type Config {
   Config(
     /// The provider gateway, fully routed.
     gateway: Gateway,
-    /// The role whose route should serve this strand's requests.
+    /// The role `resolution` asks the gateway about when the summary
+    /// role does not resolve. Dispatch does not read it: the role a
+    /// request is served under is derived from the captured identity
+    /// (`request_target`), in canonical order — `Main` first, then
+    /// `Subagent` — whatever this field names.
     role: Role,
+    /// The static model facts an identity's own catalogue entry declares:
+    /// its resolved form and the adapter api its dialect speaks.
+    /// `Error(Nil)` for an identity the host's catalogue does not know,
+    /// which falls back to the two `fallback_*` counts and `api` below.
+    ///
+    /// This is the seam that makes a strand switched *off* the configured
+    /// route accounted for honestly: admission, the compaction threshold,
+    /// and an off-route dispatch target all read the switched-to entry's
+    /// own window and ceiling rather than the main chain head's.
+    facts: fn(ModelIdentity) -> Result(#(ResolvedModel, String), Nil),
     /// The system prompt sent with every generation, if any.
     system: Option(String),
-    /// The adapter api the configured role's endpoint speaks
+    /// The adapter api to capture for an identity `facts` does not know
     /// (`anthropic.api_name`, `openai.api_name`). Captured durably into
     /// every generation intent, where deferred-handle validity compares
     /// against it rather than against a response's self-report
-    /// (ORCH-L4), so it must name the api actually dispatched to.
+    /// (ORCH-L4), so it must name the api actually dispatched to — which
+    /// is why a known identity's own dialect wins over this.
     api: String,
-    /// Context-window facts for identities the gateway cannot resolve.
+    /// Context-window facts for identities `facts` does not know.
     fallback_context_window: Int,
-    /// Output ceiling for identities the gateway cannot resolve.
+    /// Output ceiling for identities `facts` does not know.
     fallback_max_output_tokens: Int,
     /// How long the effect process waits for a provider terminal event.
     provider_timeout_ms: Int,
@@ -279,20 +322,29 @@ pub fn build_effects(config: Config) -> Effects {
 /// ```
 ///
 pub fn compaction_hooks(config: Config) -> effects.Hooks {
-  let facts = model_facts(config)
   let projection = fn(strand) { hooks.project(config.session, strand) }
+  // The threshold's window is the *strand's*, not the session's. One
+  // `Effects` record serves every strand, and a strand switched to a
+  // catalogue entry with a different context window must be compacted
+  // against that window or the clamp fires at the wrong size — early on a
+  // larger model, never on a smaller one. `ThresholdQuery` carries the
+  // strand name and nothing else, so the configuration is read back from
+  // the durable store, the same place every other hook decides from.
+  let threshold_for = fn(strand) {
+    hooks.threshold(
+      config.compaction,
+      context_window: strand_facts(config, strand).context_window,
+      projection:,
+      estimate: hooks.estimate_message,
+    )
+  }
   hooks.new()
-  |> hooks.with_admission(hooks.admission(
-    api: facts.api,
-    intended_output_limit: facts.max_output_tokens,
-    context_window: facts.context_window,
-  ))
-  |> hooks.with_threshold(hooks.threshold(
-    config.compaction,
-    context_window: facts.context_window,
-    projection:,
-    estimate: hooks.estimate_message,
-  ))
+  |> hooks.with_admission(fn(query: effects.AdmissionQuery) {
+    admit(config, query)
+  })
+  |> hooks.with_threshold(fn(query: effects.ThresholdQuery) {
+    threshold_for(query.strand)(query)
+  })
   |> hooks.with_overflow_preparation(hooks.overflow(
     config.compaction,
     projection:,
@@ -543,19 +595,24 @@ pub fn summary_provider_request(
   }
 }
 
-// Summaries route through the `Summarize` role when one is configured,
-// resolved to a concrete identity at dispatch; a session with no such
-// route summarizes with the strand's own captured identity. Routing a
-// summary to a cheaper model is the whole reason the role exists (design
-// §4.4), and unlike a generation there is no durable identity contract
-// to honour here — the summary is published as text, not as a response
-// attributed to a model.
+// Summaries route through the `Summarize` role when one is configured —
+// as a role, chain walk and all, so a busy summarizer falls to the next
+// entry instead of failing the compaction. A session with no such route
+// summarizes with the strand's own target. Routing a summary to a cheaper
+// model is the whole reason the role exists (design §4.4), and unlike a
+// generation there is no durable identity contract to honour here: the
+// summary is published as text, not as a response attributed to a model.
+//
+// `thinking: None` is the one place a route's own declared level is left
+// standing. There is no per-turn level to carry — the strand's belongs to
+// the conversation, not to the one-shot prompt being summarized — so the
+// operator's `thinking` on the summarization entry is what applies.
 fn summary_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
   case gateway.resolve(config.gateway, config.summary_role) {
-    Ok(resolved) -> ForResolved(resolved:)
+    Ok(_resolved) -> ForRole(role: config.summary_role, thinking: None)
     Error(_missing) -> request_target(config, configuration)
   }
 }
@@ -685,6 +742,14 @@ pub fn summary_progress(
 /// saying so here fails the operation in band instead of at the
 /// transport.
 ///
+/// The honest limit: the configuration argument is unread today — the
+/// answer is about the configured *roles*, not about the identity in
+/// hand — so an off-route strand whose provider vanished from the
+/// catalogue passes this check and fails at dispatch as an unknown
+/// provider rather than as the in-band `model_unavailable` this hook
+/// exists to produce. Reading the identity here is the fix when that
+/// gap earns its change.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -710,32 +775,73 @@ pub fn resolution(
   }
 }
 
-// --- the gateway's model facts ---------------------------------------------
+// --- the catalogue's model facts -------------------------------------------
 
-// What admission reports: the configured role's resolved window and
-// output ceiling, and the adapter api the endpoint speaks. A role that
-// does not resolve falls back to the config's declared facts, which is
-// what keeps a session with a moved route running rather than admitting
-// requests against numbers nobody stands behind.
+// The window, output ceiling and adapter api one identity is accounted
+// against. Read from the identity's *own* catalogue entry, so a strand
+// switched off the configured route is admitted, compacted and captured
+// against what it will actually be dispatched to. An identity the
+// catalogue does not know falls back to the config's declared facts,
+// which is what keeps a session with a moved route running rather than
+// admitting requests against numbers nobody stands behind.
 type ModelFacts {
   ModelFacts(api: String, context_window: Int, max_output_tokens: Int)
 }
 
-fn model_facts(config: Config) -> ModelFacts {
-  case gateway.resolve(config.gateway, config.role) {
-    Ok(resolved) ->
+fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
+  case config.facts(identity) {
+    Ok(#(resolved, api)) ->
       ModelFacts(
-        api: config.api,
+        api:,
         context_window: resolved.context_window,
         max_output_tokens: resolved.max_output_tokens,
       )
-    Error(_missing) ->
+    Error(Nil) -> fallback_facts(config)
+  }
+}
+
+// The figures for an identity nobody stands behind: the config's own
+// declared fallbacks, stated once so the two readers cannot drift.
+fn fallback_facts(config: Config) -> ModelFacts {
+  ModelFacts(
+    api: config.api,
+    context_window: config.fallback_context_window,
+    max_output_tokens: config.fallback_max_output_tokens,
+  )
+}
+
+// One strand's facts, read from its durable configuration. A strand whose
+// configuration is unreadable is accounted against the fallback figures:
+// a token count that cannot be taken must not halt a strand
+// (`runtime/hooks`' own rule for a failed projection).
+fn strand_facts(config: Config, strand: String) -> ModelFacts {
+  case session.strand_configuration(config.session, strand) {
+    Ok(Some(session.Cell(value: configuration, ..))) ->
+      model_facts(config, configuration.model)
+    _ ->
       ModelFacts(
         api: config.api,
         context_window: config.fallback_context_window,
         max_output_tokens: config.fallback_max_output_tokens,
       )
   }
+}
+
+// The pre-request admission, answered from the query's own configuration
+// rather than from a closure frozen at boot. Three durable values ride on
+// it — the intended output limit and context window overflow
+// classification is stable against, and the `request_api` a deferred
+// handle is validated against (ORCH-L4) — and all three are properties of
+// the identity *this attempt* will reach, which a boot-time answer cannot
+// know for a strand that switched models since.
+fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
+  let facts = model_facts(config, query.configuration.model)
+  Admitted(
+    stream_options: query.stream_options,
+    intended_output_limit: facts.max_output_tokens,
+    context_window: facts.context_window,
+    api: facts.api,
+  )
 }
 
 // A handle whose single event is an in-band, terminally-classified
@@ -795,9 +901,21 @@ pub fn provider_request(
         )
       })
     effects.GenerationRequest(configuration:, context:, ..) ->
-      generation_request(config, configuration, context)
+      generation_request(
+        config,
+        configuration,
+        context,
+        request_target(config, configuration),
+      )
+    // A poll never walks a chain: the handle it would fetch belongs to
+    // the identity that minted it. See `resolved_target`.
     effects.PollRequest(configuration:, ..) ->
-      generation_request(config, configuration, [])
+      generation_request(
+        config,
+        configuration,
+        [],
+        resolved_target(config, configuration),
+      )
   }
 }
 
@@ -805,9 +923,10 @@ fn generation_request(
   config: Config,
   configuration: StrandConfiguration,
   messages: List(AgentMessage),
+  target: RequestTarget,
 ) -> ProviderRequest {
   ProviderRequest(
-    target: request_target(config, configuration),
+    target:,
     system: config.system,
     messages:,
     tools: tool_specs(config, configuration.active_tool_names),
@@ -815,46 +934,111 @@ fn generation_request(
   )
 }
 
-/// Resolves the captured identity into a dispatch target: always
-/// `ForResolved` (recovery must re-dispatch exactly what was committed);
-/// the gateway's role resolution supplies the model facts when it agrees
-/// with the captured identity, and the config's fallback facts fill in
-/// otherwise. On both paths the target's `thinking` is the strand's
-/// per-turn level, never the route's static configuration — a turn that
-/// raises or lowers its thinking budget must reach the provider with
-/// exactly that budget.
+/// Resolves the captured identity into a generation's dispatch target.
+///
+/// **On route** — the captured identity heads a routable role's usable
+/// chain — the target is `ForRole` for that role, carrying the strand's
+/// per-turn thinking level as an overlay. The gateway then walks the
+/// chain within the one attempt, so a rate-limited head costs a fallback
+/// rather than the machine's whole retry ladder, and every target it
+/// tries is asked for the budget this turn asked for.
+///
+/// **Off route** — a strand switched to an entry no role heads, or a
+/// gateway whose routes have moved — the target is `ForResolved` on
+/// exactly the captured identity, with that identity's own catalogue
+/// facts (`Config.facts`) and the config's fallback counts behind them.
+/// Walking there would dispatch to a model the intent never named.
+///
+/// Both answers are a pure function of durable state and boot
+/// configuration, which is what makes a re-attempt after a crash choose
+/// what the original attempt chose.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // wiring.request_target(config, configuration)
-/// // -> model.ForResolved(model.ResolvedModel(provider: "acme", ..))
+/// // -> model.ForRole(role: model.Main, thinking: Some(model.ThinkingHigh))
 /// ```
 ///
 pub fn request_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
+  case routed_role(config, configuration.model) {
+    Ok(role) ->
+      ForRole(
+        role:,
+        thinking: Some(thinking_level(configuration.thinking_level)),
+      )
+    Error(Nil) -> resolved_target(config, configuration)
+  }
+}
+
+/// The dispatch target for a request that must reach exactly the captured
+/// identity and nothing else: a deferred poll, and any generation whose
+/// identity no configured role heads.
+///
+/// A poll is here by contract rather than by caution. A deferred handle
+/// is minted by one identity and ORCH-L4 validates a settlement against
+/// the `{provider, model_id, api}` the intent captured, so a poll that
+/// walked a chain would ask a model for a continuation it never issued
+/// and the answer would be refused as an invalid handle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.resolved_target(config, configuration)
+/// // -> model.ForResolved(model.ResolvedModel(provider: "acme", ..))
+/// ```
+///
+pub fn resolved_target(
+  config: Config,
+  configuration: StrandConfiguration,
+) -> RequestTarget {
   let identity = configuration.model
-  let thinking = thinking_level(configuration.thinking_level)
-  let fallback =
-    ResolvedModel(
-      provider: identity.provider,
-      model_id: identity.model_id,
-      thinking:,
-      context_window: config.fallback_context_window,
-      max_output_tokens: config.fallback_max_output_tokens,
-    )
-  case gateway.resolve(config.gateway, config.role) {
-    Ok(resolved) ->
-      case
+  let facts = model_facts(config, identity)
+  ForResolved(resolved: ResolvedModel(
+    provider: identity.provider,
+    model_id: identity.model_id,
+    thinking: thinking_level(configuration.thinking_level),
+    context_window: facts.context_window,
+    max_output_tokens: facts.max_output_tokens,
+  ))
+}
+
+// Which role, if any, this dispatch is *on route* for.
+//
+// An `effects.RequestSpec` carries no strand name, and one wiring config
+// serves every strand of a session, so the configured role cannot say
+// whether a subagent strand is on its own route. The identity can: a role
+// serves a request exactly when the head of its usable chain is the
+// identity the intent captured, because the head is what `gateway.resolve`
+// would have stored and what the walk will try first.
+//
+// Candidates are taken in canonical order so the answer is a function of
+// durable state alone — a tie between `main` and `subagent` routed to the
+// same entry resolves to `main`, every time, on every boot. The
+// configured role leads only when it is neither of them, which is the one
+// case a host has said something the canonical order does not cover.
+fn routed_role(config: Config, identity: ModelIdentity) -> Result(Role, Nil) {
+  list.find(candidate_roles(config.role), fn(role) {
+    case gateway.resolve(config.gateway, role) {
+      Ok(resolved) ->
         resolved.provider == identity.provider
         && resolved.model_id == identity.model_id
-      {
-        True -> ForResolved(resolved: ResolvedModel(..resolved, thinking:))
-        False -> ForResolved(resolved: fallback)
-      }
-    Error(_missing) -> ForResolved(resolved: fallback)
+      Error(_missing) -> False
+    }
+  })
+}
+
+fn candidate_roles(configured: Role) -> List(Role) {
+  case configured {
+    model.Main | model.Subagent -> [model.Main, model.Subagent]
+    model.Plan | model.Summarize | model.Vision | model.Custom(..) -> [
+      configured,
+      model.Main,
+      model.Subagent,
+    ]
   }
 }
 
@@ -874,6 +1058,34 @@ pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
     strand.ThinkingMedium -> model.ThinkingMedium
     strand.ThinkingHigh | strand.ThinkingXHigh | strand.ThinkingMax ->
       model.ThinkingHigh
+  }
+}
+
+/// Lifts a catalogue entry's declared thinking level onto the machine's
+/// seven-point scale — the section of `thinking_level`, so the two round
+/// trip and a `medium` in the catalogue seeds a strand that dispatches at
+/// medium.
+///
+/// This is where a route's static thinking configuration takes effect:
+/// at strand *creation*, seeding the durable per-turn level a later
+/// `set_config thinking_level` overwrites. It is never consulted at
+/// dispatch, where the per-turn level is absolute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wiring.strand_thinking_level(model.ThinkingHigh)
+///   == strand.ThinkingHigh
+/// ```
+///
+pub fn strand_thinking_level(
+  level: model.ThinkingLevel,
+) -> strand.ThinkingLevel {
+  case level {
+    model.ThinkingOff -> strand.ThinkingOff
+    model.ThinkingLow -> strand.ThinkingLow
+    model.ThinkingMedium -> strand.ThinkingMedium
+    model.ThinkingHigh -> strand.ThinkingHigh
   }
 }
 

@@ -53,7 +53,14 @@ max_output_tokens = 32000
 # The five routable roles are main, subagent, plan, summarize, and
 # vision; only main is required. A later entry is the fallback — used
 # when an attempt on the earlier one fails retryably (rate limit,
-# transport error), never after a settled response.
+# transport error), never after a settled response. That walk happens
+# inside one attempt, so it costs no retry from the harness's own ladder,
+# and the head is always tried first: nothing here tracks health or
+# remembers that a model was busy a moment ago.
+#
+# `main`, `subagent` and `summarize` are dispatched on. `plan` and
+# `vision` are reserved: parsed, validated and listed, with no caller in
+# the harness yet to route.
 [roles]
 main = ["baseten-oss", "anthropic-opus"]
 subagent = ["baseten-oss"]

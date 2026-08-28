@@ -87,6 +87,9 @@ pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
   wiring.Config(
     gateway: gw,
     role: model.Main,
+    // No catalogue behind the e2e rig; the fallback counts below are the
+    // route's own figures, so an off-route identity is accounted the same.
+    facts: fn(_identity) { Error(Nil) },
     system: Some("Drive the workspace tools exactly as instructed."),
     api: anthropic.api_name,
     fallback_context_window: 200_000,

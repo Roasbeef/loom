@@ -106,6 +106,11 @@ over one session file. WP-L.
   over pane content with a deadline). The only test in the tree with a
   fake on *neither* side of the protocol; only the model is scripted.
   Skips — loudly — when `tmux` or `go` is absent.
+- `client/agency.Config.subagent_model` — the host's `subagent` route,
+  resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
+  child with that model and that level, `Error(Nil)` inherits the parent
+  wholesale. A closure for the same reason `clock` and `rest` are — the
+  Agency is built before `api.open`.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
   child_name, is_subagent, frame_message, frame_brief, result_contract,
   result_schema_prefix}` — the Agency:
@@ -227,6 +232,14 @@ over one session file. WP-L.
   the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
   two ends of the reserved `prompt/` cell. Nothing here is called per
   turn — the whole module runs once, at boot.
+- `client/wiring.{request_target, resolved_target, strand_thinking_level,
+  thinking_level}` — the model-routing half of the seam: which role (if
+  any) a captured identity is on and therefore whether the dispatch walks
+  a chain, the `ForResolved`-only target every deferred poll and every
+  off-route generation takes, and the two directions of the map between
+  the machine's seven-point thinking scale and the provider's four-point
+  one — `thinking_level` collapsing for a dispatch, `strand_thinking_level`
+  lifting an entry's declared level to seed a strand.
 - `client/wiring.{Config, build_effects}` — the production effect seam:
   a `runtime/effects.Effects` over the real provider gateway, broker,
   and tool registry (promoted from `conformance/wiring`; spec-gaps M2
@@ -929,11 +942,64 @@ over one session file. WP-L.
   a request shape). The residual cost is the adapter's rolling
   five-minute mark on that single user turn; removing it needs a
   request-level cache flag in `provider`, which this stage did not open.
+- **Role follows identity, and the role is derived at dispatch.** An
+  `effects.RequestSpec` carries no strand name and one wiring config
+  serves every strand, so `wiring.request_target` asks the *captured
+  identity* which role it is on: the first routable role in canonical
+  order (`main`, then `subagent`) whose usable chain **head** equals it,
+  ties to `main`. A match dispatches `ForRole`, so the gateway walks that
+  chain inside the one attempt and a rate-limited head costs a fallback
+  rather than the machine's retry ladder. No match dispatches
+  `ForResolved` on exactly the captured identity. Both answers are a pure
+  function of durable state and boot configuration, which is what makes a
+  post-crash re-attempt choose what the original attempt chose — recovery
+  orphans an in-flight request and re-attempts it, it never re-dispatches
+  one. There is deliberately no per-request rerouting, no mutable role
+  registry, no health tracking and no sticky chain position: the head is
+  tried first, every time.
+- **A deferred poll is always `ForResolved`.** The handle belongs to the
+  identity that minted it and ORCH-L4 validates the settlement against
+  exactly the captured `{provider, model_id, api}`, so a poll that walked
+  a chain would fetch a continuation nobody issued. The mirror cost is
+  written down in `protocol-change/009`: a *generation* settled by a
+  fallback target that returned `Deferred` fails the same check and drains
+  as failure. Nothing settles `Deferred` today.
 - **Summaries route through the `Summarize` role when one is
-  configured**, resolved to a concrete identity at dispatch, and fall
-  back to the strand's own captured identity when it is not. Unlike a
-  generation there is no durable identity contract to honour: the
-  summary is published as text, not as a response attributed to a model.
+  configured** — as a role, `ForRole(Summarize, None)`, chain walk
+  included — and fall back to the strand's own target when it is not.
+  Unlike a generation there is no durable identity contract to honour:
+  the summary is published as text, not as a response attributed to a
+  model. `None` is the one place a route's own declared thinking level is
+  left standing, because a one-shot prompt has no per-turn budget to
+  inherit from the conversation it is summarizing.
+- **A catalogue entry's `thinking` seeds a strand; it never overrides a
+  dispatch.** The per-turn level is absolute at dispatch and travels as
+  the walk's overlay onto *every* target attempted, so a fallback cannot
+  answer at a smaller reasoning budget than the head was asked for.
+  Where the entry's level does take effect is strand *creation*, at all
+  three points and by one lift (`wiring.strand_thinking_level`):
+  `serve.seed_thinking` for `main`, `gateway.seeded_thinking` for
+  `fork`/`create_strand`, and `agency.child_configuration` for a spawned
+  child. `set_config model_name` deliberately leaves `thinking_level`
+  alone — switching model is not a request to un-raise a budget somebody
+  raised.
+- **A spawned child's model is chosen once, at creation.**
+  `agency.Config.subagent_model` is the host's `subagent` route resolved;
+  `client/serve` fills it from the gateway. An unrouted subagent role
+  inherits the parent wholesale rather than refusing, which is what every
+  child did before the role reached the seam.
+- **Model facts follow the identity, not the configured role.**
+  `wiring.Config.facts` is an `identity -> #(ResolvedModel, api)` seam
+  `client/serve` builds from the catalogue, and it is what makes a strand
+  switched off-route honest: admission is answered **per query** from the
+  query's own configuration, the compaction threshold's window is the
+  *strand's*, and an off-route dispatch target carries the switched-to
+  entry's counts. The api half matters as much as the counts — it is
+  captured durably into the generation intent and is what ORCH-L4 later
+  validates a deferred handle against, so a boot-frozen answer named the
+  main entry's dialect for a strand switched to the other one. Only an
+  identity the catalogue does not know falls back to `Config.api` and the
+  two `fallback_*` counts.
 - **A summary the sink does not hold is a retryable failure, never an
   empty summary.** `SummaryProduced(summary: "")` would publish a
   `CompactionEntry` that silently replaced a conversation with a blank;

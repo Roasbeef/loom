@@ -515,6 +515,127 @@ pub fn set_config_model_name_without_strand_switches_all_test() {
   assert list.key_find(fields, "model_name") == Ok(json.String("fallback"))
 }
 
+// --- thinking levels: seeded once, moved only by their own key -------------
+
+// A catalogue whose main entry declares a reasoning budget. The two tests
+// below are the pair issue #14's ruling 3 turns on: the entry seeds a
+// *new* strand, and nothing else in `set_config` may move the level.
+fn thinking_catalog() -> catalog.Catalog {
+  let assert [head, tail] = test_catalog().models
+    as "the test catalogue must have two entries"
+  catalog.Catalog(..test_catalog(), models: [
+    catalog.CatalogModel(..head, thinking: model.ThinkingHigh),
+    tail,
+  ])
+}
+
+fn effective_config(
+  harness: Harness,
+  id: Int,
+  strand: String,
+) -> json.JsonValue {
+  send(
+    harness,
+    id,
+    protocol.SetConfig(strand: Some(strand), config: json.Object([])),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(id)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+    as "an effective-config snapshot was expected"
+  config
+}
+
+fn field_of(
+  config: json.JsonValue,
+  key: String,
+) -> Result(json.JsonValue, Nil) {
+  let assert json.Object(fields) = config as "an effective config is an object"
+  list.key_find(fields, key)
+}
+
+// Switching model is not a request to un-raise a reasoning budget
+// somebody deliberately raised. A client that wants both sends both keys.
+pub fn set_config_model_name_leaves_thinking_level_alone_test() {
+  let harness = start_harness_with(catalog: Some(test_catalog()))
+  subscribe(harness)
+  send(
+    harness,
+    30,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("thinking_level", json.String("high"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(30)
+  send(
+    harness,
+    31,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("fallback"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(31)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+  assert field_of(config, "model_name") == Ok(json.String("fallback"))
+  assert field_of(config, "thinking_level") == Ok(json.String("high"))
+  // …and the level's own key still moves it, in both directions.
+  send(
+    harness,
+    32,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("thinking_level", json.String("off"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(32)
+  assert field_of(effective_config(harness, 33, "main"), "thinking_level")
+    == Ok(json.String("off"))
+}
+
+// A strand the hub seeds takes its per-turn level from the catalogue
+// entry its identity names — the entry in force — and not from whatever
+// level the source strand happened to be sitting at. A copied strand has
+// had no conversation yet, so there is no per-turn decision to inherit;
+// the same rule seeds `main` at boot and an Agency's children.
+pub fn a_forked_strand_is_seeded_from_the_entry_in_force_test() {
+  let harness = start_harness_with(catalog: Some(thinking_catalog()))
+  subscribe(harness)
+  // Main is deliberately moved *away* from the entry's level first, so
+  // "inherited the source" and "read the entry" cannot look alike.
+  send(
+    harness,
+    40,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("thinking_level", json.String("off"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(40)
+  send(
+    harness,
+    41,
+    protocol.Fork(strand: "main", scope: protocol.ScopeBranch, name: None),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(41)
+  let assert protocol.SnapshotEvent(protocol.StrandsSnapshot(..)) =
+    envelope.event
+    as "a fork replies with the strand list"
+  assert field_of(effective_config(harness, 42, "main-fork"), "thinking_level")
+    == Ok(json.String("high"))
+  // The source strand is untouched.
+  assert field_of(effective_config(harness, 43, "main"), "thinking_level")
+    == Ok(json.String("off"))
+}
+
 // --- the active tool list --------------------------------------------------
 
 // The durable list is the provider request's cached byte prefix, so

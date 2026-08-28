@@ -117,20 +117,44 @@ registered entry. The resolved value carries the entry's static facts,
 context window and output ceiling and thinking level, alongside the
 identity.
 
-Resolution feeds dispatch, but it does not decide it. Every production
-dispatch is `ForResolved`, never `ForRole`, and the reason is the
-recovery story: an effect intent commits the identity it will use
-*before* the request goes out, and re-dispatching that committed intent
-after a crash must reach the same model rather than whatever the
-registry now prefers. `client/wiring.request_target` therefore starts
-from the strand's captured identity and consults the configured role
-only to enrich it: when the role resolves to that same identity, the
-entry's own window and ceiling ride along; when it resolves to
-something else, or fails to resolve, the captured identity is kept and
-the wiring config's fallback window and ceiling fill the gaps. On both
-paths the strand's per-turn thinking level overwrites the route's, so a
-turn that raises its reasoning budget reaches the provider with exactly
-that budget.
+Resolution feeds dispatch, and since the M5 routing wave it also decides
+it — but only where a walk cannot change what the intent promised.
+
+The rule is one sentence: **role follows identity.** An effect intent
+commits the identity it will use *before* the request goes out, so
+`client/wiring.request_target` starts from the strand's captured identity
+and asks a single question of it — is this identity the *head* of some
+routable role's chain? If it is, the dispatch is `ForRole(role, …)` and
+the gateway walks that chain inside the attempt: a rate-limited head falls
+to its own tail instead of burning the machine's retry ladder against an
+endpoint that is refusing. If it is not — a strand switched to an entry no
+role heads, or a catalogue whose routes have moved since the session was
+written — the dispatch is `ForResolved` on exactly the captured identity,
+because a walk there would reach a model the intent never named.
+
+Both answers are a pure function of durable state and boot configuration,
+which is what makes this safe across a crash. Recovery does not
+re-dispatch a request that is still in flight; it orphans it, settles it
+synthetically, and re-attempts from the checkpoint. What has to agree
+across that gap is the *decision*, not the socket — and the decision reads
+only the strand's captured identity and a registry fixed before the
+session opened.
+
+Off route, the model facts come from the identity's own catalogue entry
+(`wiring.Config.facts`, built by `client/serve` from the catalogue), so a
+switched strand is dispatched, admitted and compacted against the window
+and ceiling it will actually meet. Only an identity the catalogue does not
+know at all falls back to the wiring config's declared counts. On both
+paths the strand's per-turn thinking level is what reaches the provider —
+as an overlay onto *every* target of a walk (`protocol-change/009`), so a
+fallback cannot silently answer at a smaller reasoning budget than the
+head was asked for.
+
+Deferred polls are the one dispatch held to `ForResolved` unconditionally.
+A deferred handle is minted by one identity and ORCH-L4 validates the
+settlement against exactly the `{provider, model_id, api}` the intent
+captured, so a poll that walked a chain would fetch a continuation nobody
+issued.
 
 ```mermaid
 flowchart TB
@@ -145,53 +169,49 @@ flowchart TB
     TOML --> RT
 
     CFG["strand.config.model — the durable<br/>provider and model id pair"]
-    RES["resolve(main) → head of main's chain"]
+    RES["resolve(main), resolve(subagent) →<br/>each chain's head"]
     RT --> RES
 
-    TGT{"does the resolved identity equal<br/>the strand's captured identity?"}
+    TGT{"does the captured identity<br/>head one of those chains?"}
     RES --> TGT
     CFG --> TGT
 
-    EXACT["ForResolved with the<br/>entry's own window and ceiling"]
-    FB["ForResolved with the wiring<br/>config's fallback window and ceiling"]
-    TGT -- yes --> EXACT
+    ROLE["ForRole(role, Some(per-turn thinking))<br/>— the gateway walks the chain"]
+    FB["ForResolved on the captured identity,<br/>facts from its own catalogue entry"]
+    TGT -- yes --> ROLE
     TGT -- no --> FB
 
+    WALK["retryable failure → next entry,<br/>same thinking overlay"]
+    ROLE --> WALK
+    RT --> WALK
+
     DISP["dispatch: the entry's dialect adapter,<br/>key read from api_key_env at this instant"]
-    EXACT --> DISP
+    WALK --> DISP
     FB --> DISP
     REG --> DISP
 
-    WALK["chain walk on retryable failure —<br/>ForRole only; no server path reaches it"]
-    RT -. unused today .-> WALK
+    POLL["deferred poll — always ForResolved,<br/>the handle belongs to one identity"]
+    CFG -. never walks .-> POLL
+    POLL --> DISP
 ```
 
-The consequence is worth stating plainly, because the file format
-invites the opposite reading. **A chain's tail does not serve as a
-runtime fallback in the session server today.** The gateway can walk a
-chain — `request` with a `ForRole` target tries each target in turn,
-moving on only for a failure `retry.classify` calls retryable,
-surfacing a terminal error at once and the last real error when the
-chain is exhausted, and never falling back after a settled response —
-and `docs/architecture/effects.md` describes that walk. But
-`client/wiring` is the only production consumer of the gateway, and it
-never builds a `ForRole` target. What a retryable provider failure gets
-in a live session is the machine's own retry ladder against the same
-captured identity, not the next entry in the chain. A chain's tail
-affects a running session only if its head becomes unregistered, which
-a catalogue-built gateway cannot arrange.
+Two roles are dispatched on today: `main` and `subagent`. `main` serves
+any strand configured with its chain head; `subagent` serves a strand an
+Agency spawned, because `client/agency` *seeds* a child with
+`resolve(subagent)`'s identity at creation and the derivation then
+recognises that identity as subagent's head. `summarize` is dispatched on
+by structural summaries, which go out `ForRole(Summarize, None)` — as a
+role, chain walk included, with no thinking overlay so the summarization
+entry's own declared level applies. A summary is published as text rather
+than as a response attributed to a model, so there is no durable identity
+contract to honour there and a cheaper fallback is pure gain.
 
-The same seam bounds the other roles. `client/serve` builds one wiring
-config for the whole session with `role: model.Main`, so every strand —
-main or subagent — resolves against main's chain. The `subagent`,
-`plan`, `summarize`, and `vision` rows are parsed, validated, routed
-into the registry, and reported in the `models` listing, and nothing
-dispatches on them. Structural summaries have no provider surface at
-all yet (recorded in `docs/spec-gaps.md` under the M2 integration), so
-`summarize` has nothing to route even in principle. The design doc
-places full role routing in the fifth milestone. Until then the routing
-table records which models an operator intends for which purpose, and
-selects a model only for `main`.
+`plan` and `vision` are **reserved vocabulary**: parsed, validated, routed
+into the registry, reported in the `models` listing, and dispatched on by
+nothing. There is no plan-generation step and no image-bearing request
+path in the harness for them to attach to, so wiring a dispatch site would
+be inventing the caller as well as the route. Recorded in
+`docs/spec-gaps.md`.
 
 ## Dialects and the adapter seam
 
@@ -242,6 +262,17 @@ display and re-select by it. The lower-level `model` key, taking a raw
 `{provider, model_id}` object, remains available for a strand and
 bypasses the catalogue entirely.
 
+A switch moves the identity and **nothing else** — in particular it does
+not touch `thinking_level`, even though the entry declares one. The
+entry's level seeds a strand at creation; the per-turn level afterwards
+belongs to whoever is having the conversation, and changing model mid-run
+is not a request to un-raise a reasoning budget somebody deliberately
+raised. A client that wants both sends both keys. What a *newly seeded*
+strand gets is the other half of the same rule: `fork` and `create_strand`
+copy the source strand's configuration but re-seed its thinking level from
+the catalogue entry the copied identity names, because a fresh strand has
+had no conversation to inherit a per-turn decision from.
+
 The terminal UI drives exactly that. Typing `:models` sends the
 protocol's `models` command. The reply is a snapshot carrying one row
 per entry — name, dialect, provider model id, the roles whose chain
@@ -264,17 +295,16 @@ before.
 
 ## Known limits
 
-Four, the first three of them recorded in `docs/spec-gaps.md` under
-WP-L.
+Five, and each is a boundary somebody chose rather than a gap nobody
+noticed.
 
-**Off-route model facts fall back.** Switching a strand to a catalogue
-entry that is not what the configured role resolves to dispatches with
-the wiring config's fallback context window and output ceiling — the
-figures from the *main chain head* — rather than the switched-to
-entry's own, because `client/wiring.Config` has no per-identity fact
-lookup. Dispatch itself is exact: the adapter, base URL, key, and model
-id all come from the entry. Only the overflow arithmetic is
-approximate, and the fix belongs in the wiring seam.
+**The walk covers refusals the provider answers, never configuration
+errors.** A missing secret is terminal: a chain head whose `api_key_env`
+is unset stops the attempt with the `NoSecret` refusal rather than
+falling to a tail whose key is present. The walk exists for what varies
+per request — a rate limit, a transport failure — and an unset variable
+does not vary; falling past it would let a misconfigured head look
+healthy on every dispatch while its own row silently never serves.
 
 **Per-model headers are refused rather than carried.** A `headers` key
 in an entry gets its own worded rejection instead of being silently
@@ -283,31 +313,56 @@ put one in. The bearer key from `api_key_env` is the only credential
 either adapter sends, which is all Baseten's OpenAI-compatible
 endpoints need.
 
-**Role chains are boot-time only.** The `[roles]` routing is baked into
-the registry that the wiring closures capture when the server starts.
-`model_name` moves a strand's — or the session's — identity, but
-re-routing a role's chain at runtime would need a mutable registry or a
-restart, and neither exists today.
+**Role chains are boot-time only, and the head is always tried first.**
+The `[roles]` routing is baked into the registry the wiring closures
+capture when the server starts. `model_name` moves a strand's — or the
+session's — identity, but re-routing a role's chain at runtime would need
+a mutable registry or a restart, and neither exists. Nor is there any
+memory *within* a boot: no health tracking, no circuit breaker, no sticky
+chain position. A chain whose head is rate-limited is walked past on every
+single request, paying one refused round trip each time, and the harness
+never concludes that the head is down. That is the deliberate trade — a
+walk is a dispatch-time choice and never a routing change, so "preferred"
+means preferred, not "preferred until it fails once", and nothing has to
+decide when a model has recovered.
 
-**An entry's `thinking` level does not reach the wire.** It is parsed,
-carried into the route's resolved value, and then overwritten on every
-dispatch by the strand's own thinking level, which starts at `off` and
-changes through `set_config`'s `thinking_level` key. The override is
-deliberate — a turn that asks for a larger reasoning budget must get
-it — but it leaves the catalogue field with no effect in the server
-today.
+**Selection is by role and position, never by cost or latency.** The
+chain's order is the operator's stated preference and the only input.
+Nothing measures how long an entry took or what it charged, and nothing
+reorders a chain on that basis.
+
+**`plan` and `vision` route nothing.** Both are parsed, validated, routed
+into the registry and listed — reserved vocabulary with no dispatch site,
+because the harness has no plan-generation step and no image-bearing
+request path to attach one to. Recorded in `docs/spec-gaps.md`.
+
+One earlier limit is closed and worth naming because the shape of the fix
+is reusable. *Off-route model facts* used to fall back to the main chain
+head's window and ceiling, since `client/wiring.Config` had no
+per-identity lookup; it now carries `facts`, an
+`identity -> #(ResolvedModel, api)` seam that `client/serve` builds from
+the catalogue, and admission, the compaction threshold and an off-route
+dispatch target all read the switched-to entry's own figures. The same
+seam fixed a quieter bug beside it: the durably captured `request_api` had
+been the main entry's dialect for every strand, including one switched to
+an entry of the *other* dialect, which is a value ORCH-L4 later validates
+a deferred handle against. *An entry's `thinking` not reaching the wire*
+is closed too, differently: it is not an override at dispatch — it
+**seeds** a strand's per-turn level at creation, at all three creation
+points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 
 ## Where the code lives
 
 | Path | What it holds |
 |---|---|
 | `client/catalog.gleam` | The `loom.toml` parser (total, strict, worded errors), `Catalog`/`CatalogModel`/`Dialect`, the `find`/`main_model`/`routed_roles`/`active_roles` lookups, and `gateway` — catalogue to registry plus routes. |
-| `client/serve.gleam` | The `--config` ladder, the environment-shaped one-entry catalogue, and the `Settings` the wiring config and the seed strand configuration are built from. |
-| `client/wiring.gleam` | `request_target`: captured identity, role resolution, the fallback facts, and the thinking override. |
-| `client/gateway.gleam` | The `models` listing, `set_config`'s `model_name` with its strand and session scopes, and the catalogue name echoed in the effective config. |
+| `client/serve.gleam` | The `--config` ladder, the environment-shaped one-entry catalogue, the `Settings` the wiring config is built from, `catalogue_facts` (the per-identity fact seam), `seed_thinking`, and the Agency's `subagent_model` resolver. |
+| `client/wiring.gleam` | `request_target` (role derivation from the captured identity), `resolved_target` (off route and every deferred poll), the per-query admission and per-strand threshold window, and `strand_thinking_level` — the lift that seeds a strand from an entry. |
+| `client/agency.gleam` | `Config.subagent_model` and `child_configuration`: a spawned child's identity and seed thinking level, chosen once at creation. |
+| `client/gateway.gleam` | The `models` listing, `set_config`'s `model_name` with its strand and session scopes, the catalogue name echoed in the effective config, and `seeded_thinking` — a forked or created strand takes the entry in force's level. |
 | `client/protocol.gleam` | `ListModels`, `ModelsSnapshot`, `ModelInfo`, `SetConfig` — the wire shapes, pinned by the Go golden fixtures. |
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
-| `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget`, `ThinkingLevel`, `ProviderRequest`. |
+| `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam` | The two dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
@@ -323,6 +378,8 @@ identity across a crash, `docs/architecture/orchestration.md` covers
 the effect sandwich and the durable program counter. For intent and
 contracts, `docs/loom-design.md` §4.4 states the role-routing intent
 and `docs/loom-implementation-spec.md` §1.5 holds the frozen gateway
-interface, with WP-F's scope in Part 2; `docs/spec-gaps.md` records
-where the implementation refined the spec, including three of the four
-limits above.
+interface, with WP-F's scope in Part 2;
+`protocol-change/009-forrole-carries-thinking.md` is the amendment that
+let a walk carry a turn's reasoning budget; `docs/spec-gaps.md` records
+where the implementation refined the spec, the reserved `plan`/`vision`
+vocabulary included.

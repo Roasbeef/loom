@@ -91,10 +91,14 @@ entry whose check already ran, so a boundary is never checked twice
 on every pass of the drive loop (`threshold`,
 `runtime/strand_runtime.gleam:1620`).
 
-The hook behind it is built in production wiring from the gateway's own
-model facts rather than from a fixture: the context window and output
-ceiling come from the resolved route, under the adapter's own api name
-(`compaction_hooks`, `client/wiring.gleam:273`). The inequality is pi's —
+The hook behind it is built in production wiring from the catalogue's
+own model facts rather than from a fixture: the threshold's context
+window is the *strand's* — read from its durable configuration's own
+catalogue entry, so a strand switched off the configured route is
+measured against the window it will actually be dispatched into — and
+only an identity the catalogue does not know falls back to the config's
+declared figures (`compaction_hooks`, `client/wiring.gleam:303`;
+`docs/architecture/models.md` has the routing side). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
 once in `client/serve.gleam:628` (`default_reserve_tokens`) and
@@ -246,11 +250,13 @@ The request itself is one user message holding the system section and
 the selected instruction concatenated, and nothing else: no `system`
 field, no tool array (`summary_provider_request`,
 `client/wiring.gleam:506`). It routes through the `Summarize` role when
-one is configured, falling back to the strand's own captured identity
-otherwise — routing a summary to a cheaper model is why that role exists,
-and unlike a generation there is no durable identity contract to honour,
-since the summary is published as text rather than as a response
-attributed to a model (`summary_target`, `client/wiring.gleam:552`). An
+one is configured, falling back to the strand's ordinary dispatch target
+otherwise — for an on-route strand that is the role's chain, walked, and
+only an off-route strand summarizes on exactly its captured identity —
+routing a summary to a cheaper model is why the role exists, and unlike
+a generation there is no durable identity contract to honour, since the
+summary is published as text rather than as a response attributed to a
+model (`summary_target`, `client/wiring.gleam:582`). An
 operator's manual instructions reach the prompt from the operation's
 durable state rather than from the preparation, because the preparation
 is the frozen *input* the decision hook approved and the instructions are
@@ -304,9 +310,9 @@ text nobody will ask for again.
 The recording happens in a wrapper around the provider surface rather
 than inside it, so a host with its own provider — the scripted demo is
 one — can still run the real hooks over it
-(`recording_summaries`, `client/wiring.gleam:356`). The wrapper owns the
+(`recording_summaries`, `client/wiring.gleam:413`). The wrapper owns the
 inner stream and **files the settlement before forwarding the terminal
-event** (`relay_summary`, `client/wiring.gleam:391`). That ordering is
+event** (`relay_summary`, `client/wiring.gleam:429`). That ordering is
 the whole point: by the time the effect process reports the request
 settled and the driver turns around to ask for progress, the text is
 already in the sink, so the hook's read is a question about a record that
@@ -493,7 +499,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2506`). An
+(`compaction_preparation`, `client/gateway.gleam:2566`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
