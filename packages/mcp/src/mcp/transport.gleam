@@ -275,9 +275,15 @@ fn held_tail(text: String, tail: BitArray) -> Result(#(String, BitArray), Nil) {
   }
 }
 
-// Whether `tail` is a prefix of some multi-byte UTF-8 character: a lead
-// byte declaring strictly more bytes than are held, followed only by
-// continuation bytes.
+// Whether `tail` could be a prefix of a multi-byte UTF-8 character: a
+// lead byte declaring strictly more bytes than are held, followed only
+// by continuation bytes. Deliberately an over-approximation: it does not
+// check the second-byte ranges that rule out overlongs and surrogates
+// (0xE0/0xED/0xF0/0xF4 leads), so those four corners are held one extra
+// chunk and die on the next arrival — bounded at three bytes, with
+// in-flight calls still expiring on their own deadlines. Exactness there
+// would buy one chunk of earlier failure in a case only a hostile peer
+// produces.
 fn plausible_truncation(tail: BitArray) -> Bool {
   case tail {
     <<>> -> True
