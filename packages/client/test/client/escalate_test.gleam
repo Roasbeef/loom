@@ -251,7 +251,7 @@ fn start(setup: Setup) -> Harness {
       ),
       broker: helperless_broker(),
       broker_timeout_ms: 5000,
-      registry: serve.registry(None, code_mode),
+      registry: serve.registry(None, code_mode, None),
       workspace:,
       blob_root: workspace <> "/.blobs",
       // Narrower than `bash` requires: it wants the whole filesystem

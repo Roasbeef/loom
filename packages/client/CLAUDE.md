@@ -10,9 +10,10 @@ that decodes stored escalation JSON back into typed broker grants, the
 scripted end-to-end demo that drives the whole M3 flow through the
 protocol alone — and, as the tree's host package, the production wiring
 adapter (`client/wiring`, promoted from conformance), the system
-prompt's assembly and its durable pin (`client/system_prompt`), the two
-seams that give a model other agents and code mode (`client/agency`,
-`client/codemode`), plus the
+prompt's assembly and its durable pin (`client/system_prompt`), the three
+seams that give a model other agents, code mode and recall over the
+repository's own history (`client/agency`, `client/codemode`,
+`client/history`), plus the
 `loom-server` entry point (`client/serve`) that boots the whole stack
 over one session file. WP-L.
 
@@ -165,6 +166,30 @@ over one session file. WP-L.
   path `resolve_real` has already contained, bounded before it is
   classified and answered with lstat semantics so a symlink is never
   called a directory.
+- `client/history.{Config, Message, index_file, default_timeout_ms,
+  index_beside, probe, over_session, sqlite_generation, start, supervised,
+  stop, poke, synchronize, seam, commit_pull, supervised_commit_pull}` —
+  the one process that owns this repository's `events/search` index, and
+  the seams that reach it. Addressed by process name, like the Agency and
+  the scratch store, so the tool seam is built before the holder exists
+  and a restart under the same name reopens the index file. `probe` is
+  the boot question: an index that will not open registers no
+  `history_search` tool and logs one worded line, never a boot refusal.
+  `over_session` binds the holder to one open session's store and takes
+  its rewrite generation as a **thunk** (`sqlite_generation`), called
+  fresh on every pull, because a precise rewrite bumps it underneath a
+  long-lived holder — and a generation that cannot be read skips the sync
+  rather than guessing zero.
+- `client/notes.{max_digest_bytes, fence, digest_hooks, digest, cells,
+  strand_of}` — the `agent/` notes digest injected at run start.
+  `digest_hooks` **wraps** an existing `run_start` rather than setting it
+  (`hooks.with_run_start` replaces, so a setter would silently drop a
+  previous layer), resolves the strand from the `OpId` through the
+  durable `op.meta` cell, reads the strand's `agent/{strand}/` fact cells
+  straight off the session store — hooks are built before `api.open`, so
+  there is no runtime handle and no Agency to ask — and renders them
+  newest-written-first by register seq, capped at 4096 bytes, fenced and
+  attributed. A strand with no notes gets nothing at all.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -279,10 +304,19 @@ over one session file. WP-L.
   `LOOM_COMPACTION_KEEP_RECENT` override them; settings that cannot
   describe a working compaction disable it rather than firing a
   threshold that prepares nothing.
-- `client/serve.registry(Option(Agency), Option(CodeMode))` — the tool
-  registry: five core tools, plus the six `agent_*` tools only when a
-  messaging plane exists, plus `code_mode` only when this host wired a
-  code-mode pipeline.
+- `client/serve.registry(Option(Agency), Option(CodeMode),
+  Option(History))` — the tool registry: five core tools, plus the six
+  `agent_*` tools only when a messaging plane exists, plus `code_mode`
+  only when this host wired a code-mode pipeline, plus `history_search`
+  only when its search index opened.
+- `client/serve.protecting_index(SandboxPolicy, String)` — the base
+  policy with the search index added to `protected`. A security property,
+  not hygiene: snippets from that index are read back into *future*
+  sessions' contexts, so an index a model can write is a channel from one
+  execution's output into a later execution's input. `protected` bars
+  writes and leaves reads alone, which is exactly the asymmetry wanted.
+  `assemble` composes it before `base_policy_fault` validates, so the
+  addition is checked by the same gate every other path is.
 - `client/serve.Settings.codemode_seams` — which code-mode seams this
   server offers (`--codemode-seams workspace|orchestration|both`,
   default `WorkspaceOnly`). A setting for the same reason
@@ -400,7 +434,21 @@ over one session file. WP-L.
   `FromClient(connection, text)`, `CommitHint`, `BusHint(published)`, and
   `ProviderDelta(operation, delta)` (casts). Senders: `client/server`'s
   socket handlers, `commit_forwarder` (from `runtime/writer.Event`),
-  `events/bus` subscriptions, and `tap_provider`'s wrapper.
+  `events/bus` subscriptions, and `tap_provider`'s wrapper. The hub's bus
+  subscription is keyed by the session's **canonical id**
+  (`bus.key(of: api.session_id(runtime))`), never by the caller-supplied
+  display name; `client/serve` supplies no bus, so nothing exercises it
+  today, but a host whose hint sources are not all its own writer needs
+  the key that identified publishers actually use
+  (`protocol-change/008`).
+- `history.Message` — `Pull` (a cast: a commit landed, go sync),
+  `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
+  limit, scope, reply)` (a call, from the tool seam), and `Stop`.
+  Senders: `commit_pull`, the writer's *second* subscriber, which is what
+  makes recall a commit-driven projection rather than a scheduled sweep;
+  and `client/history.seam`, from a live tool call's own effect process.
+  Both reach the holder by name, and both degrade an absent or wedged
+  holder to an in-band refusal rather than to a dead caller.
 - **Commits**: the hub commits nothing of its own except through the
   session's one writer. Commands map onto `runtime/api`
   (prompt/steer/follow-up/abort, escalation approve/deny, strand
@@ -418,6 +466,11 @@ over one session file. WP-L.
   seeding for protocol `fork` and `create_strand` writes `strand.config`
   / `strand.leaf` / `strand.state` (the api's creation path always takes
   a task brief, so the gateway seeds idle strands itself).
+- **Search index**: `client/history` writes only to the repository's own
+  `loom-search.db`, beside the session file and never inside it, through
+  `events/search.sync`. Index rows and the advanced cursor commit in one
+  transaction, so a crash mid-batch re-runs the batch into the same
+  state; a lost poke costs latency and never a row.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the
   storage seq** of the write that produced the event, so the durable
   stream needs no side index and `catch_up` rebuilds it with
@@ -1024,7 +1077,8 @@ over one session file. WP-L.
   settings snapshot.
 - **The server has two supervision tiers, and the line between them is
   reachability.** A child under `Booted.services` — the commit
-  forwarder, the Agency holder, the escalation holder, the gateway hub —
+  forwarder, the Agency holder, the escalation holder, the scratch store,
+  the search-index holder and its commit subscriber, the gateway hub —
   is addressed by
   *name*, so a replacement under that name is the same address and a
   crash costs hints and the sockets already attached to the old hub
@@ -1035,6 +1089,13 @@ over one session file. WP-L.
   every call, and failing closed is the posture the effect plane wants
   anyway. Those are fatal, along with the session tree, the listener,
   and the service supervisor once its own budget is spent.
+- **Recall is a projection with no authority, and the wiring says so
+  three times.** An index that will not open costs the `history_search`
+  tool and one log line, never the boot. A holder that crashes is
+  restarted and reopens the file. A sync that fails leaves the durable
+  cursor where it was, so the next commit's poke retries it. Nothing
+  about a session's correctness depends on the index being right, which
+  is what lets every one of those failures be quiet.
 - **A fatal death is an orderly shutdown, not a side effect.** The host
   traps exits, so a child's death is a message: it runs the whole
   teardown — listener, services, runtime (which releases the writer

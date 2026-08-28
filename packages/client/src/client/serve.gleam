@@ -169,10 +169,12 @@ import client/catalog
 import client/codemode as codemode_wiring
 import client/escalate
 import client/gateway as hub
+import client/history
 import client/host
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/notes
 import client/scratch
 import client/server
 import client/summaries
@@ -199,6 +201,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import runtime/effects
+import runtime/writer
 import session/session
 import simplifile
 import telemetry/context
@@ -210,6 +213,7 @@ import tools/bash
 import tools/codemode as codemode_tool
 import tools/fs
 import tools/grep
+import tools/history as history_tool
 import tools/tool.{type Registry}
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
@@ -1165,10 +1169,16 @@ fn assemble(
   logger: Logger,
   stops: Subject(host.Stop),
 ) -> Result(Booted, String) {
+  // The search index is protected before the policy is validated,
+  // because it is part of the policy this server refuses to boot
+  // without. See `protecting_index` for why a model-writable index is a
+  // security property rather than a tidiness one.
+  use index_path <- result.try(index_path(settings))
+  let base_policy = protecting_index(settings.base_policy, index_path)
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
-  use Nil <- result.try(base_policy_fault(settings.base_policy))
+  use Nil <- result.try(base_policy_fault(base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
@@ -1194,7 +1204,7 @@ fn assemble(
     exec.SpawnConfig(
       helper_path: settings.helper_path,
       shell_path:,
-      base_policy: settings.base_policy,
+      base_policy:,
       // The server never opts out of enforcement on the caller's behalf:
       // on a platform with no jail the helper refuses to serve, which is
       // the refusal `--allow-unenforced` exists to make deliberate.
@@ -1297,16 +1307,26 @@ fn assemble(
       agency_seam,
       scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     )
+  // Recall, on the same two-name pattern and gated the same way: the
+  // holder that owns the index cannot exist until the runtime has been
+  // opened (its canonical session id is what a scoped query and every
+  // hit from this session are named by), so the tool seam closes over
+  // the name now and the holder starts under it further down. An index
+  // that will not open registers no tool at all.
+  let history_name = process.new_name(prefix: "loom_history")
+  let history_pulls = process.new_name(prefix: "loom_history_pulls")
+  let history_seam = history_seam(index_path, history_name, logger)
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
-  let tool_registry = registry(Some(agency_seam), code_mode)
-  // The registry itself, once, at boot. Two planes decide their own
+  let tool_registry = registry(Some(agency_seam), code_mode, history_seam)
+  // The registry itself, once, at boot. Three planes decide their own
   // presence from the host they found — a messaging plane, a code-mode
-  // pipeline — so "which tools does this server actually offer" is not
-  // derivable from the flags, and it is the same sorted list that renders
-  // into the provider's cached byte prefix. Naming it here is what lets a
-  // release smoke assert on registration rather than on a proxy for it.
+  // pipeline, a search index — so "which tools does this server actually
+  // offer" is not derivable from the flags, and it is the same sorted
+  // list that renders into the provider's cached byte prefix. Naming it
+  // here is what lets a release smoke assert on registration rather than
+  // on a proxy for it.
   log.info(logger, "server.tools", [
     field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
   ])
@@ -1317,7 +1337,7 @@ fn assemble(
   use pinned <- result.try(system_prompt.pinned_in(opened))
   use assembled <- result.try(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
-      render_prompt(settings, pool, tool.names(tool_registry))
+      render_prompt(settings, base_policy, pool, tool.names(tool_registry))
     }),
   )
   list.each(assembled.warnings, fn(warning) {
@@ -1374,7 +1394,7 @@ fn assemble(
       registry: tool_registry,
       workspace: settings.workspace,
       blob_root:,
-      base_policy: settings.base_policy,
+      base_policy:,
       escalations: escalate.seam(escalate_config),
       demand: settings.demand,
       env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
@@ -1386,9 +1406,12 @@ fn assemble(
       ..built,
       provider: hub.tap_provider(built.provider, to: name),
       // The only work this adds on the driver process is one
-      // `process.spawn_unlinked`; everything a reap actually does happens
-      // on that spawned process. See `client/agency`.
-      hooks: agency.reaping_hooks(built.hooks, agency_config),
+        // `process.spawn_unlinked`; everything a reap actually does happens
+        // on that spawned process. See `client/agency`. The notes digest
+        // wraps the result rather than replacing a slot, so the two
+        // compose instead of one silently dropping the other.
+        hooks: agency.reaping_hooks(built.hooks, agency_config)
+        |> notes.digest_hooks(opened, clock),
     )
   let options = api.default_options(configuration)
   use runtime <- result.try(
@@ -1404,7 +1427,17 @@ fn assemble(
           ..options.settings,
           compaction: settings.compaction,
         ),
-        subscribers: [process.named_subject(forwarder_name)],
+        // Two subscribers, both by name, both restartable: the hub's
+        // hint forwarder, and — when this host has an index — the poke
+        // that drives search sync. The second is what makes recall a
+        // *commit*-driven projection rather than a scheduled sweep; a
+        // poke lost while its subscriber restarts costs latency, never a
+        // row, because `search.sync`'s own durable cursor decides what
+        // gets indexed.
+        subscribers: [
+          process.named_subject(forwarder_name),
+          ..history_subscribers(history_seam, history_pulls)
+        ],
         // Every strand of this session logs under the session's own
         // context; the driver narrows it to its strand, and each
         // dispatched effect narrows it again to `{op, step}`.
@@ -1434,7 +1467,7 @@ fn assemble(
   // the sockets already attached to the old hub rather than the server.
   // One-for-one because they are independent: nothing in the three
   // reaches another except through a name.
-  use services <- result.try(
+  let services_tree =
     sup.new(sup.OneForOne)
     |> sup.restart_tolerance(
       intensity: service_restart_intensity,
@@ -1465,6 +1498,25 @@ fn assemble(
           name,
         )
       }),
+    )
+  // The index holder is in this tier for the same reason the scratch
+  // store is: it is addressed by name, and everything it holds is one
+  // connection to a rebuildable projection that a restart reopens. Its
+  // canonical session id comes from the runtime, which is why it is
+  // added here rather than in the pipeline above.
+  use services <- result.try(
+    services_tree
+    |> with_history(
+      history_seam,
+      history.over_session(
+        name: history_name,
+        path: index_path,
+        session: api.session_id(runtime),
+        store: opened.store,
+        generation: history.sqlite_generation(settings.session_path),
+        timeout_ms: history.default_timeout_ms,
+      ),
+      history_pulls,
     )
     |> sup.start
     |> result.map_error(fn(error) {
@@ -1615,6 +1667,123 @@ fn parent_directory(path: String) -> Option(String) {
   }
 }
 
+// --- the search index ------------------------------------------------------
+
+// The index file beside this session's, as an absolute path.
+//
+// Absolute is not cosmetic: the path goes into `base_policy.protected`,
+// and a relative protected entry is refused by the jail and covers
+// nothing in the harness's own path checks — `base_policy_fault` would
+// turn `--session loom.db` into a boot failure. So a session path with
+// no directory of its own is resolved against the working directory,
+// which is the directory it would have been created in anyway.
+fn index_path(settings: Settings) -> Result(String, String) {
+  let path = history.index_beside(settings.session_path)
+  case string.starts_with(path, "/") {
+    True -> Ok(path)
+    False ->
+      simplifile.current_directory()
+      |> result.map(fn(here) { here <> "/" <> path })
+      |> result.map_error(fn(error) {
+        "the working directory is unreadable, so the search index has no "
+        <> "absolute path: "
+        <> string.inspect(error)
+      })
+  }
+}
+
+/// The base policy with the search index protected: never writable, by
+/// any jailed process or by the harness's own write tools.
+///
+/// This is a security property rather than hygiene, and it is the same
+/// argument the blob store's protection rests on one step further along.
+/// Search snippets are read back into *future* sessions' contexts, so an
+/// index a model can write is a channel from one execution's output into
+/// a later execution's input — prompt injection with a persistence
+/// layer. Writing is the whole of the poisoning path: `protected` bars
+/// writes and leaves reads alone, which is exactly the asymmetry wanted,
+/// since the harness's own indexing never goes through `resolve_writable`
+/// and a model reading the file learns nothing it could not ask
+/// `history_search` for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.protecting_index(base, "/data/loom-search.db").protected
+/// ```
+///
+pub fn protecting_index(
+  base: policy.SandboxPolicy,
+  index_path: String,
+) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..base, protected: [index_path, ..base.protected])
+}
+
+// The recall seam, or nothing and one line saying why.
+//
+// An index that will not open is not a boot failure: recall is a
+// convenience over a rebuildable projection, and a session that cannot
+// search its own past is still a session. The line is part of the
+// mechanism rather than decoration — the same posture
+// `codemode.unavailable` takes — because an absent tool is otherwise
+// indistinguishable from a host that never had one.
+fn history_seam(
+  index_path: String,
+  name: process.Name(history.Message),
+  logger: Logger,
+) -> Option(history_tool.History) {
+  case history.probe(index_path) {
+    Ok(Nil) -> {
+      log.info(logger, "history.ready", [
+        field.text(key: "index", value: index_path),
+      ])
+      Some(history.seam(name, timeout_ms: history.default_timeout_ms))
+    }
+    Error(reason) -> {
+      log.warn(logger, "history.unavailable", [
+        field.text(key: "index", value: index_path),
+        field.text(key: "reason", value: reason),
+        field.text(
+          key: "effect",
+          value: "no history_search tool is registered; check the directory "
+            <> "beside the session file is writable, or remove a corrupt "
+            <> "index file and it will be rebuilt",
+        ),
+      ])
+      None
+    }
+  }
+}
+
+// The writer subscribers the index needs, which is one when there is an
+// index and none when there is not.
+fn history_subscribers(
+  seam: Option(history_tool.History),
+  pulls: process.Name(writer.Event),
+) -> List(Subject(writer.Event)) {
+  case seam {
+    None -> []
+    Some(_seam) -> [process.named_subject(pulls)]
+  }
+}
+
+// The holder and its commit subscriber, added to the service tree only
+// when this host has an index for them to serve.
+fn with_history(
+  tree: sup.Builder,
+  seam: Option(history_tool.History),
+  config: history.Config,
+  pulls: process.Name(writer.Event),
+) -> sup.Builder {
+  case seam {
+    None -> tree
+    Some(_seam) ->
+      tree
+      |> sup.add(history.supervised(config))
+      |> sup.add(history.supervised_commit_pull(to: config.name, as_name: pulls))
+  }
+}
+
 // --- the system prompt -----------------------------------------------------
 
 /// How long the boot waits on the helper it spawns to ask whether this
@@ -1629,6 +1798,7 @@ pub const helper_probe_ms = 15_000
 // resumed session pays for none of it.
 fn render_prompt(
   settings: Settings,
+  base_policy: policy.SandboxPolicy,
   pool: Pool,
   tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
@@ -1648,7 +1818,7 @@ fn render_prompt(
       tools:,
       demand: settings.demand,
       degraded: degraded(pool),
-      base_policy: settings.base_policy,
+      base_policy:,
       guidance:,
     ),
   ))
@@ -1789,7 +1959,8 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
 
 /// The tool registry: the five core tools, plus the six `agent_*` tools
 /// when this host wired a messaging plane, plus `code_mode` when it wired
-/// a code-mode pipeline.
+/// a code-mode pipeline, plus `history_search` when its search index
+/// opened.
 ///
 /// Registration is gated on the seam existing rather than the tools being
 /// registered unconditionally and refusing at call time, and the reason
@@ -1797,17 +1968,19 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
 /// this registry, renders ahead of the system prompt, and is the byte
 /// prefix of the provider's cached region — so permanently-refusing
 /// definitions would be paid for on every request of every strand for the
-/// life of the session. A host with neither plane simply has five tools.
+/// life of the session. A host with none of the three simply has five
+/// tools.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.lookup(serve.registry(option.None, option.None), "bash")
+/// // tool.lookup(serve.registry(option.None, option.None, option.None), "bash")
 /// ```
 ///
 pub fn registry(
   agency: Option(agent.Agency),
   code_mode: Option(codemode_tool.CodeMode),
+  history: Option(history_tool.History),
 ) -> Registry {
   tool.registry(
     list.flatten([
@@ -1825,6 +1998,10 @@ pub fn registry(
       case code_mode {
         None -> []
         Some(code_mode) -> codemode_tool.tools(code_mode)
+      },
+      case history {
+        None -> []
+        Some(history) -> [history_tool.tool(history)]
       },
     ]),
   )
