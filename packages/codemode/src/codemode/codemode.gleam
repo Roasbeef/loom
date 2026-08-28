@@ -41,6 +41,7 @@ import codemode/satellite.{
 }
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
+import gleam/list
 
 /// One whole code-mode execution: how far it got, what the kernel
 /// enforced on each jailed stage, and what an approved escalation
@@ -156,7 +157,10 @@ fn compile_and_run(
   let compiled =
     compile.compile(
       vetted,
-      config.compile,
+      compile.CompileConfig(
+        ..config.compile,
+        generated: imported(config.compile.generated, vetted),
+      ),
       identity.build_phase(config.identity),
     )
   case compiled.result {
@@ -164,6 +168,33 @@ fn compile_and_run(
     Ok(artifact) ->
       run_and_report(source, artifact, compiled.enforcement, config)
   }
+}
+
+// The generated capability modules this program actually imports.
+//
+// A host may have generated a module per configured MCP server, and a
+// build that vendored all of them would cost every program the whole
+// configuration: the compiler would type-check a façade per tool of
+// every server, whether or not the program named one. So the table is
+// narrowed here, where the `Vetted` is — the parsed module, not the
+// source, so the set is the compiler's own reading of the import list —
+// and the cost of a configured server scales with the imports a program
+// wrote rather than with what an operator enabled.
+//
+// It is a *cost* filter and not an authorization one, and the difference
+// matters: what a program may import is the vetting allowlist's
+// decision, already made by the time this runs, and a module written
+// into a build the program does not import is dead source. Narrowing
+// cannot widen anything.
+fn imported(
+  generated: List(#(String, String)),
+  vetted: Vetted,
+) -> List(#(String, String)) {
+  let imports =
+    list.map(vet.vetted_module(vetted).imports, fn(definition) {
+      definition.definition.module
+    })
+  list.filter(generated, fn(module) { list.contains(imports, module.0) })
 }
 
 fn compile_failed(

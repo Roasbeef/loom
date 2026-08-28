@@ -57,6 +57,7 @@ fn exec_config(
     compile: compile.CompileConfig(
       build_root: dir <> "/build",
       dependencies: compile.default_dependencies(),
+      generated: [],
       build:,
     ),
     broker:,
@@ -83,7 +84,11 @@ fn exec_config(
   )
 }
 
-fn ok_builder(_phase: identity.PhaseIdentity, root: String) -> compile.Built {
+fn ok_builder(
+  _phase: identity.PhaseIdentity,
+  root: String,
+  _generated: List(#(String, String)),
+) -> compile.Built {
   compile.Built(
     result: Ok(compile.BuildProducts(
       beam_dir: root <> "/ebin",
@@ -130,7 +135,7 @@ pub fn vetting_rejection_short_circuits_test() {
 
 pub fn compile_failure_short_circuits_test() {
   let dir = fresh_dir("compile-fail")
-  let failing = fn(_phase, _root) {
+  let failing = fn(_phase, _root, _generated) {
     compile.Built(
       result: Error(compile.BuildRejected(diagnostics: "type error")),
       enforcement: build_report(),

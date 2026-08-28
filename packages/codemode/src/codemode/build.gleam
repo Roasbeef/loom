@@ -27,6 +27,15 @@
 ////    vendored *inside* it, so the composed policy grants exactly one
 ////    writable root — the build root — plus read access to the toolchain.
 ////
+//// The clone is also where the generated `cap/mcp/<server>` façades are
+//// installed, and the ordering is not incidental: cloning the seed
+//// replaces `vendor/` wholesale, so a module written before it would be
+//// deleted, and a module written after it is part of the `cap` package
+//// the program imports from — which is what lets a façade reach the
+//// internal marshaling seam at all. Only the modules the vetted program
+//// imports arrive here (`codemode.execute` filters), and none of it
+//// touches the dependency table `seed.verify` compares.
+////
 //// A build that nonetheless tries to resolve is diagnosed as such rather
 //// than reported as a broken program: the seed is what failed, not the
 //// model's source.
@@ -65,6 +74,7 @@ import codemode/compile.{
 import codemode/enforcement
 import codemode/identity.{type PhaseIdentity}
 import codemode/seed
+import filepath
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -120,18 +130,26 @@ pub type BuildConfig {
   )
 }
 
-/// Builds the production `compile.Builder`. The identity arrives per
-/// build, from the pipeline; the configuration holds none.
+/// Builds the production `compile.Builder`. The identity and the
+/// generated modules arrive per build, from the pipeline; the
+/// configuration holds neither.
 pub fn builder(config: BuildConfig) -> compile.Builder {
-  fn(phase, build_root) { build(config, phase, build_root) }
+  fn(phase, build_root, generated) {
+    build(config, phase, build_root, generated)
+  }
 }
 
 // The build's report is a return value, not a callback: a caller holding
 // the products holds what the kernel enforced on the jail that made them,
 // and a build that never ran says so rather than saying nothing
 // (`codemode/enforcement`, issue #5).
-fn build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
-  case prepare(config, root) {
+fn build(
+  config: BuildConfig,
+  phase: PhaseIdentity,
+  root: String,
+  generated: List(#(String, String)),
+) -> Built {
+  case prepare(config, root, generated) {
     Error(error) ->
       Built(
         result: Error(error),
@@ -143,12 +161,45 @@ fn build(config: BuildConfig, phase: PhaseIdentity, root: String) -> Built {
   }
 }
 
-fn prepare(config: BuildConfig, root: String) -> Result(Nil, CompileError) {
+fn prepare(
+  config: BuildConfig,
+  root: String,
+  generated: List(#(String, String)),
+) -> Result(Nil, CompileError) {
   use _ <- result.try(
     seed.verify(config.seed_root, config.dependencies)
     |> result.map_error(compile.BuildUnavailable),
   )
-  clone_seed(config.seed_root, root)
+  use _ <- result.try(clone_seed(config.seed_root, root))
+  install_generated(root, generated)
+}
+
+// The generated `cap/mcp/<server>` façades, written into the vendored
+// prelude *after* the clone and before the compiler runs.
+//
+// The order is the whole of it. `clone_seed` deletes `vendor/` and copies
+// the seed's over it, so anything written there earlier — by the compile
+// service, by a previous execution — is gone by the time the build
+// starts. Writing here is what makes the modules part of the `cap`
+// package the program imports from, which is what lets a façade reach
+// `cap/internal/mcp` at all.
+//
+// The seed's dependency table is untouched, so `seed.verify` above still
+// holds: what changes is one package's *sources*, which Gleam recompiles
+// from the seeded cache without resolving anything.
+fn install_generated(
+  root: String,
+  generated: List(#(String, String)),
+) -> Result(Nil, CompileError) {
+  list.try_each(generated, fn(module) {
+    let path = compile.generated_path(root, module.0)
+    use _ <- result.try(
+      simplifile.create_directory_all(filepath.directory_name(path))
+      |> file_error("create the directory for " <> module.0),
+    )
+    simplifile.write(to: path, contents: module.1)
+    |> file_error("write " <> module.0)
+  })
 }
 
 // --- preparing the root ---------------------------------------------------

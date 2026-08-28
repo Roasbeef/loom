@@ -48,7 +48,11 @@ fn fresh_root(name: String) -> String {
   root
 }
 
-fn ok_builder(_phase: identity.PhaseIdentity, root: String) -> compile.Built {
+fn ok_builder(
+  _phase: identity.PhaseIdentity,
+  root: String,
+  _generated: List(#(String, String)),
+) -> compile.Built {
   compile.Built(
     result: Ok(compile.BuildProducts(
       beam_dir: root <> "/ebin",
@@ -65,6 +69,7 @@ pub fn compile_writes_program_under_pinned_name_test() {
     compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: ok_builder,
     )
   let compiled = compile.compile(vetted(source), config, build_phase())
@@ -90,6 +95,7 @@ pub fn generated_entry_boots_the_pinned_program_test() {
     compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: ok_builder,
     )
   let assert Ok(_artifact) =
@@ -111,6 +117,7 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
     compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: ok_builder,
     )
   let assert Ok(_artifact) =
@@ -155,7 +162,7 @@ pub fn the_prelude_is_vendored_at_a_relative_path_test() {
 
 pub fn build_rejection_is_in_band_test() {
   let root = fresh_root("reject")
-  let failing = fn(_phase, _root) {
+  let failing = fn(_phase, _root, _generated) {
     compile.Built(
       result: Error(compile.BuildRejected(
         diagnostics: "type error: expected Int",
@@ -167,6 +174,7 @@ pub fn build_rejection_is_in_band_test() {
     compile.CompileConfig(
       build_root: root,
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: failing,
     )
   let compiled =
@@ -186,6 +194,7 @@ pub fn workspace_setup_failure_is_reported_test() {
     compile.CompileConfig(
       build_root: "/proc/nonexistent/deny/build-root",
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: ok_builder,
     )
   let compiled =

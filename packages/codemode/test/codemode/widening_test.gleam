@@ -218,7 +218,7 @@ pub fn an_approval_the_pipeline_never_reached_reads_as_unspent_test() {
 
 pub fn a_failed_build_never_spends_the_approval_test() {
   let dir = fresh_dir("build-fail")
-  let failing = fn(_phase, _root) {
+  let failing = fn(_phase, _root, _generated) {
     compile.Built(
       result: Error(compile.BuildRejected(diagnostics: "type error")),
       enforcement: enforcement.Reported(entries: ["bwrap"], degraded: False),
@@ -230,6 +230,7 @@ pub fn a_failed_build_never_spends_the_approval_test() {
       compile: compile.CompileConfig(
         build_root: dir <> "/build",
         dependencies: compile.default_dependencies(),
+        generated: [],
         build: failing,
       ),
     )
@@ -371,6 +372,7 @@ fn pipeline_config(
     compile: compile.CompileConfig(
       build_root: dir <> "/build",
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: ok_builder,
     ),
     broker: started_broker(),
@@ -393,7 +395,11 @@ fn pipeline_config(
   )
 }
 
-fn ok_builder(_phase: identity.PhaseIdentity, root: String) -> compile.Built {
+fn ok_builder(
+  _phase: identity.PhaseIdentity,
+  root: String,
+  _generated: List(#(String, String)),
+) -> compile.Built {
   compile.Built(
     result: Ok(compile.BuildProducts(
       beam_dir: root <> "/ebin",

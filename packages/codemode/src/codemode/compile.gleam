@@ -51,6 +51,24 @@
 //// is a `cap/runtime` contract ("Generated entry contract (pin this)"), to
 //// be emitted verbatim; a test pins this generator against it.
 ////
+//// # Generated capability modules
+////
+//// One thing does enter the build beside the program and the pinned
+//// prelude: the `cap/mcp/<server>` façades a host generated from its
+//// configured MCP servers' own `tools/list` (issue #106). They are
+//// written *inside the vendored prelude* — `generated_path` — because a
+//// façade calls `cap/internal/mcp.invoke` and Gleam admits an internal
+//// module only to its own package, and they are carried to the
+//// `Builder` rather than written here because the builder is what
+//// clones the seed's `vendor/` over the build root.
+////
+//// They are not a widening of defence 2. The dependency table is
+//// untouched, so `seed.verify` still compares byte for byte; the
+//// vetting allowlist still decides whether a program may name one; and
+//// `codemode.execute` narrows the host's table to the imports of the
+//// program actually being built, so a configured server a program never
+//// imports costs it nothing.
+////
 //// # The build seam
 ////
 //// Running `gleam build` is an *effect*, so it is injected as a `Builder`.
@@ -148,19 +166,26 @@ pub type Built {
   Built(result: Result(BuildProducts, CompileError), enforcement: Report)
 }
 
-/// The build seam. Given the build phase's identity and the prepared build
-/// root, it runs the offline build and returns the products or a
-/// structured error, plus the jail's enforcement report. Production wraps a
-/// network-off `broker.clear_call`; tests inject a fake. See the module
-/// doc.
+/// The build seam. Given the build phase's identity, the prepared build
+/// root and the generated capability modules to vendor, it runs the
+/// offline build and returns the products or a structured error, plus the
+/// jail's enforcement report. Production wraps a network-off
+/// `broker.clear_call`; tests inject a fake. See the module doc.
 ///
 /// The identity is an argument rather than something the builder was
 /// configured with, and that is load-bearing: a builder cannot hold
 /// coordinates of its own, so the build clears under whatever the pipeline
 /// derived from the execution's one `ExecIdentity` and nothing else
 /// (`codemode/identity`).
+///
+/// The generated modules are an argument for a plainer reason: they are
+/// written *into the vendored prelude*, and the builder is the party that
+/// clones the seed's `vendor/` over the build root. Anything this service
+/// wrote there first would be deleted by that clone, so the write has to
+/// happen on the far side of it and the list has to travel there
+/// (`generated_path`).
 pub type Builder =
-  fn(PhaseIdentity, String) -> Built
+  fn(PhaseIdentity, String, List(#(String, String))) -> Built
 
 /// A compiled program, and what the kernel enforced on the build that
 /// produced it. Total in both fields: a compile that never reached the
@@ -186,9 +211,38 @@ pub type CompileConfig {
     /// The dependencies to pin — nothing else may enter the build. Use
     /// `default_dependencies` for the production set.
     dependencies: List(Dependency),
+    /// The capability modules to vendor into the prelude for this build,
+    /// as `#(module name, source)` — `#("cap/mcp/github", "…")` writes
+    /// `vendor/cap/src/cap/mcp/github.gleam`.
+    ///
+    /// This is not a second dependency table and it widens nothing the
+    /// vetting allowlist did not already admit: a module written here
+    /// that the program does not import is dead source in the build, and
+    /// a module the program *does* import was allowlisted by the host
+    /// that generated it. `codemode.execute` narrows the host's whole
+    /// table to the vetted program's own imports before this record is
+    /// built, so an execution pays for the servers it named and no
+    /// others.
+    generated: List(#(String, String)),
     /// The injected build seam.
     build: Builder,
   )
+}
+
+/// Where one generated capability module is written inside a build root:
+/// inside the *vendored prelude's* source tree, because a generated
+/// façade calls `cap/internal/mcp.invoke` and the Gleam compiler admits
+/// an internal module only to its own package.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert compile.generated_path("/b", "cap/mcp/github")
+///   == "/b/vendor/cap/src/cap/mcp/github.gleam"
+/// ```
+///
+pub fn generated_path(build_root: String, module: String) -> String {
+  build_root <> "/" <> prelude_path <> "/src/" <> module <> ".gleam"
 }
 
 /// The production dependency set: exactly one standard-library version
@@ -231,7 +285,8 @@ pub fn compile(
         ),
       )
     Ok(root) -> {
-      let Built(result:, enforcement:) = config.build(identity, root)
+      let Built(result:, enforcement:) =
+        config.build(identity, root, config.generated)
       Compiled(
         result: result.map(result, fn(products) {
           Artifact(
