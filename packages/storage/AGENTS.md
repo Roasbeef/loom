@@ -33,6 +33,15 @@ by WP-C-full.
   step, run by `open_with_migrations`; the chain itself is owned by
   `session.migration_chain`. `sqlite.storage_version` is 1, so the chain is
   empty today.
+- `storage/sqlite.{record_identity, identity}` — the catalog row's
+  identity projection (`protocol-change/008`): `record_identity` writes
+  the session's canonical id into the metadata blob and its parent's into
+  the long-reserved `parent_session_id` column, and `identity(path:)`
+  reads both back without taking the writer lease, the way
+  `generation(path:)` does. Both are a **projection** — the session's
+  `session/id` / `session/parent` register cells are the truth — so it
+  needs no schema version bump and a failed write costs only a repair on
+  the next open.
 - `storage/sqlite.{Rewrite, RewriteError, rewrite_into, generation}` — the
   offline precise rewrite (pi §2.9) over a **closed** file, and the
   rewrite-generation counter external indexes key their cursors on.
@@ -78,8 +87,9 @@ by WP-C-full.
   history, no interpretation of `strand.*` / `op.*` payloads.
 - **Wire**: the SQLite file schema — write-once `entries` and
   `usage_ledger`, mutable `registers`, `branch_entries` + `branch_meta`,
-  a single-row `session` catalog (carrying `storage_version` and the
-  rewrite `generation` in its metadata blob), and `writer_lease`.
+  a single-row `session` catalog (carrying `storage_version`, the rewrite
+  `generation` and the projected `session_id` in its metadata blob, and
+  the projected `parent_session_id` in its column), and `writer_lease`.
   `storage_version` is 1.
 
 ## Invariants

@@ -876,6 +876,16 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let assert Ok(Nil) =
     session.ensure_strand(instrumented, strand, configuration())
     as "the strand must seed"
+  // The session's canonical id is boot bookkeeping of the same kind and
+  // is minted here for the same reason: `api.open` would otherwise commit
+  // it as the run's first commit, shifting every scheduled fault ordinal
+  // by one. Pre-minting leaves `api.open` with nothing to do.
+  let assert Ok(#(_session_id, _generator)) =
+    session.ensure_id(
+      instrumented,
+      ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 4242),
+    )
+    as "the session id must mint"
   control.arm(ctl)
   let assert Ok(runtime) = api.open(instrumented, surfaces, options)
     as "the session tree must boot"

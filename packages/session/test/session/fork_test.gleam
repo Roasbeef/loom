@@ -17,9 +17,17 @@ import machine/strand.{
 import session/repo
 import session/session
 import simplifile
+import storage/sqlite
 import storage/storage
 import support/drive
 import support/generate
+
+// Every fork mints the destination's canonical id, so every fork call
+// needs a generator. Tests that assert something about the minted id
+// build their own; the rest take this one.
+fn fork_generator() -> ids.Generator {
+  ids.generator(clock.stepping(from: 5000, by: 7), seed: 99)
+}
 
 fn configuration() -> strand.StrandConfiguration {
   StrandConfiguration(
@@ -56,6 +64,7 @@ pub fn branch_fork_copies_the_ancestor_chain_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
 
   // The forked main strand: leaf at the fork point, fresh state, copied
@@ -94,6 +103,7 @@ pub fn branch_fork_of_unconfigured_strand_copies_no_configuration_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
   let assert Ok(None) = session.strand_configuration(forked, "main")
   let assert Ok(Some(session.Cell(value: leaf, ..))) =
@@ -141,6 +151,7 @@ pub fn branch_fork_copies_labels_only_for_copied_entries_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
   // The session name copies; the label of the uncopied entry does not;
   // application-defined facts never copy without an explicit policy.
@@ -172,6 +183,7 @@ pub fn fork_point_must_exist_test() {
       scope: repo.ForkBranch(strand: "main", at: ghost),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
   assert id == ghost
 }
@@ -194,6 +206,7 @@ pub fn fork_at_assistant_with_calls_heals_at_projection_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
   // The fork left both results behind; request construction heals both
   // calls, in source order, directly after the assistant message.
@@ -274,6 +287,7 @@ pub fn tree_fork_copies_every_strand_and_all_labels_test() {
       scope: repo.ForkTree,
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
 
   // Every entry, every strand's configuration and leaf; fresh states.
@@ -323,6 +337,7 @@ pub fn fork_into_sqlite_and_back_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoSqlite(path:, owner: "fork-writer", lease_ttl_ms: 5000),
       clock: clock.stepping(from: 10_000, by: 1),
+      generator: fork_generator(),
     )
   let assert Ok(forked_context) = session.project_context(forked, Some(at))
   let assert Ok(source_context) = session.project_context(source, Some(at))
@@ -336,7 +351,131 @@ pub fn fork_into_sqlite_and_back_test() {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoSqlite(path:, owner: "fork-writer", lease_ttl_ms: 5000),
       clock: clock.stepping(from: 20_000, by: 1),
+      generator: fork_generator(),
     )
+}
+
+// --- session identity across a fork (protocol-change/008) ------------------
+
+pub fn a_fork_mints_its_own_id_and_records_its_parent_test() {
+  let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
+  let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
+  let assert Ok(#(source_id, _)) =
+    session.ensure_id(source, ids.generator(clock.fixed(at: 900), seed: 1))
+  let ctx = drive.new_ctx(source, 21)
+  let #(ctx, at) =
+    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+  let assert Ok(forked) =
+    repo.fork(
+      source: ctx.session,
+      scope: repo.ForkBranch(strand: "main", at:),
+      into: repo.ForkIntoMemory,
+      clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
+    )
+  let assert Ok(Some(forked_id)) = session.id(forked)
+  assert forked_id != source_id
+  assert session.parent_id(forked) == Ok(Some(source_id))
+  // The source is untouched: same id, still no parent of its own.
+  assert session.id(source) == Ok(Some(source_id))
+  assert session.parent_id(source) == Ok(None)
+  // And the id the fork minted is the one a later `ensure_id` reads back.
+  let assert Ok(#(kept, _)) =
+    session.ensure_id(forked, ids.generator(clock.fixed(at: 3000), seed: 77))
+  assert kept == forked_id
+}
+
+pub fn a_fork_of_an_unidentified_source_records_no_parent_test() {
+  let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
+  let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
+  let ctx = drive.new_ctx(source, 22)
+  let #(ctx, at) =
+    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+  let assert Ok(forked) =
+    repo.fork(
+      source: ctx.session,
+      scope: repo.ForkBranch(strand: "main", at:),
+      into: repo.ForkIntoMemory,
+      clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
+    )
+  // Minting one into the source would be a mutation the fork forbids.
+  let assert Ok(Some(_)) = session.id(forked)
+  assert session.parent_id(forked) == Ok(None)
+  assert session.id(source) == Ok(None)
+}
+
+pub fn a_sqlite_fork_writes_parent_session_id_test() {
+  let path = fresh_path("fork_parent_column")
+  let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
+  let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
+  let assert Ok(#(source_id, _)) =
+    session.ensure_id(source, ids.generator(clock.fixed(at: 900), seed: 2))
+  let ctx = drive.new_ctx(source, 23)
+  let #(ctx, at) =
+    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+  let assert Ok(forked) =
+    repo.fork(
+      source: ctx.session,
+      scope: repo.ForkBranch(strand: "main", at:),
+      into: repo.ForkIntoSqlite(path:, owner: "fork-writer", lease_ttl_ms: 5000),
+      clock: clock.stepping(from: 10_000, by: 1),
+      generator: fork_generator(),
+    )
+  let assert Ok(Some(forked_id)) = session.id(forked)
+  let assert Ok(Nil) = session.close(forked)
+  // The lease-free read an outside lister would use.
+  assert sqlite.identity(path:)
+    == Ok(#(
+      Some(ids.session_id_to_string(forked_id)),
+      Some(ids.session_id_to_string(source_id)),
+    ))
+}
+
+pub fn a_fork_into_an_already_identified_destination_is_refused_test() {
+  let path = fresh_path("fork_identified_destination")
+  // A destination an earlier open already named, but never wrote an entry
+  // into: `require_empty` sees nothing to object to, so only the copy
+  // transaction's expectation stands between this and a session file
+  // whose id silently changed under it.
+  let assert Ok(destination) =
+    session.open_sqlite(
+      path:,
+      owner: "prior-writer",
+      lease_ttl_ms: 5000,
+      clock: clock.stepping(from: 10_000, by: 1),
+    )
+    as "the destination file opens"
+  let assert Ok(#(already, _)) =
+    session.ensure_id(destination, ids.generator(clock.fixed(at: 900), seed: 4))
+  let assert Ok(Nil) = session.close(destination)
+
+  let assert Ok(source) = session.open_memory(clock.fixed(at: 1000))
+  let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
+  let ctx = drive.new_ctx(source, 24)
+  let #(ctx, at) =
+    drive.append_message(ctx, generate.assistant_msg(1, message.Stop, []))
+  let assert Error(repo.ForkCopyFailed(error: tx.StaleExpectation(..))) =
+    repo.fork(
+      source: ctx.session,
+      scope: repo.ForkBranch(strand: "main", at:),
+      into: repo.ForkIntoSqlite(path:, owner: "fork-writer", lease_ttl_ms: 5000),
+      clock: clock.stepping(from: 20_000, by: 1),
+      generator: fork_generator(),
+    )
+
+  // The destination is exactly as it was: same id, still no entries.
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path:,
+      owner: "after-the-refusal",
+      lease_ttl_ms: 5000,
+      clock: clock.stepping(from: 30_000, by: 1),
+    )
+    as "the destination file reopens"
+  assert session.id(reopened) == Ok(Some(already))
+  let assert Ok([]) = storage.scan_entries(reopened.store, storage.entry_scan())
+  let assert Ok(Nil) = session.close(reopened)
 }
 
 // --- projection equivalence (seeded property) ------------------------------
@@ -373,6 +512,7 @@ fn run_fork_scenario(seed: generate.Seed) -> Nil {
       scope: repo.ForkBranch(strand: "main", at:),
       into: repo.ForkIntoMemory,
       clock: clock.fixed(at: 2000),
+      generator: fork_generator(),
     )
   let assert Ok(Some(session.Cell(value: forked_leaf, ..))) =
     session.strand_leaf(forked, "main")

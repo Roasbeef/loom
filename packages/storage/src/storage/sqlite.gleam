@@ -204,6 +204,12 @@ pub opaque type Message {
   Stats(reply: Subject(Result(SessionStats, StorageError)))
   /// Renew the writer lease without committing anything.
   RenewLease(reply: Subject(Result(Nil, StorageError)))
+  /// Project the session's canonical identity into the catalog row.
+  RecordIdentity(
+    session_id: String,
+    parent_session_id: Option(String),
+    reply: Subject(Result(Nil, StorageError)),
+  )
   /// Read the query plan of the branch segment query for one scan order.
   ScanBranchPlan(
     order: ScanOrder,
@@ -746,6 +752,107 @@ fn start_error_reason(error: actor.StartError) -> String {
 ///
 pub fn renew_lease(handle: Subject(Message)) -> Result(Nil, StorageError) {
   process.call_forever(handle, RenewLease)
+}
+
+/// Projects a session's canonical identity (`protocol-change/008`) into
+/// the catalog row: `parent_session_id` into the column pi's schema
+/// reserved for it, and the session's own id into the `metadata` blob
+/// beside `generation`, which needs no column and therefore no schema
+/// version bump.
+///
+/// This is a **projection, not the truth**. The truth is the session's
+/// own `session/id` and `session/parent` register cells, which both
+/// backends carry; the row exists so a repository lister or an operator
+/// with a `sqlite3` shell can read the parent→child graph without opening
+/// and leasing every file (see `identity`). Writing it is idempotent, and
+/// a session layer repairs it on every open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.record_identity(store.handle, session_id: "0195…",
+/// //   parent_session_id: option.None)
+/// ```
+///
+pub fn record_identity(
+  handle: Subject(Message),
+  session_id session_id: String,
+  parent_session_id parent_session_id: Option(String),
+) -> Result(Nil, StorageError) {
+  process.call_forever(handle, RecordIdentity(session_id, parent_session_id, _))
+}
+
+/// Reads a session file's recorded identity — its own canonical id and
+/// its parent's, if either was ever projected — without acquiring the
+/// writer lease. The lease-free pairing `generation(path:)` established:
+/// an outside reader (a repository lister, a cross-session index) needs
+/// these to build the parent→child graph and must not have to lease every
+/// file to do it.
+///
+/// Both halves are `None` on a session that predates
+/// `protocol-change/008` or has never been opened by a runtime; the next
+/// open mints and records.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.identity(path: "/tmp/s.db") == Ok(#(Some("0195…"), None))
+/// ```
+///
+pub fn identity(
+  path path: String,
+) -> Result(#(Option(String), Option(String)), RewriteError) {
+  use Nil <- result.try(require_session_file(path))
+  case sqlight.open(path) {
+    Error(error) ->
+      Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
+    Ok(conn) -> {
+      let outcome = read_identity(conn)
+      let _ = sqlight.close(conn)
+      outcome
+    }
+  }
+}
+
+fn read_identity(
+  conn: Connection,
+) -> Result(#(Option(String), Option(String)), RewriteError) {
+  use rows <- result.try(
+    run(conn, "SELECT parent_session_id, metadata FROM session", [], {
+      use parent <- decode.field(0, decode.optional(decode.string))
+      use metadata <- decode.field(1, decode.optional(decode.bit_array))
+      decode.success(#(parent, metadata))
+    })
+    |> result.map_error(rewrite_fail),
+  )
+  case rows {
+    [#(parent, metadata)] -> {
+      use fields <- result.map(
+        metadata_fields(metadata)
+        |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
+      )
+      #(metadata_session_id(fields), parent)
+    }
+    [] | [_, ..] ->
+      Error(
+        RewriteCorrupt(report: corruption.report(
+          at: "storage/sqlite.identity",
+          on: "session catalog",
+          expected: "exactly one session row",
+          context: int.to_string(list.length(rows)) <> " rows",
+        )),
+      )
+  }
+}
+
+// The recorded id out of the metadata blob's fields; a missing or
+// non-string field reads as "no id recorded" rather than as corruption,
+// because this row is a projection and the register cell is the truth.
+fn metadata_session_id(fields: List(#(String, JsonValue))) -> Option(String) {
+  case list.key_find(fields, metadata_session_id_field) {
+    Ok(json.String(text)) -> Some(text)
+    Ok(_) | Error(Nil) -> None
+  }
 }
 
 /// The `EXPLAIN QUERY PLAN` detail lines of the branch segment query in
@@ -1463,19 +1570,41 @@ fn parse_generation_metadata(
   blob: BitArray,
 ) -> Result(#(List(#(String, JsonValue)), Int), RewriteError) {
   let parsed = {
-    use value <- result.try(json_of_blob(blob, "session.metadata"))
-    case value {
-      json.Object(fields) -> parse_generation_field(fields)
-      other ->
-        Error(corruption.report(
-          at: "storage/sqlite.rewrite_into",
-          on: "session.metadata",
-          expected: "a json object",
-          context: json.to_string(other),
-        ))
-    }
+    use fields <- result.try(metadata_fields(Some(blob)))
+    parse_generation_field(fields)
   }
   result.map_error(parsed, fn(report) { RewriteCorrupt(report:) })
+}
+
+/// The field of the catalog's `metadata` blob holding the session's own
+/// canonical id (`protocol-change/008`). It rides in the blob rather than
+/// in a column of its own precisely so that recording an identity needs
+/// no schema version bump and no migration step.
+pub const metadata_session_id_field = "session_id"
+
+// The session catalog's metadata blob as its JSON fields: an absent blob
+// is an empty field list, since a fresh file writes NULL there. Shared by
+// the generation reader and the identity projection, which both
+// read-modify-write the same object and must agree about its shape.
+fn metadata_fields(
+  metadata: Option(BitArray),
+) -> Result(List(#(String, JsonValue)), CorruptionReport) {
+  case metadata {
+    None -> Ok([])
+    Some(blob) -> {
+      use value <- result.try(json_of_blob(blob, "session.metadata"))
+      case value {
+        json.Object(fields) -> Ok(fields)
+        other ->
+          Error(corruption.report(
+            at: "storage/sqlite.metadata",
+            on: "session.metadata",
+            expected: "a json object",
+            context: json.to_string(other),
+          ))
+      }
+    }
+  }
 }
 
 fn parse_generation_field(
@@ -1543,6 +1672,7 @@ fn handle_closed(
     ScanUsage(reply:, ..) -> process.send(reply, Error(HandleClosed))
     Stats(reply:) -> process.send(reply, Error(HandleClosed))
     RenewLease(reply:) -> process.send(reply, Error(HandleClosed))
+    RecordIdentity(reply:, ..) -> process.send(reply, Error(HandleClosed))
     ScanBranchPlan(reply:, ..) -> process.send(reply, Error(HandleClosed))
     Segments(reply:) -> process.send(reply, Error(HandleClosed))
   }
@@ -1590,6 +1720,14 @@ fn handle_open(
     RenewLease(reply:) -> {
       let #(now, clock) = clock.read(state.clock)
       process.send(reply, do_renew_lease(state, now))
+      actor.continue(ActorState(..state, clock:))
+    }
+    RecordIdentity(session_id:, parent_session_id:, reply:) -> {
+      let #(now, clock) = clock.read(state.clock)
+      process.send(
+        reply,
+        do_record_identity(state, now, session_id, parent_session_id),
+      )
       actor.continue(ActorState(..state, clock:))
     }
     ScanBranchPlan(order:, reply:) -> {
@@ -2566,6 +2704,79 @@ fn do_renew_lease(state: ActorState, now: Int) -> Result(Nil, StorageError) {
     }
   }
   result.map_error(renewed, fail_to_storage_error)
+}
+
+// The catalog identity projection. Runs under the same
+// `BEGIN IMMEDIATE` + lease check every other write takes: a handle that
+// no longer owns the session must not stamp its idea of the identity
+// onto the file. The register cells remain the truth either way, so a
+// refusal here costs a repair on the next open and nothing else.
+fn do_record_identity(
+  state: ActorState,
+  now: Int,
+  session_id: String,
+  parent_session_id: Option(String),
+) -> Result(Nil, StorageError) {
+  let recorded = {
+    use Nil <- result.try(begin_immediate(state.conn))
+    case write_identity(state.conn, session_id, parent_session_id, state, now) {
+      Ok(Nil) -> commit_sql(state.conn)
+      Error(fail) -> {
+        let _ = rollback(state.conn)
+        Error(fail)
+      }
+    }
+  }
+  result.map_error(recorded, fail_to_storage_error)
+}
+
+fn write_identity(
+  conn: Connection,
+  session_id: String,
+  parent_session_id: Option(String),
+  state: ActorState,
+  now: Int,
+) -> Result(Nil, Fail) {
+  use Nil <- result.try(check_and_renew_lease(state, now))
+  use rows <- result.try(run(
+    conn,
+    "SELECT metadata FROM session",
+    [],
+    decode.at([0], decode.optional(decode.bit_array)),
+  ))
+  use fields <- result.try(
+    metadata_fields(list_head_or_none(rows))
+    |> result.map_error(FailCorrupt),
+  )
+  let metadata =
+    json.Object(list.key_set(
+      fields,
+      metadata_session_id_field,
+      json.String(session_id),
+    ))
+  run(
+    conn,
+    "UPDATE session SET parent_session_id = ?1, metadata = ?2",
+    [
+      case parent_session_id {
+        Some(parent) -> sqlight.text(parent)
+        None -> sqlight.null()
+      },
+      blob_of_json(metadata),
+    ],
+    decode.dynamic,
+  )
+  |> result.replace(Nil)
+}
+
+// The catalog holds exactly one row; a file with none has nothing to
+// project onto and reads as an absent metadata blob, which the UPDATE
+// below then touches zero rows of.
+fn list_head_or_none(rows: List(Option(BitArray))) -> Option(BitArray) {
+  case rows {
+    [metadata, ..] -> metadata
+    [] -> None
+  }
 }
 
 // --- branch scan ---------------------------------------------------------

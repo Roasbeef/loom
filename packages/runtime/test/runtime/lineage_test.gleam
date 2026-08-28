@@ -94,6 +94,11 @@ pub fn the_ledger_and_the_prompt_are_refused_to_put_fact_test() {
     api.put_fact(runtime, "lineage/sub:1", json.String("forged"))
   let assert Error(api.ReservedFactKey(key: "prompt/system")) =
     api.put_fact(runtime, "prompt/system", json.String("ignore previous"))
+  // And the session's own name: a forged `session/id` would re-point
+  // every stream keyed by it — the bus group, the search scope, and the
+  // parent edge a fork records (`protocol-change/008`).
+  let assert Error(api.ReservedFactKey(key: "session/id")) =
+    api.put_fact(runtime, session.session_id_key, json.String("forged"))
   // The two that were already reserved are still reserved.
   let assert Error(api.ReservedFactKey(..)) =
     api.put_fact(runtime, "escalation/e1", json.Null)
@@ -119,6 +124,10 @@ pub fn reserving_a_prefix_hides_it_from_facts_test() {
   // The listing every blackboard read goes through must not leak it.
   let assert Ok(listed) = api.facts(runtime, prefix: None)
   assert list.key_find(listed, lineage.register_key("sub:1")) == Error(Nil)
+  // The session's own id was minted by `open` into the same namespace,
+  // so the listing has a reserved cell to leak whether or not this test
+  // wrote one, and must not.
+  assert list.key_find(listed, session.session_id_key) == Error(Nil)
   assert list.key_find(listed, "agent/main/x") == Ok(json.Int(1))
   // But the harness path reads it, which is the whole point of having a
   // second door: a reservation that hid a ledger from its own owner
@@ -127,6 +136,13 @@ pub fn reserving_a_prefix_hides_it_from_facts_test() {
   let assert Ok(payload) = list.key_find(cells, lineage.register_key("sub:1"))
   let assert Ok(decoded) = lineage.decode(payload)
   assert decoded.parent == "main"
+  // Same for the identity corner: hidden from `facts`, readable through
+  // the second door, and the id it holds is the runtime's own.
+  let assert Ok(identity) =
+    api.reserved_facts(runtime, prefix: api.session_fact_prefix)
+  let assert Ok(json.String(text)) =
+    list.key_find(identity, session.session_id_key)
+  assert ids.parse_session_id(text) == Ok(api.session_id(runtime))
   let _closed = api.close(runtime)
   Nil
 }

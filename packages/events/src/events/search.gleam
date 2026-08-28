@@ -26,6 +26,15 @@
 //// dropped and the session re-indexes from zero in the same
 //// transaction.
 ////
+//// **Sessions are named by their canonical id.** `sync`, `notify`,
+//// `remove` and `query_in_session` take a `core/ids.SessionId`
+//// (`protocol-change/008`), with no caller-supplied-string form: this is
+//// a *repository-wide* index, and a file-derived name is exactly the
+//// thing that collides across repositories with nothing to notice it.
+//// The stored `session_id` column and `Hit.session` hold that id's
+//// canonical text; parse one back with `ids.parse_session_id` when the
+//// typed value is wanted.
+////
 //// SQL: the named static statements live in `src/events/sql/search.sql`
 //// and are compiled to `events/sql` by parrot (ADR-004 pilot;
 //// regenerate with `scripts/gen-sql.sh`). Schema DDL and pragmas stay
@@ -33,7 +42,7 @@
 //// (a test pins the two together).
 
 import core/entry.{type Entry}
-import core/ids
+import core/ids.{type SessionId}
 import core/message.{type AgentMessage}
 import events/sql
 import gleam/bool
@@ -179,15 +188,16 @@ pub fn close(search: Search) -> Result(Nil, SearchError) {
 /// ## Examples
 ///
 /// ```gleam
-/// // search.sync(search, store, session: "session-1", generation: 0)
+/// // search.sync(search, store, session: id, generation: 0)
 /// ```
 ///
 pub fn sync(
   search: Search,
   store: Storage(handle),
-  session session_id: String,
+  session session: SessionId,
   generation generation: Int,
 ) -> Result(Nil, SearchError) {
+  let session_id = ids.session_id_to_string(session)
   // The cursor read decides what this call writes (how far back to
   // scan, whether to drop and re-index), so it must happen *inside* the
   // same `BEGIN IMMEDIATE` as the write, not before it. `BEGIN
@@ -310,10 +320,10 @@ fn insert_row(
 pub fn notify(
   search: Search,
   store: Storage(handle),
-  session session_id: String,
+  session session: SessionId,
   generation generation: Int,
 ) -> Result(Nil, SearchError) {
-  sync(search, store, session: session_id, generation: generation)
+  sync(search, store, session:, generation:)
 }
 
 /// Removes a session's index rows and cursor — call alongside deleting
@@ -322,13 +332,14 @@ pub fn notify(
 /// ## Examples
 ///
 /// ```gleam
-/// // search.remove(search, session: "session-1")
+/// // search.remove(search, session: id)
 /// ```
 ///
 pub fn remove(
   search: Search,
-  session session_id: String,
+  session session: SessionId,
 ) -> Result(Nil, SearchError) {
+  let session_id = ids.session_id_to_string(session)
   in_transaction(search, fn() {
     use Nil <- result.try(run_statement(
       search,
@@ -426,6 +437,45 @@ fn tool_result_block_text(
     message.ToolResultText(text:, ..) -> Ok(text)
     message.ToolResultImage(..) -> Error(Nil)
   }
+}
+
+/// Runs a full-text query scoped to one session — the same ranking and
+/// the same FTS5 syntax as `query`, filtered to the rows indexed under
+/// `session`. Scoping happens in SQL rather than over the results, so
+/// `limit` counts hits *in this session* instead of hits anywhere that
+/// happen to belong to it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.query_in_session(search, session: id, text: "auth", limit: 10)
+/// ```
+///
+pub fn query_in_session(
+  search: Search,
+  session session: SessionId,
+  text text: String,
+  limit limit: Int,
+) -> Result(List(Hit), SearchError) {
+  let #(statement, params, decoder) =
+    sql.search_entries_in_session(
+      text:,
+      session_id: ids.session_id_to_string(session),
+      limit:,
+    )
+  sqlight.query(
+    statement,
+    on: search.db,
+    with: list.map(params, param_to_sqlight),
+    expecting: decoder,
+  )
+  |> result.map_error(index_fault)
+  |> result.map(
+    list.map(_, fn(row) {
+      let sql.SearchEntriesInSession(session_id:, entry_id:, snippet:) = row
+      Hit(session: session_id, entry: entry_id, snippet:)
+    }),
+  )
 }
 
 // --- the parrot bridge -----------------------------------------------------

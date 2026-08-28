@@ -14,7 +14,11 @@ extended by the M3 runtime wave.
 ## Key Types
 
 - `runtime/api.Runtime` — the live session handle: the `SessionTree`, the
-  `Session`, the `Effects` record, the strand name, and the `RunSettings`.
+  `Session`, the session's canonical `SessionId` (`api.session_id`), the
+  `Effects` record, the strand name, and the `RunSettings`. `api.open`
+  mints that id on a session that has none — the one place every session,
+  file-backed or in-memory, forked or fresh, passes through on its way up
+  (`protocol-change/008`).
   It addresses **one strand at a time**; `api.on_strand` rebinds the same
   tree to a sibling, so every operation works for subagents too.
 - `runtime/api.{CreateStrandError, Delivery}` — subagent creation, and
@@ -280,11 +284,12 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Four corners of `fact.custom` are reserved, and reserving hides as
-  well as refuses.** `escalation/`, `operation-result/`, `lineage/` and
-  `prompt/` are refused to `put_fact` and filtered out of `facts`, so no
-  blackboard write can forge an approval, shadow a terminal result,
-  rewrite a parent edge, or overwrite the pinned system prompt. Because
+- **Five corners of `fact.custom` are reserved, and reserving hides as
+  well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
+  `prompt/` and `session/` are refused to `put_fact` and filtered out of
+  `facts`, so no blackboard write can forge an approval, shadow a
+  terminal result, rewrite a parent edge, overwrite the pinned system
+  prompt, or re-point the session's own identity. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are

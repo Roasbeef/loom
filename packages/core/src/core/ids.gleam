@@ -1,6 +1,7 @@
 //// Opaque identifiers and the injected UUIDv7 generator.
 ////
-//// Every durable id in Loom — entry, usage row, operation — is a UUIDv7:
+//// Every durable id in Loom — entry, usage row, operation, session — is a
+//// UUIDv7:
 //// 48 bits of Unix-millisecond mint time, the version nibble `7`, 12 random
 //// bits, the RFC variant bits `10`, and 62 more random bits. The time
 //// prefix makes every reference self-describing and time-sortable; the
@@ -22,8 +23,12 @@
 //// 3. Synthetic settlements write under already-reserved ids — followers
 ////    and reserved ids go through the same constructors, no special case.
 ////
-//// The three id types are distinct opaque wrappers around the same UUID
+//// The four id types are distinct opaque wrappers around the same UUID
 //// shape, so an `EntryId` can never be passed where an `OpId` is expected.
+//// `SessionId` (`protocol-change/008`) names a whole session rather than a
+//// row inside one: it is minted once at session creation, persisted in the
+//// session's own store, and is what the event bus keys by and what a
+//// forked session records as its parent.
 
 import core/clock.{type Clock}
 import core/corruption.{type CorruptionReport}
@@ -58,6 +63,17 @@ pub opaque type UsageId {
 pub opaque type OpId {
   /// Invariant: `uuid` satisfies the `Uuid` field invariants.
   OpId(uuid: Uuid)
+}
+
+/// Identity of a whole session. A UUIDv7; see the module doc.
+///
+/// Distinct from the three row ids on purpose: a session outlives every
+/// row in it, exists before its first entry, and survives a precise
+/// rewrite that erases entries — so no entry, usage or operation id can
+/// stand in for one (`protocol-change/008`).
+pub opaque type SessionId {
+  /// Invariant: `uuid` satisfies the `Uuid` field invariants.
+  SessionId(uuid: Uuid)
 }
 
 /// A deterministic UUIDv7 minting capability: a clock plus a pseudo-random
@@ -132,6 +148,23 @@ pub fn mint_op(generator: Generator) -> #(OpId, Generator) {
   #(OpId(uuid:), generator)
 }
 
+/// Mints a fresh `SessionId` at the generator's current time (minting
+/// rule 1). Minted once, when a session is created; every later open of
+/// that session reads the persisted id back rather than minting again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let generator = ids.generator(clock.fixed(at: 1000), seed: 1)
+/// let #(id, _generator) = ids.mint_session(generator)
+/// assert ids.session_id_timestamp_ms(id) == 1000
+/// ```
+///
+pub fn mint_session(generator: Generator) -> #(SessionId, Generator) {
+  let #(uuid, generator) = mint_uuid(generator)
+  #(SessionId(uuid:), generator)
+}
+
 /// Mints an `EntryId` that inherits the 48-bit time prefix of `leader` with
 /// a fresh random tail (minting rule 2). Used for tool-result ids, which
 /// share their assistant id's timestamp so the call-and-results group stays
@@ -198,6 +231,23 @@ pub fn op_id_to_string(id: OpId) -> String {
   uuid_to_string(id.uuid)
 }
 
+/// Formats a `SessionId` in canonical lowercase UUID text form — the
+/// durable form: what the session's `session/id` cell holds, what the
+/// SQLite catalog row records, and what the event bus and the search
+/// index key by.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let generator = ids.generator(clock.fixed(at: 0), seed: 9)
+/// let #(id, _generator) = ids.mint_session(generator)
+/// assert string.length(ids.session_id_to_string(id)) == 36
+/// ```
+///
+pub fn session_id_to_string(id: SessionId) -> String {
+  uuid_to_string(id.uuid)
+}
+
 /// Parses an `EntryId` from UUID text form. Case-insensitive; the canonical
 /// form emitted by `entry_id_to_string` is lowercase. Total: anything that
 /// is not a well-formed UUIDv7 with the RFC variant is a corruption report,
@@ -256,6 +306,26 @@ pub fn parse_op_id(text: String) -> Result(OpId, CorruptionReport) {
   }
 }
 
+/// Parses a `SessionId` from UUID text form — the total decoder for the
+/// durable form. Same rules as `parse_entry_id`: anything that is not a
+/// well-formed UUIDv7 with the RFC variant is a corruption report, never
+/// a crash.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let generator = ids.generator(clock.fixed(at: 0), seed: 9)
+/// let #(id, _generator) = ids.mint_session(generator)
+/// assert ids.parse_session_id(ids.session_id_to_string(id)) == Ok(id)
+/// ```
+///
+pub fn parse_session_id(text: String) -> Result(SessionId, CorruptionReport) {
+  case parse_uuid(text) {
+    Ok(uuid) -> Ok(SessionId(uuid:))
+    Error(report) -> Error(report)
+  }
+}
+
 /// Reads the 48-bit mint-time prefix of an `EntryId` as Unix milliseconds.
 ///
 /// ## Examples
@@ -295,6 +365,22 @@ pub fn usage_id_timestamp_ms(id: UsageId) -> Int {
 /// ```
 ///
 pub fn op_id_timestamp_ms(id: OpId) -> Int {
+  id.uuid.ms
+}
+
+/// Reads the 48-bit mint-time prefix of a `SessionId` as Unix
+/// milliseconds — when its id was minted: session creation, except for a
+/// session that predates the id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let generator = ids.generator(clock.fixed(at: 77), seed: 9)
+/// let #(id, _generator) = ids.mint_session(generator)
+/// assert ids.session_id_timestamp_ms(id) == 77
+/// ```
+///
+pub fn session_id_timestamp_ms(id: SessionId) -> Int {
   id.uuid.ms
 }
 

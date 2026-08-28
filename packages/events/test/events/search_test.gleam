@@ -16,6 +16,18 @@ import storage/sqlite
 import storage/storage
 import support/fixtures
 
+// A stable session id per test lane. The index is repository-wide and
+// keys by the canonical id (`protocol-change/008`), so the tests need one
+// that is the same on every run and different per lane.
+fn sid(n: Int) -> ids.SessionId {
+  let #(id, _generator) =
+    ids.mint_session(ids.generator(
+      clock.fixed(at: 1_700_000_000_000 + n),
+      seed: n,
+    ))
+  id
+}
+
 fn open_search() -> search.Search {
   let assert Ok(service) = search.open(":memory:")
     as "in-memory search database must open"
@@ -31,9 +43,10 @@ pub fn sync_then_query_returns_known_entries_test() {
     fixtures.message_entry(ctx, Some(first.id), "unrelated grocery list")
   fixtures.commit_entries(store, [first, second])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok([hit]) = search.query(service, text: "migration", limit: 10)
-  assert hit.session == "s1"
+  assert hit.session == ids.session_id_to_string(sid(1))
   assert hit.entry == ids.entry_id_to_string(first.id)
   assert string.contains(hit.snippet, "[migration]")
   let assert Ok(Nil) = search.close(service)
@@ -45,9 +58,12 @@ pub fn repeated_sync_does_not_duplicate_test() {
   let #(entry, _ctx) = fixtures.message_entry(ctx, None, "singular fact")
   fixtures.commit_entries(store, [entry])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(hits) = search.query(service, text: "singular", limit: 10)
   assert list.length(hits) == 1
 }
@@ -84,7 +100,7 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
   // one with no self-healing delete.
   let assert Ok(warm_up) = search.open(path) as "search database must open"
   let assert Ok(Nil) =
-    search.sync(warm_up, store, session: "race", generation: 0)
+    search.sync(warm_up, store, session: sid(2), generation: 0)
   let assert Ok(Nil) = search.close(warm_up)
 
   // A second wave of five new entries for the two racing syncs to index.
@@ -113,7 +129,7 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
       let assert Ok(service_slow) = search.open(path)
         as "search database must open"
       let result =
-        search.sync(service_slow, slow_store, session: "race", generation: 0)
+        search.sync(service_slow, slow_store, session: sid(2), generation: 0)
       process.send(done, result)
     })
   // Let the slow sync start (and, pre-fix, finish its unlocked cursor
@@ -121,7 +137,7 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
   process.sleep(200)
   let assert Ok(fast_service) = search.open(path) as "search database must open"
   let assert Ok(Nil) =
-    search.sync(fast_service, store, session: "race", generation: 0)
+    search.sync(fast_service, store, session: sid(2), generation: 0)
   let assert Ok(slow_result) = process.receive(done, 5000)
   let assert Ok(Nil) = slow_result
 
@@ -135,12 +151,13 @@ pub fn incremental_sync_indexes_new_entries_test() {
   let #(first, ctx) = fixtures.message_entry(ctx, None, "chapter one")
   fixtures.commit_entries(store, [first])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let #(second, _ctx) =
     fixtures.message_entry(ctx, Some(first.id), "chapter two arrives")
   fixtures.commit_entries(store, [second])
   let assert Ok(Nil) =
-    search.notify(service, store, session: "s1", generation: 0)
+    search.notify(service, store, session: sid(1), generation: 0)
   let assert Ok(hits) = search.query(service, text: "chapter", limit: 10)
   assert list.length(hits) == 2
 }
@@ -157,7 +174,7 @@ pub fn generation_bump_invalidates_and_reindexes_test() {
   fixtures.commit_entries(old_store, [secret])
   let service = open_search()
   let assert Ok(Nil) =
-    search.sync(service, old_store, session: "s1", generation: 0)
+    search.sync(service, old_store, session: sid(1), generation: 0)
   let assert Ok(before) = search.query(service, text: "confidential", limit: 10)
   assert list.length(before) == 1
 
@@ -168,7 +185,7 @@ pub fn generation_bump_invalidates_and_reindexes_test() {
   let #(kept, _ctx) = fixtures.message_entry(ctx, None, "retained material")
   fixtures.commit_entries(new_store, [kept])
   let assert Ok(Nil) =
-    search.sync(service, new_store, session: "s1", generation: 1)
+    search.sync(service, new_store, session: sid(1), generation: 1)
 
   let assert Ok(after) = search.query(service, text: "confidential", limit: 10)
   assert after == []
@@ -184,12 +201,13 @@ pub fn same_generation_keeps_cursor_test() {
   let #(entry, _ctx) = fixtures.message_entry(ctx, None, "cursor anchor")
   fixtures.commit_entries(store, [entry])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   // Re-sync against an *empty* fresh store at the same generation: if
   // the cursor were reset this would drop the indexed row.
   let empty_store = fixtures.open_store()
   let assert Ok(Nil) =
-    search.sync(service, empty_store, session: "s1", generation: 0)
+    search.sync(service, empty_store, session: sid(1), generation: 0)
   let assert Ok(hits) = search.query(service, text: "anchor", limit: 10)
   assert list.length(hits) == 1
 }
@@ -200,12 +218,14 @@ pub fn remove_drops_session_test() {
   let #(entry, _ctx) = fixtures.message_entry(ctx, None, "ephemeral note")
   fixtures.commit_entries(store, [entry])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
-  let assert Ok(Nil) = search.remove(service, session: "s1")
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
+  let assert Ok(Nil) = search.remove(service, session: sid(1))
   let assert Ok(hits) = search.query(service, text: "ephemeral", limit: 10)
   assert hits == []
   // After removal a sync re-indexes from zero (the cursor is gone too).
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(back) = search.query(service, text: "ephemeral", limit: 10)
   assert list.length(back) == 1
 }
@@ -222,12 +242,57 @@ pub fn sessions_are_distinguished_in_hits_test() {
   fixtures.commit_entries(store_b, [entry_b])
   let service = open_search()
   let assert Ok(Nil) =
-    search.sync(service, store_a, session: "sess-a", generation: 0)
+    search.sync(service, store_a, session: sid(3), generation: 0)
   let assert Ok(Nil) =
-    search.sync(service, store_b, session: "sess-b", generation: 0)
+    search.sync(service, store_b, session: sid(4), generation: 0)
   let assert Ok(hits) = search.query(service, text: "shared", limit: 10)
   let sessions = list.map(hits, fn(hit) { hit.session })
-  assert list.sort(sessions, string.compare) == ["sess-a", "sess-b"]
+  assert list.sort(sessions, string.compare)
+    == list.sort(
+      [ids.session_id_to_string(sid(3)), ids.session_id_to_string(sid(4))],
+      string.compare,
+    )
+}
+
+/// The session filter runs in SQL, so `limit` counts hits in the scoped
+/// session rather than hits anywhere that happen to belong to it.
+pub fn query_in_session_scopes_to_one_session_test() {
+  let store_a = fixtures.open_store()
+  let store_b = fixtures.open_store()
+  let ctx = fixtures.new_ctx()
+  let #(mine, ctx) = fixtures.message_entry(ctx, None, "scoped keyword mine")
+  let #(theirs, _ctx) =
+    fixtures.message_entry(ctx, None, "scoped keyword theirs")
+  fixtures.commit_entries(store_a, [mine])
+  fixtures.commit_entries(store_b, [theirs])
+  let service = open_search()
+  let assert Ok(Nil) =
+    search.sync(service, store_a, session: sid(6), generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store_b, session: sid(7), generation: 0)
+
+  // Unscoped: both sessions answer.
+  let assert Ok(both) = search.query(service, text: "scoped", limit: 10)
+  assert list.length(both) == 2
+
+  // Scoped: the other session's entry is excluded, ids and all.
+  let assert Ok([hit]) =
+    search.query_in_session(service, session: sid(6), text: "scoped", limit: 10)
+  assert hit.session == ids.session_id_to_string(sid(6))
+  assert hit.entry == ids.entry_id_to_string(mine.id)
+  let assert Ok([other]) =
+    search.query_in_session(service, session: sid(7), text: "scoped", limit: 10)
+  assert other.entry == ids.entry_id_to_string(theirs.id)
+
+  // A session with nothing indexed answers with nothing rather than with
+  // everybody else's hits.
+  assert search.query_in_session(
+      service,
+      session: sid(8),
+      text: "scoped",
+      limit: 10,
+    )
+    == Ok([])
 }
 
 pub fn limit_caps_hits_test() {
@@ -239,7 +304,8 @@ pub fn limit_caps_hits_test() {
     fixtures.message_entry(ctx, Some(two.id), "repeated token")
   fixtures.commit_entries(store, [one, two, three])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(hits) = search.query(service, text: "repeated", limit: 2)
   assert list.length(hits) == 2
 }
@@ -252,12 +318,14 @@ pub fn summaries_are_indexed_and_customs_skipped_test() {
     fixtures.compaction_entry(ctx, Some(custom.id), "condensed sprint recap")
   fixtures.commit_entries(store, [custom, compaction])
   let service = open_search()
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(hits) = search.query(service, text: "recap", limit: 10)
   assert list.length(hits) == 1
   // The custom entry contributed no text, but its seq advanced the
   // cursor: a re-sync finds nothing new to do.
-  let assert Ok(Nil) = search.sync(service, store, session: "s1", generation: 0)
+  let assert Ok(Nil) =
+    search.sync(service, store, session: sid(1), generation: 0)
   let assert Ok(still) = search.query(service, text: "recap", limit: 10)
   assert list.length(still) == 1
 }
@@ -286,7 +354,7 @@ pub fn sqlite_rewrite_invalidates_index_test() {
   let service = open_search()
   let assert Ok(generation) = sqlite.generation(path:)
   let assert Ok(Nil) =
-    search.sync(service, store, session: "rw", generation: generation)
+    search.sync(service, store, session: sid(5), generation: generation)
   let assert Ok(before) = search.query(service, text: "passphrase", limit: 10)
   assert list.length(before) == 1
 
@@ -330,7 +398,7 @@ pub fn sqlite_rewrite_invalidates_index_test() {
   let assert Ok(reopened) =
     sqlite.open(sqlite.config(path:, owner: "search-test"), clock)
   let assert Ok(Nil) =
-    search.sync(service, reopened, session: "rw", generation: bumped)
+    search.sync(service, reopened, session: sid(5), generation: bumped)
   let assert Ok(gone) = search.query(service, text: "passphrase", limit: 10)
   assert gone == []
   let assert Ok(still) = search.query(service, text: "surviving", limit: 10)

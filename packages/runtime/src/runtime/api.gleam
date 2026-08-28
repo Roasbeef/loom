@@ -35,7 +35,7 @@
 //// strand booter reads the strand set from the `strand.*` registers).
 
 import core/clock
-import core/ids.{type EntryId, type OpId, type Seq}
+import core/ids.{type EntryId, type OpId, type Seq, type SessionId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
@@ -92,6 +92,7 @@ pub type Runtime {
   Runtime(
     tree: SessionTree,
     session: Session,
+    session_id: SessionId,
     effects: Effects,
     strand: String,
     settings: RunSettings,
@@ -245,6 +246,18 @@ pub fn open(
     session.ensure_strand(session, options.strand, options.configuration)
     |> result.map_error(describe_session_error),
   )
+  // The session's own name, minted here because this is the one place
+  // every session — file-backed, in-memory, forked or fresh — passes
+  // through on its way up (`protocol-change/008`). Idempotent: a session
+  // that already carries one hands it back and mints nothing.
+  let #(now, _clock) = clock.read(effects.clock)
+  use #(session_id, _generator) <- result.try(
+    session.ensure_id(
+      session,
+      ids.generator(clock.fixed(at: now), seed: effects.entropy()),
+    )
+    |> result.map_error(describe_session_error),
+  )
   let config =
     supervisor.Config(
       writer_options: writer.Options(
@@ -272,10 +285,27 @@ pub fn open(
   Ok(Runtime(
     tree:,
     session:,
+    session_id:,
     effects:,
     strand: options.strand,
     settings: options.settings,
   ))
+}
+
+/// This session's canonical id (`protocol-change/008`), minted by `open`
+/// on a session that had none and read back on every later open. It is
+/// what the event bus keys by and what a forked session records as its
+/// parent; the client protocol's session *name* is a separate,
+/// caller-facing thing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ids.session_id_to_string(api.session_id(runtime))
+/// ```
+///
+pub fn session_id(runtime: Runtime) -> SessionId {
+  runtime.session_id
 }
 
 /// The same runtime handle addressing a sibling strand: every operation
@@ -1184,17 +1214,26 @@ pub fn facts(
 /// after the tool that needs it is not a reservation.
 pub const prompt_fact_prefix = "prompt/"
 
+/// The reserved `fact.custom` key prefix a session's own canonical
+/// identity lives under — `session/id` and `session/parent`
+/// (`protocol-change/008`). Reserved for the same reason as the others:
+/// the id is what the event bus keys by and what a forked session records
+/// as its parent, so a model-supplied `put_fact` that could rewrite it
+/// could re-point a session's whole event stream.
+pub const session_fact_prefix = "session/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The four corners, and what each would let a forged write do:
+/// The five corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
 /// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
-/// the operator's channel.
+/// the operator's channel; `session/` — re-point the session's own
+/// identity, and with it every stream keyed by it.
 ///
 /// ## Examples
 ///
@@ -1211,6 +1250,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, operation.result_fact_prefix)
   || string.starts_with(key, lineage.key_prefix)
   || string.starts_with(key, prompt_fact_prefix)
+  || string.starts_with(key, session_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

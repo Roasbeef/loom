@@ -106,6 +106,9 @@ pub fn instrument(
     ),
     renew_lease: fn() { renew(ctl, schedule, lease_faults) },
     lease_interval_ms: Some(lease_interval_ms),
+    // The simulation runs over a memory store, which has no catalog row
+    // to project a session identity onto.
+    record_identity: fn(_id, _parent) { Ok(Nil) },
   )
 }
 

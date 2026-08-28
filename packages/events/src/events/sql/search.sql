@@ -20,6 +20,17 @@ WHERE entry_fts.text MATCH ?
 ORDER BY rank
 LIMIT ?;
 
+-- name: SearchEntriesInSession :many
+SELECT
+  session_id,
+  entry_id,
+  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
+FROM entry_fts
+WHERE entry_fts.text MATCH ?
+  AND session_id = ?
+ORDER BY rank
+LIMIT ?;
+
 -- name: GetCursor :one
 SELECT generation, high_water
 FROM search_cursor

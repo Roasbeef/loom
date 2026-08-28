@@ -15,7 +15,7 @@ fn receive_published(timeout: Int) -> Result(bus.Published, Nil) {
 
 pub fn publish_subscribe_roundtrip_test() {
   let bus = bus.start()
-  let session = "bus-roundtrip"
+  let session = bus.unidentified_key(name: "bus-roundtrip")
   bus.subscribe(bus, session:, topic: bus.Commits)
   let event = Committed(seqs: [4, 5], ts: 42)
   bus.publish(bus, session:, event:)
@@ -25,7 +25,7 @@ pub fn publish_subscribe_roundtrip_test() {
 
 pub fn topic_isolation_test() {
   let bus = bus.start()
-  let session = "bus-topic-isolation"
+  let session = bus.unidentified_key(name: "bus-topic-isolation")
   bus.subscribe(bus, session:, topic: bus.Commits)
   // An event on another topic of the same session is not delivered.
   let #(id, _ctx) = fixtures.mint(fixtures.new_ctx())
@@ -40,15 +40,27 @@ pub fn topic_isolation_test() {
 
 pub fn session_isolation_test() {
   let bus = bus.start()
-  bus.subscribe(bus, session: "bus-session-a", topic: bus.Commits)
-  bus.publish(bus, session: "bus-session-b", event: Committed(seqs: [1], ts: 1))
+  bus.subscribe(
+    bus,
+    session: bus.unidentified_key(name: "bus-session-a"),
+    topic: bus.Commits,
+  )
+  bus.publish(
+    bus,
+    session: bus.unidentified_key(name: "bus-session-b"),
+    event: Committed(seqs: [1], ts: 1),
+  )
   assert receive_published(50) == Error(Nil)
-  bus.unsubscribe(bus, session: "bus-session-a", topic: bus.Commits)
+  bus.unsubscribe(
+    bus,
+    session: bus.unidentified_key(name: "bus-session-a"),
+    topic: bus.Commits,
+  )
 }
 
 pub fn subscribe_all_receives_every_topic_once_test() {
   let bus = bus.start()
-  let session = "bus-subscribe-all"
+  let session = bus.unidentified_key(name: "bus-subscribe-all")
   bus.subscribe_all(bus, session:)
   let event = Committed(seqs: [9], ts: 9)
   bus.publish(bus, session:, event:)
@@ -63,7 +75,7 @@ pub fn publish_without_subscribers_is_legal_test() {
   // fire-and-forget Nil either way.
   assert bus.publish(
       bus,
-      session: "bus-nobody-listening",
+      session: bus.unidentified_key(name: "bus-nobody-listening"),
       event: Committed(seqs: [1], ts: 1),
     )
     == Nil
@@ -75,7 +87,7 @@ pub fn publish_without_subscribers_is_legal_test() {
 /// `subscribe` must dedup per `{session, topic, pid}`.
 pub fn double_subscribe_delivers_once_test() {
   let bus = bus.start()
-  let session = "bus-double-subscribe"
+  let session = bus.unidentified_key(name: "bus-double-subscribe")
   bus.subscribe(bus, session:, topic: bus.Commits)
   bus.subscribe(bus, session:, topic: bus.Commits)
   assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 1
@@ -99,7 +111,7 @@ pub fn double_subscribe_delivers_once_test() {
 /// is still alive by answering a ping afterward.
 pub fn bridge_crash_does_not_kill_starter_test() {
   let bus = bus.start()
-  let session = "bus-bridge-crash"
+  let session = bus.unidentified_key(name: "bus-bridge-crash")
   // A subject can only be received on by the process that created it, so
   // the host creates its own ping subject and hands it back over
   // `ready_relay` rather than the test handing one in.
@@ -128,12 +140,35 @@ pub fn bridge_crash_does_not_kill_starter_test() {
 
 pub fn subscriber_count_test() {
   let bus = bus.start()
-  let session = "bus-subscriber-count"
+  let session = bus.unidentified_key(name: "bus-subscriber-count")
   assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 0
   bus.subscribe(bus, session:, topic: bus.Commits)
   assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 1
   bus.unsubscribe(bus, session:, topic: bus.Commits)
   assert bus.subscriber_count(bus, session:, topic: bus.Commits) == 0
+}
+
+/// The two key spaces are disjoint by construction: an unidentified
+/// caller cannot land on an identified session's group however it picks
+/// its name, which is the whole reason the string form survived
+/// `protocol-change/008`.
+pub fn identified_and_unidentified_keys_never_collide_test() {
+  let bus = bus.start()
+  let #(id, _ctx) = fixtures.mint_session(fixtures.new_ctx())
+  let identified = bus.key(of: id)
+  // The most adversarial name available: the id's own canonical text,
+  // and then the rendered key itself.
+  let impersonator = bus.unidentified_key(name: ids.session_id_to_string(id))
+  let echoed = bus.unidentified_key(name: bus.key_to_string(identified))
+  bus.subscribe(bus, session: identified, topic: bus.Commits)
+  bus.publish(bus, session: impersonator, event: Committed(seqs: [1], ts: 1))
+  bus.publish(bus, session: echoed, event: Committed(seqs: [2], ts: 2))
+  assert receive_published(50) == Error(Nil)
+  // The identified key's own publish still arrives.
+  let event = Committed(seqs: [3], ts: 3)
+  bus.publish(bus, session: identified, event:)
+  assert receive_published(500) == Ok(Published(session: identified, event:))
+  bus.unsubscribe(bus, session: identified, topic: bus.Commits)
 }
 
 pub fn topic_of_covers_every_event_test() {
@@ -155,7 +190,7 @@ pub fn topic_of_covers_every_event_test() {
 /// runtime StorageWriter publishes (`ordinal`, `seqs`, `ts`).
 pub fn bridge_republishes_mapped_events_test() {
   let bus = bus.start()
-  let session = "bus-bridge"
+  let session = bus.unidentified_key(name: "bus-bridge")
   bus.subscribe(bus, session:, topic: bus.Commits)
   let assert Ok(started) =
     bus.bridge(bus, session:, map: fn(incoming: #(Int, List(Seq), Int)) {

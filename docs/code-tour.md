@@ -186,7 +186,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1188`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1195`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -208,7 +208,7 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:282`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:312`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
 (`runtime/api.gleam:270`), and its shape is the shape of every admission
 in the system.
@@ -603,7 +603,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1764`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1771`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -1141,7 +1141,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:690`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:720`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1152,7 +1152,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:911`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:941`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3587`). Keying
