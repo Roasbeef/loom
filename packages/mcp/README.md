@@ -1,29 +1,213 @@
 # mcp
 
-The pure protocol layer for Model Context Protocol clients: JSON-RPC 2.0
-codecs, the MCP lifecycle and tool messages (revision 2025-06-18), and
-newline-delimited stdio framing, all over `core/json`'s `JsonValue`.
+An MCP server — Model Context Protocol — is somebody else's program,
+speaking JSON-RPC 2.0 down a pipe, offering tools it would like a model
+to call. This package is Loom's entire client side of that arrangement:
+the protocol codecs, the actor that owns one server process, and the
+generator that turns a server's tool listing into a Gleam module a
+code-mode program can import. It is phase-3 work for issue #106, and it
+stops at the package boundary: reading `loom.toml`, starting a client
+per configured server, and routing `mcp.<server>` capability calls are
+harness wiring, done elsewhere.
 
-Nothing in this package performs I/O. It is the sans-io half of an MCP
-client — builders produce message values, decoders settle inbound bytes
-as typed values or typed faults — and the actor that owns a server
-process and its pipes is a separate slice. Every decoder is total:
-hostile input becomes a fault value naming what was wrong, never a
-crash.
+The package targets MCP revision 2025-06-18, the `initialize`-based
+lifecycle, and accepts `2025-03-26` and `2024-11-05` as well. The
+current revision, 2026-07-28, is stateless and has no `initialize` at
+all; servers in the field speak the older lifecycle, so that is what v1
+speaks.
 
-Three modules:
+## MCP tools are modules, not tools
 
-- `mcp/jsonrpc` — the JSON-RPC 2.0 envelope: request and notification
-  encoders, and a total decoder for the three inbound shapes (response,
-  server-initiated request, notification).
-- `mcp/protocol` — the five methods v1 needs and nothing more:
-  `initialize` / `notifications/initialized` (with version negotiation
-  against a closed supported list, and a deliberately empty client
-  capabilities object), `tools/list`, `tools/call`, and `ping`. Tool
-  input schemas cross this layer raw and untrusted.
-- `mcp/stdio` — pure line framing: a push buffer that assembles
-  newline-delimited messages from arbitrary chunks (tolerating `\r\n`,
-  bounded at 16 MiB per line), and `frame`, which renders one message
-  as compact single-line JSON plus its newline.
+The obvious design is to register each MCP tool as a harness tool, so
+`github.create_issue` appears in the model's tool list beside
+`fs_read`. Loom does the opposite: a server becomes one generated Gleam
+module, `cap/mcp/<server>`, and a code-mode program reaches its tools by
+importing it.
 
-See `CLAUDE.md` for the full type inventory and invariants.
+Two things follow, and together they are the reason.
+
+**Trust is granted per server.** Code mode's vetting lint bounds a
+program's capabilities by its imports. A generic `cap/tools.invoke`
+dispatcher would not falsify that theorem, but it would collapse what
+the theorem discriminates: the bound becomes "the whole registry, for
+every program". Allowlisting `cap/mcp/github` instead bounds the program
+to the one server a human decided to trust — which is the granularity a
+human actually reasons about, since nobody vets 300 tools one at a time.
+
+**A module costs the same whatever the server's size.** The model reads
+a rendered module surface — signatures and doc comments — rather than a
+tool schema per tool, so a server with 300 tools costs roughly what a
+server with 3 costs. That is why this package has no tool-search
+machinery: code mode already solved discovery structurally, and the
+remaining lever is operator-side server enablement.
+
+## `tools/list` is attacker-controlled input
+
+A server's listing arrives as JSON the harness did not write, and the
+generator turns it into Gleam source the harness compiles and the
+vetting allowlist admits. That is the sharp edge of the whole feature,
+so the generator treats every string in a listing as hostile.
+
+**Wire identity never bends.** Every generated body closes over the
+original tool name and the original parameter names as escaped string
+literals. `mcp/name` mangles names for the Gleam side — `createIssue`
+becomes `create_issue_1a2b3c4d` — but the mangled name is a display
+artifact, and renaming can never change what crosses the wire. Whenever
+mangling changes anything at all, the result carries eight hex
+characters of a digest of the original, so `createIssue` and
+`create_issue` stay distinct rather than quietly becoming one function.
+A residual collision after that is engineered rather than accidental,
+and the generator refuses the whole server naming both originals instead
+of repairing it.
+
+**Server prose stays inside the comment line it was written into.**
+`codegen.sanitize` replaces every control and direction-changing
+codepoint with a space, and caps a tool description at 400 characters
+and a parameter note at 120. Every comment line the generator emits
+begins `/// `, and every line break comes from the generator's own word
+wrap — never from the server's text, whose breaks the sanitizer already
+flattened.
+
+**A backstop proves the first two held.** After rendering, `scan_for_at`
+walks the source and fails generation if a single `@` appears outside a
+comment or a string literal. Generated code needs no attribute at all,
+so a stray `@` means the sanitizer failed — and `@external` is exactly
+the payload a hostile listing would want, since it is Gleam's one bridge
+to arbitrary Erlang. The generator would rather refuse the server loudly
+than hand the compiler an attribute.
+
+Two ceilings and one degradation bound the rest. A listing of more than
+256 tools refuses the server, and so does a rendered surface still past
+64 KiB after truncation. A parameter label collision inside one tool
+degrades that one function to its whole-value form and leaves the rest
+of the server typed.
+
+## Every schema settles, and no parameter is dropped
+
+`mcp/schema` is the one place a tool's raw `inputSchema` is read, and it
+never fails. It sorts each required parameter into one of three tiers.
+A schema fitting the typed subset — `string`, `integer`, `number`,
+`boolean`, or an array of those — becomes a typed Gleam argument. A
+nested object, a `$ref`, an `anyOf`, a missing type, or a `required`
+name with no `properties` entry becomes a required structured argument
+carrying the reason. An unusable top level collapses the whole tool to
+one argument holding the entire arguments map.
+
+Optional parameters are never typed arguments. They travel through the
+generated façade's single `options` argument, keyed by their original
+wire name, and appear in the doc comment so the model knows they exist.
+
+Measured against a plausible GitHub-shaped listing, 30 of 31 required
+parameters land in tier 1. The design ruling's falsifier is written into
+`codegen_test`: if mainstream servers push tier 2 past 25% of required
+parameters, that is the trigger to widen the subset and generate nested
+records.
+
+## The transport is a seam, and spawning is only the primitive
+
+`mcp/client` is written against `mcp/transport.Transport` and nothing
+lower. `PortTransport` is the production mechanism — a child OS process
+on an Erlang port, stdin and stdout as the wire, argv as a list so
+nothing is shell-interpretable. `ChannelTransport` is the test seam: an
+in-process peer that receives the connect, sees every outbound line, and
+delivers inbound bytes through the same messages a port does, which is
+why every client behaviour is provable without an OS process.
+
+**Who may spawn a real server binary is decided elsewhere.** An unjailed
+port spawn here is the primitive, not the final security posture; the
+decision to run a server through the `loom-exec` helper inside a jail
+belongs to the harness wiring that configures servers, and the seam is
+what lets that land without rewriting the actor.
+
+The child's stderr is deliberately not merged into stdout. Merging would
+interleave the server's diagnostics into the newline-delimited JSON-RPC
+stream and corrupt framing, so stderr is inherited from the BEAM and the
+server's complaints land on the harness's own.
+
+## One peer, no restart, and nothing that kills a caller
+
+The client actor owns one server for the session. A dead peer — the
+process exited, a framing fault poisoned the line stream, the bytes
+stopped being UTF-8 — settles every in-flight call as `Unavailable` and
+latches the client dead; later calls answer `Unavailable` in band rather
+than crashing anyone. Reconnection belongs to phase 5's LSP client
+(#25), which needs exactly what this package already is: a supervised,
+long-lived stdio peer.
+
+Because this client declares an empty capabilities object, a
+server-initiated request is answered in band with JSON-RPC's
+method-not-found, and a server notification is decoded and dropped.
+Every public call is a monitored send-and-select rather than
+`process.call`, which panics on a timeout and on a dead callee: a caller
+holding a tool-call verdict must not die of a wedged client. Each call
+also carries its own deadline inside the actor, so an expired id is
+forgotten and a late response for it is dropped silently.
+
+## The modules
+
+| Module | What it holds |
+|---|---|
+| `mcp/jsonrpc` | The JSON-RPC 2.0 envelope: request and notification encoders, and one total decoder for the three inbound shapes. |
+| `mcp/protocol` | The five methods v1 speaks, version negotiation against a closed list, and the deliberately empty client capabilities. |
+| `mcp/stdio` | Line framing both ways: a push buffer bounded at 16 MiB, and `frame` for the outbound side. |
+| `mcp/transport` | The `Transport` seam, the `Spawn` spec, and `utf8_prefix`, which reassembles characters split across pipe chunks. |
+| `mcp/client` | The actor: handshake, `list_tools` with bounded pagination, `call_tool`, `stop`, and the death latch. |
+| `mcp/schema` | The three-tier reading of a raw `inputSchema` into a parameter plan. |
+| `mcp/name` | Mangling a server-chosen name into a Gleam identifier, with the digest rule that keeps two originals distinct. |
+| `mcp/codegen` | The generator: one `cap/mcp/<server>` module plus its rendered surface, and every refusal that stops one being written. |
+| `mcp/internal/ffi_port` | The port externals over `mcp_ffi.erl` — this package's complete inventory of impurity. |
+
+Paths are relative to `packages/mcp/src/` — `mcp/codegen` is
+`packages/mcp/src/mcp/codegen.gleam`.
+
+## What is deliberately absent
+
+Resources, prompts, logging, progress, cancellation, completion, and the
+2026-07-28 stateless mode are all refused for v1 rather than deferred by
+accident: each is surface a hostile server could push data through, and
+a tool-calling client needs none of it.
+
+**Sampling, roots, and elicitation are absent for a stronger reason.**
+Declaring `sampling` would let a server spend Loom's model; `roots`
+would tell a server about the filesystem; `elicitation` would let a
+server put questions to a human through the harness. The declared
+capabilities object is therefore empty, and a test pins the emptiness so
+that widening it is a deliberate, test-breaking act. Upstream deprecated
+sampling and roots in 2026-07-28, so the refusal now has cover from the
+specification itself.
+
+`listChanged` decodes faithfully and is then ignored: this client lists
+tools once per connection and subscribes to nothing. HTTP and SSE
+transports are absent because a locally-spawned server speaks stdio, and
+a spawned child process is what the jailing story attaches to. Restart
+and reconnect supervision is absent for the reason above.
+
+## Running the tests
+
+`make check-mcp` is the gate for this package — format check,
+warning-free build, tests. `make test-mcp` runs the tests alone, and
+`make lint-mcp` runs the house-rule lint over these sources.
+
+Everything except the port-backed transport tests is deterministic and
+in-process: the client suite drives the production actor against a
+scripted fake server through the real `ChannelTransport` seam. The port
+tests spawn `/bin/echo`, `/bin/cat` and `/bin/sh` to prove the FFI
+writes, reads, delivers the exit status, and threads argv, env and the
+working directory; on a host missing those binaries they print a loud
+SKIP line rather than failing.
+
+## Reading further
+
+- [`CLAUDE.md`](CLAUDE.md) — the reference doc for changing this code:
+  key types, real dependency edges, the client's traffic, and the
+  invariants that break things when violated. Read it before editing.
+- [`docs/architecture/code-mode.md`](../../docs/architecture/code-mode.md)
+  — the vetting theorem, the prelude, and what each layer confines.
+- [`packages/cap/CLAUDE.md`](../cap/CLAUDE.md) — the other end of what
+  this package generates for: `cap/mcp`'s result vocabulary and the
+  `cap/internal/mcp.invoke` seam every generated façade calls.
+- [`packages/client/CLAUDE.md`](../client/CLAUDE.md) —
+  `client/protocol`, the house pattern for strict-envelope,
+  tolerant-content wire codecs these decoders follow.
+- [`docs/next.md`](../../docs/next.md) — the #106 design rulings, and
+  what the pipeline-integration slice still owes.
