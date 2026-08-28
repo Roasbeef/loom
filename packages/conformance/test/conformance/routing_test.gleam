@@ -487,14 +487,17 @@ pub fn a_mid_wait_switch_leaves_the_steps_admission_alone_test() {
   let effects =
     effects.Effects(
       ..base,
-      hooks: effects.Hooks(..hooks, admission: fn(query) {
-        let live = case session.strand_configuration(sess, "main") {
-          Ok(Some(session.Cell(value:, ..))) -> value.model
-          _ -> query.configuration.model
-        }
-        process.send(admissions, #(query.configuration.model, live))
-        hooks.admission(query)
-      }),
+      hooks: effects.Hooks(
+        ..hooks,
+        admission: fn(query: effects.AdmissionQuery) {
+          let live = case session.strand_configuration(sess, "main") {
+            Ok(Some(session.Cell(value:, ..))) -> value.model
+            _ -> query.configuration.model
+          }
+          process.send(admissions, #(query.configuration.model, live))
+          hooks.admission(query)
+        },
+      ),
     )
   let options = api.default_options(configuration())
   let assert Ok(runtime) =
