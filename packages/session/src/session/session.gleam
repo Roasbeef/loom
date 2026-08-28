@@ -11,13 +11,20 @@
 //// process should commit through a session; reads may come from anywhere
 //// (both shipped backends serialize through their own actor mailbox).
 ////
+//// A session also has a name of its own: `ensure_id` mints the canonical
+//// `core/ids.SessionId` once at creation and persists it in the reserved
+//// `session/id` cell, so every later open of the same store yields the
+//// same id (`protocol-change/008`).
+////
 //// The repository-level admin operations over sessions — forks (pi §2.7)
 //// and the precise rewrite (pi §2.9) — live in `session/repo`.
 
 import core/clock.{type Clock}
 import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry}
-import core/ids.{type EntryId, type OpId, type Seq}
+import core/ids.{
+  type EntryId, type Generator, type OpId, type Seq, type SessionId,
+}
 import core/json.{type JsonValue}
 import core/message.{
   type AgentMessage, AssistantMessage, AssistantToolCall, ToolResultMessage,
@@ -46,12 +53,16 @@ import storage/storage.{type Storage, type StorageError, Storage}
 /// writer lease and is a no-op returning `Ok` for the memory backend;
 /// `lease_interval_ms` is `Some` exactly when a lease exists and is the
 /// interval at which the runtime's writer should call `renew_lease`
-/// (well below the TTL).
+/// (well below the TTL); `record_identity` projects the canonical session
+/// id and its parent's into the SQLite catalog row and is a no-op
+/// returning `Ok` for the memory backend, which has no catalog.
 pub type Session {
   Session(
     store: Storage(Nil),
     renew_lease: fn() -> Result(Nil, StorageError),
     lease_interval_ms: Option(Int),
+    record_identity: fn(SessionId, Option(SessionId)) ->
+      Result(Nil, StorageError),
   )
 }
 
@@ -87,6 +98,9 @@ pub fn open_memory(clock: Clock) -> Result(Session, OpenError) {
         store: erase(store),
         renew_lease: fn() { Ok(Nil) },
         lease_interval_ms: None,
+        // No catalog row to project onto: for a memory session the
+        // `session/id` cell is the whole of its identity.
+        record_identity: fn(_id, _parent) { Ok(Nil) },
       ))
     Error(error) -> Error(MemoryOpenFailed(error:))
   }
@@ -120,11 +134,20 @@ pub fn open_sqlite(
   case sqlite.open_with_migrations(config, clock, migration_chain()) {
     Ok(store) -> {
       let handle = store.handle
-      Ok(Session(
-        store: erase(store),
-        renew_lease: fn() { sqlite.renew_lease(handle) },
-        lease_interval_ms: Some(int_max(1, lease_ttl_ms / 3)),
-      ))
+      Ok(
+        Session(
+          store: erase(store),
+          renew_lease: fn() { sqlite.renew_lease(handle) },
+          lease_interval_ms: Some(int_max(1, lease_ttl_ms / 3)),
+          record_identity: fn(id, parent) {
+            sqlite.record_identity(
+              handle,
+              session_id: ids.session_id_to_string(id),
+              parent_session_id: option.map(parent, ids.session_id_to_string),
+            )
+          },
+        ),
+      )
     }
     Error(error) -> Error(SqliteOpenFailed(error:))
   }
@@ -187,6 +210,176 @@ fn erase(store: Storage(handle)) -> Storage(Nil) {
 ///
 pub fn close(session: Session) -> Result(Nil, StorageError) {
   storage.close(session.store)
+}
+
+// --- session identity (protocol-change/008) ------------------------------
+
+/// The reserved `fact.custom` key a session's canonical id lives under.
+/// Reserved by the `session/` prefix in `runtime/api.reserved_fact_key`,
+/// so no model-supplied `put_fact` can forge or rewrite it.
+pub const session_id_key = "session/id"
+
+/// The reserved `fact.custom` key a forked session records its source
+/// session's id under. Absent on a session that was not forked — and on
+/// one forked from a source that had no id of its own, since a fork never
+/// mutates its source.
+pub const parent_session_id_key = "session/parent"
+
+/// This session's canonical id, or `None` for a session that has never
+/// been through `ensure_id` — one created before `protocol-change/008`,
+/// or one opened without booting a runtime.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.id(session) == Ok(Some(minted))
+/// ```
+///
+pub fn id(session: Session) -> Result(Option(SessionId), SessionError) {
+  read_identity_cell(session, session_id_key)
+}
+
+/// The id of the session this one was forked from, or `None` for a root
+/// session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.parent_id(forked) == Ok(Some(source_id))
+/// ```
+///
+pub fn parent_id(session: Session) -> Result(Option(SessionId), SessionError) {
+  read_identity_cell(session, parent_session_id_key)
+}
+
+/// Mints and persists this session's canonical id if it has none, and
+/// returns the id either way — boot bookkeeping in the same slot and the
+/// same shape as `ensure_strand`, committed through the session handle
+/// because it runs before any writer exists (spec-gaps WP-E item 2).
+///
+/// Reopening a session therefore always yields the same id: the second
+/// call finds the cell and mints nothing. A session that predates the
+/// concept gains one on its first open here, and the generator comes back
+/// unadvanced when nothing was minted.
+///
+/// The mint is CAS-guarded on the cell being absent, so a concurrent
+/// minter's `StaleExpectation` is not a failure — the winner's id is the
+/// session's id, and this re-reads it. Either way the SQLite catalog row
+/// is repaired to match (see `storage/sqlite.record_identity`); that
+/// projection failing is not a session failure, because the register cell
+/// is the truth and the next open repairs it again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(id, _generator)) = session.ensure_id(session, generator)
+/// ```
+///
+pub fn ensure_id(
+  session: Session,
+  generator: Generator,
+) -> Result(#(SessionId, Generator), SessionError) {
+  use existing <- result.try(id(session))
+  case existing {
+    Some(id) -> {
+      use Nil <- result.map(project_identity(session, id))
+      #(id, generator)
+    }
+    None -> mint_identity(session, generator)
+  }
+}
+
+fn mint_identity(
+  session: Session,
+  generator: Generator,
+) -> Result(#(SessionId, Generator), SessionError) {
+  let #(minted, generator) = ids.mint_session(generator)
+  let seed =
+    Tx(
+      writes: [
+        SetRegister(
+          ns: register.FactCustom,
+          key: session_id_key,
+          value: register.value(json.String(ids.session_id_to_string(minted))),
+        ),
+      ],
+      expected: [
+        Expect(ns: register.FactCustom, key: session_id_key, seq: None),
+      ],
+    )
+  case storage.commit(session.store, seed) {
+    Ok(_) -> {
+      use Nil <- result.map(project_identity(session, minted))
+      #(minted, generator)
+    }
+    // A concurrent minter won; the session's id is theirs, not ours.
+    Error(tx.StaleExpectation(..)) -> adopt_minted_identity(session, generator)
+    Error(error) -> Error(commit_refusal(error))
+  }
+}
+
+fn adopt_minted_identity(
+  session: Session,
+  generator: Generator,
+) -> Result(#(SessionId, Generator), SessionError) {
+  use existing <- result.try(id(session))
+  case existing {
+    Some(id) -> Ok(#(id, generator))
+    None ->
+      Error(
+        StoreFailure(error: storage.BackendFault(
+          reason: "the session id cell was refused as present and read as absent",
+        )),
+      )
+  }
+}
+
+// Writes the catalog projection: the id and, when the session records
+// one, its parent's. Only the read is allowed to fail the caller — a
+// projection write that fails leaves the register cell (the truth)
+// standing, and the next open repairs the row.
+fn project_identity(
+  session: Session,
+  id: SessionId,
+) -> Result(Nil, SessionError) {
+  use parent <- result.map(parent_id(session))
+  let _ = session.record_identity(id, parent)
+  Nil
+}
+
+fn read_identity_cell(
+  session: Session,
+  key: String,
+) -> Result(Option(SessionId), SessionError) {
+  use cell <- result.try(
+    storage.get_register(session.store, register.FactCustom, key)
+    |> result.map_error(StoreFailure),
+  )
+  case cell {
+    None -> Ok(None)
+    Some(storage.Register(value:, ..)) ->
+      decode_identity_cell(value.payload, key) |> result.map(Some)
+  }
+}
+
+fn decode_identity_cell(
+  payload: JsonValue,
+  key: String,
+) -> Result(SessionId, SessionError) {
+  case payload {
+    json.String(text) ->
+      ids.parse_session_id(text)
+      |> result.map_error(fn(report) { SessionCorrupt(report:) })
+    other ->
+      Error(
+        SessionCorrupt(report: corruption.report(
+          at: "session/session.read_identity_cell",
+          on: key,
+          expected: "a canonical session id string",
+          context: json.to_string(other),
+        )),
+      )
+  }
 }
 
 // --- boot bookkeeping ----------------------------------------------------
@@ -261,19 +454,34 @@ fn seed_commit_result(
     Ok(_) -> Ok(Nil)
     // A concurrent seeder won; the strand exists.
     Error(tx.StaleExpectation(..)) -> Ok(Nil)
-    Error(tx.Corruption(report:)) -> Error(SessionCorrupt(report:))
-    Error(tx.Faulted(reason:)) ->
-      Error(StoreFailure(error: storage.BackendFault(reason:)))
-    // Seeding a strand against a session another writer now owns is a
-    // backend failure like any other from here: this layer has no tree
-    // to reopen, and the caller that does gets the reason spelled out
+    Error(error) -> Error(commit_refusal(error))
+  }
+}
+
+/// Every commit refusal this layer does not otherwise recognize —
+/// `LeaseLost` included — flattened into a `SessionError`, because this
+/// layer owns no tree to reopen. A `StaleExpectation` never reaches here:
+/// each CAS-guarded boot write decides for itself what losing the race
+/// means, and for both of them it means success.
+fn commit_refusal(error: tx.CommitError) -> SessionError {
+  case error {
+    tx.Corruption(report:) -> SessionCorrupt(report:)
+    tx.Faulted(reason:) -> StoreFailure(error: storage.BackendFault(reason:))
+    // Committing against a session another writer now owns is a backend
+    // failure like any other from here: this layer has no tree to reopen,
+    // and the caller that does gets the reason spelled out
     // (`protocol-change/005`).
-    Error(tx.LeaseLost(held_by:)) ->
-      Error(
-        StoreFailure(
-          error: storage.BackendFault(reason: tx.describe_lease_loss(held_by)),
-        ),
+    tx.LeaseLost(held_by:) ->
+      StoreFailure(
+        error: storage.BackendFault(reason: tx.describe_lease_loss(held_by)),
       )
+    tx.StaleExpectation(failed:) ->
+      StoreFailure(error: storage.BackendFault(
+        reason: "a stale expectation reached the generic refusal path: "
+        <> register.ns_to_string(failed.ns)
+        <> "/"
+        <> failed.key,
+      ))
   }
 }
 

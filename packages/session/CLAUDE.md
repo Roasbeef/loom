@@ -15,7 +15,16 @@ the rewrite exists for. WP-C plus WP-C-full.
 
 - `session/session.Session` — one open `Storage(Nil)` (handle type erased)
   plus the lease-renewal capability the runtime's StorageWriter schedules,
-  and `lease_interval_ms` (SQLite only; `None` for memory).
+  `lease_interval_ms` (SQLite only; `None` for memory), and
+  `record_identity`, which projects the canonical session id into the
+  SQLite catalog row (a no-op for memory, which has no catalog).
+- `session/session.{id, parent_id, ensure_id, session_id_key,
+  parent_session_id_key}` — the canonical `core/ids.SessionId`
+  (`protocol-change/008`). `ensure_id` is boot bookkeeping in
+  `ensure_strand`'s shape: it mints one only if the reserved `session/id`
+  cell is empty, CAS-guarded on absence, so reopening a session always
+  yields the same id and a session that predates the concept gains one on
+  first open. `runtime/api.open` is the call site.
 - `session/session.Cell(payload)` — a decoded register payload with the seq
   it was read at. Every typed accessor returns one, because the seq is what
   the caller's CAS expectation is built from.
@@ -72,6 +81,9 @@ the rewrite exists for. WP-C plus WP-C-full.
     (spec-gaps WP-E item 2). CAS-guarded with `Expect(..., seq: None)` on
     all three; a losing concurrent seeder reads `StaleExpectation` as
     success.
+  - `ensure_id`'s one-write mint (`SetRegister` on `fact.custom`
+    `session/id`), CAS-guarded with `Expect(..., seq: None)`; a losing
+    concurrent minter re-reads the winner's id rather than failing.
   - `repo.fork`'s single destination transaction: `InsertEntry` per copied
     entry (ids preserved, `seq`/`ts` re-stamped by the destination),
     `SetRegister` for the destination strands' `strand.leaf` /
@@ -132,6 +144,14 @@ the rewrite exists for. WP-C plus WP-C-full.
 - **Compaction and branch-summary entries project as user messages** — pi
   §2.5 leaves the provider mapping open, and this is the recorded
   interpretation (spec-gaps WP-E item 7).
+- **A fork is born identified, and the source is not touched.**
+  `repo.fork` mints the destination's own `SessionId` inside the copy
+  transaction and writes the source's id beside it as `session/parent` —
+  the only path in Loom that creates a session from a session, since
+  protocol `fork` makes a strand in the same session and the Agency's
+  children are strands too. A source with no id of its own forks to a
+  destination with no parent recorded: minting one into the source would
+  be the mutation fork forbids.
 - **Fork never mutates the source, and the destination starts idle.** It
   copies entries (ids preserved), strand configuration and leaves, and
   semantic facts; it copies no operation, pending, or terminal-result

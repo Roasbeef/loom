@@ -26,7 +26,7 @@ import core/clock.{type Clock}
 import core/codec as core_codec
 import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry}
-import core/ids.{type EntryId}
+import core/ids.{type EntryId, type Generator, type SessionId}
 import core/json.{type JsonValue}
 import core/register
 import core/tx.{type CommitError, InsertEntry, InsertUsage, SetRegister, Tx}
@@ -105,11 +105,20 @@ pub type ForkError {
 /// The returned destination session is open (pi §2.8: fork returns its
 /// destination already open); the caller owns closing it.
 ///
+/// **The destination is born identified** (`protocol-change/008`): its own
+/// canonical `SessionId` is minted from `generator` and written in the
+/// same destination transaction as the copy, and the source's id — read,
+/// never minted, because a fork must not mutate its source — is written
+/// beside it as the parent. This is the one path in Loom that creates a
+/// session from a session: the client protocol's `fork` makes a strand in
+/// the *same* session, and the Agency's children are strands too, so this
+/// is the only place a parent-session edge exists to record.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // repo.fork(source, scope: repo.ForkBranch(strand: "main", at: leaf),
-/// //   into: repo.ForkIntoMemory, clock:)
+/// //   into: repo.ForkIntoMemory, clock:, generator:)
 /// ```
 ///
 pub fn fork(
@@ -117,27 +126,67 @@ pub fn fork(
   scope scope: ForkScope,
   into into: ForkDestination,
   clock clock: Clock,
+  generator generator: Generator,
 ) -> Result(Session, ForkError) {
   use entries <- result.try(collect_entries(source, scope))
   use registers <- result.try(collect_registers(source, scope, entries))
+  use parent <- result.try(
+    session.id(source) |> result.map_error(ForkSourceRead),
+  )
+  let #(minted, _generator) = ids.mint_session(generator)
   use destination <- result.try(open_destination(into, clock))
   let copy = {
     use Nil <- result.try(require_empty(destination))
     let writes =
       list.append(
         list.map(entries, fn(entry) { InsertEntry(entry:) }),
-        registers,
+        list.append(registers, identity_writes(minted, parent)),
       )
     storage.commit(destination.store, Tx(writes:, expected: []))
     |> result.map_error(ForkCopyFailed)
     |> result.replace(destination)
   }
   case copy {
-    Ok(forked) -> Ok(forked)
+    Ok(forked) -> {
+      // The catalog projection is written after the copy commits, so a
+      // refused copy leaves no identity behind. It failing is not a fork
+      // failure: the register cells are the truth and the next open
+      // repairs the row.
+      let _ = forked.record_identity(minted, parent)
+      Ok(forked)
+    }
     Error(error) -> {
       let _ = session.close(destination)
       Error(error)
     }
+  }
+}
+
+// The destination's two identity cells. The parent cell is written only
+// when the source has an id of its own: a source that predates
+// `protocol-change/008` forks to a destination that records no parent,
+// because minting one into the source would be a mutation the fork
+// contract forbids.
+fn identity_writes(
+  minted: SessionId,
+  parent: Option(SessionId),
+) -> List(tx.Write) {
+  let own =
+    SetRegister(
+      ns: register.FactCustom,
+      key: session.session_id_key,
+      value: register.value(json.String(ids.session_id_to_string(minted))),
+    )
+  case parent {
+    None -> [own]
+    Some(parent) -> [
+      own,
+      SetRegister(
+        ns: register.FactCustom,
+        key: session.parent_session_id_key,
+        value: register.value(json.String(ids.session_id_to_string(parent))),
+      ),
+    ]
   }
 }
 
