@@ -514,14 +514,16 @@ pub fn the_shared_stdlib_list_admits_no_capability_test() {
 /// A capability on no seam is a decision, written down.
 ///
 /// `cap/runtime` is the boot runtime and belongs to the harness, not to a
-/// submitted program. The list exists so that "unreachable" is a claim
-/// somebody made rather than an omission nobody noticed, and
-/// `scripts/gen-prelude.sh --check` holds it against the modules
-/// `packages/cap` actually ships (issue #95). Here we only pin that it
-/// contradicts neither seam.
+/// submitted program; `cap/mcp` is the generated `cap/mcp/<server>`
+/// modules' types-only vocabulary, off every seam until the generated
+/// path lands end to end (issue #106). The list exists so that
+/// "unreachable" is a claim somebody made rather than an omission nobody
+/// noticed, and `scripts/gen-prelude.sh --check` holds it against the
+/// modules `packages/cap` actually ships (issue #95). Here we pin the
+/// list itself and that it contradicts neither seam.
 pub fn a_harness_only_capability_is_on_no_seam_test() {
   let harness_only = policy.harness_only_cap_modules()
-  assert harness_only != []
+  assert harness_only == ["cap/mcp", "cap/runtime"]
   assert list.all(harness_only, fn(name) {
     !policy.contains(policy.default(), name)
     && !policy.contains(policy.orchestration(), name)

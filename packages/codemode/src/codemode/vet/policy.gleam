@@ -393,6 +393,14 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// imports it, and nothing anywhere says the module exists but cannot be
 /// reached (issue #95).
 ///
+/// `cap/mcp` is the types-only shared vocabulary for the generated
+/// `cap/mcp/<server>` modules (issue #106): it carries no authority — the
+/// invoke lives in `cap/internal/mcp`, reachable only through a generated
+/// façade — so allowlisting it would grant nothing. It moves to the
+/// workspace seam in the increment that lands the generated-module path
+/// end to end; keeping it off every seam until then avoids advertising a
+/// surface no program can reach anything through.
+///
 /// Writing the exclusion down is most of the value — it turns "not in the
 /// allowlist" from an absence into a decision someone made — and
 /// `scripts/gen-prelude.sh --check` is what makes it load-bearing: every
@@ -402,11 +410,11 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert policy.harness_only_cap_modules() == ["cap/runtime"]
+/// assert policy.harness_only_cap_modules() == ["cap/mcp", "cap/runtime"]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
-  ["cap/runtime"]
+  ["cap/mcp", "cap/runtime"]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,

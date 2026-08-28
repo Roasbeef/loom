@@ -33,6 +33,18 @@ thing to hand a model than one that cannot.
   the hermetic build's `--warnings-as-errors` turns importing a transitive
   dependency into a compile error, so without them `report.text` was the
   only thing a program could say.
+- `cap/mcp.{Content, ToolResult, McpError}` — the shared vocabulary for
+  the generated `cap/mcp/<server>` façades (issue #106): `Text`/`Other`
+  content blocks (non-text kinds carried by name only in v1), the tool
+  result with its optional structured output, and the error in
+  `cap/fs.FsError`'s shape (`ToolFailed` / `ServerUnavailable` /
+  `McpDenied` with the broker's code verbatim / `ResultMalformed`).
+  Types only, no authority: the one marshaling seam is
+  `cap/internal/mcp.invoke`, which sends `{tool, arguments}` — `tool`
+  the server's original name verbatim — under the per-server capability
+  `"mcp." <> server`, and being internal it is reachable only through a
+  generated façade the vetting allowlist names. On no seam yet
+  (`harness_only_cap_modules`) until the generated-module path lands.
 - `cap/strand.{Assignment, Handle, Waited, TerminalResult, StrandError}` —
   the orchestration seam. `assignment`/`within`/`detached`/
   `from_my_conversation`/`with_tools`/`expecting` build a spawn; `spawn`,
