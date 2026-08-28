@@ -71,9 +71,21 @@ nothing about the authorization model is re-derived.
 apply to every admitted call including `ServedHere`, so `fs.*` needs no new
 budget. `report.emit` is the one member that earns a #88-style lifetime
 ceiling — it mints a durable artifact per call — plus a per-emit byte bound.
-`kv` gets a store-side byte cap with eviction, not an admission ceiling. Note
-that `client/codemode.gleam`'s comment saying the workspace seam declares no
-ceilings becomes **false** the day `report.emit` routes.
+`kv` gets a store-side byte cap with eviction, not an admission ceiling.
+
+**Done, on `bridge/workspace-caps`.** `fs.read`, `fs.list`, `kv.get`/`set`/
+`delete` and `report.emit` route as `ServedHere` through
+`codemode/workspace`, a seam record of six injected closures wrapped in
+front of the MCP arm and `satellite.default_router`;
+`client/codemode.workspace_seam` builds the closures out of
+`tools/fs.resolve_real` and `fs.read_text_file`, the session's
+`client/scratch` store and the session's blob root. `report.emit` is
+`codemode/artifact`, serviced on **both** seams by one closure — which is
+#91 item 1, closed in the same change. `client/codemode.gleam`'s comment
+saying the workspace seam declares no ceilings was duly false and is
+fixed: it declares exactly one, the emit ceiling. `fs.write` and `fs.edit`
+are still refused, by name, with a sentence saying what to reach for
+instead.
 
 **Cut from the first implementation:** durable kv (keep it ephemeral,
 byte-capped, gone on restart), per-call journalling, any escalation door from
