@@ -48,7 +48,6 @@ the other side.
 | WP-G 9 | the MCP adapter — in WP-G's scope, deferred post-M2, integrated by no row since | a Part 5 track |
 | WP-F 7 | the per-OS keychain backends WP-F's scope names; only the environment backend ships | a Part 5 track |
 | WP-F 6 | pricing tables somewhere ledger-side, since the adapters zero every cost field and §3.4 calls the ledger the billing source of truth | the token-budget work `design-notes/orchestration-comparison.md` sequences after WP-N |
-| WP-K 4, WP-C-full 3 | a canonical session id in `core`: the bus, the search service, and the schema's unwritten `parent_session_id` column all wait on one | §1.1 via a protocol-change; M5 |
 | WP-L 8 | per-identity model facts in the wiring seam, so a strand switched off its role's resolution stops doing overflow arithmetic against fallback numbers | M5 |
 | M3 runtime wave 13 | decide a catalogue entry's `thinking`: the default a strand overrides, or refused like `headers` — today it is validated and discarded | M5 |
 | WP-L 2 | `api.compact` and `api.navigate`, so the gateway and the conformance runner stop keeping two copies of acceptance-plan building | no milestone |
@@ -443,9 +442,13 @@ the other side.
 3. **Operation-transition events carry a display string**, not a machine
    type — keeping events off a machine dependency per the DAG; the
    register remains the truth.
-4. **Session identity on the bus and in search is a caller-supplied
-   string** — core defines no session-id type. Revisit when the gateway
-   needs a canonical id.
+4. **Session identity on the bus is a `bus.SessionKey`**
+   (`protocol-change/008`): `key(of: SessionId)` for an identified
+   session, `unidentified_key(name:)` for a publisher that has none, with
+   disjoint `id:`/`name:` renderings so the two can never collide.
+   `events/search` takes the `SessionId` outright and has no unidentified
+   form. The gateway still subscribes under an unidentified key; keying it
+   by `api.session_id` is issue #28's serve wiring.
 5. **Search indexes** message text and compaction/branch summaries;
    thinking blocks and tool-call arguments are deliberately not indexed.
    pi's metadata-filtering question stays open, as in pi.
@@ -459,9 +462,13 @@ the other side.
 2. **Fork re-stamps placement.** The destination assigns fresh seqs and
    timestamps; ids and order are preserved. pi is silent on placement in
    the copy.
-3. **No parent-session record.** Loom has no session-id concept yet, so
-   the schema's parent-session column stays unwritten; revisit with the
-   gateway's canonical id (also WP-K gap 4).
+3. **The parent-session record is a projection.** `core/ids.SessionId`
+   (`protocol-change/008`) is minted once at session creation and lives in
+   the reserved `session/id` cell, with a fork's source recorded in
+   `session/parent`; the SQLite catalog's `parent_session_id` column and
+   its metadata `session_id` field are the lease-free copy an outside
+   lister reads. `session/repo.fork` is the only path that writes one:
+   protocol `fork` and Agency children are strands of the same session.
 4. **Fact semantics across forks**: names copy in both scopes, labels
    copy with their entries, custom facts never copy — pi's
    application-value rule read strictly.

@@ -264,7 +264,14 @@ pub fn start(
   actor.new_with_initialiser(5000, fn(subject) {
     let selector = case options.bus {
       Some(bus) -> {
-        bus.subscribe_all(bus, session: options.session_id)
+        // Still the caller-supplied name: keying this subscription by
+        // the canonical `api.session_id` is #28's serve wiring, and the
+        // protocol's `session` field is a display name either way
+        // (`protocol-change/008`).
+        bus.subscribe_all(
+          bus,
+          session: bus.unidentified_key(name: options.session_id),
+        )
         process.new_selector()
         |> process.select(subject)
         |> bus.select_published(BusHint)

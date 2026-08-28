@@ -28,7 +28,7 @@ complete copy of the retained tail (`core/entry.gleam:53`). Nothing is
 deleted. Every summarized message stays in the tree, navigable,
 forkable, and indexable; what changes is only the *projection*, because
 a context scan stops inclusively at the first compaction it meets
-(`project`, `session/session.gleam:636`). Recovery therefore replays the
+(`project`, `session/session.gleam:759`). Recovery therefore replays the
 same context it had before the crash, since the compaction entry is in
 the log like everything else.
 
@@ -452,7 +452,7 @@ inclusively at the first compaction. The compaction is therefore the
 oldest entry the scan returns, and the projection opens with its summary
 rendered as a **user** message — the summary is injected context, not
 model output — followed by its retained tail, and nothing earlier is read
-(`project_entry`, `session/session.gleam:707-719`). The ordinary rules then
+(`project_entry`, `session/session.gleam:920-719`). The ordinary rules then
 apply to the tail: errored, aborted, and deferred responses drop, and a
 retained tool call whose result was severed by the cut heals with a
 synthetic error result. On a settled history that healing is a no-op,
@@ -493,7 +493,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2499`). An
+(`compaction_preparation`, `client/gateway.gleam:2506`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
