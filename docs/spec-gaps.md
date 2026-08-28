@@ -445,11 +445,29 @@ the other side.
    session, `unidentified_key(name:)` for a publisher that has none, with
    disjoint `id:`/`name:` renderings so the two can never collide.
    `events/search` takes the `SessionId` outright and has no unidentified
-   form. The gateway still subscribes under an unidentified key; keying it
-   by `api.session_id` is issue #28's serve wiring.
+   form. The gateway now subscribes under `key(of: api.session_id(runtime))`
+   too (issue #28); the protocol's client-facing `session` field stays a
+   display name. `client/serve` supplies no bus, so that subscription is
+   correct-but-unexercised — it is for a host whose hint sources are not
+   all its own writer.
 5. **Search indexes** message text and compaction/branch summaries;
    thinking blocks and tool-call arguments are deliberately not indexed.
    pi's metadata-filtering question stays open, as in pi.
+6. **Recall has no backfill, and that is stated rather than hidden**
+   (issue #28, memory stage M1). A session's rows enter the index while it
+   runs, and the holder syncs once at start — so reopening a session
+   written before search was wired indexes its whole file, while a session
+   that is never reopened stays unfindable. Nothing sweeps the
+   repository's session files. The remedy, if it is ever wanted, is a
+   startup sweep over the session catalog rather than a change to `sync`.
+7. **An injected digest is indexed like any other message.** The `agent/`
+   notes digest `client/notes` injects at run start is an ordinary user
+   message, so search indexes it alongside everything else — a small
+   feedback loop, bounded by the digest's own 4096-byte cap and by the
+   fact that it quotes cells already durable elsewhere. The structural
+   anti-feedback exclusion (and the question of whether `CustomEntry`
+   should index to something) belongs to memory stage M2 and is
+   deliberately not pulled forward.
 
 ## From WP-C-full (`session`, `storage`)
 
