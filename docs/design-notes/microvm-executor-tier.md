@@ -169,7 +169,7 @@ put a real capability question into a type designed to hold a build fact.
 `packages/tools/CLAUDE.md` states the invariant without hedging: "Path
 discipline is the sole boundary for the filesystem tools. `fs_*` run in
 the harness and never pass through the broker or the kernel jail."
-`resolve_real` (`packages/tools/src/tools/fs.gleam:176`) walks the
+`resolve_real` (`packages/tools/src/tools/fs.gleam:188`) walks the
 candidate path and the workspace root component by component through
 `read_link`, follows at most forty links, and requires the fully resolved
 candidate to land under the fully resolved root. It is a careful boundary

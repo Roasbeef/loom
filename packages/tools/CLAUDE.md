@@ -201,6 +201,29 @@ can repair from.
   `max_link_follows` = 40) and the resolved path must land under the
   equally-resolved workspace root, so neither `..` nor a symlink planted
   inside the workspace reaches outside it.
+- **`protected` is enforced harness-side too, on the resolved path, and
+  no grant lifts it.** The base policy's never-writable list is masked by
+  bwrap for a *jailed* process, and the `fs_*` tools meet no jail — so
+  `fs_write` and `fs_edit` share one `resolve_for_write`, which applies
+  `resolve_real` and then refuses a target at or under any
+  `ctx.base_policy.protected` entry. The order is the property: a
+  workspace-internal symlink onto `.git/config` is only visible as such
+  once resolved. Containment alone left `.git/hooks/post-checkout`
+  writable by the model's own tool, which is code execution outside the
+  jail on the next checkout, and would have handed a vetted code-mode
+  loop more filesystem authority than its own jailed `proc.run` (issue
+  #105). Matching is by path component (`.gitx` is not under `.git`),
+  the same predicate `broker/policy.covered_by` and
+  `codemode/launch.covers` use, and it is applied to the entry's lexical
+  *and* resolved forms so a symlinked workspace root cannot separate the
+  two enforcement points. Grants are deliberately not consulted:
+  `policy.Grant` has no variant for `protected` and `apply_grant` never
+  writes the field. The refusal is in band as `PathError.ProtectedPath`,
+  opening `permission denied:` and naming the entry that matched, with
+  `details.error = "protected_path"`. Reads are untouched — an
+  asymmetry with the jail, which masks a protected path out of view
+  entirely — and stated in `resolve_for_write`'s doc rather than
+  glossed.
 - **Replay safety is declared per tool and load-bearing.** `bash` is
   `Never` — an arbitrary external effect must yield a synthetic interrupted
   result on crash, never a re-execution. `grep`, `fs_read`, `fs_write`, and

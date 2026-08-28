@@ -1,3 +1,4 @@
+import broker/policy
 import core/json
 import core/message
 import gleam/erlang/process
@@ -49,6 +50,16 @@ fn write_file(ctx: tool.Ctx, relative: String, content: String) -> Nil {
     fs.resolve_path(workspace: ctx.workspace, path: relative)
   let assert Ok(Nil) = filesystem.write(resolved, <<content:utf8>>)
   Nil
+}
+
+// The same ctx with a session base policy that protects `paths` — the
+// never-writable list the kernel jail masks for a spawned process and
+// the fs tools must enforce for themselves.
+fn with_protected(ctx: tool.Ctx, paths: List(String)) -> tool.Ctx {
+  tool.Ctx(
+    ..ctx,
+    base_policy: policy.SandboxPolicy(..ctx.base_policy, protected: paths),
+  )
 }
 
 fn args(fields: List(#(String, json.JsonValue))) -> json.JsonValue {
@@ -771,4 +782,132 @@ pub fn resolve_real_is_lexical_without_symlinks_test() {
     == Error(fs.EscapesWorkspace("../etc"))
   assert fs.resolve_real(filesystem:, workspace: "/work", path: "")
     == Error(fs.EmptyPath)
+}
+
+// --- protected paths -----------------------------------------------------
+
+fn write_call(path: String, content: String) -> json.JsonValue {
+  args([#("path", json.String(path)), #("content", json.String(content))])
+}
+
+// An `insert_at_start` edit planned against `content` — enough of a plan
+// to reach the write path, which is what these tests are about.
+fn insert_call(path: String, content: String) -> json.JsonValue {
+  args([
+    #("path", json.String(path)),
+    #("digest", digest_of(content)),
+    #(
+      "hunks",
+      json.Array([
+        json.Object([
+          #("op", json.String("insert_at_start")),
+          #("lines", json.Array([json.String("planted")])),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+pub fn write_to_protected_git_internals_refused_test() {
+  // A git hook written through the harness's own tool is arbitrary code
+  // execution outside the jail on the next checkout, and the jail's
+  // masks never see this write.
+  let #(ctx, _filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, ["/work/.git"])
+  let outcome =
+    fs.write_tool().run(
+      ctx,
+      write_call(".git/hooks/post-checkout", "#!/bin/sh\nwhoami\n"),
+    )
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "permission denied")
+  assert string.contains(first_text(outcome), "/work/.git")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error") == Ok(json.String("protected_path"))
+  assert list.key_find(fields, "protected") == Ok(json.String("/work/.git"))
+  let filesystem = ctx.filesystem
+  let assert Error(_) = filesystem.read("/work/.git/hooks/post-checkout")
+}
+
+pub fn edit_of_protected_path_refused_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, ".git/config", "[core]\n")
+  let ctx = with_protected(ctx, ["/work/.git"])
+  let outcome = fs.edit_tool().run(ctx, insert_call(".git/config", "[core]\n"))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "permission denied")
+  assert string.contains(first_text(outcome), "/work/.git")
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/.git/config")
+  assert bytes == <<"[core]\n":utf8>>
+}
+
+pub fn write_to_protected_file_itself_refused_test() {
+  // A protected *entry* is refused as well as everything under it.
+  let #(ctx, _filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, ["/work/.env"])
+  let outcome = fs.write_tool().run(ctx, write_call(".env", "TOKEN=leaked\n"))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "permission denied")
+  assert string.contains(first_text(outcome), "/work/.env")
+}
+
+pub fn write_outside_protected_paths_still_succeeds_test() {
+  let #(ctx, _filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, ["/work/.git", "/work/.env"])
+  let outcome =
+    fs.write_tool().run(ctx, write_call("src/main.gleam", "pub fn main() {}\n"))
+  assert outcome.is_error == False
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/src/main.gleam")
+  assert bytes == <<"pub fn main() {}\n":utf8>>
+}
+
+pub fn protected_prefix_siblings_not_refused_test() {
+  // `.gitx` and `.environment` share a textual prefix with `.git` and
+  // `.env` while being under neither: the check compares path
+  // components, never string prefixes.
+  let #(ctx, _filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, ["/work/.git", "/work/.env"])
+  let sibling_directory =
+    fs.write_tool().run(ctx, write_call(".gitx/notes.txt", "fine\n"))
+  assert sibling_directory.is_error == False
+  let sibling_file =
+    fs.write_tool().run(ctx, write_call(".environment", "fine\n"))
+  assert sibling_file.is_error == False
+}
+
+pub fn symlink_onto_protected_path_refused_test() {
+  // The ordering case: an innocuous-looking workspace-internal symlink
+  // whose target is protected. Only the resolved path says so, which is
+  // why the check runs after `resolve_real` and not before it.
+  let #(ctx, _filesystem) = real_ctx("protected_symlink")
+  let assert Ok(Nil) = simplifile.create_directory_all(ctx.workspace <> "/.git")
+  let assert Ok(Nil) =
+    simplifile.write(ctx.workspace <> "/.git/config", "[core]\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: ctx.workspace <> "/.git/config",
+      from: ctx.workspace <> "/innocent.txt",
+    )
+  let ctx = with_protected(ctx, [ctx.workspace <> "/.git"])
+  let outcome =
+    fs.write_tool().run(ctx, write_call("innocent.txt", "clobbered\n"))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "permission denied")
+  let assert Ok(untouched) = simplifile.read(ctx.workspace <> "/.git/config")
+  assert untouched == "[core]\n"
+}
+
+pub fn read_of_protected_path_still_allowed_test() {
+  // Deliberate asymmetry with the jail, stated in `resolve_for_write`:
+  // `protected` governs writes here, and reading `.git/HEAD` is
+  // ordinary work.
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, ".git/HEAD", "ref: refs/heads/main\n")
+  let ctx = with_protected(ctx, ["/work/.git"])
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String(".git/HEAD"))]))
+  assert outcome.is_error == False
+  assert string.contains(first_text(outcome), "|ref: refs/heads/main")
 }

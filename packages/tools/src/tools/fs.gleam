@@ -13,7 +13,15 @@
 //// can reach outside it. This is not defense in depth but the sole
 //// boundary: these tools run in the harness and never pass through
 //// the broker or the kernel jail, so path discipline is entirely
-//// their own responsibility.
+//// their own responsibility. Containment is only half of it: the
+//// session base policy's `protected` list — `.git` internals, `.env`,
+//// credential files — is enforced for a *jailed* process by bwrap's
+//// masks, which these tools never meet, so `fs_write` and `fs_edit`
+//// apply it themselves in `resolve_for_write`. Without that, the
+//// harness's own tools would hold strictly more filesystem authority
+//// than the jail they are supposed to be no wider than, and a written
+//// `.git/hooks/post-checkout` is arbitrary code execution outside the
+//// jail on the next checkout.
 ////
 //// ## Replay safety
 ////
@@ -69,6 +77,10 @@ pub type PathError {
   /// unreadable component, or a symlink chain longer than the
   /// resolution budget (a loop).
   Unresolvable(path: String, reason: String)
+  /// The path resolves at or under an entry of the session base
+  /// policy's `protected` list, which no write may touch. `protected`
+  /// carries the entry that matched.
+  ProtectedPath(path: String, protected: String)
 }
 
 /// The production `FileSystem` seam, backed by simplifile.
@@ -369,6 +381,81 @@ fn normalize(path: String) -> String {
   "/" <> string.join(list.reverse(segments), with: "/")
 }
 
+// --- protected paths -----------------------------------------------------
+
+/// Resolves a path for a **write**: `resolve_real` for containment, then
+/// the session base policy's `protected` list. The single path both
+/// `fs_write` and `fs_edit` go through, so neither can acquire authority
+/// the other lacks.
+///
+/// The order is the security property, not a preference. `protected` is
+/// checked on the *resolved* path, so a workspace-internal symlink
+/// pointing at `.git/config` — checked into a repository, or planted by
+/// a jailed process — is caught on what it actually names. Checked
+/// before resolution it would be a test of the string the model chose,
+/// which is the thing least worth testing.
+///
+/// **A grant cannot open a protected path.** The escalation vocabulary
+/// has no variant for it: `broker/policy.Grant` is
+/// `GrantWritableRoot`/`GrantReadableRoot`/`GrantNetwork`/`GrantEnv`/
+/// `GrantLimit`/`GrantScratch`, and `apply_grant` never writes the
+/// `protected` field. Composition only ever *unions* it
+/// (`policy.meet`), so the base list is the whole of it and
+/// `Ctx.grants` is deliberately not consulted here.
+///
+/// **Writes only, deliberately asymmetric with the jail.** bwrap masks a
+/// protected path out of the jail's view entirely, so a jailed process
+/// cannot read one either; this check refuses writes and leaves
+/// `fs_read` alone. Widening it to reads is a larger change than
+/// closing the write hole — `fs_read` of `.git/HEAD` is ordinary and
+/// useful work, and the harness-side read of a credential file is a
+/// disclosure question the base policy's `readable_roots` should answer
+/// — so the narrower fix ships first and the asymmetry is stated rather
+/// than glossed.
+///
+/// Public so that anything else in the harness holding write authority
+/// over the workspace — a capability bridge servicing `fs.write` for a
+/// code-mode program, say — resolves through this function instead of
+/// reimplementing half of it. A second implementation is how two
+/// enforcement points drift.
+pub fn resolve_for_write(ctx: Ctx, path: String) -> Result(String, PathError) {
+  use resolved <- result.try(resolve_real(
+    filesystem: ctx.filesystem,
+    workspace: ctx.workspace,
+    path:,
+  ))
+  case list.find(ctx.base_policy.protected, covers_target(ctx, _, resolved)) {
+    Error(Nil) -> Ok(resolved)
+    Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
+  }
+}
+
+// Whether one protected entry covers the resolved write target.
+//
+// The entry is tested in both its lexical and its real-filesystem
+// forms. The lexical form is what the policy itself says and what the
+// helper is handed; the resolved form is what a bwrap mask actually
+// lands on, since mounting follows symlinks — and the target here is
+// already resolved, so comparing it against an unresolved entry would
+// miss exactly the case `resolve_real` exists for (a symlinked
+// workspace root, say). Where the two agree, which is the ordinary
+// case, this is one comparison twice.
+fn covers_target(ctx: Ctx, entry: String, resolved: String) -> Bool {
+  let lexical = normalize(entry)
+  let real = walk(ctx.filesystem, lexical) |> result.unwrap(or: lexical)
+  covers(lexical, resolved) || covers(real, resolved)
+}
+
+// Whether `root` is `path` itself or a path-*component* prefix of it —
+// the same predicate `broker/policy.covered_by` composes roots with and
+// `codemode/launch.covers` judges jail reachability by, so the two
+// enforcement points cannot drift. Component-wise is the whole point:
+// `.gitx/file` merely shares a textual prefix with `.git` and is not
+// protected by it.
+fn covers(root: String, path: String) -> Bool {
+  root == "/" || root == path || string.starts_with(path, root <> "/")
+}
+
 // --- fs_read -------------------------------------------------------------
 
 /// The `fs_read` tool: hashline-anchored windowed reads.
@@ -480,24 +567,78 @@ fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
   outcome
 }
 
+/// Why a resolved path did not yield text. The structured half of what
+/// `read_text` renders as prose.
+///
+/// Split out so a caller that is not a tool — the code-mode capability
+/// bridge answering `cap/fs.read`, which owes a program a typed error
+/// rather than a sentence — reaches the same three decisions without
+/// re-deriving any of them. The tools themselves go on rendering these
+/// through `read_error_outcome`, which is where the wording lives.
+pub type ReadError {
+  /// The `FileSystem` seam refused the read.
+  ReadFailed(error: FsError)
+  /// The file is larger than `max_read_bytes` (the large-file guard).
+  TooLarge(size: Int, limit: Int)
+  /// The file's bytes are not valid UTF-8, so there is no text to
+  /// return.
+  NotText
+}
+
+/// Reads a resolved path as text, subject to the large-file guard.
+///
+/// **`resolved` must already have come out of `resolve_real`.** This
+/// function performs no path discipline of its own — it takes a path
+/// that has been resolved against the real filesystem and checked under
+/// the workspace root, and reads it. Handing it an unresolved path
+/// reintroduces exactly the symlink hole `resolve_real` closes, which is
+/// why the harness-side callers all pass its output straight through.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_text_file(filesystem, resolved) == Ok("hello\n")
+/// ```
+///
+pub fn read_text_file(
+  filesystem filesystem: FileSystem,
+  resolved resolved: String,
+) -> Result(String, ReadError) {
+  use bytes <- result.try(
+    filesystem.read(resolved) |> result.map_error(ReadFailed),
+  )
+  let size = bit_array.byte_size(bytes)
+  use <- bool.guard(
+    when: size > max_read_bytes,
+    return: Error(TooLarge(size:, limit: max_read_bytes)),
+  )
+  bit_array.to_string(bytes) |> result.replace_error(NotText)
+}
+
 // Reads and decodes a file for the text tools; failures are in-band
 // outcomes.
 fn read_text(ctx: Ctx, resolved: String) -> Result(String, ToolOutcome) {
-  use bytes <- result.try(
-    ctx.filesystem.read(resolved) |> result.map_error(fs_error_outcome),
-  )
-  use <- bool.guard(
-    when: bit_array.byte_size(bytes) > max_read_bytes,
-    return: Error(tool.failure(
-      "file is larger than "
-      <> int.to_string(max_read_bytes)
-      <> " bytes; read it in pieces with the bash tool instead",
-    )),
-  )
-  bit_array.to_string(bytes)
-  |> result.replace_error(tool.failure(
-    "file is not valid UTF-8 text; use the bash tool for binary files",
-  ))
+  read_text_file(filesystem: ctx.filesystem, resolved:)
+  |> result.map_error(read_error_outcome)
+}
+
+// The prose the text tools have always answered a failed read with, one
+// sentence per `ReadError`. Extracting the decision above left the
+// wording here, unchanged, so a model reads what it read before.
+fn read_error_outcome(error: ReadError) -> ToolOutcome {
+  case error {
+    ReadFailed(error:) -> fs_error_outcome(error)
+    TooLarge(size: _, limit:) ->
+      tool.failure(
+        "file is larger than "
+        <> int.to_string(limit)
+        <> " bytes; read it in pieces with the bash tool instead",
+      )
+    NotText ->
+      tool.failure(
+        "file is not valid UTF-8 text; use the bash tool for binary files",
+      )
+  }
 }
 
 // --- fs_write ------------------------------------------------------------
@@ -525,10 +666,7 @@ pub fn write_tool() -> tool.Tool {
 fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use content <- tool.with_arg(tool.required_string(args, "content"))
-  use resolved <- tool.or_outcome(
-    resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:),
-    path_outcome,
-  )
+  use resolved <- tool.or_outcome(resolve_for_write(ctx, path), path_outcome)
   let bytes = <<content:utf8>>
   use Nil <- tool.or_outcome(
     write_file(ctx.filesystem, resolved, bytes),
@@ -686,10 +824,7 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
   use hunks <- tool.with_arg(decode_hunks(args))
-  use resolved <- tool.or_outcome(
-    resolve_real(filesystem: ctx.filesystem, workspace: ctx.workspace, path:),
-    path_outcome,
-  )
+  use resolved <- tool.or_outcome(resolve_for_write(ctx, path), path_outcome)
   use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
   use edited <- tool.or_outcome(
     hashline.apply(content, hashline.Plan(digest:, hunks:)),
@@ -907,7 +1042,15 @@ fn object_field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
 
 /// Renders a `PathError` as the in-band failure result the model reads.
 /// Shared with `tools/grep`, whose lexical `resolve_path` fails the same
-/// way for the same reasons.
+/// way for the same reasons (it never produces `ProtectedPath`: only a
+/// write path is checked against `protected`).
+///
+/// A `ProtectedPath` refusal opens with `permission denied:`, the same
+/// wording `FsPermissionDenied` carries, so anything mapping these
+/// outcomes onto a capability code lands on the policy-denial one; it
+/// then names the entry that matched, and repeats both facts in
+/// `details` under `error: "protected_path"` so a caller need not parse
+/// prose.
 pub fn path_outcome(error: PathError) -> ToolOutcome {
   case error {
     EmptyPath -> tool.failure("invalid arguments: `path` must not be empty")
@@ -915,6 +1058,21 @@ pub fn path_outcome(error: PathError) -> ToolOutcome {
       tool.failure("path `" <> path <> "` resolves outside the workspace root")
     Unresolvable(path:, reason:) ->
       tool.failure("path `" <> path <> "` could not be resolved: " <> reason)
+    ProtectedPath(path:, protected:) ->
+      tool.failure(
+        "permission denied: `"
+        <> path
+        <> "` resolves at or under the protected path `"
+        <> protected
+        <> "`, which is never writable — no approval or grant widens it",
+      )
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("protected_path")),
+          #("path", json.String(path)),
+          #("protected", json.String(protected)),
+        ]),
+      )
   }
 }
 
