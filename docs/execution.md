@@ -134,6 +134,30 @@ make check > log 2>&1; echo "MAKE_EXIT=$?"          # then read MAKE_EXIT
 
 Then read the log for `failures`, not just the summary line.
 
+The same trap has a background form, and it caught a third green
+announcement: a gate launched as a detached background command finishes
+with the *wrapper's* status — the `echo`'s, which is zero — and the
+harness's "completed (exit code 0)" notification reports exactly that.
+The `MAKE_EXIT=` line is written into the task's output file and means
+nothing until somebody reads it. A background gate whose recorded exit
+line was never read is a gate that did not run, whatever the
+notification said; in the caught case the log's first page was compile
+errors.
+
+### A long-lived tree's incremental build cache can lie
+
+A deterministic test failure in a package the diff does not touch is not
+automatically a flake, and re-running until it passes is not a
+diagnosis. Twice in one session, `storage`'s racing-creates test failed
+identically on a tree whose `packages/storage` was untouched: the same
+commit was green in a fresh worktree, no stray BEAM processes, no file
+locks — a poisoned incremental artifact under `packages/<pkg>/build/dev`
+in the long-lived tree. The fix is `rm -rf packages/<pkg>/build/dev`
+(and the package's scratch state, e.g. `test_db`), then re-run. Check
+the fresh-worktree control *first*: it is what separates "my tree is
+poisoned" from "this commit is broken", and both agents who hit it
+without the control mis-filed it as a flake.
+
 ### Verify on a clean checkout, and mind where you put it
 
 To check a commit independently of other agents' uncommitted edits, use a

@@ -9,9 +9,9 @@ worth more than any status comment.
 
 ---
 
-## State, as of the head of `bridge/workspace-caps`
+## State, as of `main` after the #14 merge
 
-Two bodies of work are complete and merged or ready to merge.
+Four bodies of work are complete and on `main`.
 
 **#106 — MCP through code mode — is done and on `main`** (merged at
 `0f4dfac`'s lineage): generated per-server capability modules, wired end
@@ -22,8 +22,32 @@ undesigned), #110 (wild-server e2e), #111 (elicitation), #112
 (listChanged), and #107 (async code mode, with the state-machine
 argument and Claude Code's replay-continuation prior art on the issue).
 
+**#15 — one canonical id per session — is done and on `main`**
+(`protocol-change/008`): a UUIDv7 in the reserved `session/id` fact cell,
+minted at first open under a CAS, adopted verbatim on a lost race,
+projected into the SQLite catalog as repairable convenience (the
+lease-free `sqlite.identity(path:)` read exists for cross-session
+tooling), carried through fork parentage — a fork into an
+already-identified destination now refuses — and scoping `events/search`
+through an opaque `SessionKey`. One residual, tracked on the issue: the
+generated `events/sql` module is hand-mirrored (no `sqlite3` in the
+build container); a statement-for-statement pin bounds the drift and
+`make gen-sql` on an equipped host restores byte-identity.
+
+**#14 — model routing — is done and on `main`** under the rulings
+recorded on the issue and `protocol-change/009`: on-route dispatches walk
+the role's chain inside one attempt with the turn's thinking overlaid on
+every walked target; off-route strands and deferred polls stay
+`ForResolved`; children seed from the `Subagent` route; model facts and
+admission follow the identity per query, read from the step's own
+snapshot (the closing review's one behavioral catch — a mid-wait
+`set_config` no longer makes admission describe a model the attempt
+never reaches). The M5 429-storm conformance row is real. **#19 ruled
+itself out of the release by its own text** — re-checked, dispositioned,
+no work.
+
 **#16 + #105 + #91 item 1 — the harness-side capability bridge — is
-complete on this branch.** All eight workspace capabilities route:
+done and on `main`.** All eight workspace capabilities route:
 `fs.read`, `fs.list`, `fs.write`, `fs.edit`, `kv.get`/`set`/`delete`
 and `report.emit`, as `satellite.ServedHere` through
 `codemode/workspace` — a seam record of injected closures wrapped in
@@ -60,9 +84,9 @@ three copies (now one public `policy.covers`); blobs are now
 established by atomic rename, never direct write. `make check` passes
 end to end at the head.
 
-`main` holds phases 1 and 2 plus #106. **Phase 3 remaining: #14+#19,
-#15, #27, #28/#29 — and #91 items 2–5 are still open** (item 1 closed
-with the bridge).
+`main` holds phases 1 and 2 plus #106, the bridge, #15 and #14.
+**Phase 3 remaining: #27, #28/#29 — and #91 items 2–5 are still open**
+(item 1 closed with the bridge).
 
 ---
 
@@ -70,10 +94,24 @@ with the bridge).
 
 In dependency order rather than numeric:
 
-- **#14** — the wiring seam's four model-routing questions. **#19** (replace
-  `provider`'s two shipped stubs) is adjacent: routing that cannot walk a
-  fallback chain to a real provider is not routing.
-- **#15** — a canonical session id in `core`.
+- **#27** — triggered rules (TTSR). **Rulings are posted on the issue**
+  from a measured census; the load-bearing two: the scanner feeds on the
+  durable commit stream (a writer subscriber, the `commit_forwarder`
+  shape — deltas are ephemeral, discarded, and absent from the
+  simulation), and injection goes through the queue machinery as a
+  fenced steer-shaped admission, exactly-once per `{strand, rule}` via
+  one CAS-guarded transaction on a reserved `rule/` mark. Rules are
+  `[[rule]]` config in `loom.toml`, literal substring triggers.
+- **#28** — memory M1. **Rulings on the issue**; unblocked by #15. Sync
+  off the writer's commit publication (no bus in production), a search
+  holder actor in the restartable tier degrading to no-tool, the index
+  beside the session file **and in `base_policy.protected`** (a
+  model-writable index is injection into future sessions' context),
+  `history_search(query, limit, scope?)` with the measured footguns
+  defended tool-side, the notes digest as a byte-capped fenced user
+  message resolved per strand through `op.meta`.
+- **#29** — memory M2, after #28; its security paragraph is part of the
+  issue, not a footnote.
 - **#106** — **MCP through code mode: the first increment is done.**
   `docs/architecture/mcp.md` is the living account; the rulings and their
   reasons are on the issue. The shape: generated per-server capability
@@ -111,8 +149,6 @@ In dependency order rather than numeric:
   supervised long-lived stdio substrate #25 needs, and it now exists
   (`mcp/client` + `mcp/transport`), so phase 5 starts from something
   rather than nothing.
-- **#27** — triggered rules (TTSR).
-- **#28**, **#29** — memory M1 and M2.
 
 **Phase 5** is the language-service tier: **#25** (`lsp_*` over a sandboxed
 per-project client) and **#26** (`dap_*` over the same port seam). Both need
