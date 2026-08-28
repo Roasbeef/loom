@@ -91,6 +91,7 @@
 import broker/framing.{type CapOutcome}
 import codemode/artifact.{type Emit}
 import codemode/identity
+import codemode/internal/args as decode
 import codemode/satellite.{
   type CapCeiling, type CapDenial, type CapPlan, type CapRequest, type CapRouter,
   CapCeiling, CapDenial, ServedHere,
@@ -385,8 +386,8 @@ fn spawn_plan(
 }
 
 fn decode_spawn(args: MsgPackValue) -> Result(agent.SpawnRequest, CapDenial) {
-  use purpose <- result.try(string_arg(args, "purpose"))
-  use brief <- result.try(string_arg(args, "brief"))
+  use purpose <- result.try(decode.string(args, "purpose"))
+  use brief <- result.try(decode.string(args, "brief"))
   use within_ms <- result.try(optional_int_arg(args, "within_ms"))
   use detach <- result.try(bool_arg(args, "detach"))
   use context <- result.try(provenance_arg(args))
@@ -404,12 +405,14 @@ fn decode_spawn(args: MsgPackValue) -> Result(agent.SpawnRequest, CapDenial) {
 }
 
 fn provenance_arg(args: MsgPackValue) -> Result(agent.Provenance, CapDenial) {
-  use context <- result.try(string_arg(args, "context"))
+  use context <- result.try(decode.string(args, "context"))
   case context {
     "fresh" -> Ok(agent.Fresh)
     "my_conversation" -> Ok(agent.MyConversation)
     other ->
-      Error(invalid("`context` must be fresh or my_conversation, not " <> other))
+      Error(decode.invalid(
+        "`context` must be fresh or my_conversation, not " <> other,
+      ))
   }
 }
 
@@ -421,10 +424,11 @@ fn provenance_arg(args: MsgPackValue) -> Result(agent.Provenance, CapDenial) {
 fn schema_arg(
   args: MsgPackValue,
 ) -> Result(Option(agent.ResultSchema), CapDenial) {
-  use fields <- result.try(case msgpack_field(args, "result_schema") {
+  use fields <- result.try(case decode.field(args, "result_schema") {
     Error(_) | Ok(msgpack.NilValue) -> Ok([])
     Ok(msgpack.ArrayValue(items:)) -> Ok(items)
-    Ok(_other) -> Error(invalid("`result_schema` must be a list of fields"))
+    Ok(_other) ->
+      Error(decode.invalid("`result_schema` must be a list of fields"))
   })
   case fields {
     [] -> Ok(None)
@@ -433,7 +437,7 @@ fn schema_arg(
       agent.parse_result_schema(schema_json(declared))
       |> result.map(Some)
       |> result.map_error(fn(reason) {
-        invalid("the result shape you asked for " <> reason)
+        decode.invalid("the result shape you asked for " <> reason)
       })
     }
   }
@@ -445,7 +449,7 @@ type Declared {
 }
 
 fn decode_field(value: MsgPackValue) -> Result(Declared, CapDenial) {
-  use name <- result.try(string_arg(value, "name"))
+  use name <- result.try(decode.string(value, "name"))
   use required <- result.try(bool_arg(value, "required"))
   use expects <- result.try(field_type_json(value))
   Ok(Declared(name:, expects:, required:))
@@ -456,19 +460,20 @@ fn decode_field(value: MsgPackValue) -> Result(Declared, CapDenial) {
 // nesting: a descriptor with no `items` ends it, and `parse_result_schema`
 // refuses anything deeper than `agent.max_schema_depth` afterwards.
 fn field_type_json(value: MsgPackValue) -> Result(JsonValue, CapDenial) {
-  use declared <- result.try(string_arg(value, "type"))
+  use declared <- result.try(decode.string(value, "type"))
   case declared {
     "any" -> Ok(json.Object([]))
     "string" | "integer" | "number" | "boolean" | "object" ->
       Ok(json.Object([#("type", json.String(declared))]))
     "array" -> {
-      use items <- result.try(case msgpack_field(value, "items") {
+      use items <- result.try(case decode.field(value, "items") {
         Error(_) | Ok(msgpack.NilValue) -> Ok(json.Object([]))
         Ok(nested) -> field_type_json(nested)
       })
       Ok(json.Object([#("type", json.String("array")), #("items", items)]))
     }
-    other -> Error(invalid("`" <> other <> "` is not a result field type"))
+    other ->
+      Error(decode.invalid("`" <> other <> "` is not a result field type"))
   }
 }
 
@@ -520,9 +525,9 @@ fn wait_plan(
 }
 
 fn handles_arg(args: MsgPackValue) -> Result(List(agent.Handle), CapDenial) {
-  use items <- result.try(case msgpack_field(args, "handles") {
+  use items <- result.try(case decode.field(args, "handles") {
     Ok(msgpack.ArrayValue(items:)) -> Ok(items)
-    Ok(_other) | Error(_) -> Error(invalid("`handles` must be a list"))
+    Ok(_other) | Error(_) -> Error(decode.invalid("`handles` must be a list"))
   })
   list.try_map(items, decode_handle)
 }
@@ -530,8 +535,8 @@ fn handles_arg(args: MsgPackValue) -> Result(List(agent.Handle), CapDenial) {
 // Parsed through the tools' own grammar rather than assembled here, so
 // the harness has exactly one definition of what a handle is.
 fn decode_handle(value: MsgPackValue) -> Result(agent.Handle, CapDenial) {
-  use strand <- result.try(string_arg(value, "strand"))
-  use operation <- result.try(string_arg(value, "operation"))
+  use strand <- result.try(decode.string(value, "strand"))
+  use operation <- result.try(decode.string(value, "operation"))
   agent.parse_handle(strand <> "#" <> operation)
   |> result.map_error(refusal_denial)
 }
@@ -607,8 +612,8 @@ fn send_plan(
   seam: Orchestration,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use to <- result.try(string_arg(request.args, "to"))
-  use body <- result.try(string_arg(request.args, "text"))
+  use to <- result.try(decode.string(request.args, "to"))
+  use body <- result.try(decode.string(request.args, "text"))
   let caller = caller_of(seam, request)
   Ok(
     ServedHere(fn() {
@@ -637,11 +642,13 @@ fn note_plan(
   seam: Orchestration,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use key <- result.try(string_arg(request.args, "key"))
-  use held <- result.try(msgpack_field(request.args, "value"))
+  use key <- result.try(decode.string(request.args, "key"))
+  use held <- result.try(decode.field(request.args, "value"))
   use value <- result.try(
     to_json(held)
-    |> result.map_error(fn(reason) { invalid("a note's `value` " <> reason) }),
+    |> result.map_error(fn(reason) {
+      decode.invalid("a note's `value` " <> reason)
+    }),
   )
   let caller = caller_of(seam, request)
   Ok(
@@ -804,48 +811,14 @@ fn to_json(value: MsgPackValue) -> Result(JsonValue, String) {
 
 // --- argument decoding -----------------------------------------------------
 //
-// Total over anything a satellite can send. Each answers a `CapDenial`
-// naming the field, so a program repairs the call rather than guessing.
-
-fn msgpack_field(
-  value: MsgPackValue,
-  key: String,
-) -> Result(MsgPackValue, CapDenial) {
-  case value {
-    msgpack.MapValue(entries:) ->
-      list.find_map(entries, fn(entry) {
-        case entry.0 == msgpack.StringValue(key) {
-          True -> Ok(entry.1)
-          False -> Error(Nil)
-        }
-      })
-      |> result.map_error(fn(_nil) { invalid("`" <> key <> "` is missing") })
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.StringValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..) -> Error(invalid("arguments must be a map"))
-  }
-}
-
-fn string_arg(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
-  case found {
-    msgpack.StringValue(text) -> Ok(text)
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..)
-    | msgpack.MapValue(..) -> Error(invalid("`" <> key <> "` must be text"))
-  }
-}
+// The shapes only this seam sends. The three every router needs — a
+// field, a text field, a bytes field — live in `codemode/internal/args`
+// and are reached as `decode.*`; what is left here is the vocabulary
+// `strand.*` alone speaks, all of it built on the same two primitives so
+// a refusal reads the same whichever call produced it.
 
 fn int_arg(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
+  use found <- result.try(decode.field(value, key))
   case found {
     msgpack.IntValue(number) -> Ok(number)
     msgpack.NilValue
@@ -855,12 +828,12 @@ fn int_arg(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
     | msgpack.BinaryValue(..)
     | msgpack.ArrayValue(..)
     | msgpack.MapValue(..) ->
-      Error(invalid("`" <> key <> "` must be a whole number"))
+      Error(decode.invalid("`" <> key <> "` must be a whole number"))
   }
 }
 
 fn bool_arg(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
+  use found <- result.try(decode.field(value, key))
   case found {
     msgpack.BoolValue(flag) -> Ok(flag)
     msgpack.NilValue
@@ -870,7 +843,7 @@ fn bool_arg(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
     | msgpack.BinaryValue(..)
     | msgpack.ArrayValue(..)
     | msgpack.MapValue(..) ->
-      Error(invalid("`" <> key <> "` must be true or false"))
+      Error(decode.invalid("`" <> key <> "` must be true or false"))
   }
 }
 
@@ -878,10 +851,11 @@ fn optional_int_arg(
   value: MsgPackValue,
   key: String,
 ) -> Result(Option(Int), CapDenial) {
-  case msgpack_field(value, key) {
+  case decode.field(value, key) {
     Error(_absent) | Ok(msgpack.NilValue) -> Ok(None)
     Ok(msgpack.IntValue(number)) -> Ok(Some(number))
-    Ok(_other) -> Error(invalid("`" <> key <> "` must be a whole number"))
+    Ok(_other) ->
+      Error(decode.invalid("`" <> key <> "` must be a whole number"))
   }
 }
 
@@ -889,10 +863,10 @@ fn optional_string_arg(
   value: MsgPackValue,
   key: String,
 ) -> Result(Option(String), CapDenial) {
-  case msgpack_field(value, key) {
+  case decode.field(value, key) {
     Error(_absent) | Ok(msgpack.NilValue) -> Ok(None)
     Ok(msgpack.StringValue(text)) -> Ok(Some(text))
-    Ok(_other) -> Error(invalid("`" <> key <> "` must be text"))
+    Ok(_other) -> Error(decode.invalid("`" <> key <> "` must be text"))
   }
 }
 
@@ -900,7 +874,7 @@ fn optional_names_arg(
   value: MsgPackValue,
   key: String,
 ) -> Result(Option(List(String)), CapDenial) {
-  case msgpack_field(value, key) {
+  case decode.field(value, key) {
     Error(_absent) | Ok(msgpack.NilValue) -> Ok(None)
     Ok(msgpack.ArrayValue(items:)) ->
       list.try_map(items, fn(item) {
@@ -913,11 +887,12 @@ fn optional_names_arg(
           | msgpack.BinaryValue(..)
           | msgpack.ArrayValue(..)
           | msgpack.MapValue(..) ->
-            Error(invalid("`" <> key <> "` must be a list of names"))
+            Error(decode.invalid("`" <> key <> "` must be a list of names"))
         }
       })
       |> result.map(Some)
-    Ok(_other) -> Error(invalid("`" <> key <> "` must be a list of names"))
+    Ok(_other) ->
+      Error(decode.invalid("`" <> key <> "` must be a list of names"))
   }
 }
 
@@ -969,10 +944,6 @@ pub fn refusal_code(refusal: Refusal) -> String {
 
 fn refusal_denial(refusal: Refusal) -> CapDenial {
   CapDenial(code: refusal_code(refusal), message: agent.describe(refusal))
-}
-
-fn invalid(reason: String) -> CapDenial {
-  CapDenial(code: "invalid_argument", message: reason)
 }
 
 fn field(key: String, value: MsgPackValue) -> #(MsgPackValue, MsgPackValue) {

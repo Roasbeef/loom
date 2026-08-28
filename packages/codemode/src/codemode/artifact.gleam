@@ -46,14 +46,14 @@
 //// writing them.
 
 import broker/framing.{type CapOutcome}
+import codemode/internal/args
 import codemode/satellite.{
   type CapCeiling, type CapDenial, type CapPlan, type CapRequest, CapCeiling,
   CapDenial, ServedHere,
 }
-import core/msgpack.{type MsgPackValue}
+import core/msgpack
 import gleam/bit_array
 import gleam/int
-import gleam/list
 import gleam/result
 
 /// The capability name, as `cap/report.emit` sends it.
@@ -91,7 +91,7 @@ pub const emit_ceiling_code = "admission_ceiling"
 pub const too_large_code = "too_large"
 
 /// The in-band code a malformed emission travels under.
-pub const invalid_argument_code = "invalid_argument"
+pub const invalid_argument_code = args.invalid_argument_code
 
 /// The in-band code a store that would not take the bytes travels under.
 pub const store_failed_code = "store_failed"
@@ -154,9 +154,9 @@ pub fn ceiling(admissions: Int) -> CapCeiling {
 /// ```
 ///
 pub fn plan(emit: Emit, request: CapRequest) -> Result(CapPlan, CapDenial) {
-  use name <- result.try(string_arg(request.args, "name"))
-  use content_type <- result.try(string_arg(request.args, "content_type"))
-  use bytes <- result.try(binary_arg(request.args, "bytes"))
+  use name <- result.try(args.string(request.args, "name"))
+  use content_type <- result.try(args.string(request.args, "content_type"))
+  use bytes <- result.try(args.binary(request.args, "bytes"))
   let size = bit_array.byte_size(bytes)
   case size > max_emit_bytes {
     True -> Error(oversized(size))
@@ -196,73 +196,4 @@ fn oversized(size: Int) -> CapDenial {
       <> " bytes one report.emit may carry; emit a summary, or write the "
       <> "whole of it to a file with proc.run",
   )
-}
-
-// --- argument decoding ------------------------------------------------------
-//
-// The same shape `codemode/orchestration`'s decoders have and for the
-// same reason: the satellite is untrusted, so every field is decoded
-// rather than assumed, and every refusal names the field so a program
-// repairs the call instead of guessing.
-
-fn msgpack_field(
-  value: MsgPackValue,
-  key: String,
-) -> Result(MsgPackValue, CapDenial) {
-  case value {
-    msgpack.MapValue(entries:) ->
-      list.find_map(entries, fn(entry) {
-        case entry.0 == msgpack.StringValue(key) {
-          True -> Ok(entry.1)
-          False -> Error(Nil)
-        }
-      })
-      |> result.map_error(fn(_nil) { invalid("`" <> key <> "` is missing") })
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.StringValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..) -> Error(invalid("arguments must be a map"))
-  }
-}
-
-fn string_arg(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
-  case found {
-    msgpack.StringValue(text) -> Ok(text)
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..)
-    | msgpack.MapValue(..) -> Error(invalid("`" <> key <> "` must be text"))
-  }
-}
-
-// An artifact's payload. `cap/report.emit` marshals a `BitArray` with
-// `wire.binary`, so binary is the shape to expect — but text is accepted
-// as its own bytes rather than refused, because a program that built its
-// artifact by string concatenation and sent it as text meant exactly
-// that, and refusing would be a round trip to learn a distinction the
-// store does not have.
-fn binary_arg(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
-  case found {
-    msgpack.BinaryValue(bytes:) -> Ok(bytes)
-    msgpack.StringValue(text) -> Ok(<<text:utf8>>)
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.ArrayValue(..)
-    | msgpack.MapValue(..) ->
-      Error(invalid("`" <> key <> "` must be bytes or text"))
-  }
-}
-
-fn invalid(reason: String) -> CapDenial {
-  CapDenial(code: invalid_argument_code, message: reason)
 }

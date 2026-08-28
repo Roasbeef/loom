@@ -245,6 +245,44 @@ fn started(bounds: scratch.Bounds) -> Store {
   Store(name:, seam: scratch.seam(name, timeout_ms: 1000))
 }
 
+// --- incoherent bounds ------------------------------------------------------
+
+pub fn a_nonsense_bounds_is_clamped_to_a_coherent_one_test() {
+  // `Bounds` is a plain public record, so a host can spell one that
+  // breaks the invariants the doc states. Clamped rather than trusted:
+  // each field floored at 1, and the per-entry bound never looser than
+  // the total.
+  assert scratch.coherent(scratch.Bounds(
+      max_entry_bytes: 9,
+      max_total_bytes: 4,
+      max_entries: 0,
+    ))
+    == scratch.Bounds(max_entry_bytes: 4, max_total_bytes: 4, max_entries: 1)
+}
+
+pub fn a_coherent_bounds_is_left_alone_test() {
+  assert scratch.coherent(scratch.default_bounds()) == scratch.default_bounds()
+}
+
+pub fn a_store_started_on_nonsense_bounds_still_stores_test() {
+  // The property the clamp buys, observed through the store rather than
+  // through the clamp. A `max_entries` of 0 makes `evict` drop every
+  // entry the instant it is written, so each `set` answers `Ok` and each
+  // `get` answers `None` — which a program reads as unrelenting eviction,
+  // and `cap/kv`'s contract says to tolerate eviction, so it loops
+  // instead of failing.
+  let store =
+    started(scratch.Bounds(
+      max_entry_bytes: 0,
+      max_total_bytes: 0,
+      max_entries: 0,
+    ))
+  let assert Ok(Nil) = store.seam.set("k", <<"v":utf8>>)
+    as "a one-byte value fits the clamped bounds"
+  assert store.seam.get("k") == Ok(Some(<<"v":utf8>>))
+  stop(store)
+}
+
 fn stop(store: Store) -> Nil {
   scratch.stop(store.name)
   // The store's death and the next `process.named` lookup race, and this

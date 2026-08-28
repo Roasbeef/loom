@@ -167,7 +167,13 @@ over one session file. WP-L.
   a different way to grow: 256 KiB per entry (refused in band), 8 MiB
   total and 1024 entries (both **evicted**, least-recently-written, which
   is what `cap/kv`'s "may be evicted or reset between calls" contract
-  asks for). Gone on restart, deliberately — a store a program can write
+  asks for). `Bounds` is a plain record, so `start` passes every one
+  through `coherent` first — each field floored at 1, the per-entry
+  bound never looser than the total — because a `max_entries` of 0 makes
+  the store evict everything it is handed, which a program reads as
+  unrelenting eviction and loops on rather than failing. Clamped rather
+  than refused: this is a cache whose contract already says values may
+  vanish. Gone on restart, deliberately — a store a program can write
   across sessions is a channel from one execution's model output into a
   later execution's input. `none()` is the seam a host with no store
   hands out, and it *refuses* rather than silently succeeding: a `set`
@@ -643,6 +649,37 @@ over one session file. WP-L.
   find/replace ruling — the tightest window the seam can offer, and a
   strictly tighter one than the two-round-trip composition a program
   would otherwise hand-roll.
+  The write itself is `fs.write_whole`, which is what `fs_write` calls,
+  so **both doors create missing parents** and `new_dir/file.txt` means
+  one thing whichever door it came through. A `fs.list` of a
+  non-directory is `NotADirectory` under the `not_a_directory` code
+  rather than an errno sentence, because it is the one listing failure a
+  program can act on — `fs.read` was the call it wanted — and
+  `readdir`'s own `ENOTDIR` brings the special files (FIFO, socket,
+  device node) under the same honest name.
+- **A base policy the sandbox cannot enforce is a boot failure.**
+  `Settings.base_policy` is a field, so a host may hand `boot` any
+  policy value it can construct, and `assemble` asks
+  `base_policy_fault` before a directory is made, a lease is taken or a
+  helper is spawned. The case that motivated it: a relative `protected`
+  entry is refused by the jail as `RelativePath` and covers nothing in
+  the harness's own path checks, so an operator who wrote
+  `protected: [".git"]` would otherwise get a session protecting nothing
+  and learn about it from the first tool call of it. The check is
+  `broker/policy.validate`'s — the same one every composed policy passes
+  immediately before dispatch — so what refuses here is exactly what
+  would refuse there. Pure and separate from `boot`, because it is a
+  decision about a value and should be testable as one.
+- **A blob is established by a rename, never by a write.** `report.emit`
+  writes through `blob.write_addressed`: the bytes are staged under a
+  temporary name in the blob root and renamed into place, so a crash
+  mid-write can never leave a partial file at an address whose SHA-256
+  name vouches for the whole of it. The staging name carries eight
+  random bytes off `Config.entropy`, because two concurrent first
+  emissions of identical bytes are precisely the pair a content address
+  cannot separate and a shared staging name is where they interleave.
+  Idempotency is untouched: the destination is the address either way,
+  and the `is_file` probe still skips the work.
 - **`report.emit` is one mechanism on two seams, and the one workspace
   capability with a ceiling.** `cap/report` is the only module both
   vetting allowlists carry, so both routers answer `emit` — from the same

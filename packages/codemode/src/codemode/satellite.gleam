@@ -1399,10 +1399,10 @@ fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
 /// |---|---|---|
 /// | `proc.run` | this router — the jailed executor (bash-style argv) | `clear_call` |
 /// | `fs.read`, `fs.list` | `codemode/workspace`, over `tools/fs`'s own resolution | `ServedHere` |
+/// | `fs.write`, `fs.edit` | `codemode/workspace`, over `tools/fs.resolve_writable` — containment *and* the protected-path refusal (#105) | `ServedHere` |
 /// | `kv.get`/`set`/`delete` | `codemode/workspace`, over the host's ephemeral scratch store | `ServedHere` |
 /// | `report.emit` | `codemode/artifact`, over the session's blob store | `ServedHere` |
 /// | `git.*` | **nothing here, and nothing is owed**: `cap/git` composes `proc.run` inside the satellite | the row above |
-/// | `fs.write`, `fs.edit` | nobody yet — write waits on the protected-path check (#105), edit on a contract decision (#16) | — |
 /// | `net.request` | nobody yet — gated on the egress proxy | would be `clear_call` |
 /// | `lsp.*` | nobody yet — gated on the long-lived stdio client (#25) | not `clear_call`: a protocol, not a one-shot exec |
 /// | `mcp.<server>` | `client/mcp`, per configured server (#106) | `ServedHere` |

@@ -1441,7 +1441,14 @@ fn surface_router(
         // same store under the same content address. An orchestration
         // program that could not emit had `cap/report`'s one effectful
         // function refused on every call (issue #91, item 1).
-        emit: workspace_seam(config, request).emit,
+        //
+        // The closure directly, not `workspace_seam(..).emit`: this seam
+        // routes none of the other seven arms, so building all eight to
+        // read one field would state — in the one place a reader checks
+        // what an orchestration program can reach — that a workspace
+        // bridge was constructed for it. `emitting` is what both seams
+        // share, so it is what both seams call.
+        emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
         emit_ceiling: artifact.default_emit_ceiling,
       ))
   }
@@ -1524,7 +1531,7 @@ pub fn workspace_seam(
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
     kv_delete: config.scratch.delete,
-    emit: emitting(filesystem, config.blob_root),
+    emit: emitting(filesystem, config.blob_root, config.entropy),
     emit_ceiling: artifact.default_emit_ceiling,
   )
 }
@@ -1551,6 +1558,16 @@ fn read_in(
 // `fs_write` calls (#105) — then write whole through the seam. Both
 // decisions are `tools/fs`'s; the bridge's contribution is the seam name
 // on the refusal.
+//
+// The write itself is `fs.write_whole`, which is what `fs_write` calls
+// too, so **both doors create missing parent directories**. The
+// alternative was a bridge where `fs.write("new_dir/file.txt", ..)`
+// failed with an errno while the model's own tool, given the same path,
+// succeeded — one workspace behaving two ways depending on which door a
+// write came through, and the difference discoverable only by hitting
+// it. `fs_write`'s description promises parents are created; a program
+// reading `cap/fs.write`'s "creating or replacing the whole file" has
+// every reason to expect the same file to appear.
 fn write_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -1562,7 +1579,7 @@ fn write_in(
     fs.resolve_writable(filesystem:, workspace: root, protected:, path:)
     |> result.map_error(workspace.PathRefused),
   )
-  filesystem.write(resolved, <<contents:utf8>>)
+  fs.write_whole(filesystem:, resolved:, bytes: <<contents:utf8>>)
   |> result.map_error(workspace.WriteRefused)
 }
 
@@ -1622,15 +1639,37 @@ fn list_in(
   )
   use names <- result.try(
     simplifile.read_directory(resolved)
-    |> result.map_error(fn(error) {
+    |> result.map_error(listing_refusal(resolved, _)),
+  )
+  use bounded <- result.try(within_listing_bound(names))
+  Ok(list.map(bounded, fn(name) { classify(filesystem, resolved, name) }))
+}
+
+// Why a listing did not happen. `ENOTDIR` is pulled out of the errno
+// crowd because it is the one a program can act on: it means the path is
+// there and `fs.read` is the call that was wanted, which is a repair,
+// where "filesystem error on /work/x: enotdir" is a puzzle. Everything
+// else keeps the backend's own description, since inventing a sentence
+// for an errno nobody anticipated is how a refusal starts lying.
+//
+// `simplifile.read_directory` is what classifies here rather than a
+// prior stat, which also settles the special files: a FIFO, a socket or
+// a device node is not a directory and `readdir` says so with the same
+// `Enotdir`, so all of them reach a program under the honest name
+// without this needing a file-type vocabulary the `tool.FileSystem`
+// seam does not have.
+fn listing_refusal(
+  resolved: String,
+  error: simplifile.FileError,
+) -> workspace.FsRefusal {
+  case error {
+    simplifile.Enotdir -> workspace.NotADirectory(path: resolved)
+    _other ->
       workspace.ListRefused(tool.FsFailure(
         path: resolved,
         reason: simplifile.describe_error(error),
       ))
-    }),
-  )
-  use bounded <- result.try(within_listing_bound(names))
-  Ok(list.map(bounded, fn(name) { classify(filesystem, resolved, name) }))
+  }
 }
 
 // The count check, kept as its own function so the O(n) walk it needs is
@@ -1659,20 +1698,46 @@ fn classify(
     // or a seam that would not answer: none of them is a directory this
     // listing should send a program into.
     Ok(tool.LinkTarget(..)) | Ok(tool.LinkMissing) | Error(_) -> False
+    // "Not a regular file" stands in for "directory", which over-reports
+    // on the special files: a FIFO, a socket or a device node in the
+    // workspace is reported here as a directory. `tool.LinkStatus`
+    // cannot separate them — it answers link / not-a-link / missing —
+    // and the seam has no `is_directory`, so the honest answer is not
+    // reachable from what this function is handed. The consequence is
+    // bounded and self-correcting: a program that follows the listing
+    // into one gets `NotADirectory` from `fs.list` and `WrongKind` from
+    // `fs.read`, both naming the path. Widening the seam is the fix if
+    // this ever costs anything real.
     Ok(tool.NotALink) -> filesystem.is_file(child) == Ok(False)
   }
   workspace.DirEntry(name:, is_directory:)
 }
 
 // `report.emit`: the same content-addressed write `tools/blob` performs
-// for an overflowed tool output, into the same store.
+// for an overflowed tool output, into the same store, through the same
+// `blob.write_addressed`.
 //
 // Idempotent by construction, which is why nothing here checks for a
 // prior emission: the id *is* the SHA-256 of the bytes, so emitting the
 // same artifact twice answers the same id and writes the file once. The
 // `is_file` probe before the write is not a correctness guard — it saves
 // rewriting bytes that are already there, exactly as `blob.bound` does.
-fn emitting(filesystem: tool.FileSystem, blob_root: String) -> artifact.Emit {
+//
+// The write is staged and renamed rather than performed in place. An
+// address that vouches for content is only worth anything if nothing can
+// ever be reached under it but that content, and a direct write leaves
+// exactly that: a torn file whose SHA-256 name says it is whole, which
+// every later reader believes. `blob.write_addressed`'s doc carries the
+// argument; what this side owes it is a staging name unique to one
+// write, since two concurrent first emissions of identical bytes are
+// precisely what a content address cannot tell apart. Eight bytes off
+// the session's own entropy is that, and the `.tmp` it leaves behind on
+// a crash is garbage rather than a lie.
+fn emitting(
+  filesystem: tool.FileSystem,
+  blob_root: String,
+  entropy: fn(Int) -> BitArray,
+) -> artifact.Emit {
   fn(art: artifact.Artifact) {
     let ref = blob.ref_for(art.bytes)
     let path = blob.ref_path(blob_root, ref)
@@ -1686,10 +1751,27 @@ fn emitting(filesystem: tool.FileSystem, blob_root: String) -> artifact.Emit {
     use Nil <- result.try(case present {
       True -> Ok(Nil)
       False ->
-        filesystem.write(path, art.bytes) |> result.map_error(store_failed)
+        blob.write_addressed(
+          filesystem:,
+          path:,
+          temporary: blob.temp_path(blob_root, ref, staging_tag(entropy)),
+          bytes: art.bytes,
+        )
+        |> result.map_error(store_failed)
     })
     Ok(ref)
   }
+}
+
+// What makes one emission's staging file its own. Random rather than
+// derived, because nothing in an `artifact.Artifact` distinguishes two
+// concurrent emissions of the same bytes — that is what a content
+// address means — and the emit closure is built once per execution, so
+// there is no per-call coordinate to reach for either.
+const staging_tag_bytes = 8
+
+fn staging_tag(entropy: fn(Int) -> BitArray) -> String {
+  entropy(staging_tag_bytes) |> bit_array.base16_encode |> string.lowercase
 }
 
 fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
@@ -1713,6 +1795,22 @@ fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
 // scratch store is bounded store-side by a byte cap with eviction, which
 // is the right instrument for something that must not *grow* rather than
 // something that must not be called often.
+//
+// `fs.write` and `fs.edit` are the arms that argument has to be made
+// about rather than around, because they are writes and what they write
+// outlives the execution. They have no ceiling because the numbers
+// already bound them and a ceiling would not. One bridged write is
+// capped by the 16 MiB cap-channel frame — far under the 1 GiB
+// `limits.fsize_bytes` the same execution's jailed `proc.run` writes
+// under, so the bridge is the *narrower* door onto the same workspace —
+// and the loop is bounded by the wall deadline and the pooled
+// outstanding-effect cap, exactly as a jailed write loop is. What
+// separates them from `report.emit` is the kind of thing written: a
+// workspace file is the program's working state, overwritten by the
+// next write to the same path, inside a tree the operator already made
+// writable; an artifact is a mint into a store the session curates,
+// which nothing replaces. `codemode/workspace.ceilings` carries the
+// whole of it.
 //
 // `report.emit` is the one that meets the test on both seams, because it
 // is the one capability both allowlists carry: every admitted call writes

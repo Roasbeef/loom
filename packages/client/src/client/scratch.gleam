@@ -59,6 +59,7 @@
 import codemode/workspace.{type KvRefusal, EntryTooLarge, StoreUnavailable}
 import gleam/bit_array
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -88,8 +89,59 @@ pub const default_timeout_ms = 1000
 /// `max_entry_bytes` is at most `max_total_bytes` — a per-entry bound
 /// above the total would admit a value the store must immediately evict
 /// itself to make room for and then evict again.
+///
+/// `Bounds` is a plain public record, so a host can spell a value that
+/// breaks both. `start` therefore does not trust one: it passes every
+/// `Bounds` through `coherent` first. See that function for what it
+/// does and why it clamps rather than refuses.
 pub type Bounds {
   Bounds(max_entry_bytes: Int, max_total_bytes: Int, max_entries: Int)
+}
+
+/// The nearest coherent `Bounds` to the one given.
+///
+/// The record's stated invariants are a comment, and a caller can write
+/// `Bounds(max_entry_bytes: 1_000_000, max_total_bytes: 8, max_entries:
+/// 0)` as easily as the shipped one. What the store then does is not
+/// obviously wrong from inside any single function, which is what makes
+/// it worth closing here: a non-positive `max_entries` makes `evict`
+/// drop every entry the instant it is written, so each `set` answers
+/// `Ok` and each `get` answers `None` — a store that reads, to a
+/// program, exactly like unrelenting eviction, and `cap/kv`'s contract
+/// says to tolerate eviction, so the program loops instead of failing.
+/// A `max_entry_bytes` above `max_total_bytes` is the same shape one
+/// step further along: the value is admitted, then evicted to satisfy
+/// the total, and the caller is told `Ok`.
+///
+/// **Clamping rather than refusing**, and the choice is about where the
+/// damage lands. This store is a *cache* whose whole contract is that
+/// values may vanish, so a slightly different bound is within what every
+/// caller already handles; refusing would either fail the boot over a
+/// cache setting or hand back a `Scratch` that refuses every call, and
+/// neither is proportionate to the mistake. So: each field is floored at
+/// `1`, and `max_entry_bytes` is capped at `max_total_bytes` so the
+/// per-entry bound is never the looser of the two. The result always
+/// satisfies the record's stated invariants, which is what the rest of
+/// this module — `evict`'s termination argument in particular — reads
+/// as given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert scratch.coherent(scratch.Bounds(9, 4, 0))
+///   == scratch.Bounds(max_entry_bytes: 4, max_total_bytes: 4, max_entries: 1)
+/// ```
+///
+pub fn coherent(bounds: Bounds) -> Bounds {
+  let max_total_bytes = int.max(1, bounds.max_total_bytes)
+  Bounds(
+    max_entry_bytes: int.max(
+      1,
+      int.min(bounds.max_entry_bytes, max_total_bytes),
+    ),
+    max_total_bytes:,
+    max_entries: int.max(1, bounds.max_entries),
+  )
 }
 
 /// The shipped bounds. See the module doc for what each one bounds and
@@ -137,7 +189,8 @@ type State {
   State(bounds: Bounds, entries: List(Entry), total_bytes: Int, count: Int)
 }
 
-/// Starts the store under `name`.
+/// Starts the store under `name`, on the nearest coherent reading of
+/// `bounds` (see `coherent`).
 ///
 /// ## Examples
 ///
@@ -149,6 +202,7 @@ pub fn start(
   name: Name(Message),
   bounds: Bounds,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
+  let bounds = coherent(bounds)
   actor.new(State(bounds:, entries: [], total_bytes: 0, count: 0))
   |> actor.on_message(handle)
   |> actor.named(name)

@@ -169,7 +169,7 @@ put a real capability question into a type designed to hold a build fact.
 `packages/tools/CLAUDE.md` states the invariant without hedging: "Path
 discipline is the sole boundary for the filesystem tools. `fs_*` run in
 the harness and never pass through the broker or the kernel jail."
-`resolve_real` (`packages/tools/src/tools/fs.gleam:188`) walks the
+`resolve_real` (`packages/tools/src/tools/fs.gleam:217`) walks the
 candidate path and the workspace root component by component through
 `read_link`, follows at most forty links, and requires the fully resolved
 candidate to land under the fully resolved root. It is a careful boundary
@@ -377,7 +377,7 @@ but the operator-delegation problem — the part that produced #52 — goes
 away entirely.
 
 **4. `Proxy(allowlist)` finally gets somewhere to live.**
-`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:328`)
+`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:347`)
 has exactly one rule today: `NetworkProxy` becomes `NetworkOff`, because
 the egress proxy sidecar does not exist and a proxy-mode jail would
 otherwise run with unrestricted direct egress. Spec Part 5 track 10

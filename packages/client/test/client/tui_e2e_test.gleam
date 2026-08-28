@@ -771,13 +771,23 @@ fn scripted_catalog() -> catalog.Catalog {
   )
 }
 
+// A repository-relative test path as the absolute one every policy path
+// must be: the workspace becomes the base policy's writable root, and
+// `serve.base_policy_fault` refuses a boot on a policy the jail could
+// not accept.
+fn absolute(path: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  here <> "/" <> path
+}
+
 fn settings() -> serve.Settings {
   serve.Settings(
     session_path: root <> "/session.db",
     bind_host: "127.0.0.1",
     bind_port: 0,
     token_path: root <> "/session.db.token",
-    workspace: root <> "/work",
+    workspace: absolute(root) <> "/work",
     // *Narrower* than `serve.base_policy`, and that is the seam this
     // test needs. The shipped base grants read of `/`, which is exactly
     // what `bash` asks for — so under it no shipped tool can provoke a
@@ -786,7 +796,7 @@ fn settings() -> serve.Settings {
     // read of the workspace only, which leaves `bash`'s one requirement
     // uncovered and produces a single, legible wanted grant. This is a
     // real posture a cautious operator might serve, not a test hook.
-    base_policy: policy.workspace_default(root <> "/work"),
+    base_policy: policy.workspace_default(absolute(root) <> "/work"),
     // The re-cleared call does dispatch, and this is not a real helper,
     // so it fails its hello handshake and settles in band. That is
     // deliberate: the assertion is that the parked call *woke and spent

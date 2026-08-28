@@ -1,9 +1,19 @@
 //// `cap/fs` — workspace filesystem access, as typed calls over the
-//// broker. Importing this module is the permission: a program with no
-//// `import cap/fs` cannot touch the filesystem at all. Every function
-//// resolves against the workspace policy the broker composed for this
-//// execution; a path outside it comes back as a typed `FsError`, never a
-//// silent escape.
+//// capability channel. Importing this module is the permission: a
+//// program with no `import cap/fs` cannot touch the filesystem at all.
+//// Every path is resolved and contained on the far side of the channel,
+//// and one outside the workspace comes back as a typed `FsError`, never
+//// a silent escape.
+////
+//// These four arms are **answered by the harness itself** rather than
+//// composed into a jailed execution: containment is `tools/fs`'s
+//// component-by-component symlink resolution against the workspace
+//// root, and the write arms additionally refuse any path at or under
+//// the session base policy's never-writable `protected` entries — the
+//// same one function the harness's own `fs_write` goes through. There
+//// is no `SandboxPolicy` behind these calls because there is no jail to
+//// enforce one; `proc.run` is the arm where a policy is composed and a
+//// kernel applies it.
 ////
 //// These mirror the harness-side `tools/fs` capabilities (`fs_read`,
 //// `fs_write`, `fs_edit`) but as an in-satellite API whose bodies are

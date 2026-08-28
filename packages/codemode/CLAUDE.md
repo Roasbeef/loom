@@ -469,15 +469,17 @@ strand roots, and can reach neither the disk, the network, nor a process.
   not a grant.
 - **The default router refuses what it does not service, and its doc
   table says who does.** `proc.run` is the only capability it maps: it is
-  the one that becomes a jailed clearance. `fs.read`, `fs.list`, `kv.*`
-  and `report.emit` are `codemode/workspace`'s and `codemode/artifact`'s,
+  the one that becomes a jailed clearance. `fs.read`, `fs.list`,
+  `fs.write`, `fs.edit`, `kv.*` and `report.emit` are
+  `codemode/workspace`'s and `codemode/artifact`'s,
   wrapped in front of it by `client/codemode`; `mcp.<server>` is
   `client/mcp`'s. **`git.*` is nobody's and never will be** — `cap/git`
   composes `proc.run` inside the satellite, so there is no `git.*` name
   for any router to map, and the table promising one as pending
   over-counted the bridge by a whole module (issue #16's scoping). What
-  is genuinely owed is `net.request` (the egress proxy), `lsp.*` (#25),
-  and `fs.write`/`fs.edit`. Even within `proc.run`, a
+  is genuinely owed is `net.request` (the egress proxy) and `lsp.*`
+  (#25); the write arms are no longer on that list — they landed with
+  #105, over `tools/fs.resolve_writable`. Even within `proc.run`, a
   call carrying `cwd`, `stdin`, `env`, or `timeout_ms` is denied in band
   rather than run without them, and output is rendered as msgpack *text*
   because `cap/proc` decodes it into a `String`.

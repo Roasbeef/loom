@@ -88,6 +88,7 @@
 
 import broker/framing.{type CapOutcome}
 import codemode/artifact.{type Emit}
+import codemode/internal/args
 import codemode/satellite.{
   type CapCeiling, type CapDenial, type CapPlan, type CapRequest, type CapRouter,
   CapDenial, ServedHere,
@@ -163,7 +164,7 @@ pub const max_list_entries = 4096
 
 /// A structurally invalid argument. `cap/fs` decodes it to
 /// `InvalidArgument`.
-pub const invalid_argument_code = "invalid_argument"
+pub const invalid_argument_code = args.invalid_argument_code
 
 /// A path the workspace does not contain, or one the base policy
 /// protects. `cap/fs` decodes it to `PermissionDenied`.
@@ -175,6 +176,13 @@ pub const not_found_code = "not_found"
 /// An operation/kind mismatch — today, a text read of bytes that are not
 /// text. `cap/fs` decodes it to `WrongKind`.
 pub const wrong_kind_code = "wrong_kind"
+
+/// A `fs.list` of something that is not a directory. `cap/fs` decodes it
+/// to `WrongKind` as well — its `map_error` folds three codes onto that
+/// variant — but the code is its own so the message can be, and so a
+/// program is not told a file "could not be enumerated" when the truth
+/// is that it is a file.
+pub const not_a_directory_code = "not_a_directory"
 
 /// A read or a listing that is too big to answer. Carried verbatim into
 /// `cap/fs.FsFailed`, so the message is what a program reads.
@@ -229,6 +237,11 @@ pub type FsRefusal {
   ReadRefused(error: fs.ReadError)
   /// The directory could not be enumerated, with the backend's reason.
   ListRefused(error: tool.FsError)
+  /// The path resolved to something that is not a directory, so there
+  /// is nothing to list. Its own variant rather than a `ListRefused`
+  /// carrying an errno sentence, because it is the one listing failure
+  /// a program can act on directly — `fs.read` is the call it wanted.
+  NotADirectory(path: String)
   /// The directory holds more than `max_list_entries` entries.
   TooManyEntries(count: Int, limit: Int)
   /// The path resolved, the check passed, and the write itself failed.
@@ -355,15 +368,51 @@ pub type Workspace {
 /// Exactly one, and its solitude is the decision. `satellite.CapCeiling`
 /// states the test: a capability earns a ceiling when a call **mints
 /// something that outlives the execution**. `report.emit` meets it — a
-/// content-addressed file in a store that outlives the session — and
-/// none of the others comes close. `fs.read` and `fs.list` are reads,
-/// bounded by the per-read size guard and by the pooled
-/// outstanding-effect cap and wall deadline every admitted call already
-/// runs under. `kv.*` writes into a process-local store that dies with
-/// the session, and it is bounded **store-side**, by a total byte cap
-/// with eviction, which is a different instrument from an admission
-/// ceiling and the right one: what a scratch store must not do is grow,
-/// not answer often.
+/// content-addressed file in a store that outlives the session — and it
+/// is the only one of the eight that does.
+///
+/// `fs.read` and `fs.list` are reads, bounded by the per-read size guard
+/// and by the pooled outstanding-effect cap and wall deadline every
+/// admitted call already runs under. `kv.*` writes into a process-local
+/// store that dies with the session, and it is bounded **store-side**,
+/// by a total byte cap with eviction, which is a different instrument
+/// from an admission ceiling and the right one: what a scratch store
+/// must not do is grow, not answer often.
+///
+/// # `fs.write` and `fs.edit` are the arms this argument has to earn
+///
+/// They are writes, they are not reads, and what they write does outlive
+/// the execution — so the sentence above is not enough for them and
+/// stating it as though it were would be the omission that makes the
+/// whole list look unexamined. The reason they have no ceiling is that
+/// the ceiling would not be the bound: the numbers already are.
+///
+/// **Per call.** A `fs.write` carries its contents inside one `cap_call`
+/// frame, and the frame cap is 16 MiB (`broker/framing`) — so one
+/// bridged write is bounded, by the wire, at four orders of magnitude
+/// below the 1 GiB `limits.fsize_bytes` the same execution's jailed
+/// `proc.run` writes under. A program that wants to write more than the
+/// frame allows has to use `proc.run`, where the ceiling on a single
+/// file is the *larger* number. The bridge is the narrow door.
+///
+/// **Per execution.** The loop is bounded exactly as a jailed write loop
+/// is: by the execution's wall deadline and by the pooled
+/// outstanding-effect cap, which are the same two bounds `proc.run`
+/// answers to. Nothing about crossing the cap channel removes them, and
+/// nothing about a ceiling would add one a `proc.run` loop does not
+/// already evade — `sh -c 'while :; do …; done'` writes for the whole
+/// deadline under one admission.
+///
+/// **And the kind of thing written is different.** This is the part
+/// `report.emit` turns on. A workspace file is the program's *working
+/// state*: it is what the session is for, it is overwritten by the next
+/// write to the same path, and it is already inside a tree the operator
+/// handed over as writable. An artifact is a **mint into a registry** —
+/// a new content address in a blob store the session curates, which no
+/// later call replaces and which outlives the strand that made it. A
+/// bound on how many distinct things an execution may add to a curated
+/// store is a meaningful bound; a bound on how many times a program may
+/// overwrite files in its own workspace is a quota on doing the job.
 ///
 /// ## Examples
 ///
@@ -416,7 +465,7 @@ fn read_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use path <- result.try(string_arg(request.args, "path"))
+  use path <- result.try(args.string(request.args, "path"))
   Ok(
     ServedHere(fn() {
       case seam.fs_read(path) {
@@ -431,7 +480,7 @@ fn list_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use path <- result.try(string_arg(request.args, "path"))
+  use path <- result.try(args.string(request.args, "path"))
   Ok(
     ServedHere(fn() {
       case seam.fs_list(path) {
@@ -449,8 +498,8 @@ fn write_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use path <- result.try(string_arg(request.args, "path"))
-  use contents <- result.try(string_arg(request.args, "contents"))
+  use path <- result.try(args.string(request.args, "path"))
+  use contents <- result.try(args.string(request.args, "contents"))
   Ok(
     ServedHere(fn() {
       case seam.fs_write(path, contents) {
@@ -465,7 +514,7 @@ fn edit_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use path <- result.try(string_arg(request.args, "path"))
+  use path <- result.try(args.string(request.args, "path"))
   use edits <- result.try(edits_arg(request.args))
   Ok(
     ServedHere(fn() {
@@ -482,7 +531,7 @@ fn edit_plan(
 // refused at plan time — an edit that edits nothing is a mistake to
 // repair, not a success to fake.
 fn edits_arg(value: MsgPackValue) -> Result(List(Replacement), CapDenial) {
-  use found <- result.try(msgpack_field(value, "edits"))
+  use found <- result.try(args.field(value, "edits"))
   use entries <- result.try(case found {
     msgpack.ArrayValue(items:) -> Ok(items)
     msgpack.NilValue
@@ -492,18 +541,18 @@ fn edits_arg(value: MsgPackValue) -> Result(List(Replacement), CapDenial) {
     | msgpack.StringValue(..)
     | msgpack.BinaryValue(..)
     | msgpack.MapValue(..) ->
-      Error(invalid("`edits` must be an array of replacements"))
+      Error(args.invalid("`edits` must be an array of replacements"))
   })
   use replacements <- result.try(list.try_map(entries, replacement_arg))
   case replacements {
-    [] -> Error(invalid("`edits` must hold at least one replacement"))
+    [] -> Error(args.invalid("`edits` must hold at least one replacement"))
     _ -> Ok(replacements)
   }
 }
 
 fn replacement_arg(value: MsgPackValue) -> Result(Replacement, CapDenial) {
-  use find <- result.try(string_arg(value, "find"))
-  use replace_with <- result.try(string_arg(value, "replace_with"))
+  use find <- result.try(args.string(value, "find"))
+  use replace_with <- result.try(args.string(value, "replace_with"))
   Ok(Replacement(find:, replace_with:))
 }
 
@@ -520,7 +569,7 @@ fn kv_get_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use key <- result.try(string_arg(request.args, "key"))
+  use key <- result.try(args.string(request.args, "key"))
   Ok(
     ServedHere(fn() {
       case seam.kv_get(key) {
@@ -543,8 +592,8 @@ fn kv_set_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use key <- result.try(string_arg(request.args, "key"))
-  use value <- result.try(binary_arg(request.args, "value"))
+  use key <- result.try(args.string(request.args, "key"))
+  use value <- result.try(args.binary(request.args, "value"))
   Ok(
     ServedHere(fn() {
       case seam.kv_set(key, value) {
@@ -559,7 +608,7 @@ fn kv_delete_plan(
   seam: Workspace,
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
-  use key <- result.try(string_arg(request.args, "key"))
+  use key <- result.try(args.string(request.args, "key"))
   Ok(
     ServedHere(fn() {
       case seam.kv_delete(key) {
@@ -605,6 +654,14 @@ pub fn fs_denial(refusal: FsRefusal) -> CapDenial {
     ReadRefused(error:) -> read_denial(error)
     ListRefused(error:) ->
       CapDenial(code: fs_error_code(error), message: fs_error_text(error))
+    NotADirectory(path:) ->
+      CapDenial(
+        code: not_a_directory_code,
+        message: "path `"
+          <> path
+          <> "` is not a directory, so there is nothing to list; read it "
+          <> "with fs.read",
+      )
     TooManyEntries(count:, limit:) ->
       CapDenial(
         code: too_large_code,
@@ -690,6 +747,23 @@ fn path_denial(error: fs.PathError) -> CapDenial {
         code: unresolvable_code,
         message: "path `" <> path <> "` could not be resolved: " <> reason,
       )
+    // The session's own `protected` list cannot be applied, so the write
+    // is refused without being judged. A permission denial rather than
+    // an invalid argument, because nothing is wrong with what the
+    // program asked for and there is no argument it could change: the
+    // policy is the thing that has to move, and only an operator can
+    // move it.
+    fs.ProtectionMisconfigured(path:, protected:) ->
+      CapDenial(
+        code: permission_denied_code,
+        message: "path `"
+          <> path
+          <> "` was not written: this session's protected-path list holds "
+          <> "the non-absolute entry `"
+          <> protected
+          <> "`, so no write can be judged against it. This is an operator "
+          <> "misconfiguration, not something the program can repair",
+      )
   }
 }
 
@@ -760,71 +834,4 @@ pub fn kv_denial(refusal: KvRefusal) -> CapDenial {
     StoreUnavailable(reason:) ->
       CapDenial(code: kv_unavailable_code, message: reason)
   }
-}
-
-// --- argument decoding -------------------------------------------------------
-//
-// Total over anything a satellite can send, and shaped exactly like
-// `codemode/orchestration`'s: each answers a `CapDenial` naming the
-// field, so a program repairs the call rather than guessing.
-
-fn msgpack_field(
-  value: MsgPackValue,
-  key: String,
-) -> Result(MsgPackValue, CapDenial) {
-  case value {
-    msgpack.MapValue(entries:) ->
-      list.find_map(entries, fn(entry) {
-        case entry.0 == msgpack.StringValue(key) {
-          True -> Ok(entry.1)
-          False -> Error(Nil)
-        }
-      })
-      |> result.map_error(fn(_nil) { invalid("`" <> key <> "` is missing") })
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.StringValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..) -> Error(invalid("arguments must be a map"))
-  }
-}
-
-fn string_arg(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
-  case found {
-    msgpack.StringValue(text) -> Ok(text)
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.BinaryValue(..)
-    | msgpack.ArrayValue(..)
-    | msgpack.MapValue(..) -> Error(invalid("`" <> key <> "` must be text"))
-  }
-}
-
-// A scratch value. `cap/kv.set` marshals a `BitArray` with `wire.binary`,
-// so binary is the shape to expect; text is taken as its own bytes for
-// the same reason `codemode/artifact` takes it — the store has no such
-// distinction, and refusing would cost a round trip to learn one that
-// does not exist.
-fn binary_arg(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
-  use found <- result.try(msgpack_field(value, key))
-  case found {
-    msgpack.BinaryValue(bytes:) -> Ok(bytes)
-    msgpack.StringValue(text) -> Ok(<<text:utf8>>)
-    msgpack.NilValue
-    | msgpack.BoolValue(..)
-    | msgpack.IntValue(..)
-    | msgpack.FloatValue(..)
-    | msgpack.ArrayValue(..)
-    | msgpack.MapValue(..) ->
-      Error(invalid("`" <> key <> "` must be bytes or text"))
-  }
-}
-
-fn invalid(reason: String) -> CapDenial {
-  CapDenial(code: invalid_argument_code, message: reason)
 }

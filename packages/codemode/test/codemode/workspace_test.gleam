@@ -580,6 +580,32 @@ pub fn an_ambiguous_find_is_refused_with_its_count_test() {
     == Error(workspace.AmbiguousFind(find: "a", count: 3))
 }
 
+pub fn an_overlapping_find_counts_non_overlapping_matches_test() {
+  // The one place the count and the replacement could have disagreed.
+  // "aa" occurs twice in "aaa" if occurrences may overlap and once if
+  // they may not, and `string.replace` takes the non-overlapping
+  // reading — so a counter that overlapped would refuse as ambiguous an
+  // edit `string.replace` would then apply unambiguously, or worse,
+  // admit one it would apply twice. Counting by `string.split` is the
+  // same non-overlapping scan `string.replace` performs, which is why
+  // the two agree by construction rather than by luck.
+  //
+  // "aaa": one non-overlapping match, so the edit applies and consumes
+  // the first two characters.
+  let edits = [workspace.Replacement(find: "aa", replace_with: "X")]
+  assert workspace.apply_replacements("aaa", edits) == Ok("Xa")
+}
+
+pub fn an_overlapping_find_with_two_matches_is_ambiguous_test() {
+  // "aaaa": two non-overlapping matches, refused rather than replaced,
+  // and the count a program reads is the non-overlapping one — three,
+  // the overlapping count, would name occurrences the replacement would
+  // never have touched.
+  let edits = [workspace.Replacement(find: "aa", replace_with: "X")]
+  assert workspace.apply_replacements("aaaa", edits)
+    == Error(workspace.AmbiguousFind(find: "aa", count: 2))
+}
+
 pub fn an_empty_find_is_refused_test() {
   let edits = [workspace.Replacement(find: "", replace_with: "b")]
   assert workspace.apply_replacements("text", edits)

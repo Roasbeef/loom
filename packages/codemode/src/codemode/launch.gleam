@@ -901,7 +901,9 @@ fn refuse_protected(
   path: String,
   what: String,
 ) -> Result(Nil, String) {
-  case list.find(effective.protected, fn(root) { covers(root, path) }) {
+  case
+    list.find(effective.protected, fn(root) { policy.covers(root:, path:) })
+  {
     Error(Nil) -> Ok(Nil)
     Ok(root) ->
       Error(
@@ -922,7 +924,10 @@ fn refuse_scratch_shadow(
   path: String,
   what: String,
 ) -> Result(Nil, String) {
-  case effective.scratch == policy.ScratchTmpfs && covers(scratch_mount, path) {
+  case
+    effective.scratch == policy.ScratchTmpfs
+    && policy.covers(root: scratch_mount, path:)
+  {
     False -> Ok(Nil)
     True ->
       Error(
@@ -946,19 +951,13 @@ fn refuse_uncovered(
 ) -> Result(Nil, String) {
   let directory = directory_of(path)
   let roots = list.append(effective.readable_roots, effective.writable_roots)
-  case list.any(roots, fn(root) { covers(root, directory) }) {
+  case list.any(roots, fn(root) { policy.covers(root:, path: directory) }) {
     True -> Ok(Nil)
     False ->
       Error(
         what <> " at " <> path <> " is under no root the composed policy admits",
       )
   }
-}
-
-// Prefix-aware root coverage, matching the broker's own composition rule:
-// `/work` covers `/work/sub` but not `/workspace`.
-fn covers(root: String, path: String) -> Bool {
-  root == "/" || root == path || string.starts_with(path, root <> "/")
 }
 
 fn directory_of(path: String) -> String {

@@ -911,3 +911,72 @@ pub fn read_of_protected_path_still_allowed_test() {
   assert outcome.is_error == False
   assert string.contains(first_text(outcome), "|ref: refs/heads/main")
 }
+
+pub fn a_relative_protected_entry_refuses_every_write_test() {
+  // The fail-closed case. A relative entry cannot be interpreted: it
+  // normalizes to `/.git`, which is under no workspace and therefore
+  // covers nothing, so the list a person wrote to protect `.git` used to
+  // protect nothing at all while reading as though it did. The jail
+  // refuses the same policy outright (`policy.validate` answers
+  // `RelativePath`), and a harness quietly permitting what the jail
+  // loudly refuses is the worst of the two behaviours.
+  //
+  // ANY path, not just the one the entry meant: a misconfigured list
+  // cannot be partially honoured, because what it meant to cover is
+  // exactly what cannot be recovered from it.
+  let #(ctx, _filesystem) = memory_ctx()
+  let ctx = with_protected(ctx, [".git"])
+  let outcome =
+    fs.write_tool().run(ctx, write_call("src/main.gleam", "pub fn main() {}\n"))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "permission denied")
+  assert string.contains(first_text(outcome), ".git")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error")
+    == Ok(json.String("protection_misconfigured"))
+  assert list.key_find(fields, "protected") == Ok(json.String(".git"))
+  let filesystem = ctx.filesystem
+  let assert Error(_) = filesystem.read("/work/src/main.gleam")
+}
+
+pub fn a_relative_protected_entry_refuses_an_edit_too_test() {
+  // Both write doors go through `resolve_writable`, so neither can be
+  // the one that stays open.
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "notes.txt", "keep\n")
+  let ctx = with_protected(ctx, ["/work/.git", "relative/entry"])
+  let outcome = fs.edit_tool().run(ctx, insert_call("notes.txt", "keep\n"))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "relative/entry")
+  let filesystem = ctx.filesystem
+  let assert Ok(bytes) = filesystem.read("/work/notes.txt")
+  assert bytes == <<"keep\n":utf8>>
+}
+
+pub fn a_relative_protected_entry_leaves_reads_alone_test() {
+  // The refusal is on the write path only, exactly as the protected
+  // check itself is: `resolve_real` never consults the list.
+  let #(ctx, _filesystem) = memory_ctx()
+  write_file(ctx, "notes.txt", "readable\n")
+  let ctx = with_protected(ctx, [".git"])
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("notes.txt"))]))
+  assert outcome.is_error == False
+}
+
+pub fn write_whole_creates_missing_parents_test() {
+  // The seam both write doors share: `fs_write`'s description promises
+  // parents are created, and the bridge's `fs.write` closure calls this
+  // same function so the two cannot disagree.
+  let #(ctx, _filesystem) = real_ctx("write_whole_parents")
+  let assert Ok(Nil) =
+    fs.write_whole(
+      filesystem: ctx.filesystem,
+      resolved: ctx.workspace <> "/new_dir/deeper/file.txt",
+      bytes: <<"landed\n":utf8>>,
+    )
+    as "a whole-file write creates its parents"
+  let assert Ok(text) =
+    simplifile.read(ctx.workspace <> "/new_dir/deeper/file.txt")
+  assert text == "landed\n"
+}

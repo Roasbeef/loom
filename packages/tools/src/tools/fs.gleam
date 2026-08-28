@@ -81,6 +81,18 @@ pub type PathError {
   /// policy's `protected` list, which no write may touch. `protected`
   /// carries the entry that matched.
   ProtectedPath(path: String, protected: String)
+  /// The session base policy's `protected` list holds a non-absolute
+  /// entry, so this write is refused without being judged at all.
+  /// `protected` carries the offending entry.
+  ///
+  /// A relative entry is a misconfiguration rather than a path, and it
+  /// cannot be interpreted: `normalize` would root it at `/`, where it
+  /// covers nothing and every write sails past. The jail refuses the
+  /// same policy loudly (`broker/policy.validate` answers
+  /// `RelativePath`), so the harness must not be the door that quietly
+  /// stays open — a `protected` list the jail will not accept must not
+  /// be one the harness silently ignores.
+  ProtectionMisconfigured(path: String, protected: String)
 }
 
 /// The production `FileSystem` seam, backed by simplifile.
@@ -105,6 +117,14 @@ pub fn real_filesystem() -> FileSystem {
     read_link: fn(path) {
       ffi_path.read_link(path)
       |> result.map_error(fn(reason) { tool.FsFailure(path:, reason:) })
+    },
+    // `simplifile.rename` is `file:rename/2`, which is `rename(2)`: an
+    // atomic replace within one filesystem, and an error rather than a
+    // silent copy across two. The error is reported against the
+    // destination, which is the path a caller was trying to establish.
+    rename: fn(from, to) {
+      simplifile.rename(at: from, to:)
+      |> result.map_error(map_file_error(to, _))
     },
   )
 }
@@ -176,6 +196,19 @@ pub const max_link_follows = 40
 /// pointing outside it is rejected, dangling symlinks included — a
 /// write through `link -> /outside/absent` would land outside, so the
 /// link is resolved to its target and the target fails containment.
+///
+/// **Resolution is point-in-time.** What comes back is where the path
+/// led when it was walked, and the caller then reads or writes that
+/// resolved path — so a mutator running *concurrently* inside the
+/// workspace (a jailed `proc.run`, another code-mode program, the user's
+/// own editor) can interpose a symlink between the resolve and the
+/// write. Returning the resolved path rather than the original narrows
+/// the window to a component that was verified not to be a link, which
+/// is why every caller writes to the return value and never to its own
+/// argument, but it does not close it. The jail does not share this
+/// window at all: bwrap's mounts and masks are established before the
+/// payload runs and are properties of a namespace rather than of a
+/// lookup, so nothing the workspace does afterwards moves them.
 ///
 /// ## Examples
 ///
@@ -413,6 +446,13 @@ fn normalize(path: String) -> String {
 /// — so the narrower fix ships first and the asymmetry is stated rather
 /// than glossed.
 ///
+/// **The check is point-in-time, exactly as `resolve_real` is.** The
+/// protected entry is tested against where the path led when it was
+/// walked; a concurrent workspace mutator can interpose a symlink
+/// between this answer and the write that follows it. The window is the
+/// same one `resolve_real`'s doc describes and the jail's bwrap masks do
+/// not share.
+///
 /// Public so that anything else in the harness holding write authority
 /// over the workspace — a capability bridge servicing `fs.write` for a
 /// code-mode program, say — resolves through this function instead of
@@ -438,10 +478,36 @@ pub fn resolve_writable(
   protected protected: List(String),
   path path: String,
 ) -> Result(String, PathError) {
+  use _ <- result.try(all_absolute(protected, path))
   use resolved <- result.try(resolve_real(filesystem:, workspace:, path:))
   case list.find(protected, covers_target(filesystem, _, resolved)) {
     Error(Nil) -> Ok(resolved)
     Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
+  }
+}
+
+// The `protected` list is checked for absoluteness *before* the target is
+// resolved, and a relative entry refuses the write outright.
+//
+// This fails closed on purpose, and the alternative is what was here
+// before: `covers_target` normalizes an entry, `normalize` roots a
+// relative one at `/`, and `".git"` therefore became `"/.git"` — an entry
+// covering nothing inside any workspace, so every write it was meant to
+// refuse went through. The jail does not have this hole: the same policy
+// reaches `broker/policy.validate` as a `RelativePath` error and the
+// clearance is refused. An operator who writes `protected: [".git"]`
+// must not get a jail that refuses and a harness that permits.
+//
+// Refusing the whole write rather than the one entry is the point: a
+// misconfigured list cannot be partially honoured, because what it
+// *meant* to cover is exactly what cannot be determined from it.
+fn all_absolute(
+  protected: List(String),
+  path: String,
+) -> Result(Nil, PathError) {
+  case list.find(protected, fn(entry) { !string.starts_with(entry, "/") }) {
+    Error(Nil) -> Ok(Nil)
+    Ok(entry) -> Error(ProtectionMisconfigured(path:, protected: entry))
   }
 }
 
@@ -455,6 +521,16 @@ pub fn resolve_writable(
 // miss exactly the case `resolve_real` exists for (a symlinked
 // workspace root, say). Where the two agree, which is the ordinary
 // case, this is one comparison twice.
+//
+// The comparison itself is `broker/policy.covers` — the same function
+// composition judges roots with and `codemode/launch` judges jail
+// reachability by, so these enforcement points cannot drift. It matches
+// by path component, which is the whole point: `.gitx/file` merely
+// shares a textual prefix with `.git` and is not protected by it.
+//
+// The entry is known absolute here: `resolve_writable` refuses a
+// relative one before this is reached, which is what keeps `normalize`
+// from silently rooting `.git` at `/`.
 fn covers_target(
   filesystem: FileSystem,
   entry: String,
@@ -462,17 +538,8 @@ fn covers_target(
 ) -> Bool {
   let lexical = normalize(entry)
   let real = walk(filesystem, lexical) |> result.unwrap(or: lexical)
-  covers(lexical, resolved) || covers(real, resolved)
-}
-
-// Whether `root` is `path` itself or a path-*component* prefix of it —
-// the same predicate `broker/policy.covered_by` composes roots with and
-// `codemode/launch.covers` judges jail reachability by, so the two
-// enforcement points cannot drift. Component-wise is the whole point:
-// `.gitx/file` merely shares a textual prefix with `.git` and is not
-// protected by it.
-fn covers(root: String, path: String) -> Bool {
-  root == "/" || root == path || string.starts_with(path, root <> "/")
+  policy.covers(root: lexical, path: resolved)
+  || policy.covers(root: real, path: resolved)
 }
 
 // --- fs_read -------------------------------------------------------------
@@ -688,18 +755,36 @@ fn run_write(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use resolved <- tool.or_outcome(resolve_for_write(ctx, path), path_outcome)
   let bytes = <<content:utf8>>
   use Nil <- tool.or_outcome(
-    write_file(ctx.filesystem, resolved, bytes),
+    write_whole(filesystem: ctx.filesystem, resolved:, bytes:),
     fs_error_outcome,
   )
   write_outcome(path, bytes)
 }
 
-// Creates any missing parent directories, then writes the whole file —
-// the two-step seam operation `fs_write` needs from a resolved path.
-fn write_file(
-  filesystem: FileSystem,
-  resolved: String,
-  bytes: BitArray,
+/// Creates any missing parent directories, then writes the whole file —
+/// the two-step seam operation a whole-file write needs from a resolved
+/// path.
+///
+/// **`resolved` must already have come out of `resolve_for_write` or
+/// `resolve_writable`.** This performs no path discipline and no
+/// protected-path check of its own; it is the write half only.
+///
+/// Public for the reason `resolve_writable` is: the capability bridge's
+/// `fs.write` closure serves the same contract as `fs_write` and must
+/// create parents the same way. Two doors onto one workspace that
+/// disagree about whether `new_dir/file.txt` needs an existing `new_dir`
+/// is a difference a program discovers by failing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.write_whole(filesystem:, resolved: "/work/a/b.txt", bytes: <<>>)
+/// ```
+///
+pub fn write_whole(
+  filesystem filesystem: FileSystem,
+  resolved resolved: String,
+  bytes bytes: BitArray,
 ) -> Result(Nil, FsError) {
   use Nil <- result.try(
     filesystem.create_directory_all(parent_directory(resolved)),
@@ -1088,6 +1173,24 @@ pub fn path_outcome(error: PathError) -> ToolOutcome {
       |> tool.with_details(
         json.Object([
           #("error", json.String("protected_path")),
+          #("path", json.String(path)),
+          #("protected", json.String(protected)),
+        ]),
+      )
+    ProtectionMisconfigured(path:, protected:) ->
+      tool.failure(
+        "permission denied: `"
+        <> path
+        <> "` was not written because this session's protected-path list "
+        <> "is misconfigured — the entry `"
+        <> protected
+        <> "` is not absolute, so nothing can be judged against it. Ask "
+        <> "the operator to fix the session's base policy; no approval or "
+        <> "grant widens this.",
+      )
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("protection_misconfigured")),
           #("path", json.String(path)),
           #("protected", json.String(protected)),
         ]),

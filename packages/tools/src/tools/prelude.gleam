@@ -25,7 +25,7 @@
 //// names the file that moved:
 ////
 ////   02ab7f303e9459d9c9779837b6512df519b0e9940fdcc09e3163c6c0a89ede2a  packages/cap/src/cap/actor.gleam
-////   58758fa6ed33f2390e4b3bbf0dd34a87bbc63a69d83ec0ca2a2cded6fd639d2e  packages/cap/src/cap/fs.gleam
+////   1a2df8a18911102bde621635396087fd8103a2dfc23b19f16578938a47c69afe  packages/cap/src/cap/fs.gleam
 ////   87d4d708a7feb5e0155c7af7b67d2744c71002c324e4e07afc8e66d4cfd4e502  packages/cap/src/cap/git.gleam
 ////   ef852f2a91c6bb9e8523d58c3466eb644c14f34fc1e210cb6e6dff5f00bd9fb6  packages/cap/src/cap/kv.gleam
 ////   16975eb1a575e4e43a9c2892a7c40586bcab49ccb8674d4cf1e49d9aae6786cd  packages/cap/src/cap/lsp.gleam
@@ -38,7 +38,7 @@
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): b600620fc4336e6effca317742182d633729d045ef49d87c85bed991ab9530e5
+//// Body digest (every line after the marker): 563135b85851a74f070e301ef77ab9995c949c9c75509e65cbff35c4df8fed6d
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -117,7 +117,8 @@ pub fn stop() -> Next(a)
   #(
     "cap/fs",
     "### cap/fs
-`cap/fs` — workspace filesystem access, as typed calls over the broker.
+`cap/fs` — workspace filesystem access, as typed calls over the capability
+channel.
 
 /// One directory entry from `list`.
 pub type DirEntry {

@@ -8,6 +8,7 @@
 //// is exactly the keyless-environment boot story the module documents.
 
 import broker/exec
+import broker/policy
 import client/catalog
 import client/codemode
 import client/host
@@ -75,7 +76,21 @@ fn settings() -> serve.Settings {
   settings_under(root)
 }
 
+// A repository-relative test path as the absolute one every policy path
+// must be.
+fn absolute(path: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner must have a working directory"
+  here <> "/" <> path
+}
+
 fn settings_under(root: String) -> serve.Settings {
+  // Absolute, because the workspace root really is: it becomes the base
+  // policy's writable root, and `serve.base_policy_fault` refuses a boot
+  // on a policy whose paths the jail could not accept. A test that
+  // booted on a relative one was proving a server can start in a posture
+  // no tool call could ever run under.
+  let root = absolute(root)
   serve.Settings(
     session_path: root <> "/session.db",
     bind_host: "127.0.0.1",
@@ -202,7 +217,7 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
   // It is the rendered pack against this host, not an empty string and
   // not a placeholder: the workspace, the shell, and the repository's own
   // guidance are all in it, framed as project-authored data.
-  assert string.contains(pinned, "Workspace root: " <> workspace)
+  assert string.contains(pinned, "Workspace root: " <> absolute(workspace))
   assert string.contains(pinned, "Shell: " <> serve.shell_path)
   assert string.contains(pinned, "<project-guidance>")
   assert string.contains(pinned, "Build with make.")
@@ -532,4 +547,81 @@ fn settled_hub_pid(
         }
       }
   }
+}
+
+// --- the base policy the server refuses to boot on -------------------------
+
+pub fn a_base_policy_the_sandbox_can_enforce_boots_test() {
+  assert serve.base_policy_fault(serve.base_policy("/work")) == Ok(Nil)
+}
+
+pub fn a_relative_protected_entry_refuses_the_boot_test() {
+  // The finding this check exists for. A relative `protected` entry
+  // normalizes to `/.git` in the harness's own path work, where it is
+  // under no workspace and covers nothing — so the operator who wrote it
+  // gets a session that protects nothing while reading as though it
+  // does. The jail refuses the very same value (`policy.validate`), and
+  // two enforcement points disagreeing is exactly what must not ship.
+  // Refused at boot, before a directory is made or a helper is spawned,
+  // because the alternative is learning about it from the first tool
+  // call of a live session.
+  let base =
+    policy.SandboxPolicy(..serve.base_policy("/work"), protected: [".git"])
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a relative protected entry refuses the boot"
+  assert string.contains(reason, "base policy")
+  assert string.contains(reason, ".git")
+  assert string.contains(reason, "not absolute")
+}
+
+pub fn a_relative_writable_root_refuses_the_boot_test() {
+  // Same check, the other kind of path: `validate` is one rule over
+  // every path a policy names, and this server refuses on all of them
+  // rather than on the one that prompted the check.
+  let base =
+    policy.SandboxPolicy(..serve.base_policy("/work"), writable_roots: [
+      "work",
+    ])
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a relative writable root refuses the boot"
+  assert string.contains(reason, "`work` is not absolute")
+}
+
+pub fn a_negative_limit_refuses_the_boot_naming_the_field_test() {
+  let base = serve.base_policy("/work")
+  let limits = policy.Limits(..base.limits, wall_s: -1)
+  let assert Error(reason) =
+    serve.base_policy_fault(policy.SandboxPolicy(..base, limits:))
+    as "a negative limit refuses the boot"
+  assert string.contains(reason, "wall_s")
+  assert string.contains(reason, "cannot be negative")
+}
+
+pub fn a_scratch_of_the_host_root_refuses_the_boot_test() {
+  let base =
+    policy.SandboxPolicy(
+      ..serve.base_policy("/work"),
+      scratch: policy.ScratchPath(path: "/"),
+    )
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a scratch of the host root refuses the boot"
+  assert string.contains(reason, "Landlock")
+}
+
+pub fn the_boot_itself_refuses_before_anything_is_spawned_test() {
+  // Not just the pure check: `assemble` asks it first, so no session
+  // file, no lease, no helper pool. The session path is one this test
+  // has never created, and the refusal must be about the policy rather
+  // than about the missing directory.
+  let boot_root = "build/serve-test-policy-fault"
+  let _stale = simplifile.delete(boot_root)
+  let settings = settings_under(boot_root)
+  let base =
+    policy.SandboxPolicy(..settings.base_policy, protected: ["relative/entry"])
+  let assert Error(reason) =
+    serve.boot(serve.Settings(..settings, base_policy: base))
+    as "the boot refuses a base policy the sandbox cannot enforce"
+  assert string.contains(reason, "relative/entry")
+  // Nothing was prepared: the check runs before `prepare_directories`.
+  assert simplifile.is_directory(boot_root) == Ok(False)
 }

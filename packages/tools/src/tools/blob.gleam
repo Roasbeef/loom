@@ -18,6 +18,7 @@
 //// the runtime to place `blob_root` under a readable root; recorded as
 //// a spec gap.
 
+import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/int
@@ -25,7 +26,7 @@ import gleam/option.{Some}
 import gleam/result
 import gleam/string
 import tools/internal/ffi_hash
-import tools/tool.{type Ctx, type FsError, type ToolOutcome}
+import tools/tool.{type Ctx, type FileSystem, type FsError, type ToolOutcome}
 
 /// Outputs strictly larger than this many bytes overflow to the blob
 /// directory (spec §3.2: "> 64 KiB").
@@ -71,7 +72,13 @@ pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
       use present <- result.try(filesystem.is_file(path))
       use Nil <- result.try(case present {
         True -> Ok(Nil)
-        False -> filesystem.write(path, bytes)
+        False ->
+          write_addressed(
+            filesystem:,
+            path:,
+            temporary: temp_path(ctx.blob_root, ref, call_tag(ctx)),
+            bytes:,
+          )
       })
       Ok(Overflowed(
         ref:,
@@ -105,6 +112,66 @@ pub fn ref_for(bytes: BitArray) -> String {
 ///
 pub fn ref_path(root: String, ref: String) -> String {
   root <> "/" <> ref
+}
+
+/// Where a ref's bytes are staged before they are renamed into place.
+///
+/// In the blob root itself, so the rename stays within one filesystem
+/// and is therefore atomic; hidden and `.tmp`-suffixed so a reader
+/// walking the store can tell a staging file from an address; and
+/// carrying `tag`, which is what makes it unique to *one* write.
+///
+/// The tag is load-bearing rather than decoration. A shared temporary
+/// name would be shared by exactly the writers a content address cannot
+/// separate — two concurrent first writes of identical bytes — and the
+/// interleave that follows can rename a half-written file into place.
+/// A per-write name has no such interleave: each writer stages its own
+/// file and the rename replaces the destination whole.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert blob.temp_path("/blobs", "sha256-ab", "t")
+///   == "/blobs/.sha256-ab.t.tmp"
+/// ```
+///
+pub fn temp_path(root: String, ref: String, tag: String) -> String {
+  root <> "/." <> ref <> "." <> tag <> ".tmp"
+}
+
+/// Writes bytes to their content address through a staging file.
+///
+/// The write is not atomic and the rename is, so the address never names
+/// a partial file: a crash between the two leaves a stray `.tmp` in the
+/// store — a byte of garbage nothing reads and the next `create` of the
+/// same tag overwrites — rather than a blob whose SHA-256 name vouches
+/// for content it does not hold. That distinction is the whole reason
+/// this is two steps: a torn direct write is *permanently* wrong and
+/// silently so, because every later reader trusts the address.
+///
+/// Idempotency is unaffected — the destination is the content address
+/// either way, and the caller's `is_file` probe still skips the work.
+pub fn write_addressed(
+  filesystem filesystem: FileSystem,
+  path path: String,
+  temporary temporary: String,
+  bytes bytes: BitArray,
+) -> Result(Nil, FsError) {
+  use Nil <- result.try(filesystem.write(temporary, bytes))
+  filesystem.rename(temporary, path)
+}
+
+// What makes one overflow write's staging file its own: the durable
+// coordinates of the tool call that produced it. A tool call overflows
+// at most one output, so the triple is unique per write — and it is the
+// same triple that identifies the call everywhere else in the harness,
+// so nothing new has to be minted or threaded to get it. Slashes are
+// folded out because a step id is a free-form string and a staging file
+// must stay in the blob root.
+fn call_tag(ctx: Ctx) -> String {
+  [ids.op_id_to_string(ctx.op_id), ctx.step_id, int.to_string(ctx.source_index)]
+  |> string.join(with: "-")
+  |> string.replace(each: "/", with: "-")
 }
 
 /// The transcript text for a bounded output: inline text as-is; an

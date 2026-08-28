@@ -140,3 +140,61 @@ pub fn ref_is_lowercase_hex_sha256_test() {
   assert string.length(hex) == 64
   assert hex == string.lowercase(hex)
 }
+
+// --- the content address is established by the rename, never by the write ---
+
+pub fn an_overflow_is_staged_and_renamed_never_written_in_place_test() {
+  // The crash-safety property, observed the one way it can be observed
+  // in process: a filesystem whose `rename` refuses. If the bytes were
+  // written straight to the content address, the address would hold them
+  // and the emission would have succeeded; because they are staged, the
+  // refusal leaves *nothing* at the address.
+  //
+  // That is the whole of what temp-then-rename buys. A torn direct write
+  // is permanently and silently wrong — the SHA-256 name vouches for
+  // content the file does not hold, and every later reader believes it —
+  // where a failed rename leaves a `.tmp` nothing reads.
+  let store = memory_fs.start()
+  let refusing =
+    tool.FileSystem(..memory_fs.filesystem(store), rename: fn(from, _to) {
+      Error(tool.FsFailure(path: from, reason: "rename refused"))
+    })
+  let recorded = process.new_subject()
+  let context =
+    fake_broker.ctx(
+      workspace: "/work",
+      filesystem: refusing,
+      now: 0,
+      script: [],
+      recorded:,
+    )
+  let text = string.repeat("y", blob.overflow_threshold_bytes + 1)
+  let assert Error(tool.FsFailure(..)) = blob.bound(context, text)
+    as "a refused rename refuses the overflow"
+  // Nothing at the content address: the write went to the staging name.
+  let readable = memory_fs.filesystem(store)
+  let ref = blob.ref_for(<<text:utf8>>)
+  let assert Error(_) = readable.read(blob.ref_path(context.blob_root, ref))
+    as "no bytes were written to the content address"
+}
+
+pub fn a_staging_name_is_in_the_blob_root_and_is_not_an_address_test() {
+  // The rename is only atomic within one filesystem, so the staging file
+  // must live beside the destination; and it must not look like a
+  // content address, or a reader walking the store would take a
+  // half-written file for a blob.
+  let staging = blob.temp_path("/blobs", "sha256-abc", "tag")
+  assert string.starts_with(staging, "/blobs/")
+  assert string.ends_with(staging, ".tmp")
+  assert staging != blob.ref_path("/blobs", "sha256-abc")
+}
+
+pub fn two_writes_of_one_ref_stage_under_different_names_test() {
+  // What a shared staging name would cost: two concurrent first writes
+  // of identical bytes are exactly the pair a content address cannot
+  // tell apart, and they would interleave on one staging file — where
+  // one writer can rename a half-written file into place. Distinct tags
+  // have no such interleave.
+  assert blob.temp_path("/blobs", "sha256-abc", "one")
+    != blob.temp_path("/blobs", "sha256-abc", "two")
+}

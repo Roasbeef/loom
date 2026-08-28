@@ -20,6 +20,7 @@ type Msg {
     reply: Subject(Result(Nil, tool.FsError)),
   )
   IsFile(path: String, reply: Subject(Bool))
+  Rename(from: String, to: String, reply: Subject(Result(Nil, tool.FsError)))
 }
 
 /// Starts an empty in-memory filesystem.
@@ -55,6 +56,12 @@ pub fn filesystem(fs: MemoryFs) -> FileSystem {
         False -> Ok(tool.LinkMissing)
       }
     },
+    // Atomic by construction here: the actor's own message handling is
+    // the serialization, so a rename is one indivisible step exactly as
+    // `rename(2)` is on a real filesystem.
+    rename: fn(from, to) {
+      process.call(fs.subject, waiting: 1000, sending: Rename(from, to, _))
+    },
   )
 }
 
@@ -77,6 +84,18 @@ fn handle(
     IsFile(path, reply) -> {
       process.send(reply, dict.has_key(state, path))
       actor.continue(state)
+    }
+    Rename(from, to, reply) -> {
+      case dict.get(state, from) {
+        Error(Nil) -> {
+          process.send(reply, Error(tool.FsNotFound(path: from)))
+          actor.continue(state)
+        }
+        Ok(bytes) -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(dict.insert(dict.delete(state, from), to, bytes))
+        }
+      }
     }
   }
 }

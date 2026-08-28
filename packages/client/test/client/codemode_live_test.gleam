@@ -1547,6 +1547,7 @@ fn no_filesystem() -> tool.FileSystem {
     create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
     is_file: fn(_path) { Ok(False) },
     read_link: fn(_path) { Ok(tool.LinkMissing) },
+    rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
 }
 

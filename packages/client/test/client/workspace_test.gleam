@@ -249,6 +249,30 @@ pub fn an_emit_writes_a_real_blob_at_its_content_address_test() {
   assert simplifile.read_bits(path) == Ok(bytes)
 }
 
+pub fn an_emit_leaves_no_staging_file_behind_test() {
+  // The blob write is staged under a temporary name in the blob root and
+  // renamed into place, so a crash mid-write can never leave a partial
+  // file at an address whose SHA-256 name vouches for the whole of it
+  // (`blob.write_addressed`; `tools/blob_test` holds the refused-rename
+  // case). What this side owes is the other half: on the ordinary path
+  // the staging file is *gone*, so the store holds addresses and nothing
+  // else.
+  let root = fresh("emit-staging")
+  let seam = seam_over(root)
+  let bytes = <<"staged then renamed":utf8>>
+  let assert Ok(id) =
+    seam.emit(artifact.Artifact(
+      name: "report.md",
+      content_type: "text/markdown",
+      bytes:,
+    ))
+    as "a well-formed emit is written"
+  let store = root <> "/" <> codemode.blob_directory
+  let assert Ok(written) = simplifile.get_files(in: store)
+    as "the blob root must be listable"
+  assert written == [blob.ref_path(store, id)]
+}
+
 pub fn re_emitting_identical_bytes_answers_the_same_id_test() {
   // Content addressing, pinned by its consequence: the store is
   // idempotent, so a program that emits the same artifact twice pays for
@@ -397,6 +421,81 @@ pub fn a_symlink_onto_a_protected_path_is_refused_through_the_bridge_test() {
   assert simplifile.read(root <> "/.git/config") == Ok("[core]\n")
 }
 
+pub fn a_relative_protected_entry_refuses_every_bridge_write_test() {
+  // The second door onto the same fail-closed rule (`fs_test` holds the
+  // first). A relative `protected` entry normalizes to `/.git`, which is
+  // under no workspace and so covers nothing — the list would have
+  // protected nothing while reading as though it did. The jail refuses
+  // the very same policy as `RelativePath`, and the harness must not be
+  // the door that quietly stays open.
+  //
+  // Refused for ANY path, not only the one the entry meant: what a
+  // misconfigured list intended to cover is exactly what cannot be
+  // recovered from it.
+  let root = fresh("write-relative-protected")
+  let seam = seam_protecting(root, [".git"])
+  let assert Error(workspace.PathRefused(fs.ProtectionMisconfigured(
+    protected: ".git",
+    ..,
+  ))) = seam.fs_write("src/main.gleam", "pub fn main() {}")
+    as "a relative protected entry refuses the write"
+  assert simplifile.is_file(root <> "/src/main.gleam") == Ok(False)
+}
+
+pub fn a_relative_protected_entry_refuses_a_bridge_edit_test() {
+  let root = fresh("edit-relative-protected")
+  write(root, "code.txt", "let value = old_name")
+  let seam = seam_protecting(root, [root <> "/.git", "relative/entry"])
+  let edits = [
+    workspace.Replacement(find: "old_name", replace_with: "new_name"),
+  ]
+  let assert Error(workspace.PathRefused(fs.ProtectionMisconfigured(
+    protected: "relative/entry",
+    ..,
+  ))) = seam.fs_edit("code.txt", edits)
+    as "a relative protected entry refuses the edit"
+  assert seam_over(root).fs_read("code.txt") == Ok("let value = old_name")
+}
+
+pub fn a_relative_protected_entry_travels_as_permission_denied_test() {
+  // What a program actually reads. `cap/fs.map_error` turns this code
+  // into `PermissionDenied`, which is honest: nothing is wrong with the
+  // call, and there is no argument the program could change.
+  let refusal =
+    workspace.PathRefused(fs.ProtectionMisconfigured(
+      path: "src/main.gleam",
+      protected: ".git",
+    ))
+  assert workspace.fs_denial(refusal).code == workspace.permission_denied_code
+  assert string.contains(workspace.fs_denial(refusal).message, ".git")
+}
+
+pub fn a_bridge_write_creates_missing_parent_directories_test() {
+  // The two doors onto one workspace must not disagree about this. The
+  // model's own `fs_write` creates parents and says so in its
+  // description; a bridge that failed with an errno on the same path
+  // would be one workspace behaving two ways depending on which door a
+  // write came through.
+  let root = fresh("write-parents")
+  let seam = seam_over(root)
+  let assert Ok(Nil) = seam.fs_write("new_dir/file.txt", "landed")
+    as "a bridged write creates its parent directory"
+  assert seam.fs_read("new_dir/file.txt") == Ok("landed")
+}
+
+pub fn a_list_of_a_file_is_not_a_directory_test() {
+  // `fs.list` of a regular file is the one listing failure a program can
+  // act on: it says `fs.read` was the call that was wanted. `cap/fs`
+  // decodes the code to `WrongKind`.
+  let root = fresh("list-not-a-directory")
+  write(root, "notes.txt", "hello\n")
+  let seam = seam_over(root)
+  let assert Error(refusal) = seam.fs_list("notes.txt")
+    as "listing a file is refused"
+  assert refusal == workspace.NotADirectory(path: root <> "/notes.txt")
+  assert workspace.fs_denial(refusal).code == workspace.not_a_directory_code
+}
+
 pub fn a_write_outside_the_workspace_is_refused_test() {
   let seam = seam_over(fresh("write-outside"))
   let assert Error(workspace.PathRefused(fs.EscapesWorkspace(..))) =
@@ -462,13 +561,19 @@ fn seam_over(root: String) -> workspace.Workspace {
 // .git — the shape a production base carries and `workspace_default`
 // deliberately does not.
 fn protected_seam_over(root: String) -> workspace.Workspace {
+  seam_protecting(root, [root <> "/.git"])
+}
+
+// The seam over a request whose base policy protects exactly `entries` —
+// including, for the fail-closed tests, entries no valid policy may hold.
+fn seam_protecting(root: String, entries: List(String)) -> workspace.Workspace {
   let request = request_over(root)
   let base = request.base_policy
   codemode.workspace_seam(
     config_over(root),
     codemode_tool.Request(
       ..request,
-      base_policy: policy.SandboxPolicy(..base, protected: [root <> "/.git"]),
+      base_policy: policy.SandboxPolicy(..base, protected: entries),
     ),
   )
 }

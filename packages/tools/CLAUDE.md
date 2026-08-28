@@ -41,7 +41,9 @@ can repair from.
 - `tools/tool.Ctx` — every seam a tool may touch: workspace root, the
   driver's own coordinates (`strand`, `op_id`, `step_id`,
   `source_index`), base policy and grants, enforcement demand, the
-  constructed env, the clock, a `FileSystem` record of functions,
+  constructed env, the clock, a `FileSystem` record of functions
+  (`read`, `write`, `create_directory_all`, `is_file`, `read_link`, and
+  `rename` — the last for the atomic staging the blob store needs),
   `blob_root`, `clear_call` — the broker seam every jailed execution
   flows through — and `raise_refusal`, the other door onto the same
   escalation plane.
@@ -224,6 +226,42 @@ can repair from.
   asymmetry with the jail, which masks a protected path out of view
   entirely — and stated in `resolve_for_write`'s doc rather than
   glossed.
+- **A `protected` list the jail would refuse fails the harness closed
+  too.** A non-absolute entry cannot be applied: `normalize` roots it at
+  `/`, where it covers nothing under any workspace, so a list written as
+  `protected: [".git"]` used to protect nothing while reading as though
+  it did. The jail refuses the same value loudly —
+  `broker/policy.validate` answers `RelativePath` and the clearance
+  never happens — and a harness that quietly permitted what the jail
+  refuses is the worse half of that pair. So `resolve_writable` checks
+  absoluteness *before* it resolves anything and refuses the write as
+  `PathError.ProtectionMisconfigured`, in band, naming the entry, with
+  `details.error = "protection_misconfigured"`. It refuses **any** path,
+  not just the one the entry meant to cover: what a misconfigured list
+  intended is exactly what cannot be recovered from it. Reads stay
+  untouched, the same asymmetry the entry above has.
+  `client/serve.base_policy_fault` closes the other end, refusing the
+  boot outright, so the in-band refusal is the backstop rather than the
+  operator's first notice.
+- **One whole-file write behind both doors.** `fs.write_whole` creates
+  missing parents and then writes, and both `fs_write` and the code-mode
+  bridge's `fs.write` closure call it — so `new_dir/file.txt` means the
+  same thing whichever door a write came through. Two doors onto one
+  workspace disagreeing about that is a difference discoverable only by
+  hitting it.
+- **A blob is established by a rename, never by a write.** Content
+  addressing is only worth something if nothing can be reached under an
+  address but the content it names, and a torn direct write leaves
+  exactly that — a partial file whose SHA-256 name vouches for the whole
+  of it, believed by every later reader. So `blob.write_addressed`
+  stages the bytes under `blob.temp_path` in the blob root (same
+  filesystem, so `rename(2)` is atomic) and renames them into place; a
+  crash between the two leaves a stray `.tmp` nothing reads. The staging
+  name carries a tag unique to one write — the tool call's own
+  `{op_id, step_id, source_index}` here, random bytes for
+  `client/codemode`'s `report.emit` — because two concurrent first
+  writes of identical bytes are precisely the pair an address cannot
+  separate, and on a shared staging name they interleave.
 - **Replay safety is declared per tool and load-bearing.** `bash` is
   `Never` — an arbitrary external effect must yield a synthetic interrupted
   result on crash, never a re-execution. `grep`, `fs_read`, `fs_write`, and

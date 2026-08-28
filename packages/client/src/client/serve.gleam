@@ -1127,6 +1127,10 @@ fn assemble(
   logger: Logger,
   stops: Subject(host.Stop),
 ) -> Result(Booted, String) {
+  // Before a directory is made, a lease is taken or a helper is spawned:
+  // a base policy the sandbox cannot enforce is a boot failure, not a
+  // surprise waiting in the first tool call. See `base_policy_fault`.
+  use Nil <- result.try(base_policy_fault(settings.base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
@@ -1651,6 +1655,68 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(..policy.workspace_default(workspace), readable_roots: [
     "/",
   ])
+}
+
+/// Why this server will not boot on the base policy it was given, worded
+/// for the operator who wrote it.
+///
+/// `Settings.base_policy` is a *field*, so a host may serve any policy
+/// value it can construct — and a policy the effect plane cannot
+/// enforce is one this server must refuse to start on rather than start
+/// and enforce differently in different places. The three checks are
+/// `broker/policy.validate`'s, which is also the check every composed
+/// policy passes immediately before dispatch, so what is refused here is
+/// exactly what would be refused there.
+///
+/// A **relative `protected` entry** is the one worth naming. It reaches
+/// the jail as `RelativePath` and refuses the clearance, loudly; it
+/// reaches `tools/fs.resolve_writable` as a list nothing can be judged
+/// against, which now refuses in band rather than covering nothing. Two
+/// enforcement points agreeing to refuse is correct and still the wrong
+/// place to learn about it — the operator finds out from the first tool
+/// call of a live session, having been told nothing at boot. So the
+/// value is checked once, before anything is spawned, and the server
+/// does not come up.
+///
+/// Pure, and separate from `boot` for that reason: this is a decision
+/// about a value, and it should be testable as one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.base_policy_fault(serve.base_policy("/work")) == Ok(Nil)
+/// ```
+///
+pub fn base_policy_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
+  policy.validate(base)
+  |> result.map_error(fn(error) {
+    "the session base policy is not one the sandbox can enforce: "
+    <> policy_fault_text(error)
+  })
+}
+
+fn policy_fault_text(error: policy.PolicyError) -> String {
+  case error {
+    policy.RelativePath(path:) ->
+      "the path `"
+      <> path
+      <> "` is not absolute. Every writable root, readable root and "
+      <> "protected entry must start with `/` — a relative protected "
+      <> "entry is refused by the jail and covers nothing in the "
+      <> "harness's own path checks, so it would protect nothing while "
+      <> "looking as though it did"
+    policy.NegativeLimit(field:, value:) ->
+      "the limit `"
+      <> policy.limit_field_name(field)
+      <> "` is "
+      <> int.to_string(value)
+      <> ", and a resource ceiling cannot be negative (use 0 for "
+      <> "unlimited)"
+    policy.ScratchIsRoot ->
+      "scratch names the host root `/`. Landlock has no deny rules, so a "
+      <> "host-path scratch of `/` grants read-write over the whole "
+      <> "filesystem at that layer whatever the mount layer does"
+  }
 }
 
 /// The tool registry: the five core tools, plus the six `agent_*` tools

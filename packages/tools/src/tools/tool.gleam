@@ -120,6 +120,18 @@ pub type FileSystem {
     /// The path's own link status, without following it (lstat
     /// semantics).
     read_link: fn(String) -> Result(LinkStatus, FsError),
+    /// Renames a path over another, replacing any existing destination.
+    ///
+    /// The seam exists for exactly one job: a content-addressed blob is
+    /// written under a temporary name in its own directory and then
+    /// renamed into place, so a crash mid-write can never leave a
+    /// half-written file at an address that vouches for its whole
+    /// content. That property needs the rename to be **atomic**, which
+    /// `rename(2)` is within one filesystem and is not across two — so
+    /// an implementation must not fall back to copy-then-delete, and a
+    /// caller must keep the temporary in the destination's own
+    /// directory.
+    rename: fn(String, String) -> Result(Nil, FsError),
   )
 }
 
