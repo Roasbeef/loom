@@ -94,6 +94,7 @@ storage, machine, provider, and broker alongside runtime and events.)*
 pub opaque type EntryId    // UUIDv7; constructors: mint(Clock), mint_follower(EntryId)
 pub opaque type UsageId
 pub opaque type OpId
+pub opaque type SessionId  // UUIDv7; names a whole session (protocol-change/008)
 pub type Seq = Int         // storage-assigned, strictly increasing per session
 
 // core/entry
@@ -269,6 +270,9 @@ branch_meta(branch_id TEXT PK, tip_entry_id TEXT, tip_seq INT,
 CREATE UNIQUE INDEX ix_bm_tip ON branch_meta(tip_entry_id);
 session(created_at, parent_session_id, storage_version, metadata,
         message_count, usage_payload, next_seq);
+-- parent_session_id, and metadata's "session_id" field, are the lease-free
+-- projection of the session's own `session/id` / `session/parent` register
+-- cells, which are the truth (protocol-change/008).
 writer_lease(owner_id TEXT, fence INT, expires_at_ms INT);
 ```
 
