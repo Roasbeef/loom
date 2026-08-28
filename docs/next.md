@@ -121,12 +121,40 @@ Phase 3's remaining issues, in dependency order rather than numeric:
   fallback chain to a real provider is not routing.
 - **#15** — a canonical session id in `core`.
 - **#106** — **MCP through code mode**, as generated per-server capability
-  modules (`import cap/mcp/github`), *not* as registered harness tools. This
-  is new in phase 3 and it took `lsp_*`/`dap_*`'s place. It is independent of
-  the #16 bridge — different seam, different mechanism — so the two can run
-  in parallel. Read `docs/design-notes/tool-search-and-code-mode.md` §"The
-  tension" before starting; the issue carries the decision and the open
-  questions.
+  modules (`import cap/mcp/github`), *not* as registered harness tools. New
+  in phase 3, in `lsp_*`/`dap_*`'s place. Independent of the #16 bridge —
+  different seam, different mechanism — so the two can run in parallel.
+  Research is done and **the answers are on the issue**; read them before
+  `docs/design-notes/tool-search-and-code-mode.md`, which is now partly
+  stale. The short version:
+  - **No tool search.** Code mode already solves it structurally — the model
+    sees a rendered module surface, not tool JSON, so a module costs the same
+    whether the server has 3 tools or 300. The scaling lever is operator-side
+    server enablement, not model-side discovery.
+  - **Our spec citation is two revisions behind.** The design note cites
+    2025-06-18; current is 2026-07-28, which is stateless with **no
+    `initialize`**, and deprecates Sampling, Roots and Logging. Target the
+    `initialize`-based lifecycle for v1 anyway — that is what servers speak —
+    and **never declare `sampling` or `roots`**, which retires the
+    trust-inversion worry with upstream cover.
+  - **Config is `[mcp.<name>]` in `loom.toml`**, matching the model
+    catalogue, `api_key_env` for secrets, file only — no CLI, no
+    auto-discovered project file that a headless session would silently
+    trust.
+  - **`seed.verify` is not invalidated** by generated modules (verified by
+    building it), and the measured cost of 50 servers is +0.38 s, not the
+    multi-second penalty assumed. `cap.config_fingerprint` is Gleam's own
+    bookkeeping, not our hook — zero references in our source.
+  - **Build "scale with imports, not configuration" from the start**: filter
+    the clone by the *vetted* program's actual imports, which `vet.Vetted`
+    already carries.
+  - **The long pole is the adversarial corpus** for hostile `tools/list`
+    input, not the codegen.
+
+  One finding worth carrying into phase 5: **an MCP stdio client and an LSP
+  client are the same missing piece** — a supervised long-lived stdio
+  subprocess. Phase 3 therefore builds the substrate #25 needs, which makes
+  phase 5 cheaper rather than independent.
 - **#27** — triggered rules (TTSR).
 - **#28**, **#29** — memory M1 and M2.
 
