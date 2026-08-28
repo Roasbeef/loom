@@ -354,6 +354,18 @@ extended by the M3 runtime wave.
   it — the same rule the simulation hooks follow. A read that fails
   projects as empty, which reads downstream as "nothing to compact": a
   strand must not be halted because a token count could not be taken.
+  The same rule governs `run_start`, whose first production filler is
+  `client/notes`'s `agent/` digest: a hook runs on the driver, so it must
+  be synchronous and non-blocking, and it is built *before* `api.open`
+  returns, so there is no runtime handle to reach through — a register
+  read through the session store is the sanctioned pattern for both.
+- **A hook slot is set by replacement, so layers compose by wrapping.**
+  Every `hooks.with_*` setter replaces its slot outright. A second layer
+  that wants to add to one — `client/agency.reaping_hooks` on `run_end`,
+  `client/notes.digest_hooks` on `run_start` — therefore takes the built
+  `Hooks` and wraps the function already in the slot, calling it and
+  adding to its result. A layer that set the slot instead would silently
+  drop whatever the layer beneath it installed.
 - **The threshold is computed on every pass, and that is a cost.**
   `PlannerInputs.threshold` is a value rather than a thunk (frozen, spec
   Part 1), so an open operation pays one branch scan and one projection
