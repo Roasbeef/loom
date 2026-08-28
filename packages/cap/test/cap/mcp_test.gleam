@@ -203,6 +203,24 @@ pub fn non_boolean_is_error_is_malformed_test() {
 pub fn denied_maps_to_mcp_denied_with_the_code_verbatim_test() {
   assert invoke_against(Error(channel.Denied("unsupported_cap", "no router")))
     == Error(mcp.McpDenied(code: "unsupported_cap", message: "no router"))
+  // Every code but the one below stays itself, including the ones the
+  // harness does mint: folding `mcp_timeout` onto a category would throw
+  // away the one fact a program could branch on.
+  assert invoke_against(Error(channel.Denied("mcp_timeout", "too slow")))
+    == Error(mcp.McpDenied(code: "mcp_timeout", message: "too slow"))
+}
+
+pub fn the_harness_unavailable_code_reads_as_server_unavailable_test() {
+  // `client/mcp.unavailable_code`, restated here because the two packages
+  // are the ends of one wire and share no dependency. A server this host
+  // never configured, one whose client has gone, or a stopped layer all
+  // arrive under this name, and a program branching on
+  // `ServerUnavailable` must see them as what they are rather than as an
+  // unnamed denial.
+  assert invoke_against(
+      Error(channel.Denied("mcp_unavailable", "no MCP server named beta")),
+    )
+    == Error(mcp.ServerUnavailable(reason: "no MCP server named beta"))
 }
 
 pub fn unreachable_maps_to_server_unavailable_test() {

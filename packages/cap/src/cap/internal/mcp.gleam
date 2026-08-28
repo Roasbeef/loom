@@ -67,16 +67,22 @@ pub fn invoke(
   }
 }
 
+// The harness's own refusal name for a server that is not running, not
+// configured on this host, or whose client has gone reads back as the
+// variant that means the same thing; every other in-band refusal travels
+// as `McpDenied` with its code verbatim, so a code neither side has
+// learned yet is carried rather than folded into a category. The two
+// packages share no dependency — they are the ends of one wire, not
+// peers — so this side restates the name, exactly as `cap/strand`
+// restates the orchestration codes, and `client/mcp` pins its half.
 fn map_error(error: CallError) -> mcp.McpError {
   case error {
     Unreachable(reason:) -> mcp.ServerUnavailable(reason:)
-    // The harness router has not yet minted its refusal codes — in
-    // particular the one for "no such server / not running", which
-    // belongs under `ServerUnavailable`. Until it does, every in-band
-    // refusal travels as `McpDenied` with its code verbatim, so nothing
-    // is folded away and the mapping refines rather than changes when
-    // the harness-side codes land.
-    Denied(code:, message:) -> mcp.McpDenied(code:, message:)
+    Denied(code:, message:) ->
+      case code {
+        "mcp_unavailable" -> mcp.ServerUnavailable(reason: message)
+        _ -> mcp.McpDenied(code:, message:)
+      }
   }
 }
 

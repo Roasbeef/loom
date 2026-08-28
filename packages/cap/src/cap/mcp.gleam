@@ -61,10 +61,11 @@ pub type McpError {
   /// blocks ride along for a caller that wants more than prose.
   ToolFailed(message: String, content: List(Content))
   /// The capability channel could not carry the call, or the harness
-  /// router says the server is not running.
+  /// router refused it as `mcp_unavailable` — no such server, none
+  /// configured on this host, or its client has gone.
   ServerUnavailable(reason: String)
   /// Any other in-band broker or router refusal, code preserved
-  /// verbatim (`unsupported_cap`, a ceiling, …).
+  /// verbatim (`unsupported_cap`, `mcp_timeout`, a ceiling, …).
   McpDenied(code: String, message: String)
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
