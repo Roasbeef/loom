@@ -192,6 +192,12 @@ messages, or dependencies.
 ## Commits
 
 Make incremental, atomic commits that each tell one part of the story.
+**Every commit is authored by the repository owner** — the repo-local
+`user.name`/`user.email` (Olaoluwa Osuntokun <laolu32@gmail.com>) —
+never by a tool or agent identity, and commit messages carry no
+AI co-author trailers. Authorship is part of the no-tool-names rule:
+check `git config user.name` before the first commit of a session and
+fix it rather than committing under a default.
 Format: `subsystem: imperative summary under 50 chars`, then a body in
 natural prose explaining the why more than the what (no bullet-point
 dumps). Prefixes: package name for single-package changes (`core:`),

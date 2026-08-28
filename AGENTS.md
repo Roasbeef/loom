@@ -115,6 +115,14 @@ neither. `make gen-sql` is the same arrangement for the generated SQL
 modules. Change `packages/cap`'s public surface and you must regenerate,
 or the gate fails naming the file that moved.
 
+Gleam ships godoc-style documentation tooling of its own. Run inside a
+package, `gleam docs build` renders the `////`/`///` doc comments into
+HTML under `build/dev/docs/<package>`, and `gleam export
+package-interface --out <file>` emits the compiler's machine-readable
+account of the public API — the artifact `make gen-prelude` renders the
+`code_mode` description from. Reach for these to read an API as the
+compiler sees it rather than as a stale comment claims it.
+
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,
 `fix/hashline-replay`, `wp-j/vetting-lint` — never for the tool or agent
@@ -157,8 +165,8 @@ one.
 - **Design and spec** — `docs/loom-design.md`,
   `docs/loom-implementation-spec.md`, `docs/spec-gaps.md`.
 - **Architecture, per plane and subsystem** — `docs/architecture/`:
-  `durability`, `orchestration`, `effects`, `code-mode`, `messaging`,
-  `compaction`, `events`, `client`, `models`, `simulation`.
+  `durability`, `orchestration`, `effects`, `code-mode`, `mcp`,
+  `messaging`, `compaction`, `events`, `client`, `models`, `simulation`.
 - **Decisions** — `docs/adr/`, `protocol-change/`.
 - **Design notes** (explorations, not commitments) — `docs/design-notes/`.
 - **Review waves** — `docs/review/`, one file per wave with its triage.
@@ -184,6 +192,12 @@ messages, or dependencies.
 ## Commits
 
 Make incremental, atomic commits that each tell one part of the story.
+**Every commit is authored by the repository owner** — the repo-local
+`user.name`/`user.email` (Olaoluwa Osuntokun <laolu32@gmail.com>) —
+never by a tool or agent identity, and commit messages carry no
+AI co-author trailers. Authorship is part of the no-tool-names rule:
+check `git config user.name` before the first commit of a session and
+fix it rather than committing under a default.
 Format: `subsystem: imperative summary under 50 chars`, then a body in
 natural prose explaining the why more than the what (no bullet-point
 dumps). Prefixes: package name for single-package changes (`core:`),
