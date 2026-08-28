@@ -367,7 +367,7 @@ if [ "${1:-}" = "--self-test" ]; then
 
 	# A listed module the package does not ship: the shape of a rename
 	# that moved the file and not the list.
-	sed 's/\["cap\/runtime"\]/["cap\/runtime", "cap\/ghost"]/' \
+	sed 's/"cap\/runtime"\]/"cap\/runtime", "cap\/ghost"]/' \
 		"$allowlist_source" >"$work/phantom.gleam"
 	if check_coverage "$work/phantom.gleam" >/dev/null 2>&1; then
 		echo "gen-prelude: self-test FAILED — a listed but unshipped module was not caught" >&2
