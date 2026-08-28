@@ -529,3 +529,56 @@ fn starts_with_work(path: String) -> Bool {
     _ -> False
   }
 }
+
+// --- the shared coverage predicate ------------------------------------------
+//
+// `covers` is one function with three call sites in three packages —
+// composition here, the jail's reachability checks in `codemode/launch`,
+// and the harness-side protected-path refusal in `tools/fs`. It used to
+// be three textual copies, which is three places a fix could land in
+// two of. Pinned at its own home so the property is asserted about the
+// predicate rather than inferred from whichever caller happens to have a
+// test.
+
+pub fn covers_matches_a_path_by_component_never_by_prefix_test() {
+  // The whole point of the predicate. `/workspace` merely shares a
+  // textual prefix with `/work`; a plain `starts_with` would put it
+  // inside a root that does not contain it, and — read through
+  // `tools/fs` — would refuse a write to `.gitx/notes` as though it were
+  // under `.git`.
+  assert policy.covers(root: "/work", path: "/work")
+  assert policy.covers(root: "/work", path: "/work/sub")
+  assert policy.covers(root: "/work", path: "/work/sub/deeper.txt")
+  assert !policy.covers(root: "/work", path: "/workspace")
+  assert !policy.covers(root: "/work", path: "/workspace/sub")
+  assert !policy.covers(root: "/work", path: "/other")
+  assert !policy.covers(root: "/work/.git", path: "/work/.gitx/notes")
+}
+
+pub fn covers_treats_the_filesystem_root_as_covering_everything_test() {
+  assert policy.covers(root: "/", path: "/")
+  assert policy.covers(root: "/", path: "/anything/at/all")
+}
+
+pub fn covers_is_not_symmetric_test() {
+  // A root covers what is under it and not the other way round: a
+  // reversed argument order is a real bug and this is what catches it.
+  assert policy.covers(root: "/work", path: "/work/sub")
+  assert !policy.covers(root: "/work/sub", path: "/work")
+}
+
+pub fn covers_is_byte_exact_test() {
+  // Stated rather than assumed: the enforced target is Linux, where the
+  // kernel that applies the same boundary is byte-exact too. A case fold
+  // here would make this predicate and the jail disagree.
+  assert !policy.covers(root: "/work", path: "/WORK/x")
+}
+
+pub fn limit_field_name_is_the_wire_spelling_test() {
+  assert policy.limit_field_name(policy.CpuSeconds) == "cpu_s"
+  assert policy.limit_field_name(policy.WallSeconds) == "wall_s"
+  assert policy.limit_field_name(policy.MemBytes) == "mem_bytes"
+  assert policy.limit_field_name(policy.Pids) == "pids"
+  assert policy.limit_field_name(policy.FsizeBytes) == "fsize_bytes"
+  assert policy.limit_field_name(policy.OutputBytes) == "output_bytes"
+}

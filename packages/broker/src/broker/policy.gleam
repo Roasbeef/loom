@@ -87,6 +87,29 @@ pub type LimitField {
   OutputBytes
 }
 
+/// One limit field under the name the wire and the policy file use.
+///
+/// The same spelling `SandboxPolicyV1` carries and `client/grants`
+/// encodes, so a refusal that names a field names the thing an operator
+/// would edit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.limit_field_name(policy.WallSeconds) == "wall_s"
+/// ```
+///
+pub fn limit_field_name(field: LimitField) -> String {
+  case field {
+    CpuSeconds -> "cpu_s"
+    WallSeconds -> "wall_s"
+    MemBytes -> "mem_bytes"
+    Pids -> "pids"
+    FsizeBytes -> "fsize_bytes"
+    OutputBytes -> "output_bytes"
+  }
+}
+
 /// The scratch area given to the jail.
 pub type Scratch {
   /// A fresh tmpfs, the most restrictive choice.
@@ -363,9 +386,35 @@ fn meet_roots(base: List(String), requested: List(String)) -> List(String) {
 
 // Whether some root in `roots` is `path` itself or a path-prefix of it.
 fn covered_by(path: String, roots: List(String)) -> Bool {
-  list.any(roots, fn(root) {
-    path == root || root == "/" || string.starts_with(path, root <> "/")
-  })
+  list.any(roots, fn(root) { covers(root:, path:) })
+}
+
+/// Whether `root` is `path` itself or a path-**component** prefix of it,
+/// with `"/"` covering everything.
+///
+/// Component-wise is the whole point: `/workspace` merely shares a
+/// textual prefix with `/work` and is not covered by it, and `.gitx/file`
+/// is not under `.git`. Composition (`meet_roots`), the jail's
+/// reachability checks (`codemode/launch`) and the harness-side
+/// protected-path refusal (`tools/fs.resolve_writable`) all ask exactly
+/// this question, so they ask it of one function: three textual copies
+/// were three places a fix could land in two of.
+///
+/// Matching is **byte-exact**, and deliberately so. A case-insensitive
+/// filesystem would let `/WORK/x` escape a `/work` root here, but the
+/// enforced target is Linux — the jail is bwrap, Landlock and seccomp —
+/// and inventing a case fold would make this predicate disagree with the
+/// kernel that actually enforces the same boundary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.covers(root: "/work", path: "/work/sub")
+/// assert !policy.covers(root: "/work", path: "/workspace")
+/// ```
+///
+pub fn covers(root root: String, path path: String) -> Bool {
+  root == "/" || root == path || string.starts_with(path, root <> "/")
 }
 
 fn meet_network(
