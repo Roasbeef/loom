@@ -115,6 +115,14 @@ neither. `make gen-sql` is the same arrangement for the generated SQL
 modules. Change `packages/cap`'s public surface and you must regenerate,
 or the gate fails naming the file that moved.
 
+Gleam ships godoc-style documentation tooling of its own. Run inside a
+package, `gleam docs build` renders the `////`/`///` doc comments into
+HTML under `build/dev/docs/<package>`, and `gleam export
+package-interface --out <file>` emits the compiler's machine-readable
+account of the public API — the artifact `make gen-prelude` renders the
+`code_mode` description from. Reach for these to read an API as the
+compiler sees it rather than as a stale comment claims it.
+
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,
 `fix/hashline-replay`, `wp-j/vetting-lint` — never for the tool or agent
