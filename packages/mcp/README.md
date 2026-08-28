@@ -5,14 +5,29 @@ speaking JSON-RPC 2.0 down a pipe, offering tools it would like a model
 to call. This package is Loom's entire client side of that arrangement:
 the protocol codecs, the actor that owns one server process, and the
 generator that turns a server's tool listing into a Gleam module a
-code-mode program can import. It is phase-3 work for issue #106, and it
-stops at the package boundary: reading `loom.toml`, starting a client
-per configured server, and routing `mcp.<server>` capability calls are
-harness wiring — and that wiring exists. `client/catalog` parses the
-`[mcp.<name>]` tables, and `client/mcp` starts a client per configured
-server at boot, generates its module, widens the workspace seam and
-answers its capability calls. `docs/architecture/mcp.md` follows the
-whole path from one table to one call.
+code-mode program can import. **Code mode** is what this package exists
+to serve: a model writes a Gleam program, the harness vets it, compiles
+it offline and runs it in a kernel jail, and one structured result comes
+back. `docs/architecture/code-mode.md` is its account.
+
+The package is phase-3 work for issue #106, and it stops at the package
+boundary: reading `loom.toml`, starting a client per configured server,
+and routing `mcp.<server>` capability calls are harness wiring — and that
+wiring exists. `client/catalog` parses the `[mcp.<name>]` tables, and
+`client/mcp` starts a client per configured server at boot, generates its
+module, widens the workspace seam and answers its capability calls.
+`docs/architecture/mcp.md` follows the whole path from one table to one
+call.
+
+One boundary belongs up front, because collapsing it is the commonest
+misreading here. **This package generates Gleam source
+text, and never compiles it.** `mcp/codegen.generate` renders a module
+once per configured server at boot, in the harness VM, and the text is
+held in memory from there. Compiling it happens somewhere else and later:
+once per code-mode execution, inside that execution's jailed hermetic
+build, and only for the servers the submitted program actually imported.
+The arch doc's *Generated at boot, compiled per execution* section is the
+one to read for that split, with the table and the ordering rules.
 
 The package targets MCP revision 2025-06-18, the `initialize`-based
 lifecycle, and accepts `2025-03-26` and `2024-11-05` as well. The
@@ -27,6 +42,12 @@ The obvious design is to register each MCP tool as a harness tool, so
 `fs_read`. Loom does the opposite: a server becomes one generated Gleam
 module, `cap/mcp/<server>`, and a code-mode program reaches its tools by
 importing it.
+
+Each function in that module is a **façade**: a doc comment, a typed
+signature, and one call to `cap/internal/mcp.invoke`, which is where all
+the marshaling lives. The generator chooses names and signatures and
+nothing else, which is what keeps server-controlled text out of the code
+that touches the wire.
 
 Two things follow, and together they are the reason.
 
@@ -123,8 +144,8 @@ decision to run a server through the `loom-exec` helper inside a jail
 belongs to the harness wiring that configures servers, and the seam is
 what lets that land without rewriting the actor. Whether a server should
 be jailed at all is an *open decision* rather than a deferred
-implementation — nobody has designed it — and `docs/next.md` records it
-as one.
+implementation — nobody has designed it — and #109 is where the decision
+goes.
 
 The child's stderr is deliberately not merged into stdout. Merging would
 interleave the server's diagnostics into the newline-delimited JSON-RPC
@@ -190,6 +211,12 @@ transports are absent because a locally-spawned server speaks stdio, and
 a spawned child process is what the jailing story attaches to. Restart
 and reconnect supervision is absent for the reason above.
 
+Every one of these is a filing rather than a floating obligation — #108
+for HTTP and OAuth, #109 for the jail decision, #110 for an end-to-end
+against a server from the wild, #111 for elicitation, #112 for
+`listChanged`, #25 for restart supervision. `docs/architecture/mcp.md`
+lists them together with the reversal trigger each one inherits.
+
 ## Running the tests
 
 `make check-mcp` is the gate for this package — format check,
@@ -211,8 +238,12 @@ SKIP line rather than failing.
   invariants that break things when violated. Read it before editing.
 - [`docs/architecture/mcp.md`](../../docs/architecture/mcp.md) — the
   subsystem end to end: one `[mcp.<name>]` table through boot, codegen
-  and the router to one call, with the hostile-input posture and the
-  worked examples a model actually sees.
+  and the router to one call. Go there rather than here for the three
+  things this README deliberately does not restate: *Generated at boot,
+  compiled per execution* (where each verb runs, and the filter and write
+  between them), *A worked example: an issue triage pass* (a whole
+  code-mode program over a generated `cap/mcp/github`), and the diagrams
+  of boot, of one call, and of which region trusts what.
 - [`docs/architecture/code-mode.md`](../../docs/architecture/code-mode.md)
   — the vetting theorem, the prelude, and what each layer confines.
 - [`packages/cap/CLAUDE.md`](../cap/CLAUDE.md) — the other end of what
@@ -222,5 +253,6 @@ SKIP line rather than failing.
   `client/protocol`, the house pattern for strict-envelope,
   tolerant-content wire codecs these decoders follow.
 - [`docs/next.md`](../../docs/next.md) — the #106 design rulings, and
-  what this work still owes: the adversarial corpus for hostile
-  `tools/list` input, and the open decision about jailing a server.
+  what this work still owes. The hostile-`tools/list` corpus is built
+  (`codegen_test`, `schema_test`); what remains is the jail decision
+  (#109) and an end-to-end against a server from the wild (#110).

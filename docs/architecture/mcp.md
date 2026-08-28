@@ -15,8 +15,9 @@ server.** A program calls `github.create_issue(...)` after writing
 `import cap/mcp/github`, and by no other route: nothing about MCP is a
 registered harness tool, and there is no generic
 `invoke(server, tool, args)` a program can reach. What follows is that
-decision's mechanism — the boot path, the hostile-input posture the
-generator is built around, the wire one call travels, and what v1
+decision's mechanism — the boot path that *generates* each server's
+module, the jailed build that *compiles* it, the hostile-input posture
+the generator is built around, the wire one call travels, and what v1
 deliberately does not do. `docs/architecture/code-mode.md` carries the
 vetting theorem this all rests on and the pipeline the generated modules
 are compiled into; this document assumes it rather than restating it.
@@ -101,7 +102,7 @@ is unset refuses that server before anything is spawned, because a server
 started without the key it was configured with fails later, further away,
 and in the server's own words.
 
-### Boot
+### Generation happens once, at boot
 
 `client/mcp.start` walks the configured servers in catalogue order and
 does four things per server, in this order:
@@ -117,8 +118,31 @@ does four things per server, in this order:
    default).
 4. **Generate the module.** `mcp/codegen.generate` turns the listing into
    a `Generated(module_name, source, surface)`: the `cap/mcp/<name>`
-   module's Gleam source, and the rendered description surface the
-   `code_mode` tool carries for it.
+   module's Gleam *source text*, and the rendered description surface the
+   `code_mode` tool carries for it. No compiler runs here. The source is
+   held in memory, as part of the session's MCP layer, until an execution
+   asks for it.
+
+One server's boot, from its table to the four things its module widens:
+
+```mermaid
+sequenceDiagram
+    participant C as client/mcp
+    participant A as mcp client actor
+    participant S as server process
+    participant W as workspace seam
+    C->>C: read [mcp.github], resolve api_key_env
+    C->>A: start over PortTransport
+    A->>S: spawn argv, stdin and stdout as the wire
+    A->>S: initialize
+    S-->>A: negotiated revision
+    A->>S: notifications/initialized
+    A->>S: tools/list, following nextCursor
+    S-->>A: tool descriptors
+    A-->>C: the listing
+    C->>C: codegen.generate, module source and surface
+    C->>W: allowlist, description, generated table, router arm
+```
 
 The client stays running for the life of the session, because dispatch
 is the same client. Every step is a place a third party can fail, and
@@ -156,16 +180,56 @@ capabilities travel together is the whole of what the two-seam split
 buys, and an orchestrator that could also call out to a third-party
 server is a materially worse thing to hand a model than one that cannot.
 
-Generated source scales with a program's imports rather than with a
-host's configuration. `codemode.execute` narrows the table to the vetted
-program's own import list before the compile service sees it, so a
-program that named one server pays for one and a program that named none
-pays for nothing. The narrowing is a cost filter and not an
-authorization one — what a program may import was already decided by the
-allowlist. The write itself belongs to the builder, *after* the seed
-clone that replaces `vendor/` wholesale, and it lands *inside* the
-vendored prelude, because a façade calls `cap/internal/mcp` and Gleam
-admits an internal module only to its own package.
+## Generated at boot, compiled per execution
+
+A server's module is *generated* once and *compiled* many times, and the
+two verbs run at different times, in different places, under different
+rules. Collapsing them into one is the commonest way to misread this
+subsystem.
+
+**Generation** turns a server's `tools/list` JSON into Gleam *source
+text*. It runs in the harness VM, at boot, once per configured server. No
+compiler is involved: `mcp/codegen.generate` renders text, and the text
+stays in memory as part of the session's MCP layer.
+
+**Compilation** turns that text into loadable BEAM modules. It runs
+inside the jailed hermetic build of one code-mode execution, and only
+when the vetted program imported `cap/mcp/<server>`.
+
+| | Generation | Compilation |
+|---|---|---|
+| When | once at boot | once per execution |
+| For which servers | every one configured | only the ones the program imported |
+| Where | the harness VM | the network-off jail around the build |
+| What runs | `mcp/codegen.generate` | `gleam build --warnings-as-errors` |
+| What comes out | source text and a rendered surface, held in memory | the compiled façade, inside that execution's artifact |
+| What a server nobody imports costs | one generation at boot | nothing |
+
+Between the two verbs sit a filter and a write.
+
+**The filter.** `codemode.execute` narrows the host's whole table of
+generated modules to the vetted program's own import list before the
+compile service sees it, so a program that named one server pays for one
+and a program that named none pays for nothing. The narrowing is a cost
+filter and not an authorization one — what a program may import was
+already decided by the allowlist.
+
+**The write.** The builder writes each surviving module into the build
+root *after* the seed clone and *before* `gleam build`, and both halves
+of that ordering are forced. Cloning the seed replaces `vendor/`
+wholesale, so a module written earlier is deleted; `gleam build` reads
+the package off disk once, so a module written later arrives too late.
+Where the module lands is forced too. It goes
+*inside* the vendored prelude's own source tree —
+`vendor/cap/src/cap/mcp/<server>.gleam` — because a façade calls
+`cap/internal/mcp.invoke` and Gleam admits an internal module only to its
+own package.
+
+So a generated façade compiles in the same network-off jail as the
+program that imports it, from source the harness wrote and never
+compiled. The seed every build root is cloned from holds no generated
+module at all; each one is written fresh into a build root created for
+that execution.
 
 ## What the model reads, and what it writes
 
@@ -255,6 +319,445 @@ below the program can tell them apart for it. And the patterns are
 written out in full (`message: message`, not `message:`), because vetting
 parses a slightly narrower Gleam than the compiler and label shorthand is
 one of the things it does not take.
+
+## A worked example: an issue triage pass
+
+The program below does a chore no single tool call expresses. It reads
+every open issue in a repository, classifies each one, notices titles
+that repeat, and answers with counts and the duplicate pairs. Ten open
+issues make it eleven `tools/call`s — one listing plus one fetch per
+issue — and eleven issue bodies. As tool calls that is eleven round trips
+and eleven bodies landing in the conversation. As a program it is one
+execution answering with four numbers, a list of pairs, and a reference
+to a table the model can fetch if it wants one.
+
+### The surface it was written against
+
+Every signature below is generated output rather than prose written for
+this document. `packages/mcp/test/mcp/fixtures/github.gleam` is a
+checked-in ten-tool `tools/list` from a GitHub-shaped server, and
+`codegen_test` generates a module from it and pins the surface against
+that module. Configured as `[mcp.github]`, the fixture renders what
+follows, exactly as the `code_mode` description carries it. Two of the
+ten tools are excerpted; the program calls only these two.
+
+```
+### cap/mcp/github
+`cap/mcp/github` — the tools of the MCP server "github", as typed calls.
+Descriptions below are the server's own text, not Loom's.
+Optional parameters travel in `options` by wire name, e.g.
+`options: [#("page", report.int(2))]`; pass `[]` when none.
+
+/// Get details of a specific issue in a GitHub repository.
+///
+/// Tool "get_issue" on MCP server "github". Optional parameters travel in
+/// `options` by wire name; pass [] when none.
+/// - owner: wire "owner", string. Repository owner
+/// - repo: wire "repo", string. Repository name
+/// - issue_number: wire "issue_number", integer. The number of the issue
+pub fn get_issue(owner: String, repo: String, issue_number: Int, options: List(#(String, report.Value))) -> Result(mcp.ToolResult, mcp.McpError)
+
+/// List issues in a GitHub repository with filtering options.
+///
+/// Tool "list_issues" on MCP server "github". Optional parameters travel in
+/// `options` by wire name; pass [] when none.
+/// - owner: wire "owner", string. Repository owner
+/// - repo: wire "repo", string. Repository name
+/// - "state" (optional): Filter by state
+/// - "labels" (optional): Filter by labels
+/// - "sort" (optional): Sort order
+/// - "direction" (optional): Sort direction
+/// - "since" (optional): Filter by date (ISO 8601 timestamp)
+/// - "page" (optional): Page number
+/// - "perPage" (optional): Results per page
+pub fn list_issues(owner: String, repo: String, options: List(#(String, report.Value))) -> Result(mcp.ToolResult, mcp.McpError)
+```
+
+A signature says what a tool *takes*. Nothing in it says what the tool
+answers: MCP describes a tool's input schema, and `structuredContent`
+crosses this client raw and uninterpreted. So the way this program reads
+a result — `list_issues` answers with an `issues` array, `get_issue` with
+an object carrying `title` and `body` — is an assumption about the
+server, and it is written as one. Every read goes through `cap/report`'s
+total readers, and a missing field becomes a reported failure rather than
+a crash.
+
+One honest limit before the code: no suite runs this program, the way
+`packages/codemode/test` runs
+`docs/examples/stale_symbol_sweep.gleam` verbatim. What a suite pins here
+is the surface above.
+
+### The program
+
+```gleam
+import cap/actor
+import cap/mcp
+import cap/mcp/github
+import cap/report
+import cap/task
+import gleam/bool
+import gleam/dict
+import gleam/int
+import gleam/list
+import gleam/option
+import gleam/result
+import gleam/string
+
+/// The repository being triaged.
+const owner = "loom-lang"
+
+const repo = "loom"
+
+/// What makes an issue a bug report or a question. Plain string rules,
+/// computed here: a code-mode program has capabilities, not a model.
+const bug_words = ["crash", "panic", "traceback", "regression", "stack trace"]
+
+const question_words = ["how do i", "how to", "is it possible", "question"]
+
+const noise_words = ["a", "an", "the", "in", "on", "when", "with", "error"]
+
+type Class {
+  Bug
+  Feature
+  Question
+}
+
+/// One issue, after its body has been read and classified. The body
+/// itself stays in the program.
+type Triaged {
+  Triaged(
+    number: Int,
+    title: String,
+    class: Class,
+    duplicate_of: option.Option(Int),
+  )
+}
+
+/// The dedup index: the first issue seen under each normalized title,
+/// and every later collision as a pair.
+type Index {
+  Index(first_seen: dict.Dict(String, Int), duplicates: List(#(Int, Int)))
+}
+
+/// The one message the index takes: claim a title for an issue, and
+/// learn which issue already held it.
+type Claim {
+  Claim(key: String, number: Int, reply: actor.Reply(option.Option(Int)))
+}
+
+pub fn main() -> report.Outcome {
+  case triage() {
+    Ok(outcome) -> outcome
+    Error(reason) -> report.failure(reason)
+  }
+}
+
+fn triage() -> Result(report.Outcome, String) {
+  use listed <- result.try(
+    github.list_issues(owner: owner, repo: repo, options: [
+      #("state", report.string("open")),
+      #("perPage", report.int(100)),
+    ])
+    |> result.map_error(explain),
+  )
+  use numbers <- result.try(issue_numbers(listed))
+  use index <- result.try(
+    actor.spawn(Index(first_seen: dict.new(), duplicates: []), remember)
+    |> result.replace_error("the dedup index would not start"),
+  )
+  use triaged <- result.try(
+    task.parallel_map(numbers, max_concurrency: 4, with: fn(number) {
+      classify_one(index, number)
+    })
+    |> result.map_error(first_failure),
+  )
+  use final <- result.try(
+    actor.get(index, timeout: 5000)
+    |> result.replace_error("the dedup index did not answer"),
+  )
+  actor.shutdown(index)
+  Ok(summarize(triaged, final.duplicates, emit_detail(triaged)))
+}
+
+/// One issue, start to finish: fetch it, classify it, and claim its
+/// title against the shared index. Runs once per issue, four at a time.
+fn classify_one(
+  index: actor.Address(Index, Claim),
+  number: Int,
+) -> Result(Triaged, String) {
+  use found <- result.try(
+    github.get_issue(
+      owner: owner,
+      repo: repo,
+      issue_number: number,
+      options: [],
+    )
+    |> result.map_error(explain),
+  )
+  use issue <- result.try(structured(found))
+  let title = text_field(issue, "title")
+  use first <- result.try(
+    actor.call(
+      index,
+      fn(reply) { Claim(key: normalize(title), number: number, reply: reply) },
+      timeout: 5000,
+    )
+    |> result.replace_error("the dedup index did not answer"),
+  )
+  Ok(Triaged(
+    number: number,
+    title: title,
+    class: classify(title, text_field(issue, "body")),
+    duplicate_of: first,
+  ))
+}
+
+/// The index's handler. Concurrent workers all call it; it runs their
+/// claims one at a time, which is what makes "first seen" mean anything.
+fn remember(state: Index, message: Claim) -> actor.Next(Index) {
+  case message {
+    Claim(key: key, number: number, reply: reply) ->
+      case dict.get(state.first_seen, key) {
+        Ok(first) -> {
+          actor.reply(reply, option.Some(first))
+          actor.continue(
+            Index(..state, duplicates: [#(first, number), ..state.duplicates]),
+          )
+        }
+        Error(Nil) -> {
+          actor.reply(reply, option.None)
+          actor.continue(
+            Index(
+              ..state,
+              first_seen: dict.insert(state.first_seen, key, number),
+            ),
+          )
+        }
+      }
+  }
+}
+
+/// Bug, feature, or question, decided from the issue's own words.
+fn classify(title: String, body: String) -> Class {
+  let text = string.lowercase(title <> " " <> body)
+  use <- bool.guard(when: mentions(text, bug_words), return: Bug)
+  use <- bool.guard(when: mentions(text, question_words), return: Question)
+  Feature
+}
+
+fn mentions(text: String, words: List(String)) -> Bool {
+  list.any(words, fn(word) { string.contains(text, word) })
+}
+
+/// A title reduced to its content words, so "Crash on startup" and
+/// "The crash on startup" claim the same key.
+fn normalize(title: String) -> String {
+  string.lowercase(title)
+  |> string.replace(each: "-", with: " ")
+  |> string.split(" ")
+  |> list.filter(fn(word) { word != "" && !list.contains(noise_words, word) })
+  |> string.join(" ")
+}
+
+/// The per-issue table, written to the blob store rather than to the
+/// conversation. The `Outcome` carries only its reference.
+fn emit_detail(triaged: List(Triaged)) -> report.Value {
+  let rows = csv(triaged)
+  let table = <<rows:utf8>>
+  case report.emit(name: "detail.csv", content_type: "text/csv", bytes: table) {
+    Ok(reference) -> report.string(reference.id)
+    Error(report.EmitDenied(code: code, message: _message)) ->
+      report.string("not emitted: " <> code)
+    Error(report.EmitUnavailable(reason: _reason)) ->
+      report.string("not emitted: the channel could not carry it")
+  }
+}
+
+fn csv(triaged: List(Triaged)) -> String {
+  list.map(triaged, fn(item) {
+    int.to_string(item.number)
+    <> ","
+    <> class_name(item.class)
+    <> ","
+    <> item.title
+  })
+  |> string.join("\n")
+}
+
+fn class_name(class: Class) -> String {
+  case class {
+    Bug -> "bug"
+    Feature -> "feature"
+    Question -> "question"
+  }
+}
+
+/// The counts, the duplicate pairs, and the artifact reference — the
+/// only things that leave the satellite.
+fn summarize(
+  triaged: List(Triaged),
+  duplicates: List(#(Int, Int)),
+  detail: report.Value,
+) -> report.Outcome {
+  let originals =
+    list.filter(triaged, fn(item) { item.duplicate_of == option.None })
+  report.value(
+    report.object([
+      #("scanned", report.int(list.length(triaged))),
+      #("bug", report.int(count(originals, Bug))),
+      #("feature", report.int(count(originals, Feature))),
+      #("question", report.int(count(originals, Question))),
+      #("duplicates", report.list(list.map(duplicates, pair_value))),
+      #("detail", detail),
+    ]),
+  )
+}
+
+fn count(triaged: List(Triaged), class: Class) -> Int {
+  list.count(triaged, fn(item) { item.class == class })
+}
+
+fn pair_value(pair: #(Int, Int)) -> report.Value {
+  report.object([
+    #("first", report.int(pair.0)),
+    #("later", report.int(pair.1)),
+  ])
+}
+
+/// The issue numbers `list_issues` answered with.
+fn issue_numbers(listed: mcp.ToolResult) -> Result(List(Int), String) {
+  use payload <- result.try(structured(listed))
+  use issues <- result.try(
+    report.field(payload, "issues")
+    |> result.try(report.as_list)
+    |> result.replace_error("list_issues answered with no `issues` array"),
+  )
+  Ok(
+    list.filter_map(issues, fn(issue) {
+      report.field(issue, "number") |> result.try(report.as_int)
+    }),
+  )
+}
+
+fn structured(found: mcp.ToolResult) -> Result(report.Value, String) {
+  option.to_result(
+    found.structured,
+    "the server answered without structured content: " <> mcp.text(found),
+  )
+}
+
+fn text_field(value: report.Value, key: String) -> String {
+  report.field(value, key)
+  |> result.try(report.as_string)
+  |> result.unwrap("")
+}
+
+/// Why a triage pass stopped, in the program's own words.
+fn explain(error: mcp.McpError) -> String {
+  case error {
+    mcp.ToolFailed(message: message, content: _content) ->
+      "the tool ran and refused: " <> message
+    mcp.ServerUnavailable(reason: reason) ->
+      "the server never answered: " <> reason
+    mcp.McpDenied(code: code, message: message) ->
+      "the call was denied as " <> code <> ": " <> message
+    mcp.ResultMalformed(reason: reason) ->
+      "the answer did not decode: " <> reason
+  }
+}
+
+fn first_failure(failures: List(task.Failure(String))) -> String {
+  case failures {
+    [task.Returned(index: _index, error: error), ..] -> error
+    [task.Crashed(index: number, reason: reason), ..] ->
+      "classifying issue " <> int.to_string(number) <> " died: " <> reason
+    [] -> "the triage pass produced no result"
+  }
+}
+```
+
+### The import list is the permission grant
+
+Five capability modules and seven standard-library ones. This program can
+call the `github` server's tools, fan work out under `cap/task`, keep one
+`cap/actor`, and return an outcome or emit an artifact. It cannot read a
+file, run a process, open a socket, or reach a *second* MCP server:
+`cap/fs`, `cap/proc`, `cap/net` and every other `cap/mcp/<server>` are
+absent, vetting confirmed the absences before the program compiled, and
+the hermetic build's dependency table leaves the compiler nothing else to
+resolve. `cap/mcp` carries no authority of its own — it is the result and
+error vocabulary the façade's signatures are written in — so the one line
+that grants anything is `import cap/mcp/github`.
+
+### Where the concurrency bounds come from
+
+`max_concurrency: 4` is the program's own bound, and the program may
+raise it freely. Three bounds it cannot raise sit underneath.
+
+- **The pooled outstanding-effect cap**, applied by the satellite host
+  before any plan is served. It is one cap for the whole execution, so a
+  program that asked for four hundred does not get four hundred
+  concurrent calls.
+- **This seam's 60-second call timeout**, per `tools/call`, deliberately
+  below the host's 120-second one so a program that asked a server a
+  question is answered `mcp_timeout` rather than left waiting.
+- **The execution's wall deadline**, over everything at once. On expiry
+  the satellite dies as a unit — the fan-out, the index actor, and the
+  program root together.
+
+Each fetch is its own `cap_call`, routed and checked on its own, drawing
+on that one pooled budget. So raising `max_concurrency` buys breadth
+inside the program and no additional footprint outside it, which is the
+property that makes fanning out safe to hand a model.
+
+### What the actor buys over a fold
+
+A sequential fold over the issues could carry the same index in an
+accumulator, and would be shorter. It would also fetch the issues one at
+a time, and fetching is the slow part. Once four workers run at once,
+four processes need to read and update one index, and "first seen" has to
+mean something definite.
+
+`cap/actor` is what makes it mean something. Four `actor.call`s land as
+four messages in one bounded mailbox, the handler runs them one at a
+time, and each worker gets back either `None` — it was first — or
+`Some(number)` naming the issue that already held the title. No lock, no
+shared mutable value, and no second pass over the results: by the time
+`parallel_map` returns, the duplicate pairs are already in the index, and
+`actor.get` reads them out. That is the case `cap/actor` exists for —
+ongoing state driven by concurrent input — rather than state one loop
+could have threaded.
+
+One structural detail is worth knowing at this spawn site. `main` spawns
+the index, so the actor is linked to the program root and an abnormal
+crash fails the execution as a unit. An actor spawned *inside* a
+`parallel_map` branch would be linked to that branch's worker instead,
+and its crash would be contained to the branch;
+`docs/architecture/code-mode.md` has the whole of that rule.
+
+### What crosses the wire, and what stays inside
+
+Per issue, exactly one `tools/call` goes out —
+`{tool: "get_issue", arguments: {owner, repo, issue_number}}` — and one
+result comes back carrying the whole issue: title, body, labels, author,
+timestamps. That result reaches the program and stops there.
+`string.lowercase`, `string.contains` and the three word lists run inside
+the satellite, and the bodies stay there and die with it.
+
+What leaves is the object `summarize` builds: four counts, the duplicate
+pairs, and one artifact reference. The per-issue table goes out through
+`report.emit` into the session's blob store, so the model can fetch the
+detail deliberately instead of paying for it by default. An ordinary MCP
+tool call cannot make that distinction — its whole result becomes context
+by construction — and closing that gap is what code mode is for.
+
+The classification is honest string work, and that is a constraint rather
+than a simplification. A code-mode program holds capabilities, not a
+model, and no capability asks a model a question: the prelude declares
+none, and a program reaches exactly what the broker routes. A triage that
+wants real judgment returns the titles and asks in the next turn — a
+second round trip, taken on purpose, rather than a model call smuggled
+inside a jailed program.
 
 ## `tools/list` is attacker-controlled input
 
@@ -411,6 +914,29 @@ The arguments are converted to JSON at plan time rather than after
 dispatch, so a value this wire cannot carry is refused before a round
 trip that could not have happened.
 
+Where each hop of one call runs — the program is inside the jail, the
+router and everything right of it is in the harness VM, and the server is
+outside both:
+
+```mermaid
+sequenceDiagram
+    participant P as the program
+    participant F as cap/mcp/github façade
+    participant R as router arm mcp.github
+    participant X as mcp/interchange
+    participant A as mcp client actor
+    participant S as server process
+    P->>F: github.get_issue owner, repo, issue_number
+    F->>R: cap_call mcp.github, tool plus arguments
+    R->>X: msgpack arguments to JSON
+    X->>A: call_tool
+    A->>S: tools/call, one JSON-RPC line
+    S-->>A: one result line
+    A-->>X: CallToolResult
+    X-->>R: JSON to msgpack
+    R-->>P: cap_result, read as Result of ToolResult
+```
+
 ### What a program reads back
 
 | In-band code | Raised when | What `cap/mcp` makes of it |
@@ -458,7 +984,30 @@ arriving is shallow enough for the encoder on the far side.
 
 ## What runs where
 
-Three regions, and the boundaries between them are the point.
+Three regions, and the boundaries between them are the point. Which
+region holds which piece, and what each one has to trust:
+
+```mermaid
+flowchart LR
+    subgraph H[Harness VM — trusted]
+      CFG[loom.toml table]
+      CL[client/mcp: boot, refusals, router arm]
+      CG[mcp/codegen: module source, held in memory]
+      AC[mcp client actor and its port transport]
+    end
+    subgraph J[Kernel jail — untrusted]
+      B[hermetic build: façade compiled into the vendored prelude]
+      SAT[satellite: the program and the compiled façade]
+    end
+    SRV[third-party server process]
+    CFG --> CL
+    CL --> CG
+    CG -->|source, only for imported servers| B
+    B --> SAT
+    SAT -->|cap_call over the framed channel| CL
+    CL --> AC
+    AC -->|stdio pipe| SRV
+```
 
 **In the harness VM:** one client actor per server, its port transport,
 and the router arm. The actor owns the child process for the session,
@@ -504,7 +1053,8 @@ the actor. Until then, an unjailed spawn is the production primitive and
 not the final security posture; the threat model in
 `docs/architecture/effects.md` already counts a compromised third-party
 tool among the things defended against, and this is the place that
-defense is currently owed. `docs/next.md` carries it as such.
+defense is currently owed. **#109** carries the decision, and
+`docs/next.md` records it as open.
 
 ## What v1 leaves out
 
@@ -522,12 +1072,29 @@ line says what would bring it back.
 | Nested records for tier-2 parameters | the typed subset covers 30 of 31 required parameters on a GitHub-shaped listing | tier 2 past 25% of required parameters on mainstream servers — the falsifier is in `codegen_test` |
 | Per-tool trust | a human trusts a server, not a tool | a policy vocabulary keyed on tool identity, which is a protocol change and strictly more work than generating modules |
 
-Two things are owed rather than declined. The **adversarial corpus** for
-hostile `tools/list` input — the shape of `packages/codemode/test`'s
-vetting corpus, aimed at the generator — is the long pole and is not
-written. And the end-to-end runs against a checked-in fixture server that
-is deliberately friendly in its protocol and hostile only in its names; a
-run against a third-party server from the wild is still owed.
+One thing is owed rather than declined. The end-to-end runs against a
+checked-in fixture server that is deliberately friendly in its protocol
+and hostile only in its names, so a run against a third-party server from
+the wild is still owed. The **adversarial corpus** for hostile
+`tools/list` input, which was owed beside it, is built:
+`codegen_test`'s adversarial-name, hostile-prose and sanitizer-breach
+cases and `schema_test`'s hostile-size cases are that corpus, aimed at
+the generator the way `packages/codemode/test`'s vetting corpus is aimed
+at the lint.
+
+**Tracked in issues.** Each open item above is a filing rather than a
+floating obligation.
+
+- **#108** — streamable HTTP transport plus OAuth, for remote servers.
+- **#109** — the jail decision for an MCP server process: undesigned, not
+  merely unbuilt.
+- **#110** — an end-to-end against a third-party server from the wild.
+- **#111** — whether Loom answers elicitation, now folded into the base
+  protocol as `input_required`.
+- **#112** — acting on `listChanged` by regenerating a server's module.
+- **#25** — restart and reconnect supervision, which phase 5's LSP client
+  needs from the same substrate.
+- **#107** — async code mode, the question a long-running MCP call meets.
 
 ## Where the code lives
 

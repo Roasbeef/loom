@@ -8,8 +8,19 @@ supervised actor that owns one server process over a transport seam, and
 the generator that turns a server's `tools/list` into a `cap/mcp/<server>`
 Gleam module plus the description surface `code_mode` carries for it. MCP
 reaches a model through code mode only — per-server generated modules,
-never a registered harness tool and never a generic dispatcher. What is
-*not* here: reading `[mcp.<name>]` out of `loom.toml`
+never a registered harness tool and never a generic dispatcher.
+
+**This package generates source text and never compiles it.**
+`codegen.generate` runs in the harness VM, at boot, once per configured
+server, and hands back a `Generated` whose `source` the caller holds in
+memory. Compiling that text is a different verb in a different place:
+once per code-mode execution, inside that execution's jailed hermetic
+build, and only for the servers the submitted program imported. Nothing
+here should grow a compiler, a build root, or a filesystem write —
+`docs/architecture/mcp.md` §*Generated at boot, compiled per execution*
+is the account of the split.
+
+What is *not* here either: reading `[mcp.<name>]` out of `loom.toml`
 (`client/catalog`), starting a client per configured server, widening
 the workspace seam, and routing `mcp.<server>` capability calls. That is
 harness wiring and it lives in `client/mcp`; this package is the
@@ -120,7 +131,10 @@ built out of.
   `cap/mcp/<segment>` — importing `cap/internal/mcp as internal`,
   `cap/mcp`, `cap/report`, and `gleam/list` only when a body needs it —
   and a surface rendered in `scripts/gen-prelude.py`'s one-line
-  `label: Type` form.
+  `label: Type` form. Both are values, not files: this package writes
+  nothing to disk. `client/mcp` holds the source for the session, and
+  `codemode/build` writes it into one execution's build root, after the
+  seed clone and before `gleam build`.
 
 ## Invariants
 
@@ -221,7 +235,10 @@ built out of.
   subsystem end to end, including the half this package does not hold:
   one `[mcp.<name>]` table through boot and codegen to one
   `mcp.<server>` capability call, the denial codes a program reads, and
-  the worked surface and program a model sees.
+  the worked surface and program a model sees. Three of its sections
+  cover what this file states only in summary — *Generated at boot,
+  compiled per execution*, *A worked example: an issue triage pass*, and
+  *What runs where* with its trust-boundary diagram.
 - [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md)
   — the vetting theorem the per-server module granularity rests on, and
   what each layer confines.
@@ -234,7 +251,9 @@ built out of.
   decoders) and §4 (FFI confinement), the rules this package is shaped
   by.
 - [docs/next.md](../../docs/next.md) — the #106 design rulings and what
-  the work still owes: the adversarial corpus for hostile `tools/list`
-  input, and the open decision about jailing a server.
+  the work still owes. The hostile-`tools/list` corpus is built and lives
+  in `codegen_test` and `schema_test`; the open items are filed — #109
+  (the jail decision), #110 (an end-to-end against a server from the
+  wild), #108, #111, #112.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc
   graph.
