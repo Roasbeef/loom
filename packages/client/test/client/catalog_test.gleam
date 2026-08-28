@@ -5,6 +5,7 @@
 import client/catalog
 import core/clock
 import gleam/list
+import gleam/option.{None, Some}
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -222,6 +223,153 @@ main = [\"one\", \"ghost\"]
 pub fn unknown_role_refused_test() {
   let text = minimal <> "critic = [\"one\"]\n"
   let assert Error("roles.critic is not a routable role" <> _rest) =
+    catalog.parse(text)
+}
+
+// --- mcp servers -------------------------------------------------------------
+
+// One server table appended after the minimal catalogue, so every mcp
+// test exercises exactly the [mcp.<key>] shape it names.
+fn with_mcp_server(key: String, body: String) -> String {
+  minimal <> "\n[mcp." <> key <> "]\n" <> body <> "\n"
+}
+
+pub fn absent_mcp_table_parses_to_no_servers_test() {
+  let assert Ok(parsed) = catalog.parse(minimal)
+  assert parsed.mcp_servers == []
+}
+
+pub fn example_mcp_server_parses_test() {
+  assert example().mcp_servers
+    == [
+      catalog.McpServer(
+        name: "github",
+        command: ["mcp-server-github", "--stdio"],
+        api_key_env: Some("GITHUB_TOKEN"),
+      ),
+    ]
+}
+
+pub fn mcp_servers_parse_sorted_test() {
+  let text = minimal <> "
+[mcp.zeta]
+command = [\"zeta-server\"]
+
+[mcp.alpha]
+command = [\"alpha-server\", \"--stdio\"]
+api_key_env = \"ALPHA_KEY\"
+"
+  let assert Ok(parsed) = catalog.parse(text)
+  // Sorted by name regardless of file order; an absent api_key_env is
+  // None, a present one carries the env var *name*.
+  assert parsed.mcp_servers
+    == [
+      catalog.McpServer(
+        name: "alpha",
+        command: ["alpha-server", "--stdio"],
+        api_key_env: Some("ALPHA_KEY"),
+      ),
+      catalog.McpServer(
+        name: "zeta",
+        command: ["zeta-server"],
+        api_key_env: None,
+      ),
+    ]
+}
+
+pub fn uppercase_mcp_name_refused_test() {
+  let text = with_mcp_server("Github", "command = [\"x\"]")
+  let assert Error("mcp.Github is not a legal server name" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn digit_first_mcp_name_refused_test() {
+  let text = with_mcp_server("9lives", "command = [\"x\"]")
+  let assert Error("mcp.9lives is not a legal server name" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn homoglyph_mcp_name_refused_test() {
+  // A Cyrillic 'с' (U+0441) in place of ASCII 'c', via a quoted key.
+  let text = with_mcp_server("\"сap\"", "command = [\"x\"]")
+  let assert Error("mcp.сap is not a legal server name" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn slash_in_mcp_name_refused_test() {
+  let text = with_mcp_server("\"tools/gh\"", "command = [\"x\"]")
+  let assert Error("mcp.tools/gh is not a legal server name" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn empty_mcp_name_refused_test() {
+  let text = with_mcp_server("\"\"", "command = [\"x\"]")
+  let assert Error("mcp. is not a legal server name" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn internal_mcp_name_refused_test() {
+  let text = with_mcp_server("internal", "command = [\"x\"]")
+  let assert Error("mcp.internal is reserved" <> _rest) = catalog.parse(text)
+}
+
+pub fn duplicate_mcp_name_refused_by_toml_test() {
+  // tom itself refuses a repeated table header, so the parser never
+  // sees two entries under one name.
+  let text =
+    with_mcp_server("same", "command = [\"x\"]")
+    <> "\n[mcp.same]\ncommand = [\"y\"]\n"
+  assert catalog.parse(text)
+    == Error("not valid toml: the key mcp.same appears twice")
+}
+
+pub fn missing_mcp_command_refused_test() {
+  let text = with_mcp_server("one", "api_key_env = \"KEY\"")
+  let assert Error("mcp.one.command is required" <> _rest) = catalog.parse(text)
+}
+
+pub fn empty_mcp_command_refused_test() {
+  let text = with_mcp_server("one", "command = []")
+  let assert Error("mcp.one.command must name at least the executable" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn non_string_mcp_command_element_refused_test() {
+  let text = with_mcp_server("one", "command = [\"x\", 3]")
+  let assert Error("mcp.one.command must be an array of strings" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn empty_string_mcp_command_element_refused_test() {
+  let text = with_mcp_server("one", "command = [\"x\", \"\"]")
+  let assert Error(
+    "mcp.one.command elements must be non-empty strings" <> _rest,
+  ) = catalog.parse(text)
+}
+
+pub fn non_array_mcp_command_refused_test() {
+  let text = with_mcp_server("one", "command = \"x --stdio\"")
+  let assert Error("mcp.one.command must be an array of strings" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn unknown_mcp_key_refused_test() {
+  let text = with_mcp_server("one", "command = [\"x\"]\napi_key = \"KEY\"")
+  let assert Error(
+    "unknown key `api_key` in mcp.one (allowed: command, api_key_env)" <> _rest,
+  ) = catalog.parse(text)
+}
+
+pub fn empty_mcp_api_key_env_refused_test() {
+  let text = with_mcp_server("one", "command = [\"x\"]\napi_key_env = \"\"")
+  let assert Error("mcp.one.api_key_env must be non-empty" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn non_table_mcp_refused_test() {
+  // Prepended: appended after [roles] it would parse as roles.mcp.
+  let text = "mcp = 3\n" <> minimal
+  let assert Error("mcp must be a table of [mcp.<name>] entries" <> _rest) =
     catalog.parse(text)
 }
 
