@@ -295,8 +295,16 @@ before.
 
 ## Known limits
 
-Four, and each is a boundary somebody chose rather than a gap nobody
+Five, and each is a boundary somebody chose rather than a gap nobody
 noticed.
+
+**The walk covers refusals the provider answers, never configuration
+errors.** A missing secret is terminal: a chain head whose `api_key_env`
+is unset stops the attempt with the `NoSecret` refusal rather than
+falling to a tail whose key is present. The walk exists for what varies
+per request — a rate limit, a transport failure — and an unset variable
+does not vary; falling past it would let a misconfigured head look
+healthy on every dispatch while its own row silently never serves.
 
 **Per-model headers are refused rather than carried.** A `headers` key
 in an entry gets its own worded rejection instead of being silently
