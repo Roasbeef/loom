@@ -186,7 +186,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1195`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1204`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -479,7 +479,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1112`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1133`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -575,7 +575,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:562`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:575`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -603,7 +603,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1771`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1780`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -698,10 +698,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1157`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1178`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1224`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1237`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
