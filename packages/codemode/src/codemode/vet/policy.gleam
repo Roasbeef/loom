@@ -393,13 +393,19 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// imports it, and nothing anywhere says the module exists but cannot be
 /// reached (issue #95).
 ///
-/// `cap/mcp` is the types-only shared vocabulary for the generated
-/// `cap/mcp/<server>` modules (issue #106): it carries no authority — the
-/// invoke lives in `cap/internal/mcp`, reachable only through a generated
-/// façade — so allowlisting it would grant nothing. It moves to the
-/// workspace seam in the increment that lands the generated-module path
-/// end to end; keeping it off every seam until then avoids advertising a
-/// surface no program can reach anything through.
+/// `cap/mcp` is here for a different reason, and it is a standing one
+/// rather than a wait. It is the types-only shared vocabulary for the
+/// generated `cap/mcp/<server>` façades (issue #106) — it carries no
+/// authority, since the invoke lives in `cap/internal/mcp` and is
+/// reachable only through a façade — and the façades themselves are
+/// **generated per host from that host's configured servers**, so no
+/// static list can name them. A host with servers configured therefore
+/// extends the workspace seam's allowlist *at boot*, with `cap/mcp` and
+/// each generated module name, and a host with none allows neither
+/// (`client/codemode.seam_allowlist`). Keeping `cap/mcp` off every
+/// static seam is what makes that per-host: allowlisting it here would
+/// advertise the vocabulary on every host, including the ones where no
+/// module using it exists to import.
 ///
 /// Writing the exclusion down is most of the value — it turns "not in the
 /// allowlist" from an absence into a decision someone made — and

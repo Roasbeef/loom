@@ -118,7 +118,7 @@ pub fn the_build_allows_only_the_environment_it_passes_test() {
 pub fn a_missing_seed_is_reported_before_any_clearance_test() {
   let root = fresh_dir("no-seed")
   let builder = build.builder(config("/nonexistent/codemode-seed"))
-  let built = builder(build_phase(), root)
+  let built = builder(build_phase(), root, [])
   let assert Error(compile.BuildUnavailable(reason:)) = built.result
   assert string.contains(reason, "make codemode-seed")
   // A build that was never dispatched claims nothing about a jail, and
@@ -138,7 +138,7 @@ pub fn a_seed_pinned_to_other_dependencies_is_refused_test() {
       compile.PathDependency(name: "cap", path: compile.prelude_path),
     ])
   let builder = build.builder(config(seed_root))
-  let built = builder(build_phase(), root)
+  let built = builder(build_phase(), root, [])
   let assert Error(compile.BuildUnavailable(reason:)) = built.result
   assert string.contains(reason, "different dependency table")
   let assert enforcement.Unreported(_why) = built.enforcement

@@ -79,13 +79,20 @@ strand roots, and can reach neither the disk, the network, nor a process.
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
 - `codemode/compile.{Artifact, CompileError, BuildProducts, Built,
-  Compiled, Builder, Dependency, CompileConfig}` — the hermetic compile
-  service. `Builder` is `fn(PhaseIdentity, String) -> Built`: the build
-  phase arrives per build from the pipeline, so a builder holds no
-  coordinates of its own. Writes the program under the pinned `program_module`,
-  generates `entry_module`, and pins exactly `default_dependencies()`.
-  `compile` returns a `Compiled`: the artifact or its error, and the
-  build jail's enforcement report.
+  Compiled, Builder, Dependency, CompileConfig, generated_path}` — the
+  hermetic compile service. `Builder` is
+  `fn(PhaseIdentity, String, List(#(String, String))) -> Built`: the
+  build phase and the generated capability modules both arrive per build
+  from the pipeline, so a builder holds neither coordinates nor a
+  configuration of its own. Writes the program under the pinned
+  `program_module`, generates `entry_module`, and pins exactly
+  `default_dependencies()`. `CompileConfig.generated` is the
+  `cap/mcp/<server>` façades this execution's program imports, as
+  `#(module name, source)`; `generated_path` says where one lands, which
+  is *inside* the vendored prelude, because a façade calls
+  `cap/internal/mcp` and Gleam admits an internal module only to its own
+  package. `compile` returns a `Compiled`: the artifact or its error, and
+  the build jail's enforcement report.
 - `codemode/seed` — the pre-resolved package cache a hermetic build is
   cloned from. `prepare` lays one out, `verify` refuses a stale or
   differently-pinned one, `main` is `gleam run -m codemode/seed`.
@@ -251,6 +258,19 @@ strand roots, and can reach neither the disk, the network, nor a process.
 - **A program's module name is chosen by the compile service, never by the
   source.** `program_module` is a path, and a Gleam module is named by its
   path, so prelude shadowing is structurally impossible.
+- **Generated capability modules scale with a program's imports, not
+  with a host's configuration.** A host may have generated one
+  `cap/mcp/<server>` module per configured MCP server (issue #106);
+  `execute` narrows that table to the *vetted* program's own import list
+  before `compile` sees it, so a program that named one server pays for
+  one and a program that named none pays for nothing. It is a cost
+  filter and not an authorization one — what a program may import is the
+  vetting allowlist's decision, made before this runs, and a module
+  written into a build nobody imports is dead source. The write itself
+  belongs to the **builder**, after the seed clone: `clone_seed` replaces
+  `vendor/` wholesale, so a module written before it would be deleted,
+  and the dependency table `seed.verify` compares is untouched either
+  way.
 - **The build is pinned and offline.** Exactly one stdlib version and the
   prelude vendored *inside* the build root — a range cannot be resolved
   with the network off, and an absolute or out-of-root path sends Gleam

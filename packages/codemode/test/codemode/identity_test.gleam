@@ -167,6 +167,7 @@ fn observe_execution(id: ExecIdentity) -> List(#(OpId, String)) {
       compile: compile.CompileConfig(
         build_root: dir <> "/build",
         dependencies: compile.default_dependencies(),
+        generated: [],
         build: recording_builder(seen),
       ),
       broker: started,
@@ -196,7 +197,7 @@ fn observe_execution(id: ExecIdentity) -> List(#(OpId, String)) {
 }
 
 fn recording_builder(seen: Subject(#(OpId, String))) -> compile.Builder {
-  fn(phase, root) {
+  fn(phase, root, _generated) {
     process.send(seen, identity.ledger_key(phase))
     compile.Built(
       result: Ok(compile.BuildProducts(

@@ -234,6 +234,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
     compile: compile.CompileConfig(
       build_root: live.build_root,
       dependencies: compile.default_dependencies(),
+      generated: [],
       build: build.builder(build.BuildConfig(
         broker: live.broker,
         seed_root: prerequisites.seed_root,
