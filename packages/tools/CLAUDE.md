@@ -91,9 +91,14 @@ can repair from.
   one_seam}` — which allowlist a submission is judged against.
   `Seam` mirrors `codemode/vet/policy.Seam` (`WorkspaceSeam`,
   `OrchestrationSeam`); a `SeamOffer` is one seam's published
-  `allowed_imports` and `serviced_caps`; `Seams` is what this host
-  serves, as a named `default` plus `alternates`, so a host can never
-  offer none and an unnamed submission never has an ambiguous seam.
+  `allowed_imports`, `serviced_caps` and `extra_surfaces`; `Seams` is
+  what this host serves, as a named `default` plus `alternates`, so a
+  host can never offer none and an unnamed submission never has an
+  ambiguous seam. `extra_surfaces` is the one part of the description a
+  *host* supplies rather than the committed artifact: a `cap/mcp/<server>`
+  façade is generated from one host's configured server (issue #106), so
+  it cannot be in `tools/prelude`, and it renders after the committed
+  blocks under the same seam's heading.
 - `tools/codemode.{PolicyRefusal, Execution.refusal}` — whether policy
   composition stopped this execution before it ran, and whether an
   approval could overturn it. `NothingRefused` or `RunRefused(denial:,
