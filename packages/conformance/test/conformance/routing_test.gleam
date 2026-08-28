@@ -17,6 +17,10 @@
 ////   is still classified retryable, and the machine's ladder engages —
 ////   `GenerationRetryWait` durably entered, the session alive throughout
 ////   and afterwards.
+//// - **Mid-wait switch**: the strand's configuration register is moved
+////   while the ladder waits, and the step's second attempt is still
+////   admitted against the step-start snapshot — the identity the
+////   dispatch will actually reach — never the live register.
 ////
 //// Nothing here needs a jail: an answer turn calls no tools, so the
 //// broker's pool seam never yields a helper and never has to.
@@ -32,12 +36,15 @@ import client/wiring
 import core/clock
 import core/ids.{type OpId}
 import core/message
+import core/register
+import core/tx
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/string
+import machine/codec as machine_codec
 import machine/operation
 import machine/strand.{
   type ModelIdentity, type StrandConfiguration, ModelIdentity,
@@ -52,6 +59,8 @@ import provider/retry
 import provider/secret
 import provider/stream
 import runtime/api
+import runtime/effects
+import runtime/writer
 import session/session.{type Session}
 import support/rig
 import support/script
@@ -449,6 +458,147 @@ fn in_retry_wait(sess: Session, op: OpId) -> Bool {
     ))) -> True
     _ -> False
   }
+}
+
+// --- the mid-wait switch ---------------------------------------------------
+
+pub fn a_mid_wait_switch_leaves_the_steps_admission_alone_test() {
+  // The step's configuration is a snapshot taken when it entered ready
+  // (`GenerationContext`'s own invariant), and the dispatch reads it —
+  // so admission must read it too, or the three durable values it mints
+  // (intended output limit, context window, `request_api`) describe a
+  // model the request never reaches and overflow classification judges
+  // the wrong ceiling. The window this bites in is real: a whole-chain
+  // 429 durably parks the step in `GenerationRetryWait`, and an operator
+  // reacting to exactly that rate limit switches the model mid-wait.
+  let counter = tally()
+  let sess = memory_session()
+  let admissions = process.new_subject()
+  let base =
+    wiring.build_effects(wiring_config(
+      routed_gateway(recovering_transport(counter)),
+      sess,
+    ))
+  // The admission hook, wrapped to record what each attempt was judged
+  // against — and, beside it, what the live register held at that
+  // moment, so a switch that landed too late fails the test loudly
+  // instead of letting it pass about nothing.
+  let hooks = base.hooks
+  let effects =
+    effects.Effects(
+      ..base,
+      hooks: effects.Hooks(..hooks, admission: fn(query) {
+        let live = case session.strand_configuration(sess, "main") {
+          Ok(Some(session.Cell(value:, ..))) -> value.model
+          _ -> query.configuration.model
+        }
+        process.send(admissions, #(query.configuration.model, live))
+        hooks.admission(query)
+      }),
+    )
+  let options = api.default_options(configuration())
+  let assert Ok(runtime) =
+    api.open(
+      sess,
+      effects,
+      api.Options(
+        ..options,
+        // Wide enough that the switch commit — polled at 10 ms and
+        // written in one register CAS — cannot lose the race against
+        // the ladder's own wake.
+        retry_policy: operation.NormalizedRetryPolicy(
+          max_attempts: 3,
+          base_delay_ms: 1500,
+        ),
+      ),
+    )
+    as "the routing session must open"
+  let assert Ok(op) = api.prompt(runtime, [user("Say something.")])
+
+  assert waited_for_retry(sess, op, 6000)
+    as "the machine must durably enter a retry wait"
+  switch_strand_model(
+    runtime,
+    sess,
+    ModelIdentity(provider: "backup", model_id: tail_model_id),
+  )
+
+  let assert Ok(outcome) = api.await_result(runtime, op, within_ms: 30_000)
+    as "the switched run must reach a terminal result"
+  let assert operation.RunLastResult(outcome: operation.RunCompleted(..), ..) =
+    outcome
+
+  let head = ModelIdentity(provider: "primary", model_id: head_model_id)
+  let assert Ok(#(first_asked, _)) = process.receive(admissions, 2000)
+    as "the first attempt must have been admitted"
+  let assert Ok(#(second_asked, second_live)) =
+    process.receive(admissions, 2000)
+    as "the second attempt must have been admitted"
+  assert first_asked == head
+  // The switch demonstrably preceded the second admission…
+  assert second_live
+    == ModelIdentity(provider: "backup", model_id: tail_model_id)
+  // …and that admission still described the step-start snapshot.
+  assert second_asked == head
+
+  // The dispatch agreed with the admission: attempt two walked from the
+  // snapshot's head, which had recovered, so the settled response is
+  // the head's.
+  let assert [message.UserMessage(..), settled] = projected(sess)
+  let assert message.AssistantMessage(provider:, ..) = settled
+  assert provider == "primary"
+
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// The whole chain storms exactly once, then recovers: attempt one meets
+// a 429 at the head and at the tail, enters the ladder, and attempt two
+// settles at the head.
+fn recovering_transport(counter: process.Subject(Tally)) -> http.Transport {
+  let answer =
+    script.AnswerTurn(text: answer_text, input_tokens: 100, output_tokens: 9)
+  http.Transport(send_streaming: fn(request: http.HttpRequest, subject) {
+    let head = string.contains(request.url, "primary.test")
+    let host = host_of(head)
+    process.send(counter, Bump(host:))
+    let events = case hits(counter, host) {
+      1 -> rate_limited()
+      _ -> settled_events(answer)
+    }
+    list.each(events, fn(event) { process.send(subject, event) })
+  })
+}
+
+// The durable write `set_config model_name` performs, in miniature: the
+// strand's configuration register moved under a CAS on the seq the read
+// saw, through the session's own writer.
+fn switch_strand_model(
+  runtime: api.Runtime,
+  sess: Session,
+  identity: ModelIdentity,
+) -> Nil {
+  let assert Ok(Some(session.Cell(value:, seq:))) =
+    session.strand_configuration(sess, "main")
+    as "the strand configuration must read cleanly"
+  let updated = StrandConfiguration(..value, model: identity)
+  let assert Ok(_) =
+    writer.commit(
+      process.named_subject(runtime.tree.writer),
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.StrandConfig,
+            key: "main",
+            value: register.value(machine_codec.encode_configuration(updated)),
+          ),
+        ],
+        expected: [
+          tx.Expect(ns: register.StrandConfig, key: "main", seq: Some(seq)),
+        ],
+      ),
+    )
+    as "the switch commit must land"
+  Nil
 }
 
 // --- helpers ---------------------------------------------------------------
