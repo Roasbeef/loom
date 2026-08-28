@@ -29,7 +29,7 @@
 ////   87d4d708a7feb5e0155c7af7b67d2744c71002c324e4e07afc8e66d4cfd4e502  packages/cap/src/cap/git.gleam
 ////   ef852f2a91c6bb9e8523d58c3466eb644c14f34fc1e210cb6e6dff5f00bd9fb6  packages/cap/src/cap/kv.gleam
 ////   16975eb1a575e4e43a9c2892a7c40586bcab49ccb8674d4cf1e49d9aae6786cd  packages/cap/src/cap/lsp.gleam
-////   70452020e0ebba2d4c0f5ff364980d502f5857996f650c2c08dbbdfd2692c4b7  packages/cap/src/cap/mcp.gleam
+////   a5c3a1e4703f8908b016a2f77e81f1fb0bbc81016244cb9f087cd6ab59a544a5  packages/cap/src/cap/mcp.gleam
 ////   4af4fb4773f4fb7281cc0361762cca202c92af24d4e191fdb17ba3f09f383e41  packages/cap/src/cap/net.gleam
 ////   449f69c2ca5b09c6c2f5d12cb86ae4bc7c1e90e9ead2c6fe8aaaebbb6be9e14f  packages/cap/src/cap/proc.gleam
 ////   fbd196f1cab01e6ace75d87514d13376a1fb6f7726c103d43c6e15b40adad626  packages/cap/src/cap/report.gleam
@@ -38,7 +38,7 @@
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 39034b2ec91a17cf74b6cde2f64cf649006d49ff1d90e641dc15c5561c4e5029
+//// Body digest (every line after the marker): 6920f074a2913ac81bd3134f3c42159e7810dc858a5a433dfeaa966b254ab952
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -316,10 +316,11 @@ pub type McpError {
   /// along for a caller that wants more than prose.
   ToolFailed(message: String, content: List(Content))
   /// The capability channel could not carry the call, or the harness
-  /// router says the server is not running.
+  /// router refused it as `mcp_unavailable` — no such server, none
+  /// configured on this host, or its client has gone.
   ServerUnavailable(reason: String)
   /// Any other in-band broker or router refusal, code preserved verbatim
-  /// (`unsupported_cap`, a ceiling, …).
+  /// (`unsupported_cap`, `mcp_timeout`, a ceiling, …).
   McpDenied(code: String, message: String)
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
