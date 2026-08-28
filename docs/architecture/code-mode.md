@@ -240,6 +240,64 @@ property the design wants still holds, because there is no policy field
 for a program to flip and so no way for a program to widen its own network
 access — but it holds in the broker, not in the prelude.
 
+### The modules a host adds: MCP servers
+
+The nine are what Loom ships. A host may serve more, and exactly one
+thing generates them today: each `[mcp.<name>]` server in `loom.toml`
+becomes a `cap/mcp/<name>` module of typed façades, generated at boot
+from that server's own `tools/list` (issue #106). A program reaches an
+MCP server by importing it — `import cap/mcp/github` — and by no other
+route: nothing about MCP is a registered tool.
+
+Three consequences follow from that choice, and each was the reason for
+it.
+
+**A server costs what a module costs, not what its tool count costs.** A
+registered-tool design pays per *tool* in the provider's cached prefix,
+on every request of every strand; a module pays for its rendered
+surface once, the same way `cap/proc` does, whether the server lists
+three tools or three hundred. The scaling lever is which servers an
+operator enables, not model-side discovery — which is why the design
+note's tool-search proposal was dropped rather than built.
+
+**Trust is per server, and it is visible in the import list.** The
+vetting allowlist names one module per configured server, so a program
+that imported `cap/mcp/github` was handed that server and no other. The
+marshaling seam every façade calls, `cap/internal/mcp`, is an *internal*
+module, which the Gleam compiler forbids another package from importing
+— so a program cannot name it and dispatch to a server string of its
+own, which would be the generic dispatcher by the back door and would
+collapse per-server trust to "any server the router knows".
+
+**The allowlist follows the host, and only the workspace seam.** A
+façade exists only where its server is configured, so no static list can
+name one: `cap/mcp` and each generated module are added to the workspace
+seam's allowlist *at boot*, by the host that generated them
+(`client/codemode.seam_allowlist`), and `cap/mcp` stays off every static
+seam for exactly that reason. The orchestration seam is widened by none
+of it — an orchestrator that could also call out to a third-party server
+is a materially worse thing to hand a model than one that cannot, which
+is the whole of what the two-seam split buys.
+
+The generated source enters the hermetic build vendored *inside* the
+prelude, because that is the only place an internal-module call
+resolves, and it is written after the seed clone that would otherwise
+delete it. Only the modules the **vetted program actually imports** are
+written: the cost of a configured server scales with the imports a
+program wrote rather than with what an operator enabled, and a build
+whose program named no server is byte-for-byte the build it always was.
+
+A call travels as a capability like any other. `mcp.<server>` is the
+name; the arguments are `{tool, arguments}` with the tool's name
+verbatim, whatever the generated façade renamed it to for Gleam; and the
+plan is `ServedHere`, exactly as the orchestration seam's is — the
+harness answers over a socket it already owns, building no `CallSpec`,
+entering no jail, composing no policy. What bounds it is the pooled
+outstanding-effect cap, the execution's wall deadline, and one call
+timeout. The refusals a program reads are `mcp_unavailable`,
+`mcp_timeout`, `mcp_malformed`, `jsonrpc_<code>` for a server error, and
+`unsupported_cap` for a server this host never configured.
+
 ## Two seams, and why the sets are disjoint
 
 There is not one prelude but two, and a submission is vetted against
@@ -980,6 +1038,8 @@ been observed, because no run so far has had bubblewrap to bind with.
 | `cap/task.gleam`, `cap/actor.gleam` | Structured concurrency and program-scoped actors. |
 | `cap/strand.gleam` | The orchestration seam: spawn, join, address, blackboard, roster. |
 | `codemode/orchestration.gleam` | The harness end of that seam — `strand.*` onto the Agency closures. |
+| `client/mcp.gleam` | The MCP layer: a client per configured server, the generated modules, and the `mcp.<server>` router arm. |
+| `mcp/{client,transport,codegen,interchange}.gleam` | The protocol, the stdio client, the façade generator, and the msgpack ↔ JSON translation. |
 | `tools/prelude.gleam` | Generated: the capability prelude's public surface, per module, as the `code_mode` description renders it. |
 | `scripts/gen-prelude.sh`, `scripts/gen-prelude.py` | `make gen-prelude` regenerates that artifact; `--check` gates it and `--self-test` proves the gate bites. |
 | `cap/runtime.gleam` | The boot runtime inside the node: read the token, connect the socket, install the channel, run `main`, emit the outcome. |

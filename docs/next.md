@@ -124,9 +124,21 @@ Phase 3's remaining issues, in dependency order rather than numeric:
   modules (`import cap/mcp/github`), *not* as registered harness tools. New
   in phase 3, in `lsp_*`/`dap_*`'s place. Independent of the #16 bridge —
   different seam, different mechanism — so the two can run in parallel.
-  Research is done and **the answers are on the issue**; read them before
-  `docs/design-notes/tool-search-and-code-mode.md`, which is now partly
-  stale. The short version:
+  **The pipeline is wired end to end**: `packages/mcp` holds the protocol,
+  the stdio client, the façade generator and `mcp/interchange`;
+  `client/catalog` parses `[mcp.<name>]`; `client/mcp` starts a client per
+  configured server at boot, generates its module, widens the workspace
+  seam's allowlist and description, and answers `mcp.<server>` as a
+  `ServedHere` plan; `codemode.execute` narrows the generated table to the
+  vetted program's own imports and the builder vendors them into the
+  prelude after the seed clone. What is still owed: the **adversarial
+  corpus** for hostile `tools/list` input (the long pole, below), an
+  end-to-end against a real server binary, and a decision about whether an
+  MCP server should be spawned inside a jail — `mcp/transport`'s
+  `PortTransport` spawns unjailed today and the seam is where jailing
+  would attach. Research is done and **the answers are on the issue**;
+  read them before `docs/design-notes/tool-search-and-code-mode.md`, which
+  is now partly stale. The short version:
   - **No tool search.** Code mode already solves it structurally — the model
     sees a rendered module surface, not tool JSON, so a module costs the same
     whether the server has 3 tools or 300. The scaling lever is operator-side

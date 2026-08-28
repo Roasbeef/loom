@@ -9,9 +9,12 @@ the generator that turns a server's `tools/list` into a `cap/mcp/<server>`
 Gleam module plus the description surface `code_mode` carries for it. MCP
 reaches a model through code mode only — per-server generated modules,
 never a registered harness tool and never a generic dispatcher. What is
-*not* here: reading `[mcp.<name>]` out of `loom.toml`, starting a client
-per configured server, and routing `mcp.<server>` capability calls. That
-is harness wiring, and it is the pipeline-integration slice of #106.
+*not* here: reading `[mcp.<name>]` out of `loom.toml`
+(`client/catalog`), starting a client per configured server, widening
+the workspace seam, and routing `mcp.<server>` capability calls. That is
+harness wiring and it lives in `client/mcp`; this package is the
+protocol, the client, the generator and the value translation it is
+built out of.
 
 ## Key Types
 
@@ -57,6 +60,16 @@ is harness wiring, and it is the pipeline-integration slice of #106.
   name into a Gleam identifier, with the injected
   `digest: fn(String) -> String` (lowercase hex over UTF-8 bytes;
   SHA-256 in production) supplying the eight-character suffix.
+- `mcp/interchange.{InterchangeFault, to_json, to_msgpack, describe,
+  max_msgpack_int, min_msgpack_int}` — the value translation between the
+  capability wire and the MCP wire, total both ways. A msgpack integer
+  always fits `core/json.Int`; a JSON integer outside `[-2^63, 2^64 - 1]`
+  fails the **whole** conversion rather than being wrapped or clamped; a
+  msgpack binary and a non-string map key are refused in an argument
+  (JSON has neither, and both encodings a caller might expect are
+  guesses); `NilValue` and `Null` are each other. A fault names the path
+  it was found at. Depth needs no ceiling here: both parsers bound
+  nesting at the same `max_depth`.
 - `mcp/codegen.{Generated, GenerateError, generate, describe, sanitize,
   truncate, escape, scan_for_at}` — the generator.
   `Generated(module_name, source, surface)`; `GenerateError` is
@@ -68,14 +81,15 @@ is harness wiring, and it is the pipeline-integration slice of #106.
   total parser and serializer, and `CorruptionReport`); `gleam_erlang`
   (`Subject`, `Selector`, `Port`, monitors — the client actor and the
   port transport); `gleam_otp` (`actor`). `mcp/{jsonrpc, protocol, stdio,
-  schema, name, codegen}` import none of the last two and are pure
+  schema, name, codegen, interchange}` import none of the last two and are pure
   functions of their arguments, but the package as a whole is impure and
   is **not** in the portable subset lint R6 gates.
-- **Depended on by**: nothing yet. The harness wiring that configures
-  servers, starts clients, and routes `mcp.<server>` is owed;
-  `packages/cap` is the counterpart the generated modules import, and
-  this package does not depend on it (the generator emits import lines
-  as text).
+- **Depended on by**: `client`, through `client/mcp` — the wiring that
+  starts a client per configured server, generates its module, widens
+  the workspace seam's allowlist and description, and answers
+  `mcp.<server>` capability calls. `packages/cap` is the counterpart the
+  generated modules import, and this package does not depend on it (the
+  generator emits import lines as text).
 - **FFI**: `mcp/internal/ffi_port` over `src/mcp_ffi.erl` — the package's
   complete inventory of impurity. `erlang:open_port/2` with
   `spawn_executable` (binary stream mode, `exit_status`, deliberately no
