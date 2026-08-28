@@ -9,6 +9,8 @@ import core/ids
 import core/json
 import core/register
 import core/tx.{Expect, SetRegister, Tx}
+import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
 import session/session
@@ -103,6 +105,80 @@ pub fn a_corrupt_id_cell_is_a_report_not_a_crash_test() {
       ),
     )
   let assert Error(session.SessionCorrupt(..)) = session.id(sess)
+}
+
+// --- idempotence under concurrency ----------------------------------------
+
+pub fn racing_ensure_id_calls_agree_on_one_id_test() {
+  let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
+    as "the memory session must open"
+  let answers = process.new_subject()
+  let racers = [21, 22]
+  list.each(racers, fn(seed) {
+    process.spawn_unlinked(fn() {
+      // Both racers park on the same short sleep before touching the
+      // store, so they wake near enough together for the loser to take
+      // the adopt-after-`StaleExpectation` branch on some runs. The
+      // invariant under test holds on every interleaving either way.
+      process.sleep(2)
+      let outcome = session.ensure_id(sess, generator(seed:))
+      process.send(answers, outcome)
+    })
+  })
+  let minted =
+    list.map(racers, fn(_) {
+      let assert Ok(Ok(#(id, _generator))) = process.receive(answers, 10_000)
+        as "both racers must answer in band"
+      id
+    })
+  // Different generators on the two calls: only reading the winner's cell
+  // back — the read-first path, or the adopt branch after a lost CAS —
+  // can make these agree.
+  let assert [first, second] = minted as "exactly one answer per racer"
+  assert first == second
+  assert session.id(sess) == Ok(Some(first))
+}
+
+pub fn the_second_ensure_id_writes_nothing_test() {
+  let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
+    as "the memory session must open"
+  let commits = process.new_subject()
+  let counted = counting_commits(sess, commits)
+
+  let assert Ok(#(first, _)) = session.ensure_id(counted, generator(23))
+  assert drained(commits, 0) == 1
+
+  let assert Ok(#(second, _)) = session.ensure_id(counted, generator(24))
+  assert second == first
+  // The commit count, not the id, is what separates read-first from
+  // mint-always: a mint-always `ensure_id` that kept the CAS would still
+  // hand back the winner's id, having written a doomed transaction to
+  // find that out. Zero is the whole assertion.
+  assert drained(commits, 0) == 0
+}
+
+// The same session with its commit closure instrumented: every commit
+// that reaches the store sends one message to `commits` first.
+fn counting_commits(
+  sess: session.Session,
+  commits: process.Subject(Nil),
+) -> session.Session {
+  let store = sess.store
+  session.Session(
+    ..sess,
+    store: storage.Storage(..store, commit: fn(handle, tx) {
+      process.send(commits, Nil)
+      store.commit(handle, tx)
+    }),
+  )
+}
+
+// How many commit messages are waiting, draining them as it counts.
+fn drained(commits: process.Subject(Nil), counted: Int) -> Int {
+  case process.receive(commits, 0) {
+    Ok(Nil) -> drained(commits, counted + 1)
+    Error(Nil) -> counted
+  }
 }
 
 // --- persistence across close and reopen ----------------------------------
