@@ -9,6 +9,35 @@ worth more than any status comment.
 
 ---
 
+## In flight: the macOS Seatbelt boundary
+
+`wp-h/macos-seatbelt` implements WP-H phase 2 on top of the green CI-repair
+head `120bac1`. The helper now translates `SandboxPolicyV1` into a generated,
+deny-default Seatbelt profile: host-visible reads, parameterized writable
+roots, final protected-path carveouts, private scratch, local capability
+sockets, and no internet access unless the policy grants `NetworkFull`. The
+broker selects the Darwin enforcement matrix from the helper's hello frame,
+and the macOS CI lane runs the live self-test, jailed end-to-end, and code-mode
+end-to-end rather than accepting the former platform skip.
+
+The boundary is deliberately narrower than Linux's. Darwin's finite
+`RLIMIT_AS` is attempted but rejected by current kernels; `RLIMIT_NPROC`
+counts the whole login account and is not installed below the existing
+process count. A process-group plus birth-qualified process-table tracker
+reaps descendants it observes after `setsid`, but no PID namespace or
+subreaper closes the rapid-reparenting race. Every execution reports those
+exact gaps, and `FullEnforcement` refuses them. ADR-006 is the ruling; do not
+turn the passing observed-escape probe into a claim of kernel lifecycle
+containment.
+
+The current worktree passes `make check` on macOS with its own exit status
+captured (`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced
+probes, both code-mode network-off runs are enforced, and the house lint has
+zero errors. Before merge, the branch still needs its cold security review,
+atomic commits, remote PR, and green Linux plus macOS Actions runs.
+
+---
+
 ## State, as of `main` at the end of phase 3
 
 Everything below is on `main` unless it says otherwise.

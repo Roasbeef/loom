@@ -32,9 +32,9 @@ Items are cited as section plus the number as written in the list
 | M2 memory 8 | indexing `memory/*` rows so memory is reachable through `history_search`, with the by-type exclusion that would make it safe | memory stage M3, with the tokenizer upgrade |
 | M2 memory 9 | the first-order erasure cascade over provenance: erase X → find the distillates naming X's entries → re-consolidate without them | issue #115 |
 
-### Deferred work with no home (14)
+### Deferred work with no home (15)
 
-Fourteen items, thirteen rows: the canonical session id is recorded
+Fifteen items, fourteen rows: the canonical session id is recorded
 twice. Nothing in the right-hand column is scheduled — it is where the
 work would sit if someone scheduled it, recorded so the choice is made
 rather than drifted into. Part 5.1 of the spec says the same thing from
@@ -54,6 +54,7 @@ the other side.
 | WP-L 3 | an optional-brief `create_strand`, so protocol fork and create-strand stop seeding registers in the gateway | no milestone |
 | §3.4 6 | an OpenTelemetry exporter behind the `log.Sink` seam; §3.4 marks the export optional and nothing about the path is built or tested | a Part 5 track, alongside WP-F 7 |
 | §3.4 8 | the rest of "context everywhere": `broker`, `provider`, `tools`, `codemode`, `cap` and `session` still log nothing | whichever milestone next touches those packages, one injected `Logger` at a time |
+| WP-H 9 | kernel-backed Darwin descendant ownership; the sampled process tracker cannot prove cleanup of a rapid daemonizing double-fork after reparenting | a macOS executor-hardening follow-up, likely requiring a privileged process container rather than more polling |
 
 ## From WP-A (`core`)
 
@@ -113,20 +114,34 @@ the other side.
 5. **One execution at a time** per helper; a second `exec_start` gets a
    `busy` error. Concurrency lives in the broker's ExecPool, which keeps
    "kill the pgroup" unambiguous.
-6. **Network-off filtering** blocks inet/netlink/packet `socket` creation
-   by domain (seccomp cannot inspect sockaddr); AF_UNIX stays usable and
-   is confined by the filesystem layers; bwrap's network unshare is the
-   independent second layer.
-7. **Degraded mode.** When bwrap/Landlock/cgroup are unavailable (as in
-   the development container) the helper enforces what it can, reports
-   the truth in `hello.features` and per-exec `enforcement`, and the
-   broker is expected to refuse degraded helpers by policy where the
-   policy demands full enforcement. Protected paths inside writable roots
-   are unenforceable without bwrap — reported, not hidden.
+6. **Network-off filtering.** Linux blocks inet/netlink/packet `socket`
+   creation by domain (seccomp cannot inspect sockaddr), with bwrap's network
+   namespace as the independent second layer. Darwin's deny-default Seatbelt
+   profile omits Internet bind and outbound grants. Both retain AF_UNIX for
+   capability sockets, confined by their filesystem layer.
+7. **Degraded and unequal platform mechanisms.** When a requested kernel
+   layer is unavailable, the helper enforces what it can and reports the
+   exact omission in `hello.features` and per-exec `enforcement`; the broker
+   refuses it when the caller demands full enforcement. On Linux this covers
+   absent bwrap, Landlock, seccomp, or delegated cgroups. On Darwin it also
+   covers finite `RLIMIT_AS`, which current kernels reject, and
+   `RLIMIT_NPROC` when the account's existing process count is already at or
+   above the requested per-user ceiling. Neither is reported as a
+   per-execution limit when it is not one. Protected paths nested inside a
+   writable root remain unenforceable without the platform filesystem jail;
+   reported, not hidden.
 8. **Unknown input policy.** Unknown policy/body keys are rejected
    (fail-closed); unknown frame kinds get an in-band error without
    closing (forward compatibility); malformed frames close the channel
    per §3.3 invariant 6.
+9. **Darwin descendant ownership.** Seatbelt is inherited across fork, so a
+   child that leaves its process group remains under the filesystem and
+   network profile. macOS supplies neither a PID namespace nor a subreaper,
+   however. The birth-time-qualified process-table tracker reaches descendants
+   it observes, but a rapid daemonizing double-fork can be reparented between
+   samples and outlive the execution. Every Darwin report names that gap;
+   `FullEnforcement` refuses it rather than treating polling as a kernel
+   guarantee.
 
 ## From WP-G (`broker`)
 

@@ -323,7 +323,7 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 - **Phase 2 macOS**: generated Seatbelt profiles (deny-default; parameterized writable roots; network by policy); rlimits.
 - **Phase 3 Windows**: restricted tokens + ACLs + firewall (follow-up milestone).
 - Egress proxy sidecar for `Proxy(allowlist)` (CONNECT-only, host-glob allowlist, per-execution logs).
-**Exit**: the **sandbox regression suite** (WP-T, runs in CI on real kernels): write-outside-roots, protected-path write, direct socket under Off, non-allowlisted host under Proxy, env leakage, setsid escape, fork-bomb vs pids limit, output-flood truncation, orphaned-grandchild reaping — all must fail closed on both platforms. `loom-exec --self-test` runs the suite locally.
+**Exit**: the **sandbox regression suite** (WP-T, runs in CI on real kernels): write-outside-roots, protected-path write, direct socket under Off, non-allowlisted host under Proxy, env leakage, setsid escape, fork-bomb vs pids limit, output-flood truncation, orphaned-grandchild reaping. `loom-exec --self-test` runs the suite locally. Filesystem and network probes must fail closed on both platforms. Resource and lifecycle probes must either prove the named kernel mechanism or report the missing layer; `FullEnforcement` refuses either a skip or a missing layer. ADR-006 records why sampled descendant cleanup and account-wide `RLIMIT_NPROC` are observations rather than macOS equivalents of PID namespaces and cgroups.
 
 ### WP-I `tools` — core tool set
 
@@ -473,7 +473,7 @@ demonstrated.
 | M0 | A,B,(C-min),T | conformance green both backends; 10k-entry session: branch scan p50 < 5 ms | done |
 | M1 | +D,E | interleave harness green over scenario library; cold-open of a 30-turn crashed session resumes correctly | partial |
 | M2 | +F,G,H(Linux),I | jailed end-to-end: prompt → tool calls → sandboxed bash/edits → answer; sandbox suite green; pi §0.5 crash scenario reproduced live | partial |
-| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI binary drives the real server as of issue #7; `H(macOS)` resolved as unscheduled, not delivered) |
+| M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI drives the real server; `H(macOS)` now runs under Seatbelt) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | partial (three of the four demonstrated end to end; the sample's fan-out reaches a scripted Agency rather than live child strands) |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
@@ -491,8 +491,8 @@ would read as *after the follow-ups*, which is wrong.
 **Where the design doc disagrees.** `loom-design.md` §11's build order
 puts the ClientGateway and the TUI in M5 and macOS Seatbelt in M3.
 Where the two conflict this document wins on mechanics (front matter),
-and the table above is what happened: the gateway and TUI landed with
-M3, and Seatbelt is not being built at all.
+and the table above is what happened: the gateway and TUI landed with M3,
+and Seatbelt subsequently completed its macOS half.
 
 **One caveat over every row.** §0.3 says a WP is done when its exit
 criteria pass in CI on Linux and macOS. There is now a CI configuration in
@@ -574,15 +574,15 @@ Linux development container.
   former. That needed one seam: the session base policy is now a
   `serve.Settings` field, because under `serve.base_policy` no shipped
   tool's requirements can exceed the base and nothing can ever park.
-  One criterion remains weaker than the row reads.
-  *`H(macOS)` was resolved, not delivered*: Seatbelt is deliberately
-  unimplemented, because a generated profile can only be tested against
-  the string it was told to emit, which cannot distinguish
-  deny-by-default from permissive-through-a-typo — the failure mode this
-  helper exists to prevent. The build now compiles for darwin, the
-  platform reports itself *unsupported* rather than degraded, and the
-  server refuses to start there without `--allow-unenforced`. A macOS
-  jail is unscheduled work (§5.1), not a delivered milestone item.
+  The former `H(macOS)` filesystem and network gap is now delivered: Darwin
+  generates a parameterized deny-default Seatbelt profile, proves it against
+  the live kernel with all nine sandbox probes, and runs both real jailed
+  end-to-ends. The observed `setsid` probe does not prove that sampled process
+  tracking catches a rapid daemonizing double-fork; every Darwin execution
+  reports that lifecycle gap and `FullEnforcement` rejects it.
+  Its resource report stays platform-honest: finite `RLIMIT_AS` is skipped
+  when Darwin rejects it, and the per-user process rlimit is skipped when the
+  account's existing process floor already exceeds the requested ceiling.
 - **M4** — the migration sample is real:
   `docs/examples/stale_symbol_sweep.gleam` is submitted verbatim by its
   test through real vetting, a real offline `gleam build`, and a real
@@ -664,7 +664,7 @@ and rewriting their acceptance would erase what was actually accepted.
 | A system-prompt pack — named sections, total decoder, rendered against an environment, no clock in its dependency graph — assembled at boot and pinned durably, the pin winning on resume | `packages/prompt`, `client/serve` | no row named a system prompt; spec-gaps M2 integration 8 recorded that it had no home in the frozen contracts |
 | Anthropic prompt caching at four breakpoints, and cache writes counted toward the overflow comparison | `provider/adapter/anthropic` | no row; spec-gaps WP-F 8, 9 |
 | The `code_mode` tool and its wiring behind a discovered build seed — a host without one registers no tool rather than one that always refuses | `tools/codemode`, `client/codemode` | M4 integrated WP-J but no row required a door to it |
-| The macOS build split and the unsupported-platform refusal | `packages/sandbox` | the resolution of M3's `H(macOS)`, above |
+| The macOS Seatbelt jail and live regression gate | `packages/sandbox`, `.github/workflows/ci.yml` | the delivered M3 `H(macOS)` half, with exact resource-limit skips surfaced |
 | An approval bound to the **action** it was granted for: the record carries the tool, a digest of the call's effective arguments and a bounded preview, the claim and the spend both guard on it, and the approval overlay renders the command rather than only the policy diff | `client/escalate`, `client/wiring`, `packages/tui`, `protocol-change/007` | no row named consent granularity; M2's escalation row predates it |
 | The `code_mode` description carrying the prelude's public signatures — generated from `packages/cap` through the compiler's own `package-interface`, filtered by each seam's allowlist, and digest-gated inside `make check` | `tools/prelude`, `scripts/gen-prelude.{sh,py}` | M4 required a door to code mode, not an oracle behind it |
 | `packages/lint` and `make lint`: seven house rules over Gleam source, four of them (R0, R2, R4, R6) gating `make check` at error level on a census that is zero and argued | `packages/lint`, `scripts/lint.sh` | no row; the conventions in §0.2 asserted rules nothing checked |
@@ -687,18 +687,13 @@ and rewriting their acceptance would erase what was actually accepted.
 
 `docs/spec-gaps.md` now classifies all 114 of its items. Ninety-two are
 settled interpretations; eight name a milestone or a track above;
-**fourteen name work scheduled nowhere at all**, and its triage table
+**thirteen name work scheduled nowhere at all**, and its triage table
 lists each with a proposed home. A proposal there is not a schedule:
 nothing is committed until it appears in Part 2 or Part 4.
 
-Four bodies of unscheduled work are larger than any single item, and are
+Three bodies of unscheduled work are larger than any single item, and are
 named here so no row above implies otherwise:
 
-- **A macOS jail.** WP-H phase 2 is specified and deliberately unbuilt
-  (Part 4, M3). The platform refuses rather than degrades, so nothing
-  silently runs unconfined — but Loom has no jail on macOS, and the
-  spec's own "passes in CI on Linux and macOS" cannot be met until it
-  does.
 - **The egress proxy sidecar.** Track 10 above.
 - **The rest of the hook registry.** Stage C0 wired the compaction
   slots: `client/wiring.compaction_hooks` builds real admission from the
