@@ -33,13 +33,17 @@ is the ruling; do not
 turn the passing observed-escape probe into a claim of kernel lifecycle
 containment.
 
-The current worktree passes `make check` on macOS with its own exit status
-captured (`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced
-probes, both code-mode network-off runs are enforced, and the house lint has
-zero errors. A cold adversarial review found seven cleanup and probe defects;
+The local gate passed `make check` on macOS with its own exit status captured
+(`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced probes,
+both code-mode network-off runs are enforced, and the house lint has zero
+errors. A cold adversarial review found seven cleanup and probe defects;
 `7ec3d99` fixes each one, and the same reviewer verified the repairs without a
-new finding. The branch is split into four atomic commits. Before merge, it
-needs a remote PR and green Linux plus macOS Actions runs.
+new finding. CI then exposed one bookkeeping defect: the live Seatbelt test
+was defined on Linux only to call `t.Skip`. `dc4bb22` moves that test, unchanged,
+behind a Darwin build constraint; the reviewer verified that the portable
+profile tests remain shared and no macOS coverage moved. PR #134 carries the
+seven-commit series. Its source head passed all four jobs in Actions run
+33261689498: both platform gates, the Linux jail lane, and the 200-seed soak.
 
 ---
 
