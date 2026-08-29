@@ -366,47 +366,32 @@ action failed — an admission whose reply was lost may already be durable,
 and the retry paths ask the durable state rather than assuming (this is
 the same ambiguity the steer-drop work records).
 
-**A scripted intervention's loss used to be silent sometimes, and no
-longer is — though the loss itself is not yet closed.** An intervention
-claims a one-shot and then admits; the admission ran on a disposable
-process spawned *from the effect that reached the live trigger*, so the
-effect process awaiting it could be reaped by a `RestartStrand` fault
-before `control.attempt`'s own `record_attempt` ever ran — meaning some
-of these losses carried no `raised@`/`expired@` tag at all, only the bare
-`intervening@path` the dangling check still caught. That gap is closed:
-a live trigger now only registers itself and blocks (see "Keying, and
-why it is not a counter" above), and the runner's own drive loop — never
-a target of any fault in the taxonomy — is what performs the admission,
-enforces its budget, and therefore always survives to record what
-happened to it. Measured on seed 53 (twelve fault-free/faulted pairs
-against pristine `main`, then the same twelve against this change): the
-baseline showed both shapes — a `raised@intervene` next to the dangling
-entry on some runs, and on others an `intervening@` with no
-`raised@`/`expired@`/`intervened@` at all, the silent case. Every
-faulted run under this change carried the explicit tag.
+**A scripted intervention survives both sides of a lost reply.** A live
+trigger registers with the control actor and blocks; the runner's own drive
+loop, which no simulated fault can reap, takes the decision and performs the
+admission. The wait has no separate wall-clock escape. It carries the
+scripted payload rather than a doorbell, so letting the effect continue while
+the payload remained queued would permit a steer or follow-up to land after
+the settlement it must precede.
 
-What this does not do is stop the intervention from being lost. The
-carrier the runner now owns can still find *its own target* mid-restart
-— the strand it is admitting into, not the effect that triggered it —
-and a name the tree has not yet re-registered still raises. That race is
-about timing between the runner's drive pass and the target strand's own
-recovery, not about which process survives, so moving the caller does
-not touch it: `convergence/projection` still fails on seed 53 at
-essentially the same rate observed before this change (measured, not
-assumed — both twelve-run samples above landed close to the seed's
-long-documented ~40%). Retrying the admission after a `Raised` would
-close it for the cases where nothing actually committed, but not safely:
-`perform`'s own comment already warns that firing a claimed intervention
-twice makes a different session than the fault-free one, and unlike
-`admit`'s retry — which asks durable state whether its accept already
-landed before trying again — there is no equivalent durable check here
-for "did this specific steer already land". Building one is a real next
-step, but a different one from this issue, which was to move the
-*decision* to the runner; it does not, by itself, make every retry safe.
-The bracketing (`intervening@path` / `intervened@path`) and the `HARNESS
-LOST A SCRIPTED TURN` report stay in place regardless, because a future
-change could still find a way to leave a claim dangling, and a run that
-did should still say so rather than reporting an unexplained divergence.
+The runner's carrier can still lose a synchronous writer call while the tree
+restarts. That outcome is ambiguous by itself: the transaction may be absent,
+or it may be durable with only its reply lost. Each simulated intervention
+therefore carries a deterministic identity in the opaque signature of its
+user-text block. The instrumented store recognizes that identity and appends
+a reserved write-once fact, guarded absent, to the pending-entry transaction.
+After a carrier dies, the runner reads that fact straight from the raw durable
+session to answer the only safe retry question: a present fact settles the
+intervention as landed; an absent fact permits another carrier. No
+post-commit observation stands between the durable write and recovery.
+Concurrent old and new carriers cannot double-admit because only one
+transaction can satisfy the fact's absent expectation.
+
+The `intervening@path` / `intervened@path` bracket remains. It is no longer the
+expected explanation for seeds such as 33 or 53; it is a tripwire for any
+future path that spends the in-memory one-shot without making the correlated
+payload durable. A run that trips it still reports `HARNESS LOST A SCRIPTED
+TURN` rather than laundering harness damage into a convergence finding.
 
 **The `terminal/last-result-once` counter is fenced across commit
 visibility** (issue #58). The missing write was in the harness's side

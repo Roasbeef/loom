@@ -15,12 +15,17 @@ import conformance/simulation/runner
 import conformance/simulation/script
 import conformance/simulation/surface
 import conformance/simulation/vclock
+import core/json
+import core/message.{UserMessage, UserText}
+import core/register
+import core/tx
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import machine/operation.{ReplaySafe}
 import runtime/api
 import session/session
+import storage/storage
 
 // A script with no operations at all: the tree boots, the strand is
 // idle, and no run is ever open. Every queue admission against it is
@@ -44,7 +49,12 @@ fn idle_script() -> script.Script {
 // Boots a real simulated session tree on an idle strand and hands back
 // its control actor, with the runtime published the way `runner.execute`
 // publishes it.
-fn idle_session() -> #(control.Control, vclock.Clockwork, api.Runtime) {
+fn idle_session() -> #(
+  control.Control,
+  vclock.Clockwork,
+  session.Session,
+  api.Runtime,
+) {
   let vc = vclock.start(from: 1_700_000_000_000)
   let ctl = control.start()
   let script = idle_script()
@@ -59,7 +69,7 @@ fn idle_session() -> #(control.Control, vclock.Clockwork, api.Runtime) {
     api.open(raw, surfaces, api.default_options(runner.configuration()))
     as "the session tree must boot"
   control.set_runtime(ctl, runtime)
-  #(ctl, vc, runtime)
+  #(ctl, vc, raw, runtime)
 }
 
 fn teardown(ctl: control.Control, vc: vclock.Clockwork, runtime: api.Runtime) {
@@ -71,9 +81,10 @@ fn teardown(ctl: control.Control, vc: vclock.Clockwork, runtime: api.Runtime) {
 /// A steer the runtime refuses is a turn the transcript has lost, so the
 /// surface must record it where the runner's soundness check reads it.
 pub fn refused_steer_is_recorded_test() {
-  let #(ctl, vc, runtime) = idle_session()
+  let #(ctl, vc, raw, runtime) = idle_session()
   surface.apply(
     ctl,
+    raw,
     script.Steer(trigger: script.DuringTurn(turn: 0), text: "dropped"),
     awaited: True,
   )
@@ -86,9 +97,10 @@ pub fn refused_steer_is_recorded_test() {
 /// The same for a follow-up: it is the same admission path and the same
 /// lost turn.
 pub fn refused_follow_up_is_recorded_test() {
-  let #(ctl, vc, runtime) = idle_session()
+  let #(ctl, vc, raw, runtime) = idle_session()
   surface.apply(
     ctl,
+    raw,
     script.FollowUp(trigger: script.DuringTurn(turn: 0), text: "dropped"),
     awaited: True,
   )
@@ -96,4 +108,63 @@ pub fn refused_follow_up_is_recorded_test() {
   teardown(ctl, vc, runtime)
   assert list.any(notes, fn(note) { string.contains(note, "follow-up") })
     as { "the refused follow-up was not recorded: " <> string.inspect(notes) }
+}
+
+/// The signature passed to the runtime is the deterministic identity the
+/// instrumented store recognizes and fences into the admission transaction.
+pub fn intervention_user_carries_its_durable_identity_test() {
+  let intervention =
+    script.Steer(trigger: script.DuringTurn(turn: 2), text: "redirect")
+  let assert UserMessage(
+    content: [UserText(text: "redirect", text_signature: Some(identity))],
+    ..,
+  ) = surface.intervention_user(intervention, "redirect")
+    as "a simulated intervention must carry its durable identity"
+  assert identity == script.intervention_key(intervention)
+    as "the queue signature and retry identity must be identical"
+}
+
+/// Recovery settles from the durable marker itself, not from post-commit
+/// in-memory bookkeeping that a crash can overtake.
+pub fn durable_admission_marker_settles_a_lost_reply_test() {
+  let #(ctl, vc, raw, runtime) = idle_session()
+  let intervention =
+    script.FollowUp(trigger: script.DuringTurn(turn: 0), text: "landed")
+  let fact_key =
+    intervention
+    |> script.intervention_key
+    |> script.intervention_fact_key
+  let assert Ok(_) =
+    storage.commit(
+      raw.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.FactCustom,
+            key: fact_key,
+            value: register.value(json.Null),
+          ),
+        ],
+        expected: [
+          tx.Expect(ns: register.FactCustom, key: fact_key, seq: None),
+        ],
+      ),
+    )
+    as "the lost-reply marker must be durable"
+
+  surface.apply(ctl, raw, intervention, awaited: True)
+  let notes = control.notes(ctl)
+  let waits = control.waits(ctl)
+  teardown(ctl, vc, runtime)
+  assert notes == []
+    as {
+      "a durable admission must not be reported as dropped: "
+      <> string.inspect(notes)
+    }
+  assert waits
+    == [
+      "intervening@follow-up-during-effect",
+      "intervened@follow-up-during-effect",
+    ]
+    as "the durable marker must close the claimed intervention debt"
 }

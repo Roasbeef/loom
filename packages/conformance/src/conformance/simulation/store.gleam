@@ -17,11 +17,15 @@
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault.{type Schedule}
 import conformance/simulation/invariant
+import conformance/simulation/script
+import core/json
+import core/message.{type UserBlock, UserImage, UserMessage, UserText}
 import core/register
 import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import machine/codec
 import machine/operation
 import session/session.{type Session, Session}
@@ -161,6 +165,7 @@ fn commit(
   stale_faults: Bool,
   transaction: Tx,
 ) -> Result(CommitResult, CommitError) {
+  let transaction = fence_intervention_admissions(transaction)
   let next = control.commits(ctl) + 1
   case refuse_as_stale(ctl, schedule, next, stale_faults, transaction) {
     Some(error) -> Error(error)
@@ -188,6 +193,81 @@ fn commit_and_check(
       control.commit_failed(ctl)
       Error(error)
     }
+  }
+}
+
+// A simulated steer or follow-up carries its intervention identity in the
+// opaque signature of its user-text block. Fold a write-once reserved fact
+// into the same transaction as the pending queue entry. If a caller loses the
+// commit reply and retries, exactly one transaction can satisfy the absent
+// expectation; the other learns that the payload is already durable.
+fn fence_intervention_admissions(transaction: Tx) -> Tx {
+  let keys = intervention_keys(transaction)
+  case keys {
+    [] -> transaction
+    [_, ..] ->
+      tx.Tx(
+        writes: list.append(
+          transaction.writes,
+          list.map(keys, fn(key) {
+            tx.SetRegister(
+              ns: register.FactCustom,
+              key: script.intervention_fact_key(key),
+              value: register.value(json.Null),
+            )
+          }),
+        ),
+        expected: list.append(
+          list.map(keys, fn(key) {
+            tx.Expect(
+              ns: register.FactCustom,
+              key: script.intervention_fact_key(key),
+              seq: None,
+            )
+          }),
+          transaction.expected,
+        ),
+      )
+  }
+}
+
+fn intervention_keys(transaction: Tx) -> List(String) {
+  transaction.writes
+  |> list.filter_map(intervention_key_from_write)
+  |> list.unique
+}
+
+fn intervention_key_from_write(write: tx.Write) -> Result(String, Nil) {
+  case write {
+    tx.SetRegister(ns: register.PendingEntry, value:, ..) ->
+      codec.decode_pending_entry(value.payload)
+      |> result.map_error(fn(_report) { Nil })
+      |> result.try(intervention_key_from_pending)
+    tx.InsertEntry(..)
+    | tx.InsertUsage(..)
+    | tx.SetRegister(..)
+    | tx.DeleteRegister(..) -> Error(Nil)
+  }
+}
+
+fn intervention_key_from_pending(
+  pending: operation.PendingEntry,
+) -> Result(String, Nil) {
+  case pending {
+    operation.PendingMessage(message: UserMessage(content:, ..)) ->
+      list.find_map(content, intervention_key_from_block)
+    operation.PendingMessage(..) | operation.PendingCustom(..) -> Error(Nil)
+  }
+}
+
+fn intervention_key_from_block(block: UserBlock) -> Result(String, Nil) {
+  case block {
+    UserText(text_signature: Some(key), ..) ->
+      case script.is_intervention_key(key) {
+        True -> Ok(key)
+        False -> Error(Nil)
+      }
+    UserText(..) | UserImage(..) -> Error(Nil)
   }
 }
 

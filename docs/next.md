@@ -211,7 +211,9 @@ Decide-together pairs: **#77 + #82** (same single-latched door, spend site
 and raise site). **#66 + #79** (bounding retries trades capability for
 security with nowhere for capability to go until the session-widening valve
 exists). #58's terminal-counter race was separate from #69's intervention
-waiter, so #69 now stands on its own.
+waiter. The CI repair branch now fences terminal accounting and gives
+intervention payloads a correlated durable identity; retain that distinction
+when closing the two filings after the branch's soak gate is green.
 
 ### Known-stale filings — re-scope before picking up
 

@@ -30,6 +30,7 @@ import core/message.{
   DeferredHandle, ToolCall, ToolResultMessage, ToolResultText, UserMessage,
   UserText,
 }
+import core/register
 import gleam/bool
 import gleam/erlang/process
 import gleam/int
@@ -51,6 +52,7 @@ import runtime/escalation
 import runtime/hooks
 import runtime/supervisor
 import session/session.{type Session}
+import storage/storage
 
 /// The api name every simulated response carries; a deferred handle must
 /// match it to be structurally valid.
@@ -773,7 +775,7 @@ fn intervene(ctl: Control, script: Script, trigger: Option(Trigger)) -> Nil {
     Some(trigger) ->
       case interventions_due(script, trigger) {
         [] -> Nil
-        [_, ..] -> control.await_intervention(ctl, trigger, within_ms: 3000)
+        [_, ..] -> control.await_intervention(ctl, trigger)
       }
   }
 }
@@ -793,27 +795,28 @@ fn interventions_due(
 /// see `intervene`'s comment for why that distinction is the whole
 /// point.
 ///
-/// Everything due at one trigger fires on one disposable process, in
-/// script order. A steer and a follow-up scripted at the same turn are
-/// two halves of one scripted moment, and the trigger that names them is
-/// a *phase* — once the first of them commits, the projection has moved
-/// and that phase never comes round again. Firing them one process at a
-/// time would leave the gap between them exposed to the dying strand
-/// incarnation's reaper: it lands in the gap, takes the carrier down
-/// before the second admission is even attempted, and the second turn is
-/// gone for the rest of the run. One unlinked carrier makes the group
-/// all-or-nothing with respect to that.
+/// Everything due at one trigger fires on one disposable process, in script
+/// order. A steer and a follow-up scripted at the same turn are two halves of
+/// one scripted moment, and the trigger that names them is a *phase*. If the
+/// carrier dies between them, the atomic facts written with the completed
+/// prefix identify exactly which admissions landed; another carrier retries
+/// only the unresolved suffix.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // surface.fire_due(ctl, script, script.DuringTurn(turn: 1))
+/// // surface.fire_due(ctl, script, raw, script.DuringTurn(turn: 1))
 /// ```
 ///
-pub fn fire_due(ctl: Control, script: Script, trigger: Trigger) -> Nil {
+pub fn fire_due(
+  ctl: Control,
+  script: Script,
+  raw: Session,
+  trigger: Trigger,
+) -> Nil {
   case interventions_due(script, trigger) {
     [] -> Nil
-    [_, ..] as due -> apply_all(ctl, due, awaited: True)
+    [_, ..] as due -> apply_all(ctl, raw, due, awaited: True)
   }
 }
 
@@ -848,27 +851,29 @@ pub fn intervention_path(intervention: script.Intervention) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // surface.apply(ctl, script.Abort(script.AtTerminalCommit), awaited: False)
+/// // surface.apply(ctl, raw, script.Abort(script.AtTerminalCommit), awaited: False)
 /// ```
 ///
 pub fn apply(
   ctl: Control,
+  raw: Session,
   intervention: script.Intervention,
   awaited awaited: Bool,
 ) -> Nil {
-  apply_all(ctl, [intervention], awaited:)
+  apply_all(ctl, raw, [intervention], awaited:)
 }
 
 // Nothing to admit against until the runtime handle is published; a
 // trigger that fires before then simply has no session to reach.
 fn apply_all(
   ctl: Control,
+  raw: Session,
   due: List(script.Intervention),
   awaited awaited: Bool,
 ) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
-    Some(runtime) -> apply_on(ctl, runtime, due, awaited)
+    Some(runtime) -> apply_on(ctl, raw, runtime, due, awaited)
   }
 }
 
@@ -889,87 +894,121 @@ fn apply_all(
 // does not fire at all.
 fn apply_on(
   ctl: Control,
+  raw: Session,
   runtime: api.Runtime,
   due: List(script.Intervention),
   awaited: Bool,
 ) -> Nil {
-  // Claiming, admitting, and recording all happen on the carrier, so
-  // the group survives its caller: an effect process reaped halfway
-  // through still leaves a run whose scripted turns all landed and were
-  // all accounted for.
-  let act = fn() {
-    list.each(due, fn(intervention) {
-      claim_perform_record(ctl, runtime, intervention)
-    })
-  }
-  case awaited {
-    True ->
-      case control.attempt(ctl, at: "intervene", action: act, within_ms: 2000) {
-        control.Answered(Nil) -> Nil
-        // The disposable process carrying the admissions died addressing
-        // a tree that was mid-restart, or it did not answer inside the
-        // window. Neither says a commit failed — one may have landed
-        // with only the reply lost — so both are marked, not noted:
-        // faulting the seed here would fail it for something the
-        // harness cannot prove. A steer that truly vanished still
-        // fails, one check later, on the line-for-line projection
-        // comparison. Which of the two happened is recorded separately,
-        // by `attempt` itself, and reaches the runner as `Report.waits`.
-        control.Raised | control.Expired ->
-          control.mark(ctl, "admission-unobserved")
-      }
-    False -> control.detached(act)
+  let claimed = claim_interventions(ctl, due)
+  case claimed, awaited {
+    [], _ -> Nil
+    [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
+    [_, ..], False ->
+      control.detached(fn() {
+        admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
+      })
   }
 }
 
-// The one-shot claim, the admission it entitles, and the record of how
-// that admission went are one indivisible step.
-//
-// The claim outlives every restart, so whoever takes it owes the run a
-// turn. Taking it on the effect process and admitting from somewhere
-// else leaves a window — two synchronous calls wide — in which the dying
-// strand incarnation's reaper can kill the effect process between the
-// two. The claim is spent, nothing was written, the intervention never
-// fires again, and the faulted run quietly ends one user turn short of
-// the fault-free one. That is not a fault being survived; it is the
-// harness dropping a scripted turn, and it reads at the end as an
-// unexplained `convergence/projection` divergence. `control.attempt`
-// spawns *unlinked*, so a carrier that holds the claim cannot be reaped
-// before it has admitted, and an awaited caller still gets the admission
-// ordered ahead of the settlement it is about to send.
-//
-// What this cannot do is save a carrier that is itself lost. That case
-// is not prevented here; it is recorded, by the `intervening@` /
-// `intervened@` pair below, and reported.
-fn claim_perform_record(
+// Claim on the runner before any disposable carrier starts. The instrumented
+// store folds the same intervention identity into its queue transaction, so a
+// carrier that loses its reply can be retried without admitting the payload
+// twice. The in-memory claim says the schedule owes a turn; the durable fact
+// says whether that turn already entered the queue.
+fn claim_interventions(
   ctl: Control,
-  runtime: api.Runtime,
-  intervention: script.Intervention,
-) -> Nil {
-  let path = intervention_path(intervention)
-  case
-    control.claim_intervention(
-      ctl,
-      "intervention:" <> string.inspect(intervention),
-      path,
-    )
-  {
-    // Already spent: this intervention has fired, and a run that fired
-    // it twice would be a different session from the fault-free one.
-    False -> Nil
-    True -> {
-      control.mark(ctl, path)
-      // The claim opened a debt and this settles it, whichever way the
-      // admission goes. The pair is what lets a failing run say the
-      // difference between "this scripted turn was admitted" and "this
-      // scripted turn was claimed by a process that never came back":
-      // an `intervening@` with no `intervened@` after it is the second,
-      // and the runner reports it as harness damage rather than as an
-      // unexplained divergence (`runner.timing_line`).
-      let outcome = perform(runtime, intervention)
-      control.intervened(ctl, path)
-      record_landing(ctl, intervention, outcome)
+  due: List(script.Intervention),
+) -> List(script.Intervention) {
+  list.filter(due, fn(intervention) {
+    let path = intervention_path(intervention)
+    case
+      control.claim_intervention(
+        ctl,
+        "intervention:" <> script.intervention_key(intervention),
+        path,
+      )
+    {
+      False -> False
+      True -> {
+        control.mark(ctl, path)
+        True
+      }
     }
+  })
+}
+
+fn admit_claimed(
+  ctl: Control,
+  raw: Session,
+  runtime: api.Runtime,
+  claimed: List(script.Intervention),
+  attempts attempts: Int,
+) -> Nil {
+  let action = fn() {
+    list.map(claimed, fn(intervention) {
+      #(intervention, perform(runtime, intervention))
+    })
+  }
+  case control.attempt(ctl, at: "intervene", action:, within_ms: 2000) {
+    control.Answered(outcomes) -> settle_answered(ctl, raw, outcomes)
+    control.Raised | control.Expired -> {
+      let unresolved = settle_durable(ctl, raw, claimed)
+      case unresolved, attempts > 1 {
+        [], _ -> Nil
+        [_, ..], True -> {
+          process.sleep(10)
+          admit_claimed(ctl, raw, runtime, unresolved, attempts: attempts - 1)
+        }
+        [_, ..], False -> control.mark(ctl, "admission-unobserved")
+      }
+    }
+  }
+}
+
+fn settle_answered(
+  ctl: Control,
+  raw: Session,
+  outcomes: List(#(script.Intervention, Result(Nil, String))),
+) -> Nil {
+  list.each(outcomes, fn(outcome) {
+    let #(intervention, result) = outcome
+    control.intervened(ctl, intervention_path(intervention))
+    case intervention_admitted(raw, intervention) {
+      True -> Nil
+      False -> record_landing(ctl, intervention, result)
+    }
+  })
+}
+
+// Close every debt whose atomic fact proves the queue transaction landed and
+// return only the ambiguous admissions for another carrier to retry.
+fn settle_durable(
+  ctl: Control,
+  raw: Session,
+  claimed: List(script.Intervention),
+) -> List(script.Intervention) {
+  list.filter(claimed, fn(intervention) {
+    case intervention_admitted(raw, intervention) {
+      False -> True
+      True -> {
+        control.intervened(ctl, intervention_path(intervention))
+        False
+      }
+    }
+  })
+}
+
+fn intervention_admitted(
+  raw: Session,
+  intervention: script.Intervention,
+) -> Bool {
+  let key =
+    intervention
+    |> script.intervention_key
+    |> script.intervention_fact_key
+  case storage.get_register(raw.store, register.FactCustom, key) {
+    Ok(Some(_cell)) -> True
+    Ok(None) | Error(_) -> False
   }
 }
 
@@ -979,9 +1018,15 @@ fn perform(
 ) -> Result(Nil, String) {
   case intervention {
     script.Steer(text:, ..) ->
-      landed("steer", api.steer_quietly(runtime, user(text)))
+      landed(
+        "steer",
+        api.steer_quietly(runtime, intervention_user(intervention, text)),
+      )
     script.FollowUp(text:, ..) ->
-      landed("follow-up", api.follow_up(runtime, user(text)))
+      landed(
+        "follow-up",
+        api.follow_up(runtime, intervention_user(intervention, text)),
+      )
     // Abort is fire-and-forget by design (api §4.6): it returns nothing
     // to honor, and the runner already treats an aborted run's
     // transcript as a race rather than a convergence claim.
@@ -990,6 +1035,33 @@ fn perform(
       Ok(Nil)
     }
   }
+}
+
+/// Builds the user message for one simulated steer or follow-up.
+///
+/// Its opaque signature is the intervention's deterministic identity. The
+/// instrumented store recognizes that identity and commits its admission
+/// marker atomically with the pending queue entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.intervention_user(intervention, "please redirect")
+/// ```
+///
+pub fn intervention_user(
+  intervention: script.Intervention,
+  text: String,
+) -> AgentMessage {
+  UserMessage(
+    content: [
+      UserText(
+        text:,
+        text_signature: Some(script.intervention_key(intervention)),
+      ),
+    ],
+    timestamp: 0,
+  )
 }
 
 fn record_landing(

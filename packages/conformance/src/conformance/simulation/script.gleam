@@ -311,6 +311,26 @@ pub fn trigger_of(intervention: Intervention) -> Trigger {
   }
 }
 
+/// The durable identity carried by one simulated queue admission.
+///
+/// The identity is derived from the whole intervention rather than from an
+/// execution counter, so a retry after a tree restart names the same payload.
+/// The instrumented store uses it to fence that payload into the queue at most
+/// once even when the caller loses the commit reply.
+pub fn intervention_key(intervention: Intervention) -> String {
+  "simulation/intervention/" <> string.inspect(intervention)
+}
+
+/// The reserved fact key committed atomically with a simulated intervention.
+pub fn intervention_fact_key(intervention_key: String) -> String {
+  "session/" <> intervention_key
+}
+
+/// Whether a user-message signature belongs to the simulation injector.
+pub fn is_intervention_key(key: String) -> Bool {
+  string.starts_with(key, "simulation/intervention/")
+}
+
 // --- generation -----------------------------------------------------------
 
 /// The tool names a generated script may use, with their replay

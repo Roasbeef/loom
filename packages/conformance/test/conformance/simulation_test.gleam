@@ -256,6 +256,31 @@ pub fn crash_on_the_terminal_commit_corpus_test() {
   expect_case(racing, [fault.CrashAtCommit(ordinal: 5)])
 }
 
+pub fn intervention_commit_reply_loss_corpus_test() {
+  // Seed 33 combines a follow-up during the first provider turn with a tree
+  // crash and a stolen lease. Before the intervention admission carried a
+  // durable identity, the runner could spend its in-memory one-shot and then
+  // lose the writer reply: some runs finished three tokens short with an
+  // unmatched `intervening@follow-up-during-effect`. Repeating the exact seed
+  // exercises the live scheduler interleaving that exposed the defect while
+  // keeping the script and fault schedule fixed.
+  repeat_seed(33, times: 12)
+}
+
+fn repeat_seed(seed: Int, times times: Int) -> Nil {
+  case times <= 0 {
+    True -> Nil
+    False ->
+      case runner.run(seed:) {
+        runner.Passed -> repeat_seed(seed, times: times - 1)
+        runner.Failed(failure:, reproduce:, ..) ->
+          panic as {
+            failure.check <> " — " <> failure.detail <> "\n    " <> reproduce
+          }
+      }
+  }
+}
+
 pub fn strand_restart_mid_parallel_batch_corpus_test() {
   // RT-restart-leak: a strand-actor restart (the tree survives) used to
   // leak the dying incarnation's live effects, so recovery re-executed a

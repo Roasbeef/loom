@@ -692,30 +692,23 @@ pub fn intervened(ctl: Control, path: String) -> Nil {
 /// survivable: the caller here only has to survive long enough to be
 /// released, not to carry the admission itself.
 ///
-/// The wait is bounded because it is still real milliseconds — the
-/// runner's poll cadence, not a promise — and a caller that gives up
-/// proceeds rather than hangs, exactly like `attempt`'s own deadlock
-/// backstop. In ordinary operation the runner services the queue on
-/// every drive pass, so this returns within a poll or two; reaching the
-/// bound is recorded, not silently absorbed.
+/// The wait has no independent timeout. This rendezvous carries the scripted
+/// payload rather than a loss-tolerant wake-up: if the effect resumed while
+/// its entry remained queued, the runner could admit the steer or follow-up
+/// after the effect's settlement and invert the ordering this handoff exists
+/// to enforce. The runner bounds the admission carrier itself, and always
+/// releases a live caller after that bounded decision finishes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // control.await_intervention(ctl, script.DuringTurn(turn: 1), within_ms: 3000)
+/// // control.await_intervention(ctl, script.DuringTurn(turn: 1))
 /// ```
 ///
-pub fn await_intervention(
-  ctl: Control,
-  trigger: Trigger,
-  within_ms within_ms: Int,
-) -> Nil {
+pub fn await_intervention(ctl: Control, trigger: Trigger) -> Nil {
   let reply: Subject(Nil) = process.new_subject()
   process.send(ctl.subject, AwaitIntervention(trigger, reply))
-  case process.receive(reply, within_ms) {
-    Ok(Nil) -> Nil
-    Error(Nil) -> note_wait(ctl, "expired@await-intervention")
-  }
+  process.receive_forever(reply)
 }
 
 /// Takes every trigger currently awaiting the runner's attention,

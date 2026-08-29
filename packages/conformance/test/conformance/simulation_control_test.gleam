@@ -17,7 +17,8 @@
 //// the framework's own timeout.
 
 import conformance/simulation/control
-import gleam/erlang/process
+import conformance/simulation/script.{type Trigger}
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/string
 
@@ -106,4 +107,40 @@ pub fn an_unsettled_intervention_leaves_its_opening_test() {
   control.stop(ctl)
   assert list.any(waits, string.starts_with(_, "intervening@"))
   assert !list.any(waits, string.starts_with(_, "intervened@"))
+}
+
+/// A live effect cannot resume while its scripted payload is still queued.
+/// The runner owns the release, so the settlement that follows the wait can
+/// never overtake the intervention because an unrelated wall clock expired.
+pub fn an_intervention_waits_for_the_runner_release_test() {
+  let ctl = control.start()
+  let finished: Subject(Nil) = process.new_subject()
+  let _waiter =
+    process.spawn_unlinked(fn() {
+      control.await_intervention(ctl, script.DuringTurn(turn: 1))
+      process.send(finished, Nil)
+    })
+  let pending = await_pending(ctl, attempts: 100)
+  assert process.receive(finished, within: 0) == Error(Nil)
+    as "the waiting effect must not resume before the runner releases it"
+  let assert [#(script.DuringTurn(turn: 1), release)] = pending
+    as "the runner must receive the registered intervention"
+  process.send(release, Nil)
+  assert process.receive(finished, within: 1000) == Ok(Nil)
+    as "the effect must resume after the runner releases it"
+  control.stop(ctl)
+}
+
+fn await_pending(
+  ctl: control.Control,
+  attempts attempts: Int,
+) -> List(#(Trigger, Subject(Nil))) {
+  case control.take_pending_interventions(ctl), attempts > 0 {
+    [_, ..] as pending, _ -> pending
+    [], True -> {
+      process.sleep(1)
+      await_pending(ctl, attempts: attempts - 1)
+    }
+    [], False -> []
+  }
 }

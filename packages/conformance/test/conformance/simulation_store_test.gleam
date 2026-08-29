@@ -7,12 +7,17 @@
 
 import conformance/simulation/control.{type Control}
 import conformance/simulation/fault
+import conformance/simulation/script
 import conformance/simulation/store
 import core/clock
 import core/json
+import core/message.{UserMessage, UserText}
 import core/register
 import core/tx
 import gleam/erlang/process
+import gleam/option.{None, Some}
+import machine/codec
+import machine/operation
 import session/session.{type Session, Session}
 import storage/storage.{type Storage, Storage}
 
@@ -164,5 +169,87 @@ pub fn failed_commit_releases_accounting_fence_test() {
     as "a failed commit must release its accounting fence"
 
   let assert Ok(Nil) = session.close(raw) as "the probe session must close"
+  control.stop(ctl)
+}
+
+/// A simulated intervention's pending entry and its admission marker are one
+/// guarded transaction. Retrying the same identity cannot enqueue a second
+/// copy, even when it uses a fresh pending-entry key.
+pub fn intervention_admission_is_atomic_and_write_once_test() {
+  let ctl = control.start()
+  let assert Ok(raw) = session.open_memory(clock.fixed(at: 1_700_000_000_000))
+    as "the admission session must open"
+  let instrumented =
+    store.instrument(
+      raw,
+      ctl,
+      fault.none(),
+      strand: "main",
+      lease_interval_ms: 5,
+    )
+  let intervention =
+    script.FollowUp(trigger: script.DuringTurn(turn: 1), text: "queued")
+  let identity = script.intervention_key(intervention)
+  let fact_key = script.intervention_fact_key(identity)
+  let pending =
+    register.value(
+      codec.encode_pending_entry(
+        operation.PendingMessage(message: UserMessage(
+          content: [
+            UserText(text: "queued", text_signature: Some(identity)),
+          ],
+          timestamp: 0,
+        )),
+      ),
+    )
+
+  let assert Ok(_) =
+    storage.commit(
+      instrumented.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.PendingEntry,
+            key: "main/first",
+            value: pending,
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the first admission must commit"
+  let assert Ok(Some(storage.Register(value: marker, ..))) =
+    storage.get_register(raw.store, register.FactCustom, fact_key)
+    as "the admission marker must be durable with the pending entry"
+  assert marker.payload == json.Null
+    as "the admission marker payload must use the reserved null value"
+  control.seam_done(ctl)
+
+  let assert Error(tx.StaleExpectation(failed: tx.Expect(
+    ns: register.FactCustom,
+    key: failed_key,
+    seq: None,
+  ))) =
+    storage.commit(
+      instrumented.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            ns: register.PendingEntry,
+            key: "main/second",
+            value: pending,
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "a retry of the same identity must lose the absent guard"
+  assert failed_key == fact_key
+    as "the retry must conflict on the durable admission marker"
+  assert storage.get_register(raw.store, register.PendingEntry, "main/second")
+    == Ok(None)
+    as "a losing retry must not enqueue a duplicate pending entry"
+
+  let assert Ok(Nil) = session.close(raw) as "the admission session must close"
   control.stop(ctl)
 }
