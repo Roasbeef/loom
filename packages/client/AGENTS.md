@@ -704,6 +704,18 @@ over one session file. WP-L.
   anything a model says. A strand with no lineage cell is a root and is
   nobody's descendant: "no lineage fact" fails closed. That is what makes
   the wait graph acyclic and a blocking `agent_wait` safe.
+- **The bound with an answer fires first.** Two capabilities this package
+  services answer on bounds of their own, and both must sit *below*
+  `client/codemode.default_call_timeout_ms` (120 s): `client/mcp`'s
+  `default_call_timeout_ms` (60 s) and `agency.default_config`'s
+  `max_wait_ms` (30 s), the ceiling one `agent_wait`/`strand.wait` is
+  clamped to. A `ServedHere` call the satellite host gives up on is
+  answered `unsettled` and its worker killed, so inverting either ordering
+  would trade a real answer for that refusal on *every* call. The
+  constants live in three modules and nothing but a test can hold them in
+  relation, so each is pinned by one:
+  `the_mcp_call_timeout_wins_the_race_test` and
+  `the_wait_ceiling_wins_the_race_test`.
 - **A reap does one thing on the driver process: `spawn_unlinked`.**
   `Hooks.run_end` fires inside `drive_loop`, on the driver, before any
   `actor.continue` — so a hook that read a register would be a
