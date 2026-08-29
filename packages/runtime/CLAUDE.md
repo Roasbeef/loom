@@ -285,9 +285,10 @@ extended by the M3 runtime wave.
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
   locally reported `CancellationUnconfirmed` are both terminal under retry
   classification; the latter says teardown could not be proved and therefore
-  cannot authorize another attempt. The effect remains alive until its public
-  stream owner exits. Abort and driver death use that same cooperative stop
-  path, so client relays and the gateway receive cancellation before the
+  cannot authorize another attempt. The effect withholds `ProviderDone` until
+  its public stream owner exits, so the current driver cannot progress beside
+  the old subtree either. Abort and driver death use that same cooperative
+  stop path, so client relays and the gateway receive cancellation before the
   effect can disappear. No provider pump or HTTP request may outlive the
   effect that justified it.
 - **`after_commit` is the crash seam.** It runs in the writer process after

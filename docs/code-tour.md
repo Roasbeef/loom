@@ -561,9 +561,10 @@ continuing to stream and bill after abort, timeout, or driver restart.
 
 ## 9. Settlement
 
-`stream.await_terminal` returns, the effect process sends `ProviderDone`
-to the driver, and the driver turns it into an observation and plans
-again. `settle_assistant` (`machine/planner.gleam:1135`) classifies the
+`stream.await_terminal` returns, the effect process waits for the stream
+owner's complete drain, then sends `ProviderDone` to the driver. Only then does
+the driver turn it into an observation and plan again. `settle_assistant`
+(`machine/planner.gleam:1135`) classifies the
 response — first match wins, and the order is normative because
 reordering it changes behavior rather than style: cancelled control,
 overflow, valid deferred handle, retryable error, tool use, stop. Ask

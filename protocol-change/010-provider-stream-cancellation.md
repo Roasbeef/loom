@@ -166,10 +166,11 @@ runtime can ask for summary progress.
 - `client/gateway.tap_provider` and `client/wiring.recording_summaries`
   propagate cancellation and consumer death inward.
 - `runtime/strand_runtime` cancels a timed-out handle before reporting its
-  terminal observation. Provider effects remain alive until the handle owner
-  drains. Their incarnation reaper sends cooperative stop capabilities, waits
-  for every adopted effect exit, and thereby forms a transitive drain barrier;
-  replacement recovery waits for all prior reapers registered for the strand.
+  terminal observation. Provider effects do not report `ProviderDone` until
+  the handle owner drains. Their incarnation reaper sends cooperative stop
+  capabilities, waits for every adopted effect exit, and thereby forms a
+  transitive drain barrier; replacement recovery waits for all prior reapers
+  registered for the strand.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.
 
