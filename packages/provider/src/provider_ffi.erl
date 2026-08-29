@@ -39,10 +39,10 @@ start_stream_request(Method, Url, Headers, Body,
             {error, <<"http request owner failed to start">>}
     end.
 
-%% Cancels an opaque request id. Cancellation is safe after completion and
-%% errors remain local because the public stream owner arbitrates settlement.
-cancel_stream_request(RequestId) ->
-    cancel_native(RequestId),
+%% Cancels an opaque native request. Cancellation is safe after completion and
+%% returns only after the request's dedicated handler has stopped.
+cancel_stream_request(Request) ->
+    cancel_native(Request),
     nil.
 
 start_native_request(Receiver, Method, Url, Headers, Body) ->
@@ -60,12 +60,16 @@ start_native_request(Receiver, Method, Url, Headers, Body) ->
             end,
         HttpOptions =
             [{timeout, ?RESPONSE_TIMEOUT}, {connect_timeout, 30000}],
+        %% A non-empty socket option forces httpc to allocate a fresh handler
+        %% instead of reusing a keep-alive session. That gives this request one
+        %% monitorable native owner whose DOWN is a socket-drain acknowledgement.
         Options = [{sync, false}, {stream, self}, {body_format, binary},
-                   {receiver, Receiver}],
+                   {receiver, Receiver}, {socket_opts, [{nodelay, true}]}],
         case httpc:request(method_atom(Method), Request, HttpOptions, Options) of
             {ok, RequestId} ->
+                Handler = request_handler(RequestId),
                 Receiver ! {request_id, RequestId},
-                {ok, {Receiver, RequestId}};
+                {ok, {Receiver, {RequestId, Handler}}};
             {error, _Reason} ->
                 exit(Receiver, kill),
                 {error, <<"http request startup failed">>}
@@ -93,16 +97,68 @@ receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure) ->
         {http, {RequestId, {error, _Reason}}} ->
             OnFailure(<<"http transport failed">>)
     after ?RESPONSE_TIMEOUT ->
-        cancel_native(RequestId),
+        cast_cancel_native(RequestId),
         OnFailure(<<"timed out waiting for the http response">>)
     end.
 
-cancel_native(RequestId) ->
+cancel_native({RequestId, Handler}) ->
+    Monitor = monitor_handler(Handler),
     try
-        _ = httpc:cancel_request(RequestId),
+        cast_cancel_native(RequestId),
+        await_handler(Monitor),
         ok
     catch
-        _Class:_CaughtReason -> ok
+        _Class:_CaughtReason ->
+            await_handler(Monitor),
+            ok
+    end.
+
+cast_cancel_native(RequestId) ->
+    _ = httpc:cancel_request(RequestId),
+    ok.
+
+%% httpc cancellation is an asynchronous manager cast. Capture the dedicated
+%% handler before exposing the request id, then wait for its DOWN after cancel;
+%% the handler closes its socket in terminate/2 before that signal is emitted.
+request_handler(RequestId) ->
+    try
+        case httpc:info() of
+            Info when is_list(Info) ->
+                Handlers = proplists:get_value(handlers, Info, []),
+                find_request_handler(RequestId, Handlers);
+            {error, _Reason} ->
+                retry_request_handler(RequestId)
+        end
+    catch
+        _Class:_CaughtReason -> retry_request_handler(RequestId)
+    end.
+
+%% The request has already been admitted when handler discovery runs. If the
+%% manager is restarting, keep the custodian inside startup and retry instead
+%% of returning an owner that could later fabricate a drain acknowledgement.
+retry_request_handler(RequestId) ->
+    receive
+    after 10 -> request_handler(RequestId)
+    end.
+
+find_request_handler(_RequestId, []) ->
+    undefined;
+find_request_handler(RequestId, [{Pid, RequestIds, _Info} | Rest]) ->
+    case lists:member(RequestId, RequestIds) of
+        true -> Pid;
+        false -> find_request_handler(RequestId, Rest)
+    end.
+
+monitor_handler(undefined) ->
+    undefined;
+monitor_handler(Handler) ->
+    erlang:monitor(process, Handler).
+
+await_handler(undefined) ->
+    ok;
+await_handler(Monitor) ->
+    receive
+        {'DOWN', Monitor, process, _Handler, _Reason} -> ok
     end.
 
 content_type(HeaderList) ->

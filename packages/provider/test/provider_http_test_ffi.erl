@@ -1,7 +1,18 @@
 %% A loopback HTTP peer used to prove that production cancellation reaches
 %% the socket rather than merely retiring Loom's local waiter.
 -module(provider_http_test_ffi).
--export([start_hanging_server/2, start_malformed_server/0]).
+-export([start_hanging_server/2, start_malformed_server/0,
+         suspend_active_handlers/0, resume_handlers/1]).
+
+suspend_active_handlers() ->
+    Handlers = proplists:get_value(handlers, httpc:info(), []),
+    Pids = [Pid || {Pid, _Requests, _Info} <- Handlers],
+    lists:foreach(fun(Pid) -> true = erlang:suspend_process(Pid) end, Pids),
+    Pids.
+
+resume_handlers(Pids) ->
+    lists:foreach(fun(Pid) -> true = erlang:resume_process(Pid) end, Pids),
+    nil.
 
 start_hanging_server(OnAccepted, OnClosed) ->
     {ok, Listener} =

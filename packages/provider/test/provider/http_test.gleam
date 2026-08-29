@@ -2,6 +2,7 @@
 
 import gleam/erlang/process.{type Pid}
 import gleam/int
+import gleam/list
 import gleam/string
 import provider/http
 
@@ -13,6 +14,12 @@ fn start_hanging_server(
 
 @external(erlang, "provider_http_test_ffi", "start_malformed_server")
 fn start_malformed_server() -> #(Int, Pid)
+
+@external(erlang, "provider_http_test_ffi", "suspend_active_handlers")
+fn suspend_active_handlers() -> List(Pid)
+
+@external(erlang, "provider_http_test_ffi", "resume_handlers")
+fn resume_handlers(handlers: List(Pid)) -> Nil
 
 pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let accepted = process.new_subject()
@@ -38,16 +45,24 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let server_monitor = process.monitor(server)
   let assert Ok(Nil) = process.receive(accepted, within: 2000)
     as "the loopback peer must accept the production request"
+  let handlers = suspend_active_handlers()
+  assert !list.is_empty(handlers)
 
   http.cancel(running)
 
+  process.sleep(50)
+  assert process.is_alive(http.owner(running))
+    as "the custodian must wait for native handler acknowledgement"
+  assert process.receive(closed, within: 20) == Error(Nil)
+  resume_handlers(handlers)
+
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+    as "httpc cancellation must close the active loopback request"
   let assert Ok(True) =
     process.new_selector()
     |> process.select_specific_monitor(owner_monitor, fn(_down) { True })
     |> process.selector_receive(2000)
-    as "cancellation must retire the transport owner"
-  let assert Ok(Nil) = process.receive(closed, within: 2000)
-    as "httpc cancellation must close the active loopback request"
+    as "the transport owner must retire only after native closure"
   let assert Ok(True) =
     process.new_selector()
     |> process.select_specific_monitor(server_monitor, fn(_down) { True })

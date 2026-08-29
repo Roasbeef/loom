@@ -8,7 +8,10 @@
 
 import gleam/erlang/process.{type Pid}
 
-/// The opaque identifier returned by OTP for one asynchronous HTTP request.
+/// The opaque native handle for one asynchronous HTTP request.
+///
+/// Besides OTP's request id, the Erlang shim retains the dedicated handler
+/// process whose exit proves that cancellation closed the request socket.
 pub type RequestId
 
 /// Starts one HTTP request and streams the response through the callbacks:
@@ -36,7 +39,8 @@ pub fn start_stream_request(
   on_failure: fn(String) -> Nil,
 ) -> Result(#(Pid, RequestId), String)
 
-/// Cancels the exact OTP request identified by `request_id`. OTP cancellation is
+/// Cancels the exact OTP request identified by `request_id` and returns only
+/// after its dedicated native handler has exited. OTP cancellation itself is
 /// asynchronous and may race a response already in flight, so the provider
 /// request owner remains the only process allowed to choose a terminal event.
 @external(erlang, "provider_ffi", "cancel_stream_request")

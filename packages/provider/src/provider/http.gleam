@@ -114,8 +114,9 @@ pub type Transport {
 /// retains the opaque OTP request id once known, and monitors both the raw
 /// event receiver and provider request owner. It alone forwards `HttpEvent`s,
 /// so its exit is the complete transport drain acknowledgement. The FFI is
-/// limited to starting `httpc`, normalizing raw messages, and cancelling the
-/// id.
+/// limited to starting `httpc`, normalizing raw messages, and turning OTP's
+/// asynchronous cancellation into a handler-exit acknowledgement. The
+/// lifecycle state machine remains here in typed Gleam.
 ///
 /// ## Examples
 ///
@@ -235,11 +236,11 @@ fn own_native_request(
     }
     Http(NativeEnd) -> {
       process.send(subject, ResponseEnd)
-      finish_native(receiver, parent_monitor, receiver_monitor)
+      finish_native(request_id, receiver, parent_monitor, receiver_monitor)
     }
     Http(NativeFailure(reason:)) -> {
       process.send(subject, RequestFailed(reason:))
-      finish_native(receiver, parent_monitor, receiver_monitor)
+      finish_native(request_id, receiver, parent_monitor, receiver_monitor)
     }
   }
 }
@@ -250,16 +251,29 @@ fn stop_native(
   parent_monitor: process.Monitor,
   receiver_monitor: process.Monitor,
 ) -> Nil {
-  ffi_httpc.cancel_stream_request(request_id)
-  finish_native(receiver, parent_monitor, receiver_monitor)
+  finish_native(request_id, receiver, parent_monitor, receiver_monitor)
 }
 
 fn finish_native(
+  request_id: ffi_httpc.RequestId,
   receiver: Pid,
   parent_monitor: process.Monitor,
   receiver_monitor: process.Monitor,
 ) -> Nil {
+  // OTP cancellation is asynchronous, but the FFI does not return until the
+  // dedicated native handler has exited and closed its socket.
+  ffi_httpc.cancel_stream_request(request_id)
   process.kill(receiver)
+  case process.is_alive(receiver) {
+    False -> Nil
+    True -> {
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(receiver_monitor, fn(_down) { Nil })
+        |> process.selector_receive_forever()
+      Nil
+    }
+  }
   process.demonitor_process(parent_monitor)
   process.demonitor_process(receiver_monitor)
 }
