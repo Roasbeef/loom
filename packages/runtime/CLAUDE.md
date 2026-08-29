@@ -171,6 +171,20 @@ extended by the M3 runtime wave.
   told apart from the operation-state seq the admission ladder retries
   on: a lost race against the strand reloads, a taken mark answers
   `FactConflict` at once. `client/rulescan` is the only caller.
+- `runtime/api.{accept_quietly_marking, send_to_strand_marking}` —
+  `steer_marking`'s argument carried onto the *other* admission door.
+  `accept_quietly_marking` folds the same write-once `Mark` into a fresh
+  run's acceptance transaction instead of a steer's — `marked` and
+  `commit_admission` are already generic over `core/tx.Tx` and
+  `Option(Mark)`, so this is `accept_request` threading the mark it
+  already had nowhere to go, not a new commit shape.
+  `send_to_strand_marking` is `send_to_strand`'s reconciliation (steer an
+  open run, fall back to a fresh run on an idle one, retry the steer if a
+  run opens in the gap) with that same mark carried through whichever
+  path lands. `client/schedulescan` is the caller: a `wake = true`
+  scheduled heartbeat is the first caller ever needing exactly-once
+  admission on the fresh-run path, because nothing before it was allowed
+  to wake an idle strand at all.
 - `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
   compare-and-set half of the blackboard: read a cell with the seq of
   the write that put it there, then write only if it has not moved. The
@@ -404,14 +418,14 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Six corners of `fact.custom` are reserved, and reserving hides as
+- **Seven corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/`, `session/` and `rule/` are refused to `put_fact` and
-  filtered out of `facts`, so no blackboard write can forge an approval,
-  shadow a terminal result, rewrite a parent edge, overwrite the pinned
-  system prompt, re-point the session's own identity, or mark an
-  operator's triggered project rule as already fired so that it never
-  fires. Because
+  `prompt/`, `session/`, `rule/` and `schedule/` are refused to
+  `put_fact` and filtered out of `facts`, so no blackboard write can
+  forge an approval, shadow a terminal result, rewrite a parent edge,
+  overwrite the pinned system prompt, re-point the session's own
+  identity, or mark an operator's triggered project rule or scheduled
+  heartbeat as already fired so that it never fires. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are
@@ -419,8 +433,12 @@ extended by the M3 runtime wave.
   ledger prefix is `lineage/` rather than anything near the
   model-writable `agent/`: an integrity-critical namespace two letters
   from a model-writable one is one typo away from lineage forgery.
-  `rule/` is held to the same rule for the same reason — a fired-mark a
-  model could write is a project rule it could silence in advance.
+  `rule/` and `schedule/` are held to the same rule for the same reason
+  — a fired-mark a model could write is a project rule or a scheduled
+  heartbeat it could silence in advance — and to each other's, kept
+  disjoint rather than sharing one prefix: a security-relevant write-once
+  mark earns its own corner instead of one shared with a mechanically
+  similar but distinct feature.
 - **A model-spawned strand's crash loop cannot reboot `main`.** The tree
   carries two strand factories and `Config.subagent` decides, by name
   alone, which one starts a strand. The subagent factory sits *after* the
