@@ -147,27 +147,19 @@ func RunStage2(cfg Stage2Config) error {
 }
 
 // landlockView derives the Landlock grant set from the decoded policy.
-// Pure and total, unlike the rest of RunStage2, so the one decision that
-// matters here — what ScratchPath becomes — is unit-testable without a
-// kernel that speaks Landlock at all (see stage2_test.go).
+// Pure and total, unlike the rest of RunStage2, so its grants are unit-testable
+// without a kernel that speaks Landlock at all (see stage2_test.go).
 //
-// A tmpfs scratch is a directory only bwrap can create, for the jail's
-// own exclusive use — see llock.PolicyView's ScratchPath doc, which
-// already promised this and which stage 2 used to contradict by granting
-// write at ScratchMount unconditionally, tmpfs or not (#59). There is
-// nothing there for Landlock to grant: under bwrap the mount is a fresh
-// tmpfs the jail owns outright, and the grant was pure redundancy;
-// without bwrap there is no tmpfs at all, "in degraded mode there is no
-// scratch mount" per that same doc, and a policy asking for one gets
-// none rather than a silent substitute of real host storage nothing
-// asked for. A host-path scratch is real storage bwrap merely binds in,
-// so it keeps its explicit grant — the one case where Landlock is doing
-// load-bearing work rather than restating what the mount layer already
-// settled.
+// /dev/null is the one synthetic-mount exception. Programs need a null sink
+// in both bwrap and degraded mode, and granting that single harmless file is
+// safe in either: it does not widen the rest of the host's /dev tree. /proc
+// deliberately remains read-only because even a private PID mount exposes
+// host-global kernel knobs under /proc/sys.
 func landlockView(pol policy.Policy) llock.PolicyView {
 	view := llock.PolicyView{
 		WritableRoots: pol.WritableRoots,
 		ReadableRoots: pol.ReadableRoots,
+		WritableFiles: []string{"/dev/null"},
 	}
 	if !pol.ScratchIsTmpfs() {
 		view.ScratchPath = pol.Scratch

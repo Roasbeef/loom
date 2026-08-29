@@ -38,6 +38,8 @@ const (
 type Rule struct {
 	Path   string
 	Access Access
+	// File selects a file rule instead of a recursive directory rule.
+	File bool
 	// Optional marks paths whose absence is tolerated (a writable root
 	// that does not exist yet is the broker's business, not a reason to
 	// refuse the whole jail).
@@ -50,6 +52,9 @@ type Rule struct {
 type PolicyView struct {
 	WritableRoots []string
 	ReadableRoots []string
+	// WritableFiles grants write access to individual files without
+	// widening their containing directories.
+	WritableFiles []string
 	// ScratchPath is the scratch directory when it is a host path; empty
 	// when scratch is a tmpfs (which only bwrap can provide — in degraded
 	// mode there is no scratch mount, and the report says so).
@@ -58,9 +63,9 @@ type PolicyView struct {
 
 // Rules computes the Landlock grant set: read on the entire filesystem
 // root plus explicit readable roots (harmless duplicates are fine —
-// Landlock grants union), write only on writable roots and a path-backed
-// scratch. Everything not granted is denied by the ruleset's handled
-// access mask.
+// Landlock grants union), write only on writable roots, explicitly named
+// writable files, and a path-backed scratch. Everything not granted is
+// denied by the ruleset's handled access mask.
 func Rules(p PolicyView) []Rule {
 	var rules []Rule
 	// The jailed process may read everything it can see: under bwrap the
@@ -72,6 +77,9 @@ func Rules(p PolicyView) []Rule {
 	}
 	for _, w := range sorted(p.WritableRoots) {
 		rules = append(rules, Rule{Path: w, Access: ReadWrite, Optional: true})
+	}
+	for _, w := range sorted(p.WritableFiles) {
+		rules = append(rules, Rule{Path: w, Access: ReadWrite, File: true})
 	}
 	if p.ScratchPath != "" {
 		rules = append(rules, Rule{Path: p.ScratchPath, Access: ReadWrite, Optional: true})
@@ -103,7 +111,11 @@ func Apply(rules []Rule) error {
 		case ReadOnly:
 			fr = landlock.RODirs(r.Path)
 		case ReadWrite:
-			fr = landlock.RWDirs(r.Path)
+			if r.File {
+				fr = landlock.RWFiles(r.Path)
+			} else {
+				fr = landlock.RWDirs(r.Path)
+			}
 		default:
 			return fmt.Errorf("llock: unknown access %q", r.Access)
 		}

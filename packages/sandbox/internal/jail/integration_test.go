@@ -177,6 +177,10 @@ func TestStartRefusesAnUnmaskableProtectedPath(t *testing.T) {
 		t.Skip("this refusal only applies when bwrap builds the mount plan")
 	}
 	pol := testPolicy(t)
+	// Use a host-path scratch so /tmp is not itself a writable tmpfs in
+	// this plan. The missing sibling is then genuinely under the base
+	// read-only view on Linux, where t.TempDir lives beneath /tmp.
+	pol.Scratch = pol.WritableRoots[0]
 	// testPolicy's writable root is a fresh temp dir; "missing" is
 	// guaranteed absent under it, and its parent (the temp dir) is not
 	// itself writable — only the temp dir's *subtree* the writable root
@@ -391,7 +395,9 @@ func TestFreshProcAndDevSurviveAReadableRootOfSlash(t *testing.T) {
 	ex := start(t, pol, []string{"/bin/sh", "-c",
 		`p=$(ls -d /proc/[0-9]* | wc -l); i=$(tr "\0" " " < /proc/1/cmdline | cut -c1-24); ` +
 			`if echo x > /dev/null; then d=ok; else d=EACCES; fi; ` +
-			`echo "pids=$p devnull=$d init=$i"`},
+			`if (exec 8<> /proc/self/oom_score_adj) 2>/dev/null; then w=WRITABLE; else w=denied; fi; ` +
+			`if (exec 9<> /proc/sys/kernel/randomize_va_space) 2>/dev/null; then k=WRITABLE; else k=denied; fi; ` +
+			`echo "pids=$p devnull=$d procwrite=$w hostknob=$k init=$i"`},
 		c.sink)
 	_ = ex.WriteStdin(nil, true)
 	res := ex.Wait()
@@ -434,6 +440,15 @@ func TestFreshProcAndDevSurviveAReadableRootOfSlash(t *testing.T) {
 	if !strings.Contains(out, "devnull=ok") {
 		t.Fatalf("jail cannot open /dev/null: the minimal /dev was undone by a "+
 			"later bind of \"/\" and re-exposed the host device tree nodev. Output: %q", out)
+	}
+	// Opening proc files O_RDWR without writing any bytes is a non-mutating
+	// witness for whether the Landlock grant widened /proc. oom_score_adj is
+	// otherwise writable and catches the grant even when bwrap independently
+	// remounts /proc/sys read-only; the sysctl checks the host-global case.
+	if feat.LandlockABI > 0 && (!strings.Contains(out, "procwrite=denied") ||
+		!strings.Contains(out, "hostknob=denied")) {
+		t.Fatalf("Landlock allows write access through the jail's private "+
+			"/proc: %q", out)
 	}
 }
 
