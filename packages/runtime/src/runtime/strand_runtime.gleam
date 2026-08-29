@@ -1563,11 +1563,11 @@ fn spawn_provider(
     spawn_provider_effect(state.reaper, logger, fn(stop) {
       let handle = surface.request(spec)
       let terminal = await_provider(handle, stop, surface.timeout_ms)
-      wake(parent, ProviderDone(token:, terminal:))
       // The terminal and the owner drain are separate facts. Keeping this
-      // effect alive until the public owner exits gives the incarnation reaper
-      // a transitive acknowledgement for the whole provider subtree.
+      // effect private until the public owner exits prevents both the current
+      // driver and a replacement from dispatching beside the old subtree.
       stream.await_stopped_forever(handle)
+      wake(parent, ProviderDone(token:, terminal:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
