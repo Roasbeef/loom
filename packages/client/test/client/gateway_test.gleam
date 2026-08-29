@@ -1290,6 +1290,54 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
     |> process.selector_receive(1000)
 }
 
+pub fn provider_relay_guard_owns_inner_request_from_start_test() {
+  let callers = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      process.send(callers, process.self())
+      let events = process.new_subject()
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      stream.immediate(events:, cancel: fn() { Nil })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert stream.StreamHandle(owner: Some(owner), ..) = handle
+    as "the relay must publish a guard-backed handle"
+
+  assert process.receive(callers, within: 1000) == Ok(owner)
+}
+
+pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
+  let entered = process.new_subject()
+  let cancelled = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let start_gate = process.new_subject()
+      process.send(entered, start_gate)
+      let _start = process.receive_forever(start_gate)
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() {
+        process.send(cancelled, Nil)
+        process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert stream.StreamHandle(owner: Some(owner), ..) = handle
+    as "the relay must publish its guard before inner startup"
+  let assert Ok(start_gate) = process.receive(entered, within: 1000)
+
+  stream.cancel(handle)
+
+  assert process.is_alive(owner)
+  assert process.receive(cancelled, within: 20) == Error(Nil)
+  process.send(start_gate, Nil)
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert stream.next(handle, within: 1000)
+    == Ok(stream.Failed(error: stream.ProviderCancelled))
+  assert stream.await_stopped(handle, within: 1000)
+}
+
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
   let cancelled = process.new_subject()
   let surface =
