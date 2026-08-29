@@ -350,11 +350,24 @@ to the hub on the way past. The hub broadcasts them to subscribed
 connections as `stream_delta` events with `ephemeral: true`, no seq, no
 replay, wholly superseded by the settled `entry` for the same operation.
 
+The relay is also an ownership boundary. Its returned handle forwards
+explicit cancellation to the inner provider handle, and the relay monitors
+its direct consumer so an effect killed by abort or driver restart cancels
+the inner stream without waiting for either timeout. If the relay itself
+dies, the provider pump observes that consumer death and tears down the
+transport. Thus the tap preserves both event order and the cancellation chain;
+it is not another independently-lived request.
+
+`client/provider_relay.wrap` holds that mechanism once for both the delta tap
+and the summary recorder. Its observer runs before it forwards an event, so
+sharing ownership machinery does not weaken the summary recorder's stricter
+record-before-terminal order.
+
 The tap lives entirely in the composition seam, so the orchestration
 plane is untouched by it: `serve` builds the effects record, then
 replaces its provider field with the wrapped one before `api.open`. If
-the relay dies, the effect process times out exactly as it would for a
-dead provider — in band, never a crash.
+the inner provider dies first, the relay forwards the in-band failure exactly
+as before.
 
 ### Escalations, and the one check that matters
 

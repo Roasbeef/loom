@@ -186,7 +186,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1204`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1205`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -506,10 +506,11 @@ record with the real gateway, broker, and registry; the module's own
 documentation is the authoritative list of mapping decisions, and it is
 worth reading before changing anything about how a request is shaped.
 
-Two of those decisions are load-bearing. Every dispatch uses
-`ForResolved`, never `ForRole` — recovery must re-dispatch exactly the
-identity the intent committed, and a fallback walk could silently reach a
-different model (`client/wiring.gleam:272`). And `tool_specs` sorts and
+Two of those decisions are load-bearing. An on-route generation dispatches
+as `ForRole` so the gateway can walk that role's captured fallback chain;
+off-route generations and every deferred poll use `ForResolved` so recovery
+reaches exactly the identity its intent captured (`client/wiring.gleam`).
+And `tool_specs` sorts and
 deduplicates the active tool names (`client/wiring.gleam:329`), because
 the tool array renders ahead of the system prompt and prompt caching
 matches on an exact byte prefix; two requests with the same active set in
@@ -518,10 +519,10 @@ on every turn. Neither step touches authorization — `clear` admits a call
 by `list.contains` on the same list, and set membership is blind to order.
 
 The driver spawns the request on its own process
-(`runtime/strand_runtime.gleam:1123`) and waits for a message.
-`gateway.request` (`provider/gateway.gleam:230`) spawns a pump, walks the
+(`runtime/strand_runtime.gleam`) and waits for a message.
+`gateway.request` (`provider/gateway.gleam`) spawns a pump, walks the
 role's fallback chain only on *retryably*-classified failures, and calls
-`stream.run` per attempt (`provider/stream.gleam:511`). Everything above
+`stream.run` per attempt (`provider/stream.gleam`). Everything above
 the raw HTTP chunk stream is pure: the server-sent-events parser is bytes
 in, events out, with the carry state threaded, so the same bytes in any
 chunking yield the same events and the parser is property-tested without
@@ -534,12 +535,21 @@ The consumption contract is narrow enough to build on: zero or more
 it. Deltas are ephemeral display data and prove nothing.
 
 Which is exactly what the hub's tap exploits. `tap_provider`
-(`client/gateway.gleam:374`) wraps the injected surface so each request
+(`client/gateway.gleam`) wraps the injected surface so each request
 runs through a relay process that forwards every event to the effect
 process unchanged and in order, teeing deltas to the hub on the way past.
-The runtime is untouched by streaming; the tap lives entirely in the
-composition seam, and if the relay dies the effect process times out
-exactly as it would for a dead provider.
+The tap lives entirely in the composition seam, but it is not allowed an
+independent lifetime: explicit cancellation and effect-process death both
+propagate to the inner handle, while relay death is consumer death to the
+gateway pump.
+
+That chain reaches the socket. `StreamHandle.cancel` signals the one gateway
+pump that owns settlement and fallback; the pump cancels its current
+`RunningRequest`; the production transport owner calls
+`httpc:cancel_request/1` with the exact request id. Every edge is monitored
+and bounded. Ignoring late events protects state, but this ownership chain is
+what prevents an old request from continuing to stream and bill after abort,
+timeout, or driver restart.
 
 ## 9. Settlement
 
@@ -575,7 +585,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:575`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:553`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -603,7 +613,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1780`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1768`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -701,7 +711,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1178`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1237`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1345`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -1102,6 +1112,14 @@ synthetically under ids already reserved. A really-settled response that
 was already in the mailbox commits normalized to `aborted` while
 *retaining its reported usage*: abort must not fabricate a cost of zero
 for work the provider actually did.
+
+Provider effects have one additional teardown step before an ordinary receive
+timeout can return: the effect calls its stream handle's cancellation
+capability and waits a bounded acknowledgement grace. `ProviderCancelled` is
+terminal under retry classification, so a cancellation that wins cannot
+overlap a new fallback or retry with work that has not proved it stopped. If
+the effect itself is killed first, the relay and gateway consumer monitors
+carry the same cancellation inward.
 
 The interleave harness turns "kill it anywhere" into an enumeration using
 the writer's `after_commit` seam, and the deterministic simulation runner

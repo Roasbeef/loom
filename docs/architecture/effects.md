@@ -571,11 +571,22 @@ out, carry state threaded, so feeding the same bytes in any chunking
 yields the same events, and the whole parser is property-tested without a
 single process. Adapters compose it with their own pure
 accumulator into a response machine, a fold over HTTP events; only `run`
-is impure, spawning the transport on its own process and forwarding
-deltas as they appear. The consumption contract is narrow enough to
+is impure, starting a monitorable transport owner and forwarding deltas as
+they appear. The consumption contract is narrow enough to
 depend on: zero or more `Delta` events, then exactly one `Settled` or
 `Failed`, and nothing after. Deltas are ephemeral display data and prove
 nothing about settlement.
+
+The returned `StreamHandle` carries both the event subject and an idempotent
+cancel capability. The gateway pump owns the race between that signal and a
+provider terminal, monitors its direct consumer, and will not start another
+fallback once cancellation wins. Each attempt has a private HTTP-event
+subject and a monitorable transport owner. Teardown first invokes the
+transport's cancellation capability, then observes bounded owner death and
+kills only the local owner if it does not retire. The production owner retains
+the exact OTP `httpc` request id and calls `httpc:cancel_request/1`; this is
+what stops the external work rather than merely teaching the caller to ignore
+a late answer. Protocol change 010 fixes the contract and its race semantics.
 
 **Stop reasons map totally.** Each adapter maps the vocabulary it knows
 and answers `Error(Nil)` for anything else, which the caller surfaces as
