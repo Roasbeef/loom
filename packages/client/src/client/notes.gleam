@@ -232,14 +232,28 @@ fn line(cell: #(String, JsonValue)) -> String {
   fence_safe(cell.0 <> " = " <> json.to_string(cell.1))
 }
 
-// A note's value is model-written text, so it may carry a fence of its
-// own. Breaking the run rather than deleting it keeps the note readable
-// while making it unable to close the fence it sits inside.
-fn fence_safe(text: String) -> String {
-  // Replacing once is not enough: five backticks become one broken run
-  // plus a fresh triple, so the replacement repeats until no run
-  // survives. Termination: a run of n leaves a longest new run of
-  // (n mod 3) + 1, at most 3, which the next pass takes to 1.
+/// Breaks every backtick run in `text` so it cannot close the fence it
+/// is about to sit inside, while leaving it readable — the defence every
+/// quoted-data rendering in this package needs, spelled once.
+///
+/// Replacing once is not enough: five backticks become one broken run
+/// plus a fresh triple, so the replacement repeats until no run
+/// survives. Termination: a run of n leaves a longest new run of
+/// (n mod 3) + 1, at most 3, which the next pass takes to 1.
+///
+/// `client/memory` and `client/distill` fence quoted text too and use
+/// this rather than each carrying a copy. `tools/history` keeps its own,
+/// and must: `tools` depends on `core` and `broker` alone and cannot
+/// import `client` — that copy is the dependency posture, not a
+/// duplicate anybody should hoist.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notes.fence_safe("a ``` b") == "a ` ` ` b"
+/// ```
+///
+pub fn fence_safe(text: String) -> String {
   case string.contains(text, "```") {
     False -> text
     True -> fence_safe(string.replace(text, each: "```", with: "` ` `"))

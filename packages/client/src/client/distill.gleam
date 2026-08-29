@@ -81,6 +81,7 @@ import broker/token
 import client/catalog
 import client/internal/ffi_os
 import client/memory.{type Cursor, type Opened, type Provenance}
+import client/notes
 import client/rules
 import core/clock.{type Clock}
 import core/entry.{type Entry}
@@ -344,14 +345,7 @@ fn rendered_candidates(candidates: List(Candidate)) -> String {
 // broken rather than deleted — the same defence every quoted-data
 // rendering in this tree uses.
 fn quoted(text: String) -> String {
-  "```transcript\n" <> fence_safe(text) <> "\n```"
-}
-
-fn fence_safe(text: String) -> String {
-  case string.contains(text, "```") {
-    False -> text
-    True -> fence_safe(string.replace(text, each: "```", with: "` ` `"))
-  }
+  "```transcript\n" <> notes.fence_safe(text) <> "\n```"
 }
 
 /// Reads a model answer as candidate distillates.
@@ -818,9 +812,16 @@ fn readable(
     session.id(source)
     |> result.map_error(fn(error) { string.inspect(error) }),
   )
-  // A session that has never been through `ensure_id` has no stable
-  // name to key a cursor by, and this pipeline will not write to a
-  // source to give it one. Skipped, and said out loud.
+  // A session that has never been through `ensure_id` has no stable name
+  // to key a cursor by, and this pipeline will not mint one for it.
+  // Skipped, and said out loud.
+  //
+  // "Writes nothing to a source" would be too strong a claim to make
+  // here: taking the writer lease writes the lease row, migrate-on-open
+  // will upgrade an older file's schema in place, and opening a stray
+  // empty `.db` creates the schema in it before this line skips it. What
+  // is true is the part that matters — no entry, no register and no
+  // usage row of a source is ever authored by this pipeline.
   use named <- result.try(option.to_result(
     named,
     "the session has no canonical id; open it with a server once",

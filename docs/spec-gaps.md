@@ -1077,9 +1077,18 @@ interpretation. Recorded here because the spec supplies none.
    the memory session under `owner: "loom-distill"` and holds it for the
    run; a second concurrent run loses `LeaseHeld`, which is precisely
    the single-writer consolidation semantics omp bought with a
-   lease-and-heartbeat. No new lease type, no heartbeat, and no
-   background writer inside `loom-server` — which never opens the memory
-   session at all.
+   lease-and-heartbeat. The TTL is what replaces the heartbeat: nothing
+   renews a lease but a commit through it, and a run's commits are
+   separated by provider turns, so a run takes a lease sized to cover the
+   whole pass (`client/memory.run_lease_ttl_ms`, the precedent being
+   `storage/sqlite`'s own `rewrite_lease_ttl_ms`) while a `remember`
+   write takes the short one. Under a short run lease the first model
+   turn outlives it and any opener that arrives steals it, costing the
+   run every turn it has paid for. No new lease type, no renewal timer,
+   and no background writer inside `loom-server` — which never opens the
+   memory session at all: its boot probe reads the store's header
+   lease-free (`storage/sqlite.generation`), an absent store is not a
+   fault, and nothing but a write ever creates one.
 3. **`LeaseHeld` on a source *is* the live-session skip rule.** The note
    says "skip sessions younger than a few idle hours". A live server
    holds its session's writer lease, so the pipeline's open fails and
@@ -1105,7 +1114,11 @@ interpretation. Recorded here because the spec supplies none.
 5. **The digest crosses to the server as a sidecar file, and the file
    holds the body only.** Consolidation renders the head into
    `loom-memory.digest`; the server reads it once at boot, takes no
-   lease and holds no handle, and injects it at every run start. The
+   lease and holds no handle, and injects it at every run start. Every
+   run ends by reconciling that file against the head rather than merely
+   writing what it just rendered: the sidecar is the one artifact a crash
+   can leave behind its head, and nothing else would notice, because
+   every later run reads the head and not the file. The
    fence and the attribution are built at injection time
    (`client/memory.wrapped`) rather than stored, so a digest file
    somebody managed to write cannot forge its own provenance — claim to
@@ -1147,10 +1160,21 @@ interpretation. Recorded here because the spec supplies none.
    ids it supersedes — which makes the design possible: erase X, find
    the distillates naming X's entries, re-consolidate without them.
    Issue #115 carries that implementation. What provenance cannot buy is
-   stated here: a consolidation of a consolidation carries its
-   predecessor's id and not its predecessor's whole source list, so the
-   guarantee ends at the first derivation unless every derivation keeps
-   full source lists. The compaction analogue is already recorded (the
+   stated here, in three parts. A consolidation of a consolidation
+   carries its predecessor's id and not its predecessor's whole source
+   list, so the guarantee ends at the first derivation unless every
+   derivation keeps full source lists. Provenance is **batch-level**:
+   every row a run writes names that run's whole source set, not the
+   sources that fed that particular row, so a cascade over it
+   over-deletes and never under-deletes — coarser than per-row
+   provenance, and deliberately so, since the model's answer carries no
+   per-row attribution to record. And the memory session accumulates
+   **orphaned `memory/*` rows** — those written by a consolidation whose
+   head CAS never landed, from a crash or from the empty-answer refusal
+   — which nothing reaps; they are inert to every reader, because a
+   reader goes through the head, but a cascade walking rows rather than
+   the head must see through them. The compaction analogue is already
+   recorded (the
    spec's erase-X audit includes retained-tail copies), and the
    summary-dilution twin is item 4.
 10. **The per-run digest re-injection is the accumulation item already

@@ -195,19 +195,27 @@ over one session file. WP-L.
 - `client/memory.{memory_file, digest_file, store_beside, digest_beside,
   directory_of, fact_type, lesson_type, preference_type, pipeline_types,
   type_named, short_name, max_digest_bytes, max_distillates,
-  max_row_chars, lease_ttl_ms, head_key, cursor_key, notes_cursor_key,
+  max_row_chars, lease_ttl_ms, run_lease_ttl_ms, head_key, cursor_key,
+  notes_cursor_key,
   note_count_key, Cursor, cursor_from, cursor_value, MemoryFault, Opened,
   open, close, probe, SourceRef, Provenance, Distillate, distillate_of,
-  append_distillates, head, head_rows, advance_head, cell, notes_after,
-  safe_text, remember_seam, fence, render_digest, read_digest,
-  write_digest, digest_hooks, wrapped}` — the memory plane: the
+  append_distillates, head, head_rows, advance_head, advance_cursors,
+  cell, notes_after, safe_text, remember_seam, fence, render_digest,
+  read_digest, write_digest, reconcile_digest, digest_hooks, wrapped}` —
+  the memory plane: the
   `loom-memory.db` session beside the session files (the fold
   `client/history` established, deliberately *not* the workspace), the
   `loom-memory.digest` sidecar the server injects from, and the host side
   of the `remember` door. Opened with the ordinary writer lease and
   `session.ensure_id` called by hand, because nothing here goes through
   `runtime/api` — which is also why its bookkeeping cells need no
-  reserved prefix. **`append_distillates` and `advance_head` are separate
+  reserved prefix. **The TTL is the caller's**, and the two callers are
+  nothing alike: a `remember` write covers one commit, while a run's
+  commits are separated by whole provider turns and it takes
+  `run_lease_ttl_ms` so no opener can steal the file out from under a
+  model turn (the `rewrite_lease_ttl_ms` precedent, and a constant rather
+  than a renewal timer because a command has no supervision tree to hang
+  one on). **`append_distillates` and `advance_head` are separate
   on purpose**: rows commit first, the head-and-cursors CAS commits last,
   and a run killed between them leaves the previous head, cursors and
   sidecar standing over inert orphan rows. `render_digest` writes the
@@ -232,6 +240,17 @@ over one session file. WP-L.
   provider surface, so a test scripts both model turns; `target` picks the
   `Summarize` route when the catalogue has one and the resolved main
   identity when it does not, the summary path's own arrangement.
+  Two properties of the pass shape are load-bearing rather than
+  incidental. **Only the sources extraction got an answer for** drive the
+  cursors and the provenance: advancing a failed source's cursor would
+  lose its entries permanently and silently, and naming it in provenance
+  would over-claim a contribution #115's cascade would act on. And the
+  consolidation turn is dispatched on what extraction **produced**, not
+  on what it was offered — a repository whose sources all honestly answer
+  `nothing` commits a cursors-only transaction, leaves the head alone,
+  and does not re-pay the same extraction turns on every run forever.
+  Every run, that one included, ends by reconciling the sidecar against
+  the head.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -565,12 +584,16 @@ over one session file. WP-L.
   `events/search.sync`. Index rows and the advanced cursor commit in one
   transaction, so a crash mid-batch re-runs the batch into the same
   state; a lost poke costs latency and never a row.
-- **Memory**: `client/serve` never opens `loom-memory.db`. It reads
+- **Memory**: `client/serve` never opens `loom-memory.db` and never
+  creates it — its boot probe reads the store's header lease-free
+  (`storage/sqlite.generation`), and an absent store is the ordinary
+  state of a repository that has never remembered anything. It reads
   `loom-memory.digest` once at boot as bytes and injects them at every
   run start through `memory.digest_hooks`, which is why an updated digest
   lands at the next session boundary rather than mid-session. The two
   writers are `client/distill` (a command, holding the memory session's
-  writer lease for its run) and the `remember` seam (one open per call,
+  writer lease for its whole run under `run_lease_ttl_ms`) and the
+  `remember` seam (one open per call under the short `lease_ttl_ms`,
   refused in band while a run holds the lease). Usage rows for both model
   turns land in the memory session's own ledger.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the
