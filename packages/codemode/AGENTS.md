@@ -201,6 +201,10 @@ strand roots, and can reach neither the disk, the network, nor a process.
   Reaching that bound answers `unsettled` **and kills the process**: it is
   unlinked, so nothing else ever would, and a `serve` closure still
   polling for an answer nobody will read is one orphan per timed-out call.
+  A `ClearedCall` that reaches the same bound is revoked the same way, by
+  `broker.cancel` on the handle `CapStarted` carried back — bounded by the
+  kernel and the broker's monitoring rather than unbounded like the served
+  orphan, but a call reported over while its effect ran on all the same.
   The bound is deliberately the larger of the pair — `client/agency`'s
   `max_wait_ms` is 30 s against this 120 s — so an ordinary `strand.wait`
   is answered by the Agency's ceiling and never reaches this reap.

@@ -292,7 +292,9 @@ pub type CapPlan {
   /// deadline that fires mid-call still tears the node down and leaves
   /// the served call to finish into a stopped host, where its answer is
   /// dropped. That is the honest shape: there is no executor process
-  /// group to revoke, and the Agency call it wraps is itself bounded —
+  /// group to revoke — where there *is* one, on `ClearedCall`, the
+  /// timeout revokes it, which is what `CapStarted`'s handle is for —
+  /// and the Agency call it wraps is itself bounded —
   /// a `wait` by the Agency's own ceiling, which is deliberately below
   /// `client/codemode.default_call_timeout_ms` so that the bound with an
   /// answer is the one that fires, everything else by a store round trip.
@@ -1159,13 +1161,43 @@ fn run_collector(
       process.send(host, CapDone(id:, outcome: refusal_outcome(refusal)))
     Ok(handle) -> {
       process.send(host, CapStarted(id:, handle:))
-      report_collected(host, id, render, events, call_timeout_ms)
+      report_collected(
+        host,
+        broker,
+        handle,
+        id,
+        render,
+        events,
+        call_timeout_ms,
+      )
     }
   }
 }
 
+// Collects one cleared call's settlement, and revokes the clearance if
+// the deadline arrives first.
+//
+// The cancel is the same obligation `run_service` discharges by killing
+// its worker, discharged through the mechanism this side actually has.
+// A `ServedHere` call has no executor process group to revoke, so the
+// process running it is the only thing to stop; a `ClearedCall` has one,
+// which is the whole reason `CapStarted` carries the handle back to the
+// host — and answering `unsettled` while leaving the jailed executor
+// running would be reporting the call over while its effect went on.
+// Bounded by the kernel and the broker's monitoring rather than
+// unbounded like the served orphan was, but latent for the same reason
+// and closed the same way.
+//
+// `broker.cancel` is a send the broker resolves against its own live
+// table, so cancelling a call that has already settled — or one a
+// program-driven `Cancel` cancelled first — is a no-op there rather than
+// a second effect here. That is what makes this safe to issue without
+// consulting the host's `cancelled` bookkeeping, which lives on a
+// process this one is not.
 fn report_collected(
   host: Subject(Msg),
+  broker: Broker,
+  handle: broker.CallHandle,
   id: Int,
   render: fn(Collected) -> CapOutcome,
   events: Subject(broker.CallEvent),
@@ -1174,7 +1206,10 @@ fn report_collected(
   case tool.collect_events(events, waiting: call_timeout_ms) {
     Ok(collected) ->
       process.send(host, CapDone(id:, outcome: render(collected)))
-    Error(Nil) -> process.send(host, CapDone(id:, outcome: unsettled_outcome()))
+    Error(Nil) -> {
+      broker.cancel(broker, handle)
+      process.send(host, CapDone(id:, outcome: unsettled_outcome()))
+    }
   }
 }
 

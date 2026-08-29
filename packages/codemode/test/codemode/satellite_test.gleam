@@ -706,6 +706,73 @@ fn died_within(pid: process.Pid, budget_ms: Int) -> Bool {
   }
 }
 
+// --- a timed-out cleared call revokes its clearance -----------------------
+
+pub fn a_timed_out_cleared_call_releases_its_executor_test() {
+  // The `ServedHere` reap's other half. A cleared call that outruns
+  // `call_timeout_ms` is answered `unsettled` too, and the jailed
+  // executor behind it has no reason of its own to stop — but unlike a
+  // served call it *does* have a process group to revoke, which is why
+  // `CapStarted` carries the handle back at all. Answering the call over
+  // while its effect ran on would be the same false report.
+  //
+  // Observed through the pooled ledger, which is where an executor
+  // nobody cancelled is still visible: with a cap of one, the second
+  // call is admitted only if the first one's clearance really settled.
+  let dir = fresh_dir("cleared-reap")
+  let broker = start_broker(holding())
+  let cfg = satellite.SatelliteConfig(..config(dir), call_timeout_ms: 200)
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 1, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(abandoned_call_peer),
+    ).outcome
+  let assert Ok(satellite.Completed(value)) = outcome
+    as "the peer reported what it saw"
+  // The program was answered rather than left hanging…
+  assert bool_field(value, "first_unsettled") == True
+  // …and the slot its abandoned executor held was given back. The second
+  // call reaches a clearance of its own and dies on its own deadline;
+  // an executor nobody cancelled would still hold the only slot, and the
+  // answer would be the pooled budget's refusal instead.
+  assert map_field(value, "second_code") == Ok(msgpack.StringValue("unsettled"))
+  broker.stop(broker)
+}
+
+fn abandoned_call_peer(ctx: PeerCtx) -> Nil {
+  // One call against a helper that never settles on its own, left to
+  // reach the host's call deadline.
+  satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
+  let first_unsettled = case satellite_peer.collect_results(ctx, 1, 3000) {
+    [#(1, outcome)] -> is_code(outcome, "unsettled")
+    _other -> False
+  }
+  // The cancel, the settlement and the ledger release are three hops off
+  // this process, so give them a window before asking.
+  process.sleep(300)
+  satellite_peer.send_proc_run(ctx, ctx.token, 2, ["second"])
+  // Whether the second call was admitted is legible in *which* refusal
+  // it gets: `unsettled` means it reached a clearance and outran the
+  // same short deadline, `budget` means it never got a slot.
+  let second_code = case satellite_peer.collect_results(ctx, 1, 3000) {
+    [#(2, framing.CapErr(code:, message: _))] -> code
+    _other -> "no result"
+  }
+  satellite_peer.send_outcome(
+    ctx,
+    msgpack.MapValue([
+      #(
+        msgpack.StringValue("first_unsettled"),
+        msgpack.BoolValue(first_unsettled),
+      ),
+      #(msgpack.StringValue("second_code"), msgpack.StringValue(second_code)),
+    ]),
+  )
+}
+
 // --- shared helpers ------------------------------------------------------
 
 fn id_list(count: Int) -> List(Int) {
