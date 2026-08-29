@@ -131,16 +131,14 @@
 //// Two tiers, and the difference is whether a replacement process would
 //// be *reachable*.
 ////
-//// **Restartable** — the commit forwarder, the Agency holder, and the
+//// **Restartable** — the commit forwarder, the Agency holder, the
+//// escalation holder, the scratch store, the search holder, and the
 //// gateway hub, under `Booted.services` (one-for-one, three restarts in
-//// five seconds). None of the three is addressed by pid: the forwarder
-//// is the writer's subscriber by name, the Agency's tool seam borrows
-//// the runtime through the holder's name, and the listener, the
-//// forwarder, and the provider tap all reach the hub through the
-//// gateway name. A replacement under the same name is therefore the
-//// same address, and a crash costs a moment of hints and the sockets
-//// already attached to the old hub — clients reconnect — rather than
-//// the whole server. A spent restart budget is fatal, in order.
+//// five seconds). None of them is addressed by pid: each registers
+//// under a name and every caller reaches it through that name, so a
+//// replacement is the same address, and a crash costs a moment of
+//// hints, an evicted scratch cache, or the sockets attached to the old
+//// hub — never the server. A spent restart budget is fatal, in order.
 ////
 //// **Fatal** — the helper pool, the broker, the summary sink, the
 //// session tree, the listener, and the service supervisor. Each of the
@@ -1406,10 +1404,10 @@ fn assemble(
       ..built,
       provider: hub.tap_provider(built.provider, to: name),
       // The only work this adds on the driver process is one
-        // `process.spawn_unlinked`; everything a reap actually does happens
-        // on that spawned process. See `client/agency`. The notes digest
-        // wraps the result rather than replacing a slot, so the two
-        // compose instead of one silently dropping the other.
+        // `process.spawn_unlinked`; everything a reap actually does
+        // happens on that spawned process. See `client/agency`. The notes
+        // digest wraps the result rather than replacing a slot, so the
+        // two compose instead of one silently dropping the other.
         hooks: agency.reaping_hooks(built.hooks, agency_config)
         |> notes.digest_hooks(opened, clock),
     )
@@ -1457,16 +1455,14 @@ fn assemble(
   // next boot reads them rather than deriving them again from inputs that
   // may have moved.
   use Nil <- result.try(system_prompt.pin(runtime, assembled))
-  // The restartable half of the per-child policy. These three hold no
-  // state a restart cannot rebuild and — crucially — none of them is
-  // addressed by pid: the forwarder is the writer's subscriber by name,
-  // the Agency's tool seam borrows the runtime through the holder's
-  // name, and the listener, the forwarder, and the provider tap all
-  // reach the hub through `name`. So a replacement under the same name
-  // is the same address, and a crash here costs a moment of hints and
-  // the sockets already attached to the old hub rather than the server.
-  // One-for-one because they are independent: nothing in the three
-  // reaches another except through a name.
+  // The restartable half of the per-child policy. These children hold
+  // no state a restart cannot rebuild and — crucially — none of them is
+  // addressed by pid: each registers under a name and every caller
+  // reaches it through that name, so a replacement is the same address,
+  // and a crash here costs a moment of hints, an evicted cache, or the
+  // sockets attached to the old hub rather than the server. One-for-one
+  // because they are independent: nothing here reaches a sibling except
+  // through a name.
   let services_tree =
     sup.new(sup.OneForOne)
     |> sup.restart_tolerance(
@@ -1716,7 +1712,22 @@ pub fn protecting_index(
   base: policy.SandboxPolicy,
   index_path: String,
 ) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(..base, protected: [index_path, ..base.protected])
+  // The whole SQLite file family, not the database alone: the index
+  // runs in WAL mode, so `-wal` and `-shm` live beside it and a write
+  // to either is the same poisoning door one filename to the right —
+  // WAL frame checksums are not cryptographic, so a crafted `-wal` is
+  // served as index content on the next read. `-journal` covers the
+  // rollback fallback a failed WAL pragma leaves. Enumerated rather
+  // than protected as a directory because the index sits beside the
+  // session file, where a protected directory would swallow paths the
+  // operator owns.
+  policy.SandboxPolicy(..base, protected: [
+    index_path,
+    index_path <> "-wal",
+    index_path <> "-shm",
+    index_path <> "-journal",
+    ..base.protected
+  ])
 }
 
 // The recall seam, or nothing and one line saying why.

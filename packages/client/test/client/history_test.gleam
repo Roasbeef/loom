@@ -87,6 +87,28 @@ pub fn a_model_side_write_to_the_index_is_refused_test() {
     as "a write reaching the index must be refused by the protected entry"
   assert protected == index
 
+  // The side files are the same door one filename to the right: the
+  // index runs in WAL mode, WAL frame checksums are not cryptographic,
+  // and a crafted `-wal` is served as index content on the next read.
+  // The protection must cover the whole SQLite family, not the database
+  // alone.
+  let assert Error(fs.ProtectedPath(..)) =
+    fs.resolve_writable(
+      filesystem: fs.real_filesystem(),
+      workspace:,
+      protected: base.protected,
+      path: index <> "-wal",
+    )
+    as "a write reaching the index's WAL must be refused"
+  let assert Error(fs.ProtectedPath(..)) =
+    fs.resolve_writable(
+      filesystem: fs.real_filesystem(),
+      workspace:,
+      protected: base.protected,
+      path: index <> "-shm",
+    )
+    as "a write reaching the index's shared-memory file must be refused"
+
   // The control: an ordinary workspace file is still writable, so the
   // refusal above is the index's and not a policy that refuses
   // everything.
@@ -218,6 +240,47 @@ pub fn a_restarted_holder_reopens_the_index_test() {
   let assert Ok([hit]) = seam.search("retry", 10, history_tool.Repository)
     as "the reopened index must still hold what was synced before"
   assert string.contains(hit.snippet, "[retry]")
+  history.stop(name)
+}
+
+// An index that will not open must not fail the start: the holder is a
+// restartable child, and a start that can fail turns a bad file on disk
+// into a restart loop that spends the tier's shared budget for a
+// projection with no authority. It starts empty-handed and answers in
+// band; a restart over the repaired file — which always succeeds,
+// because the start no longer can fail — is the recovery.
+pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
+  let root = absolute("build/test_db/history-unopenable")
+  let _stale = simplifile.delete(root)
+  // The obstruction is the path itself being a directory — the one
+  // unopenable state SQLite refuses deterministically. A missing parent
+  // is refused too, but lazily enough that the refusal's timing is the
+  // platform's, which is exactly what a test must not depend on.
+  let path = root <> "/loom-search.db"
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+    as "the obstruction must exist before the holder starts"
+  let #(store, id) = a_store(7, ["a decision worth recalling"])
+  let name = process.new_name(prefix: "loom_history_unopenable")
+  let assert Ok(_started) = history.start(config(name, path, id, store))
+    as "an unopenable index must not fail the start"
+  let seam = history.seam(name, timeout_ms: 5000)
+  let assert Error(history_tool.IndexRefused(reason:)) =
+    seam.search("decision", 10, history_tool.Repository)
+    as "a holder with no index must refuse in band, not crash"
+  assert string.contains(reason, "could not be opened")
+  // The repair: remove the obstruction and restart the holder — a fresh
+  // start under the same name, which is exactly what the supervisor
+  // does, and which cannot fail whatever it finds on disk.
+  let assert Ok(Nil) = simplifile.delete(path)
+  history.stop(name)
+  await_gone(name)
+  let assert Ok(_second) = history.start(config(name, path, id, store))
+    as "the restart over the repaired file must start"
+  let assert Ok(Nil) = history.synchronize(name, timeout_ms: 5000)
+    as "the restarted holder must sync the repaired index"
+  let assert Ok([hit]) = seam.search("decision", 10, history_tool.Repository)
+    as "the repaired index must serve what the sync indexed"
+  assert string.contains(hit.snippet, "[decision]")
   history.stop(name)
 }
 
