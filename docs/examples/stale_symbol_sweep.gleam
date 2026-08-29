@@ -73,7 +73,21 @@ pub fn main() -> report.Outcome {
     })
 
   case build, sweeps {
-    Ok(built), Ok(outputs) ->
+    Ok(built), Ok(outputs) -> report_commands(built, outputs)
+    Error(_failure), _ -> report.failure("no build strategy finished")
+    _, Error(_failures) -> report.failure("the sweep did not settle")
+  }
+}
+
+fn report_commands(
+  built: proc.Output,
+  outputs: List(proc.Output),
+) -> report.Outcome {
+  case
+    built.exit_code == 0
+    && list.all(outputs, fn(output) { output.exit_code == 0 })
+  {
+    True ->
       report.text(
         string.join(
           list.map2(packages, outputs, fn(dir, output) {
@@ -86,9 +100,26 @@ pub fn main() -> report.Outcome {
         <> " exit="
         <> int.to_string(built.exit_code),
       )
-    Error(_failure), _ -> report.failure("no build strategy finished")
-    _, Error(_failures) -> report.failure("the sweep did not settle")
+    False -> report.failure(command_failure(built, outputs))
   }
+}
+
+fn command_failure(built: proc.Output, outputs: List(proc.Output)) -> String {
+  "command failed: build exit="
+  <> int.to_string(built.exit_code)
+  <> " stderr="
+  <> string.trim(built.stderr)
+  <> "; sweeps: "
+  <> string.join(
+    list.map2(packages, outputs, fn(dir, output) {
+      dir
+      <> " exit="
+      <> int.to_string(output.exit_code)
+      <> " stderr="
+      <> string.trim(output.stderr)
+    }),
+    "; ",
+  )
 }
 
 /// How many files one sweep listed. The whole file listing stays here, in
