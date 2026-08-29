@@ -232,23 +232,17 @@ them from their own test mains.
   where some previously named nothing. See "What this does not cover" in
   `docs/architecture/simulation.md` for the measurement and why a blind
   retry is not the next step.
-- **`terminal/last-result-once` has an open, load-dependent flake** (#58).
-  Two confirmed instances (seed 6657 faulted, seed 19195 fault-free) both
-  read `[timing] clean` — no wait, no drop, no dangling intervention —
-  and wrote `strand.last_result` once fewer than the runner recorded
-  operations. `machine/planner.finish` is the only writer and is
-  CAS-guarded and atomic across both copies; the memory backend is one
-  actor serializing every read and write; neither reproduced in isolated
-  reruns (400–3000 rounds apiece) but both appeared under real CPU
-  contention, and adding `io.println` at the suspected sites was itself
-  enough to stop it recurring there — evidence for a genuine interleaving
-  race, not a bookkeeping slip, and checked clear of #57 (seed 6657 fails
-  at the same zero-in-400 rate before and after that change).
-  `Report.terminal_writes_main`/`terminal_writes_sub` (split rather than
-  pre-summed) and the operation list in the failure detail are what a
-  future investigation gets for free; closing it needs sustained load or
-  the injected-scheduler work, not a session's worth of static reading.
-  See `docs/architecture/simulation.md`, "What this does not cover".
+- **`terminal/last-result-once` is fenced across commit visibility** (#58).
+  The memory actor can publish a terminal transaction before the
+  instrumented wrapper records its side counters, while the runner reads
+  that inner actor directly. `CommitStarted`/`CommitSucceeded` hand the
+  accounting fence atomically to the post-commit seam, keeping `seam_quiet`
+  false through successful bookkeeping; `CommitFailed` releases refused
+  commits. The deterministic `simulation_store_test` probes immediately
+  after the raw commit becomes visible and checks both success and failure.
+  The production terminal transaction and the exact once oracle are
+  unchanged. See `docs/architecture/simulation.md`, "What this does not
+  cover".
 - **The perf smoke asserts, it does not merely print.** `storage_suite_test`
   holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
   to the 5 ms M0 target it reports against — shared CI hardware has

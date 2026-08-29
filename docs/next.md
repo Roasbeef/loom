@@ -210,8 +210,8 @@ them.)*
 Decide-together pairs: **#77 + #82** (same single-latched door, spend site
 and raise site). **#66 + #79** (bounding retries trades capability for
 security with nowhere for capability to go until the session-widening valve
-exists). **#58 + #69** (same harness; #69 is a live candidate cause for the
-shape #58 presents as).
+exists). #58's terminal-counter race was separate from #69's intervention
+waiter, so #69 now stands on its own.
 
 ### Known-stale filings — re-scope before picking up
 

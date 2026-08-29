@@ -22,7 +22,6 @@ import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import machine/codec
 import machine/operation
 import session/session.{type Session, Session}
@@ -176,12 +175,20 @@ fn commit_and_check(
   next: Int,
   transaction: Tx,
 ) -> Result(CommitResult, CommitError) {
-  use result <- result.try(storage.commit(inner, transaction))
-  let _ordinal = control.note_commit(ctl)
-  note_terminal_writes(ctl, transaction)
-  note_summary_settlements(ctl, transaction)
-  note_placement_violation(ctl, inner, strand, next)
-  Ok(result)
+  control.commit_started(ctl)
+  case storage.commit(inner, transaction) {
+    Ok(result) -> {
+      let _ordinal = control.commit_succeeded(ctl)
+      note_terminal_writes(ctl, transaction)
+      note_summary_settlements(ctl, transaction)
+      note_placement_violation(ctl, inner, strand, next)
+      Ok(result)
+    }
+    Error(error) -> {
+      control.commit_failed(ctl)
+      Error(error)
+    }
+  }
 }
 
 // The boundary invariant is checked at the transaction that caused it,

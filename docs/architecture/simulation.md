@@ -131,9 +131,10 @@ writer runs the post-commit seam that a crash schedule fires from, so a
 runner that took the terminal result the moment it appeared could end a
 run while the fault armed on its last commit was still queued. The
 runner therefore waits for the seam to close before accepting a terminal
-result, and a crash counts as the seam closing, since the writer was
-killed inside it. That is what keeps a commit-indexed fault's chance to
-fire part of the run rather than a race against the observer.
+result. A crash closes the killed writer's seam, while every recovered
+writer must close each new seam it opens. That is what keeps a
+commit-indexed fault's chance to fire part of the run rather than a race
+against the observer.
 
 Two wall-clock waits are left in a simulated session, and both are named
 where they live. The first is the provider surface's own settlement
@@ -407,49 +408,28 @@ LOST A SCRIPTED TURN` report stay in place regardless, because a future
 change could still find a way to leave a claim dangling, and a run that
 did should still say so rather than reporting an unexplained divergence.
 
-**A `terminal/last-result-once` failure can still read `[timing] clean`,
-and the cause is not yet found** (issue #58). Two confirmed instances —
-seed 6657 faulted (`faults: stale@c4 + slow@e1/250`, `escalate`, no
-subagent) and seed 19195 fault-free (`subagent`, `parallel`,
-`threshold@2`) — both wrote `strand.last_result` once fewer than the
-runner recorded operations, with every wall-clock wait, every reply, and
-every intervention accounted for. Neither is explained by anything the
-attribution above knows to look for, which is exactly what makes it
-worth recording rather than shrugging off as "another one of those":
-`[timing] clean` plus `NOT REPRODUCIBLE` is also the shape a genuine race
-in the code under test would take.
-The investigation ruled out what it could reach from this package.
-`machine/planner.finish` is the only site that ever writes
-`strand.last_result`, and it writes the strand register and the
-operation-keyed copy in one unconditional, CAS-guarded transaction, so a
-read of one implies the other landed in the same commit — there is no
-branch where a durable read could see a result the write-counter missed.
-The memory backend is one actor serializing every commit and every read
-through its mailbox, so a reader can never observe a torn transaction,
-and the write-then-count order inside `store.commit_and_check` is
-one process's own call sequence, immune to interleaving with any other
-commit. Both hold regardless of fault or seed.
-What is not yet explained is why the failure requires load to
-surface at all: dedicated reruns of both seeds (400 rounds each, then
-3000 for 19195) found it zero times in an otherwise idle process, but it
-appeared twice while several other simulations competed for the same
-CPU — and instrumenting the suspected call sites with `io.println` was
-by itself enough to stop it reproducing under the same contention that
-had produced it moments before. That is consistent with a real
-interleaving-dependent race and inconsistent with a simple bookkeeping
-mistake, which is normally something a few extra print statements would
-not perturb. It was also checked against issue #57: seed 6657 exercises
-exactly the `DuringCall` intervention path that issue moved to the
-runner, and it fails at the same (zero, in 400 rounds apiece) rate on
-the commit before that change and after it, so this is not something
-#57 introduced.
-`runner.Report` now carries `terminal_writes_main` and
-`terminal_writes_sub` separately rather than pre-summed, and a failure
-here names which strand is short and lists every recorded operation —
-strictly more than a future investigation had before, even though it
-does not close the question. Reproducing it on demand needs either
-sustained soak time under real load or the injected-scheduler work
-already named above; both are bigger than fit in one session.
+**The `terminal/last-result-once` counter is fenced across commit
+visibility** (issue #58). The missing write was in the harness's side
+counter, not in the machine's terminal transaction. The memory actor
+installed the transaction and replied before `store.commit_and_check`
+called `control.note_commit` and bumped `last_result:*`. The runner reads
+the unwrapped memory store, so under load it could observe the durable
+operation result while the control actor still said that the seam was
+quiet, accept the terminal, and snapshot the old counter. The same
+ordering explains why added logging suppressed the failure and why
+dedicated reruns rarely reached it.
+
+The instrumented store now opens a synchronous accounting fence before
+calling the inner commit. A successful commit atomically hands that fence
+to the post-commit seam, so `seam_quiet` stays false until its counters and
+boundary checks are recorded; a failed commit releases the fence without
+opening a seam. The writer's existing seam remains responsible for the
+scheduled fault that runs after a successful commit.
+`simulation_store_test` probes from inside the
+inner wrapper immediately after the raw commit becomes visible, where the
+old ordering deterministically reported quiet, and checks both the success
+and error paths. This leaves the production terminal transaction unchanged
+and keeps the exact once oracle intact.
 
 **One backend, one strand, one session.** Every simulated session is an
 in-memory store with a synthetic lease. The SQLite backend's own

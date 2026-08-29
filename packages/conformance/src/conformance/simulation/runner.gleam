@@ -933,10 +933,10 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   report
 }
 
-// Waits, briefly and boundedly, for the writer's post-commit seam to
-// finish. Exhausting the wait is not an error here: a run that stalled
-// may have left a writer wedged, and `run/terminated` is the check that
-// reports it.
+// Waits, briefly and boundedly, for commit accounting and the writer's
+// post-commit seam to finish. Exhausting the wait is not an error here: a run
+// that stalled may have left a writer wedged, and `run/terminated` is the
+// check that reports it.
 fn settle_seam(ctl: Control, attempts: Int) -> Nil {
   case attempts <= 0 || control.seam_quiet(ctl) {
     True -> Nil
