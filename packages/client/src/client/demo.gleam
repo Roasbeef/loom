@@ -187,8 +187,9 @@ fn drive(
   served: server.Server,
 ) -> Result(Narrative, String) {
   let inbox = process.new_subject()
+  let deferred = process.new_subject()
   let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
-  let client = Client(hub:, connection:, inbox:)
+  let client = Client(hub:, connection:, inbox:, deferred:)
   use lines <- result.try(acceptance_flow(client, runtime))
   Ok(
     list.append(lines, [
@@ -200,7 +201,12 @@ fn drive(
 }
 
 type Client {
-  Client(hub: gateway.Gateway, connection: Int, inbox: Subject(String))
+  Client(
+    hub: gateway.Gateway,
+    connection: Int,
+    inbox: Subject(String),
+    deferred: Subject(protocol.EventEnvelope),
+  )
 }
 
 fn acceptance_flow(
@@ -423,7 +429,27 @@ fn next_event(
   client: Client,
   step: String,
 ) -> Result(protocol.EventEnvelope, String) {
-  case process.receive(client.inbox, within: 8000) {
+  next_buffered_event(client.inbox, client.deferred, step)
+}
+
+/// Receives a deferred pre-reply event before reading a new wire frame.
+@internal
+pub fn next_buffered_event(
+  inbox: Subject(String),
+  deferred: Subject(protocol.EventEnvelope),
+  step: String,
+) -> Result(protocol.EventEnvelope, String) {
+  case process.receive(deferred, within: 0) {
+    Ok(envelope) -> Ok(envelope)
+    Error(Nil) -> next_incoming_event(inbox, step)
+  }
+}
+
+fn next_incoming_event(
+  inbox: Subject(String),
+  step: String,
+) -> Result(protocol.EventEnvelope, String) {
+  case process.receive(inbox, within: 8000) {
     Error(Nil) -> Error(step <> ": timed out waiting for an event")
     Ok(frame) ->
       protocol.decode_event(frame)
@@ -441,11 +467,14 @@ fn command_replied(
   step: String,
 ) -> Result(Nil, String) {
   send_command(client, id, command)
-  reply_loop(client, id, expected, step, 200)
+  await_correlated_reply(client.inbox, client.deferred, id, expected, step, 200)
 }
 
-fn reply_loop(
-  client: Client,
+/// Waits for one correlated reply without dropping earlier live events.
+@internal
+pub fn await_correlated_reply(
+  inbox: Subject(String),
+  deferred: Subject(protocol.EventEnvelope),
   id: Int,
   expected: fn(protocol.EventEnvelope) -> Bool,
   step: String,
@@ -454,9 +483,12 @@ fn reply_loop(
   use <- bool.lazy_guard(when: budget <= 0, return: fn() {
     Error(step <> ": no reply arrived")
   })
-  use envelope <- result.try(next_event(client, step))
+  use envelope <- result.try(next_incoming_event(inbox, step))
   case envelope.reply_to == Some(id) {
-    False -> reply_loop(client, id, expected, step, budget - 1)
+    False -> {
+      process.send(deferred, envelope)
+      await_correlated_reply(inbox, deferred, id, expected, step, budget - 1)
+    }
     True -> reply_outcome(envelope, expected, step)
   }
 }
@@ -483,7 +515,35 @@ fn await(
   wanted: fn(protocol.EventEnvelope) -> Bool,
   step: String,
 ) -> Result(Nil, String) {
-  await_loop(client, wanted, step, 400)
+  case await_loop(client, wanted, step, 400) {
+    Ok(Nil) -> Ok(Nil)
+    Error(reason) ->
+      case recoverable_wait_failure(reason) {
+        False -> Error(reason)
+        True -> {
+          use replayed <- result.try(catch_up_all(client, 1_000_000))
+          find_replayed_event(replayed, wanted, step)
+        }
+      }
+  }
+}
+
+fn recoverable_wait_failure(reason: String) -> Bool {
+  string.ends_with(reason, ": timed out waiting for an event")
+  || string.ends_with(reason, ": the awaited event never arrived")
+}
+
+/// Accepts an awaited durable event from a bounded catch-up replay.
+@internal
+pub fn find_replayed_event(
+  replayed: List(protocol.EventEnvelope),
+  wanted: fn(protocol.EventEnvelope) -> Bool,
+  step: String,
+) -> Result(Nil, String) {
+  case list.any(replayed, wanted) {
+    True -> Ok(Nil)
+    False -> Error(step <> ": the event was absent from catch-up replay")
+  }
 }
 
 fn await_loop(
@@ -708,9 +768,10 @@ fn check_replay(replayed: List(protocol.EventEnvelope)) -> Result(Nil, String) {
 
 fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   let inbox = process.new_subject()
+  let deferred = process.new_subject()
   let connection =
     gateway.attach(client.hub, fn(frame) { process.send(inbox, frame) })
-  let second = Client(hub: client.hub, connection:, inbox:)
+  let second = Client(hub: client.hub, connection:, inbox:, deferred:)
   subscribe_full(second)
 }
 
