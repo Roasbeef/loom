@@ -84,11 +84,14 @@ three copies (now one public `policy.covers`); blobs are now
 established by atomic rename, never direct write. `make check` passes
 end to end at the head.
 
-`main` holds phases 1 and 2 plus #106, the bridge, #15, #14 and #27
-(triggered rules — the scanner, the reserved `rule/` corner, and the
-conformance fire/kill/flood rows; the review's dead-strand follow-up is
-#113). **Phase 3 remaining: #28/#29 — and #91 items 2–5 are still
-open** (item 1 closed with the bridge).
+`main` holds phases 1 and 2 plus #106, the bridge, #15, #14, #27
+(triggered rules — the scanner, the reserved `rule/` corner, the
+conformance fire/kill/flood rows; dead-strand follow-up is #113) and
+#28 (memory M1 — the search holder, `history_search`, the protected
+index family, the notes digest, and the cross-session recall test; the
+accepted gaps are spec-gaps items 6–9 in its section). **Phase 3
+remaining: #29 — and #91 items 2–5 are still open** (item 1 closed
+with the bridge).
 
 ---
 
@@ -96,16 +99,15 @@ open** (item 1 closed with the bridge).
 
 In dependency order rather than numeric:
 
-- **#28** — memory M1. **Rulings on the issue**; unblocked by #15. Sync
-  off the writer's commit publication (no bus in production), a search
-  holder actor in the restartable tier degrading to no-tool, the index
-  beside the session file **and in `base_policy.protected`** (a
-  model-writable index is injection into future sessions' context),
-  `history_search(query, limit, scope?)` with the measured footguns
-  defended tool-side, the notes digest as a byte-capped fenced user
-  message resolved per strand through `op.meta`.
-- **#29** — memory M2, after #28; its security paragraph is part of the
-  issue, not a footnote.
+- **#29** — memory M2, the last phase-3 item: `memory/*` custom entry
+  types with provenance, the extract-then-consolidate distillation
+  pipeline (leased, capped, redacted) into a per-workspace memory
+  session, the `remember` tool, run-start injection of the distilled
+  digest fenced and attributed under a token cap, and the structural
+  anti-feedback exclusion. Its security paragraph is part of the issue,
+  not a footnote — and M1 left it two named hooks: `CustomEntry`
+  indexes to nothing yet (spec-gaps says that change is M2's), and the
+  recall-echo exclusion is deliberately weighed here.
 - **#106** — **MCP through code mode: the first increment is done.**
   `docs/architecture/mcp.md` is the living account; the rulings and their
   reasons are on the issue. The shape: generated per-server capability
