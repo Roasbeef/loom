@@ -57,13 +57,18 @@
 //// type checker is already doing double duty as the tool-argument
 //// validator here.
 ////
-//// # `PATH` is required
+//// # `PATH` and `TMPDIR` are required
 ////
 //// `gleam build` shells out to `erl` to compile the generated Erlang, so
 //// the jailed build needs `PATH` in its environment and in the composed
 //// policy's `env_allow`. Without it the compiler dies with an escript
 //// error that looks nothing like a missing environment variable, so the
 //// requirement is stated here and checked by the composition.
+////
+//// The jail replaces `/tmp` with its scratch tmpfs, which is not writable
+//// by a network-off build. The compile service prepares `build_root/tmp`,
+//// and this builder pins `TMPDIR` to it rather than inheriting a host path
+//// the build cannot reach or write.
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/exec.{type EnforcementDemand, type ExecResult}
@@ -120,7 +125,8 @@ pub type BuildConfig {
     toolchain_roots: List(String),
     /// Enforcement strictness demanded of the jailed build.
     demand: EnforcementDemand,
-    /// The child environment. Must carry `PATH` — see the module doc.
+    /// The child environment. Must carry `PATH`; `TMPDIR` is pinned by the
+    /// builder to the prepared directory inside the build root.
     env: List(#(String, String)),
     /// The dependency table the compile service pins, checked against the
     /// seed's.
@@ -365,7 +371,7 @@ pub fn build_call(
     response: broker.RefuseNarrowed,
     demand: config.demand,
     argv: [config.gleam_path, "build", "--warnings-as-errors"],
-    env: config.env,
+    env: build_env(config, root),
     cwd: root,
     budget: identity.pooled_budget(phase),
   )
@@ -375,13 +381,22 @@ pub fn build_call(
 /// every dimension it touches: one writable root, the toolchain readable,
 /// the network off, and only the environment names actually passed.
 pub fn build_requirements(config: BuildConfig, root: String) -> SandboxPolicy {
+  let env = build_env(config, root)
   policy.SandboxPolicy(
     ..config.base_policy,
     writable_roots: [root],
     readable_roots: list.unique([root, ..config.toolchain_roots]),
     network: policy.NetworkOff,
-    env_allow: list.map(config.env, fn(pair) { pair.0 }),
+    env_allow: list.map(env, fn(pair) { pair.0 }),
   )
+}
+
+// The temporary directory is part of the prepared build root, the one
+// writable root the jail admits. Pinning it here also prevents a caller's
+// environment from shadowing it with a host path the jail cannot use.
+fn build_env(config: BuildConfig, root: String) -> List(#(String, String)) {
+  let permitted = list.filter(config.env, fn(pair) { pair.0 != "TMPDIR" })
+  [#("TMPDIR", root <> "/tmp"), ..permitted]
 }
 
 // --- the products ---------------------------------------------------------

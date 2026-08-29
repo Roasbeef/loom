@@ -111,8 +111,24 @@ pub fn the_build_writes_only_to_its_own_root_test() {
 
 pub fn the_build_allows_only_the_environment_it_passes_test() {
   let requirements = build.build_requirements(config("/seed"), "/root")
-  // PATH is not optional — `gleam build` shells out to `erl`.
-  assert requirements.env_allow == ["PATH"]
+  // PATH is not optional because `gleam build` shells out to `erl`, and
+  // TMPDIR names the writable temporary directory inside the build root.
+  assert requirements.env_allow == ["TMPDIR", "PATH"]
+}
+
+pub fn the_build_pins_its_temporary_directory_test() {
+  let root = "/work/build"
+  let configured =
+    build.BuildConfig(..config("/seed"), env: [
+      #("PATH", "/usr/bin"),
+      #("TMPDIR", "/host/tmp"),
+    ])
+  let call = build.build_call(configured, build_phase(), root)
+  assert list.key_find(call.env, "TMPDIR") == Ok(root <> "/tmp")
+  // The pinned value is unique, so helper-side map construction cannot
+  // choose a caller-supplied duplicate instead.
+  assert list.count(call.env, fn(pair) { pair.0 == "TMPDIR" }) == 1
+  assert call.requirements.env_allow == ["TMPDIR", "PATH"]
 }
 
 pub fn a_missing_seed_is_reported_before_any_clearance_test() {

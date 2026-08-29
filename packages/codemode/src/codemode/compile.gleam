@@ -262,11 +262,12 @@ pub fn default_dependencies() -> List(Dependency) {
 /// enforced on the build.
 ///
 /// Prepares the hermetic workspace — writes the program under the pinned
-/// module name, generates the satellite entry, and pins exactly the given
-/// dependencies — then runs the injected build. A build/type error comes
-/// back as `BuildRejected`; nothing crashes. A workspace that could not be
-/// prepared never reaches the builder, so its enforcement is `Unreported`
-/// naming that: no jail ran, and none is claimed.
+/// module name, generates the satellite entry, creates the build's writable
+/// temporary directory, and pins exactly the given dependencies — then runs
+/// the injected build. A build/type error comes back as `BuildRejected`;
+/// nothing crashes. A workspace that could not be prepared never reaches
+/// the builder, so its enforcement is `Unreported` naming that: no jail ran,
+/// and none is claimed.
 ///
 /// `identity` is the build phase, derived by the caller from the
 /// execution's one `ExecIdentity` (`codemode/identity.build_phase`); it is
@@ -311,6 +312,7 @@ fn prepare(
   let root = config.build_root
   let src_dir = root <> "/src"
   use _ <- result.try(make_directory(src_dir))
+  use _ <- result.try(make_directory(root <> "/tmp"))
   // Defence 1: the program is written under the pinned name, not one the
   // source chose. A Gleam module is named by its path, so this is the only
   // place the submitted module's name is decided.
