@@ -8,6 +8,7 @@ import client/catalog
 import client/gateway
 import client/grants
 import client/protocol
+import client/provider_relay
 import client/serve
 import core/clock
 import core/ids
@@ -1261,5 +1262,52 @@ pub fn provider_tap_cancels_when_its_consumer_dies_test() {
 
   process.kill(consumer)
 
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+}
+
+pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
+  let cancelled = process.new_subject()
+  let consumers = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      process.send(consumers, process.self())
+      let events = process.new_subject()
+      stream.StreamHandle(events:, cancel: fn() { process.send(cancelled, Nil) })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert Ok(direct_consumer) = process.receive(consumers, within: 1000)
+  let direct_monitor = process.monitor(direct_consumer)
+
+  stream.cancel(handle)
+
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(direct_monitor, fn(_down) { True })
+    |> process.selector_receive(1000)
+}
+
+pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
+  let cancelled = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+      )
+      stream.StreamHandle(events:, cancel: fn() { process.send(cancelled, Nil) })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
+      panic as "observer crash"
+    })
+
+  let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
+    stream.next(handle, within: 1000)
+  assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
 }
