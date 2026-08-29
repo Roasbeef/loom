@@ -503,6 +503,14 @@ pub type Provenance {
   Provenance(sources: List(SourceRef), derived_from: List(String))
 }
 
+/// The provenance of a row that records none: what the `remember` door
+/// writes its notes with, and what an unreadable payload decodes to.
+///
+/// It names no source session, so `names_source` answers `False` for it
+/// and an erasure cascade never selects it — which is the safe direction
+/// for a value that also stands in for "this row could not be read".
+pub const no_provenance = Provenance(sources: [], derived_from: [])
+
 /// One row of the distillate head, decoded.
 pub type Distillate {
   Distillate(id: EntryId, seq: Seq, kind: String, text: String)
@@ -559,6 +567,93 @@ pub fn distillate_of(item: Entry) -> Result(Distillate, Nil) {
     | entry.CompactionEntry(..)
     | entry.BranchSummaryEntry(..) -> Error(Nil)
   }
+}
+
+/// The provenance a `memory/*` entry carries, decoded **totally**: any
+/// payload that is not the shape `distillate_data` writes decodes to
+/// `no_provenance` rather than failing.
+///
+/// Unreadable therefore means *unnamed*, and that is the safe direction
+/// for the one caller. An erasure cascade drops the rows whose
+/// provenance names an erased session, so a row it cannot read is kept;
+/// the opposite default would let one malformed payload empty memory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.provenance_of(row).sources
+/// //   == [memory.SourceRef(session: "01924…", entries: [])]
+/// ```
+///
+pub fn provenance_of(item: Entry) -> Provenance {
+  case item {
+    entry.CustomEntry(data: Some(json.Object(fields)), ..) ->
+      Provenance(
+        sources: decoded_sources(list.key_find(fields, "sources")),
+        derived_from: decoded_texts(list.key_find(fields, "derived_from")),
+      )
+    entry.CustomEntry(..)
+    | entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..) -> no_provenance
+  }
+}
+
+fn decoded_sources(found: Result(JsonValue, Nil)) -> List(SourceRef) {
+  case found {
+    Ok(json.Array(items)) -> list.filter_map(items, decoded_source)
+    Ok(_other) | Error(Nil) -> []
+  }
+}
+
+fn decoded_source(item: JsonValue) -> Result(SourceRef, Nil) {
+  use fields <- result.try(object_fields(item))
+  use session <- result.map(text_field(fields, "session"))
+  SourceRef(session:, entries: decoded_texts(list.key_find(fields, "entries")))
+}
+
+fn decoded_texts(found: Result(JsonValue, Nil)) -> List(String) {
+  case found {
+    Ok(value) -> strings_in(value)
+    Error(Nil) -> []
+  }
+}
+
+fn object_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
+  case value {
+    json.Object(fields) -> Ok(fields)
+    _other -> Error(Nil)
+  }
+}
+
+fn text_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(String, Nil) {
+  case list.key_find(fields, key) {
+    Ok(json.String(text)) -> Ok(text)
+    Ok(_other) | Error(Nil) -> Error(Nil)
+  }
+}
+
+/// Whether `provenance` names `session` among its sources — the whole of
+/// an erasure cascade's match, and deliberately at **session** grain.
+///
+/// Provenance is batch-level: every row a consolidation writes names that
+/// run's whole source set rather than the entries that fed that
+/// particular row, so narrowing the match by entry id would claim a
+/// precision the pipeline never recorded. Session grain over-deletes and
+/// never under-deletes, which is the direction an erasure guarantee must
+/// fail in. `docs/spec-gaps.md`'s M2 item 9 records the rest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert memory.names_source(memory.no_provenance, "01924") == False
+/// ```
+///
+pub fn names_source(provenance: Provenance, session: String) -> Bool {
+  list.any(provenance.sources, fn(source) { source.session == session })
 }
 
 /// Appends distillate rows to the memory session, all in one
@@ -649,11 +744,15 @@ pub fn head(
   {
     Error(error) -> Error(MemoryFailed(reason: string.inspect(error)))
     Ok(None) -> Ok(#([], None))
-    Ok(Some(cell)) -> Ok(#(head_ids(cell.value.payload), Some(cell.seq)))
+    Ok(Some(cell)) -> Ok(#(strings_in(cell.value.payload), Some(cell.seq)))
   }
 }
 
-fn head_ids(payload: JsonValue) -> List(String) {
+// The strings of a JSON array, others skipped and a non-array empty.
+// Shared by the head cell and by provenance's two string lists, all
+// three of which this module writes as arrays of strings and must read
+// back totally.
+fn strings_in(payload: JsonValue) -> List(String) {
   case payload {
     json.Array(items) ->
       list.filter_map(items, fn(item) {
@@ -684,10 +783,7 @@ fn rows_by_id(
   opened: Opened,
   named: List(String),
 ) -> Result(List(Distillate), MemoryFault) {
-  let wanted =
-    list.filter_map(named, fn(text) {
-      ids.parse_entry_id(text) |> result.replace_error(Nil)
-    })
+  let wanted = parsed_ids(named)
   case storage.get_entries(opened.session.store, wanted) {
     Error(error) -> Error(MemoryFailed(reason: string.inspect(error)))
     Ok(found) ->
@@ -697,6 +793,52 @@ fn rows_by_id(
         }),
       )
   }
+}
+
+fn parsed_ids(named: List(String)) -> List(EntryId) {
+  list.filter_map(named, fn(text) {
+    ids.parse_entry_id(text) |> result.replace_error(Nil)
+  })
+}
+
+/// Every id in `named`, paired with the provenance its row carries — one
+/// pair per name, in the order given.
+///
+/// **The pairing is per name rather than per found row**, and that is the
+/// point: the caller is an erasure cascade about to rewrite the head, and
+/// a head id it could not resolve — an entry the store no longer holds,
+/// a text that never parsed — must survive that rewrite rather than
+/// vanish from it. Such an id pairs with `no_provenance`, which names
+/// nothing and is therefore never dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.provenance_by_id(opened, named) == Ok([#("01924…", prov)])
+/// ```
+///
+pub fn provenance_by_id(
+  opened: Opened,
+  named: List(String),
+) -> Result(List(#(String, Provenance)), MemoryFault) {
+  case storage.get_entries(opened.session.store, parsed_ids(named)) {
+    Error(error) -> Error(MemoryFailed(reason: string.inspect(error)))
+    Ok(found) ->
+      Ok(
+        list.map(named, fn(text) { #(text, recorded_provenance(found, text)) }),
+      )
+  }
+}
+
+fn recorded_provenance(
+  found: dict.Dict(EntryId, Entry),
+  text: String,
+) -> Provenance {
+  ids.parse_entry_id(text)
+  |> result.replace_error(Nil)
+  |> result.try(fn(id) { dict.get(found, id) })
+  |> result.map(provenance_of)
+  |> result.unwrap(no_provenance)
 }
 
 /// Moves the head onto `ids` and advances every cursor in the same
@@ -723,16 +865,6 @@ pub fn advance_head(
   expected expected: Option(Seq),
   cursors cursors: List(#(String, JsonValue)),
 ) -> Result(Nil, MemoryFault) {
-  let head_write =
-    SetRegister(
-      ns: register.FactCustom,
-      key: head_key,
-      value: register.value(
-        json.Array(
-          list.map(named, fn(id) { json.String(ids.entry_id_to_string(id)) }),
-        ),
-      ),
-    )
   let cursor_writes =
     list.map(cursors, fn(cursor) {
       SetRegister(
@@ -741,10 +873,64 @@ pub fn advance_head(
         value: register.value(cursor.1),
       )
     })
+  head_cas(
+    opened,
+    [head_cell(list.map(named, ids.entry_id_to_string)), ..cursor_writes],
+    expected,
+  )
+}
+
+/// Replaces the head with `named` — id texts already in it, written back
+/// verbatim — expecting the cell at `expected` and touching nothing else.
+///
+/// This is an **erasure cascade's** one write, and the whole of it. The
+/// survivors of a cascade are rows that are already durable, so there is
+/// nothing to append: the write order the pipeline's crash safety rests
+/// on (rows, then the head CAS, then the sidecar) is satisfied here by
+/// having no rows to write. Cursors are deliberately absent — a cascade
+/// records no reading progress, and the erased source's own cursor is
+/// voided by the rewrite generation that erasure bumped, not by this.
+///
+/// A `StaleExpectation` means a distillation run moved the head
+/// underneath the cascade, which is a lost race and not a fault: the
+/// operator runs the cascade again, over a head that now names different
+/// rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.replace_head(opened, named: survivors, expected: Some(seq))
+/// ```
+///
+pub fn replace_head(
+  opened: Opened,
+  named named: List(String),
+  expected expected: Option(Seq),
+) -> Result(Nil, MemoryFault) {
+  head_cas(opened, [head_cell(named)], expected)
+}
+
+// The head cell's write, from the id texts it will name.
+fn head_cell(named: List(String)) -> tx.Write {
+  SetRegister(
+    ns: register.FactCustom,
+    key: head_key,
+    value: register.value(json.Array(list.map(named, json.String))),
+  )
+}
+
+// The commit both head movers make: whatever writes, always expecting the
+// head cell at `expected`. One place, so "the head only ever moves under
+// a CAS" is a property of this module rather than of its callers.
+fn head_cas(
+  opened: Opened,
+  writes: List(tx.Write),
+  expected: Option(Seq),
+) -> Result(Nil, MemoryFault) {
   let committed =
     storage.commit(
       opened.session.store,
-      Tx(writes: [head_write, ..cursor_writes], expected: [
+      Tx(writes:, expected: [
         Expect(ns: register.FactCustom, key: head_key, seq: expected),
       ]),
     )
