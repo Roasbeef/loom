@@ -285,16 +285,37 @@ fn stop(
   }
 }
 
-fn byte_size(text: String) -> Int {
+/// The size of `text` in bytes, which is the unit every cap in this tree
+/// is stated in. Public because `client/memory` renders a digest under
+/// the same arithmetic and a second copy of it would be a second thing
+/// to get wrong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notes.byte_size("é") == 2
+/// ```
+///
+pub fn byte_size(text: String) -> Int {
   bit_array.byte_size(bit_array.from_string(text))
 }
 
-// The longest UTF-8 prefix of `text` fitting in `limit` bytes. The
-// retry walks back at most three bytes in practice — a Gleam string is
-// valid UTF-8, so only a cut inside a multi-byte character can fail —
-// and the `limit < 0` floor is what makes it total rather than merely
-// short.
-fn clip(text: String, limit: Int) -> String {
+/// The longest UTF-8 prefix of `text` fitting in `limit` bytes. The
+/// retry walks back at most three bytes in practice — a Gleam string is
+/// valid UTF-8, so only a cut inside a multi-byte character can fail —
+/// and the `limit < 0` floor is what makes it total rather than merely
+/// short.
+///
+/// Public for `client/memory`, which caps its digest in bytes too and
+/// must cut on the same boundary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notes.clip("hello", 2) == "he"
+/// ```
+///
+pub fn clip(text: String, limit: Int) -> String {
   case byte_size(text) <= limit {
     True -> text
     False -> longest_prefix(bit_array.from_string(text), limit)
