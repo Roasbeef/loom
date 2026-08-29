@@ -468,6 +468,25 @@ the other side.
    anti-feedback exclusion (and the question of whether `CustomEntry`
    should index to something) belongs to memory stage M2 and is
    deliberately not pulled forward.
+8. **The digest also accumulates: one capped copy per run.** `run_start`
+   messages are born-placed durable entries and the leaf moves onto
+   them, so a strand with stable notes carries one near-identical digest
+   per operation in its projection tail until compaction evicts them —
+   and each copy is separately indexed (item 7's loop, multiplied by
+   turn count). The per-injection bound is real; an in-context total
+   bound is not, and saying otherwise anywhere is a doc bug. A
+   skip-if-unchanged check is the obvious remedy if the cost shows up;
+   it is deliberately not built until it does.
+9. **`history_search`'s own results are re-indexed.** Tool results are
+   durable entries and `entry_text` indexes their text, so every snippet
+   a session recalls — fence markers and all — becomes indexed content
+   in that session's file, and a later repository-wide search for the
+   same term returns the original plus every session that ever quoted
+   it. Unbounded by any cap, unlike item 8, and created by the tool
+   itself. Ranking degradation is the cost today; the structural
+   exclusion that would close it (skip tool-result blocks whose tool is
+   `history_search`, or M2's by-type exclusion) is follow-up work,
+   weighed there rather than bolted on here.
 
 ## From WP-C-full (`session`, `storage`)
 
