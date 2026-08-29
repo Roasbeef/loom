@@ -747,10 +747,11 @@ fn dead_filesystem() -> tool.FileSystem {
 // --- the orchestration seam ------------------------------------------------
 
 pub fn the_wait_ceiling_wins_the_race_test() {
-  // The Agency's bound must be the one that fires. A `ServedHere` call the
-  // satellite host gives up on is *dropped*, so if the host's bound came
-  // first every `strand.wait` would answer `unsettled` — never `Ready`,
-  // however promptly the child finished. The same shape as
+  // The Agency's bound must be the one that fires. A `ServedHere` call
+  // the satellite host gives up on is answered `unsettled` and its worker
+  // killed, so if the host's bound came first every `strand.wait` would
+  // answer `unsettled` — never `Ready`, however promptly the child
+  // finished, and the join would be cut short as well. The same shape as
   // `the_mcp_call_timeout_wins_the_race_test`, for the other capability
   // that answers on a bound of its own.
   let config =

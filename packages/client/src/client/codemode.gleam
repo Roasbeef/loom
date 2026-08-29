@@ -609,9 +609,10 @@ pub const default_accept_timeout_ms = 30_000
 /// package: `client/mcp.default_call_timeout_ms` (60 s), and
 /// `client/agency.default_config`'s `max_wait_ms` (30 s), the ceiling a
 /// `strand.wait` is clamped to. Invert either and the host gives up
-/// first — a `ServedHere` call it abandons is dropped, so every `wait`
-/// would answer `unsettled` while the work it asked for was still being
-/// done for nobody.
+/// first — a `ServedHere` call it abandons is answered `unsettled` and
+/// its worker killed, so every `wait` would trade a real answer for that
+/// refusal, and the work behind it would be stopped half-done rather
+/// than finished for nobody.
 pub const default_call_timeout_ms = 120_000
 
 /// Where an execution's directories are created, relative to the
