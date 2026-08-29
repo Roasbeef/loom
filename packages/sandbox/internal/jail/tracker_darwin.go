@@ -82,24 +82,18 @@ func (t *processTracker) capture() {
 	t.mu.Unlock()
 }
 
-// signal sends sig only to a currently live process with the same birth time
-// as the descendant originally observed. The identity check prevents PID reuse
-// from turning cleanup into a signal aimed at an unrelated process.
+// signal narrows each delivery to a process whose birth time still matches the
+// descendant originally observed. Darwin has no stable pidfd-like handle, so a
+// final exit-and-reuse race remains between this check and kill(2); every
+// execution's lifecycle skip records that the tracker is not kernel ownership.
 func (t *processTracker) signal(sig syscall.Signal) bool {
 	t.capture()
-	table, err := darwinProcessTable()
-	if err != nil {
-		return false
-	}
-	live := make(map[int]uint64, len(table))
-	for _, process := range table {
-		live[process.pid] = process.birth
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delivered := false
 	for pid, birth := range t.seen {
-		if live[pid] != birth {
+		liveBirth, err := darwinProcessBirth(pid)
+		if err != nil || liveBirth != birth {
 			continue
 		}
 		if err := syscall.Kill(pid, sig); err == nil {
@@ -107,6 +101,14 @@ func (t *processTracker) signal(sig syscall.Signal) bool {
 		}
 	}
 	return delivered
+}
+
+func darwinProcessBirth(pid int) (uint64, error) {
+	entry, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return 0, err
+	}
+	return processBirth(*entry), nil
 }
 
 func (t *processTracker) close() {
@@ -127,22 +129,26 @@ func darwinProcessTable() ([]darwinProcess, error) {
 	}
 	out := make([]darwinProcess, 0, len(entries))
 	for _, entry := range entries {
-		start := entry.Proc.P_starttime
-		birth := uint64(start.Sec)*1_000_000 + uint64(start.Usec)
 		out = append(out, darwinProcess{
 			pid:   int(entry.Proc.P_pid),
 			ppid:  int(entry.Eproc.Ppid),
-			birth: birth,
+			birth: processBirth(entry),
 		})
 	}
 	return out, nil
 }
 
+func processBirth(entry unix.KinfoProc) uint64 {
+	start := entry.Proc.P_starttime
+	return uint64(start.Sec)*1_000_000 + uint64(start.Usec)
+}
+
 // CurrentUserProcessCount returns the number RLIMIT_NPROC currently counts
 // against this uid. Darwin's process limit is per-user rather than per-jail;
-// callers must not install a ceiling already below this floor, because that
-// would turn every later fork into EAGAIN regardless of the jailed subtree's
-// own size.
+// callers must leave concurrency reserve above this floor, because a ceiling
+// at the sample turns every later fork into EAGAIN regardless of the jailed
+// subtree's own size. The sample cannot be atomic with unrelated same-user
+// forks.
 func CurrentUserProcessCount() (uint64, error) {
 	entries, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {

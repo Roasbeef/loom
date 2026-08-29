@@ -421,10 +421,12 @@ rule about what may *not* be built, which is the half worth having first.
 
   Darwin's process-table tracker reaps descendants it observes outside the
   original process group, but it is not a PID namespace: a rapid daemonizing
-  double-fork can be reparented between samples. Every Darwin execution reports
-  `skip:darwin-process-lifecycle`, so `FullEnforcement` refuses that stronger
-  lifecycle claim. The descendant still inherits Seatbelt filesystem and
-  network confinement.
+  double-fork can be reparented between samples, and no stable process handle
+  makes its last birth check plus signal atomic. Output drainage is bounded so
+  a missed descendant cannot hold the result open forever. Every Darwin
+  execution reports `skip:darwin-process-lifecycle`, so `FullEnforcement`
+  refuses that stronger lifecycle claim. The descendant still inherits
+  Seatbelt filesystem and network confinement.
 
 ## What is not built
 

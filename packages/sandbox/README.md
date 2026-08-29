@@ -46,9 +46,10 @@ interpolated profile source.
 Darwin has no per-execution cgroup equivalent. A finite `RLIMIT_AS` is
 attempted and explicitly skipped when the kernel rejects it. Because
 `RLIMIT_NPROC` counts every process owned by the user, Loom installs it only
-when the current user-wide process floor is below the requested value; on a
-busy account it reports the omitted ceiling instead of breaking every child
-fork. A strict enforcement demand rejects either skip.
+when the current user-wide process floor leaves a 16-process reserve below the
+requested value; on a busy account it reports the omitted ceiling instead of
+breaking every child fork. The reserve narrows an unavoidable race with
+concurrent same-user forks. A strict enforcement demand rejects either skip.
 
 **bwrap owns all namespace and mount work**, deliberately: the Go runtime
 is multithreaded from its first instruction, and assembling namespaces
@@ -105,8 +106,10 @@ refusing to start without the flag.
 
 The Darwin process-table tracker is a best-effort lifecycle backstop, not a
 PID namespace. It reaches observed descendants that leave the process group,
-but a rapid daemonizing double-fork can be reparented between samples. Every
-Darwin execution reports that limitation as
+but a rapid daemonizing double-fork can be reparented between samples, and no
+stable handle makes the final birth check plus signal atomic. Output draining
+is bounded even when an untracked descendant keeps a pipe open. Every Darwin
+execution reports that limitation as
 `skip:darwin-process-lifecycle`, which makes `FullEnforcement` refuse it.
 Seatbelt follows the missed descendant across forks, so filesystem and network
 confinement remain in force even though execution-lifetime cleanup is not

@@ -36,8 +36,14 @@ const (
 // process-table samples and outlive the execution. FullEnforcement must see
 // that limitation rather than accept sampled cleanup as a kernel guarantee.
 const DarwinLifecycleSkip = "darwin-process-lifecycle: macOS has no PID " +
-	"namespace or subreaper; rapid reparenting can evade sampled descendant " +
-	"cleanup while retaining the Seatbelt profile"
+	"namespace, subreaper, or stable process handle; rapid reparenting can " +
+	"evade sampled cleanup and PID reuse remains racy while the Seatbelt " +
+	"profile persists"
+
+// darwinProcessLimitHeadroom absorbs the helper itself and ordinary account
+// churn between the process-table sample and setrlimit. It reduces, but cannot
+// eliminate, RLIMIT_NPROC's account-wide check/install race.
+const darwinProcessLimitHeadroom = 16
 
 // RunStage2 is the spec's helper in its purest form: parse the policy
 // from fd 3, apply every in-process restriction to *ourselves*, report
@@ -162,6 +168,11 @@ func RunStage2(cfg Stage2Config) error {
 					"rlimit-processes: current uid already has %d processes, "+
 						"not below requested limit %d; pids was NOT applied",
 					current, n))
+			case n-current <= darwinProcessLimitHeadroom:
+				rep.Skipped = append(rep.Skipped, fmt.Sprintf(
+					"rlimit-processes: current uid has %d processes and limit "+
+						"%d leaves no %d-process concurrency reserve; pids was "+
+						"NOT applied", current, n, darwinProcessLimitHeadroom))
 			default:
 				lim := unix.Rlimit{Cur: n, Max: n}
 				if err := unix.Setrlimit(unix.RLIMIT_NPROC, &lim); err != nil {

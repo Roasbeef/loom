@@ -74,7 +74,7 @@ required|fork bomb capped by pids limit
 #
 # Cancellation and cleanup signal the child's *process group*, so a process
 # that calls setsid(2) is out of reach of that signal. Linux relies on bwrap's
-# PID namespace. Darwin keeps birth-time-qualified handles for observed
+# PID namespace. Darwin records birth-time-qualified samples for observed
 # descendants and signals them alongside the original group. This probe proves
 # that observed case on both hosts; Darwin's rapid-reparenting gap is separately
 # reported on every execution and rejected by FullEnforcement.

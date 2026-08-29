@@ -61,6 +61,11 @@ type Result struct {
 	// PidsMaxEvents is the number of forks the cgroup pids controller
 	// denied (0 when no cgroup was attached). Diagnostic; not on the wire.
 	PidsMaxEvents uint64
+	// ObservedDescendantKill reports that the Darwin process-table tracker
+	// delivered SIGKILL to at least one birth-matched descendant. It proves
+	// only the observed cleanup case, never complete descendant ownership.
+	// Diagnostic; not on the wire.
+	ObservedDescendantKill bool
 }
 
 // Exec is a running jailed execution.
@@ -71,6 +76,8 @@ type Exec struct {
 
 	stdinW  *os.File
 	reportR *os.File
+	stdoutR *os.File
+	stderrR *os.File
 
 	stdout *StreamLimiter
 	stderr *StreamLimiter
@@ -431,6 +438,8 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		started:    time.Now(),
 		stdinW:     stdinW,
 		reportR:    reportR,
+		stdoutR:    stdoutR,
+		stderrR:    stderrR,
 		stdout:     NewStreamLimiter(req.Policy.Limits.OutputBytes),
 		stderr:     NewStreamLimiter(req.Policy.Limits.OutputBytes),
 		esc:        NewEscalation(KillGrace),
@@ -605,17 +614,22 @@ func (e *Exec) term() {
 	_ = syscall.Kill(-e.pgid, syscall.SIGTERM)
 }
 
-// Wait blocks until the direct child exits, then sweeps the process
-// group and drains the output pumps. Order matters: waitpid first, then
-// a SIGKILL sweep of the pgroup (reaping orphaned grandchildren that
-// hold the output pipes open), and only then joining the pumps — which
-// is what lets Wait return promptly even when a `sleep 30 &` orphan
-// survives its parent.
+// outputDrainGrace preserves output already in the pipes after the process
+// sweep without letting an untracked escapee hold Wait open forever.
+const outputDrainGrace = 500 * time.Millisecond
+
+// Wait blocks until the direct child exits, then sweeps the process group and
+// drains the output pumps. Order matters: waitpid first, then SIGKILL, then a
+// bounded drain. Linux PID namespaces normally close every writer. Darwin's
+// sampled tracker cannot promise that, so the parent closes its read ends when
+// the grace expires and turns an escaped writer into a broken pipe instead of
+// an unbounded helper hang.
 func (e *Exec) Wait() Result {
 	err := e.cmd.Wait()
 
+	observedDescendantKill := false
 	if e.tracker != nil {
-		e.tracker.signal(syscall.SIGKILL)
+		observedDescendantKill = e.tracker.signal(syscall.SIGKILL)
 		e.tracker.close()
 	}
 	// The direct child is gone; anything left in the group is an orphan
@@ -623,7 +637,7 @@ func (e *Exec) Wait() Result {
 	// whole subtree with it). ESRCH is the happy case.
 	_ = syscall.Kill(-e.pgid, syscall.SIGKILL)
 
-	e.pumps.Wait()
+	e.waitForOutputPumps()
 
 	e.mu.Lock()
 	if e.wallT != nil {
@@ -652,15 +666,16 @@ func (e *Exec) Wait() Result {
 	}
 
 	res := Result{
-		PidsMaxEvents:   pidsMax,
-		StdoutBytes:     e.stdout.Admitted(),
-		StderrBytes:     e.stderr.Admitted(),
-		StdoutTruncated: e.stdout.Truncated(),
-		StderrTruncated: e.stderr.Truncated(),
-		Degraded:        e.feat.Degraded(),
-		WallMs:          uint64(time.Since(e.started) / time.Millisecond),
-		TimedOut:        timedOut,
-		Cancelled:       cancelled,
+		PidsMaxEvents:          pidsMax,
+		ObservedDescendantKill: observedDescendantKill,
+		StdoutBytes:            e.stdout.Admitted(),
+		StderrBytes:            e.stderr.Admitted(),
+		StdoutTruncated:        e.stdout.Truncated(),
+		StderrTruncated:        e.stderr.Truncated(),
+		Degraded:               e.feat.Degraded(),
+		WallMs:                 uint64(time.Since(e.started) / time.Millisecond),
+		TimedOut:               timedOut,
+		Cancelled:              cancelled,
 	}
 
 	res.Enforcement = enforcementEntries(e.feat, e.cg, e.mounts, e.seatbelt, s2)
@@ -680,6 +695,33 @@ func (e *Exec) Wait() Result {
 		res.Code = 127
 	}
 	return res
+}
+
+func (e *Exec) waitForOutputPumps() {
+	done := make(chan struct{})
+	go func() {
+		e.pumps.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(outputDrainGrace)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+	}
+
+	// Close is safe against a blocked Read and makes that Read return. The pump
+	// owns the ordinary close-on-exit path, so these closes are intentionally
+	// best-effort and may race with EOF.
+	if e.stdoutR != nil {
+		_ = e.stdoutR.Close()
+	}
+	if e.stderrR != nil {
+		_ = e.stderrR.Close()
+	}
+	<-done
 }
 
 // stage2Report is what came back on fd 4, and whether anything did.

@@ -29,16 +29,22 @@ from inside the profile.
 Resource limits use the mechanism Darwin actually has. CPU and file size use
 their ordinary inherited rlimits. A requested finite `RLIMIT_AS` is attempted
 and reported as skipped when the kernel rejects it. `RLIMIT_NPROC` is installed
-only when the current account-wide process count is below the requested limit;
-otherwise it is skipped rather than making every subsequent jailed fork fail
-immediately. The report names these as address-space and per-user process
-rlimits, never as cgroups or per-execution ceilings.
+only when the current account-wide process count leaves a 16-process reserve
+below the requested limit; otherwise it is skipped rather than making every
+subsequent jailed fork fail immediately. The sample and `setrlimit` cannot be
+atomic with unrelated same-user forks, so the reserve narrows rather than
+eliminates that race. The report names these as address-space and per-user
+process rlimits, never as cgroups or per-execution ceilings.
 
 Lifecycle containment is explicitly incomplete. The helper combines a fresh
 process group with a birth-time-qualified process-table tracker, which reaches
 observed descendants after `setsid(2)`. It cannot prove ownership across the
 sampling interval: a rapid daemonizing double-fork can be reparented to
-`launchd` before the tracker records it. Every Darwin execution therefore
+`launchd` before the tracker records it. Darwin also has no stable process
+handle that makes a birth check and subsequent signal atomic. Output drains
+for a bounded interval after cleanup, then the helper closes its read ends so
+a missed descendant cannot hold the execution result open forever. Every
+Darwin execution therefore
 reports `skip:darwin-process-lifecycle`, and `FullEnforcement` rejects the
 result. Seatbelt still follows the missed descendant across fork, so this is a
 lifetime and resource-cleanup gap rather than a filesystem or network escape.

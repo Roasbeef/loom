@@ -405,15 +405,14 @@ pub fn full_enforcement_never_accepts_unenforced_ceilings_test() {
             Ok(exec.Failed(other)) ->
               panic as { "unexpected failure: " <> string.inspect(other) }
             Ok(exec.Exited(result)) -> {
-              // Only legitimate if the platform mechanisms really held both.
+              // Darwin always reports its lifecycle gap, so strict execution
+              // can never legitimately exit without a degradation refusal.
               case ffi_os.os_name() {
-                "darwin" -> {
-                  assert list.contains(
-                    result.enforcement,
-                    "rlimit-address-space",
-                  )
-                  assert list.contains(result.enforcement, "rlimit-processes")
-                }
+                "darwin" ->
+                  panic as {
+                    "Darwin strict execution ignored its mandatory lifecycle skip: "
+                    <> string.inspect(result)
+                  }
                 _ -> {
                   assert list.contains(result.enforcement, "cgroup-v2")
                 }

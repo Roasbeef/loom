@@ -579,10 +579,12 @@ Linux development container.
   the live kernel with all nine sandbox probes, and runs both real jailed
   end-to-ends. The observed `setsid` probe does not prove that sampled process
   tracking catches a rapid daemonizing double-fork; every Darwin execution
-  reports that lifecycle gap and `FullEnforcement` rejects it.
+  reports that lifecycle gap and `FullEnforcement` rejects it. A bounded output
+  drain also prevents a missed descendant from holding the result open forever.
   Its resource report stays platform-honest: finite `RLIMIT_AS` is skipped
   when Darwin rejects it, and the per-user process rlimit is skipped when the
-  account's existing process floor already exceeds the requested ceiling.
+  account's existing process floor does not leave the concurrency reserve below
+  the requested ceiling. Sampling still races unrelated same-user forks.
 - **M4** — the migration sample is real:
   `docs/examples/stale_symbol_sweep.gleam` is submitted verbatim by its
   test through real vetting, a real offline `gleam build`, and a real

@@ -125,8 +125,10 @@ the other side.
    refuses it when the caller demands full enforcement. On Linux this covers
    absent bwrap, Landlock, seccomp, or delegated cgroups. On Darwin it also
    covers finite `RLIMIT_AS`, which current kernels reject, and
-   `RLIMIT_NPROC` when the account's existing process count is already at or
-   above the requested per-user ceiling. Neither is reported as a
+   `RLIMIT_NPROC` when the account's existing process count does not leave the
+   required concurrency reserve below the requested per-user ceiling. The
+   reserve cannot make the process-count sample atomic with unrelated
+   same-user forks. Neither mechanism is reported as a
    per-execution limit when it is not one. Protected paths nested inside a
    writable root remain unenforceable without the platform filesystem jail;
    reported, not hidden.
@@ -139,7 +141,10 @@ the other side.
    network profile. macOS supplies neither a PID namespace nor a subreaper,
    however. The birth-time-qualified process-table tracker reaches descendants
    it observes, but a rapid daemonizing double-fork can be reparented between
-   samples and outlive the execution. Every Darwin report names that gap;
+   samples and outlive the execution. The final birth check and signal are not
+   atomic without a stable kernel process handle. Output drainage is bounded so
+   a missed descendant cannot hold the result pipe open forever. Every Darwin
+   report names that gap;
    `FullEnforcement` refuses it rather than treating polling as a kernel
    guarantee.
 

@@ -1,4 +1,4 @@
-// loom-exec is Loom's kernel-enforcement helper (WP-H, Linux phase 1).
+// loom-exec is Loom's kernel-enforcement helper (WP-H).
 //
 // Roles, selected by the first argument:
 //
@@ -24,6 +24,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -233,19 +234,23 @@ func probeSocket() {
 		fmt.Println("socket-created")
 		os.Exit(0)
 	}
-	fmt.Println("socket-denied")
-	os.Exit(1)
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		fmt.Println("socket-denied-permission")
+		os.Exit(1)
+	}
+	fmt.Printf("socket-error:%v\n", err)
+	os.Exit(2)
 }
 
 // probeFork holds more children than the self-test's process rlimit permits.
 // The first refused spawn is the macOS witness that RLIMIT_NPROC took effect.
 func probeFork() {
 	children := make([]*exec.Cmd, 0, 64)
-	denied := false
+	var forkErr error
 	for i := 0; i < cap(children); i++ {
 		cmd := exec.Command("/bin/sleep", "2")
 		if err := cmd.Start(); err != nil {
-			denied = true
+			forkErr = err
 			break
 		}
 		children = append(children, cmd)
@@ -254,9 +259,13 @@ func probeFork() {
 		_ = child.Process.Kill()
 		_ = child.Wait()
 	}
-	if denied {
-		fmt.Println("fork-denied")
+	if errors.Is(forkErr, unix.EAGAIN) && len(children) > 0 {
+		fmt.Println("fork-denied-eagain")
 		os.Exit(1)
+	}
+	if forkErr != nil {
+		fmt.Printf("fork-error:%v\n", forkErr)
+		os.Exit(2)
 	}
 	fmt.Println("fork-all-started")
 }

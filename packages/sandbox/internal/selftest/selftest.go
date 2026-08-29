@@ -341,10 +341,43 @@ func probeSocketOff(feat jail.Features, selfExe string) probeResult {
 	}
 	defer os.RemoveAll(dir)
 
-	// The probe target is this very binary in --probe-socket mode: it
-	// tries socket(AF_INET, SOCK_STREAM) and reports. No dependence on
-	// python/curl living in the jail.
+	// The probe target is this very binary in --probe-socket mode: it tries
+	// socket(AF_INET, SOCK_STREAM) and reports. Run the full-network control
+	// first so a broken loopback stack or exhausted file table cannot masquerade
+	// as confinement in the restricted run.
+	full := basePolicy(dir)
+	full.Network.Mode = policy.NetworkFull
+	fullRes, fullOut, err := runSocketProbe(feat, selfExe, full)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "network-full control: " + err.Error()}
+	}
+	if !strings.Contains(fullOut, "socket-created") {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("network-full control failed (exit %d, out %q)",
+				fullRes.Code, fullOut)}
+	}
+
 	pol := basePolicy(dir)
+	res, output, err := runSocketProbe(feat, selfExe, pol)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	switch {
+	case strings.Contains(output, "socket-denied-permission"):
+		return probeResult{outcome: enforced}
+	case strings.Contains(output, "socket-created"):
+		return probeResult{outcome: failed, detail: "AF_INET socket creation succeeded under network off"}
+	default:
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("probe inconclusive (exit %d, out %q)", res.Code, output)}
+	}
+}
+
+func runSocketProbe(
+	feat jail.Features,
+	selfExe string,
+	pol policy.Policy,
+) (jail.Result, string, error) {
 	var out strings.Builder
 	sink := func(stream string, data []byte, total uint64, trunc bool) {
 		if stream == "stdout" {
@@ -358,19 +391,11 @@ func probeSocketOff(feat jail.Features, selfExe string) probeResult {
 		Policy: pol,
 	}, feat, selfExe, sink)
 	if err != nil {
-		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+		return jail.Result{}, "", err
 	}
 	_ = ex.WriteStdin(nil, true)
 	res := ex.Wait()
-	switch {
-	case strings.Contains(out.String(), "socket-denied"):
-		return probeResult{outcome: enforced}
-	case strings.Contains(out.String(), "socket-created"):
-		return probeResult{outcome: failed, detail: "AF_INET socket creation succeeded under network off"}
-	default:
-		return probeResult{outcome: failed,
-			detail: fmt.Sprintf("probe inconclusive (exit %d, out %q)", res.Code, out.String())}
-	}
+	return res, out.String(), nil
 }
 
 func probeEnvAllowlist(feat jail.Features, selfExe string) probeResult {
@@ -470,9 +495,10 @@ func probeDarwinForkBomb(feat jail.Features, selfExe string) probeResult {
 	if err != nil {
 		return probeResult{outcome: skipped, detail: "count current uid processes: " + err.Error()}
 	}
-	// RLIMIT_NPROC is per-user on Darwin. Leave room for the jail scaffolding
-	// and a few children, then prove the 64-way burst reaches that real limit.
-	pol.Limits.Pids = current + 8
+	// RLIMIT_NPROC is per-user on Darwin. Leave room for the helper's
+	// concurrency reserve and a few successful children, then prove the 64-way
+	// burst reaches that real limit.
+	pol.Limits.Pids = current + 32
 	var out strings.Builder
 	sink := func(stream string, data []byte, total uint64, trunc bool) {
 		if stream == "stdout" {
@@ -496,7 +522,7 @@ func probeDarwinForkBomb(feat jail.Features, selfExe string) probeResult {
 		}
 	}
 	switch {
-	case strings.Contains(out.String(), "fork-denied"):
+	case strings.Contains(out.String(), "fork-denied-eagain"):
 		return probeResult{outcome: enforced}
 	case strings.Contains(out.String(), "fork-all-started"):
 		return probeResult{outcome: failed,
@@ -563,19 +589,15 @@ func probeSetsidEscape(feat jail.Features, selfExe string) probeResult {
 	// alone holding the output pipe.
 	script := "'" + selfExe + "' --probe-setsid & sleep 1; echo launcher-done"
 	start := time.Now()
-	_, out, err := runShell(feat, selfExe, pol, script)
+	res, out, err := runShell(feat, selfExe, pol, script)
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
 	}
 	elapsed := time.Since(start)
 	switch {
 	case strings.Contains(out, "setsid-denied"):
-		if feat.SeatbeltPath != "" {
-			return probeResult{outcome: enforced}
-		}
-		return probeResult{outcome: skipped,
-			detail: "the Linux escapee could not call setsid (already a group " +
-				"leader), so no namespace containment was tested"}
+		return probeResult{outcome: failed,
+			detail: "the probe could not call setsid, so no session escape was tested"}
 	case !strings.Contains(out, "setsid-ok"):
 		return probeResult{outcome: failed,
 			detail: fmt.Sprintf("probe inconclusive: no escape reported (out %q)", out)}
@@ -585,6 +607,9 @@ func probeSetsidEscape(feat jail.Features, selfExe string) probeResult {
 	case elapsed > setsidPatience:
 		return probeResult{outcome: failed,
 			detail: fmt.Sprintf("Wait took %s; the setsid escapee held the jail open", elapsed)}
+	case feat.SeatbeltPath != "" && !res.ObservedDescendantKill:
+		return probeResult{outcome: failed,
+			detail: "Wait returned without the Darwin tracker killing the observed escapee"}
 	}
 	return probeResult{outcome: enforced}
 }

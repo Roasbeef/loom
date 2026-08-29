@@ -86,13 +86,14 @@ two Go modules, alongside `tui`.
   process group. `ProcEntry` is `{Pid, Ppid}`: the parent link is the
   one relation a payload cannot rearrange.
 - `internal/jail.processTracker`: Darwin's lifecycle backstop. It records
-  descendants it observes with their process birth time so PID reuse cannot
-  redirect a later signal, and complements rather than replaces process-group
-  signals for children that call `setsid(2)`. macOS has no PID namespace or
-  subreaper, so a rapid daemonizing double-fork can be reparented between
-  samples. Every Darwin execution reports `skip:darwin-process-lifecycle`;
-  Seatbelt confinement remains inherited, but `FullEnforcement` does not
-  pretend sampled cleanup is a kernel guarantee.
+  descendants it observes with their process birth time and rechecks that
+  identity immediately before signaling. This narrows PID reuse but cannot
+  make the check and `kill(2)` atomic. It complements rather than replaces
+  process-group signals for children that call `setsid(2)`. macOS has no PID
+  namespace, subreaper, or stable process handle, so a rapid daemonizing
+  double-fork can be reparented between samples. Every Darwin execution reports
+  `skip:darwin-process-lifecycle`; Seatbelt confinement remains inherited, but
+  `FullEnforcement` does not pretend sampled cleanup is a kernel guarantee.
 - `internal/llock`, `internal/seccompf`, `internal/cgroup` — the three
   in-process restriction layers. `seccompf` and `jail`'s `no_new_privs`
   are split by build tag (`*_linux.go` / `*_other.go`) so the module
@@ -220,11 +221,14 @@ two Go modules, alongside `tui`.
   and currently returns `EINVAL`, so `mem_bytes` produces an explicit
   `skip:rlimit-address-space` rather than aborting the otherwise confined run
   or claiming a limit. `RLIMIT_NPROC` is per-user: it is installed only when
-  the account's current process count is below the requested ceiling. When the
-  account already exceeds it, the run reports `skip:rlimit-processes`; this
-  avoids turning every legitimate child spawn into `EAGAIN`. Either skip fails
-  `FullEnforcement`, while `BestEffort` retains filesystem and network
-  confinement and exposes the missing ceiling to its caller.
+  the account's current process count leaves a 16-process reserve below the
+  requested ceiling. When it does not, the run reports
+  `skip:rlimit-processes`; this avoids turning ordinary child spawns into
+  immediate `EAGAIN`. The sample and `setrlimit` cannot be atomic with
+  unrelated same-user forks, so the reserve narrows rather than eliminates
+  that race. Either skip fails `FullEnforcement`, while `BestEffort` retains
+  filesystem and network confinement and exposes the missing ceiling to its
+  caller.
 - **The cgroup base is configuration, and its absence is reported, not
   swallowed.** cgroup v2 forbids a cgroup from having both member
   processes and controllers enabled for its children, so the helper's own

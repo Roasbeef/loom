@@ -323,10 +323,12 @@ Darwin has no per-execution cgroup equivalent. Stage 2 attempts a finite
 `RLIMIT_AS`; current kernels reject it with `EINVAL`, which becomes an
 explicit `skip:rlimit-address-space` and therefore fails a strict demand.
 `RLIMIT_NPROC` is per-user, so Loom first measures the account's live process
-floor. It applies the ceiling only when that floor is below the request;
-otherwise it reports `skip:rlimit-processes` rather than breaking every
-legitimate fork on a busy developer account. This is deliberately weaker
-than Linux cgroups and the report says so.
+floor. It applies the ceiling only when that floor leaves a 16-process reserve
+below the request; otherwise it reports `skip:rlimit-processes` rather than
+breaking every legitimate fork on a busy developer account. The reserve
+narrows, but cannot eliminate, a race with concurrent same-user forks between
+the sample and `setrlimit`. This is deliberately weaker than Linux cgroups and
+the report says so.
 
 Everything else is plumbing with teeth. The child's environment is
 **constructed, never inherited**: a variable absent from `env_allow` is
@@ -386,9 +388,12 @@ Darwin has no PID namespace. The helper therefore starts behind a gate,
 records observed descendants with both PID and birth time, and sends TERM and
 KILL to both the original process group and the still-live recorded set. The
 group gives immediate delivery to ordinary descendants; the tracker covers an
-observed child that called `setsid(2)` without risking a reused PID. It cannot
-close the interval between process-table samples: a rapid daemonizing
-double-fork can be reparented to `launchd` before its ancestry is recorded.
+observed child that called `setsid(2)`, rechecking its birth immediately before
+signaling. Darwin has no stable process handle, so that check is not atomic
+with `kill(2)`. Nor can it close the interval between process-table samples: a
+rapid daemonizing double-fork can be reparented to `launchd` before its ancestry
+is recorded. The helper bounds output draining, so even an untracked process
+holding a pipe cannot hold the execution result open forever.
 Every Darwin execution therefore carries `skip:darwin-process-lifecycle`, so
 `FullEnforcement` refuses the stronger claim. Seatbelt itself is inherited
 across forks; a missed descendant remains filesystem- and network-confined,
