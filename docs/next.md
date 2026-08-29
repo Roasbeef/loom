@@ -94,16 +94,31 @@ Every `phase:3` release-blocker landed through the same loop — a
 measured census, rulings posted to the issue, an implementation
 worker, and a closing adversarial review with per-finding
 re-verification — and #19 dispositioned itself out by its own text.
-Still open from the waves: #91 items 2–5, #113, #115, and #119 (the
-events test-hygiene flake three agents independently hit).
+The debt wave that follows it is **built and in review as four PRs**,
+not yet merged: **#125** (events test hygiene, closing #119),
+**#126** (dead-strand rule holds, closing #113), **#128** (#91's four
+remaining defects), and **#130** (the erasure cascade, closing #115).
+**Merge #125 first** — the events flake it fixes went deterministic and
+runs before every other package, so it currently stops `make check`
+tree-wide; the other three were each gated in a scratch worktree with
+it merged in.
 
 ---
 
 ## Start here: after phase 3
 
-The plan of record's rhythm (`docs/issue-plan.md`) is a **debt wave
-between phases**: #91 items 2–5 are the substance, with #113, #115 and
-#119 beside them. Then **phase 4, the promotion ladder** (#30–#33,
+The debt wave is done and awaiting merge (the four PRs above). What it
+turned up on the way is worth reading before the next one, because most
+of it is about the gates rather than the code: **#129** — `check.sh`'s
+`tee /dev/stderr` truncates a redirected gate log mid-run, so the log
+half of `execution.md` §4's discipline is silently destroyed while the
+exit code stays honest (the pipe route, `2>&1 | tee log` reading
+`PIPESTATUS[0]`, is immune, and is what an agent should reach for here);
+**#127** — a third load-sensitive test, after #119's and storage's, each
+occurrence costing an agent a control run to exonerate its own diff;
+and the review-driven follow-ups **#122**, **#123** and **#124**.
+
+Then **phase 4, the promotion ladder** (#30–#33,
 #100), which #16 gated and which is now unblocked; **phase 5** (#25
 LSP, #26 DAP) starts from the supervised stdio substrate the MCP
 client already is. **#107** (async code mode) sits outside the ladder
