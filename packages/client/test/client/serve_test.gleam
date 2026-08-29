@@ -13,6 +13,7 @@ import client/catalog
 import client/codemode
 import client/host
 import client/protocol
+import client/rules
 import client/serve
 import client/summaries
 import client/system_prompt
@@ -120,6 +121,7 @@ fn settings_under(root: String) -> serve.Settings {
     // and a host without one registers no `code_mode` tool.
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
+    rules: [],
   )
 }
 
@@ -710,4 +712,43 @@ pub fn the_boot_itself_refuses_before_anything_is_spawned_test() {
   assert string.contains(reason, "relative/entry")
   // Nothing was prepared: the check runs before `prepare_directories`.
   assert simplifile.is_directory(boot_root) == Ok(False)
+}
+
+// --- the triggered-rule scanner's presence (issue #27) ---------------------
+
+const rules_root = "build/serve-test-rules"
+
+// A server nobody configured rules for runs exactly the processes it ran
+// before rules existed. Not a scanner holding an empty list: no scanner,
+// and one log line saying so — the `codemode.unavailable` posture, for
+// the same reason.
+pub fn a_boot_with_no_rules_starts_no_scanner_test() {
+  let _stale = simplifile.delete(rules_root)
+  let assert Ok(booted) = serve.boot(settings_under(rules_root))
+    as "the server must boot with no rules configured"
+  assert booted.rulescan == None
+  serve.shutdown(booted)
+}
+
+// And a server that *was* configured runs one, under the restartable
+// service supervisor, addressable by the name the writer subscribes to.
+pub fn a_boot_with_rules_runs_a_supervised_scanner_test() {
+  let _stale = simplifile.delete(rules_root <> "-on")
+  let base = settings_under(rules_root <> "-on")
+  let assert Ok(booted) =
+    serve.boot(
+      serve.Settings(..base, rules: [
+        rules.Rule(
+          name: "schema-gate",
+          triggers: ["ALTER TABLE"],
+          body: "Run the schema gate first.",
+        ),
+      ]),
+    )
+    as "the server must boot with a rule configured"
+  let assert Some(name) = booted.rulescan
+    as "a configured rule must name a scanner"
+  let assert Ok(_pid) = process.named(name)
+    as "the scanner must be registered under that name"
+  serve.shutdown(booted)
 }

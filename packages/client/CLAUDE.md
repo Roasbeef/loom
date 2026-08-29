@@ -184,6 +184,34 @@ over one session file. WP-L.
   hands out, and it *refuses* rather than silently succeeding: a `set`
   answering `Ok` into nothing reads to a program as an eviction and it
   loops.
+- `client/rules.{Rule, parse, fires_on, scannable_text, injection,
+  fired_key, cursor_key, fired_value, cursor_value, cursor_seq,
+  max_rules, max_triggers, max_name_length, max_trigger_length,
+  max_body_length}` — the triggered project rule store (issue #27,
+  design §8). A rule is `{name, triggers, body}` read from `[[rule]]`
+  tables in the same `loom.toml` the catalogue comes from, parsed by the
+  same strict, total discipline: unknown keys refused, empty and
+  oversized fields refused, duplicate names refused, all in words an
+  operator can act on. Rules are **operator configuration and never
+  model-writable** — a rule is text the harness injects into a model's
+  own context, so a store a model could write would be durable prompt
+  injection with a delivery mechanism attached. Triggers are literal,
+  case-sensitive substrings, any-of per rule, matched over an assistant
+  entry's visible text through `events/search.entry_text` — no regex,
+  because an operator-supplied pattern reached from model output is an
+  unbounded computation driven by the thing being matched. `injection`
+  is the fenced, attributed text a fire actually commits.
+- `client/rulescan.{Options, default_options, with_logger, start,
+  supervised, default_scan_limit, default_checkpoint_every}` — the
+  session-scoped scanner actor. Its mailbox *is* `runtime/writer.Event`,
+  so it is the writer's second named subscriber beside the commit
+  forwarder; on each hint it re-reads the store above a durable cursor
+  and never trusts the hint for anything. A fire is one
+  `api.steer_marking` — the injection and the rule's write-once
+  fired-mark in one transaction — so exactly-once is a property of the
+  commit rather than of the actor's memory. A rule that trips on an
+  **idle** strand is *held*, not dropped and not started: the cursor
+  stays frozen so the next run finds it again.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
@@ -297,9 +325,13 @@ over one session file. WP-L.
   the one on the wire and the startup line can name its digest);
   `services`, the supervisor over the restartable composition layer;
   `stops`, the subject the host reports a `SIGTERM` or a fatal fault on,
-  owned by whichever process called `boot`; and `helper_path`, the
+  owned by whichever process called `boot`; `helper_path`, the
   `loom-exec` the ladder settled on, carried so the listening line can
-  name the binary that will enforce every jail this session builds.
+  name the binary that will enforce every jail this session builds; and
+  `rulescan`, the triggered-rule scanner's *name* — `None` on a boot
+  that configured no rules and therefore started no scanner, which is
+  the `codemode.unavailable` posture applied to a second optional
+  plane.
 - `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
   process tree. `adopt` runs a boot on a dedicated exit-trapping process
   so every link an `actor.start` forms lands there rather than on the
@@ -414,7 +446,12 @@ over one session file. WP-L.
   records under `fact.custom`'s reserved `escalation/` prefix, and the
   assembled system prompt under the reserved `prompt/` prefix — read off
   the session store directly before `api.open`, written back through
-  `api.put_reserved_fact` after it. Strand
+  `api.put_reserved_fact` after it. The rule scanner owns the reserved
+  `rule/` prefix: `rule/fired/<strand>/<name>` write-once marks, committed
+  with the injection they authorize, and `rule/cursor/<strand>`
+  checkpoints, written lazily. Every one of the scanner's reads goes
+  **straight to the session store**, never through the writer's mailbox,
+  so a scan can never sit in front of a settlement. Strand
   seeding for protocol `fork` and `create_strand` writes `strand.config`
   / `strand.leaf` / `strand.state` (the api's creation path always takes
   a task brief, so the gateway seeds idle strands itself).
@@ -1024,7 +1061,8 @@ over one session file. WP-L.
   settings snapshot.
 - **The server has two supervision tiers, and the line between them is
   reachability.** A child under `Booted.services` — the commit
-  forwarder, the Agency holder, the escalation holder, the gateway hub —
+  forwarder, the Agency holder, the escalation holder, the scratch
+  store, the rule scanner, the gateway hub —
   is addressed by
   *name*, so a replacement under that name is the same address and a
   crash costs hints and the sockets already attached to the old hub
@@ -1035,6 +1073,20 @@ over one session file. WP-L.
   every call, and failing closed is the posture the effect plane wants
   anyway. Those are fatal, along with the session tree, the listener,
   and the service supervisor once its own budget is spent.
+- **A plane nobody configured costs nothing, and says so.** A
+  `loom.toml` with no `[[rule]]` starts no scanner at all — not a
+  scanner holding an empty list — and logs `rules.none`; a configured
+  one logs `rules.loaded` with the count and the names. This is the
+  `codemode.unavailable` line's reasoning applied again: an operator who
+  configured something and sees no effect must have a line to reason
+  from, and a host that configured nothing must run exactly the
+  processes it ran before the feature existed.
+- **A dormant rule is byte-absent from a context, not merely cheap.**
+  Rules live in the configuration file, fired-marks and cursors live in
+  reserved registers, and neither is an entry — so nothing a rule
+  contains can reach a projection until the scanner commits an
+  injection. The projection tests assert exactly that, in both
+  directions.
 - **A fatal death is an orderly shutdown, not a side effect.** The host
   traps exits, so a child's death is a message: it runs the whole
   teardown — listener, services, runtime (which releases the writer
