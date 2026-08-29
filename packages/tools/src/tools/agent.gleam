@@ -753,14 +753,14 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
     Error(Nil) -> Error("must carry a `properties` object")
   })
   use required <- result.try(required_names(fields))
-  use declared <- result.try(list.try_map(properties, parse_property))
-  use Nil <- result.try(case declared {
-    [] -> Error("must declare at least one property to be worth demanding")
-    [_, ..] -> Ok(Nil)
-  })
-  // `list.drop` answers a question about the first `max_result_fields`
-  // entries without walking whatever a model pasted after them.
-  use Nil <- result.try(case list.drop(declared, max_result_fields) {
+  // The bound sits above the walk, and that ordering is the whole of its
+  // protection: `list.drop` answers a question about the first
+  // `max_result_fields` entries without walking whatever a model pasted
+  // after them, and refusing here means `parse_property` never runs over
+  // the excess at all. A program drives this path at up to a frame's
+  // worth of properties per call, so the walk is the cost being avoided
+  // rather than the drop.
+  use Nil <- result.try(case list.drop(properties, max_result_fields) {
     [] -> Ok(Nil)
     [_, ..] ->
       Error(
@@ -768,6 +768,11 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
         <> int.to_string(max_result_fields)
         <> " properties",
       )
+  })
+  use declared <- result.try(list.try_map(properties, parse_property))
+  use Nil <- result.try(case declared {
+    [] -> Error("must declare at least one property to be worth demanding")
+    [_, ..] -> Ok(Nil)
   })
   use Nil <- result.try(
     list.try_each(required, fn(name) {
