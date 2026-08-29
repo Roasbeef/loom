@@ -81,6 +81,15 @@
 //// reconciled by the next run like any other. **First-order only**: the
 //// boundary is issue #115's own, recorded in `docs/spec-gaps.md`.
 ////
+//// **What it costs, which is more than it looks.** A head is one
+//// consolidation's batch and so is uniform in provenance, so a cascade
+//// that matches anything at all empties the head. Only the erased
+//// source is then re-read — every other source keeps its cursor, and
+//// the notes cursor sits past every note already consumed — so their
+//// contribution is permanently unrecoverable by this pipeline. That is
+//// a defect rather than a design: issue #124 carries the mechanism, and
+//// `cascade`'s own doc spells the sequence out.
+////
 //// # Where the model comes in
 ////
 //// Two provider calls per run — one extraction per source, one
@@ -181,7 +190,7 @@ pub type Report {
     skipped: Int,
     candidates: Int,
     rows: Int,
-    digest_bytes: Int,
+    digest: Option(Int),
   )
 }
 
@@ -537,7 +546,7 @@ fn pass(config: Config, opened: Opened) -> Result(Report, String) {
       skipped: skipped + { list.length(harvests) - list.length(extracted.read) },
       candidates: list.length(extracted.candidates),
       rows: list.length(head_ids),
-      digest_bytes: 0,
+      digest: None,
     )
   case extracted.candidates, notes {
     [], [] -> quiet(config, opened, cursors, report)
@@ -644,25 +653,30 @@ fn reconciled(
   opened: Opened,
   report: Report,
 ) -> Result(Report, String) {
-  use bytes <- result.map(reconciled_bytes(config, opened))
-  Report(..report, digest_bytes: bytes)
+  use written <- result.map(reconciled_digest(config, opened))
+  Report(..report, digest: written)
 }
 
-// The reconciliation itself, in the unit both of this module's reports
-// carry: the bytes written, or zero for a sidecar that already matched
-// its head. Shared with the erasure cascade, which ends the same way and
+// The reconciliation itself, kept in the shape `memory.reconcile_digest`
+// answers in and deliberately not collapsed to a byte count: `Some(0)` is
+// a sidecar this run *emptied* and `None` is one it never touched, and an
+// operator's line has to tell those apart. Collapsing both to zero is
+// what made a cascade that had just erased a digest report it as
+// unchanged. Shared with the erasure cascade, which ends the same way and
 // for the same reason.
-fn reconciled_bytes(config: Config, opened: Opened) -> Result(Int, String) {
+fn reconciled_digest(
+  config: Config,
+  opened: Opened,
+) -> Result(Option(Int), String) {
   use written <- result.map(memory.reconcile_digest(opened, config.digest_path))
   case written {
-    None -> 0
-    Some(bytes) -> {
+    None -> Nil
+    Some(bytes) ->
       log.info(config.logger, "distill.digest_written", [
         field.count(key: "digest_bytes", value: bytes),
       ])
-      bytes
-    }
   }
+  written
 }
 
 // Batch-level provenance: every row this consolidation writes names the
@@ -725,10 +739,25 @@ fn read_notes_cursor(opened: Opened) -> Result(Seq, String) {
 ///
 /// Constructor invariants: `dropped` counts the head rows whose
 /// provenance named the erased session and `kept` the rest, so the two
-/// sum to the head the cascade read; `digest_bytes` is the sidecar
-/// rewrite, zero when the file already matched.
+/// sum to the head the cascade read; `digest` is the sidecar rewrite,
+/// `None` when the file already matched its head.
+///
+/// `unreadable` counts the kept rows whose provenance could not be
+/// decoded at all, and is reported rather than folded into `kept`
+/// because those rows are kept by a *different* rule than the others.
+/// `provenance_of` fails safe — a row it cannot read names nothing and
+/// is therefore never dropped — which means such a row is also
+/// permanently invisible to every future cascade. That is the one place
+/// this command under-deletes, so an operator who is erasing something
+/// has to be told the count rather than left to infer it.
 pub type Cascade {
-  Cascade(session: String, dropped: Int, kept: Int, digest_bytes: Int)
+  Cascade(
+    session: String,
+    dropped: Int,
+    kept: Int,
+    unreadable: Int,
+    digest: Option(Int),
+  )
 }
 
 /// The distiller a cascade runs under: one that refuses, because a
@@ -758,8 +787,9 @@ pub fn no_distiller() -> Distiller {
 /// erase is admin tooling above the harness and this is a pass over the
 /// memory plane beside it.
 ///
-/// Three properties are the whole of its safety, and each is inherited
-/// rather than invented:
+/// Two properties are inherited rather than invented; the third is where
+/// this command's real cost sits, and it is a defect rather than a
+/// design:
 ///
 /// - **Rows are write-once, so nothing is deleted.** A cascade removes
 ///   ids from the head, which is a pointer over append-only rows. The
@@ -771,11 +801,23 @@ pub fn no_distiller() -> Distiller {
 ///   sidecar. A cascade killed before the sidecar leaves a head ahead of
 ///   its digest, and the next run's reconciliation closes it, which is
 ///   what that reconciliation is for.
-/// - **Cursors are not touched.** The erased source's cursor is voided by
-///   the rewrite generation `repo.rewrite_sqlite` bumped, so the next run
-///   re-extracts it from zero on its own (`memory.cursor_from`); resetting
-///   cursors here would additionally re-read every *other* source for
-///   nothing.
+/// - **Cursors are not touched, and an emptying cascade therefore loses
+///   what it emptied.** The erased source's cursor is voided by the
+///   rewrite generation `repo.rewrite_sqlite` bumped, so the next run
+///   re-extracts *that* source from zero on its own
+///   (`memory.cursor_from`). Every other source keeps its cursor at the
+///   high-water seq the last run left it at, and the notes cursor sits
+///   past every note already consumed. Since a head is uniform in
+///   provenance, an effective cascade empties it — so the next run
+///   consolidates the erased source alone, over an empty head, no notes,
+///   and no other source offering anything. **The surviving sources'
+///   contribution and every hand-written note are then permanently
+///   unrecoverable by the pipeline.** Re-reading the other sources is in
+///   fact the only rebuild there could be; not doing it is the gap, not
+///   the saving. Issue #124 carries the mechanism — a cursor rewind on
+///   drop, a `--rebuild` companion, or a `--dry-run` preview — and
+///   `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
+///   pins the loss until one of them lands.
 ///
 /// **First-order, and the second order is vacuous rather than skipped.**
 /// A row whose `derived_from` names a dropped row is not chased. Within
@@ -840,12 +882,13 @@ fn cascaded(
     expected: head_seq,
     dropped: dropped,
   ))
-  use bytes <- result.map(reconciled_bytes(config, opened))
+  use written <- result.map(reconciled_digest(config, opened))
   Cascade(
     session:,
     dropped: list.length(dropped),
     kept: list.length(kept),
-    digest_bytes: bytes,
+    unreadable: list.count(kept, fn(pair) { pair.1 == memory.no_provenance }),
+    digest: written,
   )
 }
 
@@ -1302,7 +1345,7 @@ fn announce(outcome: Result(Report, String)) -> Nil {
         <> " skipped; memory holds "
         <> int.to_string(report.rows)
         <> " distillates "
-        <> digest_line(report.digest_bytes),
+        <> digest_line(report.digest),
       )
   }
 }
@@ -1318,30 +1361,38 @@ fn announce_cascade(outcome: Result(Cascade, String)) -> Nil {
         <> int.to_string(report.dropped)
         <> " distillates dropped, "
         <> int.to_string(report.kept)
-        <> " kept "
-        <> cascade_digest_line(report),
+        <> " kept"
+        <> escaped_line(report)
+        <> " "
+        <> digest_line(report.digest),
       )
   }
 }
 
-// A run that consolidated nothing re-renders nothing, and saying "digest
-// 0 bytes" for that would read as a digest that had been emptied.
-fn digest_line(bytes: Int) -> String {
-  case bytes {
-    0 -> "(digest unchanged)"
-    written -> "(digest " <> int.to_string(written) <> " bytes)"
+// The under-deletion, said out loud when there is any. A row whose
+// provenance would not decode is kept by `provenance_of`'s fail-safe and
+// is invisible to every future cascade too, so an operator erasing
+// something needs the count in the line rather than in a log.
+fn escaped_line(report: Cascade) -> String {
+  case report.unreadable {
+    0 -> ""
+    escaped ->
+      " ("
+      <> int.to_string(escaped)
+      <> " kept with unreadable provenance, which no cascade can reach)"
   }
 }
 
-// The cascade's own line, keyed on what it did rather than on the byte
-// count: a cascade that emptied the head reconciles the sidecar to zero
-// bytes, and `digest_line` would call that "unchanged" — the one reading
-// an operator must not be given after erasing something.
-fn cascade_digest_line(report: Cascade) -> String {
-  case report.dropped, report.kept {
-    0, _kept -> "(digest unchanged)"
-    _dropped, 0 -> "(memory is now empty)"
-    _dropped, _some -> digest_line(report.digest_bytes)
+// Three outcomes, not two. `None` is a sidecar this run never touched;
+// `Some(0)` is one it rewrote to nothing, which is what an emptying
+// cascade — and the first run after a crashed one — produces. Reporting
+// that second case as "unchanged" is the one reading an operator must
+// not be given straight after erasing something.
+fn digest_line(written: Option(Int)) -> String {
+  case written {
+    None -> "(digest unchanged)"
+    Some(0) -> "(digest emptied)"
+    Some(bytes) -> "(digest " <> int.to_string(bytes) <> " bytes)"
   }
 }
 

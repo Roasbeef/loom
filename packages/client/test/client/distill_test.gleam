@@ -451,13 +451,15 @@ pub fn a_missing_sidecar_is_restored_by_the_next_quiet_run_test() {
   let assert Ok(report) = distill.run(config(root, prompts))
     as "the reconciling pass must run"
   assert report.sources == 0
-  assert report.digest_bytes > 0
+  let assert Some(restored) = report.digest
+    as "the run must rewrite the sidecar"
+  assert restored > 0
   assert memory.read_digest(root <> "/loom-memory.digest") == Some(settled)
 
   // And a run over an already-correct sidecar rewrites nothing.
   let assert Ok(third) = distill.run(config(root, prompts))
     as "the third pass must run"
-  assert third.digest_bytes == 0
+  assert third.digest == None
 }
 
 // --- the run's lease covers the run -----------------------------------------
@@ -669,7 +671,9 @@ pub fn a_cascade_drops_exactly_the_rows_naming_the_erased_session_test() {
   assert report.session == "alpha"
   assert report.dropped == 2
   assert report.kept == 1
-  assert report.digest_bytes > 0
+  let assert Some(bytes) = report.digest
+    as "the cascade must rewrite the sidecar"
+  assert bytes > 0
 
   // The head is exactly beta's rows, in the order it held them.
   let assert Ok(opened) = open_memory(root) as "the memory session must reopen"
@@ -724,7 +728,7 @@ pub fn a_cascade_over_a_session_nothing_names_moves_nothing_test() {
     as "the cascade must run"
   assert report.dropped == 0
   assert report.kept == 2
-  assert report.digest_bytes == 0
+  assert report.digest == None
 
   let assert Ok(after) = open_memory(root) as "the memory session must reopen"
   let assert Ok(#(now, Some(still))) = memory.head(after)
@@ -836,12 +840,211 @@ pub fn a_cascade_killed_before_the_sidecar_is_reconciled_by_the_next_run_test() 
   let assert Ok(report) = distill.run(config(root, prompts))
     as "the reconciling pass must run"
   assert report.sources == 0
-  assert report.digest_bytes > 0
+  let assert Some(rewritten) = report.digest
+    as "the reconciling run must rewrite the sidecar"
+  assert rewritten > 0
   assert recorded(prompts) == []
   let assert Some(now) = memory.read_digest(root <> "/loom-memory.digest")
     as "the sidecar must be restored"
   assert string.contains(now, "prefers tabs")
   assert string.contains(now, "make check") == False
+}
+
+/// **What an emptying cascade costs, pinned.** The head is uniform in
+/// provenance, so a cascade naming any contributing source wipes it — and
+/// the surviving sources are *not* re-read, because only the erased one's
+/// cursor was voided. Their contribution, and every hand-written note
+/// already folded in, is unrecoverable by the pipeline.
+///
+/// This records a defect, not an intention: issue #124 carries the
+/// mechanism (a cursor rewind on drop, a `--rebuild` companion, or a
+/// `--dry-run` preview). When one of those lands this test is the thing
+/// that should fail, and its failure is the signal to rewrite it.
+pub fn an_emptying_cascade_loses_the_surviving_sources_test() {
+  let root = fresh_root("cascade-loss")
+  let alpha =
+    write_source(root <> "/a.db", 11, [assistant("alpha chose msgpack")])
+  let beta = write_source(root <> "/b.db", 13, [assistant("beta chose cbor")])
+  let seam =
+    memory.remember_seam(
+      root <> "/loom-memory.db",
+      clock: a_clock(),
+      entropy: fn() { 99 },
+    )
+  let assert Ok(Nil) = seam.remember("the user prefers tabs over spaces")
+    as "the note must be written"
+
+  let prompts = start_recorder()
+  let assert Ok(first) = distill.run(config(root, prompts))
+    as "the first pass must run"
+  assert first.sources == 2
+  // One head, one batch, one provenance value naming both sources.
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(named, _seq)) = memory.head(opened) as "the head must read"
+  let assert Ok(pairs) = memory.provenance_by_id(opened, named)
+    as "the head's provenance must read"
+  assert list.all(pairs, fn(pair) { memory.names_source(pair.1, alpha) })
+  assert list.all(pairs, fn(pair) { memory.names_source(pair.1, beta) })
+  memory.close(opened)
+
+  // Erase beta, then cascade over it. Naming *either* source wipes the
+  // whole head, because every row names both.
+  let assert Ok(_rewritten) =
+    repo.rewrite_sqlite(
+      path: root <> "/b.db",
+      clock: a_clock(),
+      rewrite: repo.erase_text(needle: "cbor", replacement: "[erased]"),
+      rewrite_value: repo.erase_value(needle: "cbor", replacement: "[erased]"),
+    )
+    as "beta must be erasable"
+  let assert Ok(report) = distill.cascade(cascade_config(root), session: beta)
+    as "the cascade must run"
+  assert report.dropped == 2
+  assert report.kept == 0
+
+  // The next run re-reads beta and **only** beta.
+  let again = start_recorder()
+  let assert Ok(second) =
+    distill.run(distill.Config(..config(root, again), entropy: fn() { 4243 }))
+    as "the second pass must run"
+  assert second.sources == 1
+  let asked = string.join(recorded(again), "\n")
+  assert string.contains(asked, "[erased]")
+  // Alpha's transcript is never offered again: its cursor still sits at
+  // the high-water seq the first run left, under an unmoved generation.
+  assert string.contains(asked, "msgpack") == False
+  // And the consolidation turn is shown an empty memory and no notes, so
+  // neither alpha's contribution nor the note can come back through it.
+  assert string.contains(
+    asked,
+    "What memory says now:\n\n```transcript\n(nothing)",
+  )
+  assert string.contains(
+    asked,
+    "Written down by hand with the remember tool:\n\n```transcript\n(nothing)",
+  )
+}
+
+/// **A re-run cascade reports the sidecar it actually rewrote.** The
+/// crash story routes through exactly this: the head CAS lands, the
+/// process dies before the sidecar, and the operator runs the cascade
+/// again. The second run drops nothing — the head is already correct —
+/// but it still rewrites the digest, and reporting that as "unchanged"
+/// would tell the operator the erased text was still on disk.
+///
+/// The mutation this is here to catch: collapse `reconcile_digest`'s
+/// `Option(Int)` back to a byte count. `None` and `Some(0)` then read
+/// alike and the first assertion below fails.
+pub fn a_rerun_cascade_reports_the_sidecar_it_rewrote_test() {
+  let root = fresh_root("cascade-rerun")
+  let #(_alpha, beta) = mixed_head(root)
+
+  // The crash: the head moves, the sidecar does not.
+  let assert Ok(dying) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#(_named, seq)) = memory.head(dying) as "the head must read"
+  let assert Ok(Nil) = memory.replace_head(dying, named: beta, expected: seq)
+    as "the cascade's head CAS must land"
+  memory.close(dying)
+
+  // The operator re-runs it. Nothing left to drop, but the sidecar is
+  // still carrying alpha's text and this run is what removes it.
+  let assert Ok(report) =
+    distill.cascade(cascade_config(root), session: "alpha")
+    as "the re-run cascade must run"
+  assert report.dropped == 0
+  let assert Some(bytes) = report.digest
+    as "a cascade that rewrote the sidecar must say so, not report `None`"
+  assert bytes > 0
+  let assert Some(now) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the sidecar must be there"
+  assert string.contains(now, "make check") == False
+}
+
+/// A cascade that empties the digest reports `Some(0)` — written, and
+/// written to nothing — which is a different fact from `None`, the
+/// sidecar it never touched.
+pub fn an_emptying_cascade_reports_a_written_empty_digest_test() {
+  let root = fresh_root("cascade-emptied")
+  let #(alpha, _beta) = mixed_head(root)
+  // Drop beta's row too, by hand, so only alpha's remain and a cascade
+  // over alpha empties the head outright.
+  let assert Ok(opened) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#(_named, seq)) = memory.head(opened) as "the head must read"
+  let assert Ok(Nil) = memory.replace_head(opened, named: alpha, expected: seq)
+    as "the narrowed head must land"
+  memory.close(opened)
+
+  let assert Ok(report) =
+    distill.cascade(cascade_config(root), session: "alpha")
+    as "the cascade must run"
+  assert report.kept == 0
+  // Written, and written empty — not "unchanged".
+  assert report.digest == Some(0)
+  assert memory.read_digest(root <> "/loom-memory.digest") == None
+}
+
+/// A row whose provenance will not decode is **kept**, and the report
+/// says so separately — that is the one place a cascade under-deletes,
+/// and it is permanent, since no later cascade can reach the row either.
+pub fn a_row_with_unreadable_provenance_is_kept_and_counted_test() {
+  let root = fresh_root("cascade-unreadable")
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(named_rows, generator)) =
+    memory.append_distillates(
+      opened,
+      [#(memory.fact_type, "alpha said the gate is make check")],
+      from_session("alpha"),
+      a_clock(),
+    )
+    as "the named row must append"
+  // A row this module did not write: the right entry type, a payload
+  // `provenance_of` cannot read.
+  let #(id, _generator) = ids.mint_entry(generator)
+  let assert Ok(_committed) =
+    storage.commit(
+      opened.session.store,
+      Tx(
+        writes: [
+          InsertEntry(entry.CustomEntry(
+            id:,
+            parent: None,
+            seq: 0,
+            ts: 0,
+            custom_type: memory.fact_type,
+            data: Some(
+              json.Object([
+                #("text", json.String("a row from somewhere else")),
+                #("sources", json.String("not an array")),
+              ]),
+            ),
+          )),
+        ],
+        expected: [],
+      ),
+    )
+    as "the opaque row must commit"
+  let assert Ok(#(head_now, head_seq)) = memory.head(opened)
+    as "the head must read"
+  assert head_now == []
+  let assert Ok(Nil) =
+    memory.replace_head(
+      opened,
+      named: list.append(list.map(named_rows, ids.entry_id_to_string), [
+        ids.entry_id_to_string(id),
+      ]),
+      expected: head_seq,
+    )
+    as "the head over both rows must land"
+  memory.close(opened)
+
+  let assert Ok(report) =
+    distill.cascade(cascade_config(root), session: "alpha")
+    as "the cascade must run"
+  assert report.dropped == 1
+  assert report.kept == 1
+  // The survivor is not an ordinary keep: it escaped the match because
+  // its provenance would not decode, and the operator is told.
+  assert report.unreadable == 1
 }
 
 // --- the rig ----------------------------------------------------------------
