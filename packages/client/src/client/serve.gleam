@@ -173,6 +173,8 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/rules
+import client/rulescan
 import client/scratch
 import client/server
 import client/summaries
@@ -180,7 +182,7 @@ import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
 import gleam/bool
-import gleam/erlang/process.{type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
@@ -199,6 +201,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import runtime/effects
+import runtime/writer
 import session/session
 import simplifile
 import telemetry/context
@@ -290,6 +293,11 @@ pub type Settings {
     /// has built one. The default is `WorkspaceOnly` — the seam an
     /// unconfigured server has always served.
     codemode_seams: codemode_wiring.Seams,
+    /// The triggered project rules from the same `loom.toml`, in file
+    /// order. Empty — the ordinary case — starts no scanner at all, so
+    /// a server nobody configured rules for runs exactly the processes
+    /// it ran before rules existed.
+    rules: List(rules.Rule),
   )
 }
 
@@ -328,6 +336,11 @@ pub type Booted {
     /// has a handle on one: the client actors are deliberately unlinked
     /// (`client/mcp`), so this record is the only way they are reached.
     mcp: mcp_wiring.Layer,
+    /// The triggered-rule scanner's name, or `None` on a boot that
+    /// configured no rules and therefore started no scanner. A name
+    /// rather than a pid, because the scanner is a restartable service
+    /// and a pid would go stale the first time it was replaced.
+    rulescan: Option(Name(writer.Event)),
   )
 }
 
@@ -555,7 +568,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use catalogue <- result.try(load_catalog(flags.config))
+  use #(catalogue, rule_list) <- result.try(load_config(flags.config))
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
   // directly-constructed catalogues.
@@ -597,6 +610,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     compaction: compaction_settings(main_entry.context_window),
     codemode_seed: seed_root(flags.codemode_seed, workspace),
     codemode_seams:,
+    rules: rule_list,
   ))
 }
 
@@ -702,25 +716,40 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
   }
 }
 
-// The catalogue ladder: an explicit file must load and validate or the
-// boot refuses (a typoed config silently ignored would serve the wrong
-// model); no file falls back to the environment surface.
-fn load_catalog(flag: Option(String)) -> Result(catalog.Catalog, String) {
+// The configuration ladder: an explicit file must load and validate or
+// the boot refuses (a typoed config silently ignored would serve the
+// wrong model); no file falls back to the environment surface, which
+// defines no rules — a rule is a deliberate act, and there is no
+// environment variable that could be one by accident.
+//
+// The two parsers divide the document rather than sharing it: `catalog`
+// owns the top-level key check and the model tables, `rules` owns
+// everything inside a `[[rule]]`. Each is handed the text and does its
+// own decode, which costs one extra parse of a small file at boot and
+// keeps each parser's own worded TOML failure — the message an operator
+// actually has to act on.
+fn load_config(
+  flag: Option(String),
+) -> Result(#(catalog.Catalog, List(rules.Rule)), String) {
   case flag {
-    None -> Ok(env_catalog())
-    Some(path) ->
-      case simplifile.read(path) {
-        Error(error) ->
-          Error(
-            "the config file "
-            <> path
-            <> " is unreadable: "
-            <> string.inspect(error),
-          )
-        Ok(text) ->
-          catalog.parse(text)
-          |> result.map_error(fn(reason) { path <> ": " <> reason })
-      }
+    None -> Ok(#(env_catalog(), []))
+    Some(path) -> {
+      use text <- result.try(
+        simplifile.read(path)
+        |> result.map_error(fn(error) {
+          "the config file "
+          <> path
+          <> " is unreadable: "
+          <> string.inspect(error)
+        }),
+      )
+      let named = fn(reason) { path <> ": " <> reason }
+      use catalogue <- result.try(
+        catalog.parse(text) |> result.map_error(named),
+      )
+      use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
+      Ok(#(catalogue, rule_list))
+    }
   }
 }
 
@@ -1234,6 +1263,13 @@ fn assemble(
   // subscribes to — a subscription by name is what lets the forwarder be
   // restarted without the writer noticing.
   let forwarder_name = process.new_name(prefix: "loom_forwarder")
+  // The triggered-rule scanner is the writer's second subscriber, and
+  // reaches it the same way and for the same reason. A name is minted
+  // whether or not any rule is configured — an unregistered name is a
+  // subscriber the writer skips, which costs the commit path nothing —
+  // so the branch that matters is the one that decides whether to start
+  // anything under it.
+  let rulescan_name = process.new_name(prefix: "loom_rulescan")
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -1404,7 +1440,10 @@ fn assemble(
           ..options.settings,
           compaction: settings.compaction,
         ),
-        subscribers: [process.named_subject(forwarder_name)],
+        subscribers: [
+          process.named_subject(forwarder_name),
+          process.named_subject(rulescan_name),
+        ],
         // Every strand of this session logs under the session's own
         // context; the driver narrows it to its strand, and each
         // dispatched effect narrows it again to `{op, step}`.
@@ -1456,6 +1495,7 @@ fn assemble(
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
@@ -1487,22 +1527,28 @@ fn assemble(
       "the websocket server did not start: " <> string.inspect(error)
     }),
   )
-  Ok(Booted(
-    runtime:,
-    served:,
-    broker: broker_actor,
-    pool:,
-    summaries: summary_sink,
-    gateway: hub.Gateway(name:),
-    services: services.pid,
-    stops:,
-    session_id: settings.session_id,
-    token_path: settings.token_path,
-    bind_host: settings.bind_host,
-    prompt: assembled,
-    helper_path: settings.helper_path,
-    mcp: mcp_layer,
-  ))
+  Ok(
+    Booted(
+      runtime:,
+      served:,
+      broker: broker_actor,
+      pool:,
+      summaries: summary_sink,
+      gateway: hub.Gateway(name:),
+      services: services.pid,
+      stops:,
+      session_id: settings.session_id,
+      token_path: settings.token_path,
+      bind_host: settings.bind_host,
+      prompt: assembled,
+      helper_path: settings.helper_path,
+      mcp: mcp_layer,
+      rulescan: case settings.rules {
+        [] -> None
+        _configured -> Some(rulescan_name)
+      },
+    ),
+  )
 }
 
 /// Takes a booted server apart, front to back: the listener first so no
@@ -1538,6 +1584,50 @@ pub fn shutdown(booted: Booted) -> Nil {
   // and the stop is a cast, so a client that has already died costs
   // nothing.
   mcp_wiring.stop(booted.mcp)
+}
+
+// The triggered-rule scanner, and the decision not to start one.
+//
+// A server with no `[[rule]]` in its configuration starts no scanner at
+// all — not a scanner with an empty list — and says so in one line. This
+// is the `codemode.unavailable` posture: a plane nobody configured
+// should cost a host a process and a subscription of exactly nothing,
+// and an operator who *did* configure rules and sees no effect deserves
+// a line naming how many were loaded rather than silence to reason
+// from.
+fn with_rule_scanner(
+  builder: sup.Builder,
+  settings: Settings,
+  runtime: api.Runtime,
+  name: Name(writer.Event),
+  logger: Logger,
+) -> sup.Builder {
+  case settings.rules {
+    [] -> {
+      log.info(logger, "rules.none", [])
+      builder
+    }
+    configured -> {
+      log.info(logger, "rules.loaded", [
+        field.count(key: "rules", value: list.length(configured)),
+        field.text(
+          key: "names",
+          value: configured
+            |> list.map(fn(rule) { rule.name })
+            |> string.join(","),
+        ),
+      ])
+      sup.add(
+        builder,
+        rulescan.supervised(
+          rulescan.default_options(configured)
+            |> rulescan.with_logger(logger),
+          runtime,
+          name,
+        ),
+      )
+    }
+  }
 }
 
 /// How many restarts the service supervisor allows within

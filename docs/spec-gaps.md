@@ -929,3 +929,90 @@ into.
    whichever milestone next touches those packages, one injected
    `Logger` at a time — the seam is the part that had to be decided
    once.
+
+## From triggered rules (`client`, `runtime`) — issue #27
+
+Spec Part 4's M5 row names TTSR and states no acceptance criterion for
+it; Part 5 track 8's entry is the post-M6 memory→skill promotion half,
+which this work does not touch. So the acceptance is the issue's own
+Done list, and the interpretations below are recorded here because the
+spec supplies none.
+
+1. **The scanner is fed by the durable commit stream, not the delta
+   stream.** Design §8 says "fed by the streaming parse". Measurement
+   says that mechanism fights the tree: deltas are ephemeral by
+   contract, the runtime's effect process discards them, and the
+   simulation provider emits none at all — so a delta-fed scanner is
+   untestable by the very harness the issue demands a scenario from. It
+   would also decide from bytes that exist nowhere durable, which is the
+   one thing "hooks decide from durable state" forbids. And it would buy
+   nothing: an injection reaches the model at the next checkpoint, and
+   the settled assistant entry commits *before* that checkpoint. The
+   design's intent — dormant at zero cost, injected mid-run, off the hot
+   path — is preserved exactly; its mechanism clause is corrected.
+2. **Injection is the queue machinery, not the hook registry.** The
+   issue said "through the existing hook registry". The registry's only
+   injection points are `run_start` (fires once, before a run's first
+   request — so a rule tripped mid-run would wait for the *next* run,
+   possibly forever) and `run_end`. The mid-run door that already exists
+   is the inbox, so a fire is a durable steer-shaped admission drained
+   by the machinery every steer uses. Nothing in `runtime/effects.Hooks`
+   changed shape.
+3. **The reserved `rule/` prefix needed no `protocol-change/`.** The
+   frozen Part 1 contracts fix `RegisterNs` — the namespace *enum* — and
+   say nothing about which `fact.custom` key prefixes the runtime
+   reserves; `lineage/` was added the same way and is recorded under
+   "Delivered outside the table" rather than as a protocol change. The
+   reservation is a `runtime/api` property (`reserved_fact_key`,
+   `put_reserved_fact`, `reserved_facts`), and adding the sixth corner
+   changes no interface anyone else implements.
+4. **A rule fires at most once per strand per session, and there is no
+   re-arm.** The fired-mark is write-once and nothing clears it. An
+   unconditional re-fire would turn "zero cost when dormant" into
+   "unbounded cost once tripped", which is the property the feature
+   exists to have; a `re_arm` field costs nothing to add later if a real
+   want for one appears.
+5. **A rule tripped on an idle strand is held, not dropped and not
+   started.** Starting a run would let project configuration wake a
+   session nobody is talking to and issue a provider request no operator
+   asked for. Dropping would spend the rule silently, leaving an
+   operator with a configured rule that never fires and nothing saying
+   why. Holding is expressed by not advancing the scan cursor, so the
+   next run finds the same entry — no extra state records the hold.
+6. **The durable scan cursor is a checkpoint, not a position of
+   record.** Correctness rests on the fired-marks, so the cursor is
+   written lazily (`rulescan.default_checkpoint_every`) rather than on
+   every pass. Checkpointing each entry would put an extra commit behind
+   every assistant message for a feature that usually never fires.
+   A restart that resumes behind the checkpoint re-judges a bounded
+   overhang, which the marks make harmless.
+7. **Only assistant output the projection keeps is scanned.** Errored,
+   aborted and deferred responses are excluded — the same set
+   `session.project_entries` drops. A rule may only fire on text the
+   model will still see, and an `error` response carries the harness's
+   own failure prose rather than model output.
+8. **A fire is at-most-once, and the one losing corner is an abort.**
+   The injection and the fired-mark are one transaction, so nothing can
+   inject twice — but a queued steer only becomes conversation when a
+   checkpoint drains it, and an abort landing between the fire and that
+   checkpoint destroys the queued injection while the write-once mark
+   stands. The rule is then spent on text the model never saw. Admission
+   time cannot see an abort coming, and a mark that could be un-written
+   would reopen the injection loop the write-once shape closes, so the
+   corner is recorded rather than defended: the mark still says what
+   fired, which is more than a dropped rule would leave behind.
+9. **A newly configured rule can fire on old text.** The first boot
+   after a rule is added starts its scan cursor at zero, so the scan
+   covers the strand's whole still-projected history — a trigger the
+   model tripped weeks ago, if it is still in the window the model sees,
+   fires the rule on the next commit. Coherent with item 7 (the rule
+   fires only on text the model still sees) but worth stating: adding a
+   rule to a live workspace is not prospective-only.
+10. **A hold on a strand that will never run again is permanent.** A
+   trigger matched in a finished subagent strand's history holds —
+   correctly, since starting a run is the thing a rule must never do —
+   and nothing ever opens a run there, so the hold is retried on every
+   later pass. The transition into holding is logged once
+   (`rule.holding`), and the per-pass cost is bounded by `scan_limit`;
+   a terminal state for provably-dead strands is follow-up work, filed
+   on the issue tracker rather than solved with a lineage read here.

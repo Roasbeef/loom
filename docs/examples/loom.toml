@@ -80,3 +80,37 @@ summarize = ["anthropic-opus"]
 [mcp.github]
 command = ["mcp-server-github", "--stdio"]
 api_key_env = "GITHUB_TOKEN"
+
+# Triggered project rules, one [[rule]] table per rule. A rule is a
+# paragraph of standing instruction that only matters some of the time.
+# It costs the model's context NOTHING until something the model itself
+# says trips one of its triggers; then the harness injects the body once,
+# into the run already in flight, fenced and attributed so it can never
+# be mistaken for a turn from the person at the keyboard.
+#
+# `triggers` are LITERAL, CASE-SENSITIVE substrings — not patterns. Any
+# one of them matching fires the rule. They are matched against the
+# visible text of settled assistant messages only: not thinking blocks,
+# not tool-call arguments, not your own prompts.
+#
+# A rule fires at most once per strand per session. That is deliberate:
+# a rule that re-fired on every match would turn "free while dormant"
+# into "unbounded once tripped". The record of what has fired is durable,
+# so a crash mid-session does not re-inject on recovery.
+#
+# Like the MCP tables, these are an operator trust decision: there is no
+# CLI flag, no live reload, and no way for a model to add, edit or
+# silence one. Editing this file and restarting the server IS the
+# decision.
+[[rule]]
+name = "schema-gate"
+triggers = ["migrations/", "ALTER TABLE"]
+body = """
+Before proposing a migration, run `make check-storage` and paste the
+failing rows. The schema gate is not optional.
+"""
+
+[[rule]]
+name = "no-force-push"
+triggers = ["git push --force", "push -f"]
+body = "Never force-push a shared branch. Open a new branch instead."

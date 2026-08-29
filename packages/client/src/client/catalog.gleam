@@ -36,7 +36,17 @@
 //// [mcp.<name>]                       # optional; one table per server
 //// command = ["server-binary", "arg"] # the stdio server's argv
 //// api_key_env = "SOME_API_KEY"       # optional; env var *name*
+////
+//// [[rule]]                           # optional; see `client/rules`
+//// name = "schema-gate"
+//// triggers = ["ALTER TABLE"]
+//// body = "Run the schema gate first."
 //// ```
+////
+//// The `[[rule]]` tables are the triggered project rules and are parsed
+//// by `client/rules`, not here — but they are *named* here, in the
+//// top-level key check, because top-level strictness has to live in one
+//// parser or a typoed table name would be refused by neither.
 ////
 //// API keys never live in the file: `api_key_env` names an environment
 //// variable, which the provider secret store reads at dispatch — the
@@ -188,9 +198,13 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
+  // Top-level strictness lives here, including over the `[[rule]]`
+  // tables this module never reads (`client/rules` owns their
+  // contents): it has to live in exactly one parser, or a typoed table
+  // name would be refused by neither.
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["models", "roles", "mcp"],
+    ["models", "roles", "mcp", "rule"],
     "the top level",
   ))
   use model_tables <- result.try(

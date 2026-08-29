@@ -120,6 +120,20 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
+- **A composition-layer service is proved absent, not merely
+  well-behaved.** `conformance/triggered_rules_test` is the end-to-end
+  for issue #27: real wiring, real gateway, real adapter, real runtime,
+  a real supervisor over the real scanner, and only the HTTP transport
+  scripted. Its isolation row kills the scanner while a turn is in
+  flight — an absent scanner being the strongest available form of "an
+  expensive scan cannot delay a settlement" (design §10) — and asserts
+  the transcript is exactly what the script implies, request for
+  request, before showing the rule still fires off the durable marks
+  once the supervisor has replaced it. The one piece of stage machinery
+  is a transport that waits for the durable fired-mark from the second
+  turn on, which settles the scenario's only race — was the steer
+  durable before the checkpoint that drains it — without touching
+  anything under test.
 - **Nothing is keyed by a counter.** A generation request is answered by
   the *phase* of its projected context — how many assistant messages are in
   it, plus a hundred once a summary is — and a tool execution by its

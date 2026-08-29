@@ -99,6 +99,10 @@ pub fn the_ledger_and_the_prompt_are_refused_to_put_fact_test() {
   // parent edge a fork records (`protocol-change/008`).
   let assert Error(api.ReservedFactKey(key: "session/id")) =
     api.put_fact(runtime, session.session_id_key, json.String("forged"))
+  // A forged fired-mark would silence a project rule before it fires;
+  // a forged cursor is only a bounded re-scan, but it shares the prefix.
+  let assert Error(api.ReservedFactKey(key: "rule/fired/main/gate")) =
+    api.put_fact(runtime, "rule/fired/main/gate", json.String("forged"))
   // The two that were already reserved are still reserved.
   let assert Error(api.ReservedFactKey(..)) =
     api.put_fact(runtime, "escalation/e1", json.Null)

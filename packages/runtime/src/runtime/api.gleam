@@ -498,7 +498,64 @@ pub fn steer_quietly(
   runtime: Runtime,
   message: AgentMessage,
 ) -> Result(EntryId, ApiError) {
-  enqueue(runtime, message, queue.enqueue_steer)
+  enqueue(runtime, message, queue.enqueue_steer, None)
+}
+
+/// A reserved `fact.custom` cell written in the *same transaction* as a
+/// queue admission, expected absent — a write-once claim.
+///
+/// Constructor invariants: `key` is under a reserved prefix
+/// (`reserved_fact_key`), which `steer_marking` refuses otherwise. The
+/// absent-expectation is the type's whole meaning: a mark guarded on a
+/// seq the caller read — claim-if-unmoved rather than claim-if-first —
+/// is a generalization nothing wants yet, cut rather than shipped
+/// untested.
+pub type Mark {
+  Mark(key: String, value: JsonValue)
+}
+
+/// Enqueues a steer item and stakes a reserved claim in one transaction:
+/// either the strand's open run gains the item *and* the mark cell
+/// lands, or neither does.
+///
+/// This is the door a harness-side injector needs and `steer_quietly`
+/// cannot give it. An injector that must act at most once — per strand,
+/// per rule, per anything it can name a cell for — has to make "the
+/// message is queued" and "the claim is spent" one durable fact, because
+/// the two orders fail in opposite directions: marking first loses the
+/// injection to a crash in between, and queueing first double-injects
+/// after one. Folding the mark into the admission's own transaction
+/// removes that window rather than narrowing it, and a restarted
+/// injector that re-derives the same decision meets `FactConflict`
+/// instead of queueing a second copy.
+///
+/// The mark's expectation is told apart from the operation-state seq the
+/// admission ladder exists to retry: a lost race against the strand
+/// reloads and tries again, while a mark that moved answers
+/// `FactConflict` at once — somebody already did this, and no retry
+/// changes that.
+///
+/// Quiet by design, like `steer_quietly`: an injector has no user
+/// waiting on latency, and the strand's own commits and its checkpoint
+/// poll find the item anyway.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.steer_marking(runtime, fenced_text,
+/// //   mark: api.Mark(key: "rule/fired/main/x", value: json.Null))
+/// ```
+///
+pub fn steer_marking(
+  runtime: Runtime,
+  message: AgentMessage,
+  mark mark: Mark,
+) -> Result(EntryId, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
+  enqueue(runtime, message, queue.enqueue_steer, Some(mark))
 }
 
 /// Enqueues a follow-up item onto the open run and rings the doorbell.
@@ -513,7 +570,12 @@ pub fn follow_up(
   runtime: Runtime,
   message: AgentMessage,
 ) -> Result(EntryId, ApiError) {
-  use entry <- result.map(enqueue(runtime, message, queue.enqueue_follow_up))
+  use entry <- result.map(enqueue(
+    runtime,
+    message,
+    queue.enqueue_follow_up,
+    None,
+  ))
   nudge(runtime)
   entry
 }
@@ -528,6 +590,7 @@ fn enqueue(
     ids.Generator,
     operation.PendingEntry,
   ) -> Result(queue.QueuePlan, queue.QueueReject),
+  mark: Option(Mark),
 ) -> Result(EntryId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
@@ -551,8 +614,14 @@ fn enqueue(
         // decrements only on `Retry`, so a `Done` here is what keeps the
         // ladder from spending its four attempts against a fence that
         // will refuse all four and then reporting `RaceLost`, which
-        // would name the wrong cause.
-        commit_or_retry(writer.commit(w, plan_tx), on_ok: entry)
+        // would name the wrong cause. A mark's own expectation is the
+        // one stale expectation that is *not* a race (see
+        // `commit_admission`).
+        commit_admission(
+          writer.commit(w, marked(plan_tx, mark)),
+          mark,
+          on_ok: entry,
+        )
       }
     }
   })
@@ -1222,18 +1291,34 @@ pub const prompt_fact_prefix = "prompt/"
 /// could re-point a session's whole event stream.
 pub const session_fact_prefix = "session/"
 
+/// The reserved `fact.custom` key prefix triggered project rules keep
+/// their durable state under: one write-once fired-mark per
+/// `{strand, rule}`, and one scan-cursor checkpoint per strand
+/// (`client/rules` builds both keys). The rule *text* is never here —
+/// rules are operator configuration read from `loom.toml`, and the only
+/// thing that has to survive a crash is what already fired.
+///
+/// `rule/` rather than anything near the model-writable `agent/`, for
+/// the reason `lineage/` is not either: a fired-mark a model could write
+/// would let it silence a project rule before the scanner ever fires it,
+/// and a fired-mark it could *delete* would let it re-arm one into an
+/// injection loop. Neither is reachable — `put_fact` refuses the prefix
+/// and `facts` hides it — so the mark means what the scanner wrote.
+pub const rule_fact_prefix = "rule/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The five corners, and what each would let a forged write do:
+/// The six corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
 /// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
 /// the operator's channel; `session/` — re-point the session's own
-/// identity, and with it every stream keyed by it.
+/// identity, and with it every stream keyed by it; `rule/` — mark an
+/// operator's project rule as already fired, so it never fires.
 ///
 /// ## Examples
 ///
@@ -1251,6 +1336,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, lineage.key_prefix)
   || string.starts_with(key, prompt_fact_prefix)
   || string.starts_with(key, session_fact_prefix)
+  || string.starts_with(key, rule_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
@@ -1902,6 +1988,75 @@ fn commit_or_retry(
     Ok(_) -> Ok(Done(Ok(on_ok)))
     Error(tx.StaleExpectation(..)) -> Ok(Retry)
     Error(error) -> Ok(Done(Error(commit_failure(error))))
+  }
+}
+
+// The admission plan with a `Mark` folded in: one more write and one
+// more expectation, committed all-or-none with the admission itself.
+// The expectation goes *first* so a storage backend that reports the
+// earliest failing expectation names the mark rather than the operation
+// state — the two are told apart below, and naming the interesting one
+// first costs nothing.
+fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
+  case mark {
+    None -> plan
+    Some(Mark(key:, value:)) ->
+      tx.Tx(
+        writes: list.append(plan.writes, [
+          tx.SetRegister(
+            ns: register.FactCustom,
+            key:,
+            value: register.value(value),
+          ),
+        ]),
+        expected: [
+          tx.Expect(ns: register.FactCustom, key:, seq: None),
+          ..plan.expected
+        ],
+      )
+  }
+}
+
+// `commit_or_retry`, with one refusal pulled out of the retry ladder: a
+// stale expectation on the *mark's* cell is not a race against the
+// strand, it is the answer to the question the mark asked. Retrying it
+// would spend four attempts reloading operation state that was never
+// the problem and then report `RaceLost`, which names the wrong cause —
+// the same mistake the lease branch was written to avoid.
+fn commit_admission(
+  result: Result(tx.CommitResult, CommitError),
+  mark: Option(Mark),
+  on_ok on_ok: value,
+) -> Result(Attempt(value), ApiError) {
+  case conflicted_key(result, mark) {
+    Some(key) -> Ok(Done(Error(FactConflict(key:))))
+    None -> commit_or_retry(result, on_ok:)
+  }
+}
+
+// The mark's key, when this commit failed on the mark's own expectation.
+fn conflicted_key(
+  result: Result(tx.CommitResult, CommitError),
+  mark: Option(Mark),
+) -> Option(String) {
+  case result, mark {
+    Error(tx.StaleExpectation(failed:)), Some(Mark(key:, ..)) ->
+      case failed {
+        tx.Expect(ns: register.FactCustom, key: failed_key, seq: _)
+          if failed_key == key
+        -> Some(key)
+        tx.Expect(..) -> None
+      }
+    Error(tx.StaleExpectation(..)), None
+    | Error(tx.Corruption(..)), Some(_)
+    | Error(tx.Corruption(..)), None
+    | Error(tx.Faulted(..)), Some(_)
+    | Error(tx.Faulted(..)), None
+    | Error(tx.LeaseLost(..)), Some(_)
+    | Error(tx.LeaseLost(..)), None
+    | Ok(_), Some(_)
+    | Ok(_), None
+    -> None
   }
 }
 
