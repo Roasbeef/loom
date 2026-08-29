@@ -41,6 +41,7 @@ import machine/strand as machine_strand
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/lineage
 import runtime/writer
 import session/session
 import storage/storage
@@ -177,6 +178,85 @@ pub fn a_rule_tripped_on_an_idle_strand_starts_no_run_test() {
   stop(rig)
 }
 
+// --- the dead child ---------------------------------------------------------
+
+// Issue #113: a hold on a strand the ledger says was reaped is
+// abandoned, not retried forever. The observable is behavioral rather
+// than a peek at the scanner's own bookkeeping: a fresh run later opens
+// on the very strand an ordinary hold would have fired into the instant
+// it could, and the rule still never fires — proving the scanner never
+// looked again, rather than merely losing a race.
+pub fn a_held_rule_on_a_reaped_child_strand_is_abandoned_test() {
+  let assert Ok(rig) = harness([schema_gate()], answers_without_the_trigger())
+    as "the harness must boot"
+  let child = "sub:main/reviewer-1"
+  let assert Ok(Nil) = spawn_idle_strand(rig, child)
+    as "the child strand must settle idle"
+  // The ledger says the child was reaped *before* the scanner ever sees
+  // the trigger — matching #113's own scenario, where the subagent had
+  // already finished and been reaped by the time its history was first
+  // scanned. This is the durable mark `client/agency`'s own lazy reap
+  // enforcement writes, and the only signal this module trusts as "dead"
+  // (never a terminal `last_result` alone: see the module doc for why).
+  // The check runs once, on the pass a hold begins, so it must be in
+  // place before that first pass or this test would only be proving the
+  // ordinary retry behavior over again.
+  write_lineage(rig, child, parent: "main", reaped: True)
+  let assert Ok(Nil) =
+    commit_assistant_on(rig, child, "we should " <> trigger <> " users", 91)
+    as "the trigger entry must commit"
+  let mark = rules.fired_key(strand: child, rule: "schema-gate")
+  poke(rig)
+  process.sleep(200)
+  assert fact(rig.session, mark) == None
+  // A fresh run opens on the same strand. An ordinary hold retries and
+  // fires into it the moment it can; an abandoned one never looks again.
+  let assert Ok(second) =
+    api.prompt(api.on_strand(rig.runtime, child), [user("carry on")])
+    as "the child's second prompt must be accepted"
+  let assert Ok(_outcome) =
+    api.await_result(rig.runtime, second, within_ms: 10_000)
+    as "the child's second run must complete"
+  poke(rig)
+  process.sleep(200)
+  assert fact(rig.session, mark) == None
+  assert occurrences(rendered_of(rig.session, child), body) == 0
+  stop(rig)
+}
+
+// The two fail-open branches: no lineage cell at all (a root strand, or
+// a subagent whose cell has not landed yet) and one that will not
+// decode both keep a hold ordinary. `a_rule_tripped_on_an_idle_strand_
+// starts_no_run_test` above already proves the first, over "main",
+// which never gets a lineage cell of its own; this proves the second.
+pub fn a_held_rule_with_a_corrupt_lineage_cell_still_fires_test() {
+  let assert Ok(rig) = harness([schema_gate()], answers_without_the_trigger())
+    as "the harness must boot"
+  let child = "sub:main/reviewer-2"
+  let assert Ok(Nil) = spawn_idle_strand(rig, child)
+    as "the child strand must settle idle"
+  let assert Ok(Nil) =
+    commit_assistant_on(rig, child, "we should " <> trigger <> " users", 92)
+    as "the trigger entry must commit"
+  write_corrupt_lineage(rig, child)
+  let mark = rules.fired_key(strand: child, rule: "schema-gate")
+  poke(rig)
+  process.sleep(200)
+  assert fact(rig.session, mark) == None
+  // Fail open: doubt about the ledger must never read as "dead", so the
+  // hold is retried and fires as soon as a run opens.
+  let assert Ok(second) =
+    api.prompt(api.on_strand(rig.runtime, child), [user("carry on")])
+    as "the child's second prompt must be accepted"
+  let assert Ok(_outcome) =
+    api.await_result(rig.runtime, second, within_ms: 10_000)
+    as "the child's second run must complete"
+  poke(rig)
+  process.sleep(200)
+  assert occurrences(rendered_of(rig.session, child), body) == 1
+  stop(rig)
+}
+
 // --- driving ---------------------------------------------------------------
 
 // Two runs, the second gated on the fired-mark. Whichever of them the
@@ -262,12 +342,7 @@ fn harness(
       tools: refusing_tools(),
       hooks: effects.default_hooks(),
     )
-  let configuration =
-    machine_strand.StrandConfiguration(
-      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
-      thinking_level: machine_strand.ThinkingOff,
-      active_tool_names: [],
-    )
+  let configuration = strand_configuration()
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
@@ -306,6 +381,96 @@ fn harness(
 fn stop(rig: Rig) -> Nil {
   process.kill(rig.services)
   process.kill(rig.runtime.tree.supervisor)
+}
+
+fn strand_configuration() -> machine_strand.StrandConfiguration {
+  machine_strand.StrandConfiguration(
+    model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+    thinking_level: machine_strand.ThinkingOff,
+    active_tool_names: [],
+  )
+}
+
+// A second, genuinely running strand, seeded and settled through one
+// harmless brief — real registers, a real driver, under the same
+// supervisor "main" runs under. Used to give a subagent-shaped strand a
+// real idle `strand.state` before a test hand-writes a trigger entry and
+// a lineage cell onto it; the scanner does not care how a strand came to
+// exist, only that it has a leaf, an idle state and a committed message.
+fn spawn_idle_strand(rig: Rig, strand: String) -> Result(Nil, String) {
+  use op <- result.try(
+    api.create_strand(
+      rig.runtime,
+      named: strand,
+      configuration: strand_configuration(),
+      at: None,
+      brief: [user("settle in")],
+    )
+    |> result.map_error(string.inspect),
+  )
+  use _outcome <- result.try(
+    api.await_strand_result(
+      rig.runtime,
+      strand:,
+      operation: op,
+      within_ms: 10_000,
+    )
+    |> result.replace_error("the child's first run did not settle"),
+  )
+  Ok(Nil)
+}
+
+// A held rule's strand judged dead needs the ledger's own verdict: the
+// `runtime/lineage` cell `client/agency`'s reap enforcement would have
+// written. Written directly here, because this harness runs no Agency —
+// the scanner does not know or care who wrote the cell, only what it
+// says.
+fn write_lineage(
+  rig: Rig,
+  strand: String,
+  parent parent: String,
+  reaped reaped: Bool,
+) -> Nil {
+  let #(brief, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 1_756_000_500_000), seed: 501))
+  let cell =
+    lineage.Lineage(
+      strand:,
+      parent:,
+      depth: 1,
+      minted_by: lineage.CallSite(
+        operation: brief,
+        step_id: "rulescan-test-step",
+        source_index: 0,
+      ),
+      brief:,
+      tools: [],
+      deadline: None,
+      detached: False,
+      reaped:,
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      lineage.register_key(strand),
+      lineage.encode(cell),
+    )
+    as "the lineage cell must commit"
+  Nil
+}
+
+// A lineage cell that exists but will not decode: missing every field
+// `lineage.decode` requires. The scanner must fail open on this exactly
+// as it does on no cell at all.
+fn write_corrupt_lineage(rig: Rig, strand: String) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      lineage.register_key(strand),
+      json.Object([#("not-a-lineage-cell", json.Bool(True))]),
+    )
+    as "the corrupt cell must still commit"
+  Nil
 }
 
 // A hint with nothing behind it: the scanner pulls its truth from the
@@ -464,8 +629,19 @@ fn idle(rig: Rig) -> Bool {
 // run — a state no scripted provider can produce, because a settlement
 // only ever happens inside one.
 fn commit_assistant(rig: Rig, text: String) -> Result(Nil, String) {
+  commit_assistant_on(rig, "main", text, 77)
+}
+
+// The same trick, onto any strand's leaf, distinguished by `seed` so two
+// calls in the same test mint different entry ids.
+fn commit_assistant_on(
+  rig: Rig,
+  strand: String,
+  text: String,
+  seed: Int,
+) -> Result(Nil, String) {
   use leaf_cell <- result.try(
-    session.strand_leaf(rig.session, "main")
+    session.strand_leaf(rig.session, strand)
     |> result.replace_error("the leaf register did not read"),
   )
   use session.Cell(seq: leaf_seq, value: leaf) <- result.try(option.to_result(
@@ -473,7 +649,10 @@ fn commit_assistant(rig: Rig, text: String) -> Result(Nil, String) {
     "the strand has no leaf register",
   ))
   let #(id, _next) =
-    ids.mint_entry(ids.generator(clock.fixed(at: 1_756_000_900_000), seed: 77))
+    ids.mint_entry(ids.generator(
+      clock.fixed(at: 1_756_000_900_000 + seed),
+      seed:,
+    ))
   let commit =
     tx.Tx(
       writes: [
@@ -487,12 +666,12 @@ fn commit_assistant(rig: Rig, text: String) -> Result(Nil, String) {
         )),
         tx.SetRegister(
           ns: register.StrandLeaf,
-          key: "main",
+          key: strand,
           value: register.leaf_value(Some(id)),
         ),
       ],
       expected: [
-        tx.Expect(ns: register.StrandLeaf, key: "main", seq: Some(leaf_seq)),
+        tx.Expect(ns: register.StrandLeaf, key: strand, seq: Some(leaf_seq)),
       ],
     )
   writer.commit(process.named_subject(rig.runtime.tree.writer), commit)
@@ -503,7 +682,11 @@ fn commit_assistant(rig: Rig, text: String) -> Result(Nil, String) {
 // --- projection ------------------------------------------------------------
 
 fn rendered(opened: session.Session) -> String {
-  let leaf = case session.strand_leaf(opened, "main") {
+  rendered_of(opened, "main")
+}
+
+fn rendered_of(opened: session.Session, strand: String) -> String {
+  let leaf = case session.strand_leaf(opened, strand) {
     Ok(Some(session.Cell(value: leaf, ..))) -> leaf
     Ok(None) | Error(_reason) -> None
   }
