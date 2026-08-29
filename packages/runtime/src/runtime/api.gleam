@@ -1444,19 +1444,41 @@ pub const session_fact_prefix = "session/"
 /// and `facts` hides it — so the mark means what the scanner wrote.
 pub const rule_fact_prefix = "rule/"
 
+/// The reserved `fact.custom` key prefix scheduled heartbeats keep their
+/// durable state under: one write-once fired-mark per
+/// `{strand, schedule, occurrence}` (`client/schedule` builds the key).
+/// The schedule *config* is never here — schedules are operator
+/// configuration read from `loom.toml`, exactly as rules are — and the
+/// only thing that has to survive a crash or a restart is which
+/// occurrences have already fired.
+///
+/// Disjoint from `rule_fact_prefix` on purpose, per the same reasoning
+/// that keeps `lineage/` two letters from the model-writable `agent/`
+/// rather than folded into an existing prefix: a namespace holding a
+/// security-relevant write-once mark earns its own corner rather than
+/// sharing one with a mechanically similar but distinct feature, so
+/// neither can be mistaken for the other's key shape. What a forged write
+/// here would let a model do is the same shape of harm `rule/` guards
+/// against: mark an occurrence as already fired so a heartbeat the
+/// operator configured never fires (and, for a `wake = true` schedule,
+/// never wakes the strand it was meant to check on).
+pub const schedule_fact_prefix = "schedule/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The six corners, and what each would let a forged write do:
+/// The seven corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
 /// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
 /// the operator's channel; `session/` — re-point the session's own
 /// identity, and with it every stream keyed by it; `rule/` — mark an
-/// operator's project rule as already fired, so it never fires.
+/// operator's project rule as already fired, so it never fires;
+/// `schedule/` — mark a scheduled heartbeat's occurrence as already
+/// fired, so it never fires either.
 ///
 /// ## Examples
 ///
@@ -1475,6 +1497,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, prompt_fact_prefix)
   || string.starts_with(key, session_fact_prefix)
   || string.starts_with(key, rule_fact_prefix)
+  || string.starts_with(key, schedule_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
