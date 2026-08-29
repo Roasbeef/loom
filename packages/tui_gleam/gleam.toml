@@ -1,0 +1,18 @@
+name = "tui_gleam"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.16.0"
+
+[dependencies]
+argv = ">= 1.1.0 and < 2.0.0"
+core = { path = "../core" }
+etui = { git = "https://github.com/lupodevelop/etui.git", ref = "699d2c0a1e7f5d2ae109b00927bd5484a056517a" }
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_http = ">= 4.0.0 and < 5.0.0"
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+mork = ">= 1.12.1 and < 1.13.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
+stratus = ">= 3.0.0 and < 4.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
