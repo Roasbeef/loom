@@ -13,14 +13,14 @@ work with a home** (real work a milestone or a Part 5 follow-up track
 already owns), or **deferred work with no home** (real work scheduled
 nowhere). The two tables below name the second and third classes. The
 rule for reading them: *an item named in neither table is settled* —
-which is 99 of the 122 items. A recorded option nobody must exercise (a
+which is 110 of the 135 items. A recorded option nobody must exercise (a
 "candidate for hoisting if the duplication grates") stays settled; only
 work someone must do to meet a stated criterion is listed here.
 
 Items are cited as section plus the number as written in the list
 (`WP-J 14`, `M3 runtime wave 11`).
 
-### Deferred work with a home (5)
+### Deferred work with a home (7)
 
 | Item | The work | Scheduled at |
 |---|---|---|
@@ -29,6 +29,8 @@ Items are cited as section plus the number as written in the list
 | M2 integration 3 | a provider surface for deferred polls | M5 — the structural-summaries half shipped in Stage C0 (`client/wiring.summary_provider_request`); polls remain unwired |
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
+| M2 memory 8 | indexing `memory/*` rows so memory is reachable through `history_search`, with the by-type exclusion that would make it safe | memory stage M3, with the tokenizer upgrade |
+| M2 memory 9 | the first-order erasure cascade over provenance: erase X → find the distillates naming X's entries → re-consolidate without them | issue #115 |
 
 ### Deferred work with no home (14)
 
@@ -1053,3 +1055,128 @@ spec supplies none.
    (`rule.holding`), and the per-pass cost is bounded by `scan_limit`;
    a terminal state for provably-dead strands is follow-up work, filed
    on the issue tracker rather than solved with a lineage read here.
+
+## From memory stage M2 (`client`, `tools`) — issue #29
+
+Spec Part 5 track 8 names the memory→skill promotion path and nothing
+about the memory session itself; the design note
+(`docs/design-notes/compaction-and-memory.md`, Part 3 and Part 5 stage
+M2) is the design of record, and the issue's rulings are its
+interpretation. Recorded here because the spec supplies none.
+
+1. **The fold is the session directory, not the workspace.** The note
+   says "a dedicated memory session per workspace". `--workspace`
+   defaults to the working directory and can differ per invocation while
+   the session directory is stable, so folding on it would make one
+   repository two memories the first time somebody started a server from
+   a subdirectory — the omp lowercased-basename lesson the note itself
+   warns about. `loom-memory.db` therefore lives beside
+   `loom-search.db`, on the fold memory stage M1 already established.
+2. **"Leased" is the ordinary writer lease, and the pipeline is a
+   command rather than a resident.** `gleam run -m client/distill` opens
+   the memory session under `owner: "loom-distill"` and holds it for the
+   run; a second concurrent run loses `LeaseHeld`, which is precisely
+   the single-writer consolidation semantics omp bought with a
+   lease-and-heartbeat. No new lease type, no heartbeat, and no
+   background writer inside `loom-server` — which never opens the memory
+   session at all.
+3. **`LeaseHeld` on a source *is* the live-session skip rule.** The note
+   says "skip sessions younger than a few idle hours". A live server
+   holds its session's writer lease, so the pipeline's open fails and
+   that file is skipped: the same intent, structurally, with no clock
+   arithmetic and no second read path. The other half of the note's
+   heuristic — skipping sessions older than ~30 days — is deliberately
+   not implemented: the per-source cursor makes an old session cost one
+   open and no model turn.
+4. **The anti-feedback exclusion is `client/distill.extractable`, and it
+   is a rule about types.** Extraction takes settled assistant text
+   (`client/rules.scannable_text`, shared with the triggered-rule
+   scanner) plus compaction and branch summaries. A user turn
+   contributes nothing, which excludes an injected memory digest by
+   *role*; a `CustomEntry` contributes nothing, which excludes `memory/*`
+   rows planted in a source session by *type*. The memory file is never
+   opened as a source, so the exclusion holds twice over.
+   **The honest limit:** once a summarizer has paraphrased a digest into
+   a compaction summary, no type survives to exclude it. Dilution
+   through summaries reaches the same first-derivation boundary erasure
+   does (item 9), and is stated rather than defended. What a preference
+   stated in a user turn loses to this rule, the `remember` door
+   supplies — that is what it is for.
+5. **The digest crosses to the server as a sidecar file, and the file
+   holds the body only.** Consolidation renders the head into
+   `loom-memory.digest`; the server reads it once at boot, takes no
+   lease and holds no handle, and injects it at every run start. The
+   fence and the attribution are built at injection time
+   (`client/memory.wrapped`) rather than stored, so a digest file
+   somebody managed to write cannot forge its own provenance — claim to
+   be operator text, or close the fence and speak outside it. The file
+   is also protected in the base policy, conditionally, where a writable
+   root reaches its directory (`client/serve.protecting_memory`); the
+   condition is the missing-file-under-a-read-only-parent hazard the
+   index family's own list was narrowed for, not a convenience.
+   "Memory updates land at session boundaries" is then a property of the
+   arrangement rather than a check: the bytes are fixed at boot.
+6. **The memory session's registers need no reserved prefix.**
+   `runtime/api` reserves `fact.custom` prefixes because a model can
+   reach `put_fact`. Nothing model-influenced can reach a register in
+   the memory file: it is never opened through `runtime/api`, and the
+   only model-reachable door into it is `remember`, which appends one
+   entry under a type the host chooses and can name neither a register
+   nor its own entry type. So `distill/head`,
+   `distill/cursor/<session-id>`, `distill/notes` and `remember/count`
+   are plain cells, and the six reserved corners were not extended.
+7. **Disjoint entry types are pinned by a test, not by a registry.** The
+   pipeline writes `memory/fact`, `memory/lesson` and
+   `memory/preference`; `remember` writes `memory/note`. Both lists are
+   exported constants and a test asserts the intersection empty. There
+   are exactly two writers, both harness-side, and a model never chooses
+   a type string — `client/distill.parse_candidates` maps model output
+   through `client/memory.type_named`, which does not accept `note` — so
+   a registry would be machinery with no threat to answer.
+8. **`CustomEntry` stays unindexed, and `events` is untouched by this
+   stage.** The note's "memory becomes searchable through
+   `history_search`" is deferred with the tokenizer to memory stage M3:
+   indexing `memory/*` opens exactly the loop the anti-feedback rule
+   exists to shut, and recall of memory in M2 *is* the injected digest.
+   WP-K item 9's `history_search`-echo loop stays open for the same
+   reason — its closure belongs with M3's indexing decision, where the
+   by-type machinery would pay for both.
+9. **Erasure stops at the first derivation, and the cascade is filed
+   rather than built.** Every distillate carries provenance — the source
+   session ids and entry ids it was distilled from, and the memory entry
+   ids it supersedes — which makes the design possible: erase X, find
+   the distillates naming X's entries, re-consolidate without them.
+   Issue #115 carries that implementation. What provenance cannot buy is
+   stated here: a consolidation of a consolidation carries its
+   predecessor's id and not its predecessor's whole source list, so the
+   guarantee ends at the first derivation unless every derivation keeps
+   full source lists. The compaction analogue is already recorded (the
+   spec's erase-X audit includes retained-tail copies), and the
+   summary-dilution twin is item 4.
+10. **The per-run digest re-injection is the accumulation item already
+   recorded, not a new one.** A `run_start` message is a born-placed
+   durable entry, so a session accumulates one capped digest copy per
+   run until compaction evicts them — exactly WP-K item 8, now with a
+   second digest riding it. The per-injection bound is real; an
+   in-context total bound is not. Skip-if-unchanged remains the named
+   remedy, and remains unbuilt until the cost shows.
+11. **The deterministic simulation stays single-session, so the crash
+   points are integration tests.** "Conformance scenarios for the
+   pipeline's crash points" is met by the `memory_recall_test` shape —
+   real session files, a real memory session, a scripted provider, the
+   kill driven by running the consolidation's phases and stopping
+   between them. The simulation runner models one session's operation
+   state space; a pipeline that walks a *directory* of session files has
+   no place in it, and giving it one would be a large change to the
+   thing whose determinism everything else rests on.
+12. **`--config` is required for `client/distill`.** A run dispatches
+   two model turns, so it needs a catalogue; unlike `loom-server` there
+   is no zero-config posture worth preserving, because a distillation
+   run nobody scheduled is not a thing that happens. The environment
+   fallback `client/serve` keeps is deliberately not duplicated.
+13. **A consolidation that produces nothing usable refuses the run.** The
+   head is replaced wholesale, so a model answer with no parseable lines
+   would otherwise erase memory and advance every cursor past the
+   sources that fed it — one malformed turn, and the repository forgets.
+   The run fails instead, leaving the head, the cursors and the sidecar
+   where they were, and the next run retries over the same input.

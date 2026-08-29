@@ -25,6 +25,17 @@ a **History** record of closures declared here and filled by
 the limit clamp, the empty-query refusal, and the fence that keeps
 another session's text quoted as data.
 
+And `remember`, the model's one door into the repository's durable
+memory. Same shape again, and the same reason twice over: `client/memory`
+owns the memory session file, and the two caps that matter — redaction
+through `telemetry/field.scrub_text`, and a lifetime ceiling held in a
+durable counter — are things this package can neither perform nor read.
+So the tool is a shell over a **Memory** record of one closure, and the
+constants it states in its description (`max_note_chars`, `max_notes`)
+are the single definition the far side enforces. There is no tool to read
+memory back: recall of memory is a digest the host injects at run start,
+so there is no read door to poison and no argument that could name one.
+
 And `code_mode`, through which a model submits a *program* instead of a
 call. It has the same shape as the agent family and the same reason for
 it: `codemode` already depends on this package — its capability router
@@ -137,6 +148,17 @@ can repair from.
   (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
   `ThisSession` means the *host's*, because a model that could name one
   could read a session it was never given.
+- `tools/remember.{Memory, Refusal, tool, tool_name, note_type,
+  entry_types, max_note_chars, max_notes, refusal_outcome,
+  says_something}` — the memory door and the `remember` tool over it.
+  `Memory.remember` takes the model's text untrimmed and answers `Nil` or
+  a `Refusal` (`MemoryBusy` | `MemoryUnavailable` | `NoteTooLong` |
+  `CeilingReached` | `NothingToRemember`); `MemoryBusy` is what a caller
+  gets while a distillation run holds the memory session's writer lease,
+  and it is a refusal to say again later, not a fault. `note_type` is the
+  only type this door can produce and `entry_types` exists so the
+  disjointness test against `client/memory.pipeline_types` intersects two
+  lists rather than comparing two spellings.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -157,8 +179,9 @@ can repair from.
   `client` (`client/wiring` builds the per-call `Ctx`
   and dispatches through the registry; `client/agency` fills the
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
-  and `client/serve` registers all three families; `client/history` fills
-  the `history.History` record),
+  and `client/serve` registers all four families; `client/history` fills
+  the `history.History` record and `client/memory` fills the
+  `remember.Memory` record),
   `conformance` (the wiring/e2e suites drive the same adapter).
 - **Generated from**: `packages/cap`, at build time and not as a
   dependency edge — `scripts/gen-prelude.sh` runs `gleam export
@@ -187,7 +210,8 @@ can repair from.
   workspace readable, nothing writable, network off; `history_search`
   asks for **nothing at all** — no readable root, no writable root, no
   network — because it starts no jailed process and touches no path: the
-  index is read harness-side through the seam; `code_mode` asks
+  index is read harness-side through the seam, and `remember` asks for
+  nothing for the same reason; `code_mode` asks
   workspace write and the whole filesystem readable (the Gleam and Erlang
   toolchains live outside it), and declaratively only — it clears nothing
   through `Ctx.clear_call`, because the build and the node are cleared
@@ -289,12 +313,19 @@ can repair from.
   digest-bound edit respectively. `history_search` is `Safe` too, and
   needs no budget headroom with it: it clears nothing through the
   broker, so a batch of them shares no ledger to be refused out of.
+  `remember` is `Never`: it mints a fresh entry id per admission, so a
+  replay would write the note twice and spend two of the lifetime
+  ceiling's slots. The synthetic interrupted result is the right answer —
+  saying it again is cheap.
 - **`execution_mode` is a scheduling constraint**: `Exclusive` for bash,
-  write, and edit (they may mutate the workspace); `Concurrent` for read
-  and grep. A `Concurrent` tool's own declared budget must agree with
-  that tag: the broker pools `max_outstanding` per `{op_id, step_id}` —
-  the whole batch, not one call's fan-out (`docs/adr/005-budget-pooling-
-  granularity.md`) — so a `Concurrent` tool sharing a batch with itself
+  write, edit, and `remember` (they may mutate something shared — for
+  `remember`, the memory session, whose writer lease two calls in one
+  batch would fight over for no reason a caller could see);
+  `Concurrent` for read and grep. A `Concurrent` tool's own declared
+  budget must agree with that tag: the broker pools `max_outstanding`
+  per `{op_id, step_id}` — the whole batch, not one call's fan-out
+  (`docs/adr/005-budget-pooling-granularity.md`) — so a `Concurrent`
+  tool sharing a batch with itself
   needs headroom above `1` in that same ledger, or a second concurrent
   call is refused `OutstandingCapReached` for no reason a caller can see
   (issue #50; `grep.max_concurrent_searches` is the one declared to
@@ -306,6 +337,11 @@ can repair from.
   addressed to the reader, and breaks any backtick run in a snippet that
   could close the fence early. A snippet that could close it would make
   everything after it read as the harness talking.
+- **A model cannot choose what memory it writes.** `remember` takes one
+  string and no type: the host writes `memory/note` and nothing else,
+  which is half of the disjointness the distillation pipeline's own types
+  rest on. A model can never forge a "consolidated" fact, and the
+  pipeline's parser refuses `note:` from the other direction.
 - **The limit clamp is the tool's, not the index's.** A limit reaches SQL
   `LIMIT ?`, and SQLite reads a *negative* limit as unbounded — the
   opposite of `storage`'s convention, where a non-positive limit returns
