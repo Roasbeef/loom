@@ -9,6 +9,7 @@ func TestRules(t *testing.T) {
 	got := Rules(PolicyView{
 		WritableRoots: []string{"/work/b", "/work/a"},
 		ReadableRoots: []string{"/opt"},
+		WritableFiles: []string{"/dev/null"},
 		ScratchPath:   "/tmp",
 	})
 	want := []Rule{
@@ -16,6 +17,7 @@ func TestRules(t *testing.T) {
 		{Path: "/opt", Access: ReadOnly, Optional: true},
 		{Path: "/work/a", Access: ReadWrite, Optional: true},
 		{Path: "/work/b", Access: ReadWrite, Optional: true},
+		{Path: "/dev/null", Access: ReadWrite, File: true},
 		{Path: "/tmp", Access: ReadWrite, Optional: true},
 	}
 	if !reflect.DeepEqual(got, want) {

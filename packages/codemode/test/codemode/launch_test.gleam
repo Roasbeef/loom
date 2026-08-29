@@ -18,6 +18,7 @@ import codemode/launch
 import codemode/satellite
 import core/clock
 import core/ids
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/string
@@ -41,9 +42,24 @@ fn op_id() -> ids.OpId {
   op
 }
 
+// A Unix socket path may not exceed the kernel's `sun_path` limit, which
+// is 104 bytes on macOS. Prefer an explicitly configured short scratch,
+// then a directory under HOME. Neither fallback is under `/tmp`, because
+// the production jail replaces `/tmp` with its scratch tmpfs and correctly
+// refuses a cap socket hidden there. With neither variable set, the test
+// stays in-tree and lets the launcher's own 100-byte guard name a checkout
+// that is too deep.
 fn fresh_dir(name: String) -> String {
   let assert Ok(here) = simplifile.current_directory()
-  let dir = here <> "/build/cmtest/launch-" <> name
+  let base = case ffi_peer.get_env("LOOM_TEST_SCRATCH") {
+    Ok(scratch) -> scratch
+    Error(Nil) ->
+      case ffi_peer.get_env("HOME") {
+        Ok(home) -> home <> "/.loom-cmtest"
+        Error(Nil) -> here <> "/build/cmtest"
+      }
+  }
+  let dir = base <> "/launch-" <> name
   let _cleared = simplifile.delete(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
   dir
@@ -272,6 +288,28 @@ pub fn a_covered_cap_socket_is_reachable_test() {
 }
 
 // --- in-band refusals -----------------------------------------------------
+
+pub fn an_overlong_cap_socket_is_refused_before_listen_test() {
+  let dir = fresh_dir("overlong")
+  let socket_dir = dir <> "/" <> string.repeat("x", 100)
+  let assert Ok(Nil) = simplifile.create_directory_all(socket_dir)
+  let wire = process.new_subject()
+  let broker_actor =
+    start_broker(fn() {
+      Ok(fake_helper.start_helper(fake_helper.HoldForCancel))
+    })
+  let overlong =
+    satellite.LaunchSpec(
+      ..spec(dir, wire),
+      cap_socket_path: socket_dir <> "/cap.sock",
+    )
+  assert bit_array.byte_size(<<overlong.cap_socket_path:utf8>>) > 100
+  let assert Error(reason) = launch.launcher(config(broker_actor))(overlong)
+  assert string.contains(reason, "longer than the 100 bytes")
+  // The worded refusal is produced before the listener can bind anything.
+  assert !rig.exists(overlong.cap_socket_path)
+  broker.stop(broker_actor)
+}
 
 pub fn a_starved_budget_refuses_the_launch_test() {
   let dir = fresh_dir("starved")

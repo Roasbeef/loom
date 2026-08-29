@@ -606,37 +606,42 @@ pub fn an_abort_during_a_congestion_wait_refuses_the_retry_test() {
   broker.stop(started)
 }
 
-/// A checkout seam slower than what is left of the caller's budget must
-/// produce an in-band refusal, not a dead borrower.
+/// Charging an attempt's elapsed time must stop congestion retry once the
+/// remaining window crosses below the safe retry floor.
 ///
-/// The arithmetic gets there on its own: a 100 ms budget against a 60 ms
-/// seam leaves 40 ms after the first attempt, and a nap of 25 takes the
-/// next attempt's window to 15 — against a broker that demonstrably
-/// needs 60. `process.call` panics on a timeout, so the retry used to
-/// kill the borrower and hand back no verdict at all. The borrower here
-/// is a strand effect process: its death is a synthetic zero-usage
-/// abort, where `NoHelper` is something the model can read and route
-/// around.
+/// The arithmetic gets there on its own: the injected clock charges 60 ms
+/// to the first attempt, leaving 1,020 ms of a 1,080 ms budget, and a nap of
+/// 25 takes the next attempt's window to 995 — just below the 1,000 ms retry
+/// floor. Without charging the attempt, 1,055 ms would remain and the loop
+/// would retry. `process.call` panics on a timeout, so an undersized retry can
+/// kill the borrower and hand back no verdict at all. The borrower here is a
+/// strand effect process: its death is a synthetic zero-usage abort, where
+/// `NoHelper` is something the model can read and route around.
 ///
 /// The loop therefore reserves a window it believes the broker can
 /// answer in and stops rather than spending its last milliseconds on an
-/// exchange it expects to lose.
-pub fn a_slow_seam_refuses_in_band_rather_than_killing_the_caller_test() {
+/// exchange it expects to lose. Logical time keeps that arithmetic independent
+/// of host scheduler load, while the observed checkout count proves the loop
+/// did not issue the dangerous retry.
+pub fn charged_attempt_time_crosses_the_retry_floor_test() {
+  let checkout_attempts = process.new_subject()
   let assert Ok(started) =
     broker.start(
       broker.BrokerConfig(
         entropy: token.production_entropy(),
-        clock: clock.fixed(at: 1000),
+        clock: clock.stepping(from: 1000, by: 60),
         checkout: fn() {
-          process.sleep(60)
+          process.send(checkout_attempts, Nil)
           Error(exec.AllBusy(size: 2))
         },
         checkin: fn(_helper) { Nil },
       ),
     )
-  let verdicts = clear_elsewhere(started, spec(op()), waiting: 100)
+  let verdicts = clear_elsewhere(started, spec(op()), waiting: 1080)
   let assert Ok(Error(broker.NoHelper(error: exec.AllBusy(size: 2)))) =
     process.receive(verdicts, 3000)
+  assert process.receive(checkout_attempts, 1000) == Ok(Nil)
+  assert process.receive(checkout_attempts, 0) == Error(Nil)
   broker.stop(started)
 }
 

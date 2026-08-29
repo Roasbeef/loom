@@ -26,7 +26,17 @@ done
 for pkg in "${targets[@]}"; do
   if [ "$pkg" = "sandbox" ] || [ "$pkg" = "tui" ]; then
     echo "==> $pkg (Go)"
-    (cd "packages/$pkg" && gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$')
+    # Capture the listing directly because macOS wc pads a zero count with
+    # spaces. An assignment preserves gofmt's failure status under set -e,
+    # while using command substitution inside test would hide that failure.
+    (
+      cd "packages/$pkg"
+      unformatted="$(gofmt -l .)"
+      if [ -n "$unformatted" ]; then
+        printf '%s\n' "$unformatted" >&2
+        exit 1
+      fi
+    )
     (cd "packages/$pkg" && go vet ./... && go build ./... && go test ./...)
     continue
   fi

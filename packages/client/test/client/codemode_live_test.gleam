@@ -35,6 +35,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/io
 import gleam/list
@@ -43,6 +44,7 @@ import gleam/result
 import gleam/string
 import mcp/client as mcp_client
 import mcp/codegen
+import provider/secret
 import simplifile
 import support/fake_mcp
 import tools/agent
@@ -89,6 +91,10 @@ pub fn a_submitted_program_runs_and_reports_through_the_tool_test() {
 
 type Ready {
   Ready(helper_path: String, seed_root: String, root: String)
+}
+
+type Prepared {
+  Prepared(helper_path: String, seed_root: String)
 }
 
 fn run_live(ready: Ready) -> Nil {
@@ -182,7 +188,7 @@ pub fn a_narrowed_base_mints_an_approval_the_retry_spends_test() {
 // record for a human to answer. The assertion on `raised.denial.wanted`
 // is the one that was impossible.
 fn run_escalating(ready: Ready) -> Nil {
-  let rig = rig(ready, under: ready.root <> "-escalation")
+  let rig = rig(ready, under: ready.root)
   let seam =
     codemode.seam(codemode.default_config(
       broker: rig.broker,
@@ -281,7 +287,7 @@ pub fn a_program_calls_a_configured_mcp_server_test() {
 // what the fake replaces, and it is the one part of this path that has
 // no bearing on whether a generated façade compiles and dispatches.
 fn run_mcp(ready: Ready) -> Nil {
-  let rig = rig(ready, under: ready.root <> "-mcp")
+  let rig = rig(ready, under: ready.root)
   let layer = live_layer()
   // The generated module is the real artifact: the façade the model
   // writes against and the source the build compiles are the same
@@ -487,7 +493,7 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
   // Short on purpose: the execution's cap socket sits under this root
   // and an AF_UNIX path is capped near 100 bytes, which the tree already
   // refuses in band rather than failing as an opaque `einval`.
-  let rig = rig(fixture.ready, under: fixture.ready.root <> "-mcp-live")
+  let rig = rig(fixture.ready, under: fixture.ready.root)
   // The pid file is the child's own account of itself, written before it
   // answers anything, so a completed handshake means it is there.
   let pid_file = rig.root <> "/server.pid"
@@ -608,10 +614,14 @@ fn digested(base: String, original: String) -> String {
 // --- locating the fixture and its interpreter -------------------------------
 
 fn mcp_process_rig() -> Result(Fixture, String) {
-  use ready <- result.try(prerequisites())
+  // The declared platform skip wins before fixture-specific observations.
+  // Everything after it is non-owning until the final root reservation.
+  use Nil <- result.try(platform_prerequisite())
   use Nil <- result.try(observable_processes())
   use escript <- result.try(escript_path())
   use script <- result.try(fixture_script())
+  use prepared <- result.try(prepare_live_run())
+  use ready <- result.try(reserve_live_run(prepared))
   Ok(Fixture(ready:, escript:, script:))
 }
 
@@ -829,7 +839,7 @@ pub fn a_program_reaches_the_harness_side_capability_bridge_test() {
 // compares its bytes. An id a program cannot resolve to bytes is a
 // capability that reported success and did nothing.
 fn run_bridge(ready: Ready) -> Nil {
-  let rig = rig(ready, under: ready.root <> "-bridge")
+  let rig = rig(ready, under: ready.root)
   let assert Ok(Nil) =
     simplifile.create_directory_all(rig.workspace <> "/notes")
     as "the fixture directory must be creatable"
@@ -1096,7 +1106,7 @@ pub fn a_program_writes_edits_and_is_refused_a_protected_path_test() {
 // afterwards, because a refusal that reported itself and wrote the file
 // anyway would satisfy the first assertion alone.
 fn run_write_bridge(ready: Ready) -> Nil {
-  let root = ready.root <> "-write"
+  let root = ready.root
   let workspace = workspace_in(root)
   let protected = workspace <> "/" <> protected_dir
   // Made before the rig, so the path the base policy protects — and the
@@ -1199,7 +1209,7 @@ pub fn an_orchestration_program_emits_an_artifact_test() {
 // messaging plane works — which `orchestration_sample_test` proves
 // elsewhere, against a real one.
 fn run_orchestration_emit(ready: Ready) -> Nil {
-  let rig = rig(ready, under: ready.root <> "-orch-emit")
+  let rig = rig(ready, under: ready.root)
   let seam =
     codemode.seam(
       codemode.default_config(
@@ -1255,6 +1265,22 @@ fn unreachable_agency() -> agent.Agency {
 // --- the rig ---------------------------------------------------------------
 
 fn prerequisites() -> Result(Ready, String) {
+  use Nil <- result.try(platform_prerequisite())
+  use prepared <- result.try(prepare_live_run())
+  reserve_live_run(prepared)
+}
+
+fn platform_prerequisite() -> Result(Nil, String) {
+  // Match every other real-helper suite: a current binary on a platform with
+  // no jail is not a runnable prerequisite, and the shared reason is what the
+  // declared-skip census audits.
+  case exec.unjailed_skip_reason(exec.host_platform()) {
+    option.Some(reason) -> Error(reason)
+    option.None -> Ok(Nil)
+  }
+}
+
+fn prepare_live_run() -> Result(Prepared, String) {
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner must have a working directory"
   let repo = here <> "/../.."
@@ -1266,13 +1292,129 @@ fn prerequisites() -> Result(Ready, String) {
   ))
   case codemode.discover(seed_root) {
     Error(reason) -> Error(reason)
-    Ok(_toolchain) ->
-      Ok(Ready(
-        helper_path:,
-        seed_root:,
-        root: here <> "/build/codemode-tool-e2e",
-      ))
+    Ok(_toolchain) -> Ok(Prepared(helper_path:, seed_root:))
   }
+}
+
+fn reserve_live_run(prepared: Prepared) -> Result(Ready, String) {
+  use root <- result.try(live_root())
+  Ok(Ready(
+    helper_path: prepared.helper_path,
+    seed_root: prepared.seed_root,
+    root:,
+  ))
+}
+
+// A shallow base keeps every fixture's AF_UNIX socket below the portable byte
+// budget. Each run atomically reserves a production-random directory of its
+// own, so concurrent worktrees cannot share server.pid, sockets or cleanup.
+fn live_root() -> Result(String, String) {
+  let discriminator =
+    token.production_entropy()(8)
+    |> bit_array.base16_encode
+    |> string.lowercase
+  let scratch = case secret.lookup(secret.env(), "LOOM_TEST_SCRATCH") {
+    Ok(path) -> [path]
+    Error(Nil) -> []
+  }
+  select_live_root(
+    list.append(scratch, ["/var/tmp"]),
+    discriminator,
+    reserve_root,
+  )
+  |> result.replace_error(
+    "no safe code-mode live root: LOOM_TEST_SCRATCH and /var/tmp were "
+    <> "relative, private /tmp, over the socket-path budget, or unwritable",
+  )
+}
+
+fn select_live_root(
+  bases: List(String),
+  discriminator: String,
+  reserve: fn(String, String) -> Result(Nil, Nil),
+) -> Result(String, Nil) {
+  case bases {
+    [] -> Error(Nil)
+    [base, ..rest] ->
+      case candidate_root(base, discriminator) {
+        Error(Nil) -> select_live_root(rest, discriminator, reserve)
+        Ok(#(normalized, candidate)) ->
+          case reserve(normalized, candidate) {
+            Ok(Nil) -> Ok(candidate)
+            Error(Nil) -> select_live_root(rest, discriminator, reserve)
+          }
+      }
+  }
+}
+
+fn candidate_root(
+  base: String,
+  discriminator: String,
+) -> Result(#(String, String), Nil) {
+  case string.starts_with(base, "/"), simplifile.resolve(base) {
+    True, Ok(normalized) -> {
+      let candidate = normalized <> "/.loom-client-live-" <> discriminator
+      let socket =
+        candidate
+        <> "/work/"
+        <> codemode.work_directory
+        <> "/0000000000000000/s"
+      case
+        normalized != "/tmp"
+        && !string.starts_with(normalized, "/tmp/")
+        && bit_array.byte_size(<<socket:utf8>>)
+        <= codemode.max_socket_path_bytes
+      {
+        True -> Ok(#(normalized, candidate))
+        False -> Error(Nil)
+      }
+    }
+    _, _ -> Error(Nil)
+  }
+}
+
+fn reserve_root(base: String, root: String) -> Result(Nil, Nil) {
+  use Nil <- result.try(
+    simplifile.create_directory_all(base) |> result.replace_error(Nil),
+  )
+  use Nil <- result.try(
+    simplifile.create_directory(root) |> result.replace_error(Nil),
+  )
+  case simplifile.write(root <> "/.write-probe", "writable") {
+    Ok(Nil) -> Ok(Nil)
+    Error(_) -> {
+      let _cleaned = simplifile.delete_all([root])
+      Error(Nil)
+    }
+  }
+}
+
+pub fn live_root_rejects_bad_candidates_and_falls_through_test() {
+  let too_deep = "/" <> string.repeat("d", 96)
+  let selected =
+    select_live_root(
+      [
+        "relative",
+        "/var/tmp/../../tmp",
+        too_deep,
+        "/unwritable",
+        "/safe",
+      ],
+      "0000000000000000",
+      fn(_base, root) {
+        case string.starts_with(root, "/unwritable/") {
+          True -> Error(Nil)
+          False -> Ok(Nil)
+        }
+      },
+    )
+  assert selected == Ok("/safe/.loom-client-live-0000000000000000")
+}
+
+pub fn live_root_discriminators_make_reserved_roots_unique_test() {
+  let reserve = fn(_base, _root) { Ok(Nil) }
+  assert select_live_root(["/safe"], "0000000000000000", reserve)
+    != select_live_root(["/safe"], "1111111111111111", reserve)
 }
 
 // --- helper staleness (issue #61) -------------------------------------------
@@ -1496,6 +1638,11 @@ fn rig_protecting(
 fn stop_rig(rig: Rig) -> Nil {
   broker.stop(rig.broker)
   exec.stop_pool(rig.pool)
+  // The outcome follows host teardown; its janitor can only repeat idempotent
+  // unlinks, so the settled per-run root is safe to remove here.
+  let assert Ok(Nil) = simplifile.delete_all([rig.root])
+    as "the live rig must remove its per-run roots"
+  Nil
 }
 
 // The session base a live code-mode execution runs under: its own root

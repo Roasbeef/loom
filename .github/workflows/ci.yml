@@ -155,6 +155,14 @@ jobs:
           # a token in .git/config.
           persist-credentials: false
 
+      # The live TUI test drives the built client through a real terminal.
+      # macOS runners do not include tmux, so install the prerequisite rather
+      # than letting the skip census expose a hole in the gate.
+      - name: Install terminal test prerequisite
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux
+
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}

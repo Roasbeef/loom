@@ -1,5 +1,6 @@
 import broker/exec
 import broker/framing
+import broker/internal/ffi_os
 import broker/policy
 import broker/support/fake_helper
 import gleam/erlang/process
@@ -591,10 +592,21 @@ pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
   assert !string.contains(exec.unjailed_skip_marker, ":")
 }
 
-// This host runs the suite, so its own answer must be the jailed one —
-// otherwise every real-helper test below silently stopped running.
-pub fn host_platform_here_is_jailed_test() {
-  assert exec.host_platform() == exec.JailedHost
+// The two CI hosts must agree with the independent OS observation. Linux
+// has the phase-one jail, while Darwin must name why real-helper suites skip.
+pub fn host_platform_here_matches_the_ci_host_test() {
+  case exec.host_platform() {
+    exec.JailedHost -> {
+      assert ffi_os.os_name() == "linux"
+    }
+    exec.UnjailedHost(os_name) -> {
+      assert ffi_os.os_name() == "darwin"
+      assert os_name == "darwin"
+      let assert Some(reason) =
+        exec.unjailed_skip_reason(exec.UnjailedHost(os_name))
+      assert string.contains(reason, "darwin")
+    }
+  }
 }
 
 pub fn silent_layer_fails_full_enforcement_test() {

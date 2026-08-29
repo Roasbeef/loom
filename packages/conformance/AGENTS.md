@@ -199,12 +199,13 @@ them from their own test mains.
   outcome, and an admission whose reply the surface did not observe,
   which is not evidence the commit failed. The recording lives on an
   error path and touches no schedule, so the seed corpus keeps its
-  meaning as a before/after oracle. An intervention's one-shot claim and
-  its admission are one indivisible step on one disposable process
-  (`control.claim_intervention`), because a claim spent by a process the
-  reaper then kills is a scripted turn the run silently loses; when the
-  carrier itself is lost the debt is left open and the run reports
-  `HARNESS LOST A SCRIPTED TURN` rather than an unexplained divergence.
+  meaning as a before/after oracle. The runner takes the intervention's
+  in-memory one-shot claim, while the instrumented store derives the same
+  identity from the queued message's opaque signature and folds a reserved
+  write-once fact into the admission transaction. A retry after a lost reply
+  can therefore ask whether the payload is already durable: a landed first
+  attempt closes the debt, while an absent fact permits a new carrier without
+  admitting the turn twice.
 - **A live intervention's decision belongs to the runner, never to the
   effect that reached its trigger** (#57, diagnosed under #44). A
   `DuringTurn`/`DuringCall` trigger is reached from inside a real effect
@@ -214,41 +215,36 @@ them from their own test mains.
   `intervening@path` instead of one with a cause attached. So
   `surface.intervene` no longer admits: it only asks whether the script
   has anything due at this trigger and, if so, calls
-  `control.await_intervention` and blocks. The runner's drive loop
+  `control.await_intervention` and blocks without an independent timeout.
+  This rendezvous carries a payload, not a loss-tolerant wake-up: resuming the
+  effect while its trigger remained queued would let the admission land after
+  the settlement it must precede. The runner's drive loop
   (`service_interventions` in `runner.gleam`, called from `pump_strand`
   on every pass) drains `control.take_pending_interventions` and fires
-  each one through `surface.fire_due`, which is the same
-  claim-perform-record logic `apply`/`apply_all` always had. The block is
+  each one through `surface.fire_due`. The block is
   what keeps a live-triggered steer landing before the settlement that
   follows it: the effect does not resume until the runner reports the
   admission durable, so the ordering `steer-during-effect` depends on is
   still by construction, not by luck — only the process carrying the
   admission moved, from the effect to the runner, which is never a
-  target of any fault in the taxonomy. What this does *not* do is stop
-  the admission's own target strand from racing its own restart — a name
-  the tree has not yet re-registered still raises regardless of who is
-  calling — so `convergence/projection` on seed 53 still flakes at
-  essentially its documented rate; every occurrence now names its cause
-  where some previously named nothing. See "What this does not cover" in
-  `docs/architecture/simulation.md` for the measurement and why a blind
-  retry is not the next step.
-- **`terminal/last-result-once` has an open, load-dependent flake** (#58).
-  Two confirmed instances (seed 6657 faulted, seed 19195 fault-free) both
-  read `[timing] clean` — no wait, no drop, no dangling intervention —
-  and wrote `strand.last_result` once fewer than the runner recorded
-  operations. `machine/planner.finish` is the only writer and is
-  CAS-guarded and atomic across both copies; the memory backend is one
-  actor serializing every read and write; neither reproduced in isolated
-  reruns (400–3000 rounds apiece) but both appeared under real CPU
-  contention, and adding `io.println` at the suspected sites was itself
-  enough to stop it recurring there — evidence for a genuine interleaving
-  race, not a bookkeeping slip, and checked clear of #57 (seed 6657 fails
-  at the same zero-in-400 rate before and after that change).
-  `Report.terminal_writes_main`/`terminal_writes_sub` (split rather than
-  pre-summed) and the operation list in the failure detail are what a
-  future investigation gets for free; closing it needs sustained load or
-  the injected-scheduler work, not a session's worth of static reading.
-  See `docs/architecture/simulation.md`, "What this does not cover".
+  target of any fault in the taxonomy. If that runner-owned carrier loses its
+  writer call during restart, `surface` reads the transaction's atomic fact
+  directly from the raw durable session: it settles an admission that already
+  landed, or retries one that did not. There is no post-commit counter for a
+  crash to overtake. The `intervening@path` / `intervened@path` bracket remains
+  as a tripwire for any future path that spends a claim without making the
+  payload durable.
+- **`terminal/last-result-once` is fenced across commit visibility** (#58).
+  The memory actor can publish a terminal transaction before the
+  instrumented wrapper records its side counters, while the runner reads
+  that inner actor directly. `CommitStarted`/`CommitSucceeded` hand the
+  accounting fence atomically to the post-commit seam, keeping `seam_quiet`
+  false through successful bookkeeping; `CommitFailed` releases refused
+  commits. The deterministic `simulation_store_test` probes immediately
+  after the raw commit becomes visible and checks both success and failure.
+  The production terminal transaction and the exact once oracle are
+  unchanged. See `docs/architecture/simulation.md`, "What this does not
+  cover".
 - **The perf smoke asserts, it does not merely print.** `storage_suite_test`
   holds the `scan_branch` p50 to `perf_p50_ceiling_us` (15 ms) rather than
   to the 5 ms M0 target it reports against — shared CI hardware has

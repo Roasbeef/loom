@@ -474,11 +474,11 @@ fn timing_line(
       "[timing] HARNESS LOST A SCRIPTED TURN: "
       <> string.join(dangling, ", ")
       <> " — a scripted intervention was claimed and never observed to "
-      <> "land, because the partial crash reaped the process awaiting it. "
+      <> "land after its correlated durable check and bounded retries. "
       <> "The faulted run is one scripted turn short of the fault-free one "
-      <> "for a reason that has nothing to do with the code under test. "
-      <> "This is a known harness limitation, not a finding: see "
-      <> "docs/architecture/simulation.md, \"What this does not cover\"."
+      <> "because the harness violated its own payload contract, not because "
+      <> "the code under test diverged. See docs/architecture/simulation.md, "
+      <> "\"What this does not cover\"."
     // A real millisecond budget ran out. Whatever the check says, this
     // run had a bound in it that is not part of the seed.
     [], [_, ..], _ ->
@@ -867,7 +867,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       ),
       poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
-      after_commit: fn(_ordinal) { post_commit(ctl, script, schedule) },
+      after_commit: fn(_ordinal) { post_commit(ctl, raw, script, schedule) },
       subscribers: [events],
     )
   // Seed the strand first, then arm: seeding commits happen before the
@@ -933,10 +933,10 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   report
 }
 
-// Waits, briefly and boundedly, for the writer's post-commit seam to
-// finish. Exhausting the wait is not an error here: a run that stalled
-// may have left a writer wedged, and `run/terminated` is the check that
-// reports it.
+// Waits, briefly and boundedly, for commit accounting and the writer's
+// post-commit seam to finish. Exhausting the wait is not an error here: a run
+// that stalled may have left a writer wedged, and `run/terminated` is the
+// check that reports it.
 fn settle_seam(ctl: Control, attempts: Int) -> Nil {
   case attempts <= 0 || control.seam_quiet(ctl) {
     True -> Nil
@@ -970,7 +970,12 @@ pub fn configuration() -> StrandConfiguration {
 // trigger, and the abort that races the terminal transaction all fire
 // from here, after the commit is durable and published but before its
 // committer learns of it.
-fn post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
+fn post_commit(
+  ctl: Control,
+  raw: Session,
+  script: Script,
+  schedule: Schedule,
+) -> Nil {
   let armed =
     list.any(schedule.faults, fn(item) {
       case item {
@@ -983,7 +988,7 @@ fn post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
     })
   case armed {
     False -> Nil
-    True -> fire_post_commit(ctl, script, schedule)
+    True -> fire_post_commit(ctl, raw, script, schedule)
   }
   // Closed on every path: the runner treats an open seam as a commit
   // whose schedule has not had its turn yet, so a seam that never
@@ -993,9 +998,14 @@ fn post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
   control.seam_done(ctl)
 }
 
-fn fire_post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
+fn fire_post_commit(
+  ctl: Control,
+  raw: Session,
+  script: Script,
+  schedule: Schedule,
+) -> Nil {
   let landed = control.commits(ctl)
-  terminal_interventions(ctl, script)
+  terminal_interventions(ctl, raw, script)
   case
     list.any(schedule.faults, fn(item) {
       case item {
@@ -1022,13 +1032,13 @@ fn fire_post_commit(ctl: Control, script: Script, schedule: Schedule) -> Nil {
 // into this very writer, so awaiting one deadlocks it until the wait
 // times out — which is how a crash armed on the terminal commit came to
 // lose a race against the runner's own terminal detection.
-fn terminal_interventions(ctl: Control, script: Script) -> Nil {
+fn terminal_interventions(ctl: Control, raw: Session, script: Script) -> Nil {
   use <- bool.guard(
     when: control.read(ctl, "terminal_commits") < 1,
     return: Nil,
   )
   list.each(script.interventions, fn(intervention) {
-    fire_if_terminal(ctl, intervention)
+    fire_if_terminal(ctl, raw, intervention)
   })
 }
 
@@ -1038,12 +1048,16 @@ fn terminal_interventions(ctl: Control, script: Script) -> Nil {
 // schedule aimed at this very commit is about to kill it — claiming
 // here would risk spending the one-shot on a process that does not live
 // long enough to use it.
-fn fire_if_terminal(ctl: Control, intervention: script.Intervention) -> Nil {
+fn fire_if_terminal(
+  ctl: Control,
+  raw: Session,
+  intervention: script.Intervention,
+) -> Nil {
   use <- bool.guard(
     when: script.trigger_of(intervention) != script.AtTerminalCommit,
     return: Nil,
   )
-  surface.apply(ctl, intervention, awaited: False)
+  surface.apply(ctl, raw, intervention, awaited: False)
 }
 
 fn drive_ops(
@@ -1536,7 +1550,7 @@ fn service_interventions(ctx: Context) -> Nil {
     due ->
       list.each(due, fn(waiting) {
         let #(trigger, reply) = waiting
-        surface.fire_due(ctx.ctl, ctx.script, trigger)
+        surface.fire_due(ctx.ctl, ctx.script, ctx.raw, trigger)
         process.send(reply, Nil)
       })
   }
@@ -1556,15 +1570,12 @@ fn pump_strand(
     // it here would end the run while a fault aimed at that commit
     // was still queued. Wait for the seam to close.
     //
-    // A scripted intervention looks like the same race one layer out —
-    // it is claimed before it is admitted, and a partial crash can reap
-    // the process awaiting it — but it is deliberately *not* waited for
-    // here. Waiting was tried: a reaped effect process leaves nobody to
-    // enforce the carrier's own budget either, so a carrier that is
-    // stuck rather than merely slow never settles, and the gate turns a
-    // divergence that names its own cause into a run that never
-    // terminates. The debt is recorded and reported instead — issue #44,
-    // and "What this does not cover" in docs/architecture/simulation.md.
+    // `service_interventions` runs before this read. A live caller cannot
+    // settle while its trigger is queued because `await_intervention` has no
+    // independent timeout, and a dead caller cannot take the runner-owned
+    // decision or its atomic admission fact with it. The admission routine
+    // returns after either settling the durable fact or exhausting its own
+    // bounded carriers; an exhausted debt remains visible to `timing_line`.
     Some(last) ->
       case control.seam_quiet(ctx.ctl) {
         True -> {

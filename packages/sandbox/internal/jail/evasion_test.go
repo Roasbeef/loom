@@ -73,7 +73,7 @@ func TestCancelReachesAPayloadClaimingToBeANamespaceInit(t *testing.T) {
 	unshare := requireTool(t, "unshare")
 	c := newCollector()
 	ex := start(t, testPolicy(t), []string{
-		unshare, "-U", "-p", "-f", "--map-root-user", "/bin/sh", "-c",
+		unshare, "-U", "-p", "-f", "/bin/sh", "-c",
 		`trap 'echo INNER-HANDLER; exit 7' TERM; echo ready; sleep 30 & wait`,
 	}, c.sink)
 	_ = ex.WriteStdin(nil, true)

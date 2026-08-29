@@ -88,6 +88,20 @@ pub fn compile_writes_program_under_pinned_name_test() {
   assert written == source
 }
 
+pub fn compile_prepares_a_writable_temporary_directory_test() {
+  let root = fresh_root("tmpdir")
+  let config =
+    compile.CompileConfig(
+      build_root: root,
+      dependencies: compile.default_dependencies(),
+      generated: [],
+      build: ok_builder,
+    )
+  let assert Ok(_artifact) =
+    compile.compile(vetted("pub fn main() { 1 }\n"), config, build_phase()).result
+  assert simplifile.is_directory(root <> "/tmp") == Ok(True)
+}
+
 pub fn generated_entry_boots_the_pinned_program_test() {
   let root = fresh_root("entry")
   let source = "pub fn main() { 1 }\n"

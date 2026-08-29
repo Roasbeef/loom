@@ -12,15 +12,15 @@ HELPER   := $(GO_PKG)/loom-exec
 # ---------------------------------------------------------------- checking
 
 .PHONY: check
-check: ## Full gate: format check, warning-free build, tests (all packages)
+check: binaries ## Full gate: current helpers, format, build, tests, and lint
 	@scripts/check.sh
 
 .PHONY: check-gleam
-check-gleam: ## Full gate for the Gleam packages only
+check-gleam: binaries ## Full gate for the Gleam packages only
 	@scripts/check.sh $(PACKAGES)
 
 .PHONY: check-%
-check-%: ## Full gate for one package, e.g. make check-machine
+check-%: binaries ## Full gate for one package, e.g. make check-machine
 	@scripts/check.sh $*
 
 .PHONY: test

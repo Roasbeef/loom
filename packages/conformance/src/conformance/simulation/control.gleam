@@ -51,6 +51,9 @@ pub opaque type Message {
   Bump(key: String, reply: Subject(Int))
   Read(key: String, reply: Subject(Int))
   Once(key: String, reply: Subject(Bool))
+  CommitStarted(reply: Subject(Nil))
+  CommitSucceeded(reply: Subject(Int))
+  CommitFailed(reply: Subject(Nil))
   NoteCommit(reply: Subject(Int))
   SeamDone
   SeamQuiet(reply: Subject(Bool))
@@ -78,6 +81,7 @@ type State {
   State(
     counters: Dict(String, Int),
     claimed: Set(String),
+    commits_in_flight: Int,
     commits: Int,
     events: Int,
     runtime: Option(api.Runtime),
@@ -110,6 +114,7 @@ pub fn start() -> Control {
       State(
         counters: dict.new(),
         claimed: set.new(),
+        commits_in_flight: 0,
         commits: 0,
         events: 0,
         runtime: None,
@@ -158,6 +163,40 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         }
       }
+    CommitStarted(reply:) -> {
+      let next = case state.commits_in_flight < 0 {
+        True -> state
+        False -> State(..state, commits_in_flight: state.commits_in_flight + 1)
+      }
+      process.send(reply, Nil)
+      actor.continue(next)
+    }
+    CommitSucceeded(reply:) -> {
+      let commits = state.commits + 1
+      let next = case state.commits_in_flight > 0 {
+        True ->
+          State(
+            ..state,
+            commits_in_flight: state.commits_in_flight - 1,
+            commits:,
+            events: state.events + 1,
+            // Hand the accounting fence directly to the writer's
+            // post-commit seam. No observer can see both as closed.
+            seam_open: state.armed,
+          )
+        False -> poison_accounting(state)
+      }
+      process.send(reply, commits)
+      actor.continue(next)
+    }
+    CommitFailed(reply:) -> {
+      let next = case state.commits_in_flight > 0 {
+        True -> State(..state, commits_in_flight: state.commits_in_flight - 1)
+        False -> poison_accounting(state)
+      }
+      process.send(reply, Nil)
+      actor.continue(next)
+    }
     NoteCommit(reply:) -> {
       let commits = state.commits + 1
       process.send(reply, commits)
@@ -175,14 +214,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     SeamDone -> actor.continue(State(..state, seam_open: False))
     SeamQuiet(reply:) -> {
-      // A crash *is* the seam not finishing: the writer was killed
-      // inside it, so waiting for it to close would wait forever.
-      process.send(reply, !state.seam_open || state.crashed)
+      process.send(reply, state.commits_in_flight == 0 && !state.seam_open)
       actor.continue(state)
     }
     Arm(reply:) -> {
       process.send(reply, Nil)
-      actor.continue(State(..state, armed: True, commits: 0, seam_open: False))
+      actor.continue(
+        State(
+          ..state,
+          armed: True,
+          commits_in_flight: 0,
+          commits: 0,
+          seam_open: False,
+        ),
+      )
     }
     Commits(reply:) -> {
       // Unarmed, the answer is a number no schedule can name, so a fault
@@ -203,7 +248,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, state.runtime)
       actor.continue(state)
     }
-    NoteCrash -> actor.continue(State(..state, crashed: True))
+    NoteCrash ->
+      // The killed writer cannot close its seam. Close that specific seam
+      // here, while leaving later commits responsible for closing their own.
+      actor.continue(State(..state, seam_open: False, crashed: True))
     Note(text:) -> actor.continue(State(..state, notes: [text, ..state.notes]))
     Notes(reply:) -> {
       process.send(reply, list.reverse(state.notes))
@@ -281,6 +329,17 @@ fn current(state: State, key: String) -> Int {
   }
 }
 
+fn poison_accounting(state: State) -> State {
+  case state.commits_in_flight < 0 {
+    True -> state
+    False ->
+      State(..state, commits_in_flight: -1, notes: [
+        "commit accounting underflow",
+        ..state.notes
+      ])
+  }
+}
+
 /// Increments a named counter and returns its new value.
 ///
 /// ## Examples
@@ -318,6 +377,50 @@ pub fn read(ctl: Control, key: String) -> Int {
 ///
 pub fn claim(ctl: Control, key: String) -> Bool {
   process.call_forever(ctl.subject, Once(key, _))
+}
+
+/// Opens the accounting fence before a storage commit can become visible.
+///
+/// The instrumented store performs its bookkeeping after the inner backend
+/// answers. The fence prevents the runner from accepting a terminal result in
+/// the interval between that answer and the corresponding counter updates.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.commit_started(ctl)
+/// ```
+///
+pub fn commit_started(ctl: Control) -> Nil {
+  process.call_forever(ctl.subject, CommitStarted)
+}
+
+/// Atomically hands a successful commit's accounting fence to its seam.
+///
+/// The returned ordinal records the commit in the same actor transition that
+/// closes the fence and opens the post-commit seam, so an observer can never
+/// see both phases as quiet.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.commit_succeeded(ctl)
+/// ```
+///
+pub fn commit_succeeded(ctl: Control) -> Int {
+  process.call_forever(ctl.subject, CommitSucceeded)
+}
+
+/// Closes one accounting fence after the inner backend refuses a commit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.commit_failed(ctl)
+/// ```
+///
+pub fn commit_failed(ctl: Control) -> Nil {
+  process.call_forever(ctl.subject, CommitFailed)
 }
 
 /// Records one successful commit and returns the session-wide ordinal.
@@ -589,30 +692,23 @@ pub fn intervened(ctl: Control, path: String) -> Nil {
 /// survivable: the caller here only has to survive long enough to be
 /// released, not to carry the admission itself.
 ///
-/// The wait is bounded because it is still real milliseconds — the
-/// runner's poll cadence, not a promise — and a caller that gives up
-/// proceeds rather than hangs, exactly like `attempt`'s own deadlock
-/// backstop. In ordinary operation the runner services the queue on
-/// every drive pass, so this returns within a poll or two; reaching the
-/// bound is recorded, not silently absorbed.
+/// The wait has no independent timeout. This rendezvous carries the scripted
+/// payload rather than a loss-tolerant wake-up: if the effect resumed while
+/// its entry remained queued, the runner could admit the steer or follow-up
+/// after the effect's settlement and invert the ordering this handoff exists
+/// to enforce. The runner bounds the admission carrier itself, and always
+/// releases a live caller after that bounded decision finishes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // control.await_intervention(ctl, script.DuringTurn(turn: 1), within_ms: 3000)
+/// // control.await_intervention(ctl, script.DuringTurn(turn: 1))
 /// ```
 ///
-pub fn await_intervention(
-  ctl: Control,
-  trigger: Trigger,
-  within_ms within_ms: Int,
-) -> Nil {
+pub fn await_intervention(ctl: Control, trigger: Trigger) -> Nil {
   let reply: Subject(Nil) = process.new_subject()
   process.send(ctl.subject, AwaitIntervention(trigger, reply))
-  case process.receive(reply, within_ms) {
-    Ok(Nil) -> Nil
-    Error(Nil) -> note_wait(ctl, "expired@await-intervention")
-  }
+  process.receive_forever(reply)
 }
 
 /// Takes every trigger currently awaiting the runner's attention,
@@ -774,14 +870,15 @@ pub fn seam_done(ctl: Control) -> Nil {
   process.send(ctl.subject, SeamDone)
 }
 
-/// Whether no post-commit seam is still running.
+/// Whether no commit accounting or post-commit seam is still running.
 ///
 /// A commit becomes visible in the store before the writer runs the seam
 /// that a crash schedule fires from, so a runner that took the terminal
 /// result the moment it appeared could end a run while the fault aimed
 /// at its last commit was still queued behind an intervention. Waiting
-/// for the seam is what makes a commit-indexed fault's chance to fire
-/// part of the run rather than a race against the observer.
+/// for both phases is what makes the bookkeeping complete and a
+/// commit-indexed fault's chance to fire part of the run rather than a race
+/// against the observer.
 ///
 /// ## Examples
 ///

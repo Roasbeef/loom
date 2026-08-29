@@ -161,10 +161,10 @@ modules, alongside `tui`.
   is the independent second layer.
 - **Landlock has no deny rules, and the layering contract is: strictly
   weaker than the mounts, never independent of them.** Landlock's grants
-  union — RWDirs and RODirs only ever add access, and nothing in the API
-  can subtract from a region another rule already opened — so a reader
-  must not assume Landlock is a second, independent enforcement point
-  that would still hold if the mount plan were wrong. It is not: a
+  union — RWDirs, RWFiles, and RODirs only ever add access, and nothing
+  in the API can subtract from a region another rule already opened — so
+  a reader must not assume Landlock is a second, independent enforcement
+  point that would still hold if the mount plan were wrong. It is not: a
   protected path *inside* a writable root cannot be carved out at the
   Landlock layer, masking it is bwrap's job alone (tmpfs or ro-bind
   shadowing), and without bwrap the carve-out is unenforceable —
@@ -173,19 +173,21 @@ modules, alongside `tui`.
   all), where it is briefly promoted to the only filesystem confinement
   there is, and even then it can only restrict what the mount layer
   would also have restricted, never narrow what a mount would have left
-  open. Concretely: `internal/llock.Rules` grants exactly the same three
+  open. Concretely: `internal/llock.Rules` grants the same three policy
   regions bwrap's own grant phase would bind — the readable roots, the
   writable roots, and (for a host-path scratch only) the scratch — plus
-  the unconditional root-read every jail needs to exec anything. It
-  never sees `protected` at all; that list is bwrap's alone.
+  the unconditional root-read every jail needs to exec anything. Its one
+  non-policy exception is an exact-file RWFiles grant for `/dev/null`, so
+  programs retain a null sink without widening the containing `/dev`
+  directory or granting device ioctls. It never sees `protected` at all;
+  that list is bwrap's alone.
   `internal/jail/stage2.go`'s `landlockView` is where the policy becomes
   that grant set, and it deliberately omits a tmpfs scratch (issue #59):
-  a `tmpfs` scratch is a directory only bwrap can create for the jail's
-  own exclusive use, so under bwrap the grant was pure redundancy — a
-  rule restating what the mount layer already owns outright — and
-  without bwrap there is no tmpfs to grant write on at all, so a policy
-  asking for one gets none rather than a silent substitute of real host
-  `/tmp` that nothing asked for. `scratch: "/"` is refused even earlier,
+  stage 2 has no unforgeable evidence that bwrap replaced `/tmp`, while
+  without bwrap there is no tmpfs to grant write on at all. Omitting the
+  grant keeps degraded execution from silently substituting real host
+  `/tmp`; callers that need temporary writes under Landlock place TMPDIR
+  inside a writable root. `scratch: "/"` is refused even earlier,
   in `broker/policy.gleam`'s `validate` (`ScratchIsRoot`): a host-path
   scratch of the literal root would otherwise reach `internal/llock` as
   `RWDirs("/")`, and because grants union there is no way for any later

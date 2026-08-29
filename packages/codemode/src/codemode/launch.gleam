@@ -138,6 +138,10 @@ const node_report_wait_ms = 6000
 // execution, so a pooled budget of one would starve every `cap_call`.
 const minimum_outstanding = 2
 
+// A cross-platform margin under Linux's 108-byte and macOS's 104-byte
+// `sun_path` limits. Client-side workspace preparation uses the same budget.
+const max_socket_path_bytes = 100
+
 /// Everything the production launcher needs beyond the `LaunchSpec`.
 pub type LaunchConfig {
   LaunchConfig(
@@ -187,6 +191,24 @@ fn launch(
     "the cap token file",
   ))
   use _ <- result.try(private_directory(directory_of(spec.cap_socket_path)))
+  // The kernel truncates nothing and rejects instead: an AF_UNIX bind
+  // address longer than the platform's sun_path limit fails with einval,
+  // which reads as a kernel fault when the real problem is a workspace
+  // (or test scratch) sitting too deep. Name it before listen can see it.
+  // The budget mirrors client/codemode's guard, chosen once so both layers
+  // tell the same story.
+  use _ <- result.try(
+    case socket_path_bytes(spec.cap_socket_path) > max_socket_path_bytes {
+      False -> Ok(Nil)
+      True ->
+        Error(
+          "the cap socket would be "
+          <> spec.cap_socket_path
+          <> ", which is longer than the 100 bytes a unix socket path may "
+          <> "have; run the session from a shallower workspace",
+        )
+    },
+  )
   use listener <- result.try(
     result.map_error(ffi_unix.listen(spec.cap_socket_path), fn(reason) {
       "could not listen on the cap socket: " <> reason
@@ -1018,6 +1040,12 @@ fn stderr_tail(collected: Collected) -> String {
     "" -> ""
     text -> ": " <> string.slice(string.trim(text), at_index: 0, length: 400)
   }
+}
+
+// The socket path's UTF-8 length in bytes — what the kernel's sun_path
+// limit actually counts, not the character count.
+fn socket_path_bytes(path: String) -> Int {
+  bit_array.byte_size(<<path:utf8>>)
 }
 
 fn bit_array_text(bytes: BitArray) -> String {

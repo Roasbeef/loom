@@ -8,11 +8,9 @@ import (
 	"github.com/roasbeef/loom/sandbox/internal/policy"
 )
 
-// #59: a tmpfs scratch is a directory only bwrap can create for the
-// jail's own exclusive use, so Landlock grants it nothing — see
-// landlockView's doc and llock.PolicyView's ScratchPath doc, the
-// contract stage 2 used to contradict.
-func TestLandlockViewGrantsNothingForATmpfsScratch(t *testing.T) {
+// A tmpfs scratch must not become a write grant over the host's /tmp in
+// degraded mode. The single-file null sink grant is independent.
+func TestLandlockViewGrantsNoDirectoryForATmpfsScratch(t *testing.T) {
 	pol := policy.Policy{
 		WritableRoots: []string{"/work"},
 		ReadableRoots: []string{"/opt"},
@@ -22,6 +20,7 @@ func TestLandlockViewGrantsNothingForATmpfsScratch(t *testing.T) {
 	want := llock.PolicyView{
 		WritableRoots: []string{"/work"},
 		ReadableRoots: []string{"/opt"},
+		WritableFiles: []string{"/dev/null"},
 		ScratchPath:   "",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -40,6 +39,7 @@ func TestLandlockViewGrantsAHostPathScratch(t *testing.T) {
 	got := landlockView(pol)
 	want := llock.PolicyView{
 		WritableRoots: []string{"/work"},
+		WritableFiles: []string{"/dev/null"},
 		ScratchPath:   "/var/scratch",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -52,12 +52,25 @@ func TestLandlockViewGrantsAHostPathScratch(t *testing.T) {
 // directly against llock.Rules, the same way TestRules pins the grant
 // set as pure data — so a regression here fails at the layer that
 // decides what gets enforced, not only at the one that renders it.
-func TestLandlockViewFeedsRulesWithNoScratchGrant(t *testing.T) {
+func TestLandlockViewFeedsRulesWithNoDegradedSyntheticGrant(t *testing.T) {
 	pol := policy.Policy{Scratch: "tmpfs"}
 	rules := llock.Rules(landlockView(pol))
 	for _, r := range rules {
-		if r.Access == llock.ReadWrite {
-			t.Fatalf("a tmpfs scratch produced a Landlock write grant: %+v", rules)
+		if r.Access == llock.ReadWrite && !r.File {
+			t.Fatalf("tmpfs scratch produced a directory write grant: %+v", rules)
 		}
+	}
+}
+
+// The null sink is writable without widening the rest of /dev.
+func TestLandlockViewGrantsOnlyTheNullDeviceFile(t *testing.T) {
+	pol := policy.Policy{WritableRoots: []string{"/work"}, Scratch: "tmpfs"}
+	got := landlockView(pol)
+	want := llock.PolicyView{
+		WritableRoots: []string{"/work"},
+		WritableFiles: []string{"/dev/null"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("landlockView mismatch:\n got  %+v\nwant %+v", got, want)
 	}
 }

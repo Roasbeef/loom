@@ -663,6 +663,25 @@ pub fn a_join_answers_every_handle_against_one_deadline_test() {
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Ok(spawned) = harness.seam.spawn(caller, a_spawn("review"))
     as "the child must spawn"
+  // Establish the state this test promises before starting its one deadline:
+  // one handle has settled and one never will. Without this barrier the
+  // zero-rest logical wait can outrun the separately scheduled child driver.
+  assert until(
+    fn() {
+      case
+        api.await_strand_result(
+          harness.runtime,
+          strand: spawned.handle.strand,
+          operation: spawned.handle.operation,
+          within_ms: 0,
+        )
+      {
+        Ok(_last) -> True
+        Error(Nil) -> False
+      }
+    },
+    200,
+  )
   // A second handle on the same (addressable) strand naming an operation
   // that will never settle: the deadline has to answer for it.
   let #(ghost_operation, _generator) =

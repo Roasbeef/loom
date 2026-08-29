@@ -102,11 +102,16 @@ fn sweep_script() -> String {
   <> "  */broker) sleep 1.5 ;;\n"
   <> "  *) sleep 0.5 ;;\n"
   <> "esac\n"
-  <> "matches=$(grep -rlF \"$symbol\" \"$dir\" 2>/dev/null)\n"
+  <> "matches=$(grep -rlF \"$symbol\" \"$dir\" 2>&1)\n"
+  <> "grep_status=$?\n"
   <> "printf '%s %s\\n' \"$dir\" \"$(date +%s%N)\" >> "
   <> completions_file
   <> "\n"
-  <> "if [ -n \"$matches\" ]; then printf '%s\\n' \"$matches\"; fi\n"
+  <> "case \"$grep_status\" in\n"
+  <> "  0) printf '%s\\n' \"$matches\" ;;\n"
+  <> "  1) ;;\n"
+  <> "  *) printf '%s\\n' \"$matches\" >&2; exit \"$grep_status\" ;;\n"
+  <> "esac\n"
   <> "exit 0\n"
 }
 
