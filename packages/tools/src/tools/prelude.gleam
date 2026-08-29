@@ -32,13 +32,13 @@
 ////   f0a42c0ff39998efb24b1961c9aaa2fad262d10c13a1736e55d1bd22ac29e076  packages/cap/src/cap/mcp.gleam
 ////   4af4fb4773f4fb7281cc0361762cca202c92af24d4e191fdb17ba3f09f383e41  packages/cap/src/cap/net.gleam
 ////   449f69c2ca5b09c6c2f5d12cb86ae4bc7c1e90e9ead2c6fe8aaaebbb6be9e14f  packages/cap/src/cap/proc.gleam
-////   fbd196f1cab01e6ace75d87514d13376a1fb6f7726c103d43c6e15b40adad626  packages/cap/src/cap/report.gleam
+////   12992a29cc389f3be764dbaa3f78c79a353b67dff3891f751fca2cc8ab8517a3  packages/cap/src/cap/report.gleam
 ////   3c6837128a8a17020070e7143ebbe27e38278c84e0d74b50c4fa91eeafa243ae  packages/cap/src/cap/runtime.gleam
-////   48dafdb572b23f5a560c142dc2b58a441f00766870e01b08e55b4bafee3e0b58  packages/cap/src/cap/strand.gleam
+////   f2c0250f8abc5f439532a886b27be22692f97fdf5ba4dfa0dae9efd62b310654  packages/cap/src/cap/strand.gleam
 ////   9e3be997402f97b7bb7e91f8776f4c81bed13fe360929b63d59f30a4a9ba8237  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 563135b85851a74f070e301ef77ab9995c949c9c75509e65cbff35c4df8fed6d
+//// Body digest (every line after the marker): 7501966bef861a72aae7e85468136c241d55edf35ff2e51b6959365201e282c1
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -461,6 +461,11 @@ pub type ReportError {
 }
 /// A value's boolean, or `Error(Nil)` when it is not one.
 pub fn as_bool(Value) -> Result(Bool, Nil)
+/// A value's floating-point number, or `Error(Nil)` when it is not one.
+/// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
+/// the two tags are distinct on the wire, and a reader that widened one
+/// into the other would leave a program no way to ask which arrived.
+pub fn as_float(Value) -> Result(Float, Nil)
 /// A value's whole number, or `Error(Nil)` when it is not one. A float is
 /// *not* accepted: rounding silently is how a count becomes wrong.
 pub fn as_int(Value) -> Result(Int, Nil)
@@ -670,12 +675,22 @@ pub type StrandError {
   /// blackboard key outside the allowed shape, a result shape the harness
   /// cannot enforce.
   InvalidArgument(message: String)
+  /// The name this spawn derives is already a child's, minted by a
+  /// different call. Reconciliation hands an existing child back on a
+  /// name match, but only to the caller that minted it; anything else
+  /// would be an ownership transfer. Nothing was started — spawn again
+  /// under a different purpose.
+  NameAlreadyMinted(message: String)
   /// A send upward would have *started* a run rather than steered one:
   /// the parent has finished and nobody is watching it.
   ParentRunEnded(message: String)
   /// A note did not match the result shape this strand's own spawn
   /// demanded of it.
   ResultSchemaUnmet(message: String)
+  /// The durable plane refused or failed underneath the call — a commit,
+  /// a read, a decode. Not the program's mistake and not a bound it hit:
+  /// the harness could not carry out a call it had no objection to.
+  PlaneFailed(message: String)
   /// This execution has admitted as many spawns as it may. The seam's own
   /// ceiling; see the module doc for why a loop needs one where a turn
   /// did not.
