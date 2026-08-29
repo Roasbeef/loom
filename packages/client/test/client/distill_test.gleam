@@ -26,6 +26,7 @@ import provider/gateway as provider_gateway
 import provider/http
 import provider/model
 import provider/secret
+import session/repo
 import session/session
 import simplifile
 import storage/storage
@@ -641,7 +642,277 @@ pub fn an_unusable_consolidation_leaves_memory_alone_test() {
   memory.close(after)
 }
 
+// --- #115: the first-order erasure cascade -----------------------------------
+
+/// **A cascade drops exactly the head rows whose provenance names the
+/// erased session, and the digest stops carrying their text.**
+///
+/// Rows are write-once, so nothing is deleted: the dropped ids are still
+/// readable in the store afterwards, and are inert only because the head
+/// no longer names them — the same class of orphan a crashed
+/// consolidation leaves, which is what `docs/spec-gaps.md` records.
+///
+/// The mutation this is here to catch: invert or remove the provenance
+/// match in `memory.names_source`. Inverted, beta's row is dropped and
+/// alpha's survive; removed, nothing is dropped at all.
+pub fn a_cascade_drops_exactly_the_rows_naming_the_erased_session_test() {
+  let root = fresh_root("cascade-drop")
+  let #(alpha, beta) = mixed_head(root)
+  let assert Some(before) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the mixed head must have rendered"
+  assert string.contains(before, "make check")
+  assert string.contains(before, "prefers tabs")
+
+  let assert Ok(report) =
+    distill.cascade(cascade_config(root), session: "alpha")
+    as "the cascade must run"
+  assert report.session == "alpha"
+  assert report.dropped == 2
+  assert report.kept == 1
+  assert report.digest_bytes > 0
+
+  // The head is exactly beta's rows, in the order it held them.
+  let assert Ok(opened) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#(now, _seq)) = memory.head(opened) as "the head must read back"
+  assert now == beta
+
+  // The digest went with it.
+  let assert Some(after) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the sidecar must survive a cascade"
+  assert string.contains(after, "prefers tabs")
+  assert string.contains(after, "make check") == False
+  assert string.contains(after, "force push") == False
+
+  // Nothing was deleted: the dropped rows are still in the store, still
+  // carrying the provenance that got them dropped. A cascade edits a
+  // pointer, and the store stays append-only.
+  let assert Ok(orphans) = memory.provenance_by_id(opened, alpha)
+    as "the dropped rows must still be readable by id"
+  assert list.length(orphans) == 2
+  assert list.all(orphans, fn(pair) { memory.names_source(pair.1, "alpha") })
+  memory.close(opened)
+}
+
+/// A cascade over a session nothing names is a **true** no-op: the head
+/// cell is not written at all, and the sidecar is byte-identical.
+///
+/// "Not written" is the property, which is why the cell's seq is asserted
+/// rather than its value. CASing the identical id list back would still
+/// bump that seq — a visible write, and one that would lose a concurrent
+/// run's expectation for no reason whatever.
+pub fn a_cascade_over_a_session_nothing_names_moves_nothing_test() {
+  let root = fresh_root("cascade-noop")
+  let named = write_source(root <> "/a.db", 11, [assistant("we chose msgpack")])
+  let prompts = start_recorder()
+  let assert Ok(_first) = distill.run(config(root, prompts))
+    as "the pass must run"
+
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(settled, Some(seq))) = memory.head(opened)
+    as "the head must read"
+  // The head does carry provenance, naming the real source — so the no-op
+  // below is a match that failed, not an absence of anything to match.
+  let assert Ok(pairs) = memory.provenance_by_id(opened, settled)
+    as "the head's provenance must read"
+  assert list.all(pairs, fn(pair) { memory.names_source(pair.1, named) })
+  memory.close(opened)
+  let assert Some(digest) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the pass must leave a digest"
+
+  let assert Ok(report) =
+    distill.cascade(cascade_config(root), session: "a-session-nothing-names")
+    as "the cascade must run"
+  assert report.dropped == 0
+  assert report.kept == 2
+  assert report.digest_bytes == 0
+
+  let assert Ok(after) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#(now, Some(still))) = memory.head(after)
+    as "the head must read back"
+  assert now == settled
+  assert still == seq
+  memory.close(after)
+  assert memory.read_digest(root <> "/loom-memory.digest") == Some(digest)
+}
+
+/// **The erase → cascade → re-distill loop.** After the source is
+/// rewritten and the cascade has dropped what named it, the next run
+/// re-extracts that source from zero — and does so because the *rewrite
+/// generation* moved, not because the cascade reset anything.
+///
+/// Both halves are asserted, because the claim is about which mechanism
+/// does the work: the cursor cell is unchanged after the cascade, and the
+/// source is nonetheless read again from the beginning.
+pub fn an_erase_then_cascade_re_extracts_the_source_on_the_next_run_test() {
+  let root = fresh_root("cascade-erase")
+  let named =
+    write_source(root <> "/a.db", 11, [assistant("we chose msgpack here")])
+  let prompts = start_recorder()
+  let assert Ok(first) = distill.run(config(root, prompts))
+    as "the first pass must run"
+  assert first.rows == 2
+
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(Some(#(recorded_cursor, _seq))) =
+    memory.cell(opened, memory.cursor_key(named))
+    as "the first pass must record a cursor"
+  memory.close(opened)
+
+  // The erase itself: the admin surface above the harness, rewriting the
+  // source in place and bumping its rewrite generation.
+  let assert Ok(rewritten) =
+    repo.rewrite_sqlite(
+      path: root <> "/a.db",
+      clock: a_clock(),
+      rewrite: repo.erase_text(needle: "msgpack", replacement: "[erased]"),
+      rewrite_value: repo.erase_value(
+        needle: "msgpack",
+        replacement: "[erased]",
+      ),
+    )
+    as "the source must be erasable"
+  assert rewritten.generation > 0
+
+  let assert Ok(report) = distill.cascade(cascade_config(root), session: named)
+    as "the cascade must run"
+  assert report.dropped == 2
+  assert report.kept == 0
+
+  let assert Ok(after) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#([], Some(_seq))) = memory.head(after)
+    as "every row named the erased source, so the head is empty"
+  // The cascade moved no cursor: the cell is exactly what the run left.
+  let assert Ok(Some(#(still, _cell))) =
+    memory.cell(after, memory.cursor_key(named))
+    as "the cursor must still be there"
+  assert still == recorded_cursor
+  memory.close(after)
+  // An empty head renders an empty digest, so the sidecar reads as absent.
+  assert memory.read_digest(root <> "/loom-memory.digest") == None
+
+  // And the source is read again from zero, carrying the erased text.
+  //
+  // A fresh entropy seed, because this second run consolidates rather
+  // than going quiet: the rig's clock and seed are fixed, so two
+  // row-writing runs under one seed would mint one id twice and the
+  // second would be refused as already written.
+  let again = start_recorder()
+  let assert Ok(second) =
+    distill.run(distill.Config(..config(root, again), entropy: fn() { 4243 }))
+    as "the second pass must run"
+  assert second.sources == 1
+  let asked = string.join(recorded(again), "\n")
+  assert string.contains(asked, "[erased]")
+  assert string.contains(asked, "msgpack") == False
+}
+
+/// **A cascade killed between the head CAS and the sidecar is reconciled
+/// by the next run**, exactly as a consolidation killed there is.
+///
+/// A cascade writes no rows, so its whole write order is "CAS the head,
+/// then render" — and the sidecar is again the one artifact that can be
+/// left behind its head. Driven by phase: the head is replaced and then
+/// nothing else happens, which is the state a `kill -9` in that window
+/// leaves.
+pub fn a_cascade_killed_before_the_sidecar_is_reconciled_by_the_next_run_test() {
+  let root = fresh_root("cascade-kill")
+  let #(_alpha, beta) = mixed_head(root)
+
+  // The crash point: the head moves, and the process is gone.
+  let assert Ok(dying) = open_memory(root) as "the memory session must reopen"
+  let assert Ok(#(_named, seq)) = memory.head(dying) as "the head must read"
+  let assert Ok(Nil) = memory.replace_head(dying, named: beta, expected: seq)
+    as "the cascade's head CAS must land"
+  memory.close(dying)
+
+  // The sidecar is now behind its head, and nothing but a run would ever
+  // notice: every reader goes through the head.
+  let assert Some(stale) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the stale sidecar must still be there"
+  assert string.contains(stale, "make check")
+
+  // A run with nothing whatever to do puts it right.
+  let prompts = start_recorder()
+  let assert Ok(report) = distill.run(config(root, prompts))
+    as "the reconciling pass must run"
+  assert report.sources == 0
+  assert report.digest_bytes > 0
+  assert recorded(prompts) == []
+  let assert Some(now) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the sidecar must be restored"
+  assert string.contains(now, "prefers tabs")
+  assert string.contains(now, "make check") == False
+}
+
 // --- the rig ----------------------------------------------------------------
+
+// A memory head built by hand from two batches with different
+// provenance, its sidecar rendered, answering alpha's ids and beta's.
+//
+// A real consolidation never writes such a head: it replaces the head
+// wholesale with the single batch it just appended, so every row in a
+// live head shares one provenance value — which is also why a transitive
+// pass over `derived_from` *within* the head is vacuous rather than
+// merely deferred, since a batch's `derived_from` names the previous
+// head's rows and none of those are in the new one. A cascade rewrites a
+// pointer, though, and has to be right over any head the store can hold,
+// so the mixed case is the one worth driving.
+fn mixed_head(root: String) -> #(List(String), List(String)) {
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(alpha, generator)) =
+    memory.append_distillates(
+      opened,
+      [
+        #(memory.fact_type, "alpha said the gate is make check"),
+        #(memory.lesson_type, "alpha said do not force push"),
+      ],
+      from_session("alpha"),
+      a_clock(),
+    )
+    as "alpha's rows must append"
+  let assert Ok(#(beta, _generator)) =
+    memory.append_distillates(
+      memory.Opened(..opened, generator:),
+      [#(memory.preference_type, "beta said the user prefers tabs")],
+      from_session("beta"),
+      a_clock(),
+    )
+    as "beta's rows must append"
+  let assert Ok(Nil) =
+    memory.advance_head(
+      opened,
+      ids: list.append(alpha, beta),
+      expected: None,
+      cursors: [],
+    )
+    as "the mixed head must land"
+  let assert Ok(Some(_bytes)) =
+    memory.reconcile_digest(opened, root <> "/loom-memory.digest")
+    as "the sidecar must render the mixed head"
+  memory.close(opened)
+  #(
+    list.map(alpha, ids.entry_id_to_string),
+    list.map(beta, ids.entry_id_to_string),
+  )
+}
+
+fn from_session(named: String) -> memory.Provenance {
+  memory.Provenance(
+    sources: [memory.SourceRef(session: named, entries: ["e1"])],
+    derived_from: [],
+  )
+}
+
+// A cascade dispatches no model turn, so it runs under the refusing
+// distiller and no catalogue is involved anywhere.
+fn cascade_config(root: String) -> distill.Config {
+  distill.config_for(
+    root,
+    distill.no_distiller(),
+    clock: a_clock(),
+    entropy: fn() { 7 },
+  )
+}
 
 fn config(root: String, prompts: Subject(Recorder)) -> distill.Config {
   distill.config_for(root, scripted(prompts), clock: a_clock(), entropy: fn() {
