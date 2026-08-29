@@ -27,7 +27,8 @@ shell around that sans-io core. WP-F.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
   `Failed`, and nothing after it. Its cancel capability signals the one
-  gateway owner that decides the cancellation/terminal race.
+  gateway owner that decides the cancellation/terminal race; its optional
+  owner pid is a drain witness for every asynchronous descendant.
 - `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
   `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
   the same events.
@@ -35,7 +36,8 @@ shell around that sans-io core. WP-F.
   producing `StreamEvent`s; each adapter supplies one.
 - `provider/http.{Transport, RunningRequest, HttpRequest, HttpEvent}` — the
   injected transport seam. A running request exposes a monitorable owner and
-  bounded cancel capability; `httpc_transport()` is the production wiring.
+  cancel capability; owner exit acknowledges that native work has stopped.
+  `httpc_transport()` is the production wiring.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
@@ -61,9 +63,10 @@ shell around that sans-io core. WP-F.
 ## Traffic
 
 - **Actor messages**: `gateway.request` spawns a public guard and a private
-  pump for the whole fallback walk. The guard owns the cancel endpoint and
-  monitors the direct consumer and pump; the pump selects active-transport
-  DOWN, attempt timeout, and private per-attempt HTTP events. Together they
+  pump for the whole fallback walk. The guard owns the cancel endpoint,
+  monitors the direct consumer and pump, and retains each active transport
+  capability the pump publishes. The pump selects active-transport DOWN,
+  attempt timeout, and private per-attempt HTTP events. Together they
   deliver `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
@@ -96,10 +99,12 @@ shell around that sans-io core. WP-F.
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
-  death cancel and reap the active transport before ending the route walk.
-  The production transport owner retains the exact OTP request id and calls
-  `httpc:cancel_request/1`; late HTTP messages remain confined to that
-  attempt's private subject. `ProviderCancelled` and
+  death cancel and drain the active transport before ending the route walk.
+  The production transport custodian retains the exact OTP request id, calls
+  `httpc:cancel_request/1`, and retires its raw receiver before exiting. An
+  owner that misses the fixed grace is not killed from above: the guard emits
+  `CancellationUnconfirmed` but stays alive until the owner drains, preserving
+  the acknowledgement chain. `ProviderCancelled` and
   `CancellationUnconfirmed` are terminal and never walk to a fallback. Raw
   OTP errors are collapsed to constant diagnostics before crossing the FFI so
   request headers and credentials cannot appear in a durable provider error.

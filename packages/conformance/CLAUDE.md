@@ -120,6 +120,11 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
+- **Starved provider owners end with their consumers.** The simulation's
+  one-shot timeout owner monitors the effect process that requested it. A
+  killed effect therefore removes both the owner and its unused terminal
+  capability instead of leaving a synthetic process behind the conformance
+  run.
 - **A composition-layer service is proved absent, not merely
   well-behaved.** `conformance/triggered_rules_test` is the end-to-end
   for issue #27: real wiring, real gateway, real adapter, real runtime,

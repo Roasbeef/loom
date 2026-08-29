@@ -328,7 +328,8 @@ consumer and private observer worker; the worker alone consumes the inner
 stream. Explicit cancellation of the wrapper cancels the inner handle, and
 abort or driver restart does the same without waiting for the provider
 deadline. A worker crash becomes an in-band transport failure, while a silent
-inner owner becomes terminal `CancellationUnconfirmed` after one fixed grace.
+inner owner becomes terminal `CancellationUnconfirmed` after one fixed grace,
+and the wrapper remains alive as a drain witness until that owner exits.
 Consumer death records nothing. The record-before-forward law still applies
 when a real settlement wins the race; cancellation never manufactures a
 summary record.
@@ -570,7 +571,7 @@ the whole loop.
 
 **The simulation never fails a summarizer.** Its `summary_progress` hook
 answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:1168`), so no seed drives
+(`hooks`, `conformance/simulation/surface.gleam:1215`), so no seed drives
 a structural failure and the seeded soak proves the survival rule only by
 *not* regressing around it. Adding a refusing summarizer means a new
 `script.Structural` variant, and drawing it would reshuffle every seed's

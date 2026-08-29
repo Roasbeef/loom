@@ -217,7 +217,8 @@ kinds    : hello, exec_start, exec_stdin, exec_out, exec_exit,
 pub fn request(gw, req: ProviderRequest) -> StreamHandle
 pub fn cancel(handle: StreamHandle) -> Nil
 // events: Delta(TextDelta|ToolCallDelta|ThinkingDelta) | Settled(SettledAssistantMessage, Usage) | Failed(ProviderError)
-// StreamHandle = {events: Subject(StreamEvent), cancel: fn() -> Nil}
+// StreamHandle = {events: Subject(StreamEvent), cancel: fn() -> Nil,
+//                 owner: Option(Pid)}
 // ProviderError includes ProviderCancelled and CancellationUnconfirmed;
 // both are terminal and never fall back.
 pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
@@ -233,11 +234,12 @@ is still alive and the owner acknowledges cancellation. An ownership boundary
 whose inner owner does not acknowledge or die within its fixed grace produces
 the terminal `Failed(CancellationUnconfirmed)`; uncertainty never permits a
 retry or fallback. Consumer death has the same teardown effect without a
-public terminal. Every transport returns a monitorable owner plus a
-cancellation capability; production retains the exact OTP request id and
-calls `httpc:cancel_request/1` before the owner exits. A caller timeout alone
-is not cancellation. Protocol change 010 records the full ownership and race
-law.
+public terminal. `owner = Some(pid)` is a transitive drain witness and `None`
+means there is no asynchronous work. Every transport returns a monitorable
+owner plus a cancellation capability; production retains the exact OTP request
+id and calls `httpc:cancel_request/1` before its custodian retires the raw
+receiver and exits. A caller timeout alone is not cancellation. Protocol
+change 010 records the full ownership and race law.
 
 **The request vocabulary is closed.** `ProviderRequest` carries what the block above names and nothing else, and no options bag crosses the gateway seam. Dialect-specific per-request options — streaming flags, cache breakpoints — are the adapter's, derived from the request's own contents: the OpenAI adapter sets the wire's `stream_options.include_usage` itself, and the Anthropic adapter places its own cache breakpoints, so nothing above the seam learns either dialect. A harness-side options value the request shape cannot express therefore stops at the seam by rule; dropping it is conformance, not loss. Widening the shape to carry one is a protocol change.
 

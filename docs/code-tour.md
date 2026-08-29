@@ -306,11 +306,11 @@ load registers  →  build PlannerInputs  →  next_action  →  act  →  repea
 and `strand.leaf` on *every* pass, then fetches exactly what the loaded
 state names — the assistant entry behind a tool batch, the deferred
 handle behind a suspended poll, the pending payloads for every queued id
-(`runtime/strand_runtime.gleam:1175`). No process-local memory of durable
+(`runtime/strand_runtime.gleam:1684`). No process-local memory of durable
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:768`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:787`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -479,7 +479,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1155`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1165`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -534,7 +534,9 @@ secrets are allowed to exist.
 
 The consumption contract is narrow enough to build on: zero or more
 `Delta` events, then exactly one `Settled` or `Failed`, and nothing after
-it. Deltas are ephemeral display data and prove nothing.
+it. Deltas are ephemeral display data and prove nothing. The handle also
+carries an optional owner pid: when present, its exit acknowledges that the
+whole asynchronous subtree beneath the handle has drained.
 
 Which is exactly what the hub's tap exploits. `tap_provider`
 (`client/gateway.gleam`) wraps the injected surface so each request runs
@@ -543,16 +545,18 @@ unchanged and in order, teeing deltas to the hub on the way past. A guard owns
 the public handle and monitors both the worker and effect consumer. The tap
 lives entirely in the composition seam, but it is not allowed an independent
 lifetime: explicit cancellation and effect-process death propagate to the
-inner handle, while a relay-worker crash becomes an in-band failure and the
-worker's death is consumer death to the gateway guard.
+inner handle. A relay-worker crash becomes an in-band transport failure only
+after the inner owner drains; otherwise it becomes
+`CancellationUnconfirmed`, and the guard remains the public drain witness.
 
 That chain reaches the socket. `StreamHandle.cancel` signals the gateway
 guard, which asks the pump to cancel its current `RunningRequest`; the
 production Gleam custodian calls the narrow FFI with the exact opaque request
 id. Erlang only starts and cancels `httpc` and normalizes its raw message
 shapes. Monitoring, deadlines, and the cancellation state machine remain in
-typed Gleam. Every edge is monitored and bounded. Ignoring late events protects
-state, but this ownership chain is what prevents an old request from
+typed Gleam. Each grace period is bounded; a public owner that cannot prove
+teardown remains alive until its lower owner exits. Ignoring late events
+protects state, but this ownership chain is what prevents an old request from
 continuing to stream and bill after abort, timeout, or driver restart.
 
 ## 9. Settlement
@@ -712,7 +716,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1200`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1313`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1345`). That is the
@@ -1079,9 +1083,9 @@ still streams and bills. The fix is an ownership chain built out of
 BEAM primitives (`runtime/strand_runtime.gleam:1082`):
 
 ```gleam
-fn spawn_effect(reaper, body) {
-  // Link, then wait until the reaper records this pid before doing work.
-  adopt(reaper, process.self())
+fn spawn_effect(reaper, stop, body) {
+  // Link, then let the reaper record both this pid and how to stop it.
+  adopt(reaper, process.self(), stop)
   body()
 }
 ```
@@ -1089,9 +1093,12 @@ fn spawn_effect(reaper, body) {
 Each incarnation spawns one reaper linked to the driver. Every effect is
 spawned *unlinked* from the driver because a worker's death must settle in
 band, never fault the strand. Before an effect can run, it links to the reaper
-and waits for an adoption acknowledgement. On driver death the reaper kills
-every adopted effect and remains alive until all corresponding exit signals
-arrive.
+and waits for an adoption acknowledgement carrying its stop capability. On
+driver death the reaper hard-stops tool effects, cooperatively cancels provider
+effects, and remains alive until all corresponding exit signals arrive. A
+provider effect does not exit until its stream owner has drained, so the
+reaper's exit acknowledges the complete provider subtree rather than only its
+first process.
 
 The session registry stores the complete list of still-live reapers for each
 logical strand. A replacement driver publishes its new reaper and waits for
@@ -1125,8 +1132,10 @@ capability and waits a bounded acknowledgement grace. An owner-authored
 `ProviderCancelled` proves that cancellation won. If the owner remains silent,
 the effect reports the distinct terminal `CancellationUnconfirmed`; it cannot
 truthfully claim cancellation succeeded, but it must not retry beside work
-that may still exist. If the effect itself is killed first, relay and gateway
-consumer monitors carry the same cancellation inward.
+that may still exist. The effect then remains alive until the handle's owner
+exits. On abort or driver death the reaper uses the same cooperative stop path,
+so the relay and gateway receive cancellation without losing the outer drain
+witness first.
 
 The interleave harness turns "kill it anywhere" into an enumeration using
 the writer's `after_commit` seam, and the deterministic simulation runner

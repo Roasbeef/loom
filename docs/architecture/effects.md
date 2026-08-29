@@ -577,13 +577,15 @@ depend on: zero or more `Delta` events, then exactly one `Settled` or
 `Failed`, and nothing after. Deltas are ephemeral display data and prove
 nothing about settlement.
 
-The returned `StreamHandle` carries both the event subject and an idempotent
-cancel capability. A public gateway guard owns that capability and monitors
-the direct consumer and private fallback pump. The pump owns the provider
-terminal race and will not start another fallback once cancellation wins. Each
-attempt has a private HTTP-event subject and a monitorable transport owner.
-Teardown first invokes the transport's cancellation capability, then observes
-bounded owner death and kills only the local owner if it does not retire. The
+The returned `StreamHandle` carries the event subject, an idempotent cancel
+capability, and an optional drain-witness pid. A public gateway guard owns that
+capability, monitors the direct consumer and private fallback pump, and tracks
+the pump's current transport. The pump owns the provider terminal race and
+will not start another fallback until that transport drains. Each attempt has
+a private HTTP-event subject and a monitorable transport owner. Teardown first
+invokes the transport's cancellation capability, then observes bounded owner
+death. If it does not retire, the guard reports uncertainty but remains alive;
+killing the witness would erase the proof that native work stopped. The
 production owner is a small Gleam custodian retaining the exact opaque OTP
 `httpc` request id; the Erlang FFI only starts or cancels that id and normalizes
 raw messages. Raw OTP errors become constant diagnostics at the boundary so a

@@ -273,20 +273,23 @@ extended by the M3 runtime wave.
   so the harness never wedges and never faults the strand on a worker's
   death. Each driver incarnation also spawns a *reaper*: a small trapping
   process linked to the driver. Every effect links and receives an adoption
-  acknowledgement before doing work. On driver death the reaper kills every
-  adopted effect and remains alive until all their exits arrive. The registry
-  remembers every still-live reaper for the strand, and a replacement waits
-  for them before starting recovery. This drain barrier, rather than scheduler
+  acknowledgement before doing work. On driver death the reaper invokes every
+  adopted effect's stop capability and remains alive until all their exits
+  arrive. Tools use a hard stop; provider effects cancel cooperatively and do
+  not exit until their stream owner drains. The registry remembers every
+  still-live reaper for the strand, and a replacement waits for them before
+  starting recovery. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
 - **Provider ownership continues below the effect process.** A provider
   effect that reaches its receive deadline cancels its stream and waits a
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
   locally reported `CancellationUnconfirmed` are both terminal under retry
   classification; the latter says teardown could not be proved and therefore
-  cannot authorize another attempt. If the reaper kills the effect first,
-  client relays and the gateway monitor direct consumer death and propagate
-  teardown to the active transport. No provider pump or HTTP request may
-  outlive the effect that justified it.
+  cannot authorize another attempt. The effect remains alive until its public
+  stream owner exits. Abort and driver death use that same cooperative stop
+  path, so client relays and the gateway receive cancellation before the
+  effect can disappear. No provider pump or HTTP request may outlive the
+  effect that justified it.
 - **`after_commit` is the crash seam.** It runs in the writer process after
   the commit is durable and published but *before* the committer's reply,
   so an observer that kills the writer produces exactly "commit N durable,

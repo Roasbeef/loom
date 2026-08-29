@@ -7,10 +7,11 @@ provider + runtime + client
 ## Problem
 
 Part 1.5 gives a provider caller an event-only `StreamHandle`. A normal server
-generation then crosses four local processes:
+generation then crosses four ownership boundaries, some split into a guard and
+worker so one crash cannot erase the other's cancel path:
 
 ```text
-strand effect -> client relay -> gateway pump -> HTTP request owner
+strand effect -> client relay -> gateway -> HTTP transport
 ```
 
 Each process has a real job, but none of the outer three could stop the next
@@ -38,10 +39,13 @@ pub type StreamHandle {
   StreamHandle(
     events: Subject(StreamEvent),
     cancel: fn() -> Nil,
+    owner: Option(Pid),
   )
 }
 
 pub fn cancel(handle: StreamHandle) -> Nil
+pub fn await_stopped(handle: StreamHandle, within: Int) -> Bool
+pub fn await_stopped_forever(handle: StreamHandle) -> Nil
 ```
 
 `ProviderCancelled` means the provider request owner selected explicit
@@ -57,11 +61,14 @@ the public result honest; only the request owner may claim that cancellation
 won its race with settlement.
 
 The closure is a capability to signal the owner, not permission for each layer
-to invent an acknowledgement. The request owner is the authoritative terminal
-sender. A wrapper may synthesize only `CancellationUnconfirmed` after its fixed
-grace expires or an in-band transport failure when its direct worker crashes.
-Repeated calls may send repeated signals, but the first selected cancellation
-ends a healthy owner and makes every later call harmless.
+to invent an acknowledgement. `StreamHandle.owner = Some(pid)` is the drain
+witness for every asynchronous descendant beneath that handle: it exits only
+after that subtree stops. `None` is reserved for immediate fixtures with no
+work to drain. A wrapper may synthesize only `CancellationUnconfirmed` after
+its fixed grace expires or an in-band transport failure when its direct worker
+crashes and the inner owner has drained. Repeated calls may send repeated
+signals, but the first selected cancellation ends a healthy owner and makes
+every later call harmless.
 
 The provider-neutral transport seam also separates startup from completion:
 
@@ -99,25 +106,29 @@ retain that profile and use `httpc:cancel_request/2`.
 ## Ownership and race semantics
 
 `provider/gateway.request` starts a public guard and a private pump for the
-whole role walk. The guard owns the returned cancel endpoint and monitors its
-direct consumer and the pump. The pump retains the current `RunningRequest`;
-every attempt gets a fresh HTTP subject. Together they select HTTP events,
-explicit cancellation, consumer death, transport death, and the attempt
-timeout without making the long-running pump its own public crash boundary.
+whole role walk. The guard owns the returned cancel endpoint, monitors its
+direct consumer and the pump, and retains the latest `RunningRequest` published
+by the pump. Every attempt gets a fresh HTTP subject. The guard can therefore
+cancel and observe the live transport even if the pump crashes. Together they
+select HTTP events, explicit cancellation, consumer death, transport death,
+and the attempt timeout without making the long-running pump its own public
+crash boundary.
 
 The first selected terminal-class event decides the result:
 
 - A provider settlement or terminal failure is forwarded once; later cancel is
   a no-op.
-- Explicit cancellation cancels and reaps the active transport, emits exactly
-  `Failed(ProviderCancelled)` to a live consumer, and stops the route walk.
+- Explicit cancellation cancels the active transport, emits exactly
+  `Failed(ProviderCancelled)` when its owner acknowledges the race, and stops
+  the route walk.
 - If a cancellation crosses a wrapper or gateway guard but no owner-authored
   terminal arrives within the fixed grace period, that boundary emits exactly
   `Failed(CancellationUnconfirmed)` and stops. It does not retry or fall back.
 - Consumer death cancels and reaps the active transport, emits nothing, and
   stops the route walk.
-- Attempt timeout first cancels and reaps that transport, then returns the
-  existing retryable timeout failure to the fallback policy.
+- Attempt timeout first cancels that transport. It returns the existing
+  retryable timeout failure only after the transport owner exits; otherwise it
+  returns terminal `CancellationUnconfirmed`.
 - Transport death without its preceding terminal HTTP event becomes one
   in-band `TransportFailed` rather than a wait until timeout.
 - A retryable failure may advance to the next route entry only after checking
@@ -125,23 +136,28 @@ The first selected terminal-class event decides the result:
   can start.
 
 The owner observes bounded transport-owner death after invoking cancel. A
-transport owner that does not retire is killed locally after the grace period;
-for production, the cancellation closure has already issued
-`httpc:cancel_request/1` for the exact request id before that fallback.
+transport owner that does not retire is not killed from above, because doing so
+would erase the only acknowledgement that its native descendant stopped. The
+boundary emits `CancellationUnconfirmed` and remains alive until the owner
+eventually exits. The production transport custodian has already issued
+`httpc:cancel_request/1` for the exact request id and retires its raw receiver
+before it exits.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
 Its public guard monitors both the direct consumer and a private worker; the
 worker is the inner stream's direct consumer and runs the observer. Explicit
 cancellation or consumer death propagates to the inner handle. Worker death
-becomes a prompt in-band transport failure instead of leaving the outer caller
-parked. A terminal observer still runs before the same terminal is forwarded;
+becomes a prompt in-band transport failure only when inner drain is confirmed;
+otherwise it becomes `CancellationUnconfirmed` and the guard stays alive as
+the drain witness. A terminal observer still runs before the same terminal is forwarded;
 in particular, the summary wrapper records a settled summary before the
 runtime can ask for summary progress.
 
 ## Impact
 
-- Every `StreamHandle` constructor supplies a cancel capability. Scripted and
-  simulation handles use a harmless no-op only when no external work exists.
+- Every `StreamHandle` constructor supplies a cancel capability and declares
+  whether it has an asynchronous owner. Scripted handles use `None` only when
+  no external work exists; the starved simulation owner monitors its consumer.
 - `provider/http.Transport` implementations return a monitorable
   `RunningRequest`. Fixture transports expose cancellation probes so tests can
   prove work stopped rather than merely prove a late result was ignored.
@@ -150,8 +166,9 @@ runtime can ask for summary progress.
 - `client/gateway.tap_provider` and `client/wiring.recording_summaries`
   propagate cancellation and consumer death inward.
 - `runtime/strand_runtime` cancels a timed-out handle before reporting its
-  terminal observation. Its incarnation reaper acknowledges effect adoption,
-  drains every adopted process, and remains alive until their exits arrive;
+  terminal observation. Provider effects remain alive until the handle owner
+  drains. Their incarnation reaper sends cooperative stop capabilities, waits
+  for every adopted effect exit, and thereby forms a transitive drain barrier;
   replacement recovery waits for all prior reapers registered for the strand.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.

@@ -354,12 +354,13 @@ The relay is also an ownership boundary, split deliberately into two
 processes. A public guard owns the returned handle and monitors both the effect
 consumer and a private worker. The worker is the inner stream's direct
 consumer and runs the observer. Explicit cancellation and effect death travel
-through the guard to the inner provider handle; worker death promptly becomes
-an in-band transport failure and also appears as consumer death below it. A
-silent inner owner is bounded by one fixed timer and reported honestly as
-terminal `CancellationUnconfirmed`, not fabricated `ProviderCancelled`.
-Thus the tap preserves both event order and the cancellation chain; it is not
-another independently-lived request.
+through the guard to the inner provider handle. Worker death becomes an in-band
+transport failure only after the inner owner drains. A silent inner owner is
+bounded by one fixed timer and reported honestly as terminal
+`CancellationUnconfirmed`, not fabricated `ProviderCancelled`; the guard then
+stays alive until that inner owner exits. Thus the tap preserves both event
+order and the transitive cancellation chain; it is not another
+independently-lived request.
 
 `client/provider_relay.wrap` holds that mechanism once for both the delta tap
 and the summary recorder. Its observer runs before it forwards an event, so
