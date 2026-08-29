@@ -1255,6 +1255,13 @@ fn unreachable_agency() -> agent.Agency {
 // --- the rig ---------------------------------------------------------------
 
 fn prerequisites() -> Result(Ready, String) {
+  // Match every other real-helper suite: a current binary on a platform with
+  // no jail is not a runnable prerequisite, and the shared reason is what the
+  // declared-skip census audits.
+  use Nil <- result.try(case exec.unjailed_skip_reason(exec.host_platform()) {
+    option.Some(reason) -> Error(reason)
+    option.None -> Ok(Nil)
+  })
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner must have a working directory"
   let repo = here <> "/../.."

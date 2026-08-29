@@ -35,7 +35,7 @@
 #
 # `loom-exec` refuses to serve on darwin without --allow-unenforced
 # (packages/sandbox/internal/jail/platform.go): Seatbelt is WP-H phase 2
-# and deliberately unbuilt. The four suites that spawn a real helper could
+# and deliberately unbuilt. The five suites that spawn a real helper could
 # pass --allow-unenforced through SpawnConfig.helper_args and run with no
 # confinement at all — but they exist to prove the sandbox, and a green
 # run over an unbuilt jail is precisely the substitution the sandbox's own
