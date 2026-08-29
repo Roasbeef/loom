@@ -920,6 +920,25 @@ pub fn execute(
     ),
     return: fn() { unserved(config.surface, request.seam) },
   )
+
+  // Vetting is pure, so a rejected program must not create, clear, or even
+  // validate an execution directory. The pipeline repeats this check because
+  // its public seam accepts source rather than a `Vetted` value; keeping that
+  // boundary intact preserves its compile-to-run guarantee.
+  case
+    vet.vet(request.source, seam_allowlist(config, vetting_seam(request.seam)))
+  {
+    vet.Rejected(rejections) -> vet_rejected_execution(rejections)
+    vet.Passed(_vetted) -> execute_after_vetting(config, request)
+  }
+}
+
+// The filesystem-owning half of an execution. This is called only after the
+// submission has passed the same seam-specific policy the pipeline will use.
+fn execute_after_vetting(
+  config: Config,
+  request: codemode_tool.Request,
+) -> codemode_tool.Execution {
   let root = exec_root(config, request)
   // The socket check first: it is pure, and failing it after creating the
   // directory would leave one behind for an execution that never ran.
@@ -967,6 +986,26 @@ pub fn execute(
       )
     }
   }
+}
+
+// The pipeline's rejection translated before any execution resources exist.
+// These report strings match the pipeline because the observable result must
+// not depend on which side of the filesystem boundary performed the vet.
+fn vet_rejected_execution(
+  rejections: List(vet.Rejection),
+) -> codemode_tool.Execution {
+  codemode_tool.Execution(
+    result: codemode_tool.VetRejected(list.map(rejections, rejection)),
+    enforcement: codemode_tool.Enforcement(
+      build: codemode_tool.Unreported(
+        "vetting refused the program, so no build was dispatched",
+      ),
+      node: codemode_tool.Unreported(
+        "vetting refused the program, so no node was launched",
+      ),
+    ),
+    refusal: codemode_tool.NothingRefused,
+  )
 }
 
 // The grants an approved escalation attributed to *this* `code_mode`

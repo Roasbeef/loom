@@ -41,12 +41,14 @@ import core/ids.{type OpId}
 import core/json
 import core/message
 import core/msgpack
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/string
 import machine/strand as machine_strand
+import provider/secret
 import provider/stream
 import runtime/api
 import runtime/effects
@@ -619,9 +621,8 @@ pub fn a_forbidden_import_travels_the_real_pipeline_back_to_the_model_test() {
   // host with no toolchain and no jail. Everything between the model's
   // arguments and the model's answer is exercised except the two stages
   // `make e2e-codemode` owns.
-  let assert Ok(here) = simplifile.current_directory()
-    as "the test runner must have a working directory"
-  let work_root = here <> "/build/codemode-tool-test"
+  let work_root = short_scratch_root() <> "/vet-order"
+  let _cleared = simplifile.delete(work_root)
   let broker_actor = idle_broker()
   let config = codemode.Config(..config_for(broker_actor), work_root:)
   let seam = codemode.seam(config)
@@ -650,9 +651,32 @@ pub fn a_forbidden_import_travels_the_real_pipeline_back_to_the_model_test() {
   // — and with `link_info` rather than `is_file`, which answers
   // `Ok(False)` for a directory.
   let root = codemode.exec_root(config, request_for("turn-1:tools"))
-  assert exists(work_root)
+  assert !string.starts_with(codemode.socket_path(root), "/tmp/")
+  assert bit_array.byte_size(<<codemode.socket_path(root):utf8>>)
+    <= codemode.max_socket_path_bytes
+  // A rejected submission must leave even the work-root parent absent. The
+  // old prepare-before-vet order created this parent and removed only `root`.
+  assert !exists(work_root)
   assert !exists(root)
   broker.stop(broker_actor)
+}
+
+// A shallow, host-owned base keeps AF_UNIX paths below the cross-platform
+// budget without placing them under /tmp, which the jail replaces. The
+// in-tree fallback remains guarded by the byte-budget assertion above.
+fn short_scratch_root() -> String {
+  case secret.lookup(secret.env(), "LOOM_TEST_SCRATCH") {
+    Ok(scratch) -> scratch <> "/client"
+    Error(Nil) ->
+      case secret.lookup(secret.env(), "HOME") {
+        Ok(home) -> home <> "/.loom-client-test"
+        Error(Nil) -> {
+          let assert Ok(here) = simplifile.current_directory()
+            as "the test runner must have a working directory"
+          here <> "/build/client-test"
+        }
+      }
+  }
 }
 
 fn exists(path: String) -> Bool {
