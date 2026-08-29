@@ -38,6 +38,7 @@ import runtime/api
 import session/session
 import simplifile
 import support/internal/ffi_ws
+import support/provider as provider_test
 
 const root = "build/serve-test"
 
@@ -67,7 +68,7 @@ fn scripted_catalog() -> catalog.Catalog {
 fn scripted_gateway() -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -229,19 +230,17 @@ fn recording_gateway(
 ) -> provider_gateway.Gateway {
   catalog.gateway(
     catalogue,
-    transport: http.Transport(
-      send_streaming: fn(request: http.HttpRequest, out) {
-        process.send(bodies, request.body)
-        process.send(out, http.ResponseStatus(status: 400, headers: []))
-        process.send(
-          out,
-          http.ResponseChunk(chunk: <<
-            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
-          >>),
-        )
-        process.send(out, http.ResponseEnd)
-      },
-    ),
+    transport: provider_test.transport(fn(request: http.HttpRequest, out) {
+      process.send(bodies, request.body)
+      process.send(out, http.ResponseStatus(status: 400, headers: []))
+      process.send(
+        out,
+        http.ResponseChunk(chunk: <<
+          "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
+        >>),
+      )
+      process.send(out, http.ResponseEnd)
+    }),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -437,7 +436,7 @@ pub fn the_pinned_prompt_reaches_the_provider_request_test() {
 fn capturing_gateway(sent: Subject(String)) -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(send_streaming: fn(request, _events) {
+    transport: provider_test.transport(fn(request, _events) {
       process.send(sent, request.body)
     }),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),

@@ -42,6 +42,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/provider as provider_test
 import tools/remember
 import tools/tool
 
@@ -255,7 +256,7 @@ fn scripted_catalog() -> catalog.Catalog {
 fn dead_gateway() -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([#("ACME_KEY", "test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -267,19 +268,17 @@ fn dead_gateway() -> provider_gateway.Gateway {
 fn recording_gateway(bodies: Subject(String)) -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(
-      send_streaming: fn(request: http.HttpRequest, out) {
-        process.send(bodies, request.body)
-        process.send(out, http.ResponseStatus(status: 400, headers: []))
-        process.send(
-          out,
-          http.ResponseChunk(chunk: <<
-            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
-          >>),
-        )
-        process.send(out, http.ResponseEnd)
-      },
-    ),
+    transport: provider_test.transport(fn(request: http.HttpRequest, out) {
+      process.send(bodies, request.body)
+      process.send(out, http.ResponseStatus(status: 400, headers: []))
+      process.send(
+        out,
+        http.ResponseChunk(chunk: <<
+          "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
+        >>),
+      )
+      process.send(out, http.ResponseEnd)
+    }),
     secrets: secret.from_list([#("ACME_KEY", "test-key")]),
     clock: clock.fixed(at: 0),
   )

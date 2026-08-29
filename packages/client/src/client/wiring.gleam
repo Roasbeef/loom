@@ -139,6 +139,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import client/escalate.{type Escalations}
 import client/grants
+import client/provider_relay
 import client/summaries.{type Summaries}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
@@ -403,8 +404,8 @@ fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
 /// The relay owns the inner stream and records the terminal **before**
 /// forwarding it, so by the time the effect process reports the request
 /// settled and the driver asks for progress, the text is already there.
-/// If the relay dies, the effect process times out exactly as it would
-/// for a dead provider: in band, never a crash.
+/// The shared relay also propagates explicit cancellation and consumer
+/// death to the inner stream.
 ///
 /// ## Examples
 ///
@@ -421,48 +422,30 @@ pub fn recording_summaries(
     case spec {
       effects.SummaryRequest(operation:, task_id:, attempt:, ..) -> {
         let key = summaries.key(operation, task_id, attempt)
-        // The outer subject is owned by the calling effect process, so
-        // `stream.next` on the returned handle behaves identically.
-        let outer = process.new_subject()
-        let _relay =
-          process.spawn_unlinked(fn() {
-            relay_summary(
-              surface.request(spec),
-              outer,
-              summaries,
-              key,
-              surface.timeout_ms + 100,
-            )
-          })
-        stream.StreamHandle(events: outer)
+        provider_relay.wrap(surface, spec, fn(event) {
+          record_summary_event(event, summaries, key)
+        })
       }
       _ -> surface.request(spec)
     }
   })
 }
 
-fn relay_summary(
-  inner: StreamHandle,
-  outer: process.Subject(stream.StreamEvent),
+fn record_summary_event(
+  event: stream.StreamEvent,
   sink: Summaries,
   key: String,
-  timeout_ms: Int,
 ) -> Nil {
-  case stream.next(inner, within: timeout_ms) {
-    Error(Nil) -> Nil
-    Ok(stream.Delta(delta:)) -> {
-      process.send(outer, stream.Delta(delta:))
-      relay_summary(inner, outer, sink, key, timeout_ms)
-    }
-    Ok(stream.Settled(message:, usage:)) -> {
+  case event {
+    stream.Delta(..) -> Nil
+    stream.Settled(message:, usage:) -> {
       summaries.record(
         sink,
         key:,
         settlement: settlement_of(stream.message(message), usage),
       )
-      process.send(outer, stream.Settled(message:, usage:))
     }
-    Ok(stream.Failed(error:)) -> {
+    stream.Failed(error:) -> {
       summaries.record(
         sink,
         key:,
@@ -474,7 +457,6 @@ fn relay_summary(
           },
         ),
       )
-      process.send(outer, stream.Failed(error:))
     }
   }
 }
@@ -858,7 +840,7 @@ fn unsupported(reason: String) -> StreamHandle {
       message: reason,
     )),
   )
-  stream.StreamHandle(events:)
+  stream.StreamHandle(events:, cancel: fn() { Nil })
 }
 
 /// Maps a generation or poll spec onto the provider-neutral request

@@ -1057,7 +1057,7 @@ fn scripted_provider() -> effects.ProviderSurface {
       effects.GenerationRequest(context:, ..) ->
         generation_response(events, context)
     }
-    stream.StreamHandle(events:)
+    stream.StreamHandle(events:, cancel: fn() { Nil })
   })
 }
 
@@ -1343,7 +1343,10 @@ fn demo_gateway() -> provider_gateway.Gateway {
       max_output_tokens: 1_000_000,
     )
   provider_gateway.new(
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: http.Transport(start_streaming: fn(_request, _subject) {
+      let owner = process.spawn_unlinked(fn() { Nil })
+      Ok(http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }))
+    }),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),
   )

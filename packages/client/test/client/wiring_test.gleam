@@ -28,6 +28,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -42,14 +43,16 @@ import provider/gateway
 import provider/http
 import provider/model
 import provider/secret
+import provider/stream
 import runtime/effects
 import session/session
+import support/provider as provider_test
 
 // --- fixtures --------------------------------------------------------------
 
 // A transport that never answers; nothing here dispatches through it.
 fn dead_transport() -> http.Transport {
-  http.Transport(send_streaming: fn(_request, _subject) { Nil })
+  provider_test.silent()
 }
 
 fn routed_gateway() -> gateway.Gateway {
@@ -452,6 +455,70 @@ pub fn an_empty_summary_is_a_failed_attempt_test() {
   let assert summaries.Failed(message:, retryable: True) =
     wiring.settlement_of(assistant([text_block("   ")]), zero_usage())
   assert string.contains(message, "no text")
+}
+
+fn cancellable_summary_provider(
+  cancelled: process.Subject(Nil),
+) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
+    let events = process.new_subject()
+    stream.StreamHandle(events:, cancel: fn() {
+      process.send(cancelled, Nil)
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+    })
+  })
+}
+
+pub fn summary_relay_records_before_forwarding_cancellation_test() {
+  let sink = summary_sink()
+  let cancelled = process.new_subject()
+  let surface =
+    wiring.recording_summaries(
+      cancellable_summary_provider(cancelled),
+      into: sink,
+    )
+  let spec = summary_spec(Some(compaction_preparation(None)))
+  let assert effects.SummaryRequest(operation:, task_id:, attempt:, ..) = spec
+  let handle = surface.request(spec)
+
+  stream.cancel(handle)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+  let assert summaries.Recorded(settlement: summaries.Failed(
+    message: failure,
+    retryable: False,
+  )) = summaries.read(sink, key: summaries.key(operation, task_id, attempt))
+  assert string.contains(failure, "cancelled")
+  assert stream.next(handle, within: 10) == Error(Nil)
+}
+
+pub fn summary_relay_consumer_death_cancels_without_recording_test() {
+  let sink = summary_sink()
+  let cancelled = process.new_subject()
+  let ready = process.new_subject()
+  let surface =
+    wiring.recording_summaries(
+      cancellable_summary_provider(cancelled),
+      into: sink,
+    )
+  let spec = summary_spec(Some(compaction_preparation(None)))
+  let assert effects.SummaryRequest(operation:, task_id:, attempt:, ..) = spec
+  let consumer =
+    process.spawn_unlinked(fn() {
+      let handle = surface.request(spec)
+      process.send(ready, Nil)
+      let _ = stream.next(handle, within: 5000)
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(ready, within: 1000)
+
+  process.kill(consumer)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert summaries.read(sink, key: summaries.key(operation, task_id, attempt))
+    == summaries.Absent
 }
 
 // --- the progress hook -----------------------------------------------------

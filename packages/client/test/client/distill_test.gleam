@@ -30,6 +30,7 @@ import session/repo
 import session/session
 import simplifile
 import storage/storage
+import support/provider as provider_test
 import tools/remember
 
 // What the scripted consolidation turn answers with. The exit criterion
@@ -1357,7 +1358,7 @@ fn gateway_routing(roles: List(model.Role)) -> provider_gateway.Gateway {
   list.fold(
     roles,
     provider_gateway.new(
-      transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+      transport: provider_test.silent(),
       secrets: secret.from_list([]),
       clock: clock.fixed(at: 0),
     )
@@ -1368,6 +1369,54 @@ fn gateway_routing(roles: List(model.Role)) -> provider_gateway.Gateway {
       )),
     fn(gateway, role) { provider_gateway.route(gateway, role, [identity]) },
   )
+}
+
+pub fn gateway_distiller_cancels_a_timed_out_request_test() {
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.receive_forever(process.new_subject())
+        })
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+          process.kill(owner)
+        }),
+      )
+    })
+  let gateway =
+    provider_gateway.new(
+      transport:,
+      secrets: secret.from_list([#("ACME_KEY", "unit-test-key")]),
+      clock: clock.fixed(at: 0),
+    )
+    |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
+      name: "acme",
+      base_url: "https://acme.invalid",
+      api_key_secret: "ACME_KEY",
+    ))
+    |> provider_gateway.route(model.Main, [
+      model.ResolvedModel(
+        provider: "acme",
+        model_id: "loom-1",
+        thinking: model.ThinkingOff,
+        context_window: 100_000,
+        max_output_tokens: 4096,
+      ),
+    ])
+  let distiller =
+    distill.gateway_distiller(
+      gateway,
+      model.ForRole(role: model.Main, thinking: None),
+      timeout_ms: 10,
+    )
+
+  let assert Error(reason) = distiller.ask("remember this")
+
+  assert string.contains(reason, "timeout")
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
 }
 
 // --- small helpers ----------------------------------------------------------

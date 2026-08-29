@@ -37,7 +37,6 @@ import machine/operation
 import machine/strand as machine_strand
 import prompt/pack
 import provider/gateway as provider_gateway
-import provider/http
 import provider/model
 import provider/secret
 import provider/stream
@@ -45,6 +44,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import storage/storage
+import support/provider as provider_test
 
 // The text the scripted provider answers a summary request with. If a
 // `CompactionEntry` carries this, a provider produced it — the hooks did
@@ -289,7 +289,7 @@ fn routed_gateway() -> provider_gateway.Gateway {
       max_output_tokens: 1024,
     )
   provider_gateway.new(
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),
   )
@@ -352,7 +352,7 @@ fn scripted_provider(
         }
       }
     }
-    stream.StreamHandle(events:)
+    stream.StreamHandle(events:, cancel: fn() { Nil })
   })
 }
 

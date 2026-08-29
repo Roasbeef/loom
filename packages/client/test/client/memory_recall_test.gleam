@@ -40,7 +40,6 @@ import gleam/string
 import machine/operation
 import machine/strand as machine_strand
 import provider/gateway as provider_gateway
-import provider/http
 import provider/model
 import provider/secret
 import provider/stream
@@ -50,6 +49,7 @@ import runtime/hooks
 import session/session
 import simplifile
 import storage/storage
+import support/provider as provider_test
 import tools/history as history_tool
 import tools/tool
 
@@ -439,7 +439,7 @@ fn scripted_provider(
           _other -> settle(events, answer(bulky("answer"), 100))
         }
     }
-    stream.StreamHandle(events:)
+    stream.StreamHandle(events:, cancel: fn() { Nil })
   })
 }
 
@@ -515,7 +515,7 @@ fn routed_gateway() -> provider_gateway.Gateway {
       max_output_tokens: 1024,
     )
   provider_gateway.new(
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),
   )

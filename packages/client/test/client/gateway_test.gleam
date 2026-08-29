@@ -140,7 +140,7 @@ fn start_harness_full(
           events,
           stream.Settled(message: settled, usage: effects.zero_usage()),
         )
-        stream.StreamHandle(events:)
+        stream.StreamHandle(events:, cancel: fn() { Nil })
       }),
       tools: effects.ToolSurface(
         clear: fn(_query) { effects.ClearanceRefused(reason: "no tools") },
@@ -1196,4 +1196,70 @@ pub fn approve_of_a_decided_record_is_not_pending_test() {
     protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
   )
   expect_error(harness, 36, "not_pending")
+}
+
+// --- provider tap cancellation --------------------------------------------
+
+fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
+    let events = process.new_subject()
+    stream.StreamHandle(events:, cancel: fn() {
+      process.send(cancelled, Nil)
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+    })
+  })
+}
+
+fn cancellation_spec() -> effects.RequestSpec {
+  effects.GenerationRequest(
+    operation: op_id(919),
+    step_id: "turn-1",
+    attempt: 1,
+    configuration: machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    ),
+    context: [],
+    stream_options: json.Object([]),
+  )
+}
+
+pub fn provider_tap_forwards_explicit_cancellation_once_test() {
+  let cancelled = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      cancellable_provider(cancelled),
+      to: process.new_name(prefix: "loom_cancel_tap_test"),
+    )
+  let handle = tapped.request(cancellation_spec())
+
+  stream.cancel(handle)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+  assert stream.next(handle, within: 10) == Error(Nil)
+}
+
+pub fn provider_tap_cancels_when_its_consumer_dies_test() {
+  let cancelled = process.new_subject()
+  let ready = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      cancellable_provider(cancelled),
+      to: process.new_name(prefix: "loom_cancel_tap_death_test"),
+    )
+  let consumer =
+    process.spawn_unlinked(fn() {
+      let handle = tapped.request(cancellation_spec())
+      process.send(ready, Nil)
+      let _ = stream.next(handle, within: 5000)
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(ready, within: 1000)
+
+  process.kill(consumer)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
 }

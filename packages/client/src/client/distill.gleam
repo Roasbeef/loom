@@ -1271,7 +1271,10 @@ pub fn gateway_distiller(
         ),
       )
     case stream.await_terminal(handle, within: timeout_ms) {
-      Error(Nil) -> Error("the model did not answer inside the timeout")
+      Error(Nil) -> {
+        stream.cancel(handle)
+        Error("the model did not answer inside the timeout")
+      }
       Ok(#(_deltas, stream.Failed(error:))) -> Error(string.inspect(error))
       Ok(#(_deltas, stream.Delta(..))) ->
         Error("the stream ended on a delta, which cannot happen")

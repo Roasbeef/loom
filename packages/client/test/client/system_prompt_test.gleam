@@ -38,13 +38,13 @@ import machine/strand as machine_strand
 import prompt/default
 import prompt/pack
 import provider/gateway as provider_gateway
-import provider/http
 import provider/model
 import provider/secret
 import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import support/provider as provider_test
 import tools/tool
 
 const root = "build/system-prompt-test"
@@ -580,7 +580,7 @@ fn memory_session() -> session.Session {
 
 fn dead_gateway() -> provider_gateway.Gateway {
   provider_gateway.new(
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),
   )

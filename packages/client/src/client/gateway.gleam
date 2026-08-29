@@ -84,6 +84,7 @@ import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
 }
+import client/provider_relay
 import client/wiring
 import core/clock
 import core/entry.{type Entry, type UsageRow}
@@ -455,9 +456,8 @@ pub fn supervised_commit_forwarder(
 /// Wraps a provider surface so every streamed delta is teed to the hub
 /// as an ephemeral `stream_delta` broadcast while the runtime's effect
 /// process consumes the stream unchanged (same events, same terminal,
-/// same timeout discipline). The relay owns the inner stream; if it
-/// dies, the effect process times out exactly as it would for a dead
-/// provider — in-band, never a crash.
+/// same timeout discipline). The shared relay forwards explicit
+/// cancellation and consumer death to the inner stream.
 ///
 /// ## Examples
 ///
@@ -476,44 +476,14 @@ pub fn tap_provider(
       effects.PollRequest(operation:, ..) -> operation
       effects.SummaryRequest(operation:, ..) -> operation
     }
-    // The outer subject is owned by the calling effect process, so
-    // `stream.next` on the returned handle behaves identically.
-    let outer = process.new_subject()
-    let _relay =
-      process.spawn_unlinked(fn() {
-        let inner = surface.request(spec)
-        relay_stream(inner, outer, operation, name, surface.timeout_ms)
-      })
-    stream.StreamHandle(events: outer)
-  })
-}
-
-// Forwards stream events to the effect process, teeing deltas to the
-// hub, until the terminal event or a stalled stream (the effect process
-// applies its own timeout on the outer subject either way).
-fn relay_stream(
-  inner: stream.StreamHandle,
-  outer: Subject(stream.StreamEvent),
-  operation: OpId,
-  name: Name(Message),
-  timeout_ms: Int,
-) -> Nil {
-  case stream.next(inner, within: timeout_ms + 100) {
-    Error(Nil) -> Nil
-    Ok(event) -> {
+    provider_relay.wrap(surface, spec, fn(event) {
       case event {
         stream.Delta(delta:) ->
           send_if_alive(name, ProviderDelta(operation:, delta:))
         stream.Settled(..) | stream.Failed(..) -> Nil
       }
-      process.send(outer, event)
-      case event {
-        stream.Delta(..) ->
-          relay_stream(inner, outer, operation, name, timeout_ms)
-        stream.Settled(..) | stream.Failed(..) -> Nil
-      }
-    }
-  }
+    })
+  })
 }
 
 // Sends a hub message only while a live process is registered under the

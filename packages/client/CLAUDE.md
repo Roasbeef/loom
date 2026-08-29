@@ -51,9 +51,15 @@ over one session file. WP-L.
   post-commit publication becomes a pull hint, and an injected
   `effects.ProviderSurface` is wrapped so provider deltas tee to the hub
   while the runtime's effect process consumes the stream unchanged. The
+  wrapper forwards explicit cancellation and monitors that effect process;
+  either cancellation or consumer death tears down the inner handle. The
   forwarder registers under a name and the writer subscribes to that
   name, which is what lets it be supervised and restarted without the
   writer noticing.
+- `client/provider_relay.wrap` — the shared provider-wrapper ownership seam:
+  it creates the inner handle, monitors the outer consumer, forwards cancel
+  inward, runs a synchronous observer before forwarding each event, and
+  preserves the inner owner's one-terminal law.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
@@ -433,7 +439,9 @@ over one session file. WP-L.
   strand's durable projection, `VerdictGenerate` for every structural
   decision, and the progress hook. `recording_summaries` wraps a
   provider surface so a settled summary is filed in the sink on its way
-  past — the same composition shape as `gateway.tap_provider`.
+  past — the same composition shape as `gateway.tap_provider`. The summary
+  relay also propagates cancellation and consumer death inward, but records
+  nothing when the consumer is gone.
 - `client/wiring.{summary_provider_request, settlement_of,
   summary_progress, resolution}` — the summary path in pieces: the
   request a structural summary is made as, how a settled response reads,
@@ -1164,6 +1172,12 @@ over one session file. WP-L.
   effect process is linked to the driver's reaper, so an abort or a
   driver restart kills the parked call and the driver settles it in band
   through the ordinary monitor path.
+- **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
+  `wiring.recording_summaries` each return a new `StreamHandle`, so each
+  forwards the outer cancel capability to its inner handle and monitors its
+  direct consumer. This keeps the chain continuous from driver reaper to
+  effect, relay, gateway pump, transport owner, and the native HTTP request;
+  no wrapper may turn consumer death into a detached provider request.
 - **A park is bounded by the configured window *and* by the call's own
   budget deadline, and the deadline is re-read immediately before the
   consuming commit.** The second bound is not politeness: the broker's
