@@ -11,18 +11,28 @@ worth more than any status comment.
 
 ## Active handoff: CI portability and the Seatbelt follow-up
 
-PR #116 on `ci/darwin-and-linux-fixes` carries the first macOS gate repair
-and the two failures from the last Linux run. The reviewed head makes the full
+PR #116 on `ci/darwin-and-linux-fixes` carries the macOS gate repair and the
+failures exposed by its first fully allocated matrix. The branch makes the full
 gate build current helper binaries, rejects oversized Unix socket paths in
 Loom's own words, keeps vet rejection ahead of filesystem effects, gives the
-hermetic builder a private writable `TMPDIR`, makes host-shaped tests portable,
-and holds every payload behind a hardened fd 5 gate until cgroup entry.
+hermetic builder a private writable `TMPDIR`, and makes host-shaped tests
+portable.
+
+Run 33236746458 then found three deterministic edges. Ubuntu's dash rejected
+the pre-cgroup gate's non-POSIX `exec --`, so the gate now uses `exec "$@"`
+while keeping model-controlled bytes positional and every payload behind fd 5
+until cgroup entry. The migration sample now refuses failed build and sweep
+processes instead of reading their empty stdout as a valid zero count. The
+protocol demo preserves events delivered before a correlated reply and uses
+bounded catch-up when a durable event's live hint lags under load.
 
 The CI-equivalent Darwin run is green locally: `make check`, `make doc-check`,
 and the macOS skip census all exit zero after preparing the code-mode seed.
-Only the declared missing-Seatbelt reason remains. The first PR run never
-allocated a runner because GitHub reported an account billing failure; watch
-the replacement run to a terminal result before merging.
+Only the declared missing-Seatbelt reason remains. The live Ubuntu code-mode
+suite passes all 208 tests with the migration sample reporting `2/1/0`; the
+start gate passes under dash with its hostile-environment case. GitHub's soak,
+Linux gate, macOS gate and delegated-cgroup jail must all be green on the same
+head before this branch merges.
 
 The next body of work is WP-H phase 2 in the sibling worktree
 `../loom-seatbelt`, on branch `wp-h/seatbelt-jail`. Keep the Seatbelt jail
