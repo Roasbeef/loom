@@ -1,15 +1,20 @@
 //// Direct writer and api coverage: committed-event publication through
 //// the writer's subscriber seam, read routing, follow-up draining at a
-//// may-finish checkpoint, and awaiting a result the strand register has
-//// since moved past.
+//// may-finish checkpoint, awaiting a result the strand register has
+//// since moved past, and the two blackboard write doors — including
+//// `steer_marking`, which is a queue admission and a write-once claim in
+//// one transaction.
 
 import core/clock
+import core/ids
 import core/json
 import core/register
 import core/tx.{SetRegister, Tx}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import machine/operation
+import machine/queue
 import runtime/api
 import runtime/writer
 import session/session
@@ -255,6 +260,142 @@ pub fn put_fact_expecting_refuses_a_stale_write_test() {
     )
     as "the compare-and-set door is not a way past the reservations"
   process.kill(rt.tree.supervisor)
+}
+
+// --- steer_marking ---------------------------------------------------------
+
+// The whole point of the door: the item and the claim are one commit, so
+// there is no order in which a crash can leave one without the other.
+pub fn steer_marking_queues_the_item_and_writes_the_mark_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let assert Ok(_entry) =
+    api.steer_marking(rt, fake.user("injected"), mark: claim("r"))
+    as "the marked admission must land"
+  assert steer_count(rt, op) == 1
+  let assert Ok(Some(json.String("r"))) = api.fact(rt, mark_key("r"))
+    as "the mark must be durable"
+  process.kill(rt.tree.supervisor)
+}
+
+// The exactly-once property, at the level the property lives: a second
+// claim on the same cell is refused *and queues nothing*. Without the
+// `None` expectation the second admission would simply succeed, and an
+// injector that re-derived the same decision after a restart would put a
+// second copy of the same text into the conversation.
+pub fn steer_marking_refuses_a_second_claim_on_the_same_mark_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let assert Ok(_entry) =
+    api.steer_marking(rt, fake.user("injected"), mark: claim("r"))
+    as "the first claim must land"
+  let assert Error(api.FactConflict(key:)) =
+    api.steer_marking(rt, fake.user("injected again"), mark: claim("r"))
+    as "a second claim on a taken mark must be refused"
+  assert key == mark_key("r")
+  // The refusal is a refusal of the whole transaction: one item on the
+  // queue, not two.
+  assert steer_count(rt, op) == 1
+  process.kill(rt.tree.supervisor)
+}
+
+// A stale mark is not the seq race the admission ladder exists for, so
+// it must not be retried into a `RaceLost` that names the wrong cause —
+// and a *different* mark on the same run is admitted normally, which is
+// what shows the refusal above was about the cell and not about the run.
+pub fn steer_marking_admits_a_different_mark_on_the_same_run_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let assert Ok(_first) =
+    api.steer_marking(rt, fake.user("one"), mark: claim("first"))
+    as "the first claim must land"
+  let assert Ok(_second) =
+    api.steer_marking(rt, fake.user("two"), mark: claim("second"))
+    as "a claim on another cell must land"
+  assert steer_count(rt, op) == 2
+  process.kill(rt.tree.supervisor)
+}
+
+// The two write paths stay disjoint. This door writes reserved cells for
+// harness code; an ordinary fact belongs to `put_fact`, and letting a
+// caller reach one through the other would make the reservation
+// decorative.
+pub fn steer_marking_refuses_an_unreserved_key_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let assert Error(api.UnreservedFactKey(key: "agent/main/note")) =
+    api.steer_marking(
+      rt,
+      fake.user("injected"),
+      mark: api.Mark(
+        key: "agent/main/note",
+        value: json.String("r"),
+        expected: None,
+      ),
+    )
+    as "an unreserved mark must be refused"
+  assert steer_count(rt, op) == 0
+  process.kill(rt.tree.supervisor)
+}
+
+// An idle strand refuses the admission — and, because the mark rides in
+// the same transaction, spends nothing. A claim that was written while
+// its message was refused would be the worst of both: the injector would
+// believe it had fired, and nothing would ever have been injected.
+pub fn steer_marking_on_an_idle_strand_spends_no_claim_test() {
+  let rt = marking_runtime()
+  let assert Error(api.QueueRejected(reason: queue.NoActiveRun)) =
+    api.steer_marking(rt, fake.user("injected"), mark: claim("r"))
+    as "an idle strand has nothing to steer"
+  let assert Ok(None) = api.fact(rt, mark_key("r"))
+    as "a refused admission must leave the claim unspent"
+  process.kill(rt.tree.supervisor)
+}
+
+fn mark_key(rule: String) -> String {
+  api.rule_fact_prefix <> "fired/main/" <> rule
+}
+
+fn claim(rule: String) -> api.Mark {
+  api.Mark(key: mark_key(rule), value: json.String(rule), expected: None)
+}
+
+// How many steer items the operation's durable inbox holds.
+fn steer_count(rt: api.Runtime, op: ids.OpId) -> Int {
+  case session.op_state(rt.session, op) {
+    Ok(Some(session.Cell(
+      value: operation.RunState(inbox: operation.Inbox(steer:, ..), ..),
+      ..,
+    ))) -> list.length(steer)
+    _ -> -1
+  }
+}
+
+// A runtime whose provider never settles, so the run it accepts stays
+// open for as long as the test needs one to steer.
+fn marking_runtime() -> api.Runtime {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the session tree must boot"
+  rt
 }
 
 // A runtime with nothing driving it: these two are about the durable

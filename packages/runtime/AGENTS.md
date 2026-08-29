@@ -140,6 +140,16 @@ extended by the M3 runtime wave.
   `consume_escalation_at` CASes at the seq the caller checked, which is
   what a caller that checked a scope or an action owes its own check
   (#68).
+- `runtime/api.{Mark, steer_marking}` — a steer admission and a
+  write-once reserved claim in **one transaction**. The door an injector
+  needs and `steer_quietly` cannot give it: an injector that must act at
+  most once has to make "the message is queued" and "the claim is spent"
+  one durable fact, because the two orders fail in opposite directions —
+  marking first loses the injection to a crash in between, queueing
+  first double-injects after one. The mark's own stale expectation is
+  told apart from the operation-state seq the admission ladder retries
+  on: a lost race against the strand reloads, a taken mark answers
+  `FactConflict` at once. `client/rulescan` is the only caller.
 - `runtime/api.{FactCell, fact_cell, put_fact_expecting}` — the
   compare-and-set half of the blackboard: read a cell with the seq of
   the write that put it there, then write only if it has not moved. The
@@ -284,12 +294,14 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Five corners of `fact.custom` are reserved, and reserving hides as
+- **Six corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/` and `session/` are refused to `put_fact` and filtered out of
-  `facts`, so no blackboard write can forge an approval, shadow a
-  terminal result, rewrite a parent edge, overwrite the pinned system
-  prompt, or re-point the session's own identity. Because
+  `prompt/`, `session/` and `rule/` are refused to `put_fact` and
+  filtered out of `facts`, so no blackboard write can forge an approval,
+  shadow a terminal result, rewrite a parent edge, overwrite the pinned
+  system prompt, re-point the session's own identity, or mark an
+  operator's triggered project rule as already fired so that it never
+  fires. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are
@@ -297,6 +309,8 @@ extended by the M3 runtime wave.
   ledger prefix is `lineage/` rather than anything near the
   model-writable `agent/`: an integrity-critical namespace two letters
   from a model-writable one is one typo away from lineage forgery.
+  `rule/` is held to the same rule for the same reason — a fired-mark a
+  model could write is a project rule it could silence in advance.
 - **A model-spawned strand's crash loop cannot reboot `main`.** The tree
   carries two strand factories and `Config.subagent` decides, by name
   alone, which one starts a strand. The subagent factory sits *after* the
