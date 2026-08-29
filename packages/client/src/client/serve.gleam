@@ -172,6 +172,7 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/memory
 import client/notes
 import client/rules
 import client/rulescan
@@ -214,6 +215,7 @@ import tools/codemode as codemode_tool
 import tools/fs
 import tools/grep
 import tools/history as history_tool
+import tools/remember
 import tools/tool.{type Registry}
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
@@ -1200,7 +1202,15 @@ fn assemble(
   // without. See `protecting_index` for why a model-writable index is a
   // security property rather than a tidiness one.
   use index_path <- result.try(index_path(settings))
-  let base_policy = protecting_index(settings.base_policy, index_path)
+  // Memory is protected on the same argument one step along: the digest
+  // sidecar is text this server injects into every run's context, and
+  // the store behind it is what the digest is rendered from. See
+  // `protecting_memory`.
+  use memory_store <- result.try(beside_session(settings, memory.memory_file))
+  use memory_digest <- result.try(beside_session(settings, memory.digest_file))
+  let base_policy =
+    protecting_index(settings.base_policy, index_path)
+    |> protecting_memory(memory_store, memory_digest)
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
@@ -1349,14 +1359,20 @@ fn assemble(
   let history_name = process.new_name(prefix: "loom_history")
   let history_pulls = process.new_name(prefix: "loom_history_pulls")
   let history_seam = history_seam(index_path, history_name, logger)
+  // The memory door, gated the same way and for the same reason: a
+  // `remember` definition renders into the provider's cached byte prefix
+  // and is paid for on every request, so a host whose memory plane will
+  // not open registers no tool and says so once.
+  let memory_seam = memory_seam(memory_store, clock, entropy, logger)
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
-  let tool_registry = registry(Some(agency_seam), code_mode, history_seam)
-  // The registry itself, once, at boot. Three planes decide their own
+  let tool_registry =
+    registry(Some(agency_seam), code_mode, history_seam, memory_seam)
+  // The registry itself, once, at boot. Four planes decide their own
   // presence from the host they found — a messaging plane, a code-mode
-  // pipeline, a search index — so "which tools does this server actually
-  // offer" is not derivable from the flags, and it is the same sorted
+  // pipeline, a search index, a memory session — so "which tools does
+  // this server actually offer" is not derivable from the flags, and it is the same sorted
   // list that renders into the provider's cached byte prefix. Naming it
   // here is what lets a release smoke assert on registration rather than
   // on a proxy for it.
@@ -1444,7 +1460,14 @@ fn assemble(
         // digest wraps the result rather than replacing a slot, so the
         // two compose instead of one silently dropping the other.
         hooks: agency.reaping_hooks(built.hooks, agency_config)
-        |> notes.digest_hooks(opened, clock),
+        |> notes.digest_hooks(opened, clock)
+        // The memory digest is read once, here, as bytes — this server
+        // never opens the memory session and never takes its lease. A
+        // consolidation that lands while this one runs therefore reaches
+        // the next boot, which is the "memory updates land at session
+        // boundaries" rule obtained by construction rather than by a
+        // check. Absent file, nothing injected, no tokens spent.
+        |> memory.digest_hooks(memory.read_digest(memory_digest), clock),
     )
   let options = api.default_options(configuration)
   use runtime <- result.try(
@@ -1762,15 +1785,27 @@ fn parent_directory(path: String) -> Option(String) {
 // no directory of its own is resolved against the working directory,
 // which is the directory it would have been created in anyway.
 fn index_path(settings: Settings) -> Result(String, String) {
-  let path = history.index_beside(settings.session_path)
+  beside_session(settings, history.index_file)
+}
+
+// The absolute path of `file` beside this session's own, for the reason
+// `index_path` gives: every one of these joins `base_policy.protected`,
+// and a relative protected entry is refused by the jail and covers
+// nothing in the harness's own path checks.
+fn beside_session(settings: Settings, file: String) -> Result(String, String) {
+  let path = case parent_directory(settings.session_path) {
+    Some(directory) -> directory <> "/" <> file
+    None -> file
+  }
   case string.starts_with(path, "/") {
     True -> Ok(path)
     False ->
       simplifile.current_directory()
       |> result.map(fn(here) { here <> "/" <> path })
       |> result.map_error(fn(error) {
-        "the working directory is unreadable, so the search index has no "
-        <> "absolute path: "
+        "the working directory is unreadable, so "
+        <> file
+        <> " has no absolute path: "
         <> string.inspect(error)
       })
   }
@@ -1800,42 +1835,105 @@ pub fn protecting_index(
   base: policy.SandboxPolicy,
   index_path: String,
 ) -> policy.SandboxPolicy {
-  // The whole SQLite file family, not the database alone: the index
-  // runs in WAL mode, so `-wal` and `-shm` live beside it and a write
-  // to either is the same poisoning door one filename to the right —
-  // WAL frame checksums are not cryptographic, so a crafted `-wal` is
-  // served as index content on the next read. `-journal` covers the
-  // rollback fallback a failed WAL pragma leaves. Enumerated rather
-  // than protected as a directory because the index sits beside the
-  // session file, where a protected directory would swallow paths the
-  // operator owns.
-  //
-  // The side files ride along only where a writable root reaches their
-  // directory, and that condition is the threat model, not a
-  // convenience: the harness fs tools are workspace-contained and the
-  // jail makes a file under a read-only parent uncreatable, so with the
-  // index outside every writable root there is no write path to bar —
-  // while a *missing* protected entry under a read-only parent is one
-  // the jail refuses to mask, which turned this list into a refusal of
-  // every jailed call for the ordinary session-outside-the-workspace
-  // layout. The database itself is always protected: the boot's probe
-  // creates it, and masking an existing file needs nothing from its
-  // parent. The residual is stated rather than hidden: an approval
-  // granting a writable root over the session's own directory reopens
-  // the side-file door — and already exposes the unprotected session
-  // file itself, which is the larger half of that decision.
-  let family = case writable_reaches(base, parent_of(index_path)) {
-    True -> [
-      index_path <> "-wal",
-      index_path <> "-shm",
-      index_path <> "-journal",
-    ]
-    False -> []
-  }
-  policy.SandboxPolicy(..base, protected: [
-    index_path,
-    ..list.append(family, base.protected)
+  // The whole SQLite file family, not the database alone (see
+  // `sqlite_side_files`), enumerated rather than protected as a
+  // directory because the index sits beside the session file, where a
+  // protected directory would swallow paths the operator owns. The
+  // database itself is always protected: the boot's probe creates it.
+  // The side files are conditional, on the argument `protecting` states.
+  protecting(
+    base,
+    always: [index_path],
+    where_writable: sqlite_side_files(index_path),
+  )
+}
+
+/// The base policy with this repository's memory protected: the digest
+/// sidecar the server injects at every run start, and the store the
+/// digest is rendered from.
+///
+/// The same argument `protecting_index` makes, one step further along
+/// and one degree more direct. A search snippet reaches a later session
+/// only if a model searches for it; the memory digest is injected into
+/// **every** run of every session on this repository, unasked. A
+/// model-writable digest would therefore be the cleanest prompt-injection
+/// channel in the tree.
+///
+/// Both files are conditional, and unlike the index this is not a
+/// refinement but a requirement: neither exists until a distillation run
+/// has happened, and the jail refuses to mask a *missing* protected path
+/// under a read-only parent — the failure that once turned the index's
+/// side-file list into a refusal of every jailed call. Where no writable
+/// root reaches the directory there is nothing to protect against
+/// anyway, because the harness fs tools are workspace-contained and the
+/// jail makes a file under a read-only parent uncreatable.
+///
+/// The wrapper is the other half of this bargain and does not depend on
+/// it: `client/memory.wrapped` builds the fence and the attribution at
+/// injection time, so even a digest somebody managed to write cannot
+/// claim to be operator text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.protecting_memory(base, "/d/loom-memory.db", "/d/loom-memory.digest")
+/// ```
+///
+pub fn protecting_memory(
+  base: policy.SandboxPolicy,
+  store_path: String,
+  digest_path: String,
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_writable: [
+    store_path,
+    digest_path,
+    ..sqlite_side_files(store_path)
   ])
+}
+
+// The whole SQLite file family beside a database: it runs in WAL mode,
+// so `-wal` and `-shm` live beside it and a write to either is the same
+// poisoning door one filename to the right — WAL frame checksums are not
+// cryptographic, so a crafted `-wal` is served as content on the next
+// read. `-journal` covers the rollback fallback a failed WAL pragma
+// leaves.
+fn sqlite_side_files(path: String) -> List(String) {
+  [path <> "-wal", path <> "-shm", path <> "-journal"]
+}
+
+// The one conditional-protection mechanism, shared by the index and by
+// memory rather than copied for each.
+//
+// `always` is for paths that certainly exist by the time a jail is
+// built — the index database, which the boot's probe creates — because
+// masking an existing file needs nothing from its parent.
+// `where_writable` is for everything else, and the condition is the
+// threat model rather than a convenience: a protected path that does not
+// exist under a read-only parent is one the jail refuses to mask, which
+// is a refusal of every jailed call, while a path no writable root
+// reaches has no write path to bar in the first place.
+//
+// The residual is stated rather than hidden: an approval granting a
+// writable root over the session's own directory reopens the conditional
+// door — and already exposes the unprotected session file itself, which
+// is the larger half of that decision.
+fn protecting(
+  base: policy.SandboxPolicy,
+  always always: List(String),
+  where_writable conditional: List(String),
+) -> policy.SandboxPolicy {
+  let reachable =
+    list.filter(conditional, fn(path) {
+      writable_reaches(base, parent_of(path))
+    })
+  policy.SandboxPolicy(
+    ..base,
+    protected: list.flatten([
+      always,
+      reachable,
+      base.protected,
+    ]),
+  )
 }
 
 // Whether any writable root covers `directory` — the question of
@@ -1885,6 +1983,45 @@ fn history_seam(
           value: "no history_search tool is registered; check the directory "
             <> "beside the session file is writable, or remove a corrupt "
             <> "index file and it will be rebuilt",
+        ),
+      ])
+      None
+    }
+  }
+}
+
+// The memory door, or nothing and one line saying why.
+//
+// The same posture `history_seam` and `codemode.unavailable` take, for
+// the same arithmetic: a tool definition renders into the provider's
+// cached byte prefix and is paid for on every request for the life of
+// the session, so a door that could only ever refuse must not be
+// registered. The probe takes no lease and creates nothing (see
+// `memory.probe`): a boot that opened the store would be the very theft
+// `memory.run_lease_ttl_ms` exists to prevent, arriving mid-run and
+// stealing a distillation's expired lease.
+fn memory_seam(
+  store_path: String,
+  clock: Clock,
+  entropy: fn() -> Int,
+  logger: Logger,
+) -> Option(remember.Memory) {
+  case memory.probe(store_path) {
+    Ok(Nil) -> {
+      log.info(logger, "memory.ready", [
+        field.text(key: "store", value: store_path),
+      ])
+      Some(memory.remember_seam(store_path, clock:, entropy:))
+    }
+    Error(reason) -> {
+      log.warn(logger, "memory.unavailable", [
+        field.text(key: "store", value: store_path),
+        field.text(key: "reason", value: reason),
+        field.text(
+          key: "effect",
+          value: "no remember tool is registered; check the directory beside "
+            <> "the session file is writable, or remove a corrupt "
+            <> "loom-memory.db and it will be recreated",
         ),
       ])
       None
@@ -2118,6 +2255,7 @@ pub fn registry(
   agency: Option(agent.Agency),
   code_mode: Option(codemode_tool.CodeMode),
   history: Option(history_tool.History),
+  memory: Option(remember.Memory),
 ) -> Registry {
   tool.registry(
     list.flatten([
@@ -2139,6 +2277,10 @@ pub fn registry(
       case history {
         None -> []
         Some(history) -> [history_tool.tool(history)]
+      },
+      case memory {
+        None -> []
+        Some(memory) -> [remember.tool(memory)]
       },
     ]),
   )

@@ -9,40 +9,9 @@ worth more than any status comment.
 
 ---
 
-## Active handoff: CI portability and the Seatbelt follow-up
+## State, as of `main` at the end of phase 3
 
-PR #116 on `ci/darwin-and-linux-fixes` carries the macOS gate repair and the
-failures exposed by its first fully allocated matrix. The branch makes the full
-gate build current helper binaries, rejects oversized Unix socket paths in
-Loom's own words, keeps vet rejection ahead of filesystem effects, gives the
-hermetic builder a private writable `TMPDIR`, and makes host-shaped tests
-portable.
-
-Run 33236746458 then found three deterministic edges. Ubuntu's dash rejected
-the pre-cgroup gate's non-POSIX `exec --`, so the gate now uses `exec "$@"`
-while keeping model-controlled bytes positional and every payload behind fd 5
-until cgroup entry. The migration sample now refuses failed build and sweep
-processes instead of reading their empty stdout as a valid zero count. The
-protocol demo preserves events delivered before a correlated reply and uses
-bounded catch-up when a durable event's live hint lags under load.
-
-The CI-equivalent Darwin run is green locally: `make check`, `make doc-check`,
-and the macOS skip census all exit zero after preparing the code-mode seed.
-Only the declared missing-Seatbelt reason remains. The live Ubuntu code-mode
-suite passes all 208 tests with the migration sample reporting `2/1/0`; the
-start gate passes under dash with its hostile-environment case. GitHub's soak,
-Linux gate, macOS gate and delegated-cgroup jail must all be green on the same
-head before this branch merges.
-
-The next body of work is WP-H phase 2 in the sibling worktree
-`../loom-seatbelt`, on branch `wp-h/seatbelt-jail`. Keep the Seatbelt jail
-separate from PR #116's cross-platform and Linux cgroup repairs.
-
----
-
-## State, as of `main` after the #14 merge
-
-Four bodies of work are complete and on `main`.
+Everything below is on `main` unless it says otherwise.
 
 **#106 — MCP through code mode — is done and on `main`** (merged at
 `0f4dfac`'s lineage): generated per-server capability modules, wired end
@@ -116,66 +85,84 @@ established by atomic rename, never direct write. `make check` passes
 end to end at the head.
 
 `main` holds phases 1 and 2 plus #106, the bridge, #15, #14, #27
-(triggered rules — the scanner, the reserved `rule/` corner, the
-conformance fire/kill/flood rows; dead-strand follow-up is #113) and
-#28 (memory M1 — the search holder, `history_search`, the protected
-index family, the notes digest, and the cross-session recall test; the
-accepted gaps are spec-gaps items 6–9 in its section). **Phase 3
-remaining: #29 — and #91 items 2–5 are still open** (item 1 closed
-with the bridge).
+(triggered rules; dead-strand follow-up is #113), #28 (memory M1;
+accepted gaps are spec-gaps items 6–9 in its section) and #29 (memory
+M2 — the memory session, `client/distill`, the protected sidecar
+digest, the `remember` door; erasure cascade filed as #115, the
+recorded limits in spec-gaps' M2 section). **Phase 3 is complete.**
+Every `phase:3` release-blocker landed through the same loop — a
+measured census, rulings posted to the issue, an implementation
+worker, and a closing adversarial review with per-finding
+re-verification — and #19 dispositioned itself out by its own text.
+The debt wave that follows it is **built and in review as four PRs**,
+not yet merged: **#125** (events test hygiene, closing #119),
+**#126** (dead-strand rule holds, closing #113), **#128** (#91's four
+remaining defects), and **#130** (the erasure cascade, closing #115).
+**Merge #125 first** — the events flake it fixes went deterministic and
+runs before every other package, so it currently stops `make check`
+tree-wide; the other three were each gated in a scratch worktree with
+it merged in.
 
 ---
 
-## Start here: the phase-3 remainder
+## Start here: after phase 3
 
-In dependency order rather than numeric:
+The debt wave is done and awaiting merge (the four PRs above). What it
+turned up on the way is worth reading before the next one, because most
+of it is about the gates rather than the code: **#129** — `check.sh`'s
+`tee /dev/stderr` truncates a redirected gate log mid-run, so the log
+half of `execution.md` §4's discipline is silently destroyed while the
+exit code stays honest (the pipe route, `2>&1 | tee log` reading
+`PIPESTATUS[0]`, is immune, and is what an agent should reach for here);
+**#127** — a third load-sensitive test, after #119's and storage's, each
+occurrence costing an agent a control run to exonerate its own diff;
+and the review-driven follow-ups **#122**, **#123** and **#124**.
 
-- **#29** — memory M2, the last phase-3 item: `memory/*` custom entry
-  types with provenance, the extract-then-consolidate distillation
-  pipeline (leased, capped, redacted) into a per-workspace memory
-  session, the `remember` tool, run-start injection of the distilled
-  digest fenced and attributed under a token cap, and the structural
-  anti-feedback exclusion. Its security paragraph is part of the issue,
-  not a footnote — and M1 left it two named hooks: `CustomEntry`
-  indexes to nothing yet (spec-gaps says that change is M2's), and the
-  recall-echo exclusion is deliberately weighed here.
-- **#106** — **MCP through code mode: the first increment is done.**
-  `docs/architecture/mcp.md` is the living account; the rulings and their
-  reasons are on the issue. The shape: generated per-server capability
-  modules (`import cap/mcp/github`), never registered harness tools and
-  never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
-  `packages/mcp` holds the protocol codecs, the stdio client actor, the
-  façade generator and the value interchange; `client/mcp` starts one
-  client per configured server at boot, widens the workspace seam's
-  allowlist/description/generated-table/router as one field, and answers
-  `mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
-  table to the vetted program's own imports before the builder vendors
-  them into the prelude — fifty configured servers cost an unimporting
-  program nothing. A checked-in `escript` fixture proves it against a real
-  server process over a real pipe, wire names byte-identical end to end,
-  including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
-  corpus is **built, not owed**: mangling digests on any change and a
-  collision refuses the server; description text is stripped of every
-  control/direction codepoint and a `glexer`-shaped `@` backstop asserts
-  the cage held; schema reading is three-tier and total with nothing
-  silently dropped; tool count, surface bytes, listing pages, result size
-  and result depth are all capped with worded refusals.
+Then **phase 4, the promotion ladder** (#30–#33,
+#100), which #16 gated and which is now unblocked; **phase 5** (#25
+LSP, #26 DAP) starts from the supervised stdio substrate the MCP
+client already is. **#107** (async code mode) sits outside the ladder
+with its design dossier on the issue, awaiting prioritization.
 
-  Still open on #106, deliberately: the **jail decision** for MCP server
-  processes — `mcp/transport.PortTransport` spawns unjailed and the seam
-  is where jailing would attach; this is undesigned, not merely unbuilt —
-  an e2e against a third-party server from the wild, and the deliberate
-  v1 cuts with their reversal triggers (HTTP transport, OAuth,
-  elicitation, `listChanged`, restart supervision; see the architecture
-  doc). **#107** (filed this increment) is the async-code-mode question —
-  kept-alive satellite versus continuation handles versus a
-  replay-with-memoized-effects shape; its comments carry the
-  state-machine-expansion argument and the prior art.
+### The MCP increment, in detail
 
-  The finding carried into phase 5 held: the MCP stdio client **is** the
-  supervised long-lived stdio substrate #25 needs, and it now exists
-  (`mcp/client` + `mcp/transport`), so phase 5 starts from something
-  rather than nothing.
+**#106 — MCP through code mode: the first increment is done.**
+`docs/architecture/mcp.md` is the living account; the rulings and their
+reasons are on the issue. The shape: generated per-server capability
+modules (`import cap/mcp/github`), never registered harness tools and
+never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
+`packages/mcp` holds the protocol codecs, the stdio client actor, the
+façade generator and the value interchange; `client/mcp` starts one
+client per configured server at boot, widens the workspace seam's
+allowlist/description/generated-table/router as one field, and answers
+`mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
+table to the vetted program's own imports before the builder vendors
+them into the prelude — fifty configured servers cost an unimporting
+program nothing. A checked-in `escript` fixture proves it against a real
+server process over a real pipe, wire names byte-identical end to end,
+including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
+corpus is **built, not owed**: mangling digests on any change and a
+collision refuses the server; description text is stripped of every
+control/direction codepoint and a `glexer`-shaped `@` backstop asserts
+the cage held; schema reading is three-tier and total with nothing
+silently dropped; tool count, surface bytes, listing pages, result size
+and result depth are all capped with worded refusals.
+
+Still open on #106, deliberately: the **jail decision** for MCP server
+processes — `mcp/transport.PortTransport` spawns unjailed and the seam
+is where jailing would attach; this is undesigned, not merely unbuilt —
+an e2e against a third-party server from the wild, and the deliberate
+v1 cuts with their reversal triggers (HTTP transport, OAuth,
+elicitation, `listChanged`, restart supervision; see the architecture
+doc). **#107** (filed this increment) is the async-code-mode question —
+kept-alive satellite versus continuation handles versus a
+replay-with-memoized-effects shape; its comments carry the
+state-machine-expansion argument and the prior art.
+
+The finding carried into phase 5 held: the MCP stdio client **is** the
+supervised long-lived stdio substrate #25 needs, and it now exists
+(`mcp/client` + `mcp/transport`), so phase 5 starts from something
+rather than nothing.
 
 **Phase 5** is the language-service tier: **#25** (`lsp_*` over a sandboxed
 per-project client) and **#26** (`dap_*` over the same port seam). Both need

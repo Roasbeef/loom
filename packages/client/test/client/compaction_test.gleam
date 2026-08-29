@@ -262,7 +262,7 @@ fn wiring_config(
       compaction: compaction_settings(),
       broker: broker_actor,
       broker_timeout_ms: 1000,
-      registry: serve.registry(None, None, None),
+      registry: serve.registry(None, None, None, None),
       workspace:,
       blob_root: workspace <> "/.blobs",
       base_policy: policy.workspace_default(workspace),

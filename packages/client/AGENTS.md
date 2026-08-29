@@ -10,10 +10,12 @@ that decodes stored escalation JSON back into typed broker grants, the
 scripted end-to-end demo that drives the whole M3 flow through the
 protocol alone — and, as the tree's host package, the production wiring
 adapter (`client/wiring`, promoted from conformance), the system
-prompt's assembly and its durable pin (`client/system_prompt`), the three
-seams that give a model other agents, code mode and recall over the
-repository's own history (`client/agency`, `client/codemode`,
-`client/history`), plus the
+prompt's assembly and its durable pin (`client/system_prompt`), the four
+seams that give a model other agents, code mode, recall over the
+repository's own history and a memory that outlives a session
+(`client/agency`, `client/codemode`, `client/history`, `client/memory`),
+the distillation pipeline that fills that memory
+(`client/distill`, a second entry point), plus the
 `loom-server` entry point (`client/serve`) that boots the whole stack
 over one session file. WP-L.
 
@@ -190,6 +192,65 @@ over one session file. WP-L.
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/memory.{memory_file, digest_file, store_beside, digest_beside,
+  directory_of, fact_type, lesson_type, preference_type, pipeline_types,
+  type_named, short_name, max_digest_bytes, max_distillates,
+  max_row_chars, lease_ttl_ms, run_lease_ttl_ms, head_key, cursor_key,
+  notes_cursor_key,
+  note_count_key, Cursor, cursor_from, cursor_value, MemoryFault, Opened,
+  open, close, probe, SourceRef, Provenance, Distillate, distillate_of,
+  append_distillates, head, head_rows, advance_head, advance_cursors,
+  cell, notes_after, safe_text, remember_seam, fence, render_digest,
+  read_digest, write_digest, reconcile_digest, digest_hooks, wrapped}` —
+  the memory plane: the
+  `loom-memory.db` session beside the session files (the fold
+  `client/history` established, deliberately *not* the workspace), the
+  `loom-memory.digest` sidecar the server injects from, and the host side
+  of the `remember` door. Opened with the ordinary writer lease and
+  `session.ensure_id` called by hand, because nothing here goes through
+  `runtime/api` — which is also why its bookkeeping cells need no
+  reserved prefix. **The TTL is the caller's**, and the two callers are
+  nothing alike: a `remember` write covers one commit, while a run's
+  commits are separated by whole provider turns and it takes
+  `run_lease_ttl_ms` so no opener can steal the file out from under a
+  model turn (the `rewrite_lease_ttl_ms` precedent, and a constant rather
+  than a renewal timer because a command has no supervision tree to hang
+  one on). **`append_distillates` and `advance_head` are separate
+  on purpose**: rows commit first, the head-and-cursors CAS commits last,
+  and a run killed between them leaves the previous head, cursors and
+  sidecar standing over inert orphan rows. `render_digest` writes the
+  body only — scrubbed, byte-capped, truncation marked — and `wrapped`
+  builds the fence and the attribution at injection time, so the file
+  cannot forge its own provenance.
+- `client/distill.{Answer, Distiller, Candidate, Extract, Harvest, Report,
+  Config, default_scan_limit, max_extract_chars, max_notes_per_run,
+  default_timeout_ms, distill_owner, extractable, extraction_input,
+  extraction_prompt, consolidation_prompt, parse_candidates, config_for,
+  with_logger, run, source_files, target, gateway_distiller, main}` — the
+  distillation pipeline, runnable as `gleam run -m client/distill --
+  --config loom.toml [--session-dir <dir> | --session <path.db>]`. It
+  walks the session directory's `*.db` files, skips every one whose
+  writer lease is held (**that is the live-session rule, entire**), reads
+  each above a `{seq, rewrite generation}` cursor, extracts, consolidates
+  against the current head and the `remember` notes, and re-renders the
+  sidecar. `extractable` is the anti-feedback exclusion and is a rule
+  about types: settled assistant text (`client/rules.scannable_text`,
+  shared with the rule scanner) plus compaction and branch summaries, and
+  nothing from a user turn or a `CustomEntry`. `Distiller` is the whole
+  provider surface, so a test scripts both model turns; `target` picks the
+  `Summarize` route when the catalogue has one and the resolved main
+  identity when it does not, the summary path's own arrangement.
+  Two properties of the pass shape are load-bearing rather than
+  incidental. **Only the sources extraction got an answer for** drive the
+  cursors and the provenance: advancing a failed source's cursor would
+  lose its entries permanently and silently, and naming it in provenance
+  would over-claim a contribution #115's cascade would act on. And the
+  consolidation turn is dispatched on what extraction **produced**, not
+  on what it was offered — a repository whose sources all honestly answer
+  `nothing` commits a cursors-only transaction, leaves the head alone,
+  and does not re-pay the same extraction turns on every run forever.
+  Every run, that one included, ends by reconciling the sidecar against
+  the head.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -337,7 +398,8 @@ over one session file. WP-L.
   Option(History))` — the tool registry: five core tools, plus the six
   `agent_*` tools only when a messaging plane exists, plus `code_mode`
   only when this host wired a code-mode pipeline, plus `history_search`
-  only when its search index opened.
+  only when its search index opened, plus `remember` only when the memory
+  session beside the session file opened.
 - `client/serve.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*
@@ -346,6 +408,17 @@ over one session file. WP-L.
   writes and leaves reads alone, which is exactly the asymmetry wanted.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
+- `client/serve.protecting_memory(SandboxPolicy, String, String)` — the
+  same bargain one step along, over `loom-memory.db` (with its WAL
+  family) and `loom-memory.digest`. More direct than the index's: a
+  search snippet reaches a later session only if a model searches for it,
+  while the digest is injected into **every** run of every session on the
+  repository, unasked. Both paths are conditional on a writable root
+  reaching their directory — not a refinement but a requirement, since
+  neither file exists until a distillation run has happened and the jail
+  refuses to mask a *missing* protected path under a read-only parent.
+  The two functions share one `protecting(always:, where_writable:)`
+  mechanism rather than each carrying a copy.
 - `client/serve.Settings.codemode_seams` — which code-mode seams this
   server offers (`--codemode-seams workspace|orchestration|both`,
   default `WorkspaceOnly`). A setting for the same reason
@@ -511,6 +584,18 @@ over one session file. WP-L.
   `events/search.sync`. Index rows and the advanced cursor commit in one
   transaction, so a crash mid-batch re-runs the batch into the same
   state; a lost poke costs latency and never a row.
+- **Memory**: `client/serve` never opens `loom-memory.db` and never
+  creates it — its boot probe reads the store's header lease-free
+  (`storage/sqlite.generation`), and an absent store is the ordinary
+  state of a repository that has never remembered anything. It reads
+  `loom-memory.digest` once at boot as bytes and injects them at every
+  run start through `memory.digest_hooks`, which is why an updated digest
+  lands at the next session boundary rather than mid-session. The two
+  writers are `client/distill` (a command, holding the memory session's
+  writer lease for its whole run under `run_lease_ttl_ms`) and the
+  `remember` seam (one open per call under the short `lease_ttl_ms`,
+  refused in band while a run holds the lease). Usage rows for both model
+  turns land in the memory session's own ledger.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the
   storage seq** of the write that produced the event, so the durable
   stream needs no side index and `catch_up` rebuilds it with
