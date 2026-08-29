@@ -284,12 +284,18 @@ pub type CapPlan {
   /// arming the deadline while a call that may block for tens of seconds
   /// is outstanding.
   ///
-  /// It is unlinked and bounded by `call_timeout_ms`, so a wall deadline
-  /// that fires mid-call tears the node down and leaves the served call
-  /// to finish into a stopped host, where its answer is dropped. That is
-  /// the honest shape: there is no executor process group to revoke, and
-  /// the Agency call it wraps is itself bounded — a `wait` by the
-  /// Agency's own ceiling, everything else by a store round trip.
+  /// It is unlinked and bounded by `call_timeout_ms`, and a call that
+  /// reaches that bound is *reaped*, not merely abandoned: the host
+  /// answers `unsettled` and kills the process running `serve`, so a
+  /// closure that would have gone on polling a store for an answer
+  /// nobody is listening for does not outlive its own call. A wall
+  /// deadline that fires mid-call still tears the node down and leaves
+  /// the served call to finish into a stopped host, where its answer is
+  /// dropped. That is the honest shape: there is no executor process
+  /// group to revoke, and the Agency call it wraps is itself bounded —
+  /// a `wait` by the Agency's own ceiling, which is deliberately below
+  /// `client/codemode.default_call_timeout_ms` so that the bound with an
+  /// answer is the one that fires, everything else by a store round trip.
   ServedHere(serve: fn() -> CapOutcome)
 }
 
@@ -1181,6 +1187,16 @@ fn report_collected(
 // node. Monitoring settles both cases in band — too slow is `unsettled`,
 // dead is `cap_failed` naming the death — which is the same posture
 // `report_collected` takes toward a clearance that never settles.
+//
+// Answering the call is not the whole obligation, though: the worker is
+// unlinked, so when the deadline is what settles the call, nothing else
+// would ever end it. `serve` closures poll a store, and one still polling
+// for an answer this process has already reported `unsettled` for is an
+// orphan per timed-out call, holding the seam it reached open long after
+// the program stopped listening. So the timeout reaps it — the same
+// obligation `cap/runtime` discharges on its blocked reader — and the
+// reap is what makes `unsettled` the *end* of the call rather than only
+// the end of the waiting.
 fn run_service(
   host: Subject(Msg),
   serve: fn() -> CapOutcome,
@@ -1197,7 +1213,13 @@ fn run_service(
   let outcome = case process.selector_receive(settled, call_timeout_ms) {
     Ok(Ok(answer)) -> answer
     Ok(Error(Nil)) -> served_died_outcome()
-    Error(Nil) -> unsettled_outcome()
+    Error(Nil) -> {
+      // Nobody is left to read this worker's answer, and `answers` dies
+      // with this process, so a late `serve` would send into nothing
+      // anyway. Killing it stops the work rather than the delivery.
+      process.kill(worker)
+      unsettled_outcome()
+    }
   }
   process.demonitor_process(monitor)
   process.send(host, CapDone(id:, outcome:))

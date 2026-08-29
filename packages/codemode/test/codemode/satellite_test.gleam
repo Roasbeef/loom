@@ -618,6 +618,94 @@ fn cancel_peer(ctx: PeerCtx) -> Nil {
   )
 }
 
+// --- a timed-out served call is reaped ------------------------------------
+
+pub fn a_timed_out_served_call_leaves_no_worker_behind_test() {
+  // `unsettled` has to be the end of the call, not just the end of the
+  // waiting. The process running `serve` is unlinked, so nothing else
+  // would ever end it: a closure polling a store for a child that has not
+  // settled would go on polling for an answer this host has already
+  // reported nobody will read — one orphan per timed-out call.
+  let dir = fresh_dir("served-reap")
+  let broker = start_broker(echoing())
+  let workers = process.new_subject()
+  let cfg =
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: stalling_router(workers),
+      call_timeout_ms: 200,
+    )
+  let outcome =
+    satellite.run(
+      artifact(),
+      run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
+      broker,
+      cfg,
+      satellite_peer.launcher(stalled_call_peer),
+    ).outcome
+  let assert Ok(satellite.Completed(value)) = outcome
+    as "the peer reported what it was told"
+  // The program got an answer rather than silence…
+  assert value == msgpack.StringValue("unsettled")
+  // …and the work behind it was stopped rather than left running.
+  let assert Ok(worker) = process.receive(workers, 1000)
+    as "the served call named the process it ran on"
+  assert died_within(worker, 1000)
+  broker.stop(broker)
+}
+
+// A router whose one served capability never answers: it names the
+// process it runs on and then blocks past any call deadline.
+fn stalling_router(
+  workers: Subject(process.Pid),
+) -> fn(satellite.CapRequest) -> Result(satellite.CapPlan, satellite.CapDenial) {
+  fn(request: satellite.CapRequest) {
+    case request.cap {
+      "strand.wait" ->
+        Ok(
+          satellite.ServedHere(serve: fn() {
+            process.send(workers, process.self())
+            process.sleep(60_000)
+            framing.CapOk(value: msgpack.StringValue("far too late"))
+          }),
+        )
+      _other -> satellite.default_router(request)
+    }
+  }
+}
+
+fn stalled_call_peer(ctx: PeerCtx) -> Nil {
+  satellite_peer.send_cap_call(
+    ctx,
+    ctx.token,
+    1,
+    "strand.wait",
+    msgpack.MapValue([]),
+  )
+  let code = case satellite_peer.collect_results(ctx, 1, 3000) {
+    [#(1, framing.CapErr(code:, message: _))] -> code
+    _other -> "no result"
+  }
+  satellite_peer.send_outcome(ctx, msgpack.StringValue(code))
+}
+
+// `kill` is an asynchronous exit signal, so "gone" is a question with a
+// small window rather than an instant, and polling it is what keeps the
+// assertion from being a race in the other direction.
+fn died_within(pid: process.Pid, budget_ms: Int) -> Bool {
+  case process.is_alive(pid) {
+    False -> True
+    True ->
+      case budget_ms > 0 {
+        False -> False
+        True -> {
+          process.sleep(20)
+          died_within(pid, budget_ms - 20)
+        }
+      }
+  }
+}
+
 // --- shared helpers ------------------------------------------------------
 
 fn id_list(count: Int) -> List(Int) {
