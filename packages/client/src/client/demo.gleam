@@ -188,8 +188,13 @@ fn drive(
 ) -> Result(Narrative, String) {
   let inbox = process.new_subject()
   let deferred = process.new_subject()
+  let observed_seq = process.new_subject()
+  let recovery_ids = process.new_subject()
+  process.send(observed_seq, 0)
+  process.send(recovery_ids, 1_000_000)
   let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
-  let client = Client(hub:, connection:, inbox:, deferred:)
+  let client =
+    Client(hub:, connection:, inbox:, deferred:, observed_seq:, recovery_ids:)
   use lines <- result.try(acceptance_flow(client, runtime))
   Ok(
     list.append(lines, [
@@ -206,6 +211,8 @@ type Client {
     connection: Int,
     inbox: Subject(String),
     deferred: Subject(protocol.EventEnvelope),
+    observed_seq: Subject(Int),
+    recovery_ids: Subject(Int),
   )
 }
 
@@ -217,7 +224,7 @@ fn acceptance_flow(
   use _snapshot <- result.try(subscribe_full(client))
   let lines = ["subscribed: full snapshot for " <> session_id]
   // 2. prompt main: tool round-trip with streamed deltas.
-  use Nil <- result.try(command_replied(
+  use main_prompt_reply <- result.try(command_replied(
     client,
     2,
     protocol.Prompt(strand: "main", text: "add a retry to the fetcher"),
@@ -229,17 +236,22 @@ fn acceptance_flow(
     },
     "prompt main",
   ))
-  use Nil <- result.try(await(client, done_for(_, "main"), "main run settled"))
+  use _main_done <- result.try(await(
+    client,
+    done_for(_, "main"),
+    "main run settled",
+    after_seq: event_seq(main_prompt_reply, fallback: 0),
+  ))
   let lines = ["prompted main: run settled after a bash round-trip", ..lines]
   // 3. a subagent strand, created and briefed over the wire.
-  use Nil <- result.try(command_replied(
+  use _create_reply <- result.try(command_replied(
     client,
     3,
     protocol.CreateStrand(name: Some("research")),
     strands_reply(_, "research"),
     "create_strand research",
   ))
-  use Nil <- result.try(command_replied(
+  use research_prompt_reply <- result.try(command_replied(
     client,
     4,
     protocol.Prompt(strand: "research", text: "verify the fetch layer"),
@@ -251,13 +263,15 @@ fn acceptance_flow(
     },
     "brief research",
   ))
-  use Nil <- result.try(await(
+  use _research_done <- result.try(await(
     client,
     done_for(_, "research"),
     "research run settled",
+    after_seq: event_seq(research_prompt_reply, fallback: 0),
   ))
   let lines = ["created and briefed the research strand", ..lines]
   // 4. durable messaging: research reports to main; main acknowledges.
+  let report_floor = observed_seq(client.observed_seq)
   use Nil <- result.try(
     case
       api.send_to_strand(
@@ -273,12 +287,18 @@ fn acceptance_flow(
       Error(_) -> Error("the cross-strand send was refused")
     },
   )
-  use Nil <- result.try(await(
+  use report_event <- result.try(await(
     client,
     report_entry_on_main,
     "the report reached main's tree",
+    after_seq: report_floor,
   ))
-  use Nil <- result.try(await(client, done_for(_, "main"), "main acknowledged"))
+  use _main_ack <- result.try(await(
+    client,
+    done_for(_, "main"),
+    "main acknowledged",
+    after_seq: event_seq(report_event, fallback: report_floor),
+  ))
   let lines = ["research reported to main durably; main acknowledged", ..lines]
   // 5. escalation: raised harness-side, approved over the wire, consumed
   //    as typed grants.
@@ -287,6 +307,7 @@ fn acceptance_flow(
       allow: ["registry.npmjs.org"],
       proxy: "127.0.0.1:3128",
     ))
+  let escalation_floor = observed_seq(client.observed_seq)
   use Nil <- result.try(
     api.raise_escalation(
       runtime,
@@ -299,12 +320,13 @@ fn acceptance_flow(
     )
     |> result.map_error(fn(_) { "raising the escalation failed" }),
   )
-  use Nil <- result.try(await(
+  use _pending <- result.try(await(
     client,
     escalation_status(_, "esc-1", "pending"),
     "escalation surfaced as pending",
+    after_seq: escalation_floor,
   ))
-  use Nil <- result.try(command_replied(
+  use _approve_reply <- result.try(command_replied(
     client,
     5,
     // Raised through the unscoped door, so the record names no action
@@ -330,7 +352,7 @@ fn acceptance_flow(
     ..lines
   ]
   // 6. fork: a new strand at main's leaf.
-  use Nil <- result.try(command_replied(
+  use _fork_reply <- result.try(command_replied(
     client,
     6,
     protocol.Fork(
@@ -344,7 +366,7 @@ fn acceptance_flow(
   let lines = ["forked main in place as alt-approach", ..lines]
   // 7. navigate the fork back to the root of its shared history.
   use target <- result.try(oldest_entry_id(runtime))
-  use Nil <- result.try(command_replied(
+  use _navigate_reply <- result.try(command_replied(
     client,
     7,
     protocol.Navigate(strand: "alt-approach", to_entry: target),
@@ -361,7 +383,8 @@ fn acceptance_flow(
   ))
   let lines = ["navigated alt-approach to the oldest shared entry", ..lines]
   // 8. compact main.
-  use Nil <- result.try(command_replied(
+  let compaction_floor = observed_seq(client.observed_seq)
+  use _compact_reply <- result.try(command_replied(
     client,
     8,
     protocol.Compact(strand: "main", instructions: None),
@@ -373,15 +396,21 @@ fn acceptance_flow(
     },
     "compact main",
   ))
-  use Nil <- result.try(await(
+  use compacted <- result.try(await(
     client,
     compaction_entry(_, "main"),
     "the compaction entry appeared",
+    after_seq: compaction_floor,
   ))
-  use Nil <- result.try(await(client, done_for(_, "main"), "compaction done"))
+  use _compaction_done <- result.try(await(
+    client,
+    done_for(_, "main"),
+    "compaction done",
+    after_seq: event_seq(compacted, fallback: compaction_floor),
+  ))
   let lines = ["compacted main: summary entry committed", ..lines]
   // 9. set_config over the wire.
-  use Nil <- result.try(command_replied(
+  use _config_reply <- result.try(command_replied(
     client,
     9,
     protocol.SetConfig(
@@ -399,7 +428,7 @@ fn acceptance_flow(
   let lines = ["set queue_mode over the wire", ..lines]
   // 10. catch-up replay: every durable entry event again, exactly once,
   //     in seq order, from seq 1.
-  use replayed <- result.try(catch_up_all(client, 10))
+  use replayed <- result.try(catch_up_all(client, 10, from_seq: 1))
   use Nil <- result.try(check_replay(replayed))
   let lines = [
     "caught up from seq 1: replay is seq-ordered and duplicate-free",
@@ -429,7 +458,7 @@ fn next_event(
   client: Client,
   step: String,
 ) -> Result(protocol.EventEnvelope, String) {
-  next_buffered_event(client.inbox, client.deferred, step)
+  next_buffered_event(client.inbox, client.deferred, client.observed_seq, step)
 }
 
 /// Receives a deferred pre-reply event before reading a new wire frame.
@@ -437,11 +466,19 @@ fn next_event(
 pub fn next_buffered_event(
   inbox: Subject(String),
   deferred: Subject(protocol.EventEnvelope),
+  observed_seq: Subject(Int),
   step: String,
 ) -> Result(protocol.EventEnvelope, String) {
   case process.receive(deferred, within: 0) {
-    Ok(envelope) -> Ok(envelope)
-    Error(Nil) -> next_incoming_event(inbox, step)
+    Ok(envelope) -> {
+      observe_seq(observed_seq, envelope)
+      Ok(envelope)
+    }
+    Error(Nil) -> {
+      use envelope <- result.try(next_incoming_event(inbox, step))
+      observe_seq(observed_seq, envelope)
+      Ok(envelope)
+    }
   }
 }
 
@@ -457,6 +494,40 @@ fn next_incoming_event(
   }
 }
 
+fn observe_seq(
+  observed_seq: Subject(Int),
+  envelope: protocol.EventEnvelope,
+) -> Nil {
+  case envelope.seq {
+    None -> Nil
+    Some(seq) -> {
+      let previous = process.receive_forever(observed_seq)
+      process.send(observed_seq, int.max(previous, seq))
+    }
+  }
+}
+
+fn observed_seq(cursor: Subject(Int)) -> Int {
+  let seq = process.receive_forever(cursor)
+  process.send(cursor, seq)
+  seq
+}
+
+fn event_seq(envelope: protocol.EventEnvelope, fallback fallback: Int) -> Int {
+  case envelope.seq {
+    Some(seq) -> seq
+    None -> fallback
+  }
+}
+
+/// Allocates the next recovery request id on one demo connection.
+@internal
+pub fn next_recovery_id(ids: Subject(Int)) -> Int {
+  let id = process.receive_forever(ids)
+  process.send(ids, id + 1)
+  id
+}
+
 // Sends a command and drains events until its reply arrives; the reply
 // must satisfy `expected` and not be an error.
 fn command_replied(
@@ -465,9 +536,17 @@ fn command_replied(
   command: protocol.Command,
   expected: fn(protocol.EventEnvelope) -> Bool,
   step: String,
-) -> Result(Nil, String) {
+) -> Result(protocol.EventEnvelope, String) {
   send_command(client, id, command)
-  await_correlated_reply(client.inbox, client.deferred, id, expected, step, 200)
+  await_correlated_reply(
+    client.inbox,
+    client.deferred,
+    client.observed_seq,
+    id,
+    expected,
+    step,
+    200,
+  )
 }
 
 /// Waits for one correlated reply without dropping earlier live events.
@@ -475,11 +554,12 @@ fn command_replied(
 pub fn await_correlated_reply(
   inbox: Subject(String),
   deferred: Subject(protocol.EventEnvelope),
+  observed_seq: Subject(Int),
   id: Int,
   expected: fn(protocol.EventEnvelope) -> Bool,
   step: String,
   budget: Int,
-) -> Result(Nil, String) {
+) -> Result(protocol.EventEnvelope, String) {
   use <- bool.lazy_guard(when: budget <= 0, return: fn() {
     Error(step <> ": no reply arrived")
   })
@@ -487,9 +567,20 @@ pub fn await_correlated_reply(
   case envelope.reply_to == Some(id) {
     False -> {
       process.send(deferred, envelope)
-      await_correlated_reply(inbox, deferred, id, expected, step, budget - 1)
+      await_correlated_reply(
+        inbox,
+        deferred,
+        observed_seq,
+        id,
+        expected,
+        step,
+        budget - 1,
+      )
     }
-    True -> reply_outcome(envelope, expected, step)
+    True -> {
+      observe_seq(observed_seq, envelope)
+      reply_outcome(envelope, expected, step)
+    }
   }
 }
 
@@ -497,13 +588,13 @@ fn reply_outcome(
   envelope: protocol.EventEnvelope,
   expected: fn(protocol.EventEnvelope) -> Bool,
   step: String,
-) -> Result(Nil, String) {
+) -> Result(protocol.EventEnvelope, String) {
   case envelope.event {
     protocol.ErrorEvent(code:, message:, ..) ->
       Error(step <> " failed: " <> code <> ": " <> message)
     _ ->
       case expected(envelope) {
-        True -> Ok(Nil)
+        True -> Ok(envelope)
         False -> Error(step <> ": unexpected reply shape")
       }
   }
@@ -514,17 +605,41 @@ fn await(
   client: Client,
   wanted: fn(protocol.EventEnvelope) -> Bool,
   step: String,
-) -> Result(Nil, String) {
-  case await_loop(client, wanted, step, 400) {
-    Ok(Nil) -> Ok(Nil)
+  after_seq after_seq: Int,
+) -> Result(protocol.EventEnvelope, String) {
+  let current = fn(envelope) {
+    event_after(envelope, after_seq) && wanted(envelope)
+  }
+  case await_loop(client, current, step, 400) {
+    Ok(envelope) -> Ok(envelope)
     Error(reason) ->
       case recoverable_wait_failure(reason) {
         False -> Error(reason)
         True -> {
-          use replayed <- result.try(catch_up_all(client, 1_000_000))
-          find_replayed_event(replayed, wanted, step)
+          let id = next_recovery_id(client.recovery_ids)
+          use replayed <- result.try(catch_up_all(
+            client,
+            id,
+            from_seq: after_seq + 1,
+          ))
+          use #(matched, remaining) <- result.try(find_replayed_event(
+            replayed,
+            wanted,
+            after_seq,
+            step,
+          ))
+          observe_seq(client.observed_seq, matched)
+          list.each(remaining, process.send(client.deferred, _))
+          Ok(matched)
         }
       }
+  }
+}
+
+fn event_after(envelope: protocol.EventEnvelope, after_seq: Int) -> Bool {
+  case envelope.seq {
+    Some(seq) -> seq > after_seq
+    None -> False
   }
 }
 
@@ -538,11 +653,16 @@ fn recoverable_wait_failure(reason: String) -> Bool {
 pub fn find_replayed_event(
   replayed: List(protocol.EventEnvelope),
   wanted: fn(protocol.EventEnvelope) -> Bool,
+  after_seq: Int,
   step: String,
-) -> Result(Nil, String) {
-  case list.any(replayed, wanted) {
-    True -> Ok(Nil)
-    False -> Error(step <> ": the event was absent from catch-up replay")
+) -> Result(#(protocol.EventEnvelope, List(protocol.EventEnvelope)), String) {
+  case replayed {
+    [] -> Error(step <> ": the event was absent from catch-up replay")
+    [envelope, ..remaining] ->
+      case event_after(envelope, after_seq) && wanted(envelope) {
+        True -> Ok(#(envelope, remaining))
+        False -> find_replayed_event(remaining, wanted, after_seq, step)
+      }
   }
 }
 
@@ -551,14 +671,47 @@ fn await_loop(
   wanted: fn(protocol.EventEnvelope) -> Bool,
   step: String,
   budget: Int,
-) -> Result(Nil, String) {
+) -> Result(protocol.EventEnvelope, String) {
+  await_buffered_event(
+    client.inbox,
+    client.deferred,
+    client.observed_seq,
+    wanted,
+    step,
+    budget,
+  )
+}
+
+/// Drains buffered and live events until a predicate matches.
+@internal
+pub fn await_buffered_event(
+  inbox: Subject(String),
+  deferred: Subject(protocol.EventEnvelope),
+  observed_seq: Subject(Int),
+  wanted: fn(protocol.EventEnvelope) -> Bool,
+  step: String,
+  budget: Int,
+) -> Result(protocol.EventEnvelope, String) {
   case budget <= 0 {
     True -> Error(step <> ": the awaited event never arrived")
     False -> {
-      use envelope <- result.try(next_event(client, step))
+      use envelope <- result.try(next_buffered_event(
+        inbox,
+        deferred,
+        observed_seq,
+        step,
+      ))
       case wanted(envelope) {
-        True -> Ok(Nil)
-        False -> await_loop(client, wanted, step, budget - 1)
+        True -> Ok(envelope)
+        False ->
+          await_buffered_event(
+            inbox,
+            deferred,
+            observed_seq,
+            wanted,
+            step,
+            budget - 1,
+          )
       }
     }
   }
@@ -684,42 +837,73 @@ fn entry_id_of(row: entry.Entry) -> ids.EntryId {
 
 // --- catch-up and final-state checks ---------------------------------------
 
-// Replays everything from seq 1 and returns the replayed envelopes (the
-// resume snapshot reply excluded).
+// Replays durable envelopes from the requested sequence (the resume snapshot
+// reply excluded).
 fn catch_up_all(
   client: Client,
   id: Int,
+  from_seq from_seq: Int,
 ) -> Result(List(protocol.EventEnvelope), String) {
-  send_command(client, id, protocol.CatchUp(from_seq: 1))
+  send_command(client, id, protocol.CatchUp(from_seq:))
   use next_seq <- result.try(resume_reply(client, id, 200))
   collect_replay(client, next_seq, [])
 }
 
 fn resume_reply(client: Client, id: Int, budget: Int) -> Result(Int, String) {
+  await_resume_reply(
+    client.inbox,
+    client.deferred,
+    client.observed_seq,
+    id,
+    budget,
+  )
+}
+
+/// Waits for a catch-up reply while deferring every unrelated live event.
+@internal
+pub fn await_resume_reply(
+  inbox: Subject(String),
+  deferred: Subject(protocol.EventEnvelope),
+  observed_seq: Subject(Int),
+  id: Int,
+  budget: Int,
+) -> Result(Int, String) {
   case budget <= 0 {
     True -> Error("catch_up: no resume snapshot arrived")
     False -> {
-      use envelope <- result.try(next_event(client, "catch_up"))
+      use envelope <- result.try(next_incoming_event(inbox, "catch_up"))
       case envelope.reply_to, envelope.event {
         Some(reply), protocol.SnapshotEvent(protocol.ResumeSnapshot(next_seq:))
         ->
           case reply == id {
-            True -> Ok(next_seq)
-            False -> resume_reply(client, id, budget - 1)
+            True -> {
+              observe_seq(observed_seq, envelope)
+              Ok(next_seq)
+            }
+            False -> {
+              process.send(deferred, envelope)
+              await_resume_reply(inbox, deferred, observed_seq, id, budget - 1)
+            }
           }
         Some(reply), protocol.ErrorEvent(code:, ..) ->
           case reply == id {
             True -> Error("catch_up failed: " <> code)
-            False -> resume_reply(client, id, budget - 1)
+            False -> {
+              process.send(deferred, envelope)
+              await_resume_reply(inbox, deferred, observed_seq, id, budget - 1)
+            }
           }
-        _, _ -> resume_reply(client, id, budget - 1)
+        _, _ -> {
+          process.send(deferred, envelope)
+          await_resume_reply(inbox, deferred, observed_seq, id, budget - 1)
+        }
       }
     }
   }
 }
 
-// Collects replayed events until the stream reaches next_seq - 1 (the
-// replay is synchronous on the hub, so a short quiet period ends it).
+// Collects replayed events until the synchronous replay reaches a live-event
+// boundary or goes quiet.
 fn collect_replay(
   client: Client,
   next_seq: Int,
@@ -731,12 +915,38 @@ fn collect_replay(
       case protocol.decode_event(frame) {
         Error(_) -> Error("a replayed frame did not decode")
         Ok(envelope) ->
-          case envelope.seq {
-            Some(seq) if seq >= next_seq ->
+          case
+            collect_or_defer(envelope, next_seq, client.deferred, collected)
+          {
+            KeepReplaying(collected) ->
               collect_replay(client, next_seq, collected)
-            _ -> collect_replay(client, next_seq, [envelope, ..collected])
+            StopAtLiveBoundary(collected) -> Ok(list.reverse(collected))
           }
       }
+  }
+}
+
+/// Whether replay collection should continue after one received envelope.
+@internal
+pub type ReplayCollection {
+  KeepReplaying(List(protocol.EventEnvelope))
+  StopAtLiveBoundary(List(protocol.EventEnvelope))
+}
+
+/// Keeps replay rows and defers post-snapshot live events in arrival order.
+@internal
+pub fn collect_or_defer(
+  envelope: protocol.EventEnvelope,
+  next_seq: Int,
+  deferred: Subject(protocol.EventEnvelope),
+  collected: List(protocol.EventEnvelope),
+) -> ReplayCollection {
+  case envelope.seq {
+    Some(seq) if seq < next_seq -> KeepReplaying([envelope, ..collected])
+    _ -> {
+      process.send(deferred, envelope)
+      StopAtLiveBoundary(collected)
+    }
   }
 }
 
@@ -769,9 +979,21 @@ fn check_replay(replayed: List(protocol.EventEnvelope)) -> Result(Nil, String) {
 fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   let inbox = process.new_subject()
   let deferred = process.new_subject()
+  let observed_seq = process.new_subject()
+  let recovery_ids = process.new_subject()
+  process.send(observed_seq, 0)
+  process.send(recovery_ids, 1_000_000)
   let connection =
     gateway.attach(client.hub, fn(frame) { process.send(inbox, frame) })
-  let second = Client(hub: client.hub, connection:, inbox:, deferred:)
+  let second =
+    Client(
+      hub: client.hub,
+      connection:,
+      inbox:,
+      deferred:,
+      observed_seq:,
+      recovery_ids:,
+    )
   subscribe_full(second)
 }
 
