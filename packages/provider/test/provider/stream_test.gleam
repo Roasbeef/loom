@@ -374,6 +374,69 @@ pub fn run_explicit_cancel_stops_transport_test() {
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
+pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
+  let ready = process_subject()
+  let owners = process_subject()
+  let cancelled = process_subject()
+  let deltas = process_subject()
+  let outcomes = process_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.send(events, http.ResponseStatus(status: 200, headers: []))
+          process.send(events, http.ResponseChunk(<<"first":utf8>>))
+          process.receive_forever(process.new_subject())
+        })
+      process.send(owners, owner)
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+          // This simulates an HTTP terminal already in flight when cancellation
+          // wins. The attempt's private subject may receive it, but no second
+          // public outcome can escape the completed run loop.
+          process.send(events, http.ResponseEnd)
+          process.kill(owner)
+        }),
+      )
+    })
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let control = process.new_subject()
+      process.send(ready, control)
+      let outcome =
+        stream.run(
+          transport,
+          http.HttpRequest(
+            method: "POST",
+            url: "http://x",
+            headers: [],
+            body: "",
+          ),
+          echo_machine(),
+          fn(delta) { process.send(deltas, delta) },
+          control:,
+          consumer: process.self(),
+          within: 1000,
+        )
+      process.send(outcomes, outcome)
+    })
+  let assert Ok(control) = receive_from(ready, 100)
+  let assert Ok(owner) = receive_from(owners, 100)
+  let owner_monitor = process.monitor(owner)
+  let assert Ok(stream.TextDelta(text: "chunk", ..)) = receive_from(deltas, 100)
+
+  process.send(control, stream.Cancel)
+
+  assert receive_from(outcomes, 1000) == Ok(stream.AttemptCancelled)
+  assert receive_from(cancelled, 100) == Ok(Nil)
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(_down) { True })
+    |> process.selector_receive(1000)
+  assert receive_from(outcomes, 20) == Error(Nil)
+}
+
 pub fn run_timeout_reaps_stubborn_transport_owner_test() {
   let owners = process_subject()
   let cancelled = process_subject()

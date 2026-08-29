@@ -14,6 +14,7 @@ pub fn transport_failures_are_retryable_test() {
 
 pub fn cancellation_is_terminal_test() {
   assert retry.classify(stream.ProviderCancelled) == retry.Terminal
+  assert retry.classify(stream.CancellationUnconfirmed) == retry.Terminal
 }
 
 pub fn rate_limit_carries_backoff_hint_test() {

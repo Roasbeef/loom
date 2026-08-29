@@ -251,6 +251,17 @@ pub fn cancellation_after_settlement_is_a_noop_test() {
   assert stream.next(handle, within: 100) == Error(Nil)
 }
 
+pub fn pump_crash_after_start_fails_promptly_in_band_test() {
+  let crashing =
+    http.Transport(start_streaming: fn(_request, _events) {
+      panic as "transport seam crashed"
+    })
+  let handle = gateway.request(two_provider_gateway(crashing), main_request())
+  let assert Ok(#([], stream.Failed(stream.TransportFailed(reason:)))) =
+    stream.await_terminal(handle, within: 1000)
+  assert reason == "provider request pump stopped before a terminal response"
+}
+
 pub fn consumer_death_cancels_and_reaps_transport_test() {
   let ready = process.new_subject()
   let owners = process.new_subject()

@@ -8,13 +8,13 @@
 
 import gleam/erlang/process.{type Pid}
 
+/// The opaque identifier returned by OTP for one asynchronous HTTP request.
+pub type RequestId
+
 /// Starts one HTTP request and streams the response through the callbacks:
 /// `on_status` once, then `on_chunk` per body fragment, then `on_end`
-/// once — or `on_failure` once at any point. Returns the spawned request
-/// owner immediately; startup failure is delivered through `on_failure`.
-/// The owner retains the exact OTP request id and monitors the calling
-/// process. Cancellation queued during startup is therefore handled as soon
-/// as `httpc:request/4` returns the id.
+/// once — or `on_failure` once at any point. Returns the spawned event receiver
+/// and opaque native request id; startup failure is returned directly.
 ///
 /// Uses `httpc:request/4` with `{sync, false}` and `{stream, self}` so
 /// body chunks arrive as messages in the owner process's mailbox, which
@@ -34,10 +34,10 @@ pub fn start_stream_request(
   on_chunk: fn(BitArray) -> Nil,
   on_end: fn() -> Nil,
   on_failure: fn(String) -> Nil,
-) -> Result(Pid, String)
+) -> Result(#(Pid, RequestId), String)
 
-/// Cancels the exact OTP request retained by `owner`. OTP cancellation is
+/// Cancels the exact OTP request identified by `request_id`. OTP cancellation is
 /// asynchronous and may race a response already in flight, so the provider
 /// request owner remains the only process allowed to choose a terminal event.
 @external(erlang, "provider_ffi", "cancel_stream_request")
-pub fn cancel_stream_request(owner: Pid) -> Nil
+pub fn cancel_stream_request(request_id: RequestId) -> Nil

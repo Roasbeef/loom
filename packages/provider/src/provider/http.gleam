@@ -4,16 +4,23 @@
 //// `HttpRequest` to an injected `Transport`, which delivers the response
 //// as a stream of `HttpEvent` messages to a subject. Tests inject a
 //// transport that replays fixture events; production wires the Erlang
-//// `httpc` streaming shim via `httpc_transport`. Everything above the raw
-//// chunk stream is pure Gleam — the sans-io pattern from the style guide.
+//// `httpc` streaming shim via `httpc_transport`. The socket and its Gleam
+//// custodian form the processful shell; parsing and response folds above the
+//// `HttpEvent` boundary retain the sans-io shape from the style guide.
 ////
 //// Secrets (API keys) appear only inside `HttpRequest.headers`, which
 //// flows exclusively into the transport. No `HttpEvent`, error, or stream
 //// event ever carries the request back out (spec §3.3 invariant 4).
 
 import gleam/erlang/process.{type Pid, type Subject}
-import gleam/result
 import provider/internal/ffi_httpc
+
+const native_start_timeout_ms = 5000
+
+type NativeEvent {
+  ParentDown(process.Down)
+  ReceiverDown(process.Down)
+}
 
 /// One outbound HTTP request, fully built.
 ///
@@ -54,10 +61,10 @@ pub type HttpEvent {
 /// request's `HttpEvent`s and is monitorable by the provider request owner;
 /// `cancel` stops the underlying request and is safe after completion.
 ///
-/// Constructor invariants: `owner` retains whatever transport-native request
-/// identity cancellation needs. For the production transport that is the
-/// exact OTP `httpc` request id. `cancel` returns within a short fixed bound;
-/// the provider owner separately observes and, if necessary, kills `owner`.
+/// Constructor invariants: `cancel` retains whatever transport-native request
+/// identity cancellation needs independently of `owner`. For the production
+/// transport that is the exact OTP `httpc` request id. The provider owner
+/// separately observes and, if necessary, kills `owner`.
 pub type RunningRequest {
   RunningRequest(owner: Pid, cancel: fn() -> Nil)
 }
@@ -92,9 +99,9 @@ pub type Transport {
 
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
-/// The FFI shim owns a process that retains the exact OTP request id, monitors
-/// the provider request owner, and calls `httpc:cancel_request/1` for explicit
-/// cancellation or owner death.
+/// A small Gleam custodian retains the opaque OTP request id and monitors both
+/// the event receiver and provider request owner. The FFI is limited to
+/// starting `httpc`, normalizing its raw messages, and cancelling that id.
 ///
 /// ## Examples
 ///
@@ -105,22 +112,87 @@ pub type Transport {
 ///
 pub fn httpc_transport() -> Transport {
   Transport(start_streaming: fn(request, subject) {
-    ffi_httpc.start_stream_request(
-      request.method,
-      request.url,
-      request.headers,
-      request.body,
-      fn(status, headers) {
-        process.send(subject, ResponseStatus(status:, headers:))
-      },
-      fn(chunk) { process.send(subject, ResponseChunk(chunk:)) },
-      fn() { process.send(subject, ResponseEnd) },
-      fn(reason) { process.send(subject, RequestFailed(reason:)) },
-    )
-    |> result.map(fn(owner) {
-      RunningRequest(owner:, cancel: fn() {
-        ffi_httpc.cancel_stream_request(owner)
-      })
-    })
+    start_httpc(request, subject)
   })
+}
+
+fn start_httpc(
+  request: HttpRequest,
+  subject: Subject(HttpEvent),
+) -> Result(RunningRequest, String) {
+  let parent = process.self()
+  let ready = process.new_subject()
+  let custodian =
+    process.spawn_unlinked(fn() {
+      case
+        ffi_httpc.start_stream_request(
+          request.method,
+          request.url,
+          request.headers,
+          request.body,
+          fn(status, headers) {
+            process.send(subject, ResponseStatus(status:, headers:))
+          },
+          fn(chunk) { process.send(subject, ResponseChunk(chunk:)) },
+          fn() { process.send(subject, ResponseEnd) },
+          fn(reason) { process.send(subject, RequestFailed(reason:)) },
+        )
+      {
+        Error(reason) -> process.send(ready, Error(reason))
+        Ok(#(receiver, request_id)) -> {
+          let parent_monitor = process.monitor(parent)
+          let receiver_monitor = process.monitor(receiver)
+          process.send(ready, Ok(#(receiver, request_id)))
+          guard_native_request(
+            request_id,
+            receiver,
+            parent_monitor,
+            receiver_monitor,
+          )
+        }
+      }
+    })
+  let monitor = process.monitor(custodian)
+  let started =
+    process.new_selector()
+    |> process.select_map(ready, Ok)
+    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive(native_start_timeout_ms)
+  process.demonitor_process(monitor)
+  case started {
+    Ok(Ok(Ok(#(owner, request_id)))) ->
+      Ok(
+        RunningRequest(owner:, cancel: fn() {
+          ffi_httpc.cancel_stream_request(request_id)
+          process.kill(owner)
+        }),
+      )
+    Ok(Ok(Error(reason))) -> Error(reason)
+    Ok(Error(Nil)) -> Error("http request custodian stopped during startup")
+    Error(Nil) -> {
+      process.kill(custodian)
+      Error("http request custodian did not start in time")
+    }
+  }
+}
+
+fn guard_native_request(
+  request_id: ffi_httpc.RequestId,
+  receiver: Pid,
+  parent_monitor: process.Monitor,
+  receiver_monitor: process.Monitor,
+) -> Nil {
+  let event =
+    process.new_selector()
+    |> process.select_specific_monitor(parent_monitor, ParentDown)
+    |> process.select_specific_monitor(receiver_monitor, ReceiverDown)
+    |> process.selector_receive_forever()
+  ffi_httpc.cancel_stream_request(request_id)
+  case event {
+    ParentDown(_down) -> {
+      process.kill(receiver)
+      process.demonitor_process(receiver_monitor)
+    }
+    ReceiverDown(_down) -> process.demonitor_process(parent_monitor)
+  }
 }

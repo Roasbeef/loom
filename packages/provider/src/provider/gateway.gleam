@@ -29,6 +29,7 @@ import core/clock.{type Clock}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/openai
 import provider/http.{type Transport}
@@ -41,7 +42,25 @@ import provider/secret.{type SecretStore}
 import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
   AttemptCancelled, AttemptTerminal, Cancel, ConsumerGone, Delta, Failed,
-  NoIdentity, NoSecret, ProviderCancelled, StreamHandle, UnknownProvider,
+  NoIdentity, NoSecret, ProviderCancelled, Settled, StreamHandle,
+  UnknownProvider,
+}
+
+const request_start_timeout_ms = 5000
+
+const request_cancel_grace_ms = 1500
+
+type RequestControl {
+  CancelRequest
+  CancelDeadline
+}
+
+type RequestEvent {
+  PumpEvent(StreamEvent)
+  ConsumerDown(process.Down)
+  PumpDown(process.Down)
+  CancelRequested
+  CancelExpired
 }
 
 /// One configured provider endpoint. The variant selects the adapter
@@ -215,8 +234,9 @@ fn find_provider(
 /// module documentation for the fallback-walk semantics and
 /// `provider/stream` for the handle's consumption contract.
 ///
-/// The handle's subject is owned by the calling process; the request
-/// itself runs on a dedicated pump process, so this returns immediately.
+/// The handle's subject is owned by the calling process; a public guard owns
+/// its lifecycle while a private pump runs the fallback walk, so this returns
+/// immediately without making a pump crash indistinguishable from silence.
 ///
 /// ## Examples
 ///
@@ -239,19 +259,55 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
   let owner =
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
-      process.send(ready, control)
-      pump(gateway, request, now, events, control, consumer)
+      let pump_ready = process.new_subject()
+      let pump_events = process.new_subject()
+      let self = process.self()
+      let pump_owner =
+        process.spawn_unlinked(fn() {
+          let pump_control = process.new_subject()
+          process.send(pump_ready, pump_control)
+          pump(gateway, request, now, pump_events, pump_control, self)
+        })
+      let consumer_monitor = process.monitor(consumer)
+      let pump_monitor = process.monitor(pump_owner)
+      let pump_started =
+        process.new_selector()
+        |> process.select_map(pump_ready, Ok)
+        |> process.select_specific_monitor(pump_monitor, fn(_down) {
+          Error(Nil)
+        })
+        |> process.selector_receive(request_start_timeout_ms)
+      case pump_started {
+        Ok(Ok(pump_control)) -> {
+          process.send(ready, control)
+          guard_request(
+            events,
+            control,
+            pump_events,
+            pump_control,
+            consumer_monitor,
+            pump_owner,
+            pump_monitor,
+          )
+        }
+        Ok(Error(Nil)) | Error(Nil) -> {
+          process.kill(pump_owner)
+          forget_request(consumer_monitor, pump_monitor)
+        }
+      }
     })
   let monitor = process.monitor(owner)
   let started =
     process.new_selector()
     |> process.select_map(ready, Ok)
     |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(request_start_timeout_ms)
   process.demonitor_process(monitor: monitor)
   case started {
     Ok(Ok(control)) ->
-      StreamHandle(events:, cancel: fn() { process.send(control, Cancel) })
+      StreamHandle(events:, cancel: fn() {
+        process.send(control, CancelRequest)
+      })
     Ok(Error(Nil)) | Error(Nil) -> {
       process.kill(owner)
       process.send(
@@ -263,6 +319,200 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
       StreamHandle(events:, cancel: fn() { Nil })
     }
   }
+}
+
+// The public request owner is a guard rather than the process doing the route
+// walk. That extra process has one job: preserve the stream law if the pump
+// crashes after startup. It also makes cancellation bounded without asking the
+// caller to understand the pump's monitor or the active fallback attempt.
+fn guard_request(
+  events: process.Subject(StreamEvent),
+  control: process.Subject(RequestControl),
+  pump_events: process.Subject(StreamEvent),
+  pump_control: process.Subject(Control),
+  consumer_monitor: process.Monitor,
+  pump_owner: process.Pid,
+  pump_monitor: process.Monitor,
+) -> Nil {
+  let selector =
+    request_selector(control, pump_events, consumer_monitor, pump_monitor)
+  case process.selector_receive_forever(selector) {
+    PumpEvent(event) -> {
+      process.send(events, event)
+      case event {
+        Delta(..) ->
+          guard_request(
+            events,
+            control,
+            pump_events,
+            pump_control,
+            consumer_monitor,
+            pump_owner,
+            pump_monitor,
+          )
+        Settled(..) | Failed(..) ->
+          forget_request(consumer_monitor, pump_monitor)
+      }
+    }
+    ConsumerDown(_down) ->
+      stop_for_dead_consumer(
+        pump_control,
+        pump_owner,
+        consumer_monitor,
+        pump_monitor,
+      )
+    PumpDown(_down) -> {
+      process.demonitor_process(consumer_monitor)
+      process.send(
+        events,
+        Failed(stream.TransportFailed(
+          reason: "provider request pump stopped before a terminal response",
+        )),
+      )
+    }
+    CancelRequested -> {
+      process.send(pump_control, Cancel)
+      let _timer =
+        process.send_after(control, request_cancel_grace_ms, CancelDeadline)
+      guard_cancelling(
+        events,
+        control,
+        pump_events,
+        pump_control,
+        consumer_monitor,
+        pump_owner,
+        pump_monitor,
+      )
+    }
+    CancelExpired ->
+      guard_request(
+        events,
+        control,
+        pump_events,
+        pump_control,
+        consumer_monitor,
+        pump_owner,
+        pump_monitor,
+      )
+  }
+}
+
+// Cancellation remains an owner-authored terminal. The guard forwards a real
+// pump terminal if one arrives; pump death or expiry only proves that the
+// request could not confirm which side of the race won.
+fn guard_cancelling(
+  events: process.Subject(StreamEvent),
+  control: process.Subject(RequestControl),
+  pump_events: process.Subject(StreamEvent),
+  pump_control: process.Subject(Control),
+  consumer_monitor: process.Monitor,
+  pump_owner: process.Pid,
+  pump_monitor: process.Monitor,
+) -> Nil {
+  let selector =
+    request_selector(control, pump_events, consumer_monitor, pump_monitor)
+  case process.selector_receive_forever(selector) {
+    PumpEvent(event) ->
+      case event {
+        Delta(..) ->
+          guard_cancelling(
+            events,
+            control,
+            pump_events,
+            pump_control,
+            consumer_monitor,
+            pump_owner,
+            pump_monitor,
+          )
+        Settled(..) | Failed(..) -> {
+          process.send(events, event)
+          forget_request(consumer_monitor, pump_monitor)
+        }
+      }
+    ConsumerDown(_down) ->
+      stop_for_dead_consumer(
+        pump_control,
+        pump_owner,
+        consumer_monitor,
+        pump_monitor,
+      )
+    PumpDown(_down) | CancelExpired -> {
+      stop_request(pump_control, pump_owner, consumer_monitor, pump_monitor)
+      process.send(events, Failed(stream.CancellationUnconfirmed))
+    }
+    CancelRequested ->
+      guard_cancelling(
+        events,
+        control,
+        pump_events,
+        pump_control,
+        consumer_monitor,
+        pump_owner,
+        pump_monitor,
+      )
+  }
+}
+
+fn request_selector(
+  control: process.Subject(RequestControl),
+  pump_events: process.Subject(StreamEvent),
+  consumer_monitor: process.Monitor,
+  pump_monitor: process.Monitor,
+) -> process.Selector(RequestEvent) {
+  process.new_selector()
+  |> process.select_map(pump_events, PumpEvent)
+  |> process.select_map(control, fn(message) {
+    case message {
+      CancelRequest -> CancelRequested
+      CancelDeadline -> CancelExpired
+    }
+  })
+  |> process.select_specific_monitor(consumer_monitor, ConsumerDown)
+  |> process.select_specific_monitor(pump_monitor, PumpDown)
+}
+
+fn stop_request(
+  pump_control: process.Subject(Control),
+  pump_owner: process.Pid,
+  consumer_monitor: process.Monitor,
+  pump_monitor: process.Monitor,
+) -> Nil {
+  process.send(pump_control, Cancel)
+  process.kill(pump_owner)
+  forget_request(consumer_monitor, pump_monitor)
+}
+
+// A dead public consumer needs no terminal, but the pump still gets one grace
+// interval to run its ordinary cancellation path. Killing it immediately would
+// bypass an injected transport's cancel capability and would make the test
+// seam weaker than the production custodian.
+fn stop_for_dead_consumer(
+  pump_control: process.Subject(Control),
+  pump_owner: process.Pid,
+  consumer_monitor: process.Monitor,
+  pump_monitor: process.Monitor,
+) -> Nil {
+  process.send(pump_control, Cancel)
+  case await_pump_down(pump_monitor, request_cancel_grace_ms) {
+    True -> Nil
+    False -> process.kill(pump_owner)
+  }
+  forget_request(consumer_monitor, pump_monitor)
+}
+
+fn await_pump_down(monitor: process.Monitor, within: Int) -> Bool {
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(_down) { True })
+  |> process.selector_receive(within)
+  |> result.unwrap(False)
+}
+
+fn forget_request(
+  consumer_monitor: process.Monitor,
+  pump_monitor: process.Monitor,
+) -> Nil {
+  process.demonitor_process(consumer_monitor)
+  process.demonitor_process(pump_monitor)
 }
 
 fn pump(

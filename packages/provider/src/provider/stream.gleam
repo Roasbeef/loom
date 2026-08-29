@@ -15,9 +15,9 @@
 //// - Adapters compose the parser with their own pure accumulator into a
 ////   `ResponseMachine` — a fold over `HttpEvent`s producing
 ////   `StreamEvent`s.
-//// - `run` is the only impure piece: it spawns the transport on its own
-////   process, folds the machine over the received chunks, forwards deltas
-////   as they appear, and returns the single terminal event.
+//// - `run` is the only impure piece: it starts the injected transport,
+////   folds the machine over the received chunks, forwards deltas as they
+////   appear, and returns the single terminal event.
 ////
 //// Consumption contract for `StreamHandle` (what WP-E relies on): the
 //// subject delivers zero or more `Delta` events followed by exactly one
@@ -130,6 +130,8 @@ pub fn message(settled: SettledAssistantMessage) -> AgentMessage {
 pub type ProviderError {
   /// The request owner accepted an explicit cancellation before settlement.
   ProviderCancelled
+  /// The caller requested cancellation but no owner-authored terminal arrived.
+  CancellationUnconfirmed
   /// The transport failed before or during the response.
   TransportFailed(reason: String)
   /// The provider returned a non-success HTTP status.
@@ -170,6 +172,7 @@ pub type ProviderError {
 pub fn describe_error(error: ProviderError) -> String {
   case error {
     ProviderCancelled -> "provider request was cancelled"
+    CancellationUnconfirmed -> "provider cancellation could not be confirmed"
     TransportFailed(reason:) -> "transport failed: " <> reason
     HttpError(status:, api_error_type:, message:, retry_after_ms: _) ->
       "provider returned http "
