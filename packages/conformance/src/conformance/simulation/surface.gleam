@@ -76,6 +76,10 @@ pub const sub_model_id = "loom-sub"
 /// subagent, not main.
 pub const sub_strand = "sub:1"
 
+type SimulatedCancel {
+  ReleaseStarved
+}
+
 /// The text of the durable cross-strand message the runner sends back to
 /// the main strand once the subagent finishes. A generation whose newest
 /// user input is this report is answered directly — never from the
@@ -164,15 +168,10 @@ fn request(
       // The scripted provider timeout has already won before the runtime's
       // outer deadline asks the handle to stop. Releasing that preselected
       // transport failure on cancel preserves the fault's retry semantics;
-      // it is not a cancellation terminal and owns no external process.
-      stream.StreamHandle(events:, cancel: fn() {
-        process.send(
-          events,
-          stream.Failed(error: stream.TransportFailed(
-            reason: "simulated provider effect timeout",
-          )),
-        )
-      })
+      // it is not a cancellation terminal and owns no external process. A
+      // one-shot owner supplies the mutable edge: repeated cancellation sends
+      // to a dead subject instead of fabricating a second terminal event.
+      starved_handle(events)
     Ran -> {
       mark_request(ctl, spec)
       intervene(ctl, script, trigger_of_request(spec))
@@ -186,6 +185,28 @@ fn request(
       }
     }
   }
+}
+
+fn starved_handle(
+  events: process.Subject(stream.StreamEvent),
+) -> stream.StreamHandle {
+  let ready = process.new_subject()
+  let _owner =
+    process.spawn_unlinked(fn() {
+      let control = process.new_subject()
+      process.send(ready, control)
+      let ReleaseStarved = process.receive_forever(control)
+      process.send(
+        events,
+        stream.Failed(error: stream.TransportFailed(
+          reason: "simulated provider effect timeout",
+        )),
+      )
+    })
+  let control = process.receive_forever(ready)
+  stream.StreamHandle(events:, cancel: fn() {
+    process.send(control, ReleaseStarved)
+  })
 }
 
 fn mark_request(ctl: Control, spec: effects.RequestSpec) -> Nil {
