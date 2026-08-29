@@ -208,6 +208,85 @@ pub fn terminal_failure_does_not_walk_the_chain_test() {
     stream.await_terminal(handle, within: 2000)
 }
 
+pub fn cancellation_is_terminal_and_prevents_fallback_test() {
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(request, _events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.receive_forever(process.new_subject())
+        })
+      process.send(started, request.url)
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, request.url)
+          process.kill(owner)
+        }),
+      )
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  assert process.receive(started, within: 1000)
+    == Ok("https://primary.test/v1/messages")
+  stream.cancel(handle)
+  stream.cancel(handle)
+  let assert Ok(#([], stream.Failed(stream.ProviderCancelled))) =
+    stream.await_terminal(handle, within: 1000)
+  assert process.receive(cancelled, within: 1000)
+    == Ok("https://primary.test/v1/messages")
+  assert process.receive(started, within: 100) == Error(Nil)
+  assert process.receive(cancelled, within: 100) == Error(Nil)
+}
+
+pub fn cancellation_after_settlement_is_a_noop_test() {
+  let gateway =
+    two_provider_gateway(
+      fixture.transport(fixture.ok_response(happy_transcript("done"))),
+    )
+  let handle = gateway.request(gateway, main_request())
+  let assert Ok(#(_deltas, stream.Settled(..))) =
+    stream.await_terminal(handle, within: 1000)
+  stream.cancel(handle)
+  stream.cancel(handle)
+  assert stream.next(handle, within: 100) == Error(Nil)
+}
+
+pub fn consumer_death_cancels_and_reaps_transport_test() {
+  let ready = process.new_subject()
+  let owners = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.receive_forever(process.new_subject())
+        })
+      process.send(owners, owner)
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+          process.kill(owner)
+        }),
+      )
+    })
+  let consumer =
+    process.spawn_unlinked(fn() {
+      let _handle =
+        gateway.request(two_provider_gateway(transport), main_request())
+      process.send(ready, Nil)
+      process.receive_forever(process.new_subject())
+    })
+  assert process.receive(ready, within: 1000) == Ok(Nil)
+  let assert Ok(transport_owner) = process.receive(owners, within: 1000)
+  let transport_monitor = process.monitor(transport_owner)
+  process.kill(consumer)
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert process.new_selector()
+    |> process.select_specific_monitor(transport_monitor, fn(_down) { True })
+    |> process.selector_receive(1000)
+    == Ok(True)
+}
+
 pub fn unroutable_role_fails_in_band_test() {
   let gw = two_provider_gateway(fixture.transport([]))
   let request =

@@ -20,21 +20,21 @@ variable are the package's complete inventory of impurity.
 ## One request, arriving in parts
 
 `gateway.request` returns immediately. The work happens on a pump process
-it spawns, and the caller's only interface is the subject inside the
-returned `StreamHandle`.
+it spawns, and the returned `StreamHandle` carries an event subject plus an
+idempotent cancellation capability.
 
 ```mermaid
 sequenceDiagram
   participant C as caller (a strand)
   participant G as gateway pump process
   participant R as stream.run
-  participant T as transport process
+  participant T as transport owner
   participant M as ResponseMachine
 
   C->>G: gateway.request(gw, ProviderRequest)
-  Note over C,G: returns a StreamHandle at once
+  Note over C,G: returns StreamHandle(events, cancel) at once
   G->>R: stream.run(transport, http_request, machine, deliver, within:)
-  R->>T: spawn — send_streaming(request, http_events)
+  R->>T: start_streaming(request, private_http_events)
   T-->>R: http.ResponseStatus(status, headers)
   R->>M: on_status
   T-->>R: http.ResponseChunk(bytes)
@@ -45,6 +45,12 @@ sequenceDiagram
   R->>M: on_chunk
   M-->>R: [Settled(message, usage)]
   R-->>C: Settled — exactly one terminal, nothing after it
+  opt caller cancellation or caller death
+    C-->>G: cancel or DOWN
+    G-->>R: Cancel
+    R-->>T: cancel exact native request
+    T-->>R: DOWN within bounded grace
+  end
 ```
 
 The contract the rest of the harness leans on is narrow enough to depend
@@ -55,6 +61,15 @@ terminal, so an adapter bug cannot double-settle. Deltas are ephemeral
 display data and prove nothing about settlement — the settled message is
 always the authority, and `stream.await_terminal` is the convenience that
 collects both.
+
+Cancellation uses the same single owner as settlement and fallback. The pump
+monitors its direct consumer; `stream.run` monitors the active transport
+owner; every fallback attempt has a fresh private HTTP subject. When cancel,
+consumer death, or timeout wins, the transport cancellation capability runs
+before bounded owner reaping. Production retains the exact OTP request id and
+calls `httpc:cancel_request/1`, so teardown stops external work instead of
+only dropping its late answer. `ProviderCancelled` is terminal and never
+advances a fallback chain.
 
 `ResponseMachine` is the seam each adapter fills: `init`, `on_status`,
 `on_chunk`, `on_end`, `on_failure`, all pure. A body that ends without
@@ -231,13 +246,13 @@ Nothing invalidates anything.
 
 | Path | What it holds |
 |---|---|
-| `src/provider/gateway.gleam` | The registry and builder, `resolve`, `request`, the pump process, and the fallback walk. |
-| `src/provider/stream.gleam` | `StreamEvent` and its consumption contract, the pure parser, `ResponseMachine`, and `run`. |
+| `src/provider/gateway.gleam` | The registry and builder, `resolve`, `request`, the cancellable pump owner, and the fallback walk. |
+| `src/provider/stream.gleam` | `StreamHandle`, `StreamEvent`, cancellation arbitration, the pure parser, `ResponseMachine`, and `run`. |
 | `src/provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget`, `ProviderRequest`, `ToolSpec` — the durable identity and the static model facts an adapter needs. |
 | `src/provider/adapter/` | The two wire adapters: request construction, accumulation, stop-reason mapping, overflow, cache breakpoints. |
 | `src/provider/retry.gleam` | `classify`, `backoff_ms`, and the overflow message patterns. |
 | `src/provider/secret.gleam` | The lookup seam and its backends. |
-| `src/provider/http.gleam` | The injected transport type and `httpc_transport()`. |
+| `src/provider/http.gleam` | The injected `RunningRequest` transport contract and `httpc_transport()`. |
 
 [`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code. For
 the plane this package sits in — the one door, the wire, the jail — read

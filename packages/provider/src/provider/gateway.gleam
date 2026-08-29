@@ -39,8 +39,9 @@ import provider/model.{
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
-  type StreamEvent, type StreamHandle, Delta, Failed, NoIdentity, NoSecret,
-  StreamHandle, UnknownProvider,
+  type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
+  AttemptCancelled, AttemptTerminal, Cancel, ConsumerGone, Delta, Failed,
+  NoIdentity, NoSecret, ProviderCancelled, StreamHandle, UnknownProvider,
 }
 
 /// One configured provider endpoint. The variant selects the adapter
@@ -231,11 +232,37 @@ fn find_provider(
 /// ```
 ///
 pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
+  let consumer = process.self()
   let events = process.new_subject()
+  let ready = process.new_subject()
   let #(now, _clock) = clock.read(gateway.clock)
-  let _pump =
-    process.spawn_unlinked(fn() { pump(gateway, request, now, events) })
-  StreamHandle(events:)
+  let owner =
+    process.spawn_unlinked(fn() {
+      let control = process.new_subject()
+      process.send(ready, control)
+      pump(gateway, request, now, events, control, consumer)
+    })
+  let monitor = process.monitor(owner)
+  let started =
+    process.new_selector()
+    |> process.select_map(ready, Ok)
+    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive(5000)
+  process.demonitor_process(monitor: monitor)
+  case started {
+    Ok(Ok(control)) ->
+      StreamHandle(events:, cancel: fn() { process.send(control, Cancel) })
+    Ok(Error(Nil)) | Error(Nil) -> {
+      process.kill(owner)
+      process.send(
+        events,
+        Failed(stream.TransportFailed(
+          reason: "provider request owner did not start",
+        )),
+      )
+      StreamHandle(events:, cancel: fn() { Nil })
+    }
+  }
 }
 
 fn pump(
@@ -243,11 +270,23 @@ fn pump(
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
+  control: process.Subject(Control),
+  consumer: process.Pid,
 ) -> Nil {
   case request.target {
-    ForResolved(resolved:) -> attempt(gateway, request, now, [resolved], events)
+    ForResolved(resolved:) ->
+      attempt(gateway, request, now, [resolved], events, control, consumer)
     ForRole(role:, thinking:) ->
-      dispatch_role(gateway, request, now, role, thinking, events)
+      dispatch_role(
+        gateway,
+        request,
+        now,
+        role,
+        thinking,
+        events,
+        control,
+        consumer,
+      )
   }
 }
 
@@ -262,11 +301,29 @@ fn dispatch_role(
   role: Role,
   thinking: Option(ThinkingLevel),
   events: process.Subject(StreamEvent),
+  control: process.Subject(Control),
+  consumer: process.Pid,
 ) -> Nil {
-  case usable_chain(gateway, role) {
-    [] ->
-      process.send(events, Failed(NoIdentity(role: model.role_to_string(role))))
-    chain -> attempt(gateway, request, now, overlaid(chain, thinking), events)
+  case stop_requested(control, consumer, events) {
+    True -> Nil
+    False ->
+      case usable_chain(gateway, role) {
+        [] ->
+          process.send(
+            events,
+            Failed(NoIdentity(role: model.role_to_string(role))),
+          )
+        chain ->
+          attempt(
+            gateway,
+            request,
+            now,
+            overlaid(chain, thinking),
+            events,
+            control,
+            consumer,
+          )
+      }
   }
 }
 
@@ -296,15 +353,39 @@ fn attempt(
   now: Int,
   targets: List(ResolvedModel),
   events: process.Subject(StreamEvent),
+  control: process.Subject(Control),
+  consumer: process.Pid,
 ) -> Nil {
-  case targets {
-    [] ->
-      // Unreachable from `pump` (chains are non-empty), kept total.
-      process.send(events, Failed(NoIdentity(role: "exhausted chain")))
-    [target, ..rest] -> {
-      let terminal = attempt_one(gateway, request, now, target, events)
-      continue_or_deliver(gateway, request, now, terminal, rest, events)
-    }
+  case stop_requested(control, consumer, events) {
+    True -> Nil
+    False ->
+      case targets {
+        [] ->
+          // Unreachable from `pump` (chains are non-empty), kept total.
+          process.send(events, Failed(NoIdentity(role: "exhausted chain")))
+        [target, ..rest] -> {
+          let outcome =
+            attempt_one(
+              gateway,
+              request,
+              now,
+              target,
+              events,
+              control,
+              consumer,
+            )
+          continue_or_deliver(
+            gateway,
+            request,
+            now,
+            outcome,
+            rest,
+            events,
+            control,
+            consumer,
+          )
+        }
+      }
   }
 }
 
@@ -315,15 +396,44 @@ fn continue_or_deliver(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
+  outcome: AttemptOutcome,
+  rest: List(ResolvedModel),
+  events: process.Subject(StreamEvent),
+  control: process.Subject(Control),
+  consumer: process.Pid,
+) -> Nil {
+  case outcome {
+    AttemptCancelled -> process.send(events, Failed(ProviderCancelled))
+    ConsumerGone -> Nil
+    AttemptTerminal(terminal:) ->
+      continue_terminal(
+        gateway,
+        request,
+        now,
+        terminal,
+        rest,
+        events,
+        control,
+        consumer,
+      )
+  }
+}
+
+fn continue_terminal(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
   terminal: StreamEvent,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
+  control: process.Subject(Control),
+  consumer: process.Pid,
 ) -> Nil {
   case terminal, rest {
     Failed(error:), [_, ..] ->
       case retry.classify(error) {
         Retryable(backoff_hint_ms: _) ->
-          attempt(gateway, request, now, rest, events)
+          attempt(gateway, request, now, rest, events, control, consumer)
         Terminal -> process.send(events, terminal)
       }
     _, _ -> process.send(events, terminal)
@@ -338,15 +448,22 @@ fn attempt_one(
   now: Int,
   target: ResolvedModel,
   events: process.Subject(StreamEvent),
-) -> StreamEvent {
+  control: process.Subject(Control),
+  consumer: process.Pid,
+) -> AttemptOutcome {
   let deliver = fn(delta) { process.send(events, Delta(delta:)) }
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
-    Failed(UnknownProvider(provider: target.provider))
+    AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
   })
   use api_key <- or_failure(
     secret.lookup(gateway.secrets, config.api_key_secret),
     fn() {
-      Failed(NoSecret(provider: config.name, secret_name: config.api_key_secret))
+      AttemptTerminal(
+        Failed(NoSecret(
+          provider: config.name,
+          secret_name: config.api_key_secret,
+        )),
+      )
     },
   )
   case config {
@@ -356,6 +473,8 @@ fn attempt_one(
         anthropic.build_request(base_url:, api_key:, resolved: target, request:),
         anthropic.response_machine(target, now:),
         deliver,
+        control:,
+        consumer:,
         within: gateway.attempt_timeout_ms,
       )
     OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
@@ -364,8 +483,31 @@ fn attempt_one(
         openai.build_request(base_url:, api_key:, resolved: target, request:),
         openai.response_machine(target, now:),
         deliver,
+        control:,
+        consumer:,
         within: gateway.attempt_timeout_ms,
       )
+  }
+}
+
+// Cancellation is checked before any target starts, including a fallback.
+// A live consumer receives the one cancellation terminal; a dead consumer
+// needs no terminal and only suppresses new work.
+fn stop_requested(
+  control: process.Subject(Control),
+  consumer: process.Pid,
+  events: process.Subject(StreamEvent),
+) -> Bool {
+  case process.is_alive(consumer) {
+    False -> True
+    True ->
+      case process.receive(control, within: 0) {
+        Ok(Cancel) -> {
+          process.send(events, Failed(ProviderCancelled))
+          True
+        }
+        Error(Nil) -> False
+      }
   }
 }
 
@@ -375,9 +517,9 @@ fn attempt_one(
 // must become an in-band `Failed` rather than a corruption report.
 fn or_failure(
   result: Result(a, Nil),
-  on_error: fn() -> StreamEvent,
-  then: fn(a) -> StreamEvent,
-) -> StreamEvent {
+  on_error: fn() -> AttemptOutcome,
+  then: fn(a) -> AttemptOutcome,
+) -> AttemptOutcome {
   case result {
     Error(Nil) -> on_error()
     Ok(value) -> then(value)

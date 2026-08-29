@@ -294,49 +294,181 @@ fn echo_machine() -> stream.ResponseMachine(Int) {
 pub fn run_delivers_deltas_and_returns_terminal_test() {
   let transport = fixture.transport(fixture.ok_response("irrelevant"))
   let deltas = process_subject()
+  let control = process_subject()
   let terminal =
     stream.run(
       transport,
       http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
       echo_machine(),
       fn(delta) { send_to(deltas, delta) },
+      control:,
+      consumer: process.self(),
       within: 1000,
     )
   assert terminal
-    == stream.Failed(stream.StreamDisconnected(context: "echo done"))
+    == stream.AttemptTerminal(
+      stream.Failed(stream.StreamDisconnected(context: "echo done")),
+    )
   assert receive_from(deltas, 100)
     == Ok(stream.TextDelta(index: 0, text: "chunk"))
 }
 
 pub fn run_times_out_in_band_test() {
-  let silent = http.Transport(send_streaming: fn(_request, _subject) { Nil })
+  let cancelled = process_subject()
+  let silent = silent_transport(cancelled)
+  let control = process_subject()
   let terminal =
     stream.run(
       silent,
       http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
       echo_machine(),
       fn(_delta) { Nil },
+      control:,
+      consumer: process.self(),
       within: 50,
     )
   assert terminal
-    == stream.Failed(stream.TransportFailed(
-      reason: "timed out waiting for the provider",
-    ))
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(
+        reason: "timed out waiting for the provider",
+      )),
+    )
+  assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
 pub fn run_transport_failure_in_band_test() {
   let failing =
     fixture.transport([http.RequestFailed(reason: "connection refused")])
+  let control = process_subject()
   let terminal =
     stream.run(
       failing,
       http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
       echo_machine(),
       fn(_delta) { Nil },
+      control:,
+      consumer: process.self(),
       within: 1000,
     )
   assert terminal
-    == stream.Failed(stream.TransportFailed(reason: "connection refused"))
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(reason: "connection refused")),
+    )
+}
+
+pub fn run_explicit_cancel_stops_transport_test() {
+  let cancelled = process_subject()
+  let control = process_subject()
+  process.send(control, stream.Cancel)
+  let outcome =
+    stream.run(
+      silent_transport(cancelled),
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control:,
+      consumer: process.self(),
+      within: 1000,
+    )
+  assert outcome == stream.AttemptCancelled
+  assert receive_from(cancelled, 100) == Ok(Nil)
+}
+
+pub fn run_timeout_reaps_stubborn_transport_owner_test() {
+  let owners = process_subject()
+  let cancelled = process_subject()
+  let stubborn =
+    http.Transport(start_streaming: fn(_request, _events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.receive_forever(process.new_subject())
+        })
+      process.send(owners, owner)
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+        }),
+      )
+    })
+  let outcome =
+    stream.run(
+      stubborn,
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 20,
+    )
+  let assert Ok(owner) = receive_from(owners, 100)
+  assert outcome
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(
+        reason: "timed out waiting for the provider",
+      )),
+    )
+  assert receive_from(cancelled, 100) == Ok(Nil)
+  assert !process.is_alive(owner)
+}
+
+pub fn run_transport_death_fails_in_band_test() {
+  let dead =
+    http.Transport(start_streaming: fn(_request, _subject) {
+      let owner = process.spawn_unlinked(fn() { Nil })
+      Ok(http.RunningRequest(owner:, cancel: fn() { Nil }))
+    })
+  let outcome =
+    stream.run(
+      dead,
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 1000,
+    )
+  assert outcome
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(
+        reason: "provider transport stopped before a terminal response",
+      )),
+    )
+}
+
+pub fn run_start_failure_fails_once_in_band_test() {
+  let failed =
+    http.Transport(start_streaming: fn(_request, _events) {
+      Error("unavailable")
+    })
+  let outcome =
+    stream.run(
+      failed,
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 1000,
+    )
+  assert outcome
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(reason: "start failed: unavailable")),
+    )
+}
+
+fn silent_transport(cancelled: process.Subject(Nil)) -> http.Transport {
+  http.Transport(start_streaming: fn(_request, _events) {
+    let owner =
+      process.spawn_unlinked(fn() {
+        process.receive_forever(process.new_subject())
+      })
+    Ok(
+      http.RunningRequest(owner:, cancel: fn() {
+        process.send(cancelled, Nil)
+        process.kill(owner)
+      }),
+    )
+  })
 }
 
 fn process_subject() -> process.Subject(a) {

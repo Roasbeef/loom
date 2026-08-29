@@ -25,14 +25,16 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   target the walk attempts.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
-  `Failed`, and nothing after it.
+  `Failed`, and nothing after it. Its cancel capability signals the one
+  gateway owner that decides the cancellation/terminal race.
 - `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
   `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
   the same events.
 - `provider/stream.ResponseMachine(state)` — a fold over `HttpEvent`s
   producing `StreamEvent`s; each adapter supplies one.
-- `provider/http.{Transport, HttpRequest, HttpEvent}` — the injected
-  transport seam; `httpc_transport()` is the production wiring.
+- `provider/http.{Transport, RunningRequest, HttpRequest, HttpEvent}` — the
+  injected transport seam. A running request exposes a monitorable owner and
+  bounded cancel capability; `httpc_transport()` is the production wiring.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
@@ -55,8 +57,10 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
 
 ## Traffic
 
-- **Actor messages**: `stream.run` spawns the transport on its own process
-  and delivers `StreamEvent`s to the caller's subject:
+- **Actor messages**: `gateway.request` spawns one owner for the whole
+  fallback walk. The owner selects its cancel endpoint, direct-consumer DOWN,
+  active-transport DOWN, attempt timeout, and private per-attempt HTTP events,
+  then delivers `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
   from the transport into that pump.
@@ -86,7 +90,13 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   secret *names* only (spec §3.3 invariant 4).
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
-  terminal.
+  terminal. The gateway owner is the sole terminal sender.
+- **Cancellation reaches native work.** Explicit cancel and direct-consumer
+  death cancel and reap the active transport before ending the route walk.
+  The production transport owner retains the exact OTP request id and calls
+  `httpc:cancel_request/1`; late HTTP messages remain confined to that
+  attempt's private subject. `ProviderCancelled` is terminal and never walks
+  to a fallback.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash.

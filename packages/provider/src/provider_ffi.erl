@@ -3,10 +3,15 @@
 %% between Erlang conventions (charlists, raw httpc messages) and the
 %% Gleam callback signatures at the boundary, per the house FFI rules.
 -module(provider_ffi).
--export([stream_request/8, get_env/1]).
+-export([start_stream_request/8, cancel_stream_request/1, get_env/1]).
 
 %% Total receive-loop timeout for one streamed response, in milliseconds.
 -define(RESPONSE_TIMEOUT, 300000).
+
+%% A cancellation exchange is local to the VM and the request owner never
+%% performs blocking work after startup. Keep the caller bounded anyway: a
+%% wedged owner must not wedge the provider gateway that is trying to stop it.
+-define(CANCEL_TIMEOUT, 1000).
 
 %% os:getenv/1 returns false | string(); normalize to Gleam's
 %% {ok, Binary} | {error, nil}.
@@ -16,13 +21,50 @@ get_env(Name) ->
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
 
-%% Streams one HTTP request via httpc:request/4 with {sync, false} and
+%% Starts one HTTP request via httpc:request/4 with {sync, false} and
 %% {stream, self}: 2xx bodies arrive chunked as {http, {Id, stream_start
 %% | stream | stream_end, ...}} messages, while non-streamable responses
 %% (error statuses) arrive as one complete {http, {Id, Result}} message.
-%% Both shapes are normalized into the same callback sequence. Exceptions
-%% from httpc are caught and reported through OnFailure, never thrown.
-stream_request(Method, Url, Headers, Body, OnStatus, OnChunk, OnEnd, OnFailure) ->
+%% Both shapes are normalized into the same callback sequence. The spawned
+%% owner retains the exact RequestId and monitors the Gleam request owner;
+%% explicit cancellation and owner death therefore both reach
+%% httpc:cancel_request/1. It is returned immediately so cancellation can
+%% queue during startup; startup failures are reported through one constant,
+%% redacted failure callback.
+start_stream_request(Method, Url, Headers, Body,
+                     OnStatus, OnChunk, OnEnd, OnFailure) ->
+    try
+        Parent = self(),
+        Owner = spawn(fun() ->
+            start_stream_owner(Parent, Method, Url, Headers, Body,
+                               OnStatus, OnChunk, OnEnd, OnFailure)
+        end),
+        {ok, Owner}
+    catch
+        _Class:_CaughtReason ->
+            {error, <<"http request owner failed to start">>}
+    end.
+
+%% Asks the owner to cancel the exact RequestId it retained. The monitor
+%% makes cancellation idempotent after normal completion, and the bounded
+%% receive prevents a broken owner from blocking its gateway indefinitely.
+cancel_stream_request(Owner) ->
+    Reply = make_ref(),
+    Monitor = erlang:monitor(process, Owner),
+    Owner ! {cancel, self(), Reply},
+    receive
+        {Reply, cancelled} ->
+            erlang:demonitor(Monitor, [flush]);
+        {'DOWN', Monitor, process, Owner, _Reason} ->
+            ok
+    after ?CANCEL_TIMEOUT ->
+        erlang:demonitor(Monitor, [flush])
+    end,
+    nil.
+
+start_stream_owner(Parent, Method, Url, Headers, Body,
+                   OnStatus, OnChunk, OnEnd, OnFailure) ->
+    ParentMonitor = erlang:monitor(process, Parent),
     try
         {ok, _} = application:ensure_all_started(inets),
         {ok, _} = application:ensure_all_started(ssl),
@@ -38,23 +80,26 @@ stream_request(Method, Url, Headers, Body, OnStatus, OnChunk, OnEnd, OnFailure) 
         Options = [{sync, false}, {stream, self}, {body_format, binary}],
         case httpc:request(method_atom(Method), Request, HttpOptions, Options) of
             {ok, RequestId} ->
-                receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure);
-            {error, Reason} ->
-                OnFailure(describe(Reason))
+                receive_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                             OnEnd, OnFailure);
+            {error, _Reason} ->
+                OnFailure(<<"http request startup failed">>)
         end
     catch
-        Class:CaughtReason -> OnFailure(describe({Class, CaughtReason}))
-    end,
-    nil.
+        _Class:_CaughtReason ->
+            OnFailure(<<"http request startup failed">>)
+    end.
 
-receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure) ->
+receive_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure) ->
     receive
         {http, {RequestId, stream_start, Headers}} ->
             OnStatus(200, normalize_headers(Headers)),
-            receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure);
+            receive_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                         OnEnd, OnFailure);
         {http, {RequestId, stream, Chunk}} ->
             OnChunk(Chunk),
-            receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure);
+            receive_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                         OnEnd, OnFailure);
         {http, {RequestId, stream_end, _Headers}} ->
             OnEnd();
         {http, {RequestId, {{_Version, Status, _Reason}, Headers, ResponseBody}}} ->
@@ -62,8 +107,14 @@ receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure) ->
             OnChunk(ResponseBody),
             OnEnd();
         {http, {RequestId, {error, Reason}}} ->
-            OnFailure(describe(Reason))
+            OnFailure(describe(Reason));
+        {cancel, From, Reply} ->
+            ok = httpc:cancel_request(RequestId),
+            From ! {Reply, cancelled};
+        {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
+            ok = httpc:cancel_request(RequestId)
     after ?RESPONSE_TIMEOUT ->
+        ok = httpc:cancel_request(RequestId),
         OnFailure(<<"timed out waiting for the http response">>)
     end.
 

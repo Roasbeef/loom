@@ -11,7 +11,8 @@
 //// flows exclusively into the transport. No `HttpEvent`, error, or stream
 //// event ever carries the request back out (spec §3.3 invariant 4).
 
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
+import gleam/result
 import provider/internal/ffi_httpc
 
 /// One outbound HTTP request, fully built.
@@ -49,23 +50,51 @@ pub type HttpEvent {
   RequestFailed(reason: String)
 }
 
+/// One live transport request. The process is the sole sender of this
+/// request's `HttpEvent`s and is monitorable by the provider request owner;
+/// `cancel` stops the underlying request and is safe after completion.
+///
+/// Constructor invariants: `owner` retains whatever transport-native request
+/// identity cancellation needs. For the production transport that is the
+/// exact OTP `httpc` request id. `cancel` returns within a short fixed bound;
+/// the provider owner separately observes and, if necessary, kills `owner`.
+pub type RunningRequest {
+  RunningRequest(owner: Pid, cancel: fn() -> Nil)
+}
+
+/// Cancels a live transport request. Repeated calls and calls after transport
+/// completion are harmless.
+pub fn cancel(request: RunningRequest) -> Nil {
+  request.cancel()
+}
+
+/// The monitorable process that owns the live transport request.
+pub fn owner(request: RunningRequest) -> Pid {
+  request.owner
+}
+
 /// A streaming HTTP transport as a record of functions, so tests can
 /// inject fixtures and production can inject `httpc_transport`.
 ///
-/// Constructor invariants: `send_streaming` delivers the response for the
-/// given request to the subject as `HttpEvent` messages obeying the
-/// ordering contract on `HttpEvent`, and eventually always delivers a
-/// terminal `ResponseEnd` or `RequestFailed`. It may be called from any
-/// process and may block until the response completes.
+/// Constructor invariants: `start_streaming` returns a monitorable owner
+/// without waiting for response completion. Cancellation sent while the native
+/// request starts must remain queued until that request's identity is known.
+/// `RunningRequest.owner` is the sole sender of response events, delivers them
+/// in contract order, and either delivers a terminal
+/// `ResponseEnd`/`RequestFailed` before exiting or exits so its monitor reports
+/// transport death.
 pub type Transport {
-  Transport(send_streaming: fn(HttpRequest, Subject(HttpEvent)) -> Nil)
+  Transport(
+    start_streaming: fn(HttpRequest, Subject(HttpEvent)) ->
+      Result(RunningRequest, String),
+  )
 }
 
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
-/// The FFI shim (`provider/internal/ffi_httpc`) blocks the calling
-/// process while it pumps the socket, so callers run it on a dedicated
-/// process — `provider/stream.run` does exactly that.
+/// The FFI shim owns a process that retains the exact OTP request id, monitors
+/// the provider request owner, and calls `httpc:cancel_request/1` for explicit
+/// cancellation or owner death.
 ///
 /// ## Examples
 ///
@@ -75,8 +104,8 @@ pub type Transport {
 /// ```
 ///
 pub fn httpc_transport() -> Transport {
-  Transport(send_streaming: fn(request, subject) {
-    ffi_httpc.stream_request(
+  Transport(start_streaming: fn(request, subject) {
+    ffi_httpc.start_stream_request(
       request.method,
       request.url,
       request.headers,
@@ -88,5 +117,10 @@ pub fn httpc_transport() -> Transport {
       fn() { process.send(subject, ResponseEnd) },
       fn(reason) { process.send(subject, RequestFailed(reason:)) },
     )
+    |> result.map(fn(owner) {
+      RunningRequest(owner:, cancel: fn() {
+        ffi_httpc.cancel_stream_request(owner)
+      })
+    })
   })
 }
