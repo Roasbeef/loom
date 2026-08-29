@@ -133,6 +133,31 @@ func (c CgroupCeilings) names() string {
 // that varies by machine.
 const CgroupSkipPrefix = "cgroup-v2"
 
+const cgroupGateScript = `IFS= read -r _ <&5 || exit 125
+exec 5<&-
+exec -- "$@"`
+
+// withCgroupStartGate wraps argv in a constant shell program that waits on
+// fd 5, closes it, and then replaces itself with argv. The original arguments
+// are positional parameters, never shell source, so model-controlled bytes do
+// not cross an interpolation boundary.
+func withCgroupStartGate(argv []string) []string {
+	wrapped := []string{"/bin/sh", "-c", cgroupGateScript, "loom-cgroup-gate"}
+	return append(wrapped, argv...)
+}
+
+// releaseCgroupStartGate sends the one valid release token and closes the
+// parent's pipe end. Closing without the token makes the shell's read fail, so
+// error cleanup cannot accidentally launch the command it is trying to abort.
+func releaseCgroupStartGate(release *os.File) error {
+	_, writeErr := release.Write([]byte{'\n'})
+	closeErr := release.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
 // CgroupSkip is the enforcement-report entry the helper emits when a
 // policy asked for a memory or process ceiling and no cgroup was
 // attached to hold it. Surfaced to the broker as "skip:" + this string,
@@ -151,15 +176,17 @@ func CgroupSkip(reason string, ceilings CgroupCeilings) string {
 //
 // Process shape (bwrap mode):
 //
-//	helper ──spawn(setsid)──> bwrap ──> loom-exec --exec (stage 2) ──execve──> target
+//	helper ──spawn(setsid)──> [cgroup gate] ──execve──> bwrap
+//	bwrap ──> loom-exec --exec (stage 2) ──execve──> target
 //
-// Degraded mode drops the bwrap link. The policy travels to stage 2 as
-// msgpack on fd 3 (the same contract the spec gives the helper itself);
-// stage 2 sends its enforcement report back on fd 4 and then execs, so
-// the seccomp/Landlock/rlimit state it built persists into the target.
-// The whole subtree lives in one fresh session/pgroup owned by the
-// direct child; cancellation and cleanup signal the group, never a
-// single pid — an orphaned grandchild is still ours to kill.
+// The gate exists only when a cgroup ceiling and usable delegated base both
+// exist. Degraded mode drops the bwrap link. The policy travels to stage 2 as
+// msgpack on fd 3 (the same contract the spec gives the helper itself); stage 2
+// sends its enforcement report back on fd 4 and then execs, so the
+// seccomp/Landlock/rlimit state it built persists into the target. The whole
+// subtree lives in one fresh session/pgroup owned by the direct child;
+// cancellation and cleanup signal the group, never a single pid — an orphaned
+// grandchild is still ours to kill.
 func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, error) {
 	if len(req.Argv) == 0 {
 		return nil, fmt.Errorf("jail: empty argv")
@@ -234,6 +261,33 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		argv = stage2
 	}
 
+	cg := cgroupOutcome{
+		ceilings: CgroupCeilings{
+			Mem:  req.Policy.Limits.MemBytes > 0,
+			Pids: req.Policy.Limits.Pids > 0,
+		},
+	}
+	if cg.wanted() {
+		cg.reason = feat.CgroupReason
+	}
+
+	// A delegated base plus a requested ceiling makes the start gate
+	// load-bearing. The shell is the only process allowed to start before
+	// cgroup.Enter, and it can only perform the builtin read while blocked. Once
+	// moved, it execs argv without forking, so bwrap and every payload descendant
+	// are born in the per-exec cgroup.
+	var gateR, gateW *os.File
+	if feat.CgroupDir != "" && cg.wanted() {
+		gateR, gateW, err = os.Pipe()
+		if err != nil {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: cgroup start gate: %w", err)
+		}
+		argv = withCgroupStartGate(argv)
+	}
+
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = FilterEnv(req.Env, req.Policy.EnvAllow)
 	// New session ⇒ new process group with pgid = child pid, and no
@@ -242,12 +296,19 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// even that escape in non-degraded mode.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.ExtraFiles = []*os.File{policyR, reportW} // fds 3 and 4
+	if gateR != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, gateR) // fd 5
+	}
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
 		policyR.Close()
 		reportR.Close()
 		reportW.Close()
+		if gateR != nil {
+			gateR.Close()
+			gateW.Close()
+		}
 		return nil, fmt.Errorf("jail: stdin pipe: %w", err)
 	}
 	stdoutR, stdoutW, err := os.Pipe()
@@ -257,6 +318,10 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		reportW.Close()
 		stdinR.Close()
 		stdinW.Close()
+		if gateR != nil {
+			gateR.Close()
+			gateW.Close()
+		}
 		return nil, fmt.Errorf("jail: stdout pipe: %w", err)
 	}
 	stderrR, stderrW, err := os.Pipe()
@@ -268,6 +333,10 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		stdinW.Close()
 		stdoutR.Close()
 		stdoutW.Close()
+		if gateR != nil {
+			gateR.Close()
+			gateW.Close()
+		}
 		return nil, fmt.Errorf("jail: stderr pipe: %w", err)
 	}
 	cmd.Stdin = stdinR
@@ -275,7 +344,10 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	cmd.Stderr = stderrW
 
 	if err := cmd.Start(); err != nil {
-		for _, f := range []*os.File{policyR, reportR, reportW, stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW} {
+		for _, f := range []*os.File{policyR, reportR, reportW, stdinR, stdinW, stdoutR, stdoutW, stderrR, stderrW, gateR, gateW} {
+			if f == nil {
+				continue
+			}
 			f.Close()
 		}
 		return nil, fmt.Errorf("jail: start: %w", err)
@@ -287,6 +359,9 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	stdinR.Close()
 	stdoutW.Close()
 	stderrW.Close()
+	if gateR != nil {
+		gateR.Close()
+	}
 
 	e := &Exec{
 		cmd:     cmd,
@@ -298,24 +373,16 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		stderr:  NewStreamLimiter(req.Policy.Limits.OutputBytes),
 		esc:     NewEscalation(KillGrace),
 		feat:    feat,
+		cg:      cg,
 		mounts:  mounts,
 	}
 
-	// Best-effort cgroup membership: the group is configured before the
-	// child is moved in, and descendants inherit membership, so the
-	// mem/pids ceilings bind the whole subtree. The child could in
-	// principle fork in the gap before Enter; phase 1 accepts that race
-	// (the broker learns from Enforcement whether cgroups applied at
-	// all, which is the decision that matters).
-	e.cg.ceilings = CgroupCeilings{
-		Mem:  req.Policy.Limits.MemBytes > 0,
-		Pids: req.Policy.Limits.Pids > 0,
-	}
-	if e.cg.wanted() {
-		e.cg.reason = feat.CgroupReason
-	}
+	// Best-effort cgroup membership: configure and enter the blocked shell,
+	// then release it to exec the real argv. Setup or Enter failure still
+	// releases degraded execution, with the reason retained for Enforcement.
 	if feat.CgroupDir != "" && e.cg.wanted() {
 		name := "exec-" + strconv.FormatUint(req.ID, 10) + "-" + strconv.Itoa(cmd.Process.Pid)
+		candidate := filepath.Join(feat.CgroupDir, name)
 		dir, err := cgroup.Setup(feat.CgroupDir, name, cgroup.LimitsView{
 			MemBytes: req.Policy.Limits.MemBytes,
 			Pids:     req.Policy.Limits.Pids,
@@ -323,6 +390,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		switch {
 		case err != nil:
 			e.cg.reason = err.Error()
+			_ = cgroup.Cleanup(candidate)
 		default:
 			if err := cgroup.Enter(dir, cmd.Process.Pid); err == nil {
 				e.cgDir = dir
@@ -331,6 +399,20 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 				e.cg.reason = err.Error()
 				_ = cgroup.Cleanup(dir)
 			}
+		}
+	}
+	if gateW != nil {
+		if err := releaseCgroupStartGate(gateW); err != nil {
+			_ = syscall.Kill(-e.pgid, syscall.SIGKILL)
+			_ = e.cmd.Wait()
+			e.stdinW.Close()
+			e.reportR.Close()
+			stdoutR.Close()
+			stderrR.Close()
+			if e.cgDir != "" {
+				_ = cgroup.Cleanup(e.cgDir)
+			}
+			return nil, fmt.Errorf("jail: release cgroup start gate: %w", err)
 		}
 	}
 
