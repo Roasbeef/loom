@@ -499,7 +499,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2566`). An
+(`compaction_preparation`, `client/gateway.gleam:2574`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the

@@ -572,12 +572,12 @@ pub fn code_mode_is_registered_only_where_a_pipeline_is_wired_test() {
   // definition would be paid for on every request of every strand. A host
   // with no toolchain simply has no `code_mode`.
   assert !list.contains(
-    tool.names(serve.registry(None, None)),
+    tool.names(serve.registry(None, None, None)),
     codemode_tool.tool_name,
   )
   let broker_actor = idle_broker()
   let seam = codemode.seam(config_for(broker_actor))
-  let wired = tool.names(serve.registry(None, Some(seam)))
+  let wired = tool.names(serve.registry(None, Some(seam), None))
   assert list.contains(wired, codemode_tool.tool_name)
   assert list.length(wired) == 6
   broker.stop(broker_actor)

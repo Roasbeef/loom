@@ -396,8 +396,27 @@ A hit may be stale. It names an entry as it was when indexed, and a rewrite
 since then reaches the index only when someone later syncs that session
 under the bumped generation.
 
+`query_in_session(session, text, limit)` is the same ranking and the same
+syntax, filtered to one session's rows. The scope is **in the SQL** —
+`AND session_id = ?` beside the `MATCH`, before `ORDER BY rank` and
+`LIMIT` — because filtering afterwards does not recover scoping: a ten-hit
+request narrowed to one session can come back empty while that session has
+matches. It takes a `SessionId` rather than a string for the reason
+everything else here does.
+
 `remove` drops a session's rows and its cursor. Call it alongside deleting
 a session.
+
+### Naming a session
+
+Every entry point that names a session — `sync`, `notify`, `remove`,
+`query_in_session` — takes a `core/ids.SessionId`, with no
+caller-supplied-string form (`protocol-change/008`). This index spans a
+*repository*, which is exactly where a file-derived name ("review", from
+`/data/review.db`) collides across checkouts with nothing to notice it.
+The stored `session_id` column and `Hit.session` hold that id's canonical
+text; parse one back with `ids.parse_session_id` when the typed value is
+wanted.
 
 ### What search does not do
 
@@ -414,13 +433,6 @@ full reindex; the M3 triage deferred it to a search-quality pass as
 `EV-unicode-tokenizer`. Until then, treat the index as covering
 whitespace-delimited scripts.
 
-**A query cannot be scoped to a session.** `query` takes only the text and
-a limit, and the index spans every session in the repository — which the
-tests assert deliberately. Filtering hits afterwards does not recover
-scoping, because `rank` and `LIMIT` are applied inside SQL: a ten-hit
-request narrowed to one session can come back empty while that session has
-matches. A scope belongs in the SQL, and is not there yet.
-
 **Nothing reconciles the index against live sessions.** The module exposes
 `open`, `close`, `sync`, `notify`, `query`, and `remove`. Nothing
 enumerates indexed sessions and compares them to sessions that still exist,
@@ -432,16 +444,67 @@ for it.
 is the opposite — a limit of zero or below returns no rows — so a caller
 computing a limit by subtraction gets the whole index instead of nothing.
 An empty query string is an `IndexFault` rather than an empty result, which
-a search-as-you-type caller meets on the first backspace.
+a search-as-you-type caller meets on the first backspace. Both are the
+caller's to handle, and `tools/history` handles them: it clamps the limit
+to `[1, 50]` and refuses an empty query in band with a worded message
+before either reaches the index.
 
-**Nothing wires search into a running harness.** No package outside
-`events` calls `search.open`. It is a complete, tested service waiting for
-a consumer.
+**Nothing backfills a session that is never reopened.** A session's rows
+enter the index while it runs, and the holder syncs once at start — so
+reopening a session written before search was wired indexes its whole
+file, while one that is never reopened stays unfindable. There is no
+sweep over the repository's session files.
+
+**The injected notes digest is indexed like anything else.** The
+`agent/` digest `client/notes` injects at run start is an ordinary user
+message, so it lands in the index alongside everything else. It is
+bounded by its own 4096-byte cap; the structural anti-feedback exclusion
+belongs to memory stage M2.
+
+## Who wires it
+
+`client/history` is the search service's one consumer, and it is what
+memory stage M1 added (issue #28). The shape is three pieces:
+
+**One holder actor owns the connection.** A `sqlight` connection is not a
+value to copy into every closure that might want it — syncs and queries
+must serialize somewhere, and a crash must be able to reopen the file
+rather than leave every holder of a stale handle answering faults forever.
+So one actor owns it, started under a process *name* in the server's
+restartable tier, and both the tool seam and the sync reach it by name. A
+restart reopens the index file and is the same address.
+
+**Sync is driven by the writer's commit publication.** Not by the event
+bus: a one-session server's writer sits in the same VM as its index, so a
+bus subscription would only make the same pull happen twice, and standing
+a `pg` scope up for it would buy nothing. The hint is a second writer
+subscriber — the `client/gateway.commit_forwarder` pattern, a tiny named
+actor whose whole job is to poke the holder. A lost poke costs latency and
+never a row, because `sync`'s own durable cursor decides what gets indexed.
+(The gateway's *own* bus subscription, for a host that supplies one, is
+keyed by the canonical `SessionId` rather than by a display name; the two
+key spaces are disjoint by construction, so a hub keyed by name would sit
+in a group no identified publisher reaches.)
+
+**The index file is protected.** It lives beside the session file as
+`loom-search.db`, and `client/serve` adds it to the session base policy's
+`protected` list before validating that policy. This is a security
+property rather than hygiene, and it is the blob store's argument one step
+further along: search snippets are read back into *future* sessions'
+contexts, so an index a model can write is a channel from one execution's
+output into a later execution's input — prompt injection with a
+persistence layer. Writing is the whole of the poisoning path, so
+`protected` bars writes and leaves reads alone.
+
+An index that will not open registers no `history_search` tool and logs
+one worded line; it never refuses the boot. Recall is a projection with no
+authority, and a session that cannot search its own past is still a
+session.
 
 ## The parrot pilot
 
 The named static SQL statements behind search are generated, not written.
-`src/events/sql/search.sql` holds six named queries, `scripts/gen-sql.sh`
+`src/events/sql/search.sql` holds seven named queries, `scripts/gen-sql.sh`
 compiles them with parrot into `src/events/sql.gleam`, and the generated
 module is committed. It carries the banner `Code generated by parrot. DO
 NOT EDIT` and means it — edit the `.sql` and regenerate.
@@ -514,7 +577,8 @@ building on this package.
 imports `events/projection`. The driver, the checkpoint contract, and the
 generation guard are all exercised by tests only — which is precisely why
 the `Checkpoint` contract could still grow its generation field without a
-`protocol-change/` proposal.
+`protocol-change/` proposal. `events/search` no longer shares that
+position: `client/history` drives it in production.
 
 **Neither pull path is batched.** Neither `catch_up` nor `search.sync` caps
 its scan, so a rebuild of a large session materializes every entry, every
@@ -545,9 +609,9 @@ nothing here but the member list.
 |---|---|
 | `events/bus.gleam` | The six topics and events, `publish`, idempotent `subscribe`, `select_published`, and the unlinked writer `bridge`. |
 | `events/projection.gleam` | `Projection`, `Change`, `Checkpoint`, `catch_up` and its frontier, `rebuild`, `stats_projection`, and the driver actor with its generation guard. |
-| `events/search.gleam` | `open`/`close`, the transactional `sync`/`notify`, `query`, `remove`, `entry_text`, the hand-written DDL, and the parrot parameter bridge. |
-| `events/sql.gleam` | The six generated statement functions and their decoders. Produced by parrot from `events/sql/search.sql`; regenerate, never edit. |
-| `events/sql/search.sql` | The six named static queries — the source of truth for the generated module. |
+| `events/search.gleam` | `open`/`close`, the transactional `sync`/`notify`, `query`, `query_in_session`, `remove`, `entry_text`, the hand-written DDL, and the parrot parameter bridge. |
+| `events/sql.gleam` | The seven generated statement functions and their decoders. Produced by parrot from `events/sql/search.sql`; regenerate, never edit. |
+| `events/sql/search.sql` | The seven named static queries — the source of truth for the generated module. |
 | `sql/schema.sql` | The search database DDL, pinned to the copy in `events/search` by a test. |
 | `events/internal/ffi_pg.gleam` | The confined `pg` binding, and the publish/unwrap pairing that makes the typed boundary sound. |
 | `events_ffi.erl` | The Erlang shim those externals bind to. |

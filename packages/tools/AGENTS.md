@@ -17,6 +17,14 @@ declared here and filled by whoever can see a live runtime
 rule, the caps, the deadline, the lineage ledger — lives on the far side
 of that seam.
 
+And `history_search`, through which a model asks the repository's
+full-text index what it once knew. Same shape, same reason: `events`
+owns the index and depends on nothing here, so the tool is a shell over
+a **History** record of closures declared here and filled by
+`client/history`. What this side owns is the model's half — the schema,
+the limit clamp, the empty-query refusal, and the fence that keeps
+another session's text quoted as data.
+
 And `code_mode`, through which a model submits a *program* instead of a
 call. It has the same shape as the agent family and the same reason for
 it: `codemode` already depends on this package — its capability router
@@ -121,6 +129,14 @@ can repair from.
   each under the prelude's own `///` docs — rendered from `gleam export
   package-interface` over `packages/cap`. Unfiltered by design;
   `tools/codemode` selects from it through a seam's `allowed_imports`.
+- `tools/history.{History, Hit, Scope, Refusal, tool, tool_name,
+  clamp_limit, min_limit, max_limit, default_limit, fence}` — the recall
+  seam and the `history_search` tool over it. `History.search` takes a
+  trimmed query, an already-clamped limit and a `Scope`
+  (`Repository` | `ThisSession`) and answers hits or a `Refusal`
+  (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
+  `ThisSession` means the *host's*, because a model that could name one
+  could read a session it was never given.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
   `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
 - `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
@@ -141,7 +157,8 @@ can repair from.
   `client` (`client/wiring` builds the per-call `Ctx`
   and dispatches through the registry; `client/agency` fills the
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
-  and `client/serve` registers both families),
+  and `client/serve` registers all three families; `client/history` fills
+  the `history.History` record),
   `conformance` (the wiring/e2e suites drive the same adapter).
 - **Generated from**: `packages/cap`, at build time and not as a
   dependency edge — `scripts/gen-prelude.sh` runs `gleam export
@@ -167,7 +184,10 @@ can repair from.
   into `Match` values.
 - **Policy**: each tool declares `requirements(workspace)`. `bash` asks
   workspace write, system paths readable, network **off**; `grep` asks
-  workspace readable, nothing writable, network off; `code_mode` asks
+  workspace readable, nothing writable, network off; `history_search`
+  asks for **nothing at all** — no readable root, no writable root, no
+  network — because it starts no jailed process and touches no path: the
+  index is read harness-side through the seam; `code_mode` asks
   workspace write and the whole filesystem readable (the Gleam and Erlang
   toolchains live outside it), and declaratively only — it clears nothing
   through `Ctx.clear_call`, because the build and the node are cleared
@@ -266,7 +286,9 @@ can repair from.
   `Never` — an arbitrary external effect must yield a synthetic interrupted
   result on crash, never a re-execution. `grep`, `fs_read`, `fs_write`, and
   `fs_edit` are `Safe`: a read, a read, an idempotent write, and a
-  digest-bound edit respectively.
+  digest-bound edit respectively. `history_search` is `Safe` too, and
+  needs no budget headroom with it: it clears nothing through the
+  broker, so a batch of them shares no ledger to be refused out of.
 - **`execution_mode` is a scheduling constraint**: `Exclusive` for bash,
   write, and edit (they may mutate the workspace); `Concurrent` for read
   and grep. A `Concurrent` tool's own declared budget must agree with
@@ -277,6 +299,18 @@ can repair from.
   call is refused `OutstandingCapReached` for no reason a caller can see
   (issue #50; `grep.max_concurrent_searches` is the one declared to
   date).
+- **A search result is quoted history, and the fence is the mechanism.**
+  `history_search` hits are text some model wrote, possibly in another
+  session months ago, on its way into *this* model's context. The
+  rendering fences them, says above the fence that nothing inside it is
+  addressed to the reader, and breaks any backtick run in a snippet that
+  could close the fence early. A snippet that could close it would make
+  everything after it read as the harness talking.
+- **The limit clamp is the tool's, not the index's.** A limit reaches SQL
+  `LIMIT ?`, and SQLite reads a *negative* limit as unbounded — the
+  opposite of `storage`'s convention, where a non-positive limit returns
+  nothing. `clamp_limit` is what stops a limit computed by subtraction
+  from pulling the whole repository index into a context.
 - **Blob writes are idempotent by construction.** Content addressing
   (SHA-256) puts the same bytes at the same ref, so replaying a `Safe` tool
   or re-running an identical command never duplicates storage. Output past

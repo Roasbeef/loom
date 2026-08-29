@@ -445,11 +445,48 @@ the other side.
    session, `unidentified_key(name:)` for a publisher that has none, with
    disjoint `id:`/`name:` renderings so the two can never collide.
    `events/search` takes the `SessionId` outright and has no unidentified
-   form. The gateway still subscribes under an unidentified key; keying it
-   by `api.session_id` is issue #28's serve wiring.
+   form. The gateway now subscribes under `key(of: api.session_id(runtime))`
+   too (issue #28); the protocol's client-facing `session` field stays a
+   display name. `client/serve` supplies no bus, so that subscription is
+   correct-but-unexercised — it is for a host whose hint sources are not
+   all its own writer.
 5. **Search indexes** message text and compaction/branch summaries;
    thinking blocks and tool-call arguments are deliberately not indexed.
    pi's metadata-filtering question stays open, as in pi.
+6. **Recall has no backfill, and that is stated rather than hidden**
+   (issue #28, memory stage M1). A session's rows enter the index while it
+   runs, and the holder syncs once at start — so reopening a session
+   written before search was wired indexes its whole file, while a session
+   that is never reopened stays unfindable. Nothing sweeps the
+   repository's session files. The remedy, if it is ever wanted, is a
+   startup sweep over the session catalog rather than a change to `sync`.
+7. **An injected digest is indexed like any other message.** The `agent/`
+   notes digest `client/notes` injects at run start is an ordinary user
+   message, so search indexes it alongside everything else — a small
+   feedback loop, bounded by the digest's own 4096-byte cap and by the
+   fact that it quotes cells already durable elsewhere. The structural
+   anti-feedback exclusion (and the question of whether `CustomEntry`
+   should index to something) belongs to memory stage M2 and is
+   deliberately not pulled forward.
+8. **The digest also accumulates: one capped copy per run.** `run_start`
+   messages are born-placed durable entries and the leaf moves onto
+   them, so a strand with stable notes carries one near-identical digest
+   per operation in its projection tail until compaction evicts them —
+   and each copy is separately indexed (item 7's loop, multiplied by
+   turn count). The per-injection bound is real; an in-context total
+   bound is not, and saying otherwise anywhere is a doc bug. A
+   skip-if-unchanged check is the obvious remedy if the cost shows up;
+   it is deliberately not built until it does.
+9. **`history_search`'s own results are re-indexed.** Tool results are
+   durable entries and `entry_text` indexes their text, so every snippet
+   a session recalls — fence markers and all — becomes indexed content
+   in that session's file, and a later repository-wide search for the
+   same term returns the original plus every session that ever quoted
+   it. Unbounded by any cap, unlike item 8, and created by the tool
+   itself. Ranking degradation is the cost today; the structural
+   exclusion that would close it (skip tool-result blocks whose tool is
+   `history_search`, or M2's by-type exclusion) is follow-up work,
+   weighed there rather than bolted on here.
 
 ## From WP-C-full (`session`, `storage`)
 

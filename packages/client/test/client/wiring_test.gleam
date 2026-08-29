@@ -139,7 +139,7 @@ fn config() -> wiring.Config {
     ),
     broker: helperless_broker(),
     broker_timeout_ms: 1000,
-    registry: serve.registry(None, None),
+    registry: serve.registry(None, None, None),
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy: policy.workspace_default(workspace),

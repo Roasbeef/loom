@@ -265,13 +265,21 @@ pub fn start(
   actor.new_with_initialiser(5000, fn(subject) {
     let selector = case options.bus {
       Some(bus) -> {
-        // Still the caller-supplied name: keying this subscription by
-        // the canonical `api.session_id` is #28's serve wiring, and the
-        // protocol's `session` field is a display name either way
-        // (`protocol-change/008`).
+        // Keyed by the session's *canonical* id, never by the
+        // caller-supplied display name. The two key spaces are disjoint
+        // by construction (`protocol-change/008`), so a hub keyed by
+        // name would sit in a group no identified publisher ever
+        // reaches — and the index is repository-wide, which is exactly
+        // where a file-derived name collides with nothing to notice it.
+        // `Options.session_id` stays the protocol's `session` field: a
+        // display name, and only that.
+        //
+        // `client/serve` supplies no bus, so nothing exercises this
+        // today; it is correct for the host the field exists for — one
+        // whose hint sources are not all its own writer.
         bus.subscribe_all(
           bus,
-          session: bus.unidentified_key(name: options.session_id),
+          session: bus.key(of: api.session_id(options.runtime)),
         )
         process.new_selector()
         |> process.select(subject)

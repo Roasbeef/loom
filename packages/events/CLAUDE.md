@@ -71,8 +71,11 @@ WP-K.
   generated module imports at runtime), `gleam_erlang` + `gleam_otp`.
   `session` is declared in `gleam.toml` — the spec DAG's `K → A,B,C` — but
   nothing in `src` imports it today.
-- **Depended on by**: `client` (the gateway subscribes to the bus for
-  live hints).
+- **Depended on by**: `client` — the gateway subscribes to the bus for
+  live hints, and `client/history` is the search service's one consumer:
+  a named holder actor owning one `Search`, synced from the runtime
+  writer's post-commit publication and queried by the `history_search`
+  tool (issue #28, memory stage M1).
 - **FFI**: `events/internal/ffi_pg` — the confined binding over OTP's
   `pg` process-group module (Erlang side: `src/events_ffi.erl`).
   `gleam_erlang` ships no `pg` binding, and re-implementing membership
@@ -133,7 +136,14 @@ WP-K.
   the freshly-read store. A cold start has nothing to compare against, so
   it simply records whatever generation the store reports.
 - **Search indexes message text and compaction/branch summaries only.**
-  Thinking blocks and tool-call arguments are deliberately not indexed.
+  Thinking blocks and tool-call arguments are deliberately not indexed,
+  and a custom entry indexes to nothing — its seq still advances the
+  cursor, so a re-sync finds nothing to redo.
+- **A non-positive `limit` is unbounded, and the caller must clamp.**
+  The limit reaches SQL `LIMIT ?`, and SQLite reads `LIMIT -1` as *no
+  limit* — the opposite of `storage`'s convention. `tools/history`
+  clamps to `[1, 50]` before the query is ever built, which is where a
+  model-supplied number is stopped.
 - **The typed boundary over `pg` is re-established by pairing.** `pg`
   stores plain pids and delivery is an untyped Erlang send; only
   `ffi_pg.publish` ever sends the `{loom_event, _}` tuple and only with

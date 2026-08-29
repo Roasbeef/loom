@@ -1,18 +1,20 @@
 # Design note: compaction and memory
 
-Status: **Stage C0 is built; everything from Stage C1 on is proposed.**
+Status: **Stages C0 and M1 are built; everything else is proposed.**
 Part 0 below describes the position this note was written from, which
 C0 has since changed: compaction now runs in production, answered by
-`client/wiring`'s hooks against a real provider. Read Part 0 as history
+`client/wiring`'s hooks against a real provider. M1 has since changed the
+memory half the same way: recall is wired, `history_search` is
+registered, and the `agent/` digest is injected. Read Part 0 as history
 and Part 5 as the plan. Loom's compaction machinery was already
 implemented from the durable entry type up through the state machine,
 and none of it ran: `client/serve` installed hooks whose threshold never
 fired, whose structural decisions always declined, and whose summary
 requests settled as terminal "not wired" errors. Loom has no
 memory story at all — nothing carries knowledge from one session into the
-next. This note designs both, after reading how the two reference
-implementations actually do it. Everything claimed about Loom, pi, and
-omp below was verified in source; the handful of claims that rest on
+next (as of writing; M1 has since given it one). This note designs both,
+after reading how the two reference implementations actually do it.
+Everything claimed about Loom, pi, and omp below was verified in source; the handful of claims that rest on
 vendor blogs or third-party writeups are marked as such.
 
 Two of the note's inputs deserve naming up front, because they shape
@@ -720,13 +722,29 @@ speculative compaction only if C0 shows summarization latency actually
 hurting interactive sessions. Snapcompact-class ideas are research, not
 roadmap.
 
-## Stage M1 — recall and surfacing (composition only)
+## Stage M1 — recall and surfacing (composition only) — **built**
 
-Wire `events/search` into `client/serve` (open + event-bus-driven sync);
-add session scoping in SQL; register the `history_search` tool; inject
-the `agent/` notes digest via `run_start`. No new storage, no new
-services. Exit: a fresh session finds, by search, a decision made in a
-previous session's compacted-away history.
+Wire `events/search` into `client/serve`; add session scoping in SQL;
+register the `history_search` tool; inject the `agent/` notes digest via
+`run_start`. No new storage, no new services. Exit: a fresh session
+finds, by search, a decision made in a previous session's
+compacted-away history.
+
+Shipped as issue #28, with one design change worth recording. The plan
+here said "event-bus-driven sync"; what landed is driven by the
+**writer's own commit publication** — a second subscriber on
+`api.Options.subscribers`, the `client/gateway.commit_forwarder`
+pattern, poking a named holder actor that owns the index. A one-session
+server's writer sits in the same VM as its index, so a bus subscription
+would have made the same pull happen twice and bought a `pg` scope for
+nothing. Hints stay lossy either way; the sync's own durable cursor is
+what makes a lost hint cost latency rather than a row.
+
+Two gaps are accepted rather than hidden, and both are written down in
+`docs/spec-gaps.md` "From WP-K": there is no backfill (a session's rows
+enter the index while it runs, so a session never reopened stays
+unfindable), and an injected digest is indexed like any other user
+message. The structural anti-feedback exclusion belongs to M2.
 
 ## Stage M2 — the memory session and the pipeline
 
