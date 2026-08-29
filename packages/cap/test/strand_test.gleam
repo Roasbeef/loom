@@ -408,26 +408,72 @@ pub fn every_refusal_code_recovers_its_name_test() {
   // The other half of `codemode/orchestration.refusal_code`. The two
   // packages share no dependency — they are the ends of one wire — so
   // each pins its own side and the sample crosses it for real.
+  //
+  // Each sample's code comes from `named_code` rather than from a
+  // literal beside it, which is what makes this a gate: see below.
   let cases = [
-    #("strands_unavailable", strand.StrandsUnavailable("because")),
-    #("malformed_handle", strand.MalformedHandle("because")),
-    #("not_addressable", strand.NotAddressable("because")),
-    #("not_a_descendant", strand.NotADescendant("because")),
-    #("depth_cap", strand.DepthCapReached("because")),
-    #("fan_out_cap", strand.FanOutCapReached("because")),
-    #("unknown_tool", strand.UnknownTool("because")),
-    #("invalid_argument", strand.InvalidArgument("because")),
-    #("name_already_minted", strand.NameAlreadyMinted("because")),
-    #("parent_run_ended", strand.ParentRunEnded("because")),
-    #("result_schema_unmet", strand.ResultSchemaUnmet("because")),
-    #("plane_failed", strand.PlaneFailed("because")),
-    #("spawn_ceiling", strand.SpawnCeilingReached("because")),
-    #("admission_ceiling", strand.AdmissionCeilingReached("because")),
+    strand.StrandsUnavailable("because"),
+    strand.MalformedHandle("because"),
+    strand.NotAddressable("because"),
+    strand.NotADescendant("because"),
+    strand.DepthCapReached("because"),
+    strand.FanOutCapReached("because"),
+    strand.UnknownTool("because"),
+    strand.InvalidArgument("because"),
+    strand.NameAlreadyMinted("because"),
+    strand.ParentRunEnded("because"),
+    strand.ResultSchemaUnmet("because"),
+    strand.PlaneFailed("because"),
+    strand.SpawnCeilingReached("because"),
+    strand.AdmissionCeilingReached("because"),
   ]
-  assert list.all(cases, fn(one) {
-    install_fake(with: denied(one.0))
-    strand.roster() == Error(one.1)
+  assert list.all(cases, fn(error) {
+    case named_code(error) {
+      // A sample must be one of the named refusals; the two that are not
+      // have tests of their own below.
+      Error(Nil) -> False
+      Ok(code) -> {
+        install_fake(with: denied(code))
+        strand.roster() == Error(error)
+      }
+    }
   })
+}
+
+// Every `StrandError` that is a named in-band code, and the code it is
+// named for — total over the type, which is the point.
+//
+// `list.all` over a hand-written list of pairs proves nothing about a
+// variant nobody added to the list, and that is precisely how issue #91
+// item 3 happened: `plane_failed` and `name_already_minted` were emitted
+// by the far end, fell into the `StrandRefused` fallback here, and no
+// test on either side noticed. Restating the mapping as a total `case`
+// makes the compiler refuse this file when a variant is added, so the
+// next one cannot be added without deciding — here, in writing — whether
+// it has a code and putting it in the list above.
+//
+// The two `Error(Nil)` arms are the deliberate non-codes: `StrandRefused`
+// carries whatever code this module has *not* learned, and
+// `StrandUnavailable` is a broken channel rather than a refusal at all.
+fn named_code(error: strand.StrandError) -> Result(String, Nil) {
+  case error {
+    strand.StrandsUnavailable(..) -> Ok("strands_unavailable")
+    strand.MalformedHandle(..) -> Ok("malformed_handle")
+    strand.NotAddressable(..) -> Ok("not_addressable")
+    strand.NotADescendant(..) -> Ok("not_a_descendant")
+    strand.DepthCapReached(..) -> Ok("depth_cap")
+    strand.FanOutCapReached(..) -> Ok("fan_out_cap")
+    strand.UnknownTool(..) -> Ok("unknown_tool")
+    strand.InvalidArgument(..) -> Ok("invalid_argument")
+    strand.NameAlreadyMinted(..) -> Ok("name_already_minted")
+    strand.ParentRunEnded(..) -> Ok("parent_run_ended")
+    strand.ResultSchemaUnmet(..) -> Ok("result_schema_unmet")
+    strand.PlaneFailed(..) -> Ok("plane_failed")
+    strand.SpawnCeilingReached(..) -> Ok("spawn_ceiling")
+    strand.AdmissionCeilingReached(..) -> Ok("admission_ceiling")
+    strand.StrandRefused(..) -> Error(Nil)
+    strand.StrandUnavailable(..) -> Error(Nil)
+  }
 }
 
 pub fn an_unknown_code_arrives_as_itself_test() {

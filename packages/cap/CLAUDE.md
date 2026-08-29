@@ -62,12 +62,21 @@ thing to hand a model than one that cannot.
   the seam's own: `SpawnCeilingReached` and `AdmissionCeilingReached`, the
   second covering `send`, `note` and `notes` alike because a program at
   any of them does the same thing and the message names which. The named
-  set is exactly `codemode/orchestration.refusal_code`'s range, `map_error`
-  being the other half of that contract: `NameAlreadyMinted` and
-  `PlaneFailed` are there for that reason and not because a program is
+  set matches `codemode/orchestration.refusal_code`'s range as of today,
+  `map_error` being the other half of that contract: `NameAlreadyMinted`
+  and `PlaneFailed` are there for that reason and not because a program is
   expected to recover from either. `StrandRefused` stays the arm for a
   code this module has not learned, so a new name still reaches a program
-  as itself.
+  as itself — which is also why the two sides can drift silently, and what
+  the pins are for. **Nothing gates the pairing across the wire**: `cap`
+  and `codemode` share no dependency, so no check in either package can
+  see the other's list. What *is* gated is each end against its own type —
+  `strand_test.named_code` and `orchestration_test.expected_code` are
+  total `case`s, so adding a variant to `StrandError` or to
+  `agent.Refusal` breaks that package's test compile and forces whoever
+  adds it to write the code down and look at the paired list. Adding a
+  variant on one side and not the other still compiles everywhere; the
+  alarm is that you were made to read the sentence saying so.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry
