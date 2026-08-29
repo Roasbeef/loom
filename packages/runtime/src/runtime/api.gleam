@@ -384,11 +384,14 @@ pub fn accept_quietly(
 /// restarted caller that re-derives the same decision meets
 /// `FactConflict` instead of opening a second run.
 ///
-/// This is a building block, not the entry point: it trusts its caller
-/// for the reserved-key guard exactly as `accept_quietly` trusts its own
-/// callers, and it does not attempt a steer first. `send_to_strand_marking`
-/// is the guarded, steer-then-accept entry point built on top of it; call
-/// this directly only when the caller already knows the strand is idle.
+/// This is a building block, not the primary entry point: it does not
+/// attempt a steer first, so `send_to_strand_marking` — the steer-then-
+/// accept reconciliation — is the door most callers want; call this
+/// directly only when the caller already knows the strand is idle. It
+/// guards the reserved-key requirement itself, like `steer_marking`,
+/// rather than trusting a caller to have checked: cheap here, and a
+/// building block is exactly the shape that gets a second caller later
+/// who forgets to.
 ///
 /// ## Examples
 ///
@@ -402,6 +405,10 @@ pub fn accept_quietly_marking(
   prompts: List(AgentMessage),
   mark: Mark,
 ) -> Result(OpId, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
   accept_request(runtime, AcceptRun(prompts:), Some(mark))
 }
 

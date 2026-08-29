@@ -450,6 +450,23 @@ pub fn send_to_strand_marking_refuses_an_unreserved_key_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// `accept_quietly_marking` is a building block `send_to_strand_marking`
+// calls, but it guards the same requirement itself rather than trusting
+// its caller — a second caller added later must not be able to skip it.
+pub fn accept_quietly_marking_refuses_an_unreserved_key_test() {
+  let rt = marking_runtime()
+  let assert Error(api.UnreservedFactKey(key: "agent/main/note")) =
+    api.accept_quietly_marking(
+      rt,
+      [fake.user("Hello")],
+      api.Mark(key: "agent/main/note", value: json.String("wake")),
+    )
+    as "an unreserved mark must be refused"
+  let assert Ok(None) = api.fact(rt, "agent/main/note")
+    as "a refused admission must leave the claim unspent"
+  process.kill(rt.tree.supervisor)
+}
+
 fn mark_key(rule: String) -> String {
   api.rule_fact_prefix <> "fired/main/" <> rule
 }
