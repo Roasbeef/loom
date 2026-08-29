@@ -93,6 +93,10 @@ type Ready {
   Ready(helper_path: String, seed_root: String, root: String)
 }
 
+type Prepared {
+  Prepared(helper_path: String, seed_root: String)
+}
+
 fn run_live(ready: Ready) -> Nil {
   let rig = rig(ready, under: ready.root)
   let seam =
@@ -610,12 +614,14 @@ fn digested(base: String, original: String) -> String {
 // --- locating the fixture and its interpreter -------------------------------
 
 fn mcp_process_rig() -> Result(Fixture, String) {
+  // The declared platform skip wins before fixture-specific observations.
+  // Everything after it is non-owning until the final root reservation.
+  use Nil <- result.try(platform_prerequisite())
   use Nil <- result.try(observable_processes())
   use escript <- result.try(escript_path())
   use script <- result.try(fixture_script())
-  // Reserve the per-run root only after every non-owning prerequisite has
-  // passed, so an ordinary fixture skip cannot leak the one-shot directory.
-  use ready <- result.try(prerequisites())
+  use prepared <- result.try(prepare_live_run())
+  use ready <- result.try(reserve_live_run(prepared))
   Ok(Fixture(ready:, escript:, script:))
 }
 
@@ -1259,13 +1265,22 @@ fn unreachable_agency() -> agent.Agency {
 // --- the rig ---------------------------------------------------------------
 
 fn prerequisites() -> Result(Ready, String) {
+  use Nil <- result.try(platform_prerequisite())
+  use prepared <- result.try(prepare_live_run())
+  reserve_live_run(prepared)
+}
+
+fn platform_prerequisite() -> Result(Nil, String) {
   // Match every other real-helper suite: a current binary on a platform with
   // no jail is not a runnable prerequisite, and the shared reason is what the
   // declared-skip census audits.
-  use Nil <- result.try(case exec.unjailed_skip_reason(exec.host_platform()) {
+  case exec.unjailed_skip_reason(exec.host_platform()) {
     option.Some(reason) -> Error(reason)
     option.None -> Ok(Nil)
-  })
+  }
+}
+
+fn prepare_live_run() -> Result(Prepared, String) {
   let assert Ok(here) = simplifile.current_directory()
     as "the test runner must have a working directory"
   let repo = here <> "/../.."
@@ -1277,11 +1292,17 @@ fn prerequisites() -> Result(Ready, String) {
   ))
   case codemode.discover(seed_root) {
     Error(reason) -> Error(reason)
-    Ok(_toolchain) -> {
-      use root <- result.try(live_root())
-      Ok(Ready(helper_path:, seed_root:, root:))
-    }
+    Ok(_toolchain) -> Ok(Prepared(helper_path:, seed_root:))
   }
+}
+
+fn reserve_live_run(prepared: Prepared) -> Result(Ready, String) {
+  use root <- result.try(live_root())
+  Ok(Ready(
+    helper_path: prepared.helper_path,
+    seed_root: prepared.seed_root,
+    root:,
+  ))
 }
 
 // A shallow base keeps every fixture's AF_UNIX socket below the portable byte
