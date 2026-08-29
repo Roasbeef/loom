@@ -1996,16 +1996,17 @@ fn history_seam(
 // the same arithmetic: a tool definition renders into the provider's
 // cached byte prefix and is paid for on every request for the life of
 // the session, so a door that could only ever refuse must not be
-// registered. A *held* memory session is not that — a distillation run
-// in progress at boot is reachability, and the seam's own in-band
-// refusal is the right answer for a call that lands during the next one.
+// registered. The probe takes no lease and creates nothing (see
+// `memory.probe`): a boot that opened the store would be the very theft
+// `memory.run_lease_ttl_ms` exists to prevent, arriving mid-run and
+// stealing a distillation's expired lease.
 fn memory_seam(
   store_path: String,
   clock: Clock,
   entropy: fn() -> Int,
   logger: Logger,
 ) -> Option(remember.Memory) {
-  case memory.probe(store_path, clock) {
+  case memory.probe(store_path) {
     Ok(Nil) -> {
       log.info(logger, "memory.ready", [
         field.text(key: "store", value: store_path),

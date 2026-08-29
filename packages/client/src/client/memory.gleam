@@ -38,11 +38,16 @@
 ////
 //// # The writer lease is the whole of the concurrency story
 ////
-//// One SQLite writer lease per file, taken at open. A distillation run
-//// holds it for the run, so a second run loses `LeaseHeld` and a
-//// `remember` call during a run is refused in band and says so. No new
-//// lease, no heartbeat, no background writer inside the server — and
-//// `client/serve` never opens this file at all.
+//// One SQLite writer lease per file, taken at open, and the TTL is
+//// chosen by the caller because the two callers are nothing alike. A
+//// `remember` write covers one commit and takes `lease_ttl_ms`; a
+//// distillation run's commits are separated by whole provider turns and
+//// it takes `run_lease_ttl_ms`, which is the difference between a run
+//// that survives and one whose lease is stolen out from under it while
+//// it waits on the model. No heartbeat, no background writer inside the
+//// server — and `client/serve` never opens this file at all: its boot
+//// probe reads the file's header without the lease, and the only thing
+//// that ever creates the store is the first write to it.
 ////
 //// # The digest crosses to the server as bytes, not as a read
 ////
@@ -226,11 +231,35 @@ pub const max_distillates = 64
 /// the row outright would lose the distillate rather than its tail.
 pub const max_row_chars = 2000
 
-/// How long the memory session's writer lease runs. Short, because
-/// nothing renews it: a distillation run holds the file for one pass and
-/// a `remember` call for one write, so a lease that outlives a crashed
-/// run by minutes would refuse honest writers for minutes.
+/// How long a **short** memory-session lease runs: one `remember` write,
+/// or one source session opened during the walk. Both are a handful of
+/// store operations with nothing slow between them, so thirty seconds is
+/// generous, and a lease that outlived a crashed one by minutes would
+/// refuse honest writers for minutes.
 pub const lease_ttl_ms = 30_000
+
+/// How long a **distillation run's** lease on the memory session runs.
+///
+/// Nothing renews a lease except a commit through it, and a run's
+/// commits are separated by provider turns that may take
+/// `client/distill.default_timeout_ms` each. Under the short TTL the
+/// lease expires during the first turn, and any opener that arrives in
+/// that window — a `remember` call, a second `distill` — steals it with a
+/// bumped fence; the run then loses its next commit to `LeaseLost` and
+/// throws away every model turn it has paid for.
+///
+/// So the TTL covers the whole pass, exactly as
+/// `storage/sqlite`'s `rewrite_lease_ttl_ms` covers a whole precise
+/// rewrite and for the same reason — generous because it must cover the
+/// whole, bounded so a crashed run does not lock the file out forever.
+/// This is a constant rather than a renewal timer on purpose: a
+/// heartbeat would be a process, and a run is a command with no
+/// supervision tree to hang one on.
+///
+/// The other half of the bargain is that a `remember` call landing
+/// inside a run now genuinely gets the `LeaseHeld` refusal its
+/// description advertises, rather than silently stealing the run's file.
+pub const run_lease_ttl_ms = 600_000
 
 // --- the register cells ----------------------------------------------------
 
@@ -360,12 +389,14 @@ pub type Opened {
 /// ## Examples
 ///
 /// ```gleam
-/// // memory.open(path:, owner: "loom-distill", clock:, generator:)
+/// // memory.open(path:, owner: "loom-distill",
+/// //   lease_ttl_ms: memory.run_lease_ttl_ms, clock:, generator:)
 /// ```
 ///
 pub fn open(
   path path: String,
   owner owner: String,
+  lease_ttl_ms lease_ttl_ms: Int,
   clock clock: Clock,
   generator generator: Generator,
 ) -> Result(Opened, MemoryFault) {
@@ -402,39 +433,51 @@ pub fn close(opened: Opened) -> Nil {
 /// Whether the memory plane is reachable at `path` at all, asked once at
 /// boot so a host that has none registers no `remember` tool.
 ///
-/// A **held** lease is reachability, not a fault: a distillation run in
-/// progress at boot must not cost the server its memory door for the
-/// life of the session, and the seam's own in-band refusal is the right
-/// answer for a call that lands during the next run.
+/// **It takes no lease and creates nothing.** An earlier version opened
+/// the session, which made three claims elsewhere false at once — the
+/// server does not open this file, does not take its lease, and does not
+/// create it — and made the boot a live instance of the theft
+/// `run_lease_ttl_ms` exists to prevent: a probe arriving mid-run would
+/// have found the short lease expired and stolen it. So the question is
+/// asked the way `storage/sqlite.generation` is documented to answer
+/// it: reading the file's header without acquiring the lease.
+///
+/// An **absent** file is `Ok`: a repository that has never remembered
+/// anything has no store yet, and the first `remember` call creates it.
+/// A **present** file that is not a readable session is the one real
+/// unavailability, and gets the worded line.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(Nil) = memory.probe("/data/loom-memory.db", clock)
+/// // let assert Ok(Nil) = memory.probe("/data/loom-memory.db")
 /// ```
 ///
-pub fn probe(path: String, clock: Clock) -> Result(Nil, String) {
-  case
-    session.open_sqlite(
-      path:,
-      owner: "loom-memory-probe",
-      lease_ttl_ms:,
-      clock:,
-    )
-  {
-    Ok(opened) -> {
-      let _closed = session.close(opened)
-      Ok(Nil)
-    }
-    Error(session.SqliteOpenFailed(error: sqlite.LeaseHeld(..))) -> Ok(Nil)
+pub fn probe(path: String) -> Result(Nil, String) {
+  case simplifile.is_file(path) {
+    // Nothing there yet, which is the ordinary state of a fresh
+    // repository and not a reason to withhold the door.
+    Ok(False) -> Ok(Nil)
+    Ok(True) -> readable_store(path)
     Error(error) ->
       Error(
-        "the memory session at "
+        "the memory store at "
         <> path
-        <> " would not open: "
+        <> " could not be examined: "
         <> string.inspect(error),
       )
   }
+}
+
+fn readable_store(path: String) -> Result(Nil, String) {
+  sqlite.generation(path:)
+  |> result.replace(Nil)
+  |> result.map_error(fn(error) {
+    "the memory store at "
+    <> path
+    <> " is not a readable session file: "
+    <> string.inspect(error)
+  })
 }
 
 // --- distillates -----------------------------------------------------------
@@ -811,7 +854,9 @@ fn with_open(
   generator: Generator,
   run: fn(Opened) -> Result(Nil, remember.Refusal),
 ) -> Result(Nil, remember.Refusal) {
-  case open(path:, owner:, clock:, generator:) {
+  // The short TTL: this open covers one commit with nothing slow in
+  // front of it, unlike a distillation run's.
+  case open(path:, owner:, lease_ttl_ms:, clock:, generator:) {
     Error(fault) -> Error(note_refusal(fault))
     Ok(opened) -> {
       let outcome = run(opened)

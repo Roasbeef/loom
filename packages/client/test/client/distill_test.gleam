@@ -294,6 +294,98 @@ pub fn a_note_reaches_the_consolidation_input_test() {
   memory.close(opened)
 }
 
+// --- the run's lease covers the run -----------------------------------------
+
+// When a run begins, on the fixed clock the lease arithmetic is done
+// against.
+const run_began_at = 1_756_000_000_000
+
+// How far into the run the interloper arrives: past the short per-call
+// TTL, well inside the run-scale one.
+const interloper_arrives_after = 60_000
+
+/// **A distillation run's lease is not stolen while it waits on the
+/// model.**
+///
+/// Nothing renews a lease but a commit through it, and a run's commits
+/// are separated by provider turns. Under the short TTL the lease
+/// expires during the first turn and the next opener to arrive — a
+/// `remember` call, a second run — steals it with a bumped fence; the
+/// run then loses its next commit to `LeaseLost` and throws away every
+/// turn it has paid for.
+///
+/// Driven from inside the model turn itself, which is exactly the window
+/// that matters, and on a fixed clock so the arithmetic is decided
+/// rather than raced: the interloper carries a clock a minute ahead of
+/// the run's own.
+pub fn a_runs_lease_is_not_stolen_while_it_waits_on_the_model_test() {
+  let root = fresh_root("lease")
+  let _named =
+    write_source(root <> "/a.db", 59, [assistant("we chose msgpack")])
+  let arrivals = process.new_subject()
+  let inside_the_turn =
+    distill.Distiller(ask: fn(prompt) {
+      // The opener that arrives while the run is thinking.
+      process.send(arrivals, interloper(root))
+      case string.contains(prompt, "consolidating the durable memory") {
+        True -> Ok(distill.Answer(text: consolidated, usage: usage(3)))
+        False -> Ok(distill.Answer(text: extracted, usage: usage(3)))
+      }
+    })
+  let assert Ok(report) =
+    distill.run(
+      distill.Config(
+        ..distill.config_for(
+          root,
+          inside_the_turn,
+          clock: clock.fixed(at: run_began_at),
+          entropy: fn() { 61 },
+        ),
+        clock: clock.fixed(at: run_began_at),
+      ),
+    )
+    as "the run must survive an opener arriving mid-turn"
+  assert report.rows == 2
+
+  // Both turns had an interloper, and neither of them got in.
+  let assert Ok(first) = process.receive(arrivals, within: 1000)
+    as "the extraction turn's interloper must have reported"
+  let assert Ok(second) = process.receive(arrivals, within: 1000)
+    as "the consolidation turn's interloper must have reported"
+  assert first == Refused
+  assert second == Refused
+}
+
+/// What an opener arriving mid-run found.
+type Arrival {
+  /// `LeaseHeld`: the run still owns its file, which is the whole point.
+  Refused
+  /// The lease had expired and this opener took it — the run's next
+  /// commit is now doomed.
+  Stole
+  /// Something else went wrong; never expected, and not silently a pass.
+  Confused(reason: String)
+}
+
+fn interloper(root: String) -> Arrival {
+  case
+    memory.open(
+      path: root <> "/loom-memory.db",
+      owner: "interloper",
+      lease_ttl_ms: memory.lease_ttl_ms,
+      clock: clock.fixed(at: run_began_at + interloper_arrives_after),
+      generator: ids.generator(a_clock(), seed: 67),
+    )
+  {
+    Error(memory.MemoryHeld(..)) -> Refused
+    Error(memory.MemoryFailed(reason:)) -> Confused(reason:)
+    Ok(opened) -> {
+      memory.close(opened)
+      Stole
+    }
+  }
+}
+
 // --- cursors and dispatch ---------------------------------------------------
 
 /// A rewrite renumbers every entry, so a cursor recorded under the old
@@ -400,6 +492,7 @@ fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
   memory.open(
     path: root <> "/loom-memory.db",
     owner: "distill-test",
+    lease_ttl_ms: memory.lease_ttl_ms,
     clock: a_clock(),
     generator: ids.generator(a_clock(), seed: 21),
   )

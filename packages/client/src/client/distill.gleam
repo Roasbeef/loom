@@ -475,6 +475,11 @@ pub fn run(config: Config) -> Result(Report, String) {
     memory.open(
       path: config.memory_path,
       owner: distill_owner,
+      // The run-scale TTL, not the short one: the commits below are
+      // separated by provider turns, and a lease that expired between
+      // them would be stolen by any opener that arrived — losing the run
+      // its next commit and every turn it had paid for.
+      lease_ttl_ms: memory.run_lease_ttl_ms,
       clock: config.clock,
       generator:,
     )

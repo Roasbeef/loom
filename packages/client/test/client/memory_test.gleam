@@ -327,6 +327,7 @@ fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
   memory.open(
     path: root <> "/loom-memory.db",
     owner: "memory-test",
+    lease_ttl_ms: memory.lease_ttl_ms,
     clock: a_clock(),
     generator: ids.generator(a_clock(), seed: 7),
   )

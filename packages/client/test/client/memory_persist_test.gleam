@@ -63,9 +63,13 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
   // The door is really registered on this host: the pinned system prompt
   // lists the session's tools, and `remember` is among them.
   assert string.contains(first.prompt.text, remember.tool_name)
-  // The boot's own probe created the memory store beside the session.
-  let assert Ok(True) = simplifile.is_file(root <> "/loom-memory.db")
-    as "the boot must create the memory store"
+  // The boot's probe is lease-free and creates nothing: a boot that
+  // opened the store would take its writer lease, and one arriving
+  // during a distillation run would steal that run's. The door is
+  // registered anyway — an absent store is the ordinary state of a
+  // repository that has never remembered anything.
+  let assert Ok(False) = simplifile.is_file(root <> "/loom-memory.db")
+    as "the boot must not create the memory store"
   // Nothing is injected yet: no distillation has run, so there is no
   // sidecar and the hook has nothing to say.
   assert memory.read_digest(root <> "/loom-memory.digest") == None
@@ -78,6 +82,9 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
       core_json_note(preference),
     )
   assert outcome.is_error == False
+  // The first note is what creates the store.
+  let assert Ok(True) = simplifile.is_file(root <> "/loom-memory.db")
+    as "the first remembered note must create the memory store"
   serve.shutdown(first)
 
   // --- the pipeline, for real ------------------------------------------
