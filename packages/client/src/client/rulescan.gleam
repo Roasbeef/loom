@@ -103,9 +103,12 @@
 //// deliberately address a strand its own tooling already reports as
 //// finished, and the alternative — trusting nothing short of provable
 //// impossibility — is the unbounded, permanent re-scan this module
-//// exists to end. `scannable_text` also excludes an `Aborted` entry,
-//// which is what a reap's own abort produces, so even in that residual
-//// case the strand's own history offers nothing further to fire on.
+//// exists to end. What the residual costs is precise: the rule that
+//// was already matched and held stays silent on that fresh run, since
+//// the strand is abandoned and the match is never re-judged. It is not
+//// mitigated by `scannable_text`'s exclusion of `Aborted` entries —
+//// that bounds *new* matches, and the harm here needs no new history,
+//// only an open run.
 ////
 //// **Fail open at every branch.** No lineage cell (a root strand, or a
 //// subagent whose cell has not landed yet) and a cell that fails to
@@ -439,7 +442,7 @@ fn judge(
   let #(spent, held) = fire_all(state, strand, firing)
   let pending =
     list.filter(progress.pending, fn(name) { !list.contains(spent, name) })
-  let hold = next_hold(state, strand, progress.hold, held)
+  let hold = next_hold(state, strand, progress.hold, held, pending)
   // A held or abandoned fire freezes the cursor: the entry that matched
   // must still be above it on the next pass, or the rule is lost — and
   // an abandoned strand never gets a next pass to lose it on, but the
@@ -463,7 +466,13 @@ fn judge(
 // saw is never rechecked, which is the whole of "once per incarnation
 // per strand" (see the module doc). `Abandoned` itself is handled only
 // so this `case` is exhaustive over `Hold`, not because it is reachable.
-fn next_hold(state: State, strand: String, was: Hold, held: Bool) -> Hold {
+fn next_hold(
+  state: State,
+  strand: String,
+  was: Hold,
+  held: Bool,
+  pending: List(String),
+) -> Hold {
   case was {
     Abandoned -> Abandoned
     Holding ->
@@ -474,7 +483,7 @@ fn next_hold(state: State, strand: String, was: Hold, held: Bool) -> Hold {
     NotHeld ->
       case held {
         False -> NotHeld
-        True -> begin_hold(state, strand)
+        True -> begin_hold(state, strand, pending)
       }
   }
 }
@@ -484,11 +493,15 @@ fn next_hold(state: State, strand: String, was: Hold, held: Bool) -> Hold {
 // that may never open. Judged once, here, against the lineage ledger —
 // see `provably_dead` for what "dead" means and why FAIL OPEN keeps
 // every doubtful case merely held.
-fn begin_hold(state: State, strand: String) -> Hold {
+fn begin_hold(state: State, strand: String, pending: List(String)) -> Hold {
   case provably_dead(state, strand) {
     True -> {
+      // The rule names travel with the verdict: this line is the only
+      // record an operator gets that these rules will never fire here,
+      // and a verdict that does not say what it silenced is not one.
       log.info(state.options.logger, "rule.hold_abandoned", [
         field.text(key: "strand", value: strand),
+        field.text(key: "rules", value: string.join(pending, with: ", ")),
       ])
       Abandoned
     }
