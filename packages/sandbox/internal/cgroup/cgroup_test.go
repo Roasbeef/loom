@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -185,16 +186,23 @@ func TestDetectBaseRefusesANonCgroupPath(t *testing.T) {
 // --cgroup-base became a "cgroup v2 base": memory.max and pids.max were
 // written as ordinary files, Enter wrote a pid into one and returned
 // nil, and the exec_exit frame told the broker `cgroup-v2` applied while
-// a 32-way fork burst under pids=8 ran to completion. Only statfs(2) can
-// tell a directory from a cgroup.
+// a 32-way fork burst under pids=8 ran to completion. On Linux, only
+// statfs(2) can tell a directory from a cgroup. Other platforms must refuse
+// before pretending that they can inspect a Linux-only filesystem.
 func TestDetectBaseRefusesADirectoryDressedAsACgroup(t *testing.T) {
 	base := fakeBase(t, "cpuset cpu io memory hugetlb pids rdma misc\n", "", "")
 	dir, reason := DetectBase(base)
 	if dir != "" {
 		t.Fatalf("a plain directory was accepted as a cgroup v2 base: %q", dir)
 	}
-	if !strings.Contains(reason, "cgroup2") {
-		t.Fatalf("the refusal must name the filesystem it wanted: %q", reason)
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(reason, "cgroup2") {
+			t.Fatalf("the refusal must name the filesystem it wanted: %q", reason)
+		}
+		return
+	}
+	if !strings.Contains(reason, "cgroups are a Linux facility") {
+		t.Fatalf("the refusal must name the unsupported platform boundary: %q", reason)
 	}
 }
 
