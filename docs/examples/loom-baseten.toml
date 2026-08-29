@@ -1,0 +1,51 @@
+# loom-baseten.toml registers the open-source Baseten models used by the
+# local pi and Prime Agent clients. The server reads the credential from
+# BASETEN_API_KEY only when it dispatches a request.
+
+[models.baseten-kimi-k3]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "moonshotai/Kimi-K3"
+context_window = 1048576
+max_output_tokens = 32768
+# Kimi reasons internally, but this endpoint does not accept the
+# OpenAI reasoning_effort field.
+thinking = "unsupported"
+
+[models.baseten-deepseek-v4-flash]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "deepseek-ai/DeepSeek-V4-Flash-0731"
+context_window = 1048576
+max_output_tokens = 262144
+# DeepSeek reasons internally, but this endpoint does not accept the
+# OpenAI reasoning_effort field.
+thinking = "unsupported"
+
+[models.baseten-glm-5-3]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "zai-org/GLM-5.3"
+context_window = 1048576
+max_output_tokens = 262144
+thinking = "medium"
+
+[models.baseten-glm-5-3-flash]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "zai-org/GLM-5.3-Flash"
+context_window = 1048576
+max_output_tokens = 262144
+thinking = "medium"
+
+# Main work favors Kimi and falls back to GLM. Sub-agents favor the two
+# faster models, while planning keeps the deeper GLM route.
+[roles]
+main = ["baseten-kimi-k3", "baseten-glm-5-3"]
+subagent = ["baseten-deepseek-v4-flash", "baseten-glm-5-3-flash"]
+plan = ["baseten-glm-5-3"]
+summarize = ["baseten-glm-5-3-flash"]
