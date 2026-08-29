@@ -85,29 +85,29 @@ established by atomic rename, never direct write. `make check` passes
 end to end at the head.
 
 `main` holds phases 1 and 2 plus #106, the bridge, #15, #14, #27
-(triggered rules — the scanner, the reserved `rule/` corner, the
-conformance fire/kill/flood rows; dead-strand follow-up is #113) and
-#28 (memory M1 — the search holder, `history_search`, the protected
-index family, the notes digest, and the cross-session recall test; the
-accepted gaps are spec-gaps items 6–9 in its section). **Phase 3
-remaining: #29 — and #91 items 2–5 are still open** (item 1 closed
-with the bridge).
+(triggered rules; dead-strand follow-up is #113), #28 (memory M1;
+accepted gaps are spec-gaps items 6–9 in its section) and #29 (memory
+M2 — the memory session, `client/distill`, the protected sidecar
+digest, the `remember` door; erasure cascade filed as #115, the
+recorded limits in spec-gaps' M2 section). **Phase 3 is complete.**
+Every `phase:3` release-blocker landed through the same loop — a
+measured census, rulings posted to the issue, an implementation
+worker, and a closing adversarial review with per-finding
+re-verification — and #19 dispositioned itself out by its own text.
+Still open from the waves: #91 items 2–5, #113, #115, and #119 (the
+events test-hygiene flake three agents independently hit).
 
 ---
 
-## Start here: the phase-3 remainder
+## Start here: after phase 3
 
-In dependency order rather than numeric:
-
-- **#29** — memory M2, the last phase-3 item: `memory/*` custom entry
-  types with provenance, the extract-then-consolidate distillation
-  pipeline (leased, capped, redacted) into a per-workspace memory
-  session, the `remember` tool, run-start injection of the distilled
-  digest fenced and attributed under a token cap, and the structural
-  anti-feedback exclusion. Its security paragraph is part of the issue,
-  not a footnote — and M1 left it two named hooks: `CustomEntry`
-  indexes to nothing yet (spec-gaps says that change is M2's), and the
-  recall-echo exclusion is deliberately weighed here.
+The plan of record's rhythm (`docs/issue-plan.md`) is a **debt wave
+between phases**: #91 items 2–5 are the substance, with #113, #115 and
+#119 beside them. Then **phase 4, the promotion ladder** (#30–#33,
+#100), which #16 gated and which is now unblocked; **phase 5** (#25
+LSP, #26 DAP) starts from the supervised stdio substrate the MCP
+client already is. **#107** (async code mode) sits outside the ladder
+with its design dossier on the issue, awaiting prioritization.
 - **#106** — **MCP through code mode: the first increment is done.**
   `docs/architecture/mcp.md` is the living account; the rulings and their
   reasons are on the issue. The shape: generated per-server capability
