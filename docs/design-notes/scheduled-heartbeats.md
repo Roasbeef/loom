@@ -197,11 +197,18 @@ Every bound refuses at `loom.toml` parse time with a worded message,
   "both bounds, always, earliest wins": it fixes a single worst case
   instead of leaving a 60-second-interval, 7-day, no-`max_fires` schedule
   free to leave 10,080 fire-marks rather than 1,000. Worst case per
-  schedule is exactly 1,000 fire-mark rows; worst case per session is
+  schedule is exactly 1,000 fire-mark rows — 1,001 for one extra tick
+  under an exceedingly narrow crash race (the scanner killed between
+  committing the 1,000th mark and that commit's visibility, a slot
+  boundary crossed in that same window, and the restart's first scan
+  landing before the dead incarnation's commit applies), which per-
+  occurrence exactly-once survives untouched and the very next tick's
+  scan corrects by expiring the schedule — and worst case per session is
   `max_schedules x 1000 = 16,000` rows, which is what
-  `runtime/api.reserved_facts` scans on the rare boot that computes an
-  expiry from scratch — bounded, not open-ended, in the same sense
-  `client/rules` bounds a config-driven scan cost.
+  `client/schedulescan.read_prefix` scans directly off the store (never
+  through the writer) on the rare tick that computes an expiry from
+  scratch — bounded, not open-ended, in the same sense `client/rules`
+  bounds a config-driven scan cost.
 - One-shot (`at`) schedules have no expiry field: their occurrence count
   is 1 by construction.
 

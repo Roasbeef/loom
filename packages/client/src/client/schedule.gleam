@@ -907,9 +907,10 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
   let late_line = case late {
     True ->
       "This fire is late: the scheduled window for this occurrence has "
-      <> "already passed, most likely because the server was not running "
-      <> "when it was due. It is exactly one catch-up fire, not a replay "
-      <> "of every occurrence that was missed.\n\n"
+      <> "already closed, whether because the server was not running or "
+      <> "because nothing was there to act on it in time. It is exactly "
+      <> "one catch-up fire, not a replay of every occurrence that was "
+      <> "missed.\n\n"
     False -> ""
   }
   "[loom] scheduled heartbeat \""

@@ -548,6 +548,15 @@ fn report(state: State, sched: Schedule, verdict: Fire) -> Nil {
 // the module doc's "Isolation" section. `client/rulescan.read_fact` is the
 // same door for the same reason.
 
+// A store fault reads as "no mark" here, unlike `read_prefix`'s explicit
+// `Error`: this point read only ever gates whether a *fire is attempted*
+// (`maybe_fire_interval`, `process_one_shot`), never whether one is
+// recorded. A fault-as-absent misread proceeds to `fire`, whose commit
+// carries the mark's own absent-expectation — if the mark truly exists,
+// that commit fails on it (`FactConflict`, handled), and if the store is
+// genuinely faulting the commit fails too (`Failed`, retried on the
+// held/failed floor). Either way the CAS is what stays safe, not this
+// read; nothing here needs the two helpers' error handling to match.
 fn read_fact(state: State, key: String) -> Option(JsonValue) {
   storage.get_register(state.runtime.session.store, register.FactCustom, key)
   |> result.unwrap(None)
