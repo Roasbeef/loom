@@ -135,7 +135,7 @@ const CgroupSkipPrefix = "cgroup-v2"
 
 const cgroupGateScript = `IFS= read -r _ <&5 || exit 125
 exec 5<&-
-exec -- "$@"`
+exec "$@"`
 
 // withCgroupStartGate wraps argv in a constant shell program that waits on
 // fd 5, closes it, and then replaces itself with argv. The original arguments
