@@ -567,7 +567,9 @@ func TestForkBombCapped(t *testing.T) {
 	pol := testPolicy(t)
 	pol.Limits.Pids = 8
 	c := newCollector()
-	script := "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do sleep 1 & done 2>/dev/null; wait 2>/dev/null; echo attempted"
+	// Keep stderr on the existing pipe. A redirection on the compound loop
+	// would make Landlock reject the loop before it attempts any forks.
+	script := "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do sleep 1 & done; wait; echo attempted"
 	ex := start(t, pol, []string{"/bin/sh", "-c", script}, c.sink)
 	_ = ex.WriteStdin(nil, true)
 	res := ex.Wait()
