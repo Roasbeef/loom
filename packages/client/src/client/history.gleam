@@ -52,7 +52,7 @@ import core/ids.{type SessionId}
 import events/search.{type Search, type SearchError}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
@@ -218,7 +218,16 @@ pub opaque type Message {
 }
 
 type State {
-  State(index: Search, config: Config)
+  // `None` is an index that could not be opened: the holder stays alive
+  // and answers in band rather than crashing, because it sits in the
+  // restartable tier where a start that can fail turns a bad file on
+  // disk into a restart loop that spends the tier's shared budget and
+  // takes the whole server with it — for a projection with no
+  // authority. `None` is settled for this incarnation: `start` is the
+  // one place the file is opened, so a supervisor restart over a
+  // repaired file is the recovery — deliberately not a retry on every
+  // message, which is machinery for a state an operator repairs once.
+  State(index: Option(Search), config: Config)
 }
 
 /// Starts the holder under its configured name, opening the index file.
@@ -237,9 +246,10 @@ pub fn start(
   config: Config,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(5000, fn(subject) {
-    use index <- result.try(
-      search.open(config.path) |> result.map_error(describe_search_error),
-    )
+    // An index that will not open does not fail the start (see `State`);
+    // the boot's `probe` is what gates tool registration, and a holder
+    // that opens nothing serves refusals until the file is repaired.
+    let index = option.from_result(search.open(config.path))
     // The session's existing entries are indexed by the first pull, not
     // by the initialiser: a large session file's scan must not sit
     // inside the supervisor's start timeout.
@@ -266,7 +276,10 @@ pub fn supervised(config: Config) -> ChildSpecification(Subject(Message)) {
 
 /// Stops the holder and closes its connection.
 pub fn stop(name: Name(Message)) -> Nil {
-  process.send(process.named_subject(name), Stop)
+  case process.named(name) {
+    Error(Nil) -> Nil
+    Ok(_pid) -> process.send(process.named_subject(name), Stop)
+  }
 }
 
 /// Hints the holder that something committed. A cast, and a lost one
@@ -365,43 +378,59 @@ pub fn supervised_commit_pull(
 // --- internals -------------------------------------------------------------
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
-  case message {
-    Pull -> {
+  case message, state.index {
+    Pull, Some(index) -> {
       // A hint's pull is best effort: a failed sync leaves the durable
       // cursor exactly where it was, so the next hint retries it.
-      let _pulled = state.config.pull(state.index)
+      let _pulled = state.config.pull(index)
       actor.continue(state)
     }
-    Synchronize(reply_with:) -> {
-      process.send(reply_with, state.config.pull(state.index))
+    Pull, None -> actor.continue(state)
+    Synchronize(reply_with:), Some(index) -> {
+      process.send(reply_with, state.config.pull(index))
       actor.continue(state)
     }
-    Query(text:, limit:, scope:, reply_with:) -> {
-      process.send(reply_with, query(state, text, limit, scope))
+    Synchronize(reply_with:), None -> {
+      process.send(reply_with, Error(unavailable_index))
       actor.continue(state)
     }
-    Stop -> {
-      let _closed = search.close(state.index)
+    Query(text:, limit:, scope:, reply_with:), Some(index) -> {
+      process.send(reply_with, query(state, index, text, limit, scope))
+      actor.continue(state)
+    }
+    Query(reply_with:, ..), None -> {
+      process.send(reply_with, Error(unavailable_index))
+      actor.continue(state)
+    }
+    Stop, Some(index) -> {
+      let _closed = search.close(index)
       actor.stop()
     }
+    Stop, None -> actor.stop()
   }
 }
 
+const unavailable_index = "the search index could not be opened; recall is "
+  <> "refused in band until the holder is restarted over a repaired "
+  <> "file. Removing a corrupt index is safe: the restart recreates it "
+  <> "and a sync rebuilds the rows."
+
 fn query(
   state: State,
+  index: Search,
   text: String,
   limit: Int,
   scope: history_tool.Scope,
 ) -> Result(List(history_tool.Hit), String) {
   let found = case scope {
-    history_tool.Repository -> search.query(state.index, text:, limit:)
+    history_tool.Repository -> search.query(index, text:, limit:)
     // Scoping is in the SQL, not over the results: `rank` and `LIMIT`
     // are applied inside the query, so a post-filter would let a
     // ten-hit request narrowed to one session come back empty while
     // that session has matches.
     history_tool.ThisSession ->
       search.query_in_session(
-        state.index,
+        index,
         session: state.config.session,
         text:,
         limit:,
