@@ -350,13 +350,16 @@ to the hub on the way past. The hub broadcasts them to subscribed
 connections as `stream_delta` events with `ephemeral: true`, no seq, no
 replay, wholly superseded by the settled `entry` for the same operation.
 
-The relay is also an ownership boundary. Its returned handle forwards
-explicit cancellation to the inner provider handle, and the relay monitors
-its direct consumer so an effect killed by abort or driver restart cancels
-the inner stream without waiting for either timeout. If the relay itself
-dies, the provider pump observes that consumer death and tears down the
-transport. Thus the tap preserves both event order and the cancellation chain;
-it is not another independently-lived request.
+The relay is also an ownership boundary, split deliberately into two
+processes. A public guard owns the returned handle and monitors both the effect
+consumer and a private worker. The worker is the inner stream's direct
+consumer and runs the observer. Explicit cancellation and effect death travel
+through the guard to the inner provider handle; worker death promptly becomes
+an in-band transport failure and also appears as consumer death below it. A
+silent inner owner is bounded by one fixed timer and reported honestly as
+terminal `CancellationUnconfirmed`, not fabricated `ProviderCancelled`.
+Thus the tap preserves both event order and the cancellation chain; it is not
+another independently-lived request.
 
 `client/provider_relay.wrap` holds that mechanism once for both the delta tap
 and the summary recorder. Its observer runs before it forwards an event, so

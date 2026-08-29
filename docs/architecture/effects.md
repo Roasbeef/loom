@@ -578,15 +578,23 @@ depend on: zero or more `Delta` events, then exactly one `Settled` or
 nothing about settlement.
 
 The returned `StreamHandle` carries both the event subject and an idempotent
-cancel capability. The gateway pump owns the race between that signal and a
-provider terminal, monitors its direct consumer, and will not start another
-fallback once cancellation wins. Each attempt has a private HTTP-event
-subject and a monitorable transport owner. Teardown first invokes the
-transport's cancellation capability, then observes bounded owner death and
-kills only the local owner if it does not retire. The production owner retains
-the exact OTP `httpc` request id and calls `httpc:cancel_request/1`; this is
-what stops the external work rather than merely teaching the caller to ignore
-a late answer. Protocol change 010 fixes the contract and its race semantics.
+cancel capability. A public gateway guard owns that capability and monitors
+the direct consumer and private fallback pump. The pump owns the provider
+terminal race and will not start another fallback once cancellation wins. Each
+attempt has a private HTTP-event subject and a monitorable transport owner.
+Teardown first invokes the transport's cancellation capability, then observes
+bounded owner death and kills only the local owner if it does not retire. The
+production owner is a small Gleam custodian retaining the exact opaque OTP
+`httpc` request id; the Erlang FFI only starts or cancels that id and normalizes
+raw messages. Raw OTP errors become constant diagnostics at the boundary so a
+request header cannot leak through a durable provider error.
+
+An owner-authored `ProviderCancelled` proves cancellation won. A guard or
+wrapper whose inner owner stays silent for the fixed grace instead emits
+terminal `CancellationUnconfirmed`; uncertainty cannot authorize a fallback
+or retry. This distinction is what stops the external work rather than merely
+teaching the caller to ignore a late answer. Protocol change 010 fixes the
+contract and its race semantics.
 
 **Stop reasons map totally.** Each adapter maps the vocabulary it knows
 and answers `Error(Nil)` for anything else, which the caller surfaces as

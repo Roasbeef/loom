@@ -59,8 +59,9 @@ extended by the M3 runtime wave.
   the brief operation, the child's tools, an **absolute** deadline, the
   detach flag, and the durable reap mark. `is_descendant` is the walk the
   addressing rule is decided by, and it fails closed.
-- `runtime/registry.Message` — the strand-name registry actor: strand name
-  ↔ the process name its driver registers under.
+- `runtime/registry.Message` — the strand-incarnation registry actor: strand
+  name ↔ the process name its driver registers under, plus the complete live
+  reaper chain a replacement must wait for before recovery.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
@@ -196,9 +197,13 @@ extended by the M3 runtime wave.
     `ToolDone(token, outcome)`, `EffectExit(down)`.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
-    `Lookup(strand, reply_with)` and `Known(reply_with)`. Senders:
-    `runtime/supervisor`'s strand factory and booter, and `runtime/api`
-    when it rings a doorbell or addresses a sibling strand.
+    `Lookup(strand, reply_with)`, `Known(reply_with)`, and
+    `ClaimReaper(strand, reaper, reply_with)`. The last operation atomically
+    publishes the new incarnation and returns every still-live predecessor,
+    preserving older generations even if a replacement fails during startup.
+    Senders: `runtime/supervisor`'s strand factory and booter,
+    `runtime/strand_runtime` during initialization, and `runtime/api` when it
+    rings a doorbell or addresses a sibling strand.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -266,21 +271,22 @@ extended by the M3 runtime wave.
   reaper.** An effect process that dies without reporting settles
   **in-band** — a transport failure response or a synthetic tool error —
   so the harness never wedges and never faults the strand on a worker's
-  death. Each driver incarnation also spawns a *reaper*: a tiny trapping
-  process, linked to the driver, that every effect links to at birth and
-  that kills itself (taking the linked effects with it) the moment the
-  driver dies. A strand-actor restart therefore cannot leak a live effect
-  into the next incarnation — the exclusivity gate and the
-  orphan-versus-live replay decision read the incarnation-local `live`
-  list, and both are sound only because no effect outlives its
-  incarnation.
+  death. Each driver incarnation also spawns a *reaper*: a small trapping
+  process linked to the driver. Every effect links and receives an adoption
+  acknowledgement before doing work. On driver death the reaper kills every
+  adopted effect and remains alive until all their exits arrive. The registry
+  remembers every still-live reaper for the strand, and a replacement waits
+  for them before starting recovery. This drain barrier, rather than scheduler
+  timing, makes the incarnation-local `live` list sound.
 - **Provider ownership continues below the effect process.** A provider
   effect that reaches its receive deadline cancels its stream and waits a
-  bounded acknowledgement grace before returning `ProviderCancelled`, which
-  is terminal under retry classification. If the reaper kills the effect
-  first, client relays and the gateway monitor direct consumer death and
-  propagate teardown to the active transport. No provider pump or HTTP
-  request may outlive the effect that justified it.
+  bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
+  locally reported `CancellationUnconfirmed` are both terminal under retry
+  classification; the latter says teardown could not be proved and therefore
+  cannot authorize another attempt. If the reaper kills the effect first,
+  client relays and the gateway monitor direct consumer death and propagate
+  teardown to the active transport. No provider pump or HTTP request may
+  outlive the effect that justified it.
 - **`after_commit` is the crash seam.** It runs in the writer process after
   the commit is durable and published but *before* the committer's reply,
   so an observer that kills the writer produces exactly "commit N durable,

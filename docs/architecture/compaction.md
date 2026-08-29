@@ -323,12 +323,15 @@ no tool array, so a call in the answer means it did something else — and
 so is an answer with no text (`settlement_of`,
 `client/wiring.gleam:437`).
 
-Ownership flows inward on the same relay. Explicit cancellation of the
-wrapper cancels the inner handle, and the relay monitors its effect-process
-consumer so abort or driver restart does the same without waiting for the
-provider deadline. Consumer death records nothing. The record-before-forward
-law still applies when a real settlement wins the race; cancellation never
-manufactures a summary record.
+Ownership flows inward on the same relay. Its public guard monitors the effect
+consumer and private observer worker; the worker alone consumes the inner
+stream. Explicit cancellation of the wrapper cancels the inner handle, and
+abort or driver restart does the same without waiting for the provider
+deadline. A worker crash becomes an in-band transport failure, while a silent
+inner owner becomes terminal `CancellationUnconfirmed` after one fixed grace.
+Consumer death records nothing. The record-before-forward law still applies
+when a real settlement wins the race; cancellation never manufactures a
+summary record.
 
 **A missing record reads as retryable, never as an empty summary.**
 Nothing in the sink is durable, and deliberately so. A record lost to a
@@ -567,7 +570,7 @@ the whole loop.
 
 **The simulation never fails a summarizer.** Its `summary_progress` hook
 answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:1182`), so no seed drives
+(`hooks`, `conformance/simulation/surface.gleam:1168`), so no seed drives
 a structural failure and the seeded soak proves the survival rule only by
 *not* regressing around it. Adding a refusing summarizer means a new
 `script.Structural` variant, and drawing it would reshuffle every seed's

@@ -57,9 +57,11 @@ over one session file. WP-L.
   name, which is what lets it be supervised and restarted without the
   writer noticing.
 - `client/provider_relay.wrap` — the shared provider-wrapper ownership seam:
-  it creates the inner handle, monitors the outer consumer, forwards cancel
-  inward, runs a synchronous observer before forwarding each event, and
-  preserves the inner owner's one-terminal law.
+  a public guard monitors the outer consumer and a private worker; the worker
+  is the inner stream's direct consumer and runs the synchronous observer
+  before forwarding each event. Cancel travels inward, an unacknowledged
+  cancel becomes terminal `CancellationUnconfirmed` after one fixed grace,
+  and worker death becomes a prompt in-band transport failure.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
@@ -1174,10 +1176,13 @@ over one session file. WP-L.
   through the ordinary monitor path.
 - **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
   `wiring.recording_summaries` each return a new `StreamHandle`, so each
-  forwards the outer cancel capability to its inner handle and monitors its
-  direct consumer. This keeps the chain continuous from driver reaper to
-  effect, relay, gateway pump, transport owner, and the native HTTP request;
-  no wrapper may turn consumer death into a detached provider request.
+  uses a guard-and-worker pair: the guard owns the public cancel capability,
+  while the worker is the inner stream's direct consumer. The guard monitors
+  both its caller and worker, forwards cancellation inward, and bounds missing
+  acknowledgement with `CancellationUnconfirmed`. This keeps the chain
+  continuous from driver reaper to effect, relay guard and worker, gateway
+  guard and pump, transport custodian and receiver, and the native HTTP
+  request; no wrapper may turn consumer death into a detached request.
 - **A park is bounded by the configured window *and* by the call's own
   budget deadline, and the deadline is re-read immediately before the
   consuming commit.** The second bound is not politeness: the broker's

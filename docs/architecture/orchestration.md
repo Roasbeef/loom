@@ -321,7 +321,7 @@ the run still completes with the steer in context.
 
 ```
   SessionSupervisor              rest-for-one
-    ├── 1. StrandRegistry        strand name ↔ process name
+    ├── 1. StrandRegistry        names plus live reaper generations
     ├── 2. StorageWriter         every commit, and every driver read
     ├── 3. strand factory        simple-one-for-one; ordinary strands
     ├── 4. subagent factory      simple-one-for-one; own tolerance
@@ -333,11 +333,14 @@ Rest-for-one over those five is the whole recovery policy, and the order
 crash restarts the writer and every child after it, because a strand
 holding a subject to a dead writer has nothing to say — and the booter,
 sitting last, repopulates the factories the restart just emptied. A crash
-in one
-strand restarts only that strand, because each factory supervises its own
+in one strand restarts only that strand, because each factory supervises its own
 children simple-one-for-one. Every child registers under a process name
 rather than a pid, so restarts keep them addressable; the registry sits
-first precisely so those names outlive everything that uses them.
+first precisely so those names outlive everything that uses them. It also
+stores every still-live effect reaper per logical strand. A replacement
+publishes its new reaper and waits for every predecessor to drain before
+recovery dispatches, so a restart cannot overlap a replay with an effect that
+has received a kill signal but has not yet exited.
 
 The two factories are one restart budget each, and the split is what buys
 the separation. `supervisor.start_strand` asks `Config.subagent` which

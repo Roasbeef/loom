@@ -25,11 +25,12 @@ that decides its race with settlement.
 
 ## Proposal
 
-Add one terminal provider error and one cancellation capability:
+Add two terminal provider errors and one cancellation capability:
 
 ```gleam
 pub type ProviderError {
   ProviderCancelled
+  CancellationUnconfirmed
   // Existing variants remain unchanged.
 }
 
@@ -48,10 +49,19 @@ cancellation before a provider terminal. It is terminal under
 `provider/retry.classify`; it can never advance a fallback chain. Its rendered
 diagnostic is constant and contains no request, account, or credential data.
 
+`CancellationUnconfirmed` means an outer ownership boundary requested
+cancellation but the inner owner neither returned a terminal nor died within
+the bounded grace period. It is also terminal: uncertainty about whether old
+work stopped must never authorize new provider work. The distinct error keeps
+the public result honest; only the request owner may claim that cancellation
+won its race with settlement.
+
 The closure is a capability to signal the owner, not permission for each layer
-to invent a result. The owner is the only terminal sender. Repeated calls may
-send repeated signals, but the first selected cancellation ends the owner and
-makes every later call harmless.
+to invent an acknowledgement. The request owner is the authoritative terminal
+sender. A wrapper may synthesize only `CancellationUnconfirmed` after its fixed
+grace expires or an in-band transport failure when its direct worker crashes.
+Repeated calls may send repeated signals, but the first selected cancellation
+ends a healthy owner and makes every later call harmless.
 
 The provider-neutral transport seam also separates startup from completion:
 
@@ -88,11 +98,12 @@ retain that profile and use `httpc:cancel_request/2`.
 
 ## Ownership and race semantics
 
-`provider/gateway.request` starts one owner for the whole role walk. That owner
-creates the cancel endpoint, monitors its direct consumer, and retains the
-current `RunningRequest`. Every attempt gets a fresh HTTP subject. It selects
-HTTP events, explicit cancellation, consumer death, transport death, and the
-attempt timeout in one loop.
+`provider/gateway.request` starts a public guard and a private pump for the
+whole role walk. The guard owns the returned cancel endpoint and monitors its
+direct consumer and the pump. The pump retains the current `RunningRequest`;
+every attempt gets a fresh HTTP subject. Together they select HTTP events,
+explicit cancellation, consumer death, transport death, and the attempt
+timeout without making the long-running pump its own public crash boundary.
 
 The first selected terminal-class event decides the result:
 
@@ -100,6 +111,9 @@ The first selected terminal-class event decides the result:
   a no-op.
 - Explicit cancellation cancels and reaps the active transport, emits exactly
   `Failed(ProviderCancelled)` to a live consumer, and stops the route walk.
+- If a cancellation crosses a wrapper or gateway guard but no owner-authored
+  terminal arrives within the fixed grace period, that boundary emits exactly
+  `Failed(CancellationUnconfirmed)` and stops. It does not retry or fall back.
 - Consumer death cancels and reaps the active transport, emits nothing, and
   stops the route walk.
 - Attempt timeout first cancels and reaps that transport, then returns the
@@ -116,10 +130,13 @@ for production, the cancellation closure has already issued
 `httpc:cancel_request/1` for the exact request id before that fallback.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
-It monitors its direct consumer and propagates explicit cancellation or
-consumer death to the inner handle. A terminal observer still runs before the
-same terminal is forwarded; in particular, the summary wrapper records a
-settled summary before the runtime can ask for summary progress.
+Its public guard monitors both the direct consumer and a private worker; the
+worker is the inner stream's direct consumer and runs the observer. Explicit
+cancellation or consumer death propagates to the inner handle. Worker death
+becomes a prompt in-band transport failure instead of leaving the outer caller
+parked. A terminal observer still runs before the same terminal is forwarded;
+in particular, the summary wrapper records a settled summary before the
+runtime can ask for summary progress.
 
 ## Impact
 
@@ -128,17 +145,20 @@ settled summary before the runtime can ask for summary progress.
 - `provider/http.Transport` implementations return a monitorable
   `RunningRequest`. Fixture transports expose cancellation probes so tests can
   prove work stopped rather than merely prove a late result was ignored.
-- `provider/gateway` owns cancellation, fallback, and the one-terminal law.
+- `provider/gateway` owns cancellation, fallback, crash translation, and the
+  one-terminal law through its guard-and-pump pair.
 - `client/gateway.tap_provider` and `client/wiring.recording_summaries`
   propagate cancellation and consumer death inward.
 - `runtime/strand_runtime` cancels a timed-out handle before reporting its
-  terminal observation. Reaper-driven effect death is covered independently by
-  the monitor chain.
+  terminal observation. Its incarnation reaper acknowledges effect adoption,
+  drains every adopted process, and remains alive until their exits arrive;
+  replacement recovery waits for all prior reapers registered for the strand.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.
 
-No durable or network wire format changes. `ProviderCancelled` and the cancel
-capability are in-VM orchestration vocabulary.
+No durable or network wire format changes. `ProviderCancelled`,
+`CancellationUnconfirmed`, and the cancel capability are in-VM orchestration
+vocabulary.
 
 ## Decision
 
@@ -146,9 +166,11 @@ capability are in-VM orchestration vocabulary.
 `TransportFailed("cancelled")` was rejected because transport failures are
 retryable; that representation can start a fallback after an operator asked to
 stop. Inferring cancellation from caller timeout was rejected because timeout
-does not prove the work stopped. Linking all processes was rejected because a
-provider or transport failure is an application result that must settle in
-band, not a reason to crash a strand.
+does not prove the work stopped. So was fabricating `ProviderCancelled` after
+an acknowledgement timeout; that says the owner selected a result it never
+sent. Linking all processes was rejected because a provider or transport
+failure is an application result that must settle in band, not a reason to
+crash a strand.
 
 The extra monitorable transport owner is the minimum boundary that can retain
 the real request id, distinguish death from completion, and cancel future

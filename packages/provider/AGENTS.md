@@ -5,8 +5,9 @@
 The provider SDK: a typed registry of provider configurations and role
 routes, a pure incremental server-sent-events parser, two wire adapters
 (Anthropic Messages, OpenAI chat-completions), retry and overflow
-classification, and the secret-injection seam. Everything above the raw
-HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
+classification, and the secret-injection seam. SSE parsing and adapter folds
+are pure Gleam; the gateway and transport custodians are the small processful
+shell around that sans-io core. WP-F.
 
 ## Key Types
 
@@ -49,18 +50,21 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   type-compatible with `StreamHandle`, and `settle_failure` bridges
   `retry.classify` into the machine's retryability convention),
   `conformance` (wiring and the e2e).
-- **FFI**: `provider/internal/ffi_httpc` — drives OTP `httpc` in
-  asynchronous streaming mode, because the Gleam ecosystem has no streaming
-  HTTP client (`gleam_httpc` is synchronous only). `provider/internal/
+- **FFI**: `provider/internal/ffi_httpc` — starts and cancels OTP `httpc` in
+  asynchronous streaming mode and normalizes its raw messages, because the
+  Gleam ecosystem has no streaming HTTP client (`gleam_httpc` is synchronous
+  only). It returns the native request id as an opaque value; monitoring,
+  ownership, deadlines, and race selection stay in typed Gleam. `provider/internal/
   ffi_env` — `os:getenv` for the environment secret store. These two are
   the package's complete inventory of impurity.
 
 ## Traffic
 
-- **Actor messages**: `gateway.request` spawns one owner for the whole
-  fallback walk. The owner selects its cancel endpoint, direct-consumer DOWN,
-  active-transport DOWN, attempt timeout, and private per-attempt HTTP events,
-  then delivers `StreamEvent`s to the caller's subject:
+- **Actor messages**: `gateway.request` spawns a public guard and a private
+  pump for the whole fallback walk. The guard owns the cancel endpoint and
+  monitors the direct consumer and pump; the pump selects active-transport
+  DOWN, attempt timeout, and private per-attempt HTTP events. Together they
+  deliver `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
   from the transport into that pump.
@@ -95,8 +99,10 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   death cancel and reap the active transport before ending the route walk.
   The production transport owner retains the exact OTP request id and calls
   `httpc:cancel_request/1`; late HTTP messages remain confined to that
-  attempt's private subject. `ProviderCancelled` is terminal and never walks
-  to a fallback.
+  attempt's private subject. `ProviderCancelled` and
+  `CancellationUnconfirmed` are terminal and never walk to a fallback. Raw
+  OTP errors are collapsed to constant diagnostics before crossing the FFI so
+  request headers and credentials cannot appear in a durable provider error.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash.

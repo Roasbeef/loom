@@ -310,7 +310,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:746`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:768`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -479,7 +479,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1133`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1155`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -520,36 +520,40 @@ by `list.contains` on the same list, and set membership is blind to order.
 
 The driver spawns the request on its own process
 (`runtime/strand_runtime.gleam`) and waits for a message.
-`gateway.request` (`provider/gateway.gleam`) spawns a pump, walks the
-role's fallback chain only on *retryably*-classified failures, and calls
-`stream.run` per attempt (`provider/stream.gleam`). Everything above
-the raw HTTP chunk stream is pure: the server-sent-events parser is bytes
-in, events out, with the carry state threaded, so the same bytes in any
-chunking yield the same events and the parser is property-tested without
-a single process. `docs/architecture/effects.md`, section "Providers",
-covers the adapters, total stop-reason mapping, adapter-computed
-overflow, and where secrets are allowed to exist.
+`gateway.request` (`provider/gateway.gleam`) spawns a public guard and a
+private fallback pump. The pump walks the role's chain only on
+*retryably*-classified failures and calls `stream.run` per attempt
+(`provider/stream.gleam`); the guard owns the returned handle and translates
+a pump crash into a prompt in-band failure. The processful shell is small.
+Its server-sent-events parser is pure bytes-in/events-out code with threaded
+carry state, and each adapter is a pure response fold, so the same bytes in
+any chunking yield the same events and the parsers are property-tested without
+a process. `docs/architecture/effects.md`, section "Providers", covers the
+adapters, total stop-reason mapping, adapter-computed overflow, and where
+secrets are allowed to exist.
 
 The consumption contract is narrow enough to build on: zero or more
 `Delta` events, then exactly one `Settled` or `Failed`, and nothing after
 it. Deltas are ephemeral display data and prove nothing.
 
 Which is exactly what the hub's tap exploits. `tap_provider`
-(`client/gateway.gleam`) wraps the injected surface so each request
-runs through a relay process that forwards every event to the effect
-process unchanged and in order, teeing deltas to the hub on the way past.
-The tap lives entirely in the composition seam, but it is not allowed an
-independent lifetime: explicit cancellation and effect-process death both
-propagate to the inner handle, while relay death is consumer death to the
-gateway pump.
+(`client/gateway.gleam`) wraps the injected surface so each request runs
+through a relay worker that forwards every event to the effect process
+unchanged and in order, teeing deltas to the hub on the way past. A guard owns
+the public handle and monitors both the worker and effect consumer. The tap
+lives entirely in the composition seam, but it is not allowed an independent
+lifetime: explicit cancellation and effect-process death propagate to the
+inner handle, while a relay-worker crash becomes an in-band failure and the
+worker's death is consumer death to the gateway guard.
 
-That chain reaches the socket. `StreamHandle.cancel` signals the one gateway
-pump that owns settlement and fallback; the pump cancels its current
-`RunningRequest`; the production transport owner calls
-`httpc:cancel_request/1` with the exact request id. Every edge is monitored
-and bounded. Ignoring late events protects state, but this ownership chain is
-what prevents an old request from continuing to stream and bill after abort,
-timeout, or driver restart.
+That chain reaches the socket. `StreamHandle.cancel` signals the gateway
+guard, which asks the pump to cancel its current `RunningRequest`; the
+production Gleam custodian calls the narrow FFI with the exact opaque request
+id. Erlang only starts and cancels `httpc` and normalizes its raw message
+shapes. Monitoring, deadlines, and the cancellation state machine remain in
+typed Gleam. Every edge is monitored and bounded. Ignoring late events protects
+state, but this ownership chain is what prevents an old request from
+continuing to stream and bill after abort, timeout, or driver restart.
 
 ## 9. Settlement
 
@@ -708,7 +712,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1178`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1200`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1345`). That is the
@@ -1075,25 +1079,27 @@ still streams and bills. The fix is an ownership chain built out of
 BEAM primitives (`runtime/strand_runtime.gleam:1082`):
 
 ```gleam
-fn start_reaper() -> Pid {
-  let driver = process.self()
-  process.spawn(fn() {
-    process.trap_exits(True)
-    reap_when_driver_dies(driver)
-  })
+fn spawn_effect(reaper, body) {
+  // Link, then wait until the reaper records this pid before doing work.
+  adopt(reaper, process.self())
+  body()
 }
 ```
 
-Each incarnation spawns one reaper: a tiny process linked to the driver
-that traps exits and does exactly one thing — when the driver dies, for
-any reason, it kills itself, and every effect process linked to it dies
-with it. Every effect is spawned *unlinked* from the driver (a worker's
-death must settle in band, never fault the strand) and its first act is
-linking to the reaper (`runtime/strand_runtime.gleam:1114`). If the
-reaper is already gone the link refuses and the effect exits without
-doing its work. Linking the effects to the driver directly would have
-forced the driver to trap exits, entangling the actor's supervision
-shutdown with effect lifecycle.
+Each incarnation spawns one reaper linked to the driver. Every effect is
+spawned *unlinked* from the driver because a worker's death must settle in
+band, never fault the strand. Before an effect can run, it links to the reaper
+and waits for an adoption acknowledgement. On driver death the reaper kills
+every adopted effect and remains alive until all corresponding exit signals
+arrive.
+
+The session registry stores the complete list of still-live reapers for each
+logical strand. A replacement driver publishes its new reaper and waits for
+every predecessor to disappear before it nudges recovery. The list, rather
+than a single latest pid, matters when a replacement itself fails during
+startup: the next attempt must still see the older generation. Linking effects
+to the driver directly would instead force the driver to trap exits and mix
+supervision shutdown with application settlement.
 
 Meanwhile an effect that merely dies mid-flight never wedges anything.
 The driver monitors each one, and `effect_exit`
@@ -1115,11 +1121,12 @@ for work the provider actually did.
 
 Provider effects have one additional teardown step before an ordinary receive
 timeout can return: the effect calls its stream handle's cancellation
-capability and waits a bounded acknowledgement grace. `ProviderCancelled` is
-terminal under retry classification, so a cancellation that wins cannot
-overlap a new fallback or retry with work that has not proved it stopped. If
-the effect itself is killed first, the relay and gateway consumer monitors
-carry the same cancellation inward.
+capability and waits a bounded acknowledgement grace. An owner-authored
+`ProviderCancelled` proves that cancellation won. If the owner remains silent,
+the effect reports the distinct terminal `CancellationUnconfirmed`; it cannot
+truthfully claim cancellation succeeded, but it must not retry beside work
+that may still exist. If the effect itself is killed first, relay and gateway
+consumer monitors carry the same cancellation inward.
 
 The interleave harness turns "kill it anywhere" into an enumeration using
 the writer's `after_commit` seam, and the deterministic simulation runner
@@ -1408,7 +1415,9 @@ needs at every layer.
 names owned by a registry that sits first in the restart order, so a
 replacement process is addressable at the same address
 (`runtime/registry.gleam`). Doorbells resolve through `lookup` at ring
-time rather than caching a handle.
+time rather than caching a handle. The same actor records the complete live
+reaper chain per strand; a replacement atomically publishes its own reaper and
+receives the predecessors it must await before recovery.
 
 **Monitors turn a dead worker into a message.** The driver monitors every
 effect process, so an effect that dies without reporting settles in band
@@ -1416,10 +1425,12 @@ rather than hanging a strand or faulting it
 (`runtime/strand_runtime.gleam:467`). No timeout heuristics, no liveness
 polling.
 
-**Links plus one trapping process give kernel-grade ownership.** The
-reaper (`runtime/strand_runtime.gleam:1082`) makes "no effect outlives
-its driver incarnation" true by construction rather than by threading a
-cancellation token through every effect and hoping every path checks it.
+**Links, adoption, and a drain barrier give kernel-grade ownership.** The
+reaper (`runtime/strand_runtime.gleam`) acknowledges an effect before it can
+run, kills every adopted effect when the driver dies, and exits only after
+their exits arrive. The replacement waits for that exit through the registry,
+making "no effect overlaps its successor incarnation" an observed ordering
+rather than a scheduler-timing assumption.
 
 **Ports carry the sandbox helper.** `erlang:open_port/2` with
 `spawn_executable` in binary stream mode is the only non-NIF way to
