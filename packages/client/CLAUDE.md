@@ -427,10 +427,13 @@ over one session file. WP-L.
   `runtime/effects.Timers.after` deadline, never by a writer hint, and it
   holds no progress state across ticks: every tick re-derives which
   schedules are due or expired from a bounded scan of the write-once
-  fired-marks already in the store
-  (`runtime/api.reserved_facts`/`client/schedule.fired_key_prefix`), the
-  same "durable-derived beats durable-stored" argument that keeps
-  `client/rulescan`'s cursor a checkpoint rather than a source of truth.
+  fired-marks already in the store, read straight off `storage`
+  (`client/schedule.fired_key_prefix`) rather than through the writer's
+  mailbox — the same isolation `client/rulescan`'s direct reads give it,
+  for the same reason: a slow tick must never queue in front of a
+  settlement. The same "durable-derived beats durable-stored" argument
+  keeps `client/rulescan`'s cursor a checkpoint rather than a source of
+  truth.
   A fire is one `api.steer_marking` when `Schedule.wake` is `False` — the
   injection and the occurrence's write-once fired-mark in one
   transaction, exactly `client/rulescan`'s at-most-once argument, held on

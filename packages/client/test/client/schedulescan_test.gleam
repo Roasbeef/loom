@@ -54,6 +54,7 @@ type ClockMessage {
   TakeEarliest(reply: Subject(Option(fn() -> Nil)))
   JumpTo(now: Int)
   PendingCount(reply: Subject(Int))
+  EarliestAt(reply: Subject(Option(Int)))
 }
 
 type ClockState {
@@ -106,6 +107,13 @@ fn handle_clock_message(
       actor.continue(ClockState(..state, now: int.max(state.now, now)))
     PendingCount(reply:) -> {
       process.send(reply, list.length(state.deadlines))
+      actor.continue(state)
+    }
+    EarliestAt(reply:) -> {
+      process.send(
+        reply,
+        option.map(earliest_deadline(state.deadlines), fn(due) { due.at }),
+      )
       actor.continue(state)
     }
   }
@@ -173,6 +181,15 @@ fn fake_jump_to(fc: FakeClock, now: Int) -> Nil {
 
 fn fake_pending(fc: FakeClock) -> Int {
   process.call(fc.subject, waiting: 1000, sending: PendingCount)
+}
+
+// The delay, in ms from `now`, of the earliest pending deadline — a peek,
+// consuming nothing. `None` when nothing is pending.
+fn fake_earliest_delay_ms(fc: FakeClock) -> Option(Int) {
+  case process.call(fc.subject, waiting: 1000, sending: EarliestAt) {
+    None -> None
+    Some(at) -> Some(at - fake_now(fc))
+  }
 }
 
 // --- polling ----------------------------------------------------------------
@@ -447,6 +464,43 @@ pub fn a_one_shot_fires_once_and_never_rearms_test() {
   // re-arm from the schedule.
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "a fired one-shot must never re-arm"
+  stop(rig)
+}
+
+// A `wake = false` one-shot naming a permanently idle strand is `Held`
+// on every attempt, forever — it has no expiry to end that. Left at its
+// naive floor this would poll once a second for the life of the session;
+// the retry must never go faster than the same busy-loop floor
+// `client/schedule` enforces on every `every` schedule.
+pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
+  let sched =
+    schedule.Schedule(
+      name: "stuck",
+      target: "main",
+      timing: schedule.OneShot(at: 100),
+      wake: False,
+      body: "reminder",
+    )
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  assert idle(rig, "main") as "the strand must start idle"
+  // First tick (t=0): not yet due, re-arms at the real remaining wait.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  // The re-armed tick lands at or after `at`; the strand is still idle and
+  // wake=false may not start a run, so this occurrence holds.
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  let key = schedule.fired_key(strand: "main", name: "stuck", occurrence: 100)
+  process.sleep(100)
+  assert !fired(rig.runtime, key) as "a held one-shot must leave no mark"
+  assert await_true(
+    fn() {
+      case fake_earliest_delay_ms(rig.fc) {
+        Some(delay) -> delay >= schedule.min_interval_s * 1000
+        None -> False
+      }
+    },
+    2000,
+  )
+    as "a held or failed one-shot must retry no faster than the interval floor"
   stop(rig)
 }
 

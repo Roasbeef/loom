@@ -30,7 +30,7 @@
 //// commit. A schedule has no branch to scan: whether an occurrence is
 //// due, how many times a schedule has fired, and how long ago the first
 //// fire was are all questions a bounded prefix scan of the write-once
-//// fire-marks (`runtime/api.reserved_facts` under
+//// fire-marks (`read_prefix`, below, under
 //// `client/schedule.fired_key_prefix`) answers exactly, every time. So
 //// this actor holds nothing across ticks beyond the static, parsed
 //// `List(client/schedule.Schedule)` it started with — a restart loses
@@ -61,7 +61,11 @@
 //// bounded scan that already answers expiry, no extra state. A `OneShot`
 //// schedule has exactly one occurrence — `at` itself — so its lateness is
 //// the simpler `now_s >= at + <grace>`, since `at` does not depend on
-//// `now_s` the way an interval's slot does.
+//// `now_s` the way an interval's slot does. A late annotation names a
+//// window that closed before this fire landed; it does not claim the
+//// server was down for it — an interval schedule held on a stubbornly
+//// idle strand across a slot boundary reads exactly the same way, and
+//// both are, correctly, "late" in the sense the text describes.
 ////
 //// ## An idle strand holds unless the schedule opts in
 ////
@@ -73,33 +77,54 @@
 //// (`runtime/api.send_to_strand_marking`, landing `Started`), which is
 //// safe only because every recurring schedule expires (`client/schedule`
 //// bounds `max_fires`/`expires_after_s` unconditionally) — see the
-//// design note's "The crux" section for the full argument.
+//// design note's "The crux" section for the full argument. The expiry
+//// clock only starts on a schedule's first landed fire (`expires_after_s`
+//// counts from the earliest fired-mark, per `client/schedule`), so a
+//// schedule that never once fires — held forever on a strand nobody ever
+//// opens a run on — never expires either: it keeps ticking, and keeps
+//// costing nothing durable, for the life of the session. That is a cost
+//// question, not a safety one: no fires means no liveness extension and
+//// no rows, which is the property `wake = true` actually needs.
 ////
 //// ## Isolation
 ////
 //// Every read here goes straight to the session store
-//// (`runtime/api.fact`/`reserved_facts`), never through the writer's
-//// mailbox, so a slow tick cannot sit in front of a settlement. The only
-//// thing this actor sends the writer is the fire itself — an ordinary
-//// marked admission — on its own process. It is a restartable service
-//// (`client/serve`'s service supervisor): killing it mid-tick costs the
-//// tick in flight and nothing else, and the replacement's first tick
-//// (armed at start, per the module doc above) re-derives everything from
-//// the durable fire-marks.
+//// (`storage.get_register`/`list_registers` against
+//// `runtime.session.store`), never through the writer's mailbox — the
+//// same door `client/rulescan` reads through and for the same reason: a
+//// slow tick's up-to-`max_schedules` bounded scans must never queue in
+//// front of a settlement. The only thing this actor sends the writer is
+//// the fire itself — an ordinary marked admission — on its own process.
+//// It is a restartable service (`client/serve`'s service supervisor):
+//// killing it mid-tick costs the tick in flight and nothing else, and the
+//// replacement's first tick (armed at start, per the module doc above)
+//// re-derives everything from the durable fire-marks. One dependency this
+//// buys nothing against: the scanner's whole liveness rests on one
+//// re-armed `Timers.after` deadline, and `runtime/effects.Timers`'s own
+//// contract tolerates a dropped wake precisely because the strand driver
+//// can always rediscover a missed one by re-planning — this actor has no
+//// such rediscovery path, so a wake genuinely lost (not merely late)
+//// would silently end every schedule until the scanner itself restarts.
+//// `effects.real_timers()` never drops one in production; the risk is
+//// confined to a host supplying its own, lossier `Timers`.
 
 import client/schedule.{type Schedule}
 import core/clock
 import core/ids.{type EntryId}
 import core/json.{type JsonValue}
 import core/message
+import core/register
+import gleam/bool
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
+import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
+import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
 
@@ -283,11 +308,11 @@ fn process_interval(
   now_s: Int,
 ) -> ScheduleStatus {
   let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
-  case api.reserved_facts(state.runtime, prefix:) {
+  case read_prefix(state, prefix) {
     // A store read that fails is not worth stopping for: retry on the
     // schedule's own cadence, which is already bounded well above a
     // busy loop (`schedule.min_interval_s`).
-    Error(_reason) -> Active(next_delay_ms: seconds * 1000)
+    Error(Nil) -> Active(next_delay_ms: seconds * 1000)
     Ok(marks) ->
       interval_with_marks(state, sched, seconds, expiry, now_ms, now_s, marks)
   }
@@ -311,49 +336,43 @@ fn interval_with_marks(
   case schedule.interval_expired(occurrences:, expiry:, now_s:) {
     True -> Expired
     False -> {
-      let slot = now_s / seconds
-      maybe_fire_interval(state, sched, slot, seconds, occurrences)
-      Active(next_delay_ms: next_interval_delay_ms(slot, seconds, now_ms))
+      let occurrence = schedule.interval_occurrence(seconds:, now_s:)
+      maybe_fire_interval(state, sched, occurrence, seconds, occurrences)
+      Active(next_delay_ms: next_interval_delay_ms(occurrence, seconds, now_ms))
     }
   }
 }
 
-// The current slot's occurrence, fired if its mark is still absent. A
-// held or failed attempt is not specially retried mid-slot: the next
-// tick this schedule gets is the next slot boundary, at which point a
-// *new* occurrence is due — which is the same "never iterate backward
-// over skipped slots" property that makes a missed window cost at most
-// one late fire rather than one attempt is a debt carried forward.
+// The current slot's occurrence, fired if its mark is still absent. The
+// absence check reads `occurrences` — the same prefix scan
+// `interval_with_marks` already paid for this tick — rather than a
+// second point read: nothing can have changed it since, this actor being
+// the only writer of its own tick. A held or failed attempt is not
+// specially retried mid-slot: the next tick this schedule gets is the
+// next slot boundary, at which point a *new* occurrence is due — which is
+// the same "never iterate backward over skipped slots" property that
+// makes a missed window cost at most one late fire rather than one
+// attempt is a debt carried forward.
 fn maybe_fire_interval(
   state: State,
   sched: Schedule,
-  slot: Int,
+  occurrence: Int,
   seconds: Int,
   occurrences: List(Int),
 ) -> Nil {
-  let occurrence = slot * seconds
+  use <- bool.guard(when: list.contains(occurrences, occurrence), return: Nil)
   let key =
     schedule.fired_key(strand: sched.target, name: sched.name, occurrence:)
-  case api.fact(state.runtime, key) {
-    Ok(Some(_already_fired)) -> Nil
-    Ok(None) -> {
-      let late = schedule.interval_late(occurrences:, seconds:, occurrence:)
-      let _verdict = fire(state, sched, key, late:)
-      Nil
-    }
-    Error(_reason) -> Nil
-  }
+  let late = schedule.interval_late(occurrences:, seconds:, occurrence:)
+  let _verdict = fire(state, sched, key, late:)
+  Nil
 }
 
 // The epoch second the *next* slot begins at — the boundary a fire
 // occurring now is judged `late` against, and the instant re-arming
 // waits for.
-fn interval_boundary_s(slot: Int, seconds: Int) -> Int {
-  { slot + 1 } * seconds
-}
-
-fn next_interval_delay_ms(slot: Int, seconds: Int, now_ms: Int) -> Int {
-  let boundary_ms = interval_boundary_s(slot, seconds) * 1000
+fn next_interval_delay_ms(occurrence: Int, seconds: Int, now_ms: Int) -> Int {
+  let boundary_ms = { occurrence + seconds } * 1000
   int.max(boundary_ms - now_ms, 1000)
 }
 
@@ -368,24 +387,32 @@ fn process_one_shot(
 ) -> ScheduleStatus {
   let key =
     schedule.fired_key(strand: sched.target, name: sched.name, occurrence: at)
-  case api.fact(state.runtime, key) {
+  case read_fact(state, key) {
     // Fired forever: a one-shot's occurrence count is 1 by construction,
     // and its mark existing is the whole of that fact.
-    Ok(Some(_already_fired)) -> Expired
-    Ok(None) -> due_one_shot(state, sched, key, at, now_ms, now_s)
-    // A read failure retries on the same clamped cadence a not-yet-due
-    // schedule would use — see `due_one_shot`.
-    Error(_reason) -> Active(next_delay_ms: int.max(at * 1000 - now_ms, 1000))
+    Some(_already_fired) -> Expired
+    None -> due_one_shot(state, sched, key, at, now_ms, now_s)
   }
+}
+
+// The floor a held or failed retry never goes below: a one-shot with
+// nothing to steer is otherwise a candidate for tight, indefinite
+// re-arming — a `wake = false` one-shot naming a strand that never opens
+// a run polls forever, and one naming a strand that doesn't exist fails
+// every attempt forever — so the same busy-loop floor `client/schedule`
+// already enforces on a configured `every` applies here too. A function
+// rather than a `const`: Gleam constants must be literals, and this is
+// one imported constant times another.
+fn held_or_failed_retry_ms() -> Int {
+  schedule.min_interval_s * 1000
 }
 
 // Not yet due: re-arm at the real remaining wait, clamped. Due: fire, and
 // stop re-arming for good the moment the mark actually lands (`Fired` or
 // `AlreadyFired`) — a one-shot never re-arms once its single occurrence
-// is spent. A held or failed attempt (no open run yet, say) is retried
-// promptly rather than waiting for a boundary that has already passed:
-// `at` is already in the past by construction here, so the same clamped
-// formula that governs the not-yet-due case collapses to its floor.
+// is spent. A held or failed attempt (no open run yet, say) retries no
+// sooner than `held_or_failed_retry_ms`, never at the tight cadence a
+// genuinely not-yet-due wait uses.
 fn due_one_shot(
   state: State,
   sched: Schedule,
@@ -399,7 +426,7 @@ fn due_one_shot(
     True ->
       case fire(state, sched, key, late: now_s >= at + late_grace_s) {
         Fired | AlreadyFired -> Expired
-        Held | Failed(..) -> Active(next_delay_ms: 1000)
+        Held | Failed(..) -> Active(next_delay_ms: held_or_failed_retry_ms())
       }
   }
 }
@@ -513,4 +540,38 @@ fn report(state: State, sched: Schedule, verdict: Fire) -> Nil {
         ..where
       ])
   }
+}
+
+// --- durable reads -------------------------------------------------------
+//
+// Straight to the session store, never through the writer's mailbox — see
+// the module doc's "Isolation" section. `client/rulescan.read_fact` is the
+// same door for the same reason.
+
+fn read_fact(state: State, key: String) -> Option(JsonValue) {
+  storage.get_register(state.runtime.session.store, register.FactCustom, key)
+  |> result.unwrap(None)
+  |> option.map(fn(cell: storage.Register) { cell.value.payload })
+}
+
+// A prefix scan of `fact.custom`, read directly off the store the same way
+// `read_fact` is. `Error(Nil)` on a store fault — the caller retries next
+// tick, on its own bounded cadence, rather than treating a transient read
+// failure as "nothing has ever fired here."
+fn read_prefix(
+  state: State,
+  prefix: String,
+) -> Result(List(#(String, JsonValue)), Nil) {
+  storage.list_registers(
+    state.runtime.session.store,
+    register.FactCustom,
+    Some(prefix),
+  )
+  |> result.map(fn(cells) {
+    list.map(cells, fn(pair) {
+      let #(key, storage.Register(value:, ..)) = pair
+      #(key, value.payload)
+    })
+  })
+  |> result.replace_error(Nil)
 }
