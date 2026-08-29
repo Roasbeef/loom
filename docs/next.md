@@ -36,8 +36,10 @@ containment.
 The current worktree passes `make check` on macOS with its own exit status
 captured (`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced
 probes, both code-mode network-off runs are enforced, and the house lint has
-zero errors. Before merge, the branch still needs its cold security review,
-atomic commits, remote PR, and green Linux plus macOS Actions runs.
+zero errors. A cold adversarial review found seven cleanup and probe defects;
+`7ec3d99` fixes each one, and the same reviewer verified the repairs without a
+new finding. The branch is split into four atomic commits. Before merge, it
+needs a remote PR and green Linux plus macOS Actions runs.
 
 ---
 
