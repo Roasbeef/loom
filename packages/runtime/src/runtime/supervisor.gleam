@@ -1,18 +1,30 @@
 //// The SessionSupervisor: the OTP tree that turns an open session into a
 //// living one.
 ////
-//// Shape (design §4.1): a rest-for-one supervisor over five children, in
+//// Shape (design §4.1): a rest-for-one supervisor over six children, in
 //// order —
 ////
-//// 1. the **strand registry** (name ↔ process-name map, so restarts keep
+//// 1. the **drain ledger** (logical strand → live effect reapers),
+//// 2. the **strand registry** (name ↔ process-name map, so restarts keep
 ////    every strand addressable),
-//// 2. the **StorageWriter**,
-//// 3. the **StrandSupervisor** — a factory (simple-one-for-one) of strand
+//// 3. the **StorageWriter**,
+//// 4. the **StrandSupervisor** — a factory (simple-one-for-one) of strand
 ////    drivers, one per strand, restarted individually on crash,
-//// 4. the **subagent StrandSupervisor** — a second factory, with its own
+//// 5. the **subagent StrandSupervisor** — a second factory, with its own
 ////    restart tolerance, for strands a model spawned,
-//// 5. the **strand booter** — a worker whose start lists the `strand.*`
+//// 6. the **strand booter** — a worker whose start lists the `strand.*`
 ////    registers in the store and starts a driver for every strand found.
+////
+//// ## Why the drain ledger is separate
+////
+//// The name registry is meant to restart: rest-for-one then rebuilds the
+//// writer and every driver beneath it. Effect reapers have the opposite
+//// requirement. They must remain discoverable while those old drivers die,
+//// or a replacement can replay durable work beside an undrained predecessor.
+//// The drain ledger therefore precedes the name registry and survives its
+//// restart. It is a significant temporary child: if the ledger itself dies,
+//// the supervisor stops the whole session instead of restarting with an empty
+//// ownership history.
 ////
 //// ## Why subagents get their own factory
 ////
@@ -60,6 +72,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
 import gleam/result
+import runtime/internal/drain_registry
 import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
@@ -128,17 +141,18 @@ pub type SessionTree {
 /// ```
 ///
 pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
+  let drains_name = process.new_name(prefix: "loom_drains")
   let registry_name = process.new_name(prefix: "loom_registry")
   let writer_name = process.new_name(prefix: "loom_writer")
   let strands_name = process.new_name(prefix: "loom_strands")
   let subagent_strands_name = process.new_name(prefix: "loom_subagent_strands")
-  let registry_subject = process.named_subject(registry_name)
+  let drains_subject = process.named_subject(drains_name)
   let template =
     strand_runtime.Options(
       ..config.strand_options,
       writer: writer_name,
       claim_reaper: fn(strand, reaper) {
-        registry.claim_reaper(registry_subject, strand, reaper)
+        drain_registry.claim(drains_subject, strand, reaper)
       },
     )
   let factory = fn(strand_name) {
@@ -151,9 +165,15 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   }
   let tree =
     sup.new(sup.RestForOne)
+    |> sup.auto_shutdown(sup.AnySignificant)
     |> sup.restart_tolerance(
       intensity: config.tolerance.intensity,
       period: config.tolerance.period,
+    )
+    |> sup.add(
+      drain_registry.supervised(drains_name)
+      |> supervision.restart(supervision.Temporary)
+      |> supervision.significant(True),
     )
     |> sup.add(registry.supervised(registry_name))
     |> sup.add(writer.supervised(config.writer_options, writer_name))

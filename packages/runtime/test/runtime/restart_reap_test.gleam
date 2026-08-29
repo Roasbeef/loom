@@ -347,6 +347,67 @@ pub fn provider_effect_exit_waits_for_its_published_owner_test() {
   assert recorder.read(rec, "provider-overlap") == 0
   process.kill(rt.tree.supervisor)
 }
+
+pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
+  let rec = recorder.start()
+  let consumers = pid_log()
+  let owners = pid_log()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      provider: delayed_drain_provider(rec, consumers, owners),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(_op) = api.prompt(rt, [fake.user("wait for the provider")])
+    as "the prompt must be accepted"
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-handle-returned") >= 1 },
+    5000,
+    "the first provider handle",
+  )
+  process.sleep(25)
+  kill_registry(rt)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-cancel-called") >= 1 },
+    5000,
+    "the predecessor provider cancellation",
+  )
+  process.sleep(25)
+  assert recorder.read(rec, "provider-requested") == 1
+  let assert [first_owner, ..] = logged_pids(owners)
+  assert process.is_alive(first_owner)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
+    5000,
+    "the predecessor provider owner drain",
+  )
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-requested") >= 2 },
+    5000,
+    "the replacement provider request",
+  )
+  assert recorder.read(rec, "provider-overlap") == 0
+  process.kill(rt.tree.supervisor)
+}
+
 // This provider keeps cancellation and drain observably separate. The owner
 // remains alive for 100 ms after cancellation, creating a deterministic window
 // in which an eager retry would overlap it. Each new request checks the owner
@@ -390,6 +451,7 @@ fn delayed_drain_provider(
     })
   })
 }
+
 // Kills the named strand's driver process only: the factory restarts it
 // under the same registered name while the writer — and the rest of the
 // tree — keeps running.
@@ -398,6 +460,15 @@ fn kill_strand(rt: api.Runtime, strand: String) -> Nil {
     as "the strand driver must be registered"
   let assert Ok(pid) = process.subject_owner(subject)
     as "the strand driver must be alive"
+  process.kill(pid)
+}
+
+// The name registry is deliberately restartable. Killing it exercises the
+// rest-for-one path while the earlier drain ledger and old reapers stay live.
+fn kill_registry(rt: api.Runtime) -> Nil {
+  let subject = process.named_subject(rt.tree.registry)
+  let assert Ok(pid) = process.subject_owner(subject)
+    as "the strand registry must be alive"
   process.kill(pid)
 }
 

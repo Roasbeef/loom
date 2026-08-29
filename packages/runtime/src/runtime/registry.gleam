@@ -1,5 +1,5 @@
 //// The strand-incarnation registry: one small actor mapping strand names to
-//// stable process names and remembering each live effect reaper.
+//// stable process names.
 ////
 //// Process names are minted once per strand and survive every restart
 //// below the registry: the strand factory asks `ensure` when it starts a
@@ -10,12 +10,11 @@
 //// and strand crashes; only a whole-tree reboot (open, close) starts it
 //// empty, and the strand booter then repopulates it from the store.
 ////
-//// Reapers solve the other half of replacement. A restarted driver may not
-//// replay durable work while its predecessor's effects are merely scheduled
-//// to die. Each incarnation atomically publishes its reaper here and receives
-//// the complete live predecessor list. The actor retains the whole chain, not
-//// just the newest pid, because a replacement can itself fail before the
-//// oldest generation drains.
+//// The production session tree keeps effect-generation reapers in the
+//// earlier, non-restartable `runtime/internal/drain_registry`; they cannot
+//// safely share this actor's restart boundary. `ClaimReaper` remains here as
+//// a compatibility surface for direct users, but the supervisor deliberately
+//// does not route ownership barriers through it.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject}
