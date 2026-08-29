@@ -180,6 +180,15 @@ pub fn a_note_cannot_close_the_fence_test() {
   assert string.split(digest, "```") |> list.length == 3
 }
 
+// Five backticks defeat a single replacement — breaking the first triple
+// leaves a fresh one — so the replacement repeats until no run survives.
+pub fn a_longer_backtick_run_cannot_rebuild_the_fence_test() {
+  let opened = a_session()
+  note(opened, "main", "trap", "`````inline")
+  let assert Some(digest) = notes.digest(opened, "main")
+  assert string.split(digest, "```") |> list.length == 3
+}
+
 // --- fixtures --------------------------------------------------------------
 
 fn a_session() -> Session {

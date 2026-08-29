@@ -281,6 +281,19 @@ pub fn a_snippet_cannot_close_the_fence_test() {
   assert string.contains(rendered, "` ` `")
 }
 
+// Five backticks defeat a single replacement: breaking the first triple
+// leaves two survivors beside the third backtick, which is a fresh
+// triple. The replacement must repeat until no run survives.
+pub fn a_longer_backtick_run_cannot_rebuild_the_fence_test() {
+  let asked = process.new_subject()
+  let outcome =
+    run(answering([a_hit("`````inline")], asked), [
+      #("query", json.String("inline")),
+    ])
+  let rendered = text_of(outcome)
+  assert string.split(rendered, "```") |> list.length == 3
+}
+
 // A snippet spans lines when the indexed text did; one hit must still be
 // one line, or the numbering stops meaning anything.
 pub fn a_snippet_is_flattened_to_one_line_test() {

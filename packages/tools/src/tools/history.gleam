@@ -325,7 +325,14 @@ fn hit_line(hit: Hit, rank: Int) -> String {
 // Breaking the run rather than deleting it keeps the excerpt readable
 // while making it unable to close the fence it sits inside.
 fn fence_safe(text: String) -> String {
-  string.replace(text, each: "```", with: "` ` `")
+  // Replacing once is not enough: five backticks become one broken run
+  // plus a fresh triple (` ` ``` is two characters from ```` ``` ````),
+  // so the replacement repeats until no run survives. Termination is by
+  // strictly shrinking backtick runs — each pass halves the longest one.
+  case string.contains(text, "```") {
+    False -> text
+    True -> fence_safe(string.replace(text, each: "```", with: "` ` `"))
+  }
 }
 
 // Snippets are excerpts, and a newline inside one would break the

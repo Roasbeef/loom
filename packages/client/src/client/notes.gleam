@@ -62,12 +62,12 @@ import tools/agent
 
 /// The most the rendered note lines may occupy, in bytes.
 ///
-/// Four kilobytes is roughly a thousand tokens on every request of every
-/// run for the rest of the session — enough for a working set of
-/// findings and decisions, and small enough that a strand which has been
-/// journalling for an hour pays a bounded price rather than a growing
-/// one. What does not fit is not lost: it is one `agent_notes` call
-/// away, and the truncation line says so.
+/// Four kilobytes is roughly a thousand tokens — enough for a working
+/// set of findings and decisions. The bound is per injection, and that
+/// is the honest extent of it: every run start appends its own digest
+/// as a durable entry, so a strand accumulates one capped copy per run
+/// until compaction evicts them. What does not fit in one is not lost:
+/// it is one `agent_notes` call away, and the truncation line says so.
 pub const max_digest_bytes = 4096
 
 /// The fence the digest is wrapped in.
@@ -236,7 +236,14 @@ fn line(cell: #(String, JsonValue)) -> String {
 // own. Breaking the run rather than deleting it keeps the note readable
 // while making it unable to close the fence it sits inside.
 fn fence_safe(text: String) -> String {
-  string.replace(text, each: "```", with: "` ` `")
+  // Replacing once is not enough: five backticks become one broken run
+  // plus a fresh triple (` ` ``` is two characters from ```` ``` ````),
+  // so the replacement repeats until no run survives. Termination is by
+  // strictly shrinking backtick runs — each pass halves the longest one.
+  case string.contains(text, "```") {
+    False -> text
+    True -> fence_safe(string.replace(text, each: "```", with: "` ` `"))
+  }
 }
 
 // Newest-first, taking whole lines while they fit. `remaining` counts
