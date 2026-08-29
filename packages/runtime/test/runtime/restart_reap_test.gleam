@@ -143,6 +143,7 @@ pub fn provider_timeout_cancels_before_settling_test() {
     api.await_result(rt, op, within_ms: 5000)
     as "the cancelled provider request must settle terminally"
   assert error.code == "provider_error"
+  assert error.message == "provider request was cancelled"
   assert recorder.read(rec, "provider-cancelled") == 1
   process.kill(rt.tree.supervisor)
 }
@@ -184,6 +185,7 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
     api.await_result(rt, op, within_ms: 5000)
     as "an unacknowledged cancellation must still settle terminally"
   assert error.code == "provider_error"
+  assert error.message == "provider cancellation could not be confirmed"
   // A retryable fallback would dispatch and cancel the request again.
   assert recorder.read(rec, "unacknowledged-cancel") == 1
   process.kill(rt.tree.supervisor)
@@ -191,6 +193,7 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
 
 pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
   let rec = recorder.start()
+  let pids = pid_log()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session must open"
@@ -209,6 +212,18 @@ pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
         let consumer = process.self()
         let events = process.new_subject()
         let _requested = recorder.bump(rec, "provider-requested")
+        record_pid(pids, consumer)
+        let overlapping =
+          logged_pids(pids)
+          |> list.filter(fn(pid) { pid != consumer })
+          |> list.filter(process.is_alive)
+        case overlapping {
+          [] -> Nil
+          _ -> {
+            let _overlap = recorder.bump(rec, "provider-overlap")
+            Nil
+          }
+        }
         let owner =
           process.spawn_unlinked(fn() {
             let down =
@@ -236,8 +251,12 @@ pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
     as "the prompt must be accepted"
   wait_for(fn() { recorder.read(rec, "provider-requested") >= 1 }, 5000)
   kill_strand(rt, "main")
+  wait_for(fn() { recorder.read(rec, "provider-requested") >= 2 }, 5000)
   wait_for(fn() { recorder.read(rec, "provider-consumer-down") >= 1 }, 5000)
   assert recorder.read(rec, "provider-consumer-down") >= 1
+  assert recorder.read(rec, "provider-overlap") == 0
+  let assert [first, ..] = logged_pids(pids)
+  assert !process.is_alive(first)
   process.kill(rt.tree.supervisor)
 }
 

@@ -273,6 +273,7 @@ pub fn open(
         stream_options: options.stream_options,
         retry_policy: options.retry_policy,
         poll_interval_ms: options.poll_interval_ms,
+        claim_reaper: fn(_strand, _reaper) { [] },
         logger: options.logger,
       ),
       tolerance: options.tolerance,

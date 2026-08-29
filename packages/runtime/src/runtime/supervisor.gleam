@@ -132,8 +132,15 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   let writer_name = process.new_name(prefix: "loom_writer")
   let strands_name = process.new_name(prefix: "loom_strands")
   let subagent_strands_name = process.new_name(prefix: "loom_subagent_strands")
+  let registry_subject = process.named_subject(registry_name)
   let template =
-    strand_runtime.Options(..config.strand_options, writer: writer_name)
+    strand_runtime.Options(
+      ..config.strand_options,
+      writer: writer_name,
+      claim_reaper: fn(strand, reaper) {
+        registry.claim_reaper(registry_subject, strand, reaper)
+      },
+    )
   let factory = fn(strand_name) {
     let name =
       registry.ensure(process.named_subject(registry_name), strand_name)
