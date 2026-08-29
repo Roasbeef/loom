@@ -9,9 +9,9 @@ worth more than any status comment.
 
 ---
 
-## State, as of `main` after the #14 merge
+## State, as of `main` at the end of phase 3
 
-Four bodies of work are complete and on `main`.
+Everything below is on `main` unless it says otherwise.
 
 **#106 — MCP through code mode — is done and on `main`** (merged at
 `0f4dfac`'s lineage): generated per-server capability modules, wired end
@@ -123,43 +123,46 @@ Then **phase 4, the promotion ladder** (#30–#33,
 LSP, #26 DAP) starts from the supervised stdio substrate the MCP
 client already is. **#107** (async code mode) sits outside the ladder
 with its design dossier on the issue, awaiting prioritization.
-- **#106** — **MCP through code mode: the first increment is done.**
-  `docs/architecture/mcp.md` is the living account; the rulings and their
-  reasons are on the issue. The shape: generated per-server capability
-  modules (`import cap/mcp/github`), never registered harness tools and
-  never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
-  `packages/mcp` holds the protocol codecs, the stdio client actor, the
-  façade generator and the value interchange; `client/mcp` starts one
-  client per configured server at boot, widens the workspace seam's
-  allowlist/description/generated-table/router as one field, and answers
-  `mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
-  table to the vetted program's own imports before the builder vendors
-  them into the prelude — fifty configured servers cost an unimporting
-  program nothing. A checked-in `escript` fixture proves it against a real
-  server process over a real pipe, wire names byte-identical end to end,
-  including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
-  corpus is **built, not owed**: mangling digests on any change and a
-  collision refuses the server; description text is stripped of every
-  control/direction codepoint and a `glexer`-shaped `@` backstop asserts
-  the cage held; schema reading is three-tier and total with nothing
-  silently dropped; tool count, surface bytes, listing pages, result size
-  and result depth are all capped with worded refusals.
 
-  Still open on #106, deliberately: the **jail decision** for MCP server
-  processes — `mcp/transport.PortTransport` spawns unjailed and the seam
-  is where jailing would attach; this is undesigned, not merely unbuilt —
-  an e2e against a third-party server from the wild, and the deliberate
-  v1 cuts with their reversal triggers (HTTP transport, OAuth,
-  elicitation, `listChanged`, restart supervision; see the architecture
-  doc). **#107** (filed this increment) is the async-code-mode question —
-  kept-alive satellite versus continuation handles versus a
-  replay-with-memoized-effects shape; its comments carry the
-  state-machine-expansion argument and the prior art.
+### The MCP increment, in detail
 
-  The finding carried into phase 5 held: the MCP stdio client **is** the
-  supervised long-lived stdio substrate #25 needs, and it now exists
-  (`mcp/client` + `mcp/transport`), so phase 5 starts from something
-  rather than nothing.
+**#106 — MCP through code mode: the first increment is done.**
+`docs/architecture/mcp.md` is the living account; the rulings and their
+reasons are on the issue. The shape: generated per-server capability
+modules (`import cap/mcp/github`), never registered harness tools and
+never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
+`packages/mcp` holds the protocol codecs, the stdio client actor, the
+façade generator and the value interchange; `client/mcp` starts one
+client per configured server at boot, widens the workspace seam's
+allowlist/description/generated-table/router as one field, and answers
+`mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
+table to the vetted program's own imports before the builder vendors
+them into the prelude — fifty configured servers cost an unimporting
+program nothing. A checked-in `escript` fixture proves it against a real
+server process over a real pipe, wire names byte-identical end to end,
+including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
+corpus is **built, not owed**: mangling digests on any change and a
+collision refuses the server; description text is stripped of every
+control/direction codepoint and a `glexer`-shaped `@` backstop asserts
+the cage held; schema reading is three-tier and total with nothing
+silently dropped; tool count, surface bytes, listing pages, result size
+and result depth are all capped with worded refusals.
+
+Still open on #106, deliberately: the **jail decision** for MCP server
+processes — `mcp/transport.PortTransport` spawns unjailed and the seam
+is where jailing would attach; this is undesigned, not merely unbuilt —
+an e2e against a third-party server from the wild, and the deliberate
+v1 cuts with their reversal triggers (HTTP transport, OAuth,
+elicitation, `listChanged`, restart supervision; see the architecture
+doc). **#107** (filed this increment) is the async-code-mode question —
+kept-alive satellite versus continuation handles versus a
+replay-with-memoized-effects shape; its comments carry the
+state-machine-expansion argument and the prior art.
+
+The finding carried into phase 5 held: the MCP stdio client **is** the
+supervised long-lived stdio substrate #25 needs, and it now exists
+(`mcp/client` + `mcp/transport`), so phase 5 starts from something
+rather than nothing.
 
 **Phase 5** is the language-service tier: **#25** (`lsp_*` over a sandboxed
 per-project client) and **#26** (`dap_*` over the same port seam). Both need
