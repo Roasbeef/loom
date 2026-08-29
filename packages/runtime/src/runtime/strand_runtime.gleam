@@ -15,10 +15,13 @@
 //// restored registers, spec §3.1). `strand.last_result` is never read.
 ////
 //// Live effects run on spawned processes the driver monitors; their
-//// outcomes come back as ordinary messages. An effect process that dies
-//// without reporting settles in-band (a transport-failure response or a
-//// synthetic tool error) — the harness never wedges. Every effect
-//// process is also linked to the incarnation's **reaper** (a tiny
+//// outcomes come back as ordinary messages. A tool process that dies without
+//// reporting settles as a synthetic tool error. A provider process instead
+//// faults the driver: its reaper cancels the published stream owner and the
+//// replacement waits for that owner to drain before recovery may dispatch.
+//// Converting such a death directly into a retryable provider result would
+//// let the current incarnation retry beside cleanup it no longer owns.
+//// Every effect process is also linked to the incarnation's **reaper** (a tiny
 //// trapping companion process that dies when the driver does), so a
 //// driver restart cannot leak a live effect into the next incarnation:
 //// the exclusivity gate and the replay decision both read the
@@ -144,11 +147,17 @@ pub opaque type Message {
 
 type ReaperMessage {
   Adopt(effect: Pid, stop: fn() -> Nil, reply_with: Subject(Bool))
+  TrackProvider(
+    effect: Pid,
+    handle: stream.StreamHandle,
+    reply_with: Subject(Bool),
+  )
 }
 
 type ReaperEvent {
   ReaperCommand(ReaperMessage)
   LinkedExit(process.ExitMessage)
+  OwnedStreamDown(process.Down)
 }
 
 type Reaper {
@@ -156,7 +165,22 @@ type Reaper {
 }
 
 type AdoptedEffect {
-  AdoptedEffect(pid: Pid, stop: fn() -> Nil)
+  AdoptedEffect(
+    pid: Pid,
+    stop: fn() -> Nil,
+    provider: ProviderOwnership,
+    exited: Bool,
+  )
+}
+
+// Provider ownership has a publication phase because the reaper must
+// distinguish "not a provider" from "a provider with no asynchronous work".
+// A watched owner is retained even after the effect exits; only its monitor's
+// Down proves the transitive stream subtree has drained.
+type ProviderOwnership {
+  ProviderUnpublished
+  ProviderDrained
+  ProviderWatching(handle: stream.StreamHandle, monitor: process.Monitor)
 }
 
 type ProviderWaitEvent {
@@ -635,21 +659,16 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
           |> option.from_result,
         otherwise: state,
       )
-      // The effect process died without reporting: settle in-band
-      // through the ordinary outcome paths. Degraded, not fatal — the
-      // level policy's `warning`.
+      // The effect process died without reporting. Tools have no descendant
+      // ownership after the worker dies, so an in-band synthetic result is
+      // safe. A provider may still have a transport subtree: halt the driver
+      // and let the old reaper's published owner become the restart barrier.
       log.warn(step_logger(state, live.token), "effect.exited", [
         field.text(key: "kind", value: effect_kind(live.token)),
       ])
       case live.token {
         AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
-          provider_done(
-            state,
-            live.token,
-            stream.Failed(error: stream.TransportFailed(
-              reason: "the effect process exited before settling",
-            )),
-          )
+          Halt("a provider effect exited before its stream owner drained")
         ToolEffect(..) ->
           tool_done(
             state,
@@ -1398,6 +1417,7 @@ fn reap(
     process.new_selector()
     |> process.select_map(commands, ReaperCommand)
     |> process.select_trapped_exits(LinkedExit)
+    |> process.select_monitors(OwnedStreamDown)
     |> process.selector_receive_forever()
   case event {
     ReaperCommand(Adopt(effect:, stop:, reply_with:)) -> {
@@ -1405,15 +1425,42 @@ fn reap(
       process.send(reply_with, accepted)
       case accepted {
         True ->
-          reap(driver, commands, [AdoptedEffect(pid: effect, stop:), ..effects])
+          reap(driver, commands, [
+            AdoptedEffect(
+              pid: effect,
+              stop:,
+              provider: ProviderUnpublished,
+              exited: False,
+            ),
+            ..effects
+          ])
         False -> reap(driver, commands, effects)
+      }
+    }
+    ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
+      let #(effects, accepted) = publish_provider_owner(effects, effect, handle)
+      let committed = accepted && process.is_alive(driver)
+      process.send(reply_with, committed)
+      case committed {
+        True -> reap(driver, commands, effects)
+        False -> {
+          // A monitor allocated during a racing publication must not escape
+          // merely because the driver crossed into drain first.
+          let effects = case accepted {
+            True -> unpublish_provider_owner(effects, effect)
+            False -> effects
+          }
+          reap(driver, commands, effects)
+        }
       }
     }
     LinkedExit(process.ExitMessage(pid:, reason: _)) ->
       case pid == driver {
         True -> drain(commands, effects)
-        False -> reap(driver, commands, without_pid(effects, pid))
+        False -> reap(driver, commands, effect_departed(effects, pid))
       }
+    OwnedStreamDown(down) ->
+      reap(driver, commands, provider_owner_departed(effects, down))
   }
 }
 
@@ -1436,24 +1483,122 @@ fn await_drain(
         process.new_selector()
         |> process.select_map(commands, ReaperCommand)
         |> process.select_trapped_exits(LinkedExit)
+        |> process.select_monitors(OwnedStreamDown)
         |> process.selector_receive_forever()
       case event {
         ReaperCommand(Adopt(effect: _, stop: _, reply_with:)) -> {
           process.send(reply_with, False)
           await_drain(commands, effects)
         }
+        ReaperCommand(TrackProvider(effect: _, handle: _, reply_with:)) -> {
+          process.send(reply_with, False)
+          await_drain(commands, effects)
+        }
         LinkedExit(process.ExitMessage(pid:, reason: _)) ->
-          await_drain(commands, without_pid(effects, pid))
+          await_drain(commands, effect_departed(effects, pid))
+        OwnedStreamDown(down) ->
+          await_drain(commands, provider_owner_departed(effects, down))
       }
     }
   }
 }
 
-fn without_pid(
+fn publish_provider_owner(
   effects: List(AdoptedEffect),
-  removed: Pid,
+  published_by: Pid,
+  handle: stream.StreamHandle,
+) -> #(List(AdoptedEffect), Bool) {
+  case effects {
+    [] -> #([], False)
+    [effect, ..rest] if effect.pid == published_by ->
+      case effect.provider, effect.exited {
+        ProviderUnpublished, False -> {
+          let ownership = monitor_provider_owner(handle)
+          #([AdoptedEffect(..effect, provider: ownership), ..rest], True)
+        }
+        _, _ -> #(effects, False)
+      }
+    [effect, ..rest] -> {
+      let #(rest, accepted) = publish_provider_owner(rest, published_by, handle)
+      #([effect, ..rest], accepted)
+    }
+  }
+}
+
+fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
+  case handle.owner {
+    None -> ProviderDrained
+    Some(owner) -> {
+      let monitor = process.monitor(owner)
+      case process.is_alive(owner) {
+        True -> ProviderWatching(handle:, monitor:)
+        False -> {
+          process.demonitor_process(monitor)
+          ProviderDrained
+        }
+      }
+    }
+  }
+}
+
+// Publication lost a race with driver death. Tear down the monitor here; the
+// provider worker that received `False` owns cancellation and the final wait.
+fn unpublish_provider_owner(
+  effects: List(AdoptedEffect),
+  published_by: Pid,
 ) -> List(AdoptedEffect) {
-  list.filter(effects, fn(effect) { effect.pid != removed })
+  list.map(effects, fn(effect) {
+    case effect.pid == published_by, effect.provider {
+      True, ProviderWatching(monitor:, ..) -> {
+        process.demonitor_process(monitor)
+        AdoptedEffect(..effect, provider: ProviderUnpublished)
+      }
+      True, ProviderDrained ->
+        AdoptedEffect(..effect, provider: ProviderUnpublished)
+      _, _ -> effect
+    }
+  })
+}
+
+// An effect Down is not necessarily a drain. A published provider owner stays
+// in the ledger until its independent monitor fires; everything else can be
+// forgotten as soon as the worker itself is gone.
+fn effect_departed(
+  effects: List(AdoptedEffect),
+  departed: Pid,
+) -> List(AdoptedEffect) {
+  case effects {
+    [] -> []
+    [effect, ..rest] if effect.pid == departed ->
+      case effect.provider {
+        ProviderWatching(handle:, ..) -> {
+          stream.cancel(handle)
+          [AdoptedEffect(..effect, exited: True), ..rest]
+        }
+        ProviderUnpublished | ProviderDrained -> rest
+      }
+    [effect, ..rest] -> [effect, ..effect_departed(rest, departed)]
+  }
+}
+
+fn provider_owner_departed(
+  effects: List(AdoptedEffect),
+  down: process.Down,
+) -> List(AdoptedEffect) {
+  case down {
+    process.PortDown(..) -> effects
+    process.ProcessDown(monitor:, ..) ->
+      list.filter_map(effects, fn(effect) {
+        case effect.provider {
+          ProviderWatching(monitor: watched, ..) if watched == monitor ->
+            case effect.exited {
+              True -> Error(Nil)
+              False -> Ok(AdoptedEffect(..effect, provider: ProviderDrained))
+            }
+          _ -> Ok(effect)
+        }
+      })
+  }
 }
 
 fn await_previous_reapers(
@@ -1546,6 +1691,25 @@ fn adopt_and_run(
   }
 }
 
+// The worker publishes the stream's transitive owner before it waits for one
+// byte. This acknowledgement transfers the restart barrier to the reaper. If
+// the reaper is already draining, ownership stays here: cancel and wait before
+// this worker is allowed to exit.
+fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
+  let Reaper(commands:, pid: reaper_pid) = reaper
+  let reaper_monitor = process.monitor(reaper_pid)
+  let reply = process.new_subject()
+  process.send(commands, TrackProvider(process.self(), handle, reply))
+  let accepted =
+    process.new_selector()
+    |> process.select_map(reply, fn(value) { value })
+    |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
+    |> process.selector_receive(1000)
+    |> result.unwrap(False)
+  process.demonitor_process(reaper_monitor)
+  accepted
+}
+
 fn spawn_provider(
   state: State,
   token: EffectToken,
@@ -1562,12 +1726,20 @@ fn spawn_provider(
   let #(pid, stop) =
     spawn_provider_effect(state.reaper, logger, fn(stop) {
       let handle = surface.request(spec)
-      let terminal = await_provider(handle, stop, surface.timeout_ms)
-      // The terminal and the owner drain are separate facts. Keeping this
-      // effect private until the public owner exits prevents both the current
-      // driver and a replacement from dispatching beside the old subtree.
-      stream.await_stopped_forever(handle)
-      wake(parent, ProviderDone(token:, terminal:))
+      case track_provider_owner(state.reaper, handle) {
+        False -> {
+          stream.cancel(handle)
+          stream.await_stopped_forever(handle)
+        }
+        True -> {
+          let terminal = await_provider(handle, stop, surface.timeout_ms)
+          // The terminal and the owner drain are separate facts. Keeping this
+          // effect private until the public owner exits prevents both the current
+          // driver and a replacement from dispatching beside the old subtree.
+          stream.await_stopped_forever(handle)
+          wake(parent, ProviderDone(token:, terminal:))
+        }
+      }
     })
   let monitor = process.monitor(pid)
   State(..state, live: [

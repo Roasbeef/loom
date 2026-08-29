@@ -284,6 +284,112 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
   process.kill(rt.tree.supervisor)
 }
 
+pub fn provider_effect_exit_waits_for_its_published_owner_test() {
+  let rec = recorder.start()
+  let consumers = pid_log()
+  let owners = pid_log()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      provider: delayed_drain_provider(rec, consumers, owners),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(_op) = api.prompt(rt, [fake.user("wait for the provider")])
+    as "the prompt must be accepted"
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-handle-returned") >= 1 },
+    5000,
+    "the first provider handle",
+  )
+  // The handle publication is a synchronous reaper call immediately after
+  // `request` returns. Let that actor turn complete, then simulate the
+  // unexpected death whose old path fabricated a retryable result at once.
+  process.sleep(25)
+  let assert [first_consumer, ..] = logged_pids(consumers)
+  process.kill(first_consumer)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-cancel-called") >= 1 },
+    5000,
+    "the orphaned provider cancellation",
+  )
+  process.sleep(25)
+  assert recorder.read(rec, "provider-requested") == 1
+  let assert [first_owner, ..] = logged_pids(owners)
+  assert process.is_alive(first_owner)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
+    5000,
+    "the orphaned provider owner drain",
+  )
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-requested") >= 2 },
+    5000,
+    "the replacement provider request",
+  )
+  assert recorder.read(rec, "provider-overlap") == 0
+  process.kill(rt.tree.supervisor)
+}
+// This provider keeps cancellation and drain observably separate. The owner
+// remains alive for 100 ms after cancellation, creating a deterministic window
+// in which an eager retry would overlap it. Each new request checks the owner
+// pid log before starting its own subtree.
+fn delayed_drain_provider(
+  rec: Subject(recorder.Message),
+  consumers: PidLog,
+  owners: PidLog,
+) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+    let consumer = process.self()
+    let events = process.new_subject()
+    let _requested = recorder.bump(rec, "provider-requested")
+    record_pid(consumers, consumer)
+    let overlap =
+      logged_pids(owners)
+      |> list.any(process.is_alive)
+    case overlap {
+      True -> {
+        let _overlap = recorder.bump(rec, "provider-overlap")
+        Nil
+      }
+      False -> Nil
+    }
+    let ready = process.new_subject()
+    let owner =
+      process.spawn_unlinked(fn() {
+        let cancel = process.new_subject()
+        process.send(ready, cancel)
+        let _cancel = process.receive_forever(cancel)
+        process.sleep(100)
+        let _drained = recorder.bump(rec, "provider-owner-drained")
+        Nil
+      })
+    record_pid(owners, owner)
+    let cancel = process.receive_forever(ready)
+    let _returned = recorder.bump(rec, "provider-handle-returned")
+    stream.owned(events:, owner:, cancel: fn() {
+      let _cancelled = recorder.bump(rec, "provider-cancel-called")
+      process.send(cancel, Nil)
+    })
+  })
+}
 // Kills the named strand's driver process only: the factory restarts it
 // under the same registered name while the writer — and the rest of the
 // tree — keeps running.
