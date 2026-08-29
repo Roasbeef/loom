@@ -103,6 +103,8 @@ const settle_margin_ms = 10_000
 // How much compiler output to carry back as diagnostics.
 const diagnostics_limit = 8000
 
+const tmp_env = "TMPDIR"
+
 /// Everything the production builder needs beyond the build phase's
 /// identity and the build root.
 ///
@@ -118,7 +120,8 @@ pub type BuildConfig {
     seed_root: String,
     /// Absolute path to the `gleam` executable.
     gleam_path: String,
-    /// The session base policy.
+    /// The session base policy. The builder adds its harness-owned `TMPDIR`
+    /// name to the derived call base; callers need not authorize it.
     base_policy: SandboxPolicy,
     /// Roots the build may read: the Gleam and Erlang toolchains. Usually
     /// `["/"]`, which the session base must then also cover.
@@ -362,7 +365,7 @@ pub fn build_call(
   broker.CallSpec(
     op_id: identity.op_id(phase),
     step_id: identity.step_id(phase),
-    base_policy: config.base_policy,
+    base_policy: build_base_policy(config),
     requirements: build_requirements(config, root),
     grants: identity.grants(phase),
     // Nothing about a hermetic build is best-effort: a session base that
@@ -395,8 +398,18 @@ pub fn build_requirements(config: BuildConfig, root: String) -> SandboxPolicy {
 // writable root the jail admits. Pinning it here also prevents a caller's
 // environment from shadowing it with a host path the jail cannot use.
 fn build_env(config: BuildConfig, root: String) -> List(#(String, String)) {
-  let permitted = list.filter(config.env, fn(pair) { pair.0 != "TMPDIR" })
-  [#("TMPDIR", root <> "/tmp"), ..permitted]
+  let permitted = list.filter(config.env, fn(pair) { pair.0 != tmp_env })
+  [#(tmp_env, root <> "/tmp"), ..permitted]
+}
+
+// TMPDIR is minted by this builder and points beneath its one writable root.
+// Authorizing the name on the derived call base lets it survive the policy
+// meet without widening the session base or the model-written run phase.
+fn build_base_policy(config: BuildConfig) -> SandboxPolicy {
+  policy.SandboxPolicy(
+    ..config.base_policy,
+    env_allow: list.unique(list.append(config.base_policy.env_allow, [tmp_env])),
+  )
 }
 
 // --- the products ---------------------------------------------------------

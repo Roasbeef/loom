@@ -129,6 +129,18 @@ pub fn the_build_pins_its_temporary_directory_test() {
   // choose a caller-supplied duplicate instead.
   assert list.count(call.env, fn(pair) { pair.0 == "TMPDIR" }) == 1
   assert call.requirements.env_allow == ["TMPDIR", "PATH"]
+  // TMPDIR belongs only to the derived build call. The caller's session base
+  // stays unchanged, while composition preserves the harness-owned name.
+  assert !list.contains(configured.base_policy.env_allow, "TMPDIR")
+  assert list.contains(call.base_policy.env_allow, "TMPDIR")
+  let #(effective, narrowings) =
+    policy.compose(
+      base: call.base_policy,
+      requirements: call.requirements,
+      grants: [],
+    )
+  assert list.contains(effective.env_allow, "TMPDIR")
+  assert narrowings == []
 }
 
 pub fn a_missing_seed_is_reported_before_any_clearance_test() {
