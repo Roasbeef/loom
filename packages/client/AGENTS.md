@@ -208,8 +208,9 @@ over one session file. WP-L.
   forwarder; on each hint it re-reads the store above a durable cursor
   and never trusts the hint for anything. A fire is one
   `api.steer_marking` — the injection and the rule's write-once
-  fired-mark in one transaction — so exactly-once is a property of the
-  commit rather than of the actor's memory. A rule that trips on an
+  fired-mark in one transaction — so injected-never-twice is a property
+  of the commit rather than of the actor's memory (at-most-once in
+  full: the abort corner is `docs/spec-gaps.md`'s item 8). A rule that trips on an
   **idle** strand is *held*, not dropped and not started: the cursor
   stays frozen so the next run finds it again.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
