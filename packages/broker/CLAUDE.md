@@ -344,16 +344,23 @@ protocol (spec Part 1.4). WP-G.
   *silent* helper passes: a stage 2 that died before writing fd 4
   produced `enforcement: ["bwrap"]`, which contains no skip and therefore
   satisfied the demand with the whole inner report absent (#54).
-  `required_layers` derives the demanded set from the policy —
-  `bwrap`, `mounts`, `landlock` and `no-new-privs` unconditionally, plus
-  `seccomp-net` under a network-off or proxy policy, `cgroup-v2` under a
-  memory or pid ceiling, and `rlimit-cpu` / `rlimit-fsize` under theirs —
-  and `unapplied_layers` names what is missing. An entry's layer is its
+  `required_layers_for_features` derives the demanded set from both the
+  helper's hello and the policy. Linux requires `bwrap`, `mounts`, `landlock`
+  and `no-new-privs`, plus `seccomp-net` for restricted networking and
+  `cgroup-v2` for memory or pid ceilings. Darwin requires `seatbelt`,
+  `seatbelt-fs`, `seatbelt-net`, and the requested rlimit tags. Both require
+  `rlimit-cpu` / `rlimit-fsize` under their policies. Selecting from the
+  helper's hello rather than the broker VM also keeps remote/fake backends
+  honest. `unapplied_layers` names what is missing. An entry's layer is its
   tag up to the first `:` or `=`, so `landlock:abi=5` and
   `mounts:ro=2,rw=1,…` answer for their layers. With no per-exec policy
-  the execution runs under the helper's fd-3 base, whose conditional
-  layers this actor cannot see, so only the unconditional four are
-  required.
+  the execution runs under the helper's fd-3 base, whose conditional layers
+  this actor cannot see, so only that backend's unconditional layers are
+  required. Darwin also reports `skip:darwin-process-lifecycle` on every
+  execution: Seatbelt follows forks, but sampled descendant cleanup cannot
+  guarantee ownership after rapid reparenting. The ordinary "any skip"
+  ground-truth check therefore refuses `FullEnforcement` even when every
+  requested filesystem, network, and rlimit tag is present.
 - **`--allow-unenforced` is for an unsupported platform, never a degraded
   one.** A Linux host missing bwrap or Landlock still enforces something
   and reports what it could not; that report is what `FullEnforcement`

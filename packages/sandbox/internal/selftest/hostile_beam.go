@@ -91,11 +91,11 @@ const hostileSecret = "LOOM_CAP_TOKEN=the-jail-was-supposed-to-hide-this\n"
 const hostilePatience = 60 * time.Second
 
 func probeHostileBeam(feat jail.Features, selfExe string) probeResult {
-	if feat.BwrapPath == "" {
+	if !feat.HasFilesystemJail() || !feat.HasNetworkJail() {
 		return probeResult{outcome: skipped,
-			detail: "confining an unvetted .beam needs bwrap's mount and " +
-				"network namespaces; degraded mode has neither, and " +
-				"Landlock alone cannot hide a protected path"}
+			detail: "confining an unvetted .beam needs the platform's primary " +
+				"filesystem and network jail; this host has neither a complete " +
+				"Linux bwrap/seccomp stack nor macOS Seatbelt"}
 	}
 	rig, why, err := newHostileRig()
 	if err != nil {
@@ -556,8 +556,8 @@ type HostileBeamRun struct {
 // (no Erlang, no bwrap), which is a skip and never a pass.
 func RunHostileBeamForTest(selfExe string, confined bool) (HostileBeamRun, string, error) {
 	feat := jail.DetectFeatures()
-	if feat.BwrapPath == "" {
-		return HostileBeamRun{}, "no bwrap: there is no jail to grant or withhold", nil
+	if !feat.HasFilesystemJail() || !feat.HasNetworkJail() {
+		return HostileBeamRun{}, "no complete platform jail to grant or withhold", nil
 	}
 	rig, why, err := newHostileRig()
 	if err != nil {

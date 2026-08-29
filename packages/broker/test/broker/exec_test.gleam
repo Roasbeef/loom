@@ -557,12 +557,11 @@ pub fn missed_heartbeat_declares_helper_dead_test() {
 }
 
 // The platform decision mirrors the helper's own `jail.PlatformFor`:
-// Linux is WP-H phase 1 and the only jail that exists. Taking the OS
-// name as an argument is the only way the macOS and Windows answers can
-// be checked at all, since no such host has ever run this tree.
+// Linux and macOS have WP-H platform jails. Taking the OS name as an argument
+// keeps the unsupported answer testable on either CI host.
 pub fn host_platform_for_names_the_unjailed_ones_test() {
   assert exec.host_platform_for("linux") == exec.JailedHost
-  assert exec.host_platform_for("darwin") == exec.UnjailedHost("darwin")
+  assert exec.host_platform_for("darwin") == exec.JailedHost
   assert exec.host_platform_for("nt") == exec.UnjailedHost("nt")
   assert exec.host_platform_for("plan9") == exec.UnjailedHost("plan9")
 }
@@ -573,7 +572,7 @@ pub fn host_platform_for_names_the_unjailed_ones_test() {
 // demand check rather than be waved through by a flag.
 pub fn unenforced_args_only_on_an_unjailed_platform_test() {
   assert exec.unenforced_helper_args(exec.JailedHost) == []
-  assert exec.unenforced_helper_args(exec.UnjailedHost("darwin"))
+  assert exec.unenforced_helper_args(exec.UnjailedHost("windows"))
     == ["--allow-unenforced"]
 }
 
@@ -584,29 +583,54 @@ pub fn unenforced_args_only_on_an_unjailed_platform_test() {
 pub fn unjailed_skip_reason_carries_the_declared_marker_test() {
   assert exec.unjailed_skip_reason(exec.JailedHost) == None
   let assert Some(reason) =
-    exec.unjailed_skip_reason(exec.UnjailedHost("darwin"))
+    exec.unjailed_skip_reason(exec.UnjailedHost("windows"))
   assert string.contains(reason, exec.unjailed_skip_marker)
-  assert string.contains(reason, "darwin")
+  assert string.contains(reason, "windows")
   // The census greps `SKIP <name>: <reason>`; a colon before the first
   // one would split the line in the wrong place.
   assert !string.contains(exec.unjailed_skip_marker, ":")
 }
 
-// The two CI hosts must agree with the independent OS observation. Linux
-// has the phase-one jail, while Darwin must name why real-helper suites skip.
+// The two CI hosts must agree with the independent OS observation.
 pub fn host_platform_here_matches_the_ci_host_test() {
   case exec.host_platform() {
     exec.JailedHost -> {
-      assert ffi_os.os_name() == "linux"
+      assert list.contains(["linux", "darwin"], ffi_os.os_name())
     }
     exec.UnjailedHost(os_name) -> {
-      assert ffi_os.os_name() == "darwin"
-      assert os_name == "darwin"
+      assert !list.contains(["linux", "darwin"], ffi_os.os_name())
+      assert os_name == ffi_os.os_name()
       let assert Some(reason) =
         exec.unjailed_skip_reason(exec.UnjailedHost(os_name))
       assert string.contains(reason, "darwin")
     }
   }
+}
+
+pub fn darwin_required_layers_name_seatbelt_and_rlimits_test() {
+  let pol =
+    policy.SandboxPolicy(
+      ..network_off_policy(),
+      limits: policy.Limits(
+        ..network_off_policy().limits,
+        mem_bytes: 1024,
+        pids: 8,
+        cpu_s: 2,
+        fsize_bytes: 4096,
+      ),
+    )
+  assert exec.required_layers_for(Some(pol), "darwin")
+    == [
+      "seatbelt", "seatbelt-fs", "seatbelt-net", "rlimit-address-space",
+      "rlimit-processes", "rlimit-cpu", "rlimit-fsize",
+    ]
+}
+
+pub fn hello_features_choose_the_helpers_enforcement_matrix_test() {
+  assert exec.required_layers_for_features(None, ["rlimits", "seatbelt"])
+    == ["seatbelt", "seatbelt-fs"]
+  assert exec.required_layers_for_features(None, ["rlimits", "bwrap"])
+    == ["bwrap", "mounts", "landlock", "no-new-privs"]
 }
 
 pub fn silent_layer_fails_full_enforcement_test() {
@@ -649,7 +673,7 @@ pub fn missing_seccomp_fails_full_enforcement_test() {
   assert !list.any(result.enforcement, string.starts_with(_, "skip:"))
   assert exec.unapplied_layers(
       result.enforcement,
-      exec.required_layers(Some(network_off_policy())),
+      exec.required_layers_for(Some(network_off_policy()), "linux"),
     )
     == ["seccomp-net"]
   exec.shutdown(helper)
@@ -697,7 +721,7 @@ pub fn presence_refuses_nothing_the_skip_rule_already_refused_test() {
   // thing that speaks.
   let silent = ["bwrap"]
   assert !list.any(silent, string.starts_with(_, "skip:"))
-  assert exec.unapplied_layers(silent, exec.required_layers(None))
+  assert exec.unapplied_layers(silent, exec.required_layers_for(None, "linux"))
     == ["mounts", "landlock", "no-new-privs"]
 }
 

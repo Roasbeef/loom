@@ -11,6 +11,7 @@
 
 import broker/exec
 import broker/framing
+import broker/internal/ffi_os
 import broker/policy
 import broker/support/shell
 import gleam/bit_array
@@ -297,9 +298,9 @@ pub fn allow_unenforced_arg_is_harmless_where_a_jail_exists_test() {
   }
 }
 
-// The honesty contract for the ceilings only cgroups can hold: a policy
-// that asks for `mem_bytes` or `pids` gets back either the layer or a
-// `skip:` naming it. Silence would let exactly this policy satisfy a
+// The honesty contract for resource ceilings: a policy that asks for
+// `mem_bytes` or `pids` gets back either the platform's applied mechanism
+// or a `skip:` naming it. Silence would let exactly this policy satisfy a
 // `FullEnforcement` demand with neither ceiling in place.
 pub fn cgroup_ceiling_is_never_silently_dropped_test() {
   use helper <- with_real_helper("cgroup_ceiling_is_never_silently_dropped")
@@ -320,14 +321,24 @@ pub fn cgroup_ceiling_is_never_silently_dropped_test() {
     )
   let assert Ok(Nil) = exec.run(helper, req, events:, waiting: 3000)
   let assert Ok(#(_stdout, exit)) = collect_exit(events, <<>>, 15_000)
-  let applied = list.contains(exit.enforcement, "cgroup-v2")
+  case ffi_os.os_name() {
+    "darwin" -> {
+      assert layer_applied_or_skipped(exit, "rlimit-address-space")
+      assert layer_applied_or_skipped(exit, "rlimit-processes")
+    }
+    _ -> {
+      assert layer_applied_or_skipped(exit, "cgroup-v2")
+    }
+  }
+}
+
+fn layer_applied_or_skipped(result: exec.ExecResult, layer: String) -> Bool {
+  let applied = list.contains(result.enforcement, layer)
   let skipped =
-    list.any(exit.enforcement, fn(entry) {
-      string.starts_with(entry, "skip:cgroup-v2")
+    list.any(result.enforcement, fn(entry) {
+      string.starts_with(entry, "skip:" <> layer)
     })
-  assert applied != skipped
-    as "the wire must say either that a cgroup held the demanded ceilings
-or that none did"
+  applied != skipped
 }
 
 // The honesty patch's headline claim, end to end through the real
@@ -372,26 +383,41 @@ pub fn full_enforcement_never_accepts_unenforced_ceilings_test() {
         Ok(Nil) ->
           case collect_settled(events, 15_000) {
             Error(Nil) -> panic as "no terminal event arrived"
-            // Refused on ground truth. The refusal alone is not the
-            // claim: on a host missing some other layer this result
-            // would be refused anyway, and the cgroup gap would still
-            // be invisible. So insist the report names it.
+            // Refused on ground truth. The refusal alone is not the claim:
+            // on a host missing some other layer this result would be
+            // refused anyway, and the resource gap would still be invisible.
+            // Insist the report names the platform mechanism.
             Ok(exec.Failed(exec.DegradedExecution(result))) -> {
-              assert list.contains(result.enforcement, "cgroup-v2")
-                || list.any(result.enforcement, fn(entry) {
-                  string.starts_with(entry, "skip:cgroup-v2")
-                })
-                as "the demanded mem/pids ceilings are neither reported held
-nor reported skipped"
+              case ffi_os.os_name() {
+                "darwin" -> {
+                  assert layer_applied_or_skipped(
+                    result,
+                    "rlimit-address-space",
+                  )
+                  assert layer_applied_or_skipped(result, "rlimit-processes")
+                }
+                _ -> {
+                  assert layer_applied_or_skipped(result, "cgroup-v2")
+                }
+              }
               Nil
             }
             Ok(exec.Failed(other)) ->
               panic as { "unexpected failure: " <> string.inspect(other) }
             Ok(exec.Exited(result)) -> {
-              // Only legitimate if a cgroup really did hold them.
-              assert list.contains(result.enforcement, "cgroup-v2")
-                as "a strict demand for mem/pids ceilings was accepted with
-no cgroup-v2 entry in the enforcement report"
+              // Only legitimate if the platform mechanisms really held both.
+              case ffi_os.os_name() {
+                "darwin" -> {
+                  assert list.contains(
+                    result.enforcement,
+                    "rlimit-address-space",
+                  )
+                  assert list.contains(result.enforcement, "rlimit-processes")
+                }
+                _ -> {
+                  assert list.contains(result.enforcement, "cgroup-v2")
+                }
+              }
               Nil
             }
             Ok(exec.Output(..)) -> panic as "unreachable"

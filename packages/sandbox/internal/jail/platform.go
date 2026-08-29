@@ -18,10 +18,8 @@ import (
 // passes" that a Linux container prints, when the truthful statement is
 // that no confinement was even attempted.
 //
-// WP-H phase 1 is Linux. Phase 2 (macOS Seatbelt: generated deny-default
-// profiles applied with sandbox-exec/sandbox_init) and phase 3 (Windows
-// restricted tokens and ACLs) are specified and unbuilt. Nothing in this
-// tree has ever run on either platform.
+// WP-H phase 1 is Linux and phase 2 is macOS Seatbelt. Phase 3 (Windows
+// restricted tokens and ACLs) remains specified and unbuilt.
 type PlatformSupport struct {
 	// GOOS is the operating system this binary was built for.
 	GOOS string
@@ -47,19 +45,15 @@ const (
 // Platform reports the jail support compiled into this binary.
 func Platform() PlatformSupport { return PlatformFor(runtime.GOOS) }
 
-// PlatformFor is the pure decision, taking the OS as an argument so the
-// non-Linux answers are testable from Linux — which is the only place
-// they can be tested at all, since no macOS or Windows host has ever run
-// this code.
+// PlatformFor is the pure decision, taking the OS as an argument so every
+// platform answer is testable on every host. Live backend tests separately
+// exercise the kernel implementation on its native operating system.
 func PlatformFor(goos string) PlatformSupport {
 	switch goos {
 	case "linux":
 		return PlatformSupport{GOOS: goos, Implemented: true}
 	case "darwin":
-		return PlatformSupport{GOOS: goos, Reason: "jail: macOS Seatbelt " +
-			"(WP-H phase 2) is not implemented — loom-exec applies no " +
-			"filesystem view, no network filter, and no memory or " +
-			"process ceiling on darwin"}
+		return PlatformSupport{GOOS: goos, Implemented: true}
 	case "windows":
 		return PlatformSupport{GOOS: goos, Reason: "jail: the Windows " +
 			"sandbox (WP-H phase 3) is not implemented — loom-exec " +
@@ -67,7 +61,7 @@ func PlatformFor(goos string) PlatformSupport {
 	default:
 		return PlatformSupport{GOOS: goos, Reason: fmt.Sprintf(
 			"jail: loom-exec has no sandbox implementation for %s; "+
-				"only Linux is built (WP-H phase 1)", goos)}
+				"Linux and macOS are built (WP-H phases 1 and 2)", goos)}
 	}
 }
 

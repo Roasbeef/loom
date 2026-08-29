@@ -4,11 +4,9 @@
 # `.github/scripts/skip_census.sh` fails a job on any skip at all. That is
 # the right default: a feature-detected suite that declines to run still
 # exits zero, and four milestones were accepted while partial because
-# nothing said so. But one kind of skip is not a missing prerequisite —
-# it is a platform Loom does not have an implementation for, where the
-# only alternatives are to skip or to run the suite with nothing
-# enforcing the policy it claims to test. That is a decision, and this
-# file is where it is written down and reviewed.
+# nothing said so. Every remaining skip must name a missing environmental
+# prerequisite; a platform implementation gap is not entitled to a
+# declaration here.
 #
 # Format, one declared skip per line:
 #
@@ -28,19 +26,14 @@
 #   - declarations for other platforms are inert here, so the same file
 #     is read the same way by every job.
 #
-# Deleting a line is never the fix for a red census. Either the
-# prerequisite gets installed, or the reason gets written here.
+# Deleting a declaration is correct only when its skip has become unnecessary.
 
-# --- macOS: no jail exists, so nothing can enforce a policy.
+# --- macOS: the MCP teardown assertion has no process-observation API.
 #
-# `loom-exec` refuses to serve on darwin without --allow-unenforced
-# (packages/sandbox/internal/jail/platform.go): Seatbelt is WP-H phase 2
-# and deliberately unbuilt. The five suites that spawn a real helper could
-# pass --allow-unenforced through SpawnConfig.helper_args and run with no
-# confinement at all — but they exist to prove the sandbox, and a green
-# run over an unbuilt jail is precisely the substitution the sandbox's own
-# doc forbids. They skip instead, and say why.
-#
-# This line stops matching the day macOS grows a jail, which fails the
-# census and forces the declaration to be removed rather than forgotten.
-declared|darwin|no loom-exec jail for this platform|WP-H phase 2 (macOS Seatbelt) is unbuilt, so the helper refuses to serve and the alternative is an unconfined run reporting success for a jail that does not exist
+# The test exercises the real MCP server and its shutdown on every host. Its
+# final assertion additionally reads `/proc/<pid>` to prove the server process
+# disappeared. Darwin has no procfs and the test has no equivalent observation
+# API, so that assertion reports a precise platform skip after the functional
+# path has run. This declaration stops matching when the test gains a Darwin
+# process observation and makes the census demand its removal.
+declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|the real MCP exchange and shutdown ran, but Darwin has no procfs for the final independent pid-death assertion

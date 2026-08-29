@@ -1,6 +1,7 @@
 package jail
 
 import (
+	"os"
 	"os/exec"
 
 	"github.com/roasbeef/loom/sandbox/internal/cgroup"
@@ -16,6 +17,9 @@ type Features struct {
 	// BwrapPath is the resolved bubblewrap binary; empty means degraded
 	// mode (no mount/namespace layer).
 	BwrapPath string
+	// SeatbeltPath is the pinned system sandbox-exec binary on macOS;
+	// empty means the platform jail cannot be entered.
+	SeatbeltPath string
 	// LandlockABI is the kernel's Landlock ABI version; 0 with a reason
 	// when unavailable.
 	LandlockABI    int
@@ -41,14 +45,25 @@ func DetectFeatures() Features { return DetectFeaturesWith(cgroup.BaseFromEnv())
 // falls back to the helper's own cgroup, which only serves in the root
 // cgroup; see internal/cgroup for why.
 func DetectFeaturesWith(cgroupBase string) Features {
-	var f Features
-	if p, err := exec.LookPath("bwrap"); err == nil {
-		f.BwrapPath = p
+	f := Features{Platform: Platform()}
+	switch f.Platform.GOOS {
+	case "linux":
+		if p, err := exec.LookPath("bwrap"); err == nil {
+			f.BwrapPath = p
+		}
+		f.LandlockABI, f.LandlockReason = llock.ABIVersion()
+		f.Seccomp = seccompf.Supported()
+		f.CgroupDir, f.CgroupReason = cgroup.DetectBase(cgroupBase)
+	case "darwin":
+		if info, err := os.Stat(SeatbeltExecutable); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			f.SeatbeltPath = SeatbeltExecutable
+		}
+		f.LandlockReason = "Landlock is a Linux-only layer"
+		f.CgroupReason = "cgroup v2 is a Linux-only layer"
+	default:
+		f.LandlockReason = "Landlock is unavailable on " + f.Platform.GOOS
+		f.CgroupReason = "cgroup v2 is unavailable on " + f.Platform.GOOS
 	}
-	f.LandlockABI, f.LandlockReason = llock.ABIVersion()
-	f.Seccomp = seccompf.Supported()
-	f.CgroupDir, f.CgroupReason = cgroup.DetectBase(cgroupBase)
-	f.Platform = Platform()
 	return f
 }
 
@@ -60,19 +75,30 @@ func DetectFeaturesWith(cgroupBase string) Features {
 // the broker can tell them apart.
 func (f Features) List() []string {
 	out := []string{"rlimits", "pgroup"}
-	if f.BwrapPath != "" {
-		out = append(out, "bwrap")
-	} else {
+	switch f.Platform.GOOS {
+	case "linux":
+		if f.BwrapPath != "" {
+			out = append(out, "bwrap")
+		} else {
+			out = append(out, "degraded")
+		}
+		if f.LandlockABI > 0 {
+			out = append(out, "landlock")
+		}
+		if f.Seccomp {
+			out = append(out, "seccomp")
+		}
+		if f.CgroupDir != "" {
+			out = append(out, "cgroup-v2")
+		}
+	case "darwin":
+		if f.SeatbeltPath != "" {
+			out = append(out, "seatbelt")
+		} else {
+			out = append(out, "degraded")
+		}
+	default:
 		out = append(out, "degraded")
-	}
-	if f.LandlockABI > 0 {
-		out = append(out, "landlock")
-	}
-	if f.Seccomp {
-		out = append(out, "seccomp")
-	}
-	if f.CgroupDir != "" {
-		out = append(out, "cgroup-v2")
 	}
 	if !f.Platform.Implemented {
 		out = append(out, PlatformUnsupportedFeature)
@@ -84,5 +110,26 @@ func (f Features) List() []string {
 // how to build was not built: the mount/namespace layer is missing, or
 // there is no jail for the platform in the first place.
 func (f Features) Degraded() bool {
-	return f.BwrapPath == "" || !f.Platform.Implemented
+	if !f.Platform.Implemented {
+		return true
+	}
+	switch f.Platform.GOOS {
+	case "linux":
+		return f.BwrapPath == ""
+	case "darwin":
+		return f.SeatbeltPath == ""
+	default:
+		return true
+	}
+}
+
+// HasFilesystemJail reports whether this host can enforce writable roots and
+// protected paths with its primary platform backend.
+func (f Features) HasFilesystemJail() bool {
+	return f.BwrapPath != "" || f.SeatbeltPath != ""
+}
+
+// HasNetworkJail reports whether this host can deny direct Internet sockets.
+func (f Features) HasNetworkJail() bool {
+	return f.Seccomp || f.SeatbeltPath != ""
 }

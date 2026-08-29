@@ -87,6 +87,11 @@ type Exec struct {
 	cgDir  string
 	cg     cgroupOutcome
 	mounts MountReport
+	// seatbelt holds the generated macOS plan's enforcement entries. They
+	// are published only when stage 2 reports from inside the profile.
+	seatbelt   []string
+	scratchDir string
+	tracker    *processTracker
 }
 
 // cgroupOutcome records what became of the per-exec cgroup for one
@@ -133,26 +138,26 @@ func (c CgroupCeilings) names() string {
 // that varies by machine.
 const CgroupSkipPrefix = "cgroup-v2"
 
-const cgroupGateScript = `IFS= read -r _ <&5 || exit 125
+const startGateScript = `IFS= read -r _ <&5 || exit 125
 exec 5<&-
 exec "$@"`
 
-// withCgroupStartGate wraps argv in a constant shell program that waits on
+// withStartGate wraps argv in a constant shell program that waits on
 // fd 5, closes it, and then replaces itself with argv. The original arguments
 // are positional parameters, never shell source, so model-controlled bytes do
 // not cross an interpolation boundary.
-func withCgroupStartGate(argv []string) []string {
+func withStartGate(argv []string) []string {
 	// Privileged shell mode does not grant a new privilege here. It prevents
 	// startup hooks and exported functions from replacing the read builtin
 	// before the shell enters the cgroup.
-	wrapped := []string{"/bin/sh", "-p", "-c", cgroupGateScript, "loom-cgroup-gate"}
+	wrapped := []string{"/bin/sh", "-p", "-c", startGateScript, "loom-start-gate"}
 	return append(wrapped, argv...)
 }
 
-// releaseCgroupStartGate sends the one valid release token and closes the
+// releaseStartGate sends the one valid release token and closes the
 // parent's pipe end. Closing without the token makes the shell's read fail, so
 // error cleanup cannot accidentally launch the command it is trying to abort.
-func releaseCgroupStartGate(release *os.File) error {
+func releaseStartGate(release *os.File) error {
 	_, writeErr := release.Write([]byte{'\n'})
 	closeErr := release.Close()
 	if writeErr != nil {
@@ -225,7 +230,16 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 
 	var argv []string
 	var mounts MountReport
-	if feat.BwrapPath != "" {
+	var seatbelt []string
+	var scratchDir string
+	removeScratch := true
+	defer func() {
+		if removeScratch && scratchDir != "" {
+			_ = os.RemoveAll(scratchDir)
+		}
+	}()
+	switch {
+	case feat.Platform.GOOS == "linux" && feat.BwrapPath != "":
 		// The mount plan is built from a policy whose protected paths
 		// have been resolved through their symlinks; see resolveProtected.
 		jailed := req.Policy
@@ -260,15 +274,43 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		mounts = AuditMounts(jailed, plan)
 		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds)...)
 		argv = append(argv, stage2...)
-	} else {
+	case feat.Platform.GOOS == "darwin":
+		if feat.SeatbeltPath != SeatbeltExecutable {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: macOS Seatbelt is unavailable at %s; "+
+				"refusing to run without a filesystem and network jail",
+				SeatbeltExecutable)
+		}
+		if req.Policy.ScratchIsTmpfs() {
+			scratchDir, err = os.MkdirTemp("", "loom-exec-scratch-")
+			if err != nil {
+				policyR.Close()
+				reportR.Close()
+				reportW.Close()
+				return nil, fmt.Errorf("jail: create private macOS scratch: %w", err)
+			}
+			if err := os.Chmod(scratchDir, 0o700); err != nil {
+				policyR.Close()
+				reportR.Close()
+				reportW.Close()
+				return nil, fmt.Errorf("jail: protect private macOS scratch: %w", err)
+			}
+		}
+		plan := SeatbeltPlanFor(req.Policy, scratchDir)
+		argv = plan.Args(stage2)
+		seatbelt = plan.Enforcement(req.Policy.Network.Mode)
+	default:
 		argv = stage2
 	}
 
-	cg := cgroupOutcome{
-		ceilings: CgroupCeilings{
+	var cg cgroupOutcome
+	if feat.Platform.GOOS == "linux" {
+		cg.ceilings = CgroupCeilings{
 			Mem:  req.Policy.Limits.MemBytes > 0,
 			Pids: req.Policy.Limits.Pids > 0,
-		},
+		}
 	}
 	if cg.wanted() {
 		cg.reason = feat.CgroupReason
@@ -280,7 +322,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 	// moved, it execs argv without forking, so bwrap and every payload descendant
 	// are born in the per-exec cgroup.
 	var gateR, gateW *os.File
-	if feat.CgroupDir != "" && cg.wanted() {
+	if feat.Platform.GOOS == "darwin" || feat.CgroupDir != "" && cg.wanted() {
 		gateR, gateW, err = os.Pipe()
 		if err != nil {
 			policyR.Close()
@@ -288,7 +330,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 			reportW.Close()
 			return nil, fmt.Errorf("jail: cgroup start gate: %w", err)
 		}
-		argv = withCgroupStartGate(argv)
+		argv = withStartGate(argv)
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -366,18 +408,38 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		gateR.Close()
 	}
 
+	var tracker *processTracker
+	if feat.Platform.GOOS == "darwin" {
+		tracker, err = startProcessTracker(cmd.Process.Pid)
+		if err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+			stdinW.Close()
+			reportR.Close()
+			stdoutR.Close()
+			stderrR.Close()
+			if gateW != nil {
+				gateW.Close()
+			}
+			return nil, err
+		}
+	}
+
 	e := &Exec{
-		cmd:     cmd,
-		pgid:    cmd.Process.Pid, // Setsid ⇒ pgid == child pid
-		started: time.Now(),
-		stdinW:  stdinW,
-		reportR: reportR,
-		stdout:  NewStreamLimiter(req.Policy.Limits.OutputBytes),
-		stderr:  NewStreamLimiter(req.Policy.Limits.OutputBytes),
-		esc:     NewEscalation(KillGrace),
-		feat:    feat,
-		cg:      cg,
-		mounts:  mounts,
+		cmd:        cmd,
+		pgid:       cmd.Process.Pid, // Setsid ⇒ pgid == child pid
+		started:    time.Now(),
+		stdinW:     stdinW,
+		reportR:    reportR,
+		stdout:     NewStreamLimiter(req.Policy.Limits.OutputBytes),
+		stderr:     NewStreamLimiter(req.Policy.Limits.OutputBytes),
+		esc:        NewEscalation(KillGrace),
+		feat:       feat,
+		cg:         cg,
+		mounts:     mounts,
+		seatbelt:   seatbelt,
+		scratchDir: scratchDir,
+		tracker:    tracker,
 	}
 
 	// Best-effort cgroup membership: configure and enter the blocked shell,
@@ -405,8 +467,11 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		}
 	}
 	if gateW != nil {
-		if err := releaseCgroupStartGate(gateW); err != nil {
+		if err := releaseStartGate(gateW); err != nil {
 			_ = syscall.Kill(-e.pgid, syscall.SIGKILL)
+			if e.tracker != nil {
+				e.tracker.close()
+			}
 			_ = e.cmd.Wait()
 			e.stdinW.Close()
 			e.reportR.Close()
@@ -432,6 +497,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		})
 	}
 
+	removeScratch = false
 	return e, nil
 }
 
@@ -500,6 +566,9 @@ func (e *Exec) Cancel() {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			if e.esc.Tick(time.Now()) == SigKill {
+				if e.tracker != nil {
+					e.tracker.signal(syscall.SIGKILL)
+				}
 				_ = syscall.Kill(-e.pgid, syscall.SIGKILL)
 			}
 		})
@@ -524,6 +593,15 @@ func (e *Exec) term() {
 			return
 		}
 	}
+	if e.tracker != nil {
+		// Darwin has no PID namespace. The process group reaches every
+		// ordinary descendant immediately; the tracker additionally reaches
+		// descendants that escaped it with setsid. Neither is a substitute for
+		// the other, so TERM must cover both sets.
+		e.tracker.signal(syscall.SIGTERM)
+		_ = syscall.Kill(-e.pgid, syscall.SIGTERM)
+		return
+	}
 	_ = syscall.Kill(-e.pgid, syscall.SIGTERM)
 }
 
@@ -536,6 +614,10 @@ func (e *Exec) term() {
 func (e *Exec) Wait() Result {
 	err := e.cmd.Wait()
 
+	if e.tracker != nil {
+		e.tracker.signal(syscall.SIGKILL)
+		e.tracker.close()
+	}
 	// The direct child is gone; anything left in the group is an orphan
 	// (and in bwrap mode the dying PID namespace has already taken the
 	// whole subtree with it). ESRCH is the happy case.
@@ -565,6 +647,9 @@ func (e *Exec) Wait() Result {
 		pidsMax = cgroup.ReadPidsEventsMax(e.cgDir)
 		_ = cgroup.Cleanup(e.cgDir)
 	}
+	if e.scratchDir != "" {
+		_ = os.RemoveAll(e.scratchDir)
+	}
 
 	res := Result{
 		PidsMaxEvents:   pidsMax,
@@ -578,7 +663,7 @@ func (e *Exec) Wait() Result {
 		Cancelled:       cancelled,
 	}
 
-	res.Enforcement = enforcementEntries(e.feat, e.cg, e.mounts, s2)
+	res.Enforcement = enforcementEntries(e.feat, e.cg, e.mounts, e.seatbelt, s2)
 
 	if err == nil {
 		res.Code = 0
@@ -682,7 +767,7 @@ const BwrapUnwitnessedSkip = "bwrap: stage 2 sent no enforcement report " +
 // same way. A policy that asked for `mem_bytes` or `pids` and got no
 // cgroup has an unenforced ceiling, and saying nothing about it would let
 // exactly that result satisfy a full-enforcement demand.
-func enforcementEntries(feat Features, cg cgroupOutcome, mounts MountReport, s2 stage2Report) []string {
+func enforcementEntries(feat Features, cg cgroupOutcome, mounts MountReport, seatbelt []string, s2 stage2Report) []string {
 	var out []string
 	if !feat.Platform.Implemented {
 		out = append(out, "skip:"+feat.Platform.Reason)
@@ -695,6 +780,13 @@ func enforcementEntries(feat Features, cg cgroupOutcome, mounts MountReport, s2 
 			}
 		} else {
 			out = append(out, "skip:"+BwrapUnwitnessedSkip)
+		}
+	}
+	if feat.SeatbeltPath != "" {
+		if s2.received {
+			out = append(out, seatbelt...)
+		} else {
+			out = append(out, "skip:"+SeatbeltUnwitnessedSkip)
 		}
 	}
 	if cg.attached {

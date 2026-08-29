@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"syscall"
 
@@ -27,6 +28,16 @@ const (
 	policyFD = 3
 	reportFD = 4
 )
+
+// DarwinLifecycleSkip records the one containment property Seatbelt cannot
+// provide. The profile follows every fork, so a missed descendant remains
+// filesystem- and network-confined, but macOS has no PID namespace or
+// subreaper. A daemonizing double-fork can therefore be reparented between
+// process-table samples and outlive the execution. FullEnforcement must see
+// that limitation rather than accept sampled cleanup as a kernel guarantee.
+const DarwinLifecycleSkip = "darwin-process-lifecycle: macOS has no PID " +
+	"namespace or subreaper; rapid reparenting can evade sampled descendant " +
+	"cleanup while retaining the Seatbelt profile"
 
 // RunStage2 is the spec's helper in its purest form: parse the policy
 // from fd 3, apply every in-process restriction to *ourselves*, report
@@ -84,44 +95,93 @@ func RunStage2(cfg Stage2Config) error {
 		rep.Applied = append(rep.Applied, "rlimit-cpu")
 	}
 
-	// Landlock: second filesystem layer (first, in degraded mode).
-	if abi, reason := llock.ABIVersion(); abi > 0 {
-		if err := llock.Apply(llock.Rules(landlockView(pol))); err != nil {
-			return fmt.Errorf("stage2: landlock: %w", err)
-		}
-		rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
-	} else {
-		rep.Skipped = append(rep.Skipped, "landlock: "+reason)
-	}
-
-	// no_new_privs wherever the platform has it: nothing exec'd from a
-	// jail may ever acquire privilege via setuid/fscaps, whether or not
-	// seccomp below also demands it. Cheap, irreversible, inherited.
-	// Where the prctl does not exist the layer is *skipped*, by name.
-	switch reason, err := noNewPrivs(); {
-	case err != nil:
-		return fmt.Errorf("stage2: set no_new_privs: %w", err)
-	case reason != "":
-		rep.Skipped = append(rep.Skipped, reason)
-	default:
-		rep.Applied = append(rep.Applied, "no-new-privs")
-	}
-
-	// seccomp network filter whenever the policy denies direct sockets:
-	// mode "off", and mode "proxy" — which in phase 1 fails closed to
-	// no direct network (no sidecar exists to enforce the allowlist)
-	// and must say so in the report rather than pretend the proxy
-	// confinement was applied.
-	if BlocksDirectNetwork(pol.Network.Mode) {
-		if seccompf.Supported() {
-			if err := seccompf.Install(); err != nil {
-				return fmt.Errorf("stage2: seccomp: %w", err)
+	switch runtime.GOOS {
+	case "linux":
+		// Landlock is the second filesystem layer on Linux, and the first in
+		// degraded mode.
+		if abi, reason := llock.ABIVersion(); abi > 0 {
+			if err := llock.Apply(llock.Rules(landlockView(pol))); err != nil {
+				return fmt.Errorf("stage2: landlock: %w", err)
 			}
-			rep.Applied = append(rep.Applied, "seccomp-net")
+			rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
 		} else {
-			rep.Skipped = append(rep.Skipped, "seccomp: kernel lacks seccomp filter support")
+			rep.Skipped = append(rep.Skipped, "landlock: "+reason)
 		}
+
+		// no_new_privs prevents privilege gain through setuid binaries and
+		// file capabilities, and seccomp blocks direct sockets under the two
+		// network-restricted policies.
+		switch reason, err := noNewPrivs(); {
+		case err != nil:
+			return fmt.Errorf("stage2: set no_new_privs: %w", err)
+		case reason != "":
+			rep.Skipped = append(rep.Skipped, reason)
+		default:
+			rep.Applied = append(rep.Applied, "no-new-privs")
+		}
+		if BlocksDirectNetwork(pol.Network.Mode) {
+			if seccompf.Supported() {
+				if err := seccompf.Install(); err != nil {
+					return fmt.Errorf("stage2: seccomp: %w", err)
+				}
+				rep.Applied = append(rep.Applied, "seccomp-net")
+			} else {
+				rep.Skipped = append(rep.Skipped,
+					"seccomp: kernel lacks seccomp filter support")
+			}
+		}
+
+	case "darwin":
+		// Seatbelt owns filesystem and network confinement outside this
+		// stage. Current Darwin kernels expose RLIMIT_AS but reject a finite
+		// value, so that known unsupported result is reported instead of
+		// aborting an otherwise confined execution. If a future kernel accepts
+		// the limit, the same path reports it applied. RLIMIT_NPROC is
+		// inherited, though it is a per-user rather than per-execution ceiling;
+		// the report names the exact mechanism rather than pretending Linux
+		// cgroups exist here.
+		if n := pol.Limits.MemBytes; n > 0 {
+			lim := unix.Rlimit{Cur: n, Max: n}
+			if err := unix.Setrlimit(unix.RLIMIT_AS, &lim); err != nil {
+				rep.Skipped = append(rep.Skipped,
+					"rlimit-address-space: "+err.Error()+
+						"; mem_bytes was NOT applied")
+			} else {
+				rep.Applied = append(rep.Applied, "rlimit-address-space")
+			}
+		}
+		if n := pol.Limits.Pids; n > 0 {
+			current, countErr := CurrentUserProcessCount()
+			switch {
+			case countErr != nil:
+				rep.Skipped = append(rep.Skipped,
+					"rlimit-processes: count current uid processes: "+
+						countErr.Error()+"; pids was NOT applied")
+			case current >= n:
+				rep.Skipped = append(rep.Skipped, fmt.Sprintf(
+					"rlimit-processes: current uid already has %d processes, "+
+						"not below requested limit %d; pids was NOT applied",
+					current, n))
+			default:
+				lim := unix.Rlimit{Cur: n, Max: n}
+				if err := unix.Setrlimit(unix.RLIMIT_NPROC, &lim); err != nil {
+					rep.Skipped = append(rep.Skipped,
+						"rlimit-processes: "+err.Error()+
+							"; pids was NOT applied")
+				} else {
+					rep.Applied = append(rep.Applied, "rlimit-processes")
+				}
+			}
+		}
+		rep.Skipped = append(rep.Skipped, DarwinLifecycleSkip)
+
+	default:
+		rep.Skipped = append(rep.Skipped,
+			"platform-restrictions: no in-process driver for "+runtime.GOOS)
 	}
+
+	// Proxy mode remains narrowed to network-off on every platform until
+	// the harness-owned allowlisting sidecar exists.
 	if pol.Network.Mode == policy.NetworkProxy {
 		rep.Skipped = append(rep.Skipped, ProxyUnenforcedSkip)
 	}

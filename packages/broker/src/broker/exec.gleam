@@ -773,7 +773,7 @@ fn handle_run(
       case request.demand, degraded_features(features) {
         FullEnforcement, True ->
           refuse_run(state, reply, DegradedHelper(features:))
-        _, _ -> dispatch_exec(state, request, events, reply)
+        _, _ -> dispatch_exec(state, request, features, events, reply)
       }
   }
 }
@@ -792,6 +792,7 @@ fn refuse_run(
 fn dispatch_exec(
   state: State,
   request: ExecRequest,
+  features: List(String),
   events: Subject(ExecEvent),
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> actor.Next(State, Msg) {
@@ -813,7 +814,7 @@ fn dispatch_exec(
       id:,
       events:,
       demand: request.demand,
-      required: required_layers(request.policy),
+      required: required_layers_for_features(request.policy, features),
       cancel_timer: None,
     )
   let state = State(..state, exec: Some(exec))
@@ -838,16 +839,17 @@ fn degraded_features(features: List(String)) -> Bool {
 /// inner report — Landlock, seccomp, no_new_privs, the rlimits — absent.
 /// A layer that says nothing is not a layer that was applied.
 ///
-/// Four tags are unconditional on a Linux jail, because the helper
-/// applies them for every policy: `bwrap` (the namespace layer),
-/// `mounts` (that layer's audit of what the resolved plan narrowed),
-/// `landlock`, and `no-new-privs`. The rest are asked for by the policy
-/// itself, and are required only when it asks:
+/// Linux requires `bwrap`, `mounts`, `landlock`, and `no-new-privs`.
+/// macOS requires `seatbelt` and `seatbelt-fs`. The rest are asked for by
+/// the policy itself, and each platform names its actual mechanism:
 ///
 /// | policy                    | tag            |
 /// |---------------------------|----------------|
-/// | `network` off or proxy    | `seccomp-net`  |
-/// | `mem_bytes` or `pids` > 0 | `cgroup-v2`    |
+/// | Linux network off/proxy   | `seccomp-net`  |
+/// | macOS network off/proxy   | `seatbelt-net` |
+/// | Linux memory/pids > 0     | `cgroup-v2`    |
+/// | macOS memory > 0          | `rlimit-address-space` |
+/// | macOS pids > 0            | `rlimit-processes` |
 /// | `cpu_s` > 0               | `rlimit-cpu`   |
 /// | `fsize_bytes` > 0         | `rlimit-fsize` |
 ///
@@ -855,29 +857,86 @@ fn degraded_features(features: List(String)) -> Bool {
 /// base, whose conditional layers this actor cannot see; only the
 /// unconditional four are required then.
 pub fn required_layers(policy: Option(SandboxPolicy)) -> List(String) {
-  let base = ["bwrap", "mounts", "landlock", "no-new-privs"]
+  required_layers_for(policy, ffi_os.os_name())
+}
+
+/// The enforcement matrix selected by the helper that will execute the
+/// request. Tests and remote helpers may not run the same backend as the
+/// broker VM, so the hello frame, not the VM's operating system, chooses it.
+pub fn required_layers_for_features(
+  policy: Option(SandboxPolicy),
+  features: List(String),
+) -> List(String) {
+  let os_name = case list.contains(features, "seatbelt") {
+    True -> "darwin"
+    False -> "linux"
+  }
+  required_layers_for(policy, os_name)
+}
+
+/// `required_layers` with an explicit OS name, so both platform matrices are
+/// testable on either CI host.
+pub fn required_layers_for(
+  policy: Option(SandboxPolicy),
+  os_name: String,
+) -> List(String) {
+  let base = base_layers_for(os_name)
   case policy {
     None -> base
     Some(policy) ->
       list.flatten([
         base,
-        case policy.network {
-          policy.NetworkOff | policy.NetworkProxy(..) -> ["seccomp-net"]
-          policy.NetworkFull -> []
-        },
-        case policy.limits.mem_bytes > 0 || policy.limits.pids > 0 {
-          True -> ["cgroup-v2"]
-          False -> []
-        },
-        case policy.limits.cpu_s > 0 {
-          True -> ["rlimit-cpu"]
-          False -> []
-        },
-        case policy.limits.fsize_bytes > 0 {
-          True -> ["rlimit-fsize"]
-          False -> []
-        },
+        network_layers_for(policy.network, os_name),
+        resource_layers_for(policy.limits, os_name),
+        optional_layer(policy.limits.cpu_s > 0, "rlimit-cpu"),
+        optional_layer(policy.limits.fsize_bytes > 0, "rlimit-fsize"),
       ])
+  }
+}
+
+fn base_layers_for(os_name: String) -> List(String) {
+  case os_name {
+    "darwin" -> ["seatbelt", "seatbelt-fs"]
+    "linux" -> ["bwrap", "mounts", "landlock", "no-new-privs"]
+    _ -> []
+  }
+}
+
+fn network_layers_for(
+  network: policy.NetworkPolicy,
+  os_name: String,
+) -> List(String) {
+  case network {
+    policy.NetworkOff | policy.NetworkProxy(..) ->
+      case os_name {
+        "darwin" -> ["seatbelt-net"]
+        "linux" -> ["seccomp-net"]
+        _ -> []
+      }
+    policy.NetworkFull -> []
+  }
+}
+
+fn resource_layers_for(limits: policy.Limits, os_name: String) -> List(String) {
+  case limits.mem_bytes > 0 || limits.pids > 0 {
+    False -> []
+    True ->
+      case os_name {
+        "darwin" ->
+          list.flatten([
+            optional_layer(limits.mem_bytes > 0, "rlimit-address-space"),
+            optional_layer(limits.pids > 0, "rlimit-processes"),
+          ])
+        "linux" -> ["cgroup-v2"]
+        _ -> []
+      }
+  }
+}
+
+fn optional_layer(enabled: Bool, layer: String) -> List(String) {
+  case enabled {
+    True -> [layer]
+    False -> []
   }
 }
 
@@ -1281,9 +1340,9 @@ pub type HostPlatform {
   /// Loom has a jail here. The helper serves with no extra argument,
   /// and a missing kernel layer is reported as a skip, not a refusal.
   JailedHost
-  /// Loom has no jail here (macOS Seatbelt is WP-H phase 2, the Windows
-  /// sandbox phase 3; neither is built). `loom-exec` refuses to serve
-  /// without `--allow-unenforced`, and with it confines nothing at all.
+  /// Loom has no jail here (the Windows sandbox is WP-H phase 3 and remains
+  /// unbuilt). `loom-exec` refuses to serve without `--allow-unenforced`, and
+  /// with it confines nothing at all.
   UnjailedHost(os_name: String)
 }
 
@@ -1293,12 +1352,12 @@ pub fn host_platform() -> HostPlatform {
 }
 
 /// The pure decision, taking `os:type/0`'s name so the answers no Linux
-/// host can reach are still testable from Linux. Kept deliberately in
-/// step with the helper's own `PlatformFor`: Linux is phase 1 and is the
-/// only jail that exists.
+/// host can reach are still testable from Linux. Kept deliberately in step
+/// with the helper's own `PlatformFor`: Linux is phase 1, macOS is phase 2,
+/// and Windows remains unimplemented phase 3.
 pub fn host_platform_for(os_name: String) -> HostPlatform {
   case os_name {
-    "linux" -> JailedHost
+    "linux" | "darwin" -> JailedHost
     other -> UnjailedHost(os_name: other)
   }
 }

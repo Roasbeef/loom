@@ -10,15 +10,16 @@ applied and which were skipped and why. It depends on no Loom package;
 the frozen wire protocol (`packages/broker`'s `broker/framing`) is the
 entire coupling.
 
-Only Linux has a jail today. macOS Seatbelt and the Windows sandbox are
-specified and unbuilt; on those platforms the helper refuses to serve
-at all rather than run with nothing enforcing the policy operators asked
-for.
+Linux and macOS have native jails. Linux stacks bubblewrap, Landlock,
+seccomp, cgroup v2, and rlimits. macOS uses a generated deny-default
+Seatbelt profile plus the rlimits Darwin can actually enforce. Windows and
+unknown targets remain unsupported; on those platforms the helper refuses to
+serve rather than run with nothing enforcing the requested policy.
 
 ## The layers, and how they stack
 
-A single execution passes through five independent kernel mechanisms,
-each contributing something the others cannot:
+A Linux execution passes through five independent kernel mechanisms, each
+contributing something the others cannot:
 
 ```mermaid
 flowchart TD
@@ -27,12 +28,27 @@ flowchart TD
     LL["Landlock<br/>filesystem access rules (no deny rules —<br/>a protected path INSIDE a writable root<br/>needs bwrap's mask, not this)"]
     SC["seccomp<br/>network-off at socket(2)/socketpair(2);<br/>TSYNC binds every Go runtime thread"]
     CG["cgroup v2<br/>memory + pids ceilings, via a delegated,<br/>process-empty base"]
-    RL["rlimits<br/>CPU wall time only —<br/>RLIMIT_AS/NPROC are trivially escaped, unused"]
+    RL["rlimits<br/>CPU and file-size ceilings"]
     EXEC["execve(target)"]
     REPORT["jail.Report on fd 4:<br/>Applied entries (terse tags) +<br/>Skipped entries (reasons, never silent)"]
 
     P --> BW --> LL --> SC --> CG --> RL --> EXEC --> REPORT
 ```
+
+On macOS, the helper wraps the same restrict-and-exec stage in the pinned
+system `/usr/bin/sandbox-exec`. The generated profile grants read-only host
+visibility, typed writable roots, a private mode-0700 scratch directory, and
+AF_UNIX capability sockets; final subtractive rules hide protected logical
+and resolved paths. Internet bind and outbound access exist only for
+`NetworkFull`. Policy paths cross into SBPL as `-D` parameters, never as
+interpolated profile source.
+
+Darwin has no per-execution cgroup equivalent. A finite `RLIMIT_AS` is
+attempted and explicitly skipped when the kernel rejects it. Because
+`RLIMIT_NPROC` counts every process owned by the user, Loom installs it only
+when the current user-wide process floor is below the requested value; on a
+busy account it reports the omitted ceiling instead of breaking every child
+fork. A strict enforcement demand rejects either skip.
 
 **bwrap owns all namespace and mount work**, deliberately: the Go runtime
 is multithreaded from its first instruction, and assembling namespaces
@@ -74,17 +90,27 @@ flowchart LR
 `writable_roots`, a protected-path write, a direct socket under network
 off, an env var outside the allowlist, a fork bomb against the pids
 limit, an output flood against the per-stream cap, an orphaned
-grandchild reaped via the pgroup, a `setsid` escape contained by the PID
-namespace, and — the one that matters most for the confinement claim
-this whole package makes — an unvetted `.beam` denied host write, secret
-read, and network. `--allow-unenforced` is reserved for one narrow case:
-an *unsupported platform*, never a degraded one. A Linux host missing
-bwrap or Landlock still enforces something real and reports what it
-could not; a build with no jail at all for its OS has a gap in Loom
+grandchild reaped via the pgroup, an observed `setsid` escape reaped by the
+platform lifecycle mechanism, and an unvetted `.beam` denied host write,
+secret read, and network. That hostile `.beam` is the probe that matters most
+for the confinement claim this whole package makes. `--allow-unenforced` is
+reserved for one narrow case:
+an *unsupported platform*, never a degraded one. A host missing one of its
+native layers still enforces what remains and reports what it could not; a
+build with no jail at all for its OS has a gap in Loom
 itself, and that gap gets its own vocabulary — `platform-unsupported` in
 `hello.features`, `skip:jail: …` leading every per-exec enforcement list,
 `RESULT: UNSUPPORTED PLATFORM` from `--self-test`, and server mode
 refusing to start without the flag.
+
+The Darwin process-table tracker is a best-effort lifecycle backstop, not a
+PID namespace. It reaches observed descendants that leave the process group,
+but a rapid daemonizing double-fork can be reparented between samples. Every
+Darwin execution reports that limitation as
+`skip:darwin-process-lifecycle`, which makes `FullEnforcement` refuse it.
+Seatbelt follows the missed descendant across forks, so filesystem and network
+confinement remain in force even though execution-lifetime cleanup is not
+guaranteed.
 
 ## The hostile-`.beam` probe, and what "confined" actually means here
 

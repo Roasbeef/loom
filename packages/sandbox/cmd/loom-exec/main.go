@@ -26,6 +26,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/roasbeef/loom/sandbox/internal/cgroup"
@@ -64,6 +65,8 @@ func main() {
 		probeSocket()
 	case args[0] == "--probe-setsid":
 		probeSetsid()
+	case args[0] == "--probe-fork":
+		probeFork()
 	case args[0] == "--help" || args[0] == "-h":
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(0)
@@ -76,8 +79,8 @@ func main() {
 const usage = `usage: loom-exec [--self-test] [--allow-unenforced] [--cgroup-base DIR]
 Server mode (no arguments) expects a SandboxPolicyV1 on fd 3 and the
 framing protocol on stdin/stdout. --exec, --probe-socket and
---probe-setsid are internal. --allow-unenforced serves anyway on a
-platform with no jail (macOS, Windows); without it such a build refuses
+--probe-setsid and --probe-fork are internal. --allow-unenforced serves anyway on a
+platform with no jail (Windows and unknown targets); without it such a build refuses
 to serve at all. --cgroup-base names a delegated, process-empty cgroup v2
 directory to create per-exec cgroups under (` + cgroup.BaseEnvVar + ` does
 the same); without one, memory and process ceilings are reported skipped
@@ -214,16 +217,46 @@ func probeSetsid() {
 // outlast the self-test's patience; see internal/selftest.
 const probeSetsidHold = 30 * time.Second
 
-// probeSocket attempts to create an AF_INET stream socket, printing
-// exactly one token on stdout. Exit code mirrors the token so callers
-// can use either.
+// probeSocket attempts to create and bind an AF_INET stream socket, printing
+// exactly one token on stdout. Linux seccomp denies creation; macOS Seatbelt
+// denies use. In either backend, "socket-created" means the process obtained a
+// usable direct IP socket under a policy that forbids one.
 func probeSocket() {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
 	if err == nil {
-		unix.Close(fd)
+		err = unix.Bind(fd, &unix.SockaddrInet4{
+			Addr: [4]byte{127, 0, 0, 1},
+		})
+		_ = unix.Close(fd)
+	}
+	if err == nil {
 		fmt.Println("socket-created")
 		os.Exit(0)
 	}
 	fmt.Println("socket-denied")
 	os.Exit(1)
+}
+
+// probeFork holds more children than the self-test's process rlimit permits.
+// The first refused spawn is the macOS witness that RLIMIT_NPROC took effect.
+func probeFork() {
+	children := make([]*exec.Cmd, 0, 64)
+	denied := false
+	for i := 0; i < cap(children); i++ {
+		cmd := exec.Command("/bin/sleep", "2")
+		if err := cmd.Start(); err != nil {
+			denied = true
+			break
+		}
+		children = append(children, cmd)
+	}
+	for _, child := range children {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}
+	if denied {
+		fmt.Println("fork-denied")
+		os.Exit(1)
+	}
+	fmt.Println("fork-all-started")
 }

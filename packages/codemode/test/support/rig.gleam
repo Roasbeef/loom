@@ -81,9 +81,11 @@ pub fn wall_clock() -> Clock {
   clock.from_function(ffi_peer.now_ms)
 }
 
-/// Stands up a rig under `build/e2e-codemode/<name>`: a fresh root (any
-/// previous run's state removed), a helper pool of `pool_size`, and a
-/// broker whose checkout borrows from it.
+/// Stands up a rig under the configured short scratch root, then HOME, then
+/// `build/e2e-codemode`: any previous state is removed before a helper pool
+/// and broker are started. The shallow preferred roots keep AF_UNIX socket
+/// paths within Darwin's byte limit without hiding them under `/tmp`, which
+/// the jail deliberately replaces.
 ///
 /// Panics on failure — a rig that cannot start is a test failure, not a
 /// skip, because `prerequisites` already proved the pieces are there.
@@ -93,7 +95,15 @@ pub fn start(
   pool_size pool_size: Int,
 ) -> Rig {
   let assert Ok(here) = simplifile.current_directory()
-  let root = here <> "/build/e2e-codemode/" <> name
+  let base = case ffi_peer.get_env("LOOM_TEST_SCRATCH") {
+    Ok(scratch) -> scratch
+    Error(Nil) ->
+      case ffi_peer.get_env("HOME") {
+        Ok(home) -> home <> "/.loom-cmtest"
+        Error(Nil) -> here <> "/build/e2e-codemode"
+      }
+  }
+  let root = base <> "/e2e-" <> name
   let _cleared = simplifile.delete(root)
   let workspace = root <> "/work"
   let build_root = root <> "/build-root"
