@@ -1721,13 +1721,51 @@ pub fn protecting_index(
   // than protected as a directory because the index sits beside the
   // session file, where a protected directory would swallow paths the
   // operator owns.
+  //
+  // The side files ride along only where a writable root reaches their
+  // directory, and that condition is the threat model, not a
+  // convenience: the harness fs tools are workspace-contained and the
+  // jail makes a file under a read-only parent uncreatable, so with the
+  // index outside every writable root there is no write path to bar —
+  // while a *missing* protected entry under a read-only parent is one
+  // the jail refuses to mask, which turned this list into a refusal of
+  // every jailed call for the ordinary session-outside-the-workspace
+  // layout. The database itself is always protected: the boot's probe
+  // creates it, and masking an existing file needs nothing from its
+  // parent. The residual is stated rather than hidden: an approval
+  // granting a writable root over the session's own directory reopens
+  // the side-file door — and already exposes the unprotected session
+  // file itself, which is the larger half of that decision.
+  let family = case writable_reaches(base, parent_of(index_path)) {
+    True -> [
+      index_path <> "-wal",
+      index_path <> "-shm",
+      index_path <> "-journal",
+    ]
+    False -> []
+  }
   policy.SandboxPolicy(..base, protected: [
     index_path,
-    index_path <> "-wal",
-    index_path <> "-shm",
-    index_path <> "-journal",
-    ..base.protected
+    ..list.append(family, base.protected)
   ])
+}
+
+// Whether any writable root covers `directory` — the question of
+// whether a jailed or harness-side write could create a file there.
+fn writable_reaches(base: policy.SandboxPolicy, directory: String) -> Bool {
+  list.any(base.writable_roots, fn(root) {
+    policy.covers(root: root, path: directory)
+  })
+}
+
+// The directory holding a path: everything before the last slash. The
+// index path is absolute by construction (`index_path` resolves it), so
+// there is always a slash to find.
+fn parent_of(path: String) -> String {
+  case string.split(path, "/") |> list.reverse {
+    [_leaf, ..parents] -> parents |> list.reverse |> string.join("/")
+    [] -> path
+  }
 }
 
 // The recall seam, or nothing and one line saying why.

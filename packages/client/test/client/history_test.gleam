@@ -87,6 +87,20 @@ pub fn a_model_side_write_to_the_index_is_refused_test() {
     as "a write reaching the index must be refused by the protected entry"
   assert protected == index
 
+  // The ordinary security-conscious layout — the session, and so the
+  // index, outside every writable root — must not grow protected
+  // entries for files that never exist: the jail refuses to mask a
+  // missing entry under a read-only parent, so the side files would
+  // turn into a refusal of every jailed call. No write path reaches
+  // them there. The database itself, which the boot's probe creates,
+  // stays protected in every layout.
+  let elsewhere = absolute("build/test_db/history-layout-sessions")
+  let outside = history.index_beside(elsewhere <> "/loom.db")
+  let narrow = serve.protecting_index(serve.base_policy(workspace), outside)
+  assert list.contains(narrow.protected, outside)
+  assert !list.contains(narrow.protected, outside <> "-wal")
+  assert !list.contains(narrow.protected, outside <> "-journal")
+
   // The side files are the same door one filename to the right: the
   // index runs in WAL mode, WAL frame checksums are not cryptographic,
   // and a crafted `-wal` is served as index content on the next read.
@@ -264,9 +278,9 @@ pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
   let assert Ok(_started) = history.start(config(name, path, id, store))
     as "an unopenable index must not fail the start"
   let seam = history.seam(name, timeout_ms: 5000)
-  let assert Error(history_tool.IndexRefused(reason:)) =
+  let assert Error(history_tool.IndexUnavailable(reason:)) =
     seam.search("decision", 10, history_tool.Repository)
-    as "a holder with no index must refuse in band, not crash"
+    as "a holder with no index must answer unavailability, not crash"
   assert string.contains(reason, "could not be opened")
   // The repair: remove the obstruction and restart the holder — a fresh
   // start under the same name, which is exactly what the supervisor

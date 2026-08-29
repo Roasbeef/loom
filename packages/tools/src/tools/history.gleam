@@ -326,9 +326,9 @@ fn hit_line(hit: Hit, rank: Int) -> String {
 // while making it unable to close the fence it sits inside.
 fn fence_safe(text: String) -> String {
   // Replacing once is not enough: five backticks become one broken run
-  // plus a fresh triple (` ` ``` is two characters from ```` ``` ````),
-  // so the replacement repeats until no run survives. Termination is by
-  // strictly shrinking backtick runs — each pass halves the longest one.
+  // plus a fresh triple, so the replacement repeats until no run
+  // survives. Termination: a run of n leaves a longest new run of
+  // (n mod 3) + 1, at most 3, which the next pass takes to 1.
   case string.contains(text, "```") {
     False -> text
     True -> fence_safe(string.replace(text, each: "```", with: "` ` `"))

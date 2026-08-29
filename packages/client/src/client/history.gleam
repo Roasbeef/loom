@@ -332,6 +332,11 @@ pub fn seam(
   history_tool.History(search: fn(text, limit, scope) {
     case ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _)) {
       Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
+      // A holder that is alive but holds nothing is unavailability,
+      // not a refusal: the tool's refusal rendering suggests rephrasing
+      // the query, and no rephrasing opens an index.
+      Ok(Error(reason)) if reason == unavailable_index ->
+        Error(history_tool.IndexUnavailable(reason:))
       Ok(Error(reason)) -> Error(history_tool.IndexRefused(reason:))
       Ok(Ok(hits)) -> Ok(hits)
     }
@@ -411,9 +416,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 }
 
 const unavailable_index = "the search index could not be opened; recall is "
-  <> "refused in band until the holder is restarted over a repaired "
-  <> "file. Removing a corrupt index is safe: the restart recreates it "
-  <> "and a sync rebuilds the rows."
+  <> "refused in band until a restart over a repaired file. Removing a "
+  <> "corrupt index is safe: the restart recreates it and a sync "
+  <> "rebuilds the rows."
 
 fn query(
   state: State,
