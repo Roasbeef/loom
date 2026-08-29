@@ -9,6 +9,27 @@ worth more than any status comment.
 
 ---
 
+## Active handoff: CI portability and the Seatbelt follow-up
+
+PR #116 on `ci/darwin-and-linux-fixes` carries the first macOS gate repair
+and the two failures from the last Linux run. The reviewed head makes the full
+gate build current helper binaries, rejects oversized Unix socket paths in
+Loom's own words, keeps vet rejection ahead of filesystem effects, gives the
+hermetic builder a private writable `TMPDIR`, makes host-shaped tests portable,
+and holds every payload behind a hardened fd 5 gate until cgroup entry.
+
+The CI-equivalent Darwin run is green locally: `make check`, `make doc-check`,
+and the macOS skip census all exit zero after preparing the code-mode seed.
+Only the declared missing-Seatbelt reason remains. The first PR run never
+allocated a runner because GitHub reported an account billing failure; watch
+the replacement run to a terminal result before merging.
+
+The next body of work is WP-H phase 2 in the sibling worktree
+`../loom-seatbelt`, on branch `wp-h/seatbelt-jail`. Keep the Seatbelt jail
+separate from PR #116's cross-platform and Linux cgroup repairs.
+
+---
+
 ## State, as of `main` after the #14 merge
 
 Four bodies of work are complete and on `main`.
