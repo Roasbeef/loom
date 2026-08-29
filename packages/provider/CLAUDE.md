@@ -53,10 +53,14 @@ shell around that sans-io core. WP-F.
   `retry.classify` into the machine's retryability convention),
   `conformance` (wiring and the e2e).
 - **FFI**: `provider/internal/ffi_httpc` — starts and cancels OTP `httpc` in
-  asynchronous streaming mode and normalizes its raw messages, because the
-  Gleam ecosystem has no streaming HTTP client (`gleam_httpc` is synchronous
-  only). It returns the native request id as an opaque value; monitoring,
-  ownership, deadlines, and race selection stay in typed Gleam. `provider/internal/
+  asynchronous streaming mode, normalizes its raw messages, and waits for the
+  dedicated request handler to exit after cancellation. Gleam cannot
+  selectively receive raw `httpc` tuples, and OTP exposes cancellation as an
+  asynchronous cast rather than a socket-drain acknowledgement. The shim
+  therefore forces a non-reused handler, captures it through public
+  `httpc:info/0`, and returns the opaque `{request id, handler pid}`. All
+  request, fallback, deadline, and terminal state machines stay in typed
+  Gleam. `provider/internal/
   ffi_env` — `os:getenv` for the environment secret store. These two are
   the package's complete inventory of impurity.
 
@@ -101,7 +105,8 @@ shell around that sans-io core. WP-F.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production transport custodian retains the exact OTP request id, calls
-  `httpc:cancel_request/1`, and retires its raw receiver before exiting. An
+  `httpc:cancel_request/1`, waits for the dedicated request handler's Down, and
+  retires its raw receiver before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
   the acknowledgement chain. `ProviderCancelled` and

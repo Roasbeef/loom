@@ -587,9 +587,12 @@ invokes the transport's cancellation capability, then observes bounded owner
 death. If it does not retire, the guard reports uncertainty but remains alive;
 killing the witness would erase the proof that native work stopped. The
 production owner is a small Gleam custodian retaining the exact opaque OTP
-`httpc` request id; the Erlang FFI only starts or cancels that id and normalizes
-raw messages. Raw OTP errors become constant diagnostics at the boundary so a
-request header cannot leak through a durable provider error.
+`httpc` request id and its dedicated request-handler pid. The narrow Erlang FFI
+starts the raw request, normalizes its messages, issues OTP's asynchronous
+cancel cast, and waits for that handler to exit after closing the socket. The
+request and terminal state machines remain Gleam. Raw OTP errors become
+constant diagnostics at the boundary so a request header cannot leak through
+a durable provider error.
 
 An owner-authored `ProviderCancelled` proves cancellation won. A guard or
 wrapper whose inner owner stays silent for the fixed grace instead emits

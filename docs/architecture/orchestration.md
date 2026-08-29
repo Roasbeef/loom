@@ -321,26 +321,29 @@ the run still completes with the steer in context.
 
 ```
   SessionSupervisor              rest-for-one
-    ├── 1. StrandRegistry        names plus live reaper generations
-    ├── 2. StorageWriter         every commit, and every driver read
-    ├── 3. strand factory        simple-one-for-one; ordinary strands
-    ├── 4. subagent factory      simple-one-for-one; own tolerance
-    └── 5. strand booter         lists strand.*, starts what is missing
+    ├── 1. DrainLedger           live reaper generations
+    ├── 2. StrandRegistry        logical names to process names
+    ├── 3. StorageWriter         every commit, and every driver read
+    ├── 4. strand factory        simple-one-for-one; ordinary strands
+    ├── 5. subagent factory      simple-one-for-one; own tolerance
+    └── 6. strand booter         lists strand.*, starts what is missing
 ```
 
-Rest-for-one over those five is the whole recovery policy, and the order
+Rest-for-one over those six is the whole recovery policy, and the order
 *is* the blast radius, as `runtime/supervisor.gleam` builds it. A writer
 crash restarts the writer and every child after it, because a strand
 holding a subject to a dead writer has nothing to say — and the booter,
 sitting last, repopulates the factories the restart just emptied. A crash
 in one strand restarts only that strand, because each factory supervises its own
 children simple-one-for-one. Every child registers under a process name
-rather than a pid, so restarts keep them addressable; the registry sits
-first precisely so those names outlive everything that uses them. It also
-stores every still-live effect reaper per logical strand. A replacement
-publishes its new reaper and waits for every predecessor to drain before
-recovery dispatches, so a restart cannot overlap a replay with an effect that
-has received a kill signal but has not yet exited.
+rather than a pid, so restarts keep them addressable. The separate drain
+ledger sits first because its ordering fact must also outlive a restart of the
+name registry itself. It stores every still-live effect reaper per logical
+strand. A replacement publishes its new reaper and waits for every predecessor
+to drain before recovery dispatches, so a restart cannot overlap a replay with
+an effect that has received cancellation but whose descendants have not yet
+exited. The ledger is a significant temporary child: its own death stops the
+session tree rather than silently restarting with an empty history.
 
 The two factories are one restart budget each, and the split is what buys
 the separation. `supervisor.start_strand` asks `Config.subagent` which

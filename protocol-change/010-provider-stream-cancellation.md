@@ -103,6 +103,14 @@ attempt's private subject and cannot produce another `StreamEvent` terminal.
 If Loom later uses `httpc:request/5` with a non-default profile, the owner must
 retain that profile and use `httpc:cancel_request/2`.
 
+The production shim closes that acknowledgement gap without moving the
+lifecycle into Erlang. A non-empty socket option gives each Loom request a
+dedicated, non-reused `httpc` handler; the shim captures that handler through
+public `httpc:info/0`, issues the cancellation cast, and waits for its Down.
+The handler closes its socket during termination before that Down is delivered.
+Raw tuple selection and this one OTP-specific wait remain in the shim; request,
+fallback, timeout, and terminal state stay in Gleam.
+
 ## Ownership and race semantics
 
 `provider/gateway.request` starts a public guard and a private pump for the
@@ -131,6 +139,10 @@ The first selected terminal-class event decides the result:
   returns terminal `CancellationUnconfirmed`.
 - Transport death without its preceding terminal HTTP event becomes one
   in-band `TransportFailed` rather than a wait until timeout.
+- Unexpected death of the runtime's provider effect is not translated into a
+  retryable provider failure. Its reaper cancels the already-published stream
+  owner, the driver restarts, and replacement recovery waits for that owner's
+  complete drain.
 - A retryable failure may advance to the next route entry only after checking
   the shared cancel endpoint again. Once cancellation is selected, no fallback
   can start.
@@ -166,11 +178,13 @@ runtime can ask for summary progress.
 - `client/gateway.tap_provider` and `client/wiring.recording_summaries`
   propagate cancellation and consumer death inward.
 - `runtime/strand_runtime` cancels a timed-out handle before reporting its
-  terminal observation. Provider effects do not report `ProviderDone` until
-  the handle owner drains. Their incarnation reaper sends cooperative stop
-  capabilities, waits for every adopted effect exit, and thereby forms a
-  transitive drain barrier; replacement recovery waits for all prior reapers
-  registered for the strand.
+  terminal observation. Provider effects publish the handle owner to their
+  incarnation reaper before consuming events and do not report `ProviderDone`
+  until that owner drains. The reaper independently monitors both pids and
+  thereby remains a transitive drain barrier if the effect dies first.
+  Replacement recovery waits for all prior reapers in a dedicated drain
+  ledger that precedes the restartable strand-name registry. The ledger's own
+  death stops the session tree rather than erasing those barriers.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.
 

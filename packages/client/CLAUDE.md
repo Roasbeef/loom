@@ -57,11 +57,12 @@ over one session file. WP-L.
   name, which is what lets it be supervised and restarted without the
   writer noticing.
 - `client/provider_relay.wrap` — the shared provider-wrapper ownership seam:
-  a public guard monitors the outer consumer and a private worker; the worker
-  is the inner stream's direct consumer and runs the synchronous observer
-  before forwarding each event. Cancel travels inward, an unacknowledged
-  cancel becomes terminal `CancellationUnconfirmed` after one fixed grace,
-  and the guard remains alive until the inner owner drains. Worker death
+  a public guard is published before it calls the inner surface, remains that
+  surface's direct consumer, and runs the synchronous observer through a
+  separately monitored callback worker before forwarding each event. Cancel
+  travels inward, an unacknowledged cancel becomes terminal
+  `CancellationUnconfirmed` after one fixed grace,
+  and the guard remains alive until the inner owner drains. Observer death
   becomes a prompt in-band transport failure only after that drain is proved.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
@@ -1177,12 +1178,13 @@ over one session file. WP-L.
   through the ordinary monitor path.
 - **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
   `wiring.recording_summaries` each return a new `StreamHandle`, so each
-  uses a guard-and-worker pair: the guard owns the public cancel capability,
-  while the worker is the inner stream's direct consumer. The guard monitors
-  both its caller and worker, forwards cancellation inward, and bounds missing
+  publishes a guard before beginning the inner request. The guard owns the
+  public cancel capability and remains the inner stream's direct consumer;
+  only each synchronous observer call moves to a monitored worker. The guard
+  monitors its caller, forwards cancellation inward, and bounds missing
   acknowledgement with `CancellationUnconfirmed`, then stays alive until the
   inner owner exits. This keeps the chain continuous from driver reaper to
-  effect, relay guard and worker, gateway guard and pump, transport custodian
+  effect, relay guard, gateway guard and pump, transport custodian
   and receiver, and the native HTTP request; no wrapper may turn consumer death
   into a detached request.
 - **A park is bounded by the configured window *and* by the call's own
