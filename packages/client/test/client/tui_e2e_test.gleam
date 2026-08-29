@@ -627,5 +627,6 @@ fn settings() -> serve.Settings {
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
+    schedules: [],
   )
 }

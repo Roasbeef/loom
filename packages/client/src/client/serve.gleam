@@ -183,6 +183,8 @@ import client/memory
 import client/notes
 import client/rules
 import client/rulescan
+import client/schedule
+import client/schedulescan
 import client/scratch
 import client/server
 import client/summaries
@@ -309,6 +311,10 @@ pub type Settings {
     /// a server nobody configured rules for runs exactly the processes
     /// it ran before rules existed.
     rules: List(rules.Rule),
+    /// The scheduled heartbeats from the same `loom.toml`, in file order.
+    /// Empty — the ordinary case — starts no scanner at all, the same
+    /// posture `rules` takes.
+    schedules: List(schedule.Schedule),
   )
 }
 
@@ -352,6 +358,12 @@ pub type Booted {
     /// rather than a pid, because the scanner is a restartable service
     /// and a pid would go stale the first time it was replaced.
     rulescan: Option(Name(writer.Event)),
+    /// The scheduled-heartbeat scanner's name, or `None` on a boot that
+    /// configured no schedules and therefore started no scanner. Not a
+    /// writer subscriber — it is driven by its own injected timer, never
+    /// by a commit hint — so its name has nothing to do with
+    /// `subscribers:` the way `rulescan`'s does.
+    schedulescan: Option(Name(schedulescan.Message)),
   )
 }
 
@@ -605,7 +617,9 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use #(catalogue, rule_list) <- result.try(load_config(flags.config))
+  use #(catalogue, rule_list, schedule_list) <- result.try(load_config(
+    flags.config,
+  ))
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -646,6 +660,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     codemode_seed: seed_root(flags.codemode_seed, workspace),
     codemode_seams:,
     rules: rule_list,
+    schedules: schedule_list,
   ))
 }
 
@@ -754,20 +769,24 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 // The configuration ladder: an explicit file must load and validate or
 // the boot refuses (a typoed config silently ignored would serve the
 // wrong model); no file falls back to the environment surface, which
-// defines no rules — a rule is a deliberate act, and there is no
-// environment variable that could be one by accident.
+// defines no rules and no schedules — both are a deliberate act, and
+// there is no environment variable that could be one by accident.
 //
-// The two parsers divide the document rather than sharing it: `catalog`
+// The three parsers divide the document rather than sharing it: `catalog`
 // owns the top-level key check and the model tables, `rules` owns
-// everything inside a `[[rule]]`. Each is handed the text and does its
-// own decode, which costs one extra parse of a small file at boot and
-// keeps each parser's own worded TOML failure — the message an operator
-// actually has to act on.
+// everything inside a `[[rule]]`, `schedule` owns everything inside a
+// `[[schedule]]`. Each is handed the text and does its own decode, which
+// costs two extra parses of a small file at boot and keeps each parser's
+// own worded TOML failure — the message an operator actually has to act
+// on.
 fn load_config(
   flag: Option(String),
-) -> Result(#(catalog.Catalog, List(rules.Rule)), String) {
+) -> Result(
+  #(catalog.Catalog, List(rules.Rule), List(schedule.Schedule)),
+  String,
+) {
   case flag {
-    None -> Ok(#(env_catalog(), []))
+    None -> Ok(#(env_catalog(), [], []))
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -783,7 +802,10 @@ fn load_config(
         catalog.parse(text) |> result.map_error(named),
       )
       use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
-      Ok(#(catalogue, rule_list))
+      use schedule_list <- result.try(
+        schedule.parse(text) |> result.map_error(named),
+      )
+      Ok(#(catalogue, rule_list, schedule_list))
     }
   }
 }
@@ -1327,6 +1349,12 @@ fn assemble(
   // anything under it.
   let rulescan_name = process.new_name(prefix: "loom_rulescan")
 
+  // The scheduled-heartbeat scanner is not a writer subscriber — it is
+  // driven by its own injected timer, never by a commit hint, so its
+  // name is minted for exactly one reason: the restartable-service tier
+  // below needs an address that survives the scanner being replaced.
+  let schedulescan_name = process.new_name(prefix: "loom_schedulescan")
+
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -1603,6 +1631,7 @@ fn assemble(
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
+    |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
@@ -1674,6 +1703,10 @@ fn assemble(
       rulescan: case settings.rules {
         [] -> None
         _configured -> Some(rulescan_name)
+      },
+      schedulescan: case settings.schedules {
+        [] -> None
+        _configured -> Some(schedulescan_name)
       },
     ),
   )
@@ -1751,6 +1784,45 @@ fn with_rule_scanner(
         rulescan.supervised(
           rulescan.default_options(configured)
             |> rulescan.with_logger(logger),
+          runtime,
+          name,
+        ),
+      )
+    }
+  }
+}
+
+// The scheduled-heartbeat scanner, and the decision not to start one —
+// the same `codemode.unavailable` posture `with_rule_scanner` takes, for
+// the same reason: a plane nobody configured should cost a host a
+// process of exactly nothing.
+fn with_schedule_scanner(
+  builder: sup.Builder,
+  settings: Settings,
+  runtime: api.Runtime,
+  name: Name(schedulescan.Message),
+  logger: Logger,
+) -> sup.Builder {
+  case settings.schedules {
+    [] -> {
+      log.info(logger, "schedules.none", [])
+      builder
+    }
+    configured -> {
+      log.info(logger, "schedules.loaded", [
+        field.count(key: "schedules", value: list.length(configured)),
+        field.text(
+          key: "names",
+          value: configured
+            |> list.map(fn(sched) { sched.name })
+            |> string.join(","),
+        ),
+      ])
+      sup.add(
+        builder,
+        schedulescan.supervised(
+          schedulescan.default_options(configured)
+            |> schedulescan.with_logger(logger),
           runtime,
           name,
         ),
