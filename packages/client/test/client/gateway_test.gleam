@@ -46,7 +46,7 @@ fn start_harness() -> Harness {
 // `set_config active_tools` has the same registry to validate against
 // that the effect wiring dispatches through.
 fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
-  start_harness_full(catalogue, Some(serve.registry(None, None, None)))
+  start_harness_full(catalogue, Some(serve.registry(None, None, None, None)))
 }
 
 // The host that configured no registry: active-set changes have
