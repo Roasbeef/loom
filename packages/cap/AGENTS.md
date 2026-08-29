@@ -28,7 +28,9 @@ thing to hand a model than one that cannot.
   frame, so a strand receives a structured value and never scrapes stdout.
   `Value` is a re-export of the wire's value type plus builders
   (`string`/`int`/`float`/`bool`/`list`/`object`/`null`) and readers
-  (`field`/`as_string`/`as_int`/`as_bool`/`as_list`). They live here
+  (`field`/`as_string`/`as_int`/`as_float`/`as_bool`/`as_list`), none of
+  which coerces: `as_int` refuses a float and `as_float` refuses an int,
+  so the pair still answers which tag arrived. They live here
   because a program cannot name `core/msgpack`: the allowlist omits it and
   the hermetic build's `--warnings-as-errors` turns importing a transitive
   dependency into a compile error, so without them `report.text` was the
@@ -59,7 +61,13 @@ thing to hand a model than one that cannot.
   carrying the harness's own sentence — except the two ceilings, which are
   the seam's own: `SpawnCeilingReached` and `AdmissionCeilingReached`, the
   second covering `send`, `note` and `notes` alike because a program at
-  any of them does the same thing and the message names which.
+  any of them does the same thing and the message names which. The named
+  set is exactly `codemode/orchestration.refusal_code`'s range, `map_error`
+  being the other half of that contract: `NameAlreadyMinted` and
+  `PlaneFailed` are there for that reason and not because a program is
+  expected to recover from either. `StrandRefused` stays the arm for a
+  code this module has not learned, so a new name still reaches a program
+  as itself.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry

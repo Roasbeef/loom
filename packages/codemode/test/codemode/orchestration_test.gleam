@@ -560,7 +560,9 @@ pub fn every_agency_refusal_keeps_its_name_test() {
   // The exit criterion: a call outside the program's own lineage is
   // refused under the name the tools already refuse under. The mapping is
   // exhaustive over `agent.Refusal`, and it is half of a contract whose
-  // other half is `cap/strand.map_error`.
+  // other half is `cap/strand.map_error` — which now carries a variant for
+  // every one of these, so the contract's "the variant of the same name"
+  // sentence is true of the whole list rather than of most of it.
   let cases = [
     #(agent.AgencyUnavailable, "strands_unavailable"),
     #(agent.MalformedHandle(text: "x"), "malformed_handle"),
@@ -570,10 +572,37 @@ pub fn every_agency_refusal_keeps_its_name_test() {
     #(agent.FanOutCapReached(live: 8, cap: 8), "fan_out_cap"),
     #(agent.UnknownTool(name: "bash"), "unknown_tool"),
     #(agent.InvalidArgument(reason: "no"), "invalid_argument"),
+    #(agent.NameAlreadyMinted(strand: "sub:main/a"), "name_already_minted"),
     #(agent.ParentRunEnded(strand: "main"), "parent_run_ended"),
+    #(
+      agent.ResultSchemaUnmet(
+        schema: a_boolean_schema(),
+        received: json.Object([]),
+        mismatch: agent.FieldMissing(name: "ok", expects: agent.BooleanField),
+      ),
+      "result_schema_unmet",
+    ),
     #(agent.PlaneFailed(reason: "down"), "plane_failed"),
   ]
   assert list.all(cases, fn(one) { orchestration.refusal_code(one.0) == one.1 })
+}
+
+// A `ResultSchema` is opaque, so the only way to hold one is to parse it.
+fn a_boolean_schema() -> agent.ResultSchema {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #("ok", json.Object([#("type", json.String("boolean"))])),
+          ]),
+        ),
+      ]),
+    )
+    as "a one-field schema parses"
+  schema
 }
 
 pub fn a_refusal_travels_with_the_harnesss_own_words_test() {

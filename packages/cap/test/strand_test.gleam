@@ -417,8 +417,10 @@ pub fn every_refusal_code_recovers_its_name_test() {
     #("fan_out_cap", strand.FanOutCapReached("because")),
     #("unknown_tool", strand.UnknownTool("because")),
     #("invalid_argument", strand.InvalidArgument("because")),
+    #("name_already_minted", strand.NameAlreadyMinted("because")),
     #("parent_run_ended", strand.ParentRunEnded("because")),
     #("result_schema_unmet", strand.ResultSchemaUnmet("because")),
+    #("plane_failed", strand.PlaneFailed("because")),
     #("spawn_ceiling", strand.SpawnCeilingReached("because")),
     #("admission_ceiling", strand.AdmissionCeilingReached("because")),
   ]
@@ -509,6 +511,8 @@ pub fn a_program_can_build_and_read_a_structured_value_test() {
   assert report.as_string(name) == Ok("core")
   let assert Ok(hits) = report.field(value, "hits") as "a hits field"
   assert report.as_int(hits) == Ok(2)
+  let assert Ok(ratio) = report.field(value, "ratio") as "a ratio field"
+  assert report.as_float(ratio) == Ok(0.5)
   let assert Ok(clean) = report.field(value, "clean") as "a clean field"
   assert report.as_bool(clean) == Ok(False)
   let assert Ok(files) = report.field(value, "files") as "a files field"
@@ -519,8 +523,11 @@ pub fn a_program_can_build_and_read_a_structured_value_test() {
 
 pub fn a_reader_never_coerces_test() {
   // A float read as an integer is how a count becomes wrong, so it is an
-  // error rather than a rounding.
+  // error rather than a rounding — and `as_float` refuses an int for the
+  // symmetric reason, so the pair of readers between them still answers
+  // which tag actually arrived.
   assert report.as_int(report.float(1.0)) == Error(Nil)
+  assert report.as_float(report.int(1)) == Error(Nil)
   assert report.as_string(report.int(1)) == Error(Nil)
   assert report.as_bool(report.string("true")) == Error(Nil)
   assert report.as_list(report.object([])) == Error(Nil)
