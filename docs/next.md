@@ -634,6 +634,36 @@ passes the full gate and `doc-check`. If a tiebreak is wanted, take
 regenerated prelude), so it lands while the others are still cheap to
 rebase.
 
+**#118 — durable scheduled heartbeats — is in review, PR #121, not yet on
+`main`.** Unphased new work, not part of the numbered plan: a `[[schedule]]`
+in `loom.toml` fires a durable, fenced injection onto a strand on a fixed
+interval or a one-shot UTC instant, mirroring the triggered-rules shape
+(`client/rules`/`client/rulescan`, issue #27) with a scanner that is
+time-triggered instead of content-triggered. `docs/design-notes/
+scheduled-heartbeats.md` is the pre-code design ruling (a Fable 5 advisor
+consult): the crux was whether a schedule may wake an idle strand, which a
+content-triggered rule is never allowed to do — ruled allowed, opt-in
+(`wake = true`), safe only because every recurring schedule now carries a
+mandatory, tightened expiry (`max_fires` and `expires_after_s` both always
+active, earliest wins, worst case exactly 1,000 fired-mark rows per
+schedule). Model self-scheduling is cut, not deferred — a self-scheduling
+model extends its own liveness and cost unsupervised, and framing cannot
+solve that the way it solves a rule's authority-confusion. The one runtime
+change: `runtime/api` gained `accept_quietly_marking`/
+`send_to_strand_marking`, the fresh-run door's version of the existing
+`steer_marking` write-once-claim mechanism — additive, no `machine` change,
+no `protocol-change/` needed. A closing adversarial review (Fable 5) caught
+a real tautological-boundary bug in the "late fire" annotation before it
+shipped (fixed and pinned with pure-function tests) and, on re-verify after
+the fix round, one narrow self-correcting crash-race footnote in the
+1,000-row bound (recorded in the design note, not worth a code change: per-
+occurrence exactly-once is untouched). Two pre-existing, unrelated repo
+issues were found and filed separately while verifying this branch, not
+fixed here: #120 (`gleam format --check` fails on 4 files across 4 other
+packages, confirmed present on a clean `main`) and an identical-before-
+and-after `make doc-check` citation-drift in docs this branch never
+touches.
+
 ---
 
 ## Start here: after phase 3
