@@ -161,6 +161,16 @@ body = \"b\"
   assert string.contains(reason, "two rules are named r")
 }
 
+// The newline shares the quote's refusal: both would break the fence.
+// TOML's `\n` escape in a basic string decodes to a real newline, which
+// is how one reaches a parsed name at all.
+pub fn a_newline_in_a_rule_name_is_refused_test() {
+  let assert Error(reason) =
+    rules.parse("[[rule]]\nname = \"a\\nb\"\ntriggers = [\"t\"]\nbody = \"b\"")
+    as "a newline in a rule name must be refused"
+  assert string.contains(reason, "quote or a newline")
+}
+
 // The name is a segment of `rule/fired/<strand>/<name>`, so a slash in
 // it would make the strand segment unreadable.
 pub fn a_slash_in_a_rule_name_is_refused_test() {

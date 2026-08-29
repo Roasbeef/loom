@@ -331,11 +331,7 @@ pub fn steer_marking_refuses_an_unreserved_key_test() {
     api.steer_marking(
       rt,
       fake.user("injected"),
-      mark: api.Mark(
-        key: "agent/main/note",
-        value: json.String("r"),
-        expected: None,
-      ),
+      mark: api.Mark(key: "agent/main/note", value: json.String("r")),
     )
     as "an unreserved mark must be refused"
   assert steer_count(rt, op) == 0
@@ -361,7 +357,7 @@ fn mark_key(rule: String) -> String {
 }
 
 fn claim(rule: String) -> api.Mark {
-  api.Mark(key: mark_key(rule), value: json.String(rule), expected: None)
+  api.Mark(key: mark_key(rule), value: json.String(rule))
 }
 
 // How many steer items the operation's durable inbox holds.

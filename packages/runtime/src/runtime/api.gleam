@@ -502,15 +502,16 @@ pub fn steer_quietly(
 }
 
 /// A reserved `fact.custom` cell written in the *same transaction* as a
-/// queue admission, guarded on the seq the writer read it at.
+/// queue admission, expected absent — a write-once claim.
 ///
 /// Constructor invariants: `key` is under a reserved prefix
-/// (`reserved_fact_key`), which `steer_marking` refuses otherwise;
-/// `expected` is `Some(seq)` for a cell read at that seq and `None` for
-/// a cell that must still be absent — the `None` case being what makes a
-/// `Mark` a write-once claim.
+/// (`reserved_fact_key`), which `steer_marking` refuses otherwise. The
+/// absent-expectation is the type's whole meaning: a mark guarded on a
+/// seq the caller read — claim-if-unmoved rather than claim-if-first —
+/// is a generalization nothing wants yet, cut rather than shipped
+/// untested.
 pub type Mark {
-  Mark(key: String, value: JsonValue, expected: Option(Seq))
+  Mark(key: String, value: JsonValue)
 }
 
 /// Enqueues a steer item and stakes a reserved claim in one transaction:
@@ -542,8 +543,7 @@ pub type Mark {
 ///
 /// ```gleam
 /// // api.steer_marking(runtime, fenced_text,
-/// //   mark: api.Mark(key: "rule/fired/main/x", value: json.Null,
-/// //     expected: option.None))
+/// //   mark: api.Mark(key: "rule/fired/main/x", value: json.Null))
 /// ```
 ///
 pub fn steer_marking(
@@ -2000,7 +2000,7 @@ fn commit_or_retry(
 fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
   case mark {
     None -> plan
-    Some(Mark(key:, value:, expected:)) ->
+    Some(Mark(key:, value:)) ->
       tx.Tx(
         writes: list.append(plan.writes, [
           tx.SetRegister(
@@ -2010,7 +2010,7 @@ fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
           ),
         ]),
         expected: [
-          tx.Expect(ns: register.FactCustom, key:, seq: expected),
+          tx.Expect(ns: register.FactCustom, key:, seq: None),
           ..plan.expected
         ],
       )

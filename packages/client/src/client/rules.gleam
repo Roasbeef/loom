@@ -147,17 +147,11 @@ pub fn parse(text: String) -> Result(List(Rule), String) {
   parse_document(document)
 }
 
-/// Parses the `[[rule]]` entries of an already-decoded TOML document —
-/// the door `client/serve` uses so one file read and one `tom.parse`
-/// serve both the catalogue and the rules.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // rules.parse_document(document) == Ok([])
-/// ```
-///
-pub fn parse_document(
+// The document half of `parse`. Deliberately not a public door:
+// `client/serve` hands each parser the raw text and pays one extra
+// `tom.parse` of a small file at boot, so each keeps its own worded
+// TOML failure — the decision is recorded at `serve.load_config`.
+fn parse_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Rule), String) {
   use tables <- result.try(case dict.get(document, "rule") {
@@ -464,10 +458,14 @@ pub fn fires_on(rule: Rule, text: String) -> Bool {
 // --- the durable half ------------------------------------------------------
 
 /// The reserved `fact.custom` key of one rule's write-once fired-mark on
-/// one strand. Write-once is the whole exactly-once story: the scanner
+/// one strand. Write-once is the whole at-most-once story: the scanner
 /// commits this cell in the same transaction as the injection, expecting
 /// it absent, so a replay after a crash loses the race to its own
-/// earlier self rather than injecting twice.
+/// earlier self rather than injecting twice. At-most-once rather than
+/// exactly-once, and the gap is one corner: an abort landing between the
+/// fire and the checkpoint that would have drained it destroys the
+/// queued injection while the mark stands, spending the rule on text the
+/// model never saw (`docs/spec-gaps.md`, the triggered-rules section).
 ///
 /// The strand segment is unambiguous because a rule name may not contain
 /// a `/` (see `Rule`), so everything after the last slash is the name.

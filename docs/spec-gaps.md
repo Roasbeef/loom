@@ -991,3 +991,28 @@ spec supplies none.
    `session.project_entries` drops. A rule may only fire on text the
    model will still see, and an `error` response carries the harness's
    own failure prose rather than model output.
+8. **A fire is at-most-once, and the one losing corner is an abort.**
+   The injection and the fired-mark are one transaction, so nothing can
+   inject twice — but a queued steer only becomes conversation when a
+   checkpoint drains it, and an abort landing between the fire and that
+   checkpoint destroys the queued injection while the write-once mark
+   stands. The rule is then spent on text the model never saw. Admission
+   time cannot see an abort coming, and a mark that could be un-written
+   would reopen the injection loop the write-once shape closes, so the
+   corner is recorded rather than defended: the mark still says what
+   fired, which is more than a dropped rule would leave behind.
+9. **A newly configured rule can fire on old text.** The first boot
+   after a rule is added starts its scan cursor at zero, so the scan
+   covers the strand's whole still-projected history — a trigger the
+   model tripped weeks ago, if it is still in the window the model sees,
+   fires the rule on the next commit. Coherent with item 7 (the rule
+   fires only on text the model still sees) but worth stating: adding a
+   rule to a live workspace is not prospective-only.
+10. **A hold on a strand that will never run again is permanent.** A
+   trigger matched in a finished subagent strand's history holds —
+   correctly, since starting a run is the thing a rule must never do —
+   and nothing ever opens a run there, so the hold is retried on every
+   later pass. The transition into holding is logged once
+   (`rule.holding`), and the per-pass cost is bounded by `scan_limit`;
+   a terminal state for provably-dead strands is follow-up work, filed
+   on the issue tracker rather than solved with a lineage read here.

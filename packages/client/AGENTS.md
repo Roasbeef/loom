@@ -449,9 +449,11 @@ over one session file. WP-L.
   `api.put_reserved_fact` after it. The rule scanner owns the reserved
   `rule/` prefix: `rule/fired/<strand>/<name>` write-once marks, committed
   with the injection they authorize, and `rule/cursor/<strand>`
-  checkpoints, written lazily. Every one of the scanner's reads goes
-  **straight to the session store**, never through the writer's mailbox,
-  so a scan can never sit in front of a settlement. Strand
+  checkpoints, written lazily. Every one of the scanner's *reads* goes
+  straight to the session store, never through the writer's mailbox, so
+  a scan can never sit in front of a settlement; the fire itself is an
+  ordinary queue admission through the writer, on the scanner's own
+  process. Strand
   seeding for protocol `fork` and `create_strand` writes `strand.config`
   / `strand.leaf` / `strand.state` (the api's creation path always takes
   a task brief, so the gateway seeds idle strands itself).

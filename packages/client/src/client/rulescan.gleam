@@ -36,9 +36,14 @@
 //// a single transaction: the fenced injection joins the strand's open
 //// run as a steer item and the rule's write-once fired-mark lands in the
 //// same commit, expecting the mark absent. That is the whole
-//// exactly-once argument — a scanner that crashed between deciding and
+//// at-most-once argument — a scanner that crashed between deciding and
 //// writing re-decides after its restart and loses the race to its own
-//// earlier self.
+//// earlier self. At-most-once and not exactly-once: an abort that lands
+//// after the fire and before the checkpoint that would drain it
+//// destroys the queued injection while the mark stands, which spends
+//// the rule on text the model never saw. Admission time cannot see an
+//// abort coming, so the corner is recorded (`docs/spec-gaps.md`) rather
+//// than defended.
 ////
 //// ## An idle strand holds; it does not start a run
 ////
@@ -332,6 +337,7 @@ fn judge(
       && list.any(texts, rules.fires_on(rule, _))
     })
   let #(spent, held) = fire_all(state, strand, firing)
+  note_holding(state, strand, was: progress.holding, now: held)
   let pending =
     list.filter(progress.pending, fn(name) { !list.contains(spent, name) })
   // A held fire freezes the cursor: the entry that matched must still be
@@ -345,6 +351,26 @@ fn judge(
   let progress =
     Progress(scanned:, checkpointed:, leaf: Some(leaf), holding: held, pending:)
   State(..state, progress: dict.insert(state.progress, strand, progress))
+}
+
+// A hold that begins is the one state an operator cannot read off the
+// fired-marks: the rule is configured, matched, and waiting on a run
+// that may never open — a finished subagent strand holds forever. Logged
+// once per transition rather than once per pass, so a dead strand's hold
+// is neither silent forever nor noisy forever.
+fn note_holding(
+  state: State,
+  strand: String,
+  was was: Bool,
+  now now: Bool,
+) -> Nil {
+  case now && !was {
+    True ->
+      log.info(state.options.logger, "rule.holding", [
+        field.text(key: "strand", value: strand),
+      ])
+    False -> Nil
+  }
 }
 
 fn scannable(entry: Entry) -> Result(String, Nil) {
@@ -392,7 +418,6 @@ fn fire(state: State, strand: String, rule: Rule) -> Fire {
     api.Mark(
       key: rules.fired_key(strand:, rule: rule.name),
       value: rules.fired_value(rule),
-      expected: None,
     )
   let admitted = api.steer_marking(target, injection(state, rule), mark:)
   let verdict = classify(admitted)
