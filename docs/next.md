@@ -84,9 +84,11 @@ three copies (now one public `policy.covers`); blobs are now
 established by atomic rename, never direct write. `make check` passes
 end to end at the head.
 
-`main` holds phases 1 and 2 plus #106, the bridge, #15 and #14.
-**Phase 3 remaining: #27, #28/#29 — and #91 items 2–5 are still open**
-(item 1 closed with the bridge).
+`main` holds phases 1 and 2 plus #106, the bridge, #15, #14 and #27
+(triggered rules — the scanner, the reserved `rule/` corner, and the
+conformance fire/kill/flood rows; the review's dead-strand follow-up is
+#113). **Phase 3 remaining: #28/#29 — and #91 items 2–5 are still
+open** (item 1 closed with the bridge).
 
 ---
 
@@ -94,14 +96,6 @@ end to end at the head.
 
 In dependency order rather than numeric:
 
-- **#27** — triggered rules (TTSR). **Rulings are posted on the issue**
-  from a measured census; the load-bearing two: the scanner feeds on the
-  durable commit stream (a writer subscriber, the `commit_forwarder`
-  shape — deltas are ephemeral, discarded, and absent from the
-  simulation), and injection goes through the queue machinery as a
-  fenced steer-shaped admission, exactly-once per `{strand, rule}` via
-  one CAS-guarded transaction on a reserved `rule/` mark. Rules are
-  `[[rule]]` config in `loom.toml`, literal substring triggers.
 - **#28** — memory M1. **Rulings on the issue**; unblocked by #15. Sync
   off the writer's commit publication (no bus in production), a search
   holder actor in the restartable tier degrading to no-tool, the index
