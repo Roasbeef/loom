@@ -352,6 +352,104 @@ pub fn steer_marking_on_an_idle_strand_spends_no_claim_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// --- send_to_strand_marking -------------------------------------------
+
+// Exactly-once on the fresh-run door: an idle strand's send takes the
+// accept-quietly-marking path, and the mark lands in the same commit as
+// the accepted run — the same guarantee `steer_marking` gives the steer
+// door, applied to the door that had no marking equivalent before this.
+pub fn send_to_strand_marking_starts_a_fresh_run_and_writes_the_mark_test() {
+  let rt = marking_runtime()
+  let assert Ok(api.Started(operation: _op)) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("wake up"),
+      mark: claim("wake"),
+    )
+    as "an idle strand must accept a fresh run"
+  let assert Ok(Some(json.String("wake"))) = api.fact(rt, mark_key("wake"))
+    as "the mark must be durable"
+  assert harness.final_projection(rt.session) == ["user:wake up"]
+    as "the accepted run must actually hold the message"
+  process.kill(rt.tree.supervisor)
+}
+
+// The exactly-once property traced through the real reconciliation: the
+// first attempt opens the run, so the second attempt's `steer_marking`
+// finds an *open* run rather than `NoActiveRun` and never falls back to
+// `accept_quietly_marking` at all. It is the mark's own stale
+// expectation on that steer commit — not a race against the strand —
+// that refuses it, and the refusal is of the whole transaction, so no
+// second copy of the message reaches the run's queue.
+pub fn send_to_strand_marking_a_second_time_is_refused_and_does_not_double_start_test() {
+  let rt = marking_runtime()
+  let mark = claim("wake")
+  let assert Ok(api.Started(operation: op)) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("wake up"),
+      mark:,
+    )
+    as "the first attempt must start a fresh run"
+  let assert Error(api.FactConflict(key:)) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("wake up again"),
+      mark:,
+    )
+    as "the second attempt must meet the mark already spent, via a steer"
+  assert key == mark_key("wake")
+  assert steer_count(rt, op) == 0
+    as "the refused transaction must not have queued a second copy"
+  process.kill(rt.tree.supervisor)
+}
+
+// An already-open run steers exactly like a direct `steer_marking` call:
+// the fresh-run fallback never triggers because `NoActiveRun` never
+// fires, so this door behaves identically to the one it wraps whenever
+// there is a run to steer onto.
+pub fn send_to_strand_marking_steers_an_open_run_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let assert Ok(api.Steered(entry: _)) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("also this"),
+      mark: claim("wake"),
+    )
+    as "an open run must be steered, not accepted"
+  assert steer_count(rt, op) == 1
+  let assert Ok(Some(json.String("wake"))) = api.fact(rt, mark_key("wake"))
+    as "the mark must be durable"
+  process.kill(rt.tree.supervisor)
+}
+
+// `send_to_strand_marking` is its own entry point and carries its own
+// reserved-key guard rather than trusting `accept_quietly_marking`, which
+// has none (it trusts its own caller, like `accept_quietly`). A refused
+// guard must leave the idle strand untouched.
+pub fn send_to_strand_marking_refuses_an_unreserved_key_test() {
+  let rt = marking_runtime()
+  let assert Error(api.UnreservedFactKey(key: "agent/main/note")) =
+    api.send_to_strand_marking(
+      rt,
+      to: "main",
+      message: fake.user("wake up"),
+      mark: api.Mark(key: "agent/main/note", value: json.String("wake")),
+    )
+    as "an unreserved mark must be refused"
+  // Nothing was queued or started: the strand is still idle enough to
+  // accept a fresh run cleanly.
+  let assert Ok(_op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "the guard must have refused before touching admission"
+  process.kill(rt.tree.supervisor)
+}
+
 fn mark_key(rule: String) -> String {
   api.rule_fact_prefix <> "fired/main/" <> rule
 }

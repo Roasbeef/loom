@@ -368,7 +368,41 @@ pub fn accept_quietly(
   runtime: Runtime,
   prompts: List(AgentMessage),
 ) -> Result(OpId, ApiError) {
-  accept_request(runtime, AcceptRun(prompts:))
+  accept_request(runtime, AcceptRun(prompts:), None)
+}
+
+/// Accepts a fresh run and stakes a reserved claim in one transaction:
+/// either the idle strand opens *and* the mark cell lands, or neither
+/// does.
+///
+/// The same argument as `steer_marking`, applied to the other admission
+/// door: an injector that must act at most once cannot make "the run
+/// opened" and "the claim is spent" two separate commits, because
+/// whichever one lands first leaves a window where a crash — or a
+/// concurrent retry — repeats or loses the injection. Folding the mark
+/// into the acceptance's own transaction removes that window; a
+/// restarted caller that re-derives the same decision meets
+/// `FactConflict` instead of opening a second run.
+///
+/// This is a building block, not the entry point: it trusts its caller
+/// for the reserved-key guard exactly as `accept_quietly` trusts its own
+/// callers, and it does not attempt a steer first. `send_to_strand_marking`
+/// is the guarded, steer-then-accept entry point built on top of it; call
+/// this directly only when the caller already knows the strand is idle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.accept_quietly_marking(runtime, [user_message],
+/// //   api.Mark(key: "rule/fired/main/x", value: json.Null))
+/// ```
+///
+pub fn accept_quietly_marking(
+  runtime: Runtime,
+  prompts: List(AgentMessage),
+  mark: Mark,
+) -> Result(OpId, ApiError) {
+  accept_request(runtime, AcceptRun(prompts:), Some(mark))
 }
 
 /// Accepts a standalone compaction and rings the doorbell. `preparation`
@@ -388,7 +422,11 @@ pub fn compact(
   custom_instructions custom_instructions: Option(String),
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
-  accept_request(runtime, AcceptCompaction(custom_instructions:, preparation:))
+  accept_request(
+    runtime,
+    AcceptCompaction(custom_instructions:, preparation:),
+    None,
+  )
 }
 
 /// Accepts a navigation request and rings the doorbell: moves the
@@ -423,6 +461,7 @@ pub fn navigate(
       preparation:,
       target_known:,
     ),
+    None,
   )
 }
 
@@ -430,10 +469,14 @@ pub fn navigate(
 // serialization line (strand state, leaf, pending queue), build the
 // request's plan against it, commit, and reload-and-retry on nothing but
 // a lost seq race. `accept_quietly`, `compact`, and `navigate` differ
-// only in which `AcceptRequest` they hand this.
+// only in which `AcceptRequest` they hand this; `accept_quietly_marking`
+// is the one caller that hands a `Some(mark)` — the rest pass `None`,
+// under which `marked`/`commit_admission` degrade to the plain
+// `commit_or_retry` this always did.
 fn accept_request(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
+  mark: Option(Mark),
 ) -> Result(OpId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
@@ -460,7 +503,11 @@ fn accept_request(
       acceptance.accept_prompt(request, ctx),
       fn(reason) { AcceptRejected(reason:) },
     )
-    commit_or_retry(writer.commit(w, plan_tx), on_ok: operation.id)
+    commit_admission(
+      writer.commit(w, marked(plan_tx, mark)),
+      mark,
+      on_ok: operation.id,
+    )
   })
 }
 
@@ -1078,6 +1125,63 @@ fn send_attempts(
         // the steer again.
         Error(AcceptRejected(reason: StrandBusy)) ->
           send_attempts(target, message, attempts - 1)
+        Error(error) -> Error(error)
+      }
+    Error(error) -> Error(error)
+  }
+}
+
+/// Sends a message to another strand carrying one write-once claim, so
+/// whichever admission door it lands through — a steer onto an open run
+/// or a fresh run on an idle strand — the mark spends atomically with
+/// it. Same door as `send_to_strand`, same reconciliation between a
+/// concurrent steer and a concurrent accept; the difference is entirely
+/// in *why* a caller reaches for it — see `steer_marking`'s doc comment
+/// for the write-once argument this applies to whichever path the
+/// message actually takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_to_strand_marking(runtime, to: "main", message: findings,
+/// //   mark: api.Mark(key: "rule/fired/main/x", value: json.Null))
+/// ```
+///
+pub fn send_to_strand_marking(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+  mark mark: Mark,
+) -> Result(Delivery, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
+  send_attempts_marking(on_strand(runtime, target), message, mark, 4)
+}
+
+fn send_attempts_marking(
+  target: Runtime,
+  message: AgentMessage,
+  mark: Mark,
+  attempts: Int,
+) -> Result(Delivery, ApiError) {
+  use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+  case steer_marking(target, message, mark:) {
+    Ok(entry) -> {
+      nudge(target)
+      Ok(Steered(entry:))
+    }
+    Error(QueueRejected(reason: queue.NoActiveRun)) ->
+      case accept_quietly_marking(target, [message], mark) {
+        Ok(operation) -> {
+          nudge(target)
+          Ok(Started(operation:))
+        }
+        // A run opened between the steer refusal and the accept: try
+        // the steer again.
+        Error(AcceptRejected(reason: StrandBusy)) ->
+          send_attempts_marking(target, message, mark, attempts - 1)
         Error(error) -> Error(error)
       }
     Error(error) -> Error(error)
