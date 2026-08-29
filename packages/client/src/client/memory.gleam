@@ -76,6 +76,7 @@ import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import core/register
 import core/tx.{Expect, InsertEntry, SetRegister, Tx}
+import gleam/bool
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -750,6 +751,99 @@ pub fn advance_head(
   case committed {
     Ok(_result) -> Ok(Nil)
     Error(error) -> Error(commit_fault(error))
+  }
+}
+
+/// Advances cursors and nothing else, in one transaction, leaving the
+/// head exactly where it is.
+///
+/// This is what a run with nothing to consolidate commits. The
+/// alternative — dispatching a consolidation turn over an empty input,
+/// having it refused for producing no usable lines, and returning
+/// without writing anything — leaves every cursor where it was, so the
+/// next run re-reads the same entries and pays the same extraction turns
+/// again, forever. A source that was read and honestly yielded nothing
+/// has still been read, and the cursor is the only place that fact can
+/// be recorded.
+///
+/// No expectation is taken: a cursor is a checkpoint over write-once
+/// rows, so the worst a lost race costs is a re-read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.advance_cursors(opened, [#(memory.cursor_key(id), value)])
+/// ```
+///
+pub fn advance_cursors(
+  opened: Opened,
+  cursors: List(#(String, JsonValue)),
+) -> Result(Nil, MemoryFault) {
+  use <- bool.guard(when: cursors == [], return: Ok(Nil))
+  let writes =
+    list.map(cursors, fn(cursor) {
+      SetRegister(
+        ns: register.FactCustom,
+        key: cursor.0,
+        value: register.value(cursor.1),
+      )
+    })
+  case storage.commit(opened.session.store, Tx(writes:, expected: [])) {
+    Ok(_result) -> Ok(Nil)
+    Error(error) -> Error(commit_fault(error))
+  }
+}
+
+/// Re-renders the head and makes the sidecar match it, answering the
+/// byte size when it wrote and `None` when the file was already right.
+///
+/// Called at the end of **every** run, including one that consolidated
+/// nothing, because the sidecar is the one piece of this that a crash
+/// can leave behind its head: the head CAS commits, and then the process
+/// dies (or the write fails) before the file is rewritten. Nothing else
+/// would ever notice — the next run reads the head, not the file — so a
+/// repository that then went quiet would serve a stale digest to every
+/// later session indefinitely.
+///
+/// Comparing before writing keeps the common case free: a quiet
+/// repository's reconciliation is one render and one read, no write.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.reconcile_digest(opened, "/data/loom-memory.digest")
+/// ```
+///
+pub fn reconcile_digest(
+  opened: Opened,
+  path: String,
+) -> Result(Option(Int), String) {
+  use rows <- result.try(
+    head_rows(opened)
+    |> result.map_error(fn(fault) {
+      case fault {
+        MemoryHeld(owner:) -> "the memory session is held by " <> owner
+        MemoryFailed(reason:) -> reason
+      }
+    }),
+  )
+  let body = render_digest(rows)
+  case read_digest(path) == present(body) {
+    True -> Ok(None)
+    False -> {
+      use Nil <- result.map(write_digest(path, body))
+      Some(notes.byte_size(body))
+    }
+  }
+}
+
+// What `read_digest` would answer for a body this module just rendered,
+// so the comparison is between like and like — an empty head renders to
+// an empty body, which `read_digest` reports as an absent digest.
+fn present(body: String) -> Option(String) {
+  case string.trim(body) {
+    "" -> None
+    text -> Some(notes.clip(text, max_digest_bytes))
   }
 }
 

@@ -294,6 +294,171 @@ pub fn a_note_reaches_the_consolidation_input_test() {
   memory.close(opened)
 }
 
+// --- a failed extraction claims nothing -------------------------------------
+
+/// **A source whose extraction turn failed keeps its cursor and stays
+/// out of the provenance of everything the run writes.**
+///
+/// Both halves are the finding. An advanced cursor would skip those
+/// entries permanently and silently — the one loss the cursor exists to
+/// prevent — and provenance naming a source that contributed nothing
+/// over-claims, which is what issue #115's cascade would later act on by
+/// over-deleting.
+pub fn a_failed_extraction_advances_no_cursor_and_claims_no_provenance_test() {
+  let root = fresh_root("halfread")
+  let good =
+    write_source(root <> "/good.db", 23, [assistant("we chose msgpack")])
+  let bad = write_source(root <> "/bad.db", 29, [assistant("and cbor lost")])
+
+  // The extraction turn for one source fails; the other, and the
+  // consolidation, succeed.
+  let assert Ok(report) =
+    distill.run(
+      distill.config_for(
+        root,
+        distill.Distiller(ask: fn(prompt) {
+          case
+            string.contains(prompt, "consolidating the durable memory"),
+            string.contains(prompt, "cbor")
+          {
+            True, _ -> Ok(distill.Answer(text: consolidated, usage: usage(4)))
+            False, True -> Error("the model refused this one")
+            False, False -> Ok(distill.Answer(text: extracted, usage: usage(4)))
+          }
+        }),
+        clock: a_clock(),
+        entropy: fn() { 31 },
+      ),
+    )
+    as "the pass must run"
+  assert report.sources == 1
+  assert report.skipped == 1
+
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  // The source that answered advanced; the one that failed did not.
+  let assert Ok(Some(#(_cursor, _seq))) =
+    memory.cell(opened, memory.cursor_key(good))
+    as "the source that answered must have a cursor"
+  let assert Ok(None) = memory.cell(opened, memory.cursor_key(bad))
+    as "the source whose extraction failed must have no cursor"
+
+  // And no row claims the failed source.
+  let assert Ok(stored) = raw_rows(opened) as "the raw rows must read"
+  let all = string.join(stored, "\n")
+  assert string.contains(all, good)
+  assert string.contains(all, bad) == False
+  memory.close(opened)
+
+  // The proof that "no cursor" means "read again": a second run over the
+  // same directory offers the failed source's entries once more.
+  let prompts = start_recorder()
+  let assert Ok(second) = distill.run(config(root, prompts))
+    as "the second pass must run"
+  assert second.sources == 1
+  assert string.contains(string.join(recorded(prompts), "\n"), "cbor")
+}
+
+// --- a run with nothing to consolidate --------------------------------------
+
+/// A repository whose sources are all read and all honestly answer
+/// `nothing` records that it read them, dispatches no consolidation, and
+/// leaves the head alone.
+///
+/// Without the cursors-only commit this run would reach the (correct)
+/// empty-answer refusal, write nothing, and re-pay the same extraction
+/// turn over the same entries on every run from then on.
+pub fn a_run_that_extracts_nothing_still_advances_its_cursors_test() {
+  let root = fresh_root("quiet")
+  let named = write_source(root <> "/a.db", 37, [assistant("small talk")])
+  let asked = start_recorder()
+  let nothing =
+    distill.Distiller(ask: fn(prompt) {
+      record(asked, prompt)
+      Ok(distill.Answer(text: "nothing", usage: usage(2)))
+    })
+  let assert Ok(report) =
+    distill.run(
+      distill.config_for(root, nothing, clock: a_clock(), entropy: fn() { 41 }),
+    )
+    as "the quiet pass must run"
+  assert report.sources == 1
+  assert report.candidates == 0
+
+  // One turn only: the extraction. No consolidation was dispatched.
+  let turns = recorded(asked)
+  assert list.length(turns) == 1
+  assert string.contains(
+      string.join(turns, "\n"),
+      "consolidating the durable memory",
+    )
+    == False
+
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  // The cursor moved…
+  let assert Ok(Some(#(_cursor, _seq))) =
+    memory.cell(opened, memory.cursor_key(named))
+    as "a read source's cursor must advance even when it yielded nothing"
+  // …and the head did not.
+  let assert Ok(#([], None)) = memory.head(opened)
+    as "a quiet run must not write a head"
+  memory.close(opened)
+
+  // The second run finds nothing left to read, and asks nothing at all.
+  let again = start_recorder()
+  let assert Ok(second) =
+    distill.run(
+      distill.config_for(
+        root,
+        distill.Distiller(ask: fn(prompt) {
+          record(again, prompt)
+          Ok(distill.Answer(text: "nothing", usage: usage(2)))
+        }),
+        clock: a_clock(),
+        entropy: fn() { 43 },
+      ),
+    )
+    as "the second quiet pass must run"
+  assert second.sources == 0
+  assert recorded(again) == []
+}
+
+// --- the sidecar is reconciled, not only written ----------------------------
+
+/// A sidecar that went missing after a successful run is restored by the
+/// next run, even one with nothing to consolidate.
+///
+/// The gap this closes: the head CAS commits and the process dies before
+/// the file is written. Nothing else would notice — every later run
+/// reads the head, not the file — so a repository that then went quiet
+/// would serve a stale digest to every session from then on.
+pub fn a_missing_sidecar_is_restored_by_the_next_quiet_run_test() {
+  let root = fresh_root("reconcile")
+  let _named =
+    write_source(root <> "/a.db", 47, [assistant("we chose msgpack")])
+  let prompts = start_recorder()
+  let assert Ok(_first) = distill.run(config(root, prompts))
+    as "the first pass must run"
+  let assert Some(settled) = memory.read_digest(root <> "/loom-memory.digest")
+    as "the first pass must leave a digest"
+
+  // The crash's residue: the head stands, the sidecar is gone.
+  let assert Ok(Nil) = simplifile.delete(root <> "/loom-memory.digest")
+    as "the sidecar must be removable"
+  assert memory.read_digest(root <> "/loom-memory.digest") == None
+
+  // A run with nothing whatever to do still puts it back.
+  let assert Ok(report) = distill.run(config(root, prompts))
+    as "the reconciling pass must run"
+  assert report.sources == 0
+  assert report.digest_bytes > 0
+  assert memory.read_digest(root <> "/loom-memory.digest") == Some(settled)
+
+  // And a run over an already-correct sidecar rewrites nothing.
+  let assert Ok(third) = distill.run(config(root, prompts))
+    as "the third pass must run"
+  assert third.digest_bytes == 0
+}
+
 // --- the run's lease covers the run -----------------------------------------
 
 // When a run begins, on the fixed clock the lease arithmetic is done
@@ -444,14 +609,19 @@ pub fn an_unusable_consolidation_leaves_memory_alone_test() {
   let assert Ok(#(settled, _seq)) = memory.head(opened) as "the head must read"
   memory.close(opened)
 
-  let _more =
-    write_source(root <> "/b.db", 17, [assistant("and protobuf lost")])
+  let more = write_source(root <> "/b.db", 17, [assistant("and protobuf lost")])
+  // Extraction must succeed, or the run would take the quiet path and
+  // never reach the consolidation turn this row is about. Only the
+  // consolidation answer is unusable.
   let assert Error(reason) =
     distill.run(
       distill.config_for(
         root,
-        distill.Distiller(ask: fn(_prompt) {
-          Ok(distill.Answer(text: "I have no idea", usage: usage(1)))
+        distill.Distiller(ask: fn(prompt) {
+          case string.contains(prompt, "consolidating the durable memory") {
+            True -> Ok(distill.Answer(text: "I have no idea", usage: usage(1)))
+            False -> Ok(distill.Answer(text: extracted, usage: usage(1)))
+          }
         }),
         clock: a_clock(),
         entropy: fn() { 5 },
@@ -464,6 +634,10 @@ pub fn an_unusable_consolidation_leaves_memory_alone_test() {
   let assert Ok(#(head_now, _seq)) = memory.head(after)
     as "the head must read back"
   assert head_now == settled
+  // And the refused run advanced nothing: the new source is read again
+  // on the next pass rather than skipped past.
+  let assert Ok(None) = memory.cell(after, memory.cursor_key(more))
+    as "a refused run must not advance the new source's cursor"
   memory.close(after)
 }
 

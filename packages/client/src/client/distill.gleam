@@ -81,7 +81,6 @@ import broker/token
 import client/catalog
 import client/internal/ffi_os
 import client/memory.{type Cursor, type Opened, type Provenance}
-import client/notes
 import client/rules
 import core/clock.{type Clock}
 import core/entry.{type Entry}
@@ -89,7 +88,6 @@ import core/ids.{type Generator, type Seq}
 import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
-import gleam/bool
 import gleam/int
 import gleam/io
 import gleam/list
@@ -507,41 +505,81 @@ fn pass(config: Config, opened: Opened) -> Result(Report, String) {
     memory.notes_after(opened, notes_cursor, limit: max_notes_per_run)
     |> result.map_error(describe_fault),
   )
-  use <- bool.lazy_guard(when: harvests == [] && notes == [], return: fn() {
-    log.info(config.logger, "distill.idle", [
-      field.count(key: "skipped", value: skipped),
-    ])
-    Ok(Report(
-      sources: 0,
-      skipped:,
-      candidates: 0,
+  // Extraction runs before the decision, and the decision is made on
+  // what it *produced* rather than on what it was offered. A repository
+  // whose sources all honestly answer "nothing" has been read — its
+  // cursors have to move, or the next run pays the same extraction turns
+  // over the same entries, and the run after that, forever — but it has
+  // nothing to consolidate, and dispatching a turn over an empty input
+  // would only reach the empty-answer refusal below.
+  let extracted = extract_all(config, opened, harvests)
+  let cursors = cursors_of(extracted.read, notes)
+  let opened = memory.Opened(..opened, generator: extracted.generator)
+  let report =
+    Report(
+      sources: list.length(extracted.read),
+      // A source whose extraction turn failed was not read this run, so
+      // it counts where the leased and the unreadable ones count.
+      skipped: skipped + { list.length(harvests) - list.length(extracted.read) },
+      candidates: list.length(extracted.candidates),
       rows: list.length(head_ids),
       digest_bytes: 0,
-    ))
-  })
-  let #(candidates, generator) = extract_all(config, opened, harvests)
+    )
+  case extracted.candidates, notes {
+    [], [] -> quiet(config, opened, cursors, report)
+    _some, _none ->
+      consolidated(config, opened, current, extracted, notes, head_seq, report)
+  }
+}
+
+// Nothing to consolidate: record what was read and leave the head alone.
+//
+// The cursors-only commit is the whole point (`memory.advance_cursors`),
+// and the reconciliation that follows it is why this path renders at all
+// — see `reconciled`.
+fn quiet(
+  config: Config,
+  opened: Opened,
+  cursors: List(#(String, json.JsonValue)),
+  report: Report,
+) -> Result(Report, String) {
+  use Nil <- result.try(
+    memory.advance_cursors(opened, cursors) |> result.map_error(describe_fault),
+  )
+  log.info(config.logger, "distill.idle", [
+    field.count(key: "skipped", value: report.skipped),
+    field.count(key: "cursors", value: list.length(cursors)),
+  ])
+  reconciled(config, opened, report)
+}
+
+fn consolidated(
+  config: Config,
+  opened: Opened,
+  current: List(memory.Distillate),
+  extracted: Extracted,
+  notes: List(memory.Distillate),
+  head_seq: Option(Seq),
+  report: Report,
+) -> Result(Report, String) {
   use #(rows, generator) <- result.try(consolidate(
     config,
     opened,
     current,
-    candidates,
+    extracted.candidates,
     notes,
-    generator,
+    extracted.generator,
   ))
   finish(
     config,
     memory.Opened(..opened, generator:),
     rows,
     head_seq,
-    provenance_of(harvests, current, notes),
-    cursors_of(harvests, notes),
-    Report(
-      sources: list.length(harvests),
-      skipped:,
-      candidates: list.length(candidates),
-      rows: list.length(rows),
-      digest_bytes: 0,
-    ),
+    // Both of these are driven by the sources extraction actually got an
+    // answer for, never by everything it opened. See `Extracted`.
+    provenance_of(extracted.read, current, notes),
+    cursors_of(extracted.read, notes),
+    Report(..report, rows: list.length(rows)),
   )
 }
 
@@ -570,16 +608,38 @@ fn finish(
     memory.advance_head(opened, ids: written, expected: head_seq, cursors:)
     |> result.map_error(describe_fault),
   )
-  use rendered <- result.try(
-    memory.head_rows(opened) |> result.map_error(describe_fault),
-  )
-  let body = memory.render_digest(rendered)
-  use Nil <- result.map(memory.write_digest(config.digest_path, body))
   log.info(config.logger, "distill.consolidated", [
     field.count(key: "rows", value: list.length(written)),
-    field.count(key: "digest_bytes", value: notes.byte_size(body)),
   ])
-  Report(..report, digest_bytes: notes.byte_size(body))
+  reconciled(config, opened, Report(..report, rows: list.length(written)))
+}
+
+// The sidecar, made to match the head — the last thing every run does,
+// consolidating or not.
+//
+// It is deliberately not "write the digest we just rendered". The
+// sidecar is the one artifact a crash can leave behind its head: the
+// head CAS commits, and then the process dies before the file is
+// rewritten. Nothing would ever notice, because every later run reads
+// the head rather than the file — so a repository that went quiet after
+// such a crash would serve a stale digest to every session from then on.
+// Reconciling here closes that, and costs a quiet run one render and one
+// read.
+fn reconciled(
+  config: Config,
+  opened: Opened,
+  report: Report,
+) -> Result(Report, String) {
+  use written <- result.map(memory.reconcile_digest(opened, config.digest_path))
+  case written {
+    None -> report
+    Some(bytes) -> {
+      log.info(config.logger, "distill.digest_written", [
+        field.count(key: "digest_bytes", value: bytes),
+      ])
+      Report(..report, digest_bytes: bytes)
+    }
+  }
 }
 
 // Batch-level provenance: every row this consolidation writes names the
@@ -800,28 +860,61 @@ fn new_entries(
 
 // --- the two model turns ---------------------------------------------------
 
+/// What extraction produced, and — just as load-bearing — which sources
+/// it actually got an answer for.
+///
+/// A source whose extraction turn failed must not appear in `read`. Two
+/// things downstream are driven by that list and both are wrong without
+/// it: its cursor would advance past entries no model ever saw, losing
+/// them permanently and silently (the one thing the cursor exists to
+/// prevent), and every row written this run would name it in their
+/// provenance, over-claiming a contribution it did not make — which
+/// issue #115's cascade would later act on by over-deleting.
+type Extracted {
+  Extracted(
+    candidates: List(Candidate),
+    read: List(Harvest),
+    generator: Generator,
+  )
+}
+
 fn extract_all(
   config: Config,
   opened: Opened,
   harvests: List(Harvest),
-) -> #(List(Candidate), Generator) {
-  list.fold(harvests, #([], opened.generator), fn(carried, harvest) {
-    let #(found, generator) = carried
-    case config.distiller.ask(extraction_prompt(harvest)) {
-      Error(reason) -> {
-        log.warn(config.logger, "distill.extraction_failed", [
-          field.text(key: "session", value: harvest.session),
-          field.text(key: "reason", value: reason),
-        ])
-        #(found, generator)
-      }
-      Ok(answer) -> {
-        let generator =
-          record_usage(opened, generator, answer.usage, "extract", config)
-        #(list.append(found, parse_candidates(answer.text)), generator)
-      }
-    }
-  })
+) -> Extracted {
+  let folded =
+    list.fold(
+      harvests,
+      Extracted(candidates: [], read: [], generator: opened.generator),
+      fn(carried, harvest) {
+        case config.distiller.ask(extraction_prompt(harvest)) {
+          Error(reason) -> {
+            log.warn(config.logger, "distill.extraction_failed", [
+              field.text(key: "session", value: harvest.session),
+              field.text(key: "reason", value: reason),
+            ])
+            carried
+          }
+          Ok(answer) ->
+            Extracted(
+              candidates: list.append(
+                carried.candidates,
+                parse_candidates(answer.text),
+              ),
+              read: [harvest, ..carried.read],
+              generator: record_usage(
+                opened,
+                carried.generator,
+                answer.usage,
+                "extract",
+                config,
+              ),
+            )
+        }
+      },
+    )
+  Extracted(..folded, read: list.reverse(folded.read))
 }
 
 fn consolidate(
