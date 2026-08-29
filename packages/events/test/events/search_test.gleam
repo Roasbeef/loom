@@ -50,10 +50,13 @@ fn fresh_index_path(lane: String) -> String {
   let _stale = simplifile.delete(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
     as "the test scratch directory must be creatable"
-  let path = dir <> "/index.db"
-  let assert Ok(False) = simplifile.is_file(path)
-    as "the index file must not survive from the last run"
-  path
+  // The whole directory, not just the main file: a partial delete that
+  // took `index.db` and left a stale `-wal` beside it would pass an
+  // is_file check on the path alone and hand the next open exactly the
+  // sibling that locks it.
+  let assert Ok([]) = simplifile.read_directory(dir)
+    as "no file may survive from the last run in this lane"
+  dir <> "/index.db"
 }
 
 // A bounded retry around a `sync` call that races another connection's
