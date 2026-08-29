@@ -35,6 +35,10 @@ func startGatedCommand(t *testing.T, argv []string) (*exec.Cmd, *os.File) {
 
 	wrapped := withCgroupStartGate(argv)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
+	// Bash imports this spelling as an exported shell function. If privileged
+	// mode is removed, it shadows read and releases the target before fd 5 has
+	// a token. Other /bin/sh implementations safely ignore the hostile entry.
+	cmd.Env = []string{"BASH_FUNC_read%%=() { return 0; }"}
 	cmd.ExtraFiles = []*os.File{null3, null4, gateR}
 	if err := cmd.Start(); err != nil {
 		gateR.Close()

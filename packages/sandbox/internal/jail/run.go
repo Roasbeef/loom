@@ -142,7 +142,10 @@ exec -- "$@"`
 // are positional parameters, never shell source, so model-controlled bytes do
 // not cross an interpolation boundary.
 func withCgroupStartGate(argv []string) []string {
-	wrapped := []string{"/bin/sh", "-c", cgroupGateScript, "loom-cgroup-gate"}
+	// Privileged shell mode does not grant a new privilege here. It prevents
+	// startup hooks and exported functions from replacing the read builtin
+	// before the shell enters the cgroup.
+	wrapped := []string{"/bin/sh", "-p", "-c", cgroupGateScript, "loom-cgroup-gate"}
 	return append(wrapped, argv...)
 }
 
