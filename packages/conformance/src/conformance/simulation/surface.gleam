@@ -148,7 +148,6 @@ fn request(
 ) -> stream.StreamHandle {
   let index = control.bump(ctl, "effect")
   let events = process.new_subject()
-  let handle = stream.StreamHandle(events:)
   let on_strand = strand_of_spec(spec, strand)
   case
     effect_fault(
@@ -160,7 +159,20 @@ fn request(
       loss_allowed: retryable(spec),
     )
   {
-    Killed | Starved -> handle
+    Killed -> stream.StreamHandle(events:, cancel: fn() { Nil })
+    Starved ->
+      // The scripted provider timeout has already won before the runtime's
+      // outer deadline asks the handle to stop. Releasing that preselected
+      // transport failure on cancel preserves the fault's retry semantics;
+      // it is not a cancellation terminal and owns no external process.
+      stream.StreamHandle(events:, cancel: fn() {
+        process.send(
+          events,
+          stream.Failed(error: stream.TransportFailed(
+            reason: "simulated provider effect timeout",
+          )),
+        )
+      })
     Ran -> {
       mark_request(ctl, spec)
       intervene(ctl, script, trigger_of_request(spec))
@@ -168,9 +180,9 @@ fn request(
         Some(settle) -> {
           mark_settlement(ctl, settle)
           send_settlement(events, settle)
-          handle
+          stream.StreamHandle(events:, cancel: fn() { Nil })
         }
-        None -> handle
+        None -> stream.StreamHandle(events:, cancel: fn() { Nil })
       }
     }
   }

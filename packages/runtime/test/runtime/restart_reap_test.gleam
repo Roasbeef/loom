@@ -17,7 +17,8 @@ import core/clock
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
-import machine/operation.{ReplaySafe}
+import machine/operation.{ReplaySafe, RunFailed, RunLastResult}
+import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/supervisor
@@ -102,6 +103,141 @@ pub fn strand_restart_reaps_the_live_tool_effect_test() {
   // And the reaped first execution stays dead: nothing re-adopted it.
   let assert [first, ..] = logged_pids(pids)
   assert !process.is_alive(first)
+  process.kill(rt.tree.supervisor)
+}
+
+pub fn provider_timeout_cancels_before_settling_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      provider: effects.ProviderSurface(timeout_ms: 10, request: fn(_spec) {
+        let events = process.new_subject()
+        stream.StreamHandle(events:, cancel: fn() {
+          let _cancelled = recorder.bump(rec, "provider-cancelled")
+          process.send(events, stream.Failed(error: stream.ProviderCancelled))
+        })
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("wait for the provider")])
+    as "the prompt must be accepted"
+  let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
+    api.await_result(rt, op, within_ms: 5000)
+    as "the cancelled provider request must settle terminally"
+  assert error.code == "provider_error"
+  assert recorder.read(rec, "provider-cancelled") == 1
+  process.kill(rt.tree.supervisor)
+}
+
+pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      provider: effects.ProviderSurface(timeout_ms: 10, request: fn(_spec) {
+        let events = process.new_subject()
+        stream.StreamHandle(events:, cancel: fn() {
+          let _cancelled = recorder.bump(rec, "unacknowledged-cancel")
+          Nil
+        })
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("wait for the provider")])
+    as "the prompt must be accepted"
+  let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
+    api.await_result(rt, op, within_ms: 5000)
+    as "an unacknowledged cancellation must still settle terminally"
+  assert error.code == "provider_error"
+  // A retryable fallback would dispatch and cancel the request again.
+  assert recorder.read(rec, "unacknowledged-cancel") == 1
+  process.kill(rt.tree.supervisor)
+}
+
+pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let consumer = process.self()
+        let events = process.new_subject()
+        let _requested = recorder.bump(rec, "provider-requested")
+        let owner =
+          process.spawn_unlinked(fn() {
+            let down =
+              process.new_selector()
+              |> process.select_specific_monitor(
+                process.monitor(consumer),
+                fn(_down) { Nil },
+              )
+            let _consumer_down = process.selector_receive_forever(down)
+            let _cancelled = recorder.bump(rec, "provider-consumer-down")
+            Nil
+          })
+        stream.StreamHandle(events:, cancel: fn() { process.kill(owner) })
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(_op) = api.prompt(rt, [fake.user("wait for the provider")])
+    as "the prompt must be accepted"
+  wait_for(fn() { recorder.read(rec, "provider-requested") >= 1 }, 5000)
+  kill_strand(rt, "main")
+  wait_for(fn() { recorder.read(rec, "provider-consumer-down") >= 1 }, 5000)
+  assert recorder.read(rec, "provider-consumer-down") >= 1
   process.kill(rt.tree.supervisor)
 }
 

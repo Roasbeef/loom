@@ -36,7 +36,7 @@ pub type Turn {
 /// results. A request beyond the script fails the attempt in-band, so
 /// an over-long run fails loudly instead of looping.
 pub fn transport(turns: List(Turn)) -> Transport {
-  http.Transport(send_streaming: fn(request, subject) {
+  owned_transport(fn(request, subject) {
     let index = tool_results_in(request.body)
     case
       turns
@@ -53,6 +53,16 @@ pub fn transport(turns: List(Turn)) -> Transport {
           ),
         )
     }
+  })
+}
+
+/// A monitorable transport for in-memory conformance scripts.
+pub fn owned_transport(
+  replay: fn(http.HttpRequest, Subject(HttpEvent)) -> Nil,
+) -> Transport {
+  http.Transport(start_streaming: fn(request, subject) {
+    let owner = process.spawn_unlinked(fn() { replay(request, subject) })
+    Ok(http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }))
   })
 }
 

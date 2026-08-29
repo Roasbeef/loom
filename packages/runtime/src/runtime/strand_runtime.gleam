@@ -1414,15 +1414,7 @@ fn spawn_provider(
   let pid =
     spawn_effect(state.reaper, logger, fn() {
       let handle = surface.request(spec)
-      let terminal = case
-        stream.await_terminal(handle, within: surface.timeout_ms)
-      {
-        Ok(#(_deltas, terminal)) -> terminal
-        Error(Nil) ->
-          stream.Failed(error: stream.TransportFailed(
-            reason: "timed out waiting for the provider stream to settle",
-          ))
-      }
+      let terminal = await_provider(handle, surface.timeout_ms)
       wake(parent, ProviderDone(token:, terminal:))
     })
   let monitor = process.monitor(pid)
@@ -1430,6 +1422,32 @@ fn spawn_provider(
     Live(token:, pid:, monitor:, configuration:, call: None),
     ..state.live
   ])
+}
+
+// The cancellation grace is an acknowledgement window, not another provider
+// timeout. A request owner normally answers immediately after it has handed
+// cancellation to its active transport; the short bound keeps a broken owner
+// from delaying the strand after the original wait has already expired.
+const provider_cancel_grace_ms = 1500
+
+fn await_provider(
+  handle: stream.StreamHandle,
+  timeout_ms: Int,
+) -> stream.StreamEvent {
+  case stream.await_terminal(handle, within: timeout_ms) {
+    Ok(#(_deltas, terminal)) -> terminal
+    Error(Nil) -> {
+      stream.cancel(handle)
+      case stream.await_terminal(handle, within: provider_cancel_grace_ms) {
+        Ok(#(_deltas, terminal)) -> terminal
+        // Cancellation won even when its owner failed to acknowledge it.
+        // Keep that outcome terminal: calling it a transport failure would
+        // let the retry ladder overlap new work with the request that failed
+        // to prove it stopped.
+        Error(Nil) -> stream.Failed(error: stream.ProviderCancelled)
+      }
+    }
+  }
 }
 
 fn spawn_tool(

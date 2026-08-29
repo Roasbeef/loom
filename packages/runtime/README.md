@@ -101,6 +101,14 @@ a synthetic tool error, or an orphaned-provider-request classification —
 never by faulting the strand. The harness never wedges on a dead worker,
 and it never blames the strand for one either.
 
+Provider effects also own a cancellable stream handle. If the ordinary wait
+deadline expires, the effect first cancels that handle and allows a bounded
+acknowledgement grace before reporting `ProviderCancelled`. If abort or a
+driver crash kills the effect first, the provider wrappers and gateway monitor
+their direct consumers and propagate teardown to the active HTTP request.
+This closes the ownership chain below the reaper: no relay, fallback pump, or
+socket request gets to outlive the effect that justified it.
+
 ## Correlation travels as a value, through the spawn
 
 `runtime/effects.spawn_effect` takes the step-scoped `telemetry/log.Logger`

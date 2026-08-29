@@ -222,8 +222,10 @@ extended by the M3 runtime wave.
   `put_fact_expecting` is the same write with the caller's read seq
   asserted, which is what makes a shared cell safely updatable.
 - **Wire**: consumes `provider/stream.StreamEvent` — zero or more `Delta`
-  then exactly one `Settled` or `Failed` — from a `StreamHandle`, and
-  `effects.ToolOutcome` from the tool surface.
+  then exactly one `Settled` or `Failed` — from a cancellable `StreamHandle`,
+  and `effects.ToolOutcome` from the tool surface. A provider wait deadline
+  invokes the handle's cancellation capability before returning a terminal
+  observation.
 
 ## Invariants
 
@@ -272,6 +274,13 @@ extended by the M3 runtime wave.
   orphan-versus-live replay decision read the incarnation-local `live`
   list, and both are sound only because no effect outlives its
   incarnation.
+- **Provider ownership continues below the effect process.** A provider
+  effect that reaches its receive deadline cancels its stream and waits a
+  bounded acknowledgement grace before returning `ProviderCancelled`, which
+  is terminal under retry classification. If the reaper kills the effect
+  first, client relays and the gateway monitor direct consumer death and
+  propagate teardown to the active transport. No provider pump or HTTP
+  request may outlive the effect that justified it.
 - **`after_commit` is the crash seam.** It runs in the writer process after
   the commit is durable and published but *before* the committer's reply,
   so an observer that kills the writer produces exactly "commit N durable,
