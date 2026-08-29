@@ -34,9 +34,9 @@ required|env not in allowlist withheld
 required|output flood truncated at cap
 required|orphaned grandchild reaped via pgroup
 
-# --- Kernel layers. The jail job installs bubblewrap and lifts Ubuntu's
-# --- AppArmor restriction on unprivileged user namespaces before running
-# --- the self-test, so these are required of a hosted Linux runner.
+# --- Kernel layers. The Linux jail job supplies bubblewrap, namespaces,
+# --- Landlock, and seccomp. The macOS gate supplies the system Seatbelt
+# --- backend. Each must make the same policy-level probes fail closed.
 #
 # "protected path masked from reads and writes" was "protected path write
 # denied" until #55 resolved what `protected` means: the path is removed
@@ -49,10 +49,10 @@ required|write outside writable_roots denied
 required|protected path masked from reads and writes
 required|direct socket denied under network off
 
-# --- cgroup v2.
+# --- Process ceilings.
 #
-# Memory and process ceilings are the one layer the helper cannot get
-# from the kernel alone: cgroup v2 forbids a cgroup from having both
+# Linux memory and process ceilings need an operator-delegated cgroup v2:
+# cgroup v2 forbids a cgroup from having both
 # member processes and controllers enabled for its children, and the
 # helper's own cgroup always contains the helper. That is a fact about
 # *that choice of base*, not about cgroup v2 — any delegated cgroup with
@@ -60,7 +60,9 @@ required|direct socket denied under network off
 # what delegation is for. So the base is configuration
 # (`LOOM_CGROUP_BASE` / `--cgroup-base`), the jail job delegates one with
 # three lines of shell before the self-test runs, and this probe is
-# required of that shape.
+# required of that shape. Darwin instead exercises its inherited per-user
+# RLIMIT_NPROC with a limit derived from the account's live process floor;
+# the probe fails if that real limit does not stop the fork burst.
 #
 # This entry was a `known-gap` for one release, on the reasoning that the
 # limits could only be reached from the true root cgroup. The gap is over
@@ -70,14 +72,13 @@ required|fork bomb capped by pids limit
 
 # --- The pgroup contract's escape hatch.
 #
-# Cancellation and cleanup signal the child's *process group*, so a
-# process that calls setsid(2) is out of reach of that signal. bwrap's
-# PID namespace covers it anyway — the namespace dies with its init and
-# takes every process in it. The jail job installs bubblewrap, so the
-# layer exists here and must hold. Without bwrap this probe skips, which
-# is honest: the pgroup sweep alone genuinely does not reach a new
-# session.
-required|setsid escape contained by pid namespace
+# Cancellation and cleanup signal the child's *process group*, so a process
+# that calls setsid(2) is out of reach of that signal. Linux relies on bwrap's
+# PID namespace. Darwin keeps birth-time-qualified handles for observed
+# descendants and signals them alongside the original group. This probe proves
+# that observed case on both hosts; Darwin's rapid-reparenting gap is separately
+# reported on every execution and rejected by FullEnforcement.
+required|observed setsid escape reaped
 
 # --- The hostile-satellite tabletop's kernel half.
 #
@@ -90,10 +91,8 @@ required|setsid escape contained by pid namespace
 # inside the jail, calling `file:write_file/2`, `file:read_file/1` and
 # `gen_tcp:connect/4` on its own behalf.
 #
-# The jail job has bubblewrap and, from setup-toolchain, an Erlang
-# toolchain to build and load the adversary with, so the layer exists
-# here and must hold. Without bwrap the probe skips (Landlock alone
-# cannot hide a protected path and there is no network namespace);
-# without erl/erlc it skips too, because an adversary that cannot be
-# built was never attempted and its silence is not containment.
+# Both jail hosts have an Erlang toolchain and a primary filesystem/network
+# jail, so the adversary must be contained. Without erl/erlc it skips because
+# an adversary that cannot be built was never attempted and its silence is
+# not containment.
 required|unvetted beam denied host write, secret, and network
