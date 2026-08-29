@@ -139,7 +139,8 @@ pub const default_list_timeout_ms = 30_000
 /// a `ServedHere` call the host gives up on is answered `unsettled` and
 /// its worker killed, and a program that asked an MCP server a question
 /// deserves `mcp_timeout` — the refusal naming what happened — rather
-/// than a generic one over a call cut off mid-flight. It is a constant rather than a share of the execution's
+/// than a generic one over a call cut off mid-flight. It is a constant
+/// rather than a share of the execution's
 /// deadline because a `CapRequest` carries an absolute deadline and no
 /// clock to read it against; the execution's own deadline still bounds
 /// the whole program from outside, and the node dies with it.
