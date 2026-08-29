@@ -151,6 +151,7 @@ fn request(
   spec: effects.RequestSpec,
 ) -> stream.StreamHandle {
   let index = control.bump(ctl, "effect")
+  let consumer = process.self()
   let events = process.new_subject()
   let on_strand = strand_of_spec(spec, strand)
   case
@@ -163,7 +164,7 @@ fn request(
       loss_allowed: retryable(spec),
     )
   {
-    Killed -> stream.StreamHandle(events:, cancel: fn() { Nil })
+    Killed -> stream.immediate(events:, cancel: fn() { Nil })
     Starved ->
       // The scripted provider timeout has already won before the runtime's
       // outer deadline asks the handle to stop. Releasing that preselected
@@ -171,7 +172,7 @@ fn request(
       // it is not a cancellation terminal and owns no external process. A
       // one-shot owner supplies the mutable edge: repeated cancellation sends
       // to a dead subject instead of fabricating a second terminal event.
-      starved_handle(events)
+      starved_handle(events, consumer)
     Ran -> {
       mark_request(ctl, spec)
       intervene(ctl, script, trigger_of_request(spec))
@@ -179,9 +180,9 @@ fn request(
         Some(settle) -> {
           mark_settlement(ctl, settle)
           send_settlement(events, settle)
-          stream.StreamHandle(events:, cancel: fn() { Nil })
+          stream.immediate(events:, cancel: fn() { Nil })
         }
-        None -> stream.StreamHandle(events:, cancel: fn() { Nil })
+        None -> stream.immediate(events:, cancel: fn() { Nil })
       }
     }
   }
@@ -189,22 +190,33 @@ fn request(
 
 fn starved_handle(
   events: process.Subject(stream.StreamEvent),
+  consumer: process.Pid,
 ) -> stream.StreamHandle {
   let ready = process.new_subject()
-  let _owner =
+  let owner =
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
       process.send(ready, control)
-      let ReleaseStarved = process.receive_forever(control)
-      process.send(
-        events,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "simulated provider effect timeout",
-        )),
-      )
+      let event =
+        process.new_selector()
+        |> process.select_map(control, fn(_release) { True })
+        |> process.select_specific_monitor(process.monitor(consumer), fn(_down) {
+          False
+        })
+        |> process.selector_receive_forever()
+      case event {
+        False -> Nil
+        True ->
+          process.send(
+            events,
+            stream.Failed(error: stream.TransportFailed(
+              reason: "simulated provider effect timeout",
+            )),
+          )
+      }
     })
   let control = process.receive_forever(ready)
-  stream.StreamHandle(events:, cancel: fn() {
+  stream.owned(events:, owner:, cancel: fn() {
     process.send(control, ReleaseStarved)
   })
 }

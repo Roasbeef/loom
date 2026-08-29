@@ -509,7 +509,7 @@ fn scripted_provider(
       effects.PollRequest(..) | effects.SummaryRequest(..) ->
         settle(events, answer("unused"))
     }
-    stream.StreamHandle(events:, cancel: fn() { Nil })
+    stream.immediate(events:, cancel: fn() { Nil })
   })
 }
 

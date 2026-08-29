@@ -141,7 +141,7 @@ fn start_harness_full(
           events,
           stream.Settled(message: settled, usage: effects.zero_usage()),
         )
-        stream.StreamHandle(events:, cancel: fn() { Nil })
+        stream.immediate(events:, cancel: fn() { Nil })
       }),
       tools: effects.ToolSurface(
         clear: fn(_query) { effects.ClearanceRefused(reason: "no tools") },
@@ -1204,7 +1204,7 @@ pub fn approve_of_a_decided_record_is_not_pending_test() {
 fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
     let events = process.new_subject()
-    stream.StreamHandle(events:, cancel: fn() {
+    stream.immediate(events:, cancel: fn() {
       process.send(cancelled, Nil)
       process.send(events, stream.Failed(error: stream.ProviderCancelled))
     })
@@ -1272,7 +1272,7 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
     effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
       process.send(consumers, process.self())
       let events = process.new_subject()
-      stream.StreamHandle(events:, cancel: fn() { process.send(cancelled, Nil) })
+      stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
@@ -1299,7 +1299,7 @@ pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
         events,
         stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
       )
-      stream.StreamHandle(events:, cancel: fn() { process.send(cancelled, Nil) })
+      stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
@@ -1310,4 +1310,43 @@ pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
     stream.next(handle, within: 1000)
   assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+}
+
+pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
+  let cancelled = process.new_subject()
+  let owners = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(owners, #(owner, release))
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+      )
+      stream.owned(events:, owner:, cancel: fn() {
+        process.send(cancelled, Nil)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
+      panic as "observer crash"
+    })
+  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
+
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert process.is_alive(owner)
+  assert !stream.await_stopped(handle, within: 20)
+  process.send(release, Nil)
+  assert stream.await_stopped(handle, within: 1000)
 }

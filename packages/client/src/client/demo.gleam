@@ -1057,7 +1057,7 @@ fn scripted_provider() -> effects.ProviderSurface {
       effects.GenerationRequest(context:, ..) ->
         generation_response(events, context)
     }
-    stream.StreamHandle(events:, cancel: fn() { Nil })
+    stream.immediate(events:, cancel: fn() { Nil })
   })
 }
 

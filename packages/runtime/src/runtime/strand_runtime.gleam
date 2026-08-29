@@ -143,7 +143,7 @@ pub opaque type Message {
 }
 
 type ReaperMessage {
-  Adopt(effect: Pid, reply_with: Subject(Bool))
+  Adopt(effect: Pid, stop: fn() -> Nil, reply_with: Subject(Bool))
 }
 
 type ReaperEvent {
@@ -155,10 +155,20 @@ type Reaper {
   Reaper(commands: Subject(ReaperMessage), pid: Pid)
 }
 
+type AdoptedEffect {
+  AdoptedEffect(pid: Pid, stop: fn() -> Nil)
+}
+
+type ProviderWaitEvent {
+  ProviderStream(stream.StreamEvent)
+  StopProvider
+}
+
 type Live {
   Live(
     token: EffectToken,
     pid: Pid,
+    stop: fn() -> Nil,
     monitor: process.Monitor,
     /// The captured identity of the dispatching intent, for synthetic
     /// failure settlements.
@@ -746,7 +756,7 @@ fn commit_abort_marker(
 // `effect_exit` and settles synthetically. Either way reconciliation
 // sees exactly one outcome per reserved id.
 fn interrupt_live_effects(state: State) -> State {
-  list.each(state.live, fn(live) { process.kill(live.pid) })
+  list.each(state.live, fn(live) { live.stop() })
   state
 }
 
@@ -1356,8 +1366,10 @@ fn with_projection(
 // therefore enumerate every effect that crossed the execution boundary.
 //
 // Driver death begins a drain rather than merely broadcasting exit signals.
-// The reaper kills every adopted effect and stays alive until every linked exit
-// has arrived. The long-lived strand registry remembers all still-live reapers
+// The reaper invokes every adopted effect's stop capability and stays alive
+// until every linked exit has arrived. Tool effects use a hard stop; provider
+// effects cancel cooperatively and do not exit until the public stream owner
+// has drained. The long-lived strand registry remembers all still-live reapers
 // for a logical strand; a replacement driver claims its own reaper, then waits
 // for every older one to disappear before it nudges recovery. This is the
 // barrier the old timing argument lacked: recovery cannot dispatch beside a
@@ -1380,7 +1392,7 @@ fn start_reaper() -> Reaper {
 fn reap(
   driver: Pid,
   commands: Subject(ReaperMessage),
-  effects: List(Pid),
+  effects: List(AdoptedEffect),
 ) -> Nil {
   let event =
     process.new_selector()
@@ -1388,11 +1400,12 @@ fn reap(
     |> process.select_trapped_exits(LinkedExit)
     |> process.selector_receive_forever()
   case event {
-    ReaperCommand(Adopt(effect:, reply_with:)) -> {
+    ReaperCommand(Adopt(effect:, stop:, reply_with:)) -> {
       let accepted = process.is_alive(driver) && process.is_alive(effect)
       process.send(reply_with, accepted)
       case accepted {
-        True -> reap(driver, commands, [effect, ..effects])
+        True ->
+          reap(driver, commands, [AdoptedEffect(pid: effect, stop:), ..effects])
         False -> reap(driver, commands, effects)
       }
     }
@@ -1404,12 +1417,18 @@ fn reap(
   }
 }
 
-fn drain(commands: Subject(ReaperMessage), effects: List(Pid)) -> Nil {
-  list.each(effects, process.kill)
+fn drain(
+  commands: Subject(ReaperMessage),
+  effects: List(AdoptedEffect),
+) -> Nil {
+  list.each(effects, fn(effect) { effect.stop() })
   await_drain(commands, effects)
 }
 
-fn await_drain(commands: Subject(ReaperMessage), effects: List(Pid)) -> Nil {
+fn await_drain(
+  commands: Subject(ReaperMessage),
+  effects: List(AdoptedEffect),
+) -> Nil {
   case effects {
     [] -> Nil
     [_, ..] -> {
@@ -1419,7 +1438,7 @@ fn await_drain(commands: Subject(ReaperMessage), effects: List(Pid)) -> Nil {
         |> process.select_trapped_exits(LinkedExit)
         |> process.selector_receive_forever()
       case event {
-        ReaperCommand(Adopt(effect: _, reply_with:)) -> {
+        ReaperCommand(Adopt(effect: _, stop: _, reply_with:)) -> {
           process.send(reply_with, False)
           await_drain(commands, effects)
         }
@@ -1430,8 +1449,11 @@ fn await_drain(commands: Subject(ReaperMessage), effects: List(Pid)) -> Nil {
   }
 }
 
-fn without_pid(pids: List(Pid), removed: Pid) -> List(Pid) {
-  list.filter(pids, fn(pid) { pid != removed })
+fn without_pid(
+  effects: List(AdoptedEffect),
+  removed: Pid,
+) -> List(AdoptedEffect) {
+  list.filter(effects, fn(effect) { effect.pid != removed })
 }
 
 fn await_previous_reapers(
@@ -1457,34 +1479,71 @@ fn await_previous_reapers(
 // or starts draining before it can acknowledge, the worker exits without
 // running. Once acknowledged, the reaper has recorded the pid and cannot
 // finish its own drain until this worker is dead.
-fn spawn_effect(reaper: Reaper, logger: Logger, body: fn() -> Nil) -> Pid {
-  process.spawn_unlinked(fn() {
-    let Reaper(commands:, pid: reaper_pid) = reaper
-    let reaper_monitor = process.monitor(reaper_pid)
-    case process.link(reaper_pid) {
-      False -> process.demonitor_process(reaper_monitor)
-      True -> {
-        let reply = process.new_subject()
-        process.send(commands, Adopt(process.self(), reply))
-        let accepted =
-          process.new_selector()
-          |> process.select_map(reply, fn(value) { value })
-          |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
-          |> process.selector_receive(1000)
-          |> result.unwrap(False)
-        process.demonitor_process(reaper_monitor)
-        case accepted {
-          True -> {
-            // The context travels inside `body`; stamping it here also
-            // correlates a crash report emitted by this worker process.
-            log.adopt(logger)
-            body()
-          }
-          False -> process.unlink(reaper_pid)
+fn spawn_effect(
+  reaper: Reaper,
+  logger: Logger,
+  body: fn() -> Nil,
+) -> #(Pid, fn() -> Nil) {
+  let pid =
+    process.spawn_unlinked(fn() {
+      let self = process.self()
+      adopt_and_run(reaper, logger, fn() { process.kill(self) }, body)
+    })
+  #(pid, fn() { process.kill(pid) })
+}
+
+// Provider effects receive a cooperative stop because their process is the
+// top-level drain witness. Killing it would start cleanup below it while
+// allowing the reaper to report completion too early.
+fn spawn_provider_effect(
+  reaper: Reaper,
+  logger: Logger,
+  body: fn(Subject(Nil)) -> Nil,
+) -> #(Pid, fn() -> Nil) {
+  let ready = process.new_subject()
+  let pid =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(ready, stop)
+      adopt_and_run(reaper, logger, fn() { process.send(stop, Nil) }, fn() {
+        body(stop)
+      })
+    })
+  let stop = process.receive_forever(ready)
+  #(pid, fn() { process.send(stop, Nil) })
+}
+
+fn adopt_and_run(
+  reaper: Reaper,
+  logger: Logger,
+  stop: fn() -> Nil,
+  body: fn() -> Nil,
+) -> Nil {
+  let Reaper(commands:, pid: reaper_pid) = reaper
+  let reaper_monitor = process.monitor(reaper_pid)
+  case process.link(reaper_pid) {
+    False -> process.demonitor_process(reaper_monitor)
+    True -> {
+      let reply = process.new_subject()
+      process.send(commands, Adopt(process.self(), stop, reply))
+      let accepted =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { value })
+        |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
+        |> process.selector_receive(1000)
+        |> result.unwrap(False)
+      process.demonitor_process(reaper_monitor)
+      case accepted {
+        True -> {
+          // The context travels inside `body`; stamping it here also
+          // correlates a crash report emitted by this worker process.
+          log.adopt(logger)
+          body()
         }
+        False -> process.unlink(reaper_pid)
       }
     }
-  })
+  }
 }
 
 fn spawn_provider(
@@ -1500,15 +1559,19 @@ fn spawn_provider(
     field.text(key: "kind", value: effect_kind(token)),
     field.text(key: "model", value: configuration.model.model_id),
   ])
-  let pid =
-    spawn_effect(state.reaper, logger, fn() {
+  let #(pid, stop) =
+    spawn_provider_effect(state.reaper, logger, fn(stop) {
       let handle = surface.request(spec)
-      let terminal = await_provider(handle, surface.timeout_ms)
+      let terminal = await_provider(handle, stop, surface.timeout_ms)
       wake(parent, ProviderDone(token:, terminal:))
+      // The terminal and the owner drain are separate facts. Keeping this
+      // effect alive until the public owner exits gives the incarnation reaper
+      // a transitive acknowledgement for the whole provider subtree.
+      stream.await_stopped_forever(handle)
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, monitor:, configuration:, call: None),
+    Live(token:, pid:, stop:, monitor:, configuration:, call: None),
     ..state.live
   ])
 }
@@ -1521,20 +1584,71 @@ const provider_cancel_grace_ms = 2000
 
 fn await_provider(
   handle: stream.StreamHandle,
+  stop: Subject(Nil),
   timeout_ms: Int,
 ) -> stream.StreamEvent {
-  case stream.await_terminal(handle, within: timeout_ms) {
-    Ok(#(_deltas, terminal)) -> terminal
-    Error(Nil) -> {
+  case next_provider_event(handle, stop, timeout_ms) {
+    Ok(stream.Delta(..)) -> await_provider(handle, stop, timeout_ms)
+    Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
+      terminal
+    Error(True) -> {
       stream.cancel(handle)
-      case stream.await_terminal(handle, within: provider_cancel_grace_ms) {
-        Ok(#(_deltas, terminal)) -> terminal
+      stream.await_stopped_forever(handle)
+      stream.Failed(error: stream.CancellationUnconfirmed)
+    }
+    Error(False) -> {
+      stream.cancel(handle)
+      case next_provider_event(handle, stop, provider_cancel_grace_ms) {
+        Ok(stream.Delta(..)) ->
+          await_provider_cancel(handle, stop, provider_cancel_grace_ms)
+        Ok(stream.Settled(..) as terminal)
+        | Ok(stream.Failed(..) as terminal) -> terminal
+        Error(True) -> {
+          stream.await_stopped_forever(handle)
+          stream.Failed(error: stream.CancellationUnconfirmed)
+        }
         // The owner alone can prove cancellation won. Keep an unconfirmed
         // outcome terminal: retrying could overlap new work with a request
         // that failed to prove it stopped.
-        Error(Nil) -> stream.Failed(error: stream.CancellationUnconfirmed)
+        Error(False) -> stream.Failed(error: stream.CancellationUnconfirmed)
       }
     }
+  }
+}
+
+fn await_provider_cancel(
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  timeout_ms: Int,
+) -> stream.StreamEvent {
+  case next_provider_event(handle, stop, timeout_ms) {
+    Ok(stream.Delta(..)) -> await_provider_cancel(handle, stop, timeout_ms)
+    Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
+      terminal
+    Error(True) -> {
+      stream.await_stopped_forever(handle)
+      stream.Failed(error: stream.CancellationUnconfirmed)
+    }
+    Error(False) -> stream.Failed(error: stream.CancellationUnconfirmed)
+  }
+}
+
+// The private selector event keeps stream traffic and the reaper's cooperative
+// stop distinct. The Boolean error then carries that distinction through the
+// small recursive wait helpers: `True` is stop and `False` is local timeout.
+fn next_provider_event(
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  within_ms: Int,
+) -> Result(stream.StreamEvent, Bool) {
+  let selector =
+    process.new_selector()
+    |> process.select_map(handle.events, ProviderStream)
+    |> process.select_map(stop, fn(_nil) { StopProvider })
+  case process.selector_receive(selector, within_ms) {
+    Ok(ProviderStream(event)) -> Ok(event)
+    Ok(StopProvider) -> Error(True)
+    Error(Nil) -> Error(False)
   }
 }
 
@@ -1553,14 +1667,14 @@ fn spawn_tool(
     field.text(key: "tool", value: run.call.name),
     field.flag(key: "replay", value: run.replay == operation.ReplaySafe),
   ])
-  let pid =
+  let #(pid, stop) =
     spawn_effect(state.reaper, logger, fn() {
       let outcome = runner(run)
       wake(parent, ToolDone(token:, outcome:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, monitor:, configuration:, call: Some(call)),
+    Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),
     ..state.live
   ])
 }

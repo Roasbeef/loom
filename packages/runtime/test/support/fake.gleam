@@ -72,7 +72,7 @@ pub fn effects(
           Refuse(error:) -> process.send(events, stream.Failed(error:))
           Hang -> Nil
         }
-        stream.StreamHandle(events:, cancel: fn() { Nil })
+        stream.immediate(events:, cancel: fn() { Nil })
       },
       timeout_ms: 60_000,
     ),

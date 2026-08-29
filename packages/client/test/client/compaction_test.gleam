@@ -352,7 +352,7 @@ fn scripted_provider(
         }
       }
     }
-    stream.StreamHandle(events:, cancel: fn() { Nil })
+    stream.immediate(events:, cancel: fn() { Nil })
   })
 }
 

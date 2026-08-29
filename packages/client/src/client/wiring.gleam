@@ -840,7 +840,7 @@ fn unsupported(reason: String) -> StreamHandle {
       message: reason,
     )),
   )
-  stream.StreamHandle(events:, cancel: fn() { Nil })
+  stream.immediate(events:, cancel: fn() { Nil })
 }
 
 /// Maps a generation or poll spec onto the provider-neutral request

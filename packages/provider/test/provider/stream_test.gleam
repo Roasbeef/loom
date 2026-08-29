@@ -437,7 +437,7 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
   assert receive_from(outcomes, 20) == Error(Nil)
 }
 
-pub fn run_timeout_reaps_stubborn_transport_owner_test() {
+pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
   let owners = process_subject()
   let cancelled = process_subject()
   let stubborn =
@@ -464,14 +464,10 @@ pub fn run_timeout_reaps_stubborn_transport_owner_test() {
       within: 20,
     )
   let assert Ok(owner) = receive_from(owners, 100)
-  assert outcome
-    == stream.AttemptTerminal(
-      stream.Failed(stream.TransportFailed(
-        reason: "timed out waiting for the provider",
-      )),
-    )
+  assert outcome == stream.AttemptCancellationUnconfirmed
   assert receive_from(cancelled, 100) == Ok(Nil)
-  assert !process.is_alive(owner)
+  assert process.is_alive(owner)
+  process.kill(owner)
 }
 
 pub fn run_transport_death_fails_in_band_test() {

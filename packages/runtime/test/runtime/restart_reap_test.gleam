@@ -124,7 +124,7 @@ pub fn provider_timeout_cancels_before_settling_test() {
       ..base_effects,
       provider: effects.ProviderSurface(timeout_ms: 10, request: fn(_spec) {
         let events = process.new_subject()
-        stream.StreamHandle(events:, cancel: fn() {
+        stream.immediate(events:, cancel: fn() {
           let _cancelled = recorder.bump(rec, "provider-cancelled")
           process.send(events, stream.Failed(error: stream.ProviderCancelled))
         })
@@ -166,7 +166,7 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
       ..base_effects,
       provider: effects.ProviderSurface(timeout_ms: 10, request: fn(_spec) {
         let events = process.new_subject()
-        stream.StreamHandle(events:, cancel: fn() {
+        stream.immediate(events:, cancel: fn() {
           let _cancelled = recorder.bump(rec, "unacknowledged-cancel")
           Nil
         })
@@ -191,7 +191,7 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
   process.kill(rt.tree.supervisor)
 }
 
-pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
+pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
   let rec = recorder.start()
   let pids = pid_log()
   let assert Ok(sess) =
@@ -224,19 +224,23 @@ pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
             Nil
           }
         }
+        let ready = process.new_subject()
         let owner =
           process.spawn_unlinked(fn() {
-            let down =
-              process.new_selector()
-              |> process.select_specific_monitor(
-                process.monitor(consumer),
-                fn(_down) { Nil },
-              )
-            let _consumer_down = process.selector_receive_forever(down)
-            let _cancelled = recorder.bump(rec, "provider-consumer-down")
+            // A Subject names the process that creates it. The owner must
+            // therefore mint this capability and hand it back before the
+            // provider effect can issue cancellation.
+            let cancel = process.new_subject()
+            process.send(ready, cancel)
+            let _cancel = process.receive_forever(cancel)
+            let _drained = recorder.bump(rec, "provider-owner-drained")
             Nil
           })
-        stream.StreamHandle(events:, cancel: fn() { process.kill(owner) })
+        let cancel = process.receive_forever(ready)
+        stream.owned(events:, owner:, cancel: fn() {
+          let _cancelled = recorder.bump(rec, "provider-cancel-called")
+          process.send(cancel, Nil)
+        })
       }),
     )
   let options =
@@ -249,11 +253,31 @@ pub fn strand_restart_reaches_the_provider_consumer_monitor_test() {
     as "the session tree must boot"
   let assert Ok(_op) = api.prompt(rt, [fake.user("wait for the provider")])
     as "the prompt must be accepted"
-  wait_for(fn() { recorder.read(rec, "provider-requested") >= 1 }, 5000)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-requested") >= 1 },
+    5000,
+    "the first provider request",
+  )
   kill_strand(rt, "main")
-  wait_for(fn() { recorder.read(rec, "provider-requested") >= 2 }, 5000)
-  wait_for(fn() { recorder.read(rec, "provider-consumer-down") >= 1 }, 5000)
-  assert recorder.read(rec, "provider-consumer-down") >= 1
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-cancel-called") >= 1 },
+    5000,
+    "the predecessor provider cancellation",
+  )
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
+    5000,
+    "the predecessor provider owner drain",
+  )
+  // The predecessor owner must acknowledge its drain before recovery can
+  // dispatch request two; checking in this order makes overlap impossible to
+  // hide behind an eventually delivered owner-drained message.
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-requested") >= 2 },
+    5000,
+    "the replacement provider request",
+  )
+  assert recorder.read(rec, "provider-owner-drained") >= 1
   assert recorder.read(rec, "provider-overlap") == 0
   let assert [first, ..] = logged_pids(pids)
   assert !process.is_alive(first)
@@ -272,14 +296,25 @@ fn kill_strand(rt: api.Runtime, strand: String) -> Nil {
 }
 
 fn wait_for(condition: fn() -> Bool, remaining: Int) -> Nil {
+  wait_for_named(condition, remaining, "a test condition")
+}
+
+fn wait_for_named(
+  condition: fn() -> Bool,
+  remaining: Int,
+  milestone: String,
+) -> Nil {
   case condition() {
     True -> Nil
     False ->
       case remaining <= 0 {
-        True -> panic as "timed out waiting for a test condition"
+        True -> {
+          let reason = "timed out waiting for " <> milestone
+          panic as reason
+        }
         False -> {
           process.sleep(10)
-          wait_for(condition, remaining - 10)
+          wait_for_named(condition, remaining - 10, milestone)
         }
       }
   }

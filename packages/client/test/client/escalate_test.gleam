@@ -305,7 +305,7 @@ fn summary_sink() -> summaries.Summaries {
 
 // A provider that never answers; nothing in this suite generates.
 fn stream_handle_that_never_settles() -> stream.StreamHandle {
-  stream.StreamHandle(events: process.new_subject(), cancel: fn() { Nil })
+  stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
 }
 
 // --- the call under test ---------------------------------------------------

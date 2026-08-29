@@ -32,7 +32,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/openai
-import provider/http.{type Transport}
+import provider/http.{type RunningRequest, type Transport}
 import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
   type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
@@ -41,8 +41,8 @@ import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
-  AttemptCancelled, AttemptTerminal, Cancel, ConsumerGone, Delta, Failed,
-  NoIdentity, NoSecret, ProviderCancelled, Settled, StreamHandle,
+  AttemptCancellationUnconfirmed, AttemptCancelled, AttemptTerminal, Cancel,
+  ConsumerGone, Delta, Failed, NoIdentity, NoSecret, ProviderCancelled, Settled,
   UnknownProvider,
 }
 
@@ -57,6 +57,7 @@ type RequestControl {
 
 type RequestEvent {
   PumpEvent(StreamEvent)
+  AttemptStarted(RunningRequest)
   ConsumerDown(process.Down)
   PumpDown(process.Down)
   CancelRequested
@@ -261,12 +262,21 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
       let control = process.new_subject()
       let pump_ready = process.new_subject()
       let pump_events = process.new_subject()
+      let pump_attempts = process.new_subject()
       let self = process.self()
       let pump_owner =
         process.spawn_unlinked(fn() {
           let pump_control = process.new_subject()
           process.send(pump_ready, pump_control)
-          pump(gateway, request, now, pump_events, pump_control, self)
+          pump(
+            gateway,
+            request,
+            now,
+            pump_events,
+            pump_attempts,
+            pump_control,
+            self,
+          )
         })
       let consumer_monitor = process.monitor(consumer)
       let pump_monitor = process.monitor(pump_owner)
@@ -284,10 +294,12 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
             events,
             control,
             pump_events,
+            pump_attempts,
             pump_control,
             consumer_monitor,
             pump_owner,
             pump_monitor,
+            None,
           )
         }
         Ok(Error(Nil)) | Error(Nil) -> {
@@ -305,7 +317,7 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
   process.demonitor_process(monitor: monitor)
   case started {
     Ok(Ok(control)) ->
-      StreamHandle(events:, cancel: fn() {
+      stream.owned(events:, owner:, cancel: fn() {
         process.send(control, CancelRequest)
       })
     Ok(Error(Nil)) | Error(Nil) -> {
@@ -316,7 +328,7 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
           reason: "provider request owner did not start",
         )),
       )
-      StreamHandle(events:, cancel: fn() { Nil })
+      stream.immediate(events:, cancel: fn() { Nil })
     }
   }
 }
@@ -329,14 +341,34 @@ fn guard_request(
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
+  pump_attempts: process.Subject(RunningRequest),
   pump_control: process.Subject(Control),
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
   pump_monitor: process.Monitor,
+  active: Option(RunningRequest),
 ) -> Nil {
   let selector =
-    request_selector(control, pump_events, consumer_monitor, pump_monitor)
+    request_selector(
+      control,
+      pump_events,
+      pump_attempts,
+      consumer_monitor,
+      pump_monitor,
+    )
   case process.selector_receive_forever(selector) {
+    AttemptStarted(running) ->
+      guard_request(
+        events,
+        control,
+        pump_events,
+        pump_attempts,
+        pump_control,
+        consumer_monitor,
+        pump_owner,
+        pump_monitor,
+        Some(running),
+      )
     PumpEvent(event) -> {
       process.send(events, event)
       case event {
@@ -345,13 +377,18 @@ fn guard_request(
             events,
             control,
             pump_events,
+            pump_attempts,
             pump_control,
             consumer_monitor,
             pump_owner,
             pump_monitor,
+            active,
           )
-        Settled(..) | Failed(..) ->
+        Settled(..) | Failed(..) -> {
+          await_active_forever(active)
+          await_pump_down_forever(pump_owner, pump_monitor)
           forget_request(consumer_monitor, pump_monitor)
+        }
       }
     }
     ConsumerDown(_down) ->
@@ -360,15 +397,23 @@ fn guard_request(
         pump_owner,
         consumer_monitor,
         pump_monitor,
+        active,
       )
     PumpDown(_down) -> {
       process.demonitor_process(consumer_monitor)
-      process.send(
-        events,
-        Failed(stream.TransportFailed(
-          reason: "provider request pump stopped before a terminal response",
-        )),
-      )
+      case stop_active(active, request_cancel_grace_ms) {
+        True ->
+          process.send(
+            events,
+            Failed(stream.TransportFailed(
+              reason: "provider request pump stopped before a terminal response",
+            )),
+          )
+        False -> {
+          process.send(events, Failed(stream.CancellationUnconfirmed))
+          await_active_forever(active)
+        }
+      }
     }
     CancelRequested -> {
       process.send(pump_control, Cancel)
@@ -378,10 +423,12 @@ fn guard_request(
         events,
         control,
         pump_events,
+        pump_attempts,
         pump_control,
         consumer_monitor,
         pump_owner,
         pump_monitor,
+        active,
       )
     }
     CancelExpired ->
@@ -389,10 +436,12 @@ fn guard_request(
         events,
         control,
         pump_events,
+        pump_attempts,
         pump_control,
         consumer_monitor,
         pump_owner,
         pump_monitor,
+        active,
       )
   }
 }
@@ -404,14 +453,36 @@ fn guard_cancelling(
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
+  pump_attempts: process.Subject(RunningRequest),
   pump_control: process.Subject(Control),
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
   pump_monitor: process.Monitor,
+  active: Option(RunningRequest),
 ) -> Nil {
   let selector =
-    request_selector(control, pump_events, consumer_monitor, pump_monitor)
+    request_selector(
+      control,
+      pump_events,
+      pump_attempts,
+      consumer_monitor,
+      pump_monitor,
+    )
   case process.selector_receive_forever(selector) {
+    AttemptStarted(running) -> {
+      http.cancel(running)
+      guard_cancelling(
+        events,
+        control,
+        pump_events,
+        pump_attempts,
+        pump_control,
+        consumer_monitor,
+        pump_owner,
+        pump_monitor,
+        Some(running),
+      )
+    }
     PumpEvent(event) ->
       case event {
         Delta(..) ->
@@ -419,13 +490,17 @@ fn guard_cancelling(
             events,
             control,
             pump_events,
+            pump_attempts,
             pump_control,
             consumer_monitor,
             pump_owner,
             pump_monitor,
+            active,
           )
         Settled(..) | Failed(..) -> {
           process.send(events, event)
+          await_active_forever(active)
+          await_pump_down_forever(pump_owner, pump_monitor)
           forget_request(consumer_monitor, pump_monitor)
         }
       }
@@ -435,20 +510,34 @@ fn guard_cancelling(
         pump_owner,
         consumer_monitor,
         pump_monitor,
+        active,
       )
-    PumpDown(_down) | CancelExpired -> {
-      stop_request(pump_control, pump_owner, consumer_monitor, pump_monitor)
+    PumpDown(_down) -> {
+      process.send(pump_control, Cancel)
+      http_cancel(active)
       process.send(events, Failed(stream.CancellationUnconfirmed))
+      await_active_forever(active)
+      process.demonitor_process(consumer_monitor)
+    }
+    CancelExpired -> {
+      process.send(pump_control, Cancel)
+      http_cancel(active)
+      process.send(events, Failed(stream.CancellationUnconfirmed))
+      await_active_forever(active)
+      await_pump_down_forever(pump_owner, pump_monitor)
+      forget_request(consumer_monitor, pump_monitor)
     }
     CancelRequested ->
       guard_cancelling(
         events,
         control,
         pump_events,
+        pump_attempts,
         pump_control,
         consumer_monitor,
         pump_owner,
         pump_monitor,
+        active,
       )
   }
 }
@@ -456,11 +545,13 @@ fn guard_cancelling(
 fn request_selector(
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
+  pump_attempts: process.Subject(RunningRequest),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
 ) -> process.Selector(RequestEvent) {
   process.new_selector()
   |> process.select_map(pump_events, PumpEvent)
+  |> process.select_map(pump_attempts, AttemptStarted)
   |> process.select_map(control, fn(message) {
     case message {
       CancelRequest -> CancelRequested
@@ -469,17 +560,6 @@ fn request_selector(
   })
   |> process.select_specific_monitor(consumer_monitor, ConsumerDown)
   |> process.select_specific_monitor(pump_monitor, PumpDown)
-}
-
-fn stop_request(
-  pump_control: process.Subject(Control),
-  pump_owner: process.Pid,
-  consumer_monitor: process.Monitor,
-  pump_monitor: process.Monitor,
-) -> Nil {
-  process.send(pump_control, Cancel)
-  process.kill(pump_owner)
-  forget_request(consumer_monitor, pump_monitor)
 }
 
 // A dead public consumer needs no terminal, but the pump still gets one grace
@@ -491,20 +571,71 @@ fn stop_for_dead_consumer(
   pump_owner: process.Pid,
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
+  active: Option(RunningRequest),
 ) -> Nil {
   process.send(pump_control, Cancel)
-  case await_pump_down(pump_monitor, request_cancel_grace_ms) {
-    True -> Nil
-    False -> process.kill(pump_owner)
-  }
+  http_cancel(active)
+  await_active_forever(active)
+  await_pump_down_forever(pump_owner, pump_monitor)
   forget_request(consumer_monitor, pump_monitor)
 }
 
-fn await_pump_down(monitor: process.Monitor, within: Int) -> Bool {
-  process.new_selector()
-  |> process.select_specific_monitor(monitor, fn(_down) { True })
-  |> process.selector_receive(within)
-  |> result.unwrap(False)
+fn http_cancel(active: Option(RunningRequest)) -> Nil {
+  case active {
+    None -> Nil
+    Some(running) -> http.cancel(running)
+  }
+}
+
+fn stop_active(active: Option(RunningRequest), within: Int) -> Bool {
+  case active {
+    None -> False
+    Some(running) -> {
+      http.cancel(running)
+      await_running_down(running, within)
+    }
+  }
+}
+
+fn await_active_forever(active: Option(RunningRequest)) -> Nil {
+  case active {
+    None -> Nil
+    Some(running) -> {
+      let monitor = process.monitor(http.owner(running))
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+        |> process.selector_receive_forever()
+      Nil
+    }
+  }
+}
+
+fn await_running_down(running: RunningRequest, within: Int) -> Bool {
+  let monitor = process.monitor(http.owner(running))
+  let down =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { True })
+    |> process.selector_receive(within)
+    |> result.unwrap(False)
+  process.demonitor_process(monitor)
+  down
+}
+
+fn await_pump_down_forever(
+  owner: process.Pid,
+  monitor: process.Monitor,
+) -> Nil {
+  case process.is_alive(owner) {
+    False -> Nil
+    True -> {
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+        |> process.selector_receive_forever()
+      Nil
+    }
+  }
 }
 
 fn forget_request(
@@ -520,12 +651,22 @@ fn pump(
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
   case request.target {
     ForResolved(resolved:) ->
-      attempt(gateway, request, now, [resolved], events, control, consumer)
+      attempt(
+        gateway,
+        request,
+        now,
+        [resolved],
+        events,
+        attempts,
+        control,
+        consumer,
+      )
     ForRole(role:, thinking:) ->
       dispatch_role(
         gateway,
@@ -534,6 +675,7 @@ fn pump(
         role,
         thinking,
         events,
+        attempts,
         control,
         consumer,
       )
@@ -551,6 +693,7 @@ fn dispatch_role(
   role: Role,
   thinking: Option(ThinkingLevel),
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -570,6 +713,7 @@ fn dispatch_role(
             now,
             overlaid(chain, thinking),
             events,
+            attempts,
             control,
             consumer,
           )
@@ -603,6 +747,7 @@ fn attempt(
   now: Int,
   targets: List(ResolvedModel),
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -621,6 +766,7 @@ fn attempt(
               now,
               target,
               events,
+              attempts,
               control,
               consumer,
             )
@@ -631,6 +777,7 @@ fn attempt(
             outcome,
             rest,
             events,
+            attempts,
             control,
             consumer,
           )
@@ -649,11 +796,14 @@ fn continue_or_deliver(
   outcome: AttemptOutcome,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
   case outcome {
     AttemptCancelled -> process.send(events, Failed(ProviderCancelled))
+    AttemptCancellationUnconfirmed ->
+      process.send(events, Failed(stream.CancellationUnconfirmed))
     ConsumerGone -> Nil
     AttemptTerminal(terminal:) ->
       continue_terminal(
@@ -663,6 +813,7 @@ fn continue_or_deliver(
         terminal,
         rest,
         events,
+        attempts,
         control,
         consumer,
       )
@@ -676,6 +827,7 @@ fn continue_terminal(
   terminal: StreamEvent,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -683,7 +835,16 @@ fn continue_terminal(
     Failed(error:), [_, ..] ->
       case retry.classify(error) {
         Retryable(backoff_hint_ms: _) ->
-          attempt(gateway, request, now, rest, events, control, consumer)
+          attempt(
+            gateway,
+            request,
+            now,
+            rest,
+            events,
+            attempts,
+            control,
+            consumer,
+          )
         Terminal -> process.send(events, terminal)
       }
     _, _ -> process.send(events, terminal)
@@ -698,6 +859,7 @@ fn attempt_one(
   now: Int,
   target: ResolvedModel,
   events: process.Subject(StreamEvent),
+  attempts: process.Subject(RunningRequest),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> AttemptOutcome {
@@ -718,21 +880,23 @@ fn attempt_one(
   )
   case config {
     AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run(
+      stream.run_tracked(
         gateway.transport,
         anthropic.build_request(base_url:, api_key:, resolved: target, request:),
         anthropic.response_machine(target, now:),
         deliver,
+        fn(running) { process.send(attempts, running) },
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
       )
     OpenAiCompatibleProvider(name: _, base_url:, api_key_secret: _) ->
-      stream.run(
+      stream.run_tracked(
         gateway.transport,
         openai.build_request(base_url:, api_key:, resolved: target, request:),
         openai.response_machine(target, now:),
         deliver,
+        fn(running) { process.send(attempts, running) },
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,

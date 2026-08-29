@@ -462,7 +462,7 @@ fn cancellable_summary_provider(
 ) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
     let events = process.new_subject()
-    stream.StreamHandle(events:, cancel: fn() {
+    stream.immediate(events:, cancel: fn() {
       process.send(cancelled, Nil)
       process.send(events, stream.Failed(error: stream.ProviderCancelled))
     })

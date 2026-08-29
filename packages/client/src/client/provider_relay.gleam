@@ -13,8 +13,8 @@
 //// owner, then the guard waits one fixed grace timer for the owner-authored
 //// terminal. The timer is scheduled once, so a stream of late deltas cannot
 //// extend teardown indefinitely. If no terminal arrives, the guard reports
-//// `CancellationUnconfirmed`, kills the worker, and the worker's disappearance
-//// supplies a second downward cancellation signal to the inner stream.
+//// `CancellationUnconfirmed` but remains alive until the inner owner drains;
+//// its public pid is therefore a transitive teardown acknowledgement.
 
 import gleam/erlang/process.{type Pid, type Subject}
 import provider/stream
@@ -163,8 +163,10 @@ fn forward_inner(
       case event {
         stream.Delta(..) ->
           forward_inner(inner, guard_monitor, relayed, observe, timeout_ms)
-        stream.Settled(..) | stream.Failed(..) ->
+        stream.Settled(..) | stream.Failed(..) -> {
           process.demonitor_process(guard_monitor)
+          stream.await_stopped_forever(inner)
+        }
       }
     }
   }
@@ -184,7 +186,7 @@ fn await_handle(
   process.demonitor_process(monitor)
   case started {
     Ok(Ok(Ok(control))) ->
-      stream.StreamHandle(events: outer, cancel: fn() {
+      stream.owned(events: outer, owner: guard, cancel: fn() {
         process.send(control, Cancel)
       })
     Ok(Ok(Error(reason))) -> failed_handle(outer, reason)
@@ -204,7 +206,7 @@ fn failed_handle(
     outer,
     stream.Failed(error: stream.TransportFailed(reason: reason)),
   )
-  stream.StreamHandle(events: outer, cancel: fn() { Nil })
+  stream.immediate(events: outer, cancel: fn() { Nil })
 }
 
 fn forward(
@@ -237,8 +239,10 @@ fn forward(
                 consumer_monitor,
                 worker_monitor,
               )
-            stream.Settled(..) | stream.Failed(..) ->
+            stream.Settled(..) | stream.Failed(..) -> {
+              await_worker_down_forever(worker, worker_monitor)
               forget_relay(consumer_monitor, worker_monitor)
+            }
           }
         }
       }
@@ -247,12 +251,22 @@ fn forward(
     WorkerDown(_down) -> {
       stream.cancel(inner)
       process.demonitor_process(consumer_monitor)
-      process.send(
-        outer,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "provider relay worker stopped before a terminal response",
-        )),
-      )
+      case stream.await_stopped(inner, within: cancel_grace_ms) {
+        True ->
+          process.send(
+            outer,
+            stream.Failed(error: stream.TransportFailed(
+              reason: "provider relay worker stopped before a terminal response",
+            )),
+          )
+        False -> {
+          process.send(
+            outer,
+            stream.Failed(error: stream.CancellationUnconfirmed),
+          )
+          stream.await_stopped_forever(inner)
+        }
+      }
     }
     CancelRequested -> {
       stream.cancel(inner)
@@ -307,14 +321,18 @@ fn forward_cancelling(
           )
         stream.Settled(..) | stream.Failed(..) -> {
           process.send(outer, event)
+          await_worker_down_forever(worker, worker_monitor)
           forget_relay(consumer_monitor, worker_monitor)
         }
       }
     ConsumerDown(_down) ->
       stop_relay(inner, worker, consumer_monitor, worker_monitor)
     WorkerDown(_down) | CancelExpired -> {
-      stop_relay(inner, worker, consumer_monitor, worker_monitor)
       process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
+      stream.cancel(inner)
+      stream.await_stopped_forever(inner)
+      stop_worker(worker, worker_monitor)
+      process.demonitor_process(consumer_monitor)
     }
     CancelRequested ->
       forward_cancelling(
@@ -353,9 +371,36 @@ fn stop_relay(
   consumer_monitor: process.Monitor,
   worker_monitor: process.Monitor,
 ) -> Nil {
+  // Consumer death closes the observation boundary before cancellation can
+  // produce a terminal event. This keeps wrapper-local side effects, such as
+  // summary recording, from outliving the consumer that requested them.
+  stop_worker(worker, worker_monitor)
   stream.cancel(inner)
-  process.kill(worker)
+  stream.await_stopped_forever(inner)
   forget_relay(consumer_monitor, worker_monitor)
+}
+
+fn stop_worker(worker: Pid, monitor: process.Monitor) -> Nil {
+  case process.is_alive(worker) {
+    True -> {
+      process.kill(worker)
+      await_worker_down_forever(worker, monitor)
+    }
+    False -> Nil
+  }
+}
+
+fn await_worker_down_forever(worker: Pid, monitor: process.Monitor) -> Nil {
+  case process.is_alive(worker) {
+    False -> Nil
+    True -> {
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+        |> process.selector_receive_forever()
+      Nil
+    }
+  }
 }
 
 fn forget_relay(

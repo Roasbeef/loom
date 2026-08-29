@@ -251,15 +251,87 @@ pub fn cancellation_after_settlement_is_a_noop_test() {
   assert stream.next(handle, within: 100) == Error(Nil)
 }
 
-pub fn pump_crash_after_start_fails_promptly_in_band_test() {
+pub fn pump_crash_before_attempt_fails_promptly_in_band_test() {
   let crashing =
     http.Transport(start_streaming: fn(_request, _events) {
       panic as "transport seam crashed"
     })
   let handle = gateway.request(two_provider_gateway(crashing), main_request())
-  let assert Ok(#([], stream.Failed(stream.TransportFailed(reason:)))) =
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
     stream.await_terminal(handle, within: 1000)
-  assert reason == "provider request pump stopped before a terminal response"
+}
+
+pub fn pump_crash_after_attempt_refuses_retry_until_transport_drains_test() {
+  let owners = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      let pump = process.self()
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(owners, #(owner, release))
+      let _killer =
+        process.spawn_unlinked(fn() {
+          // Let `run_tracked` publish the live capability before simulating
+          // the pump fault that would otherwise lose it.
+          process.sleep(25)
+          process.kill(pump)
+        })
+      Ok(
+        http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+        }),
+      )
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+    stream.await_terminal(handle, within: 2500)
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+
+  assert process.is_alive(owner)
+  assert !stream.await_stopped(handle, within: 20)
+  process.send(release, Nil)
+  assert stream.await_stopped(handle, within: 1000)
+}
+
+pub fn retryable_terminal_does_not_fallback_before_transport_drains_test() {
+  let attempts = process.new_subject()
+  let ready = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(request, events) {
+      process.send(attempts, request.url)
+      let owner_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(owner_ready, release)
+          process.send(events, http.RequestFailed(reason: "overloaded"))
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(owner_ready)
+      process.send(ready, #(owner, release))
+      Ok(http.RunningRequest(owner:, cancel: fn() { Nil }))
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let assert Ok(#(owner, release)) = process.receive(ready, within: 1000)
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+    stream.await_terminal(handle, within: 1000)
+
+  assert process.is_alive(owner)
+  assert process.receive(attempts, within: 1000)
+    == Ok("https://primary.test/v1/messages")
+  assert process.receive(attempts, within: 100) == Error(Nil)
+  process.send(release, Nil)
+  assert stream.await_stopped(handle, within: 1000)
 }
 
 pub fn consumer_death_cancels_and_reaps_transport_test() {

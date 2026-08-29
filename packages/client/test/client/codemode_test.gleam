@@ -1186,9 +1186,7 @@ fn start_runtime() -> Live {
         provider: effects.ProviderSurface(
           timeout_ms: 60_000,
           request: fn(_spec) {
-            stream.StreamHandle(events: process.new_subject(), cancel: fn() {
-              Nil
-            })
+            stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
           },
         ),
         tools: effects.ToolSurface(

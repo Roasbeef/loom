@@ -160,7 +160,7 @@ fn scripted_stream(
     }
     Settles(text:) -> settle_into(events, text)
   }
-  stream.StreamHandle(events:, cancel: fn() { Nil })
+  stream.immediate(events:, cancel: fn() { Nil })
 }
 
 fn report_context(

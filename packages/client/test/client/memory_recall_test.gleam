@@ -439,7 +439,7 @@ fn scripted_provider(
           _other -> settle(events, answer(bulky("answer"), 100))
         }
     }
-    stream.StreamHandle(events:, cancel: fn() { Nil })
+    stream.immediate(events:, cancel: fn() { Nil })
   })
 }
 

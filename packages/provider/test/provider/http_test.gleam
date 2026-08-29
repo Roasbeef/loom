@@ -14,9 +14,6 @@ fn start_hanging_server(
 @external(erlang, "provider_http_test_ffi", "start_malformed_server")
 fn start_malformed_server() -> #(Int, Pid)
 
-@external(erlang, "erlang", "suspend_process")
-fn suspend_process(pid: Pid) -> Bool
-
 pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let accepted = process.new_subject()
   let closed = process.new_subject()
@@ -42,7 +39,6 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let assert Ok(Nil) = process.receive(accepted, within: 2000)
     as "the loopback peer must accept the production request"
 
-  assert suspend_process(http.owner(running))
   http.cancel(running)
 
   let assert Ok(True) =

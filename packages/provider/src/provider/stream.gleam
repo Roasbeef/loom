@@ -445,19 +445,78 @@ pub type ResponseMachine(state) {
   )
 }
 
-/// A live provider stream: the subject on which `StreamEvent`s arrive.
-/// See the module documentation for the consumption contract.
+/// A provider stream: the subject on which `StreamEvent`s arrive, its
+/// cancellation capability, and the process that remains alive until owned
+/// external work has drained.
 ///
 /// Constructor invariants: `events` is owned by the process that called
-/// `gateway.request`, so only that process may receive from it.
+/// `gateway.request`, so only that process may receive from it. `owner` is
+/// `Some` whenever the handle owns asynchronous work and that process exits
+/// only after every descendant has stopped. `None` is reserved for an already
+/// terminal or entirely local fixture with no work to drain.
 pub type StreamHandle {
-  StreamHandle(events: Subject(StreamEvent), cancel: fn() -> Nil)
+  StreamHandle(
+    events: Subject(StreamEvent),
+    cancel: fn() -> Nil,
+    owner: Option(Pid),
+  )
+}
+
+/// Constructs a stream backed by asynchronous work whose owner is a drain
+/// witness for the whole subtree.
+pub fn owned(
+  events events: Subject(StreamEvent),
+  cancel cancel: fn() -> Nil,
+  owner owner: Pid,
+) -> StreamHandle {
+  StreamHandle(events:, cancel:, owner: Some(owner))
+}
+
+/// Constructs a stream with no asynchronous work to drain.
+pub fn immediate(
+  events events: Subject(StreamEvent),
+  cancel cancel: fn() -> Nil,
+) -> StreamHandle {
+  StreamHandle(events:, cancel:, owner: None)
 }
 
 /// Requests cancellation of the whole provider request. The request owner
 /// decides the cancellation/terminal race and makes repeated calls harmless.
 pub fn cancel(handle: StreamHandle) -> Nil {
   handle.cancel()
+}
+
+/// Waits up to `within` milliseconds for the stream's complete ownership tree
+/// to drain. An immediate handle is already stopped.
+pub fn await_stopped(handle: StreamHandle, within timeout: Int) -> Bool {
+  case handle.owner {
+    None -> True
+    Some(owner) -> {
+      let monitor = process.monitor(owner)
+      let stopped =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_down) { True })
+        |> process.selector_receive(timeout)
+        |> result.unwrap(False)
+      process.demonitor_process(monitor)
+      stopped
+    }
+  }
+}
+
+/// Waits until the stream's complete ownership tree has drained.
+pub fn await_stopped_forever(handle: StreamHandle) -> Nil {
+  case handle.owner {
+    None -> Nil
+    Some(owner) -> {
+      let monitor = process.monitor(owner)
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+        |> process.selector_receive_forever()
+      Nil
+    }
+  }
 }
 
 /// Receives the next stream event, `Error(Nil)` on timeout.
@@ -518,6 +577,7 @@ pub type Control {
 pub type AttemptOutcome {
   AttemptTerminal(terminal: StreamEvent)
   AttemptCancelled
+  AttemptCancellationUnconfirmed
   ConsumerGone
 }
 
@@ -557,6 +617,31 @@ pub fn run(
   consumer consumer: Pid,
   within timeout: Int,
 ) -> AttemptOutcome {
+  run_tracked(
+    transport,
+    request,
+    machine,
+    deliver,
+    fn(_running) { Nil },
+    control:,
+    consumer:,
+    within: timeout,
+  )
+}
+
+/// Runs one request attempt and publishes the live transport capability before
+/// waiting on it. The gateway uses this to retain a cancellation path even if
+/// its fallback pump crashes.
+pub fn run_tracked(
+  transport: Transport,
+  request: HttpRequest,
+  machine: ResponseMachine(state),
+  deliver: fn(Delta) -> Nil,
+  started: fn(http.RunningRequest) -> Nil,
+  control control: Subject(Control),
+  consumer consumer: Pid,
+  within timeout: Int,
+) -> AttemptOutcome {
   let http_events = process.new_subject()
   let http.Transport(start_streaming:) = transport
   case start_streaming(request, http_events) {
@@ -565,6 +650,7 @@ pub fn run(
         Failed(TransportFailed(reason: "start failed: " <> reason)),
       )
     Ok(running) -> {
+      started(running)
       let consumer_monitor = process.monitor(consumer)
       let transport_monitor = process.monitor(http.owner(running))
       let selector =
@@ -599,21 +685,25 @@ fn run_loop(
 ) -> AttemptOutcome {
   case process.selector_receive(selector, timeout) {
     Error(Nil) -> {
-      stop_attempt(running, consumer_monitor, transport_monitor)
-      AttemptTerminal(
-        Failed(TransportFailed(reason: "timed out waiting for the provider")),
-      )
+      case stop_attempt(running, consumer_monitor, transport_monitor) {
+        True ->
+          AttemptTerminal(
+            Failed(TransportFailed(reason: "timed out waiting for the provider")),
+          )
+        False -> AttemptCancellationUnconfirmed
+      }
     }
-    Ok(Cancelled) -> {
-      stop_attempt(running, consumer_monitor, transport_monitor)
-      AttemptCancelled
-    }
+    Ok(Cancelled) ->
+      case stop_attempt(running, consumer_monitor, transport_monitor) {
+        True -> AttemptCancelled
+        False -> AttemptCancellationUnconfirmed
+      }
     Ok(ConsumerExited(down: _)) -> {
-      stop_attempt(running, consumer_monitor, transport_monitor)
+      let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
       ConsumerGone
     }
     Ok(TransportExited(down: _)) -> {
-      forget_attempt(consumer_monitor, transport_monitor)
+      let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
       AttemptTerminal(
         Failed(TransportFailed(
           reason: "provider transport stopped before a terminal response",
@@ -635,8 +725,10 @@ fn run_loop(
       let #(state, events) = machine.on_chunk(state, chunk)
       case forward(events, deliver) {
         Some(terminal) -> {
-          stop_attempt(running, consumer_monitor, transport_monitor)
-          AttemptTerminal(terminal)
+          case stop_attempt(running, consumer_monitor, transport_monitor) {
+            True -> AttemptTerminal(terminal)
+            False -> AttemptCancellationUnconfirmed
+          }
         }
         None ->
           run_loop(
@@ -661,8 +753,10 @@ fn run_loop(
         None ->
           Failed(StreamDisconnected(context: "response ended without settling"))
       }
-      finish_attempt(running, consumer_monitor, transport_monitor)
-      AttemptTerminal(terminal)
+      case finish_attempt(running, consumer_monitor, transport_monitor) {
+        True -> AttemptTerminal(terminal)
+        False -> AttemptCancellationUnconfirmed
+      }
     }
     Ok(Http(http.RequestFailed(reason:))) -> {
       // Mirrors on_end: a machine that has already settled (acc.done)
@@ -671,8 +765,10 @@ fn run_loop(
         Some(terminal) -> terminal
         None -> Failed(TransportFailed(reason:))
       }
-      finish_attempt(running, consumer_monitor, transport_monitor)
-      AttemptTerminal(terminal)
+      case finish_attempt(running, consumer_monitor, transport_monitor) {
+        True -> AttemptTerminal(terminal)
+        False -> AttemptCancellationUnconfirmed
+      }
     }
   }
 }
@@ -683,44 +779,31 @@ fn stop_attempt(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
-) -> Nil {
+) -> Bool {
   http.cancel(running)
   finish_attempt(running, consumer_monitor, transport_monitor)
 }
 
-// A transport terminal is a message, not proof its owner stopped. Observe the
-// owner for a short grace; if it remains alive, kill only that local process.
-// The production owner's explicit cancel path has already called
-// `httpc:cancel_request/1` before this fallback is reachable.
+// A transport terminal is a message, not proof its owner stopped. This bounded
+// observation decides whether a retry is safe; the gateway retains the live
+// capability and remains the transitive drain witness when it is not.
 fn finish_attempt(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
-) -> Nil {
-  case await_owner_down(transport_monitor, 100) {
-    True -> Nil
-    False -> {
-      process.kill(http.owner(running))
-      let _down = await_owner_down(transport_monitor, 100)
-      Nil
+) -> Bool {
+  let stopped = case process.is_alive(http.owner(running)) {
+    False -> True
+    True -> {
+      process.new_selector()
+      |> process.select_specific_monitor(transport_monitor, fn(_down) { True })
+      |> process.selector_receive(100)
+      |> result.unwrap(False)
     }
   }
-  forget_attempt(consumer_monitor, transport_monitor)
-}
-
-fn await_owner_down(monitor: Monitor, timeout_ms: Int) -> Bool {
-  process.new_selector()
-  |> process.select_specific_monitor(monitor, fn(_down) { True })
-  |> process.selector_receive(timeout_ms)
-  |> result.unwrap(False)
-}
-
-fn forget_attempt(
-  consumer_monitor: Monitor,
-  transport_monitor: Monitor,
-) -> Nil {
-  process.demonitor_process(monitor: consumer_monitor)
-  process.demonitor_process(monitor: transport_monitor)
+  process.demonitor_process(consumer_monitor)
+  process.demonitor_process(transport_monitor)
+  stopped
 }
 
 // Delivers deltas in order and returns the first terminal event, dropping
