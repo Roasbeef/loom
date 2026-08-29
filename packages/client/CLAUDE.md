@@ -275,15 +275,31 @@ over one session file. WP-L.
   rows** — every survivor is already durable — so the pipeline's write
   order holds trivially, and it takes the *short* lease rather than
   `run_lease_ttl_ms`, since nothing slow sits between its commits. It
-  **moves no cursor**: the erased source is re-extracted from zero by the
-  rewrite generation the erase bumped, and resetting cursors would
-  additionally re-read every other source for nothing. And a cascade that
+  **moves no cursor** — and that is a defect rather than a saving. The
+  erased source is re-extracted from zero by the rewrite generation the
+  erase bumped, but every *other* source keeps its high-water cursor and
+  the notes cursor sits past every note already consumed. Since a head is
+  uniform in provenance, an effective cascade empties it, so **the
+  surviving sources' contribution and every hand-written note become
+  permanently unrecoverable by the pipeline**: the next run consolidates
+  the erased source alone, over an empty head and no notes. Re-reading
+  the other sources is the only rebuild there could be, so not doing it
+  is the gap. Issue **#124** carries the mechanism (a cursor rewind on
+  drop, a `--rebuild` companion, or a `--dry-run` preview), and
+  `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
+  pins the loss until one lands. And a cascade that
   drops nothing **does not CAS at all**, because writing the identical id
   list back would still bump the cell's seq and lose a concurrent run's
   expectation. First-order: a row whose `derived_from` names a dropped
   row is not chased, and within one head that is vacuous rather than
-  deferred — a head is exactly one consolidation's batch, whose
-  `derived_from` names the *previous* head. `docs/spec-gaps.md`'s M2
+  deferred. The induction is written out at `memory.replace_head` and
+  needs **both** head writers: `advance_head` mints a fresh batch whose
+  ids are disjoint from what its `derived_from` names, and `replace_head`
+  writes a *subset* of an existing head, which preserves that
+  disjointness. A third head writer introducing new ids would void it
+  silently. The `Cascade` report carries an `unreadable` count — rows
+  kept because their provenance would not decode, which is the one place
+  the command under-deletes. `docs/spec-gaps.md`'s M2
   item 9 carries the boundary and the over-deletion it implies.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`

@@ -896,6 +896,20 @@ pub fn advance_head(
 /// operator runs the cascade again, over a head that now names different
 /// rows.
 ///
+/// **`named` must be a subset of the head it replaces, and the cascade's
+/// first-order argument depends on that.** The invariant is that no head
+/// row's `derived_from` names another row of the same head, and it holds
+/// by induction over the two writers: an empty head satisfies it;
+/// `advance_head` preserves it, because a fresh batch's ids are newly
+/// minted and so disjoint from everything its `derived_from` can name;
+/// and this function preserves it, because a subset of a set that
+/// intersects nothing still intersects nothing. That is what makes
+/// chasing `derived_from` inside a head vacuous rather than merely
+/// skipped. **A third head writer that could introduce ids not already
+/// in the head would void the argument silently**, so it would have to
+/// re-establish the invariant or the cascade would need a real
+/// transitive pass.
+///
 /// ## Examples
 ///
 /// ```gleam

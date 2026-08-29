@@ -1180,8 +1180,19 @@ interpretation. Recorded here because the spec supplies none.
    batch it just wrote, whose `derived_from` names the *previous* head's
    rows and the notes it consumed — none of which are in the new head —
    so a transitive pass within the head can never select a row the
-   first-order pass did not. The boundary sits between heads, where the
-   ids that would carry it are already out of reach. Provenance is
+   first-order pass did not. Stated properly it is an induction over the
+   *two* head writers, and the second step is the one easy to omit:
+   `advance_head` preserves the invariant because a fresh batch's ids
+   are newly minted and disjoint from anything its `derived_from` can
+   name, and `replace_head` preserves it because a cascade writes a
+   **subset** of an existing head, and a subset of a set that intersects
+   nothing still intersects nothing. A third head writer able to
+   introduce ids not already in the head would void the argument
+   silently, so it would have to re-establish the invariant or the
+   cascade would need a real transitive pass; the induction is written
+   out at `client/memory.replace_head`. The boundary sits between heads,
+   where the ids that would carry it are already out of reach.
+   Provenance is
    **batch-level**:
    every row a run writes names that run's whole source set, not the
    sources that fed that particular row, so a cascade over it
@@ -1192,8 +1203,32 @@ interpretation. Recorded here because the spec supplies none.
    exactly one batch, every row in it shares one provenance value, so a
    cascade over a session that fed the current head empties the head
    outright. That is over-deletion, in the direction an erasure
-   guarantee has to fail in, and the next run rebuilds from whatever
-   sources are still readable. And the memory session accumulates
+   guarantee has to fail in — but **the emptied memory does not come
+   back**, and that part is a defect rather than a consequence. Only the
+   erased source's cursor is voided, by the rewrite generation; every
+   surviving source keeps its high-water cursor and the notes cursor
+   sits past every note already consumed, so the next run consolidates
+   the erased source alone over an empty head. The surviving sources'
+   contribution and every hand-written note are permanently
+   unrecoverable by the pipeline. Re-reading the other sources is the
+   only rebuild there could be, so declining to is the gap and not a
+   saving. **Issue #124** carries the mechanism — a cursor rewind on
+   drop, a `--rebuild` companion, or a `--dry-run` preview so an
+   operator sees the wipe coming — and `client/distill_test`'s
+   `an_emptying_cascade_loses_the_surviving_sources` pins the loss until
+   one of them lands.
+   **The two failure directions run opposite ways**, which is worth
+   stating together because no single call site shows both.
+   `names_source` matches at session grain, so a cascade *over*-deletes
+   rather than under-deletes; `provenance_of` decodes an unreadable
+   payload to `no_provenance`, which names nothing, so such a row is
+   *kept* — under-deletion, and permanent, since no later cascade can
+   reach it either. Both are right on their own terms: one malformed row
+   must not be able to empty memory, and a coarse match must not be able
+   to miss. What they cost together is visibility, since an escaped row
+   sits in `kept` indistinguishably — so the `Cascade` report counts the
+   kept-because-unreadable rows and the command's line says so whenever
+   there are any. And the memory session accumulates
    **orphaned `memory/*` rows** — those written by a consolidation whose
    head CAS never landed, from a crash or from the empty-answer refusal
    — which nothing reaps; they are inert to every reader, because a
