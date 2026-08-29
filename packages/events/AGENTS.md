@@ -159,6 +159,12 @@ WP-K.
 - **The hand-written schema DDL must stay identical to `sql/schema.sql`**
   — a test pins the two together. Parrot covers named static queries only;
   DDL and pragmas stay out of codegen (ADR-004).
+- **A test that opens a real on-disk index file owns a scratch directory
+  it deletes and re-asserts absent before use.** `search_test.gleam`'s
+  `fresh_index_path` is the shared helper (issue #119): a bare delete of
+  the `.db` file with no check, and no cleanup of `-wal`/`-shm`/
+  `-journal` siblings, once let a stale file from an interrupted run
+  make a fresh open see the database as locked.
 
 ## Deep Docs
 
