@@ -65,6 +65,32 @@ zero errors.
 
 ---
 
+## Active evaluation: issue #114
+
+Branch `client/etui-tui` carries an opt-in pure-Gleam client in
+`packages/tui_gleam`; it is not on `main` and does not replace the shipped Go
+client. The client now works in a real Herdr PTY, attaches to the real gateway,
+uses slash commands, opens a searchable `/model` overlay, projects live strands
+as agents, renders assistant CommonMark through Mork into etui spans, and keeps
+reasoning/tool detail collapsed until `Ctrl+G` or `/details` asks for it. The
+agent rail is hidden by default and toggled with `Tab`.
+
+The package's warning-free build and 14 tests pass, its R0-R8 lint census is
+zero, and the doc graph recognizes its mirrored package docs. The measured
+compatibility cost remains: etui needs Gleam 1.16+, and Mork's Erlang path needs
+OTP 28+, above Loom's advertised OTP 27 floor. It is therefore absent from the
+root package and release lists. `docs/design-notes/etui-client.md` holds the
+measurements, source/screenshot influences, protocol coverage, and Baseten
+catalogue mapping.
+
+Before adoption, implement protocol-change/007 approval with exact action and
+grant echo, then sparse-sequence reconnect/catch-up behavior. After those gates
+pass, decide the toolchain floor and release replacement explicitly; do not
+silently add this package to `PACKAGES` or replace `bin/loom-tui` before that
+decision.
+
+---
+
 ## State, as of `main` at the end of phase 3
 
 Everything below is on `main` unless it says otherwise.
