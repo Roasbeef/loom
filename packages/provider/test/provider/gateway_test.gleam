@@ -251,22 +251,22 @@ pub fn cancellation_after_settlement_is_a_noop_test() {
   assert stream.next(handle, within: 100) == Error(Nil)
 }
 
-pub fn pump_crash_before_attempt_fails_promptly_in_band_test() {
+pub fn transport_start_crash_fails_promptly_in_band_test() {
   let crashing =
     http.Transport(start_streaming: fn(_request, _events) {
       panic as "transport seam crashed"
     })
   let handle = gateway.request(two_provider_gateway(crashing), main_request())
-  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+  let assert Ok(#([], stream.Failed(stream.TransportFailed(..)))) =
     stream.await_terminal(handle, within: 1000)
 }
 
-pub fn pump_crash_after_attempt_refuses_retry_until_transport_drains_test() {
+pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
+  let entered = process.new_subject()
   let owners = process.new_subject()
   let cancelled = process.new_subject()
   let transport =
     http.Transport(start_streaming: fn(_request, _events) {
-      let pump = process.self()
       let ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
@@ -276,14 +276,10 @@ pub fn pump_crash_after_attempt_refuses_retry_until_transport_drains_test() {
           Nil
         })
       let release = process.receive_forever(ready)
+      let start_gate = process.new_subject()
+      process.send(entered, start_gate)
+      let _release_start = process.receive_forever(start_gate)
       process.send(owners, #(owner, release))
-      let _killer =
-        process.spawn_unlinked(fn() {
-          // Let `run_tracked` publish the live capability before simulating
-          // the pump fault that would otherwise lose it.
-          process.sleep(25)
-          process.kill(pump)
-        })
       Ok(
         http.RunningRequest(owner:, cancel: fn() {
           process.send(cancelled, Nil)
@@ -291,9 +287,13 @@ pub fn pump_crash_after_attempt_refuses_retry_until_transport_drains_test() {
       )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
+  let assert Ok(start_gate) = process.receive(entered, within: 1000)
+  stream.cancel(handle)
+  assert !stream.await_stopped(handle, within: 20)
   let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
     stream.await_terminal(handle, within: 2500)
+  process.send(start_gate, Nil)
+  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
 
   assert process.is_alive(owner)

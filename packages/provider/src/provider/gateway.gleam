@@ -55,9 +55,13 @@ type RequestControl {
   CancelDeadline
 }
 
+type AttemptRegistration {
+  AttemptRegistration(running: RunningRequest, permit: process.Subject(Bool))
+}
+
 type RequestEvent {
   PumpEvent(StreamEvent)
-  AttemptStarted(RunningRequest)
+  AttemptStarted(AttemptRegistration)
   ConsumerDown(process.Down)
   PumpDown(process.Down)
   CancelRequested
@@ -341,7 +345,7 @@ fn guard_request(
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(RunningRequest),
+  pump_attempts: process.Subject(AttemptRegistration),
   pump_control: process.Subject(Control),
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
@@ -357,7 +361,8 @@ fn guard_request(
       pump_monitor,
     )
   case process.selector_receive_forever(selector) {
-    AttemptStarted(running) ->
+    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      process.send(permit, True)
       guard_request(
         events,
         control,
@@ -369,6 +374,7 @@ fn guard_request(
         pump_monitor,
         Some(running),
       )
+    }
     PumpEvent(event) -> {
       process.send(events, event)
       case event {
@@ -394,7 +400,7 @@ fn guard_request(
     ConsumerDown(_down) ->
       stop_for_dead_consumer(
         pump_control,
-        pump_owner,
+        pump_attempts,
         consumer_monitor,
         pump_monitor,
         active,
@@ -453,7 +459,7 @@ fn guard_cancelling(
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(RunningRequest),
+  pump_attempts: process.Subject(AttemptRegistration),
   pump_control: process.Subject(Control),
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
@@ -469,8 +475,8 @@ fn guard_cancelling(
       pump_monitor,
     )
   case process.selector_receive_forever(selector) {
-    AttemptStarted(running) -> {
-      http.cancel(running)
+    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      process.send(permit, False)
       guard_cancelling(
         events,
         control,
@@ -507,7 +513,7 @@ fn guard_cancelling(
     ConsumerDown(_down) ->
       stop_for_dead_consumer(
         pump_control,
-        pump_owner,
+        pump_attempts,
         consumer_monitor,
         pump_monitor,
         active,
@@ -545,7 +551,7 @@ fn guard_cancelling(
 fn request_selector(
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(RunningRequest),
+  pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
 ) -> process.Selector(RequestEvent) {
@@ -568,16 +574,49 @@ fn request_selector(
 // seam weaker than the production custodian.
 fn stop_for_dead_consumer(
   pump_control: process.Subject(Control),
-  pump_owner: process.Pid,
+  pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
   active: Option(RunningRequest),
 ) -> Nil {
   process.send(pump_control, Cancel)
   http_cancel(active)
-  await_active_forever(active)
-  await_pump_down_forever(pump_owner, pump_monitor)
-  forget_request(consumer_monitor, pump_monitor)
+  abandon_request(pump_attempts, consumer_monitor, pump_monitor, active)
+}
+
+// The pump may be blocked handing a freshly prepared attempt to the guard when
+// the public consumer dies. Keep accepting and refusing those handoffs until
+// the pump exits; otherwise both processes could wait forever before the
+// underlying transport had even been allowed to start.
+fn abandon_request(
+  pump_attempts: process.Subject(AttemptRegistration),
+  consumer_monitor: process.Monitor,
+  pump_monitor: process.Monitor,
+  active: Option(RunningRequest),
+) -> Nil {
+  let event =
+    process.new_selector()
+    |> process.select_map(pump_attempts, AttemptStarted)
+    |> process.select_specific_monitor(pump_monitor, PumpDown)
+    |> process.selector_receive_forever()
+  case event {
+    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      process.send(permit, False)
+      http.cancel(running)
+      abandon_request(
+        pump_attempts,
+        consumer_monitor,
+        pump_monitor,
+        Some(running),
+      )
+    }
+    PumpDown(_down) -> {
+      await_active_forever(active)
+      forget_request(consumer_monitor, pump_monitor)
+    }
+    PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
+      abandon_request(pump_attempts, consumer_monitor, pump_monitor, active)
+  }
 }
 
 fn http_cancel(active: Option(RunningRequest)) -> Nil {
@@ -651,7 +690,7 @@ fn pump(
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -693,7 +732,7 @@ fn dispatch_role(
   role: Role,
   thinking: Option(ThinkingLevel),
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -747,7 +786,7 @@ fn attempt(
   now: Int,
   targets: List(ResolvedModel),
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -796,7 +835,7 @@ fn continue_or_deliver(
   outcome: AttemptOutcome,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -827,7 +866,7 @@ fn continue_terminal(
   terminal: StreamEvent,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> Nil {
@@ -859,7 +898,7 @@ fn attempt_one(
   now: Int,
   target: ResolvedModel,
   events: process.Subject(StreamEvent),
-  attempts: process.Subject(RunningRequest),
+  attempts: process.Subject(AttemptRegistration),
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> AttemptOutcome {
@@ -885,7 +924,7 @@ fn attempt_one(
         anthropic.build_request(base_url:, api_key:, resolved: target, request:),
         anthropic.response_machine(target, now:),
         deliver,
-        fn(running) { process.send(attempts, running) },
+        fn(running) { register_attempt(attempts, running, consumer) },
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
@@ -896,11 +935,36 @@ fn attempt_one(
         openai.build_request(base_url:, api_key:, resolved: target, request:),
         openai.response_machine(target, now:),
         deliver,
-        fn(running) { process.send(attempts, running) },
+        fn(running) { register_attempt(attempts, running, consumer) },
         control:,
         consumer:,
         within: gateway.attempt_timeout_ms,
       )
+  }
+}
+
+// Registration is a synchronous ownership handoff. The prepared transport
+// cannot begin until the guard has retained its outer custodian. If the guard
+// dies during the handoff, cancellation is sent by this pump before
+// `run_tracked` sends its begin message, so per-sender ordering prevents the
+// underlying transport from starting.
+fn register_attempt(
+  attempts: process.Subject(AttemptRegistration),
+  running: RunningRequest,
+  guard: process.Pid,
+) -> Nil {
+  let permit = process.new_subject()
+  let guard_monitor = process.monitor(guard)
+  process.send(attempts, AttemptRegistration(running:, permit:))
+  let allowed =
+    process.new_selector()
+    |> process.select_map(permit, fn(allowed) { allowed })
+    |> process.select_specific_monitor(guard_monitor, fn(_down) { False })
+    |> process.selector_receive_forever()
+  process.demonitor_process(guard_monitor)
+  case allowed {
+    True -> Nil
+    False -> http.cancel(running)
   }
 }
 

@@ -515,6 +515,113 @@ pub fn run_start_failure_fails_once_in_band_test() {
     )
 }
 
+pub fn run_tracked_publishes_owner_before_transport_start_test() {
+  let published = process_subject()
+  let transport_started = process_subject()
+  let outcomes = process_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      process.send(transport_started, Nil)
+      Error("fixture stopped")
+    })
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let outcome =
+        stream.run_tracked(
+          transport,
+          http.HttpRequest(
+            method: "POST",
+            url: "http://x",
+            headers: [],
+            body: "",
+          ),
+          echo_machine(),
+          fn(_delta) { Nil },
+          fn(running) {
+            let permit = process_subject()
+            process.send(published, #(running, permit))
+            let _permit = process.receive_forever(permit)
+            Nil
+          },
+          control: process_subject(),
+          consumer: process.self(),
+          within: 1000,
+        )
+      process.send(outcomes, outcome)
+    })
+
+  let assert Ok(#(_running, permit)) = receive_from(published, 1000)
+  assert receive_from(transport_started, 20) == Error(Nil)
+  process.send(permit, Nil)
+  assert receive_from(transport_started, 1000) == Ok(Nil)
+  assert receive_from(outcomes, 1000)
+    == Ok(
+      stream.AttemptTerminal(
+        stream.Failed(stream.TransportFailed(
+          reason: "start failed: fixture stopped",
+        )),
+      ),
+    )
+}
+
+pub fn run_tracked_owner_drains_inner_after_runner_death_test() {
+  let published = process_subject()
+  let inner_ready = process_subject()
+  let cancelled = process_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      let ready = process_subject()
+      let inner =
+        process.spawn_unlinked(fn() {
+          let release = process_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(inner_ready, #(inner, release))
+      Ok(
+        http.RunningRequest(owner: inner, cancel: fn() {
+          process.send(cancelled, Nil)
+        }),
+      )
+    })
+  let runner =
+    process.spawn_unlinked(fn() {
+      let _outcome =
+        stream.run_tracked(
+          transport,
+          http.HttpRequest(
+            method: "POST",
+            url: "http://x",
+            headers: [],
+            body: "",
+          ),
+          echo_machine(),
+          fn(_delta) { Nil },
+          fn(running) { process.send(published, running) },
+          control: process_subject(),
+          consumer: process.self(),
+          within: 1000,
+        )
+      Nil
+    })
+  let assert Ok(running) = receive_from(published, 1000)
+  let assert Ok(#(inner, release)) = receive_from(inner_ready, 1000)
+  let owner_monitor = process.monitor(http.owner(running))
+
+  process.kill(runner)
+
+  assert receive_from(cancelled, 1000) == Ok(Nil)
+  assert process.is_alive(inner)
+  assert process.is_alive(http.owner(running))
+  process.send(release, Nil)
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(_down) { True })
+    |> process.selector_receive(1000)
+}
+
 fn silent_transport(cancelled: process.Subject(Nil)) -> http.Transport {
   http.Transport(start_streaming: fn(_request, _events) {
     let owner =
