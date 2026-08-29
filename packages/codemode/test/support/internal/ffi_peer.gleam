@@ -40,3 +40,9 @@ pub fn os_cmd(command: String) -> String
 /// deadlines, which a fixture clock cannot provide.
 @external(erlang, "codemode_test_ffi", "now_ms")
 pub fn now_ms() -> Int
+
+/// Reads an environment variable, returning `Error(Nil)` when it is unset.
+/// Uses `os:getenv/1`; the launcher tests use the process environment to
+/// select a short scratch directory outside `/tmp`.
+@external(erlang, "codemode_test_ffi", "get_env")
+pub fn get_env(name: String) -> Result(String, Nil)

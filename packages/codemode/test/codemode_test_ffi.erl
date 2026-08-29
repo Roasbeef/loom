@@ -12,7 +12,8 @@
     peer_close/1,
     find_executable/1,
     os_cmd/1,
-    now_ms/0
+    now_ms/0,
+    get_env/1
 ]).
 
 %% The same connect the real satellite makes (cap_ffi:connect_unix/1):
@@ -59,3 +60,11 @@ os_cmd(Command) ->
 %% deadlines (a jailed node dies at one), so it needs the real clock.
 now_ms() ->
     erlang:system_time(millisecond).
+
+%% os:getenv/1 — the launcher suite selects a short, non-/tmp scratch
+%% directory when a checkout is too deep for a Unix socket path.
+get_env(Name) ->
+    case os:getenv(unicode:characters_to_list(Name)) of
+        false -> {error, nil};
+        Value -> {ok, unicode:characters_to_binary(Value)}
+    end.
