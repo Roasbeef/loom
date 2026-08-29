@@ -6,21 +6,21 @@
 spawns to run untrusted commands inside a real jail. It speaks the frozen
 effect-plane framing protocol on stdio, builds the jail from a strict
 `SandboxPolicyV1` decode, and reports honestly what the running kernel
-actually enforced. WP-H, Linux phase 1 — and Linux is the only jail that
-exists: macOS Seatbelt (phase 2) and the Windows sandbox (phase 3) are
-specified and unbuilt, and this binary refuses to serve on either rather
-than run with nothing enforcing the policy. One of the tree's two Go
-modules, alongside `tui`.
+actually enforced. WP-H's Linux phase 1 and macOS phase 2 are implemented;
+the Windows phase 3 sandbox remains unbuilt and the binary refuses to serve
+there rather than run with nothing enforcing the policy. One of the tree's
+two Go modules, alongside `tui`.
 
 ## Key Types
 
 - `cmd/loom-exec` — the binary's three roles, selected by the first
   argument: no argument is **server mode** (read the base policy from fd 3,
   then frames on stdio); `--exec` is **stage 2** (read the policy from
-  fd 3, apply Landlock/seccomp/rlimits to self, report on fd 4, execve the
-  target); `--self-test` runs the regression probes against the live
-  kernel. `--probe-socket` and `--probe-setsid` are the internal
-  network-off and session-escape witnesses. `internal/selftest` also
+  fd 3, apply the platform's in-process restrictions and rlimits, report on
+  fd 4, execve the target); `--self-test` runs the regression probes against
+  the live kernel. `--probe-socket`, `--probe-setsid`, and `--probe-fork`
+  are the internal network, session-escape, and process-limit witnesses.
+  `internal/selftest` also
   carries `loom_hostile.erl`, the hostile-satellite tabletop's adversary,
   which the self-test compiles with `erlc` and loads into a jailed node.
   Server mode also takes `--allow-unenforced` (the explicit opt-out of the
@@ -73,6 +73,11 @@ modules, alongside `tui`.
   replays a `MountPlan` the same way `AuditMounts` does and names every
   `PathMissing` protected path whose parent the plan leaves read-only, so
   `run.go` can refuse before bwrap ever runs instead of a bare `code=1`.
+- `internal/jail.{SeatbeltPlan, SeatbeltPlanFor}`: the Darwin backend's
+  deny-default profile, path definitions, audit digest, and enforcement
+  tags. Model-influenced paths travel through `sandbox-exec -D`, never as
+  interpolated SBPL. Broad grants precede the protected logical/resolved
+  path denies, and the denies are the final rules in the profile.
 - `internal/jail.{Stage2Skip, Stage2SkipPrefix, BwrapUnwitnessedSkip}` —
   the entries for a stage 2 that never reported on fd 4, and for the
   bwrap layer that consequently has no witness.
@@ -80,11 +85,20 @@ modules, alongside `tui`.
   addressed to, selected by descent from the supervisor rather than by
   process group. `ProcEntry` is `{Pid, Ppid}`: the parent link is the
   one relation a payload cannot rearrange.
+- `internal/jail.processTracker`: Darwin's lifecycle backstop. It records
+  descendants it observes with their process birth time and rechecks that
+  identity immediately before signaling. This narrows PID reuse but cannot
+  make the check and `kill(2)` atomic. It complements rather than replaces
+  process-group signals for children that call `setsid(2)`. macOS has no PID
+  namespace, subreaper, or stable process handle, so a rapid daemonizing
+  double-fork can be reparented between samples. Every Darwin execution reports
+  `skip:darwin-process-lifecycle`; Seatbelt confinement remains inherited, but
+  `FullEnforcement` does not pretend sampled cleanup is a kernel guarantee.
 - `internal/llock`, `internal/seccompf`, `internal/cgroup` — the three
   in-process restriction layers. `seccompf` and `jail`'s `no_new_privs`
   are split by build tag (`*_linux.go` / `*_other.go`) so the module
-  compiles and vets for `GOOS=darwin`; the non-Linux halves are stubs that
-  report the layer unavailable and never pretend to install one.
+  compiles and vets for `GOOS=darwin`; Darwin uses Seatbelt for filesystem
+  and network confinement rather than either Linux-only layer.
   `internal/jail/stage2.go`'s `landlockView` is the one function that
   turns a decoded policy into `llock.PolicyView`, and is where the
   layering contract below is actually decided rather than just stated.
@@ -111,11 +125,11 @@ modules, alongside `tui`.
   shell wrapper, because Erlang ports cannot map arbitrary descriptors.
 - **fd 4** — stage 2's enforcement `Report` back to the supervising
   helper, sent just before execve: `Applied` entries are terse layer tags
-  (`landlock:abi=5`, `seccomp-net`, `rlimit-cpu`), `Skipped` entries carry
-  reasons. It is also the helper's **witness that bubblewrap built the
-  jail**: the report cannot arrive from anywhere but a process bwrap
-  exec'd inside the namespace, so `bwrap` and the mount audit are claimed
-  only when it did arrive, and its absence is a `skip:`, never silence.
+  (`landlock:abi=5`, `seccomp-net`, `seatbelt-net`, `rlimit-cpu`), `Skipped`
+  entries carry reasons. It is also the helper's **witness that the outer
+  platform jail reached stage 2**: bwrap/mount and Seatbelt profile claims
+  are published only when this report arrives, and its absence is a `skip:`,
+  never silence.
 - **Environment** — `LOOM_CGROUP_BASE` names the delegated cgroup v2 base
   when the operator supplies one that way; `--cgroup-base` overrides it.
   Erlang ports cannot set a child's environment, so the broker uses the
@@ -197,11 +211,24 @@ modules, alongside `tui`.
   keeps `internal/jail/mounts.go`'s own rule intact: the mount layer
   binds exactly what the policy says and narrows nothing on its own
   initiative (4b4983d).
-- **cgroups, not rlimits, for memory and pids.** `RLIMIT_AS` is
+- **Linux uses cgroups, not rlimits, for memory and pids.** `RLIMIT_AS` is
   per-process and trivially escaped by forking; `RLIMIT_NPROC` is per-user
   (useless when the jail shares a uid, ignored for root). The construction
   half is pure — policy in, `{path, contents}` pairs out — so the exact
   writes are unit-tested even where no v2 delegation exists.
+- **Darwin reports the weaker rlimit truth.** The platform exposes no
+  per-execution cgroup equivalent. A requested finite `RLIMIT_AS` is attempted
+  and currently returns `EINVAL`, so `mem_bytes` produces an explicit
+  `skip:rlimit-address-space` rather than aborting the otherwise confined run
+  or claiming a limit. `RLIMIT_NPROC` is per-user: it is installed only when
+  the account's current process count leaves a 16-process reserve below the
+  requested ceiling. When it does not, the run reports
+  `skip:rlimit-processes`; this avoids turning ordinary child spawns into
+  immediate `EAGAIN`. The sample and `setrlimit` cannot be atomic with
+  unrelated same-user forks, so the reserve narrows rather than eliminates
+  that race. Either skip fails `FullEnforcement`, while `BestEffort` retains
+  filesystem and network confinement and exposes the missing ceiling to its
+  caller.
 - **The cgroup base is configuration, and its absence is reported, not
   swallowed.** cgroup v2 forbids a cgroup from having both member
   processes and controllers enabled for its children, so the helper's own
@@ -542,12 +569,14 @@ modules, alongside `tui`.
   rather than repeating "skips are environmental, not passes"; and server
   mode refuses to start without `--allow-unenforced`, because a BestEffort
   caller would otherwise run model-influenced code with `network: off` in
-  the policy and nothing enforcing it. **None of the non-Linux path has
-  ever executed.** Its acceptance is `make selftest` on a real macOS host;
-  the unit tests only pin the wording and the branching.
+  the policy and nothing enforcing it. This is now the Windows/unknown-target
+  path; Darwin instead runs its live Seatbelt suite and advertises `seatbelt`.
 
 ## Deep Docs
 
+- [docs/adr/006-macos-seatbelt-boundary.md](../../docs/adr/006-macos-seatbelt-boundary.md):
+  the Seatbelt boundary, Darwin's resource semantics, and the explicit
+  descendant-lifecycle limit.
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —
   the threat model and Rule Zero, the jail, enforced versus reported.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-H (`sandbox`)":

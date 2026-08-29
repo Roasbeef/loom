@@ -125,9 +125,11 @@ Three riders:
   integration test with a live rollback mid-session, the TCB freeze test,
   and a recorded adversarial review of the extension zone whose HIGH
   findings are closed or explicitly accepted.
-- **macOS green means the suites run or skip for a declared reason.** It
-  does not mean a macOS jail exists (§5.1, and "Not in the first release"
-  below).
+- **macOS green includes the Seatbelt jail.** The live self-test must exercise
+  all nine probes, and the real jailed end-to-ends must run without a declared
+  platform skip. The observed `setsid` probe does not erase Darwin's lack of a
+  PID namespace or subreaper; each execution reports the rapid-reparenting
+  lifecycle gap, and `FullEnforcement` rejects that report.
 
 ---
 
@@ -788,7 +790,6 @@ was.
 
 | Body of work | Where it is recorded | Why it stays out |
 |---|---|---|
-| **A macOS jail** (WP-H phase 2, Seatbelt) | spec §5.1, Part 4 M3 note | Deliberately unbuilt: a generated profile can only be tested against the string it was told to emit, which cannot distinguish deny-by-default from permissive-through-a-typo. The platform refuses rather than degrades, so nothing runs silently unconfined. #2 makes macOS *build and test*; it does not make macOS *safe*. |
 | **The egress proxy sidecar** | spec Part 5 track 10, §5.1 | Track 10 hardens a sidecar that does not exist. `Proxy(allowlist)` fails closed today — jailed exactly as network-off, with a skipped `network-proxy` entry saying the allowlist was not enforced. Correct behaviour, no release dependency. |
 | **The MCP adapter** | spec-gaps WP-G 9 | Widening to M6 makes the case *against* it stronger, not weaker: the promotion ladder is Loom's own answer to the problem MCP solves, and the design says outright that the persistent-actor mode is something "nothing MCP-shaped can express". Shipping both in one release would ship two extension stories. Wants a Part 5 track number. |
 | **Compaction stages C1 and C2** | `compaction-and-memory.md` Part 5 | C0 (#3) is the bar for "runs at all". C1 makes it good — file-operation tracking, blob-ref carry-forward, branch summaries through the navigation host, the TUI divider — and C2 is explicitly gated on measurements C0 has not produced yet. No acceptance row names either. |

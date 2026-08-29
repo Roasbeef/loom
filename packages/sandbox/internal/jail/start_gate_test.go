@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +32,7 @@ func startGatedCommand(t *testing.T, argv []string) (*exec.Cmd, *os.File) {
 		t.Fatalf("open fd 4 placeholder: %v", err)
 	}
 
-	wrapped := withCgroupStartGate(argv)
+	wrapped := withStartGate(argv)
 	cmd := exec.Command(wrapped[0], wrapped[1:]...)
 	// Bash imports this spelling as an exported shell function. If privileged
 	// mode is removed, it shadows read and releases the target before fd 5 has
@@ -71,7 +70,7 @@ func TestCgroupStartGateBlocksAndPreservesArgv(t *testing.T) {
 		t.Fatalf("target ran before gate release: stat error %v", err)
 	}
 
-	if err := releaseCgroupStartGate(release); err != nil {
+	if err := releaseStartGate(release); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		t.Fatalf("release gate: %v", err)
@@ -130,7 +129,7 @@ exit 126
 	// A detected base is represented by Features, but this plain directory
 	// cannot configure cgroup.subtree_control. Start must release the blocked
 	// child in degraded mode and retain the setup error as a cgroup skip.
-	feat := Features{CgroupDir: t.TempDir(), Platform: PlatformFor(runtime.GOOS)}
+	feat := Features{CgroupDir: t.TempDir(), Platform: PlatformFor("linux")}
 	pol := policy.Policy{
 		Network:  policy.Network{Mode: policy.NetworkFull},
 		Limits:   policy.Limits{Pids: 8, OutputBytes: 1024},

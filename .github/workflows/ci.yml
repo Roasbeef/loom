@@ -14,11 +14,9 @@
 #                 and then insists nothing skipped, because a suite that
 #                 quietly declines to run is how a partial milestone reads
 #                 as a complete one.
-#   gate-macos    the same gate on the second platform §0.3 demands and
-#                 that nothing in this tree has ever run on. Expected red
-#                 today; see the job's own comment for exactly why. It is
-#                 not marked continue-on-error: a known failure that CI
-#                 keeps reporting is a finding, one CI hides is a lie.
+#   gate-macos    the same gate on the second platform §0.3 demands, plus
+#                 the Seatbelt self-test and both jailed end-to-ends. The
+#                 enforcement report must account for every probe.
 #   jail-linux    the suites whose value is kernel enforcement, run on a
 #                 machine given bubblewrap and unprivileged user
 #                 namespaces. The self-test's ENFORCED/SKIPPED report is
@@ -121,28 +119,11 @@ jobs:
 
   # --------------------------------------------------------- the second OS
   #
-  # §0.3 requires exit criteria to pass "in CI on Linux and macOS". No part
-  # of this tree has ever executed on macOS, and this job is expected to be
-  # red on its first run for a reason that is documented, not accidental:
-  #
-  #   `loom-exec` has no jail for darwin — Seatbelt is WP-H phase 2 and
-  #   deliberately unbuilt — so on macOS the helper refuses to serve in
-  #   server mode unless it is passed `--allow-unenforced`
-  #   (packages/sandbox/internal/jail/platform.go).
-  #
-  # Both halves of that now have an answer. `broker/exec.SpawnConfig` has
-  # a `helper_args` field, so a host *can* pass the flag; and the four
-  # suites that spawn a real helper choose not to, skipping instead with
-  # the declared reason in `.github/declared-skips` — because a suite that
-  # exists to prove the sandbox proves nothing by running unconfined. The
-  # skip census honours the declaration and fails the job the day macOS
-  # stops needing it.
-  #
-  # The Go packages fare better: every Linux-only test in packages/sandbox
-  # carries `//go:build linux`, leaving darwin with pure unit tests, and
-  # packages/tui is portable. Nothing in this tree has ever executed on
-  # macOS, so the point of running this job is still to find out rather
-  # than to assume.
+  # §0.3 requires exit criteria to pass "in CI on Linux and macOS". The
+  # generated deny-default Seatbelt profile is tested against a real macOS
+  # kernel here. The self-test and enforcement matrix are strict: a missing
+  # profile, a typo that opens a forbidden operation, or an unaccounted skip
+  # fails the job before the ordinary package gate runs.
   gate-macos:
     name: gate (macos)
     runs-on: macos-15
@@ -173,15 +154,14 @@ jobs:
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: ${{ github.event.inputs.cache || 'true' }}
 
-      # Reported before the gate runs, so the log distinguishes "no jail
-      # for this platform" from "a kernel that could not provide a layer".
-      - name: What the platform says about itself
+      - name: Seatbelt enforcement self-test
         run: |
           set -euo pipefail
           make sandbox
-          ./packages/sandbox/loom-exec --self-test > selftest-macos.log 2>&1 || true
+          ./packages/sandbox/loom-exec --self-test > selftest-macos.log 2>&1
+          cat selftest-macos.log
           .github/scripts/enforcement_report.sh \
-            selftest-macos.log .github/enforcement-expectations "macos (self-test)" || true
+            selftest-macos.log .github/enforcement-expectations "macos (self-test)"
 
       - name: Prepare the code-mode build seed
         run: make codemode-seed
@@ -189,11 +169,19 @@ jobs:
       - name: make check
         run: set -o pipefail; make check 2>&1 | tee check-macos.log
 
+      - name: make e2e
+        run: set -o pipefail; make e2e 2>&1 | tee e2e-macos.log
+
+      - name: make e2e-codemode
+        run: set -o pipefail; make e2e-codemode 2>&1 | tee e2e-codemode-macos.log
+
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check-macos.log
 
       - name: Skip census
-        run: .github/scripts/skip_census.sh "gate (macos)" check-macos.log
+        run: |
+          .github/scripts/skip_census.sh "gate (macos)" \
+            check-macos.log e2e-macos.log e2e-codemode-macos.log
 
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -204,6 +192,8 @@ jobs:
             check-macos.log
             doc-check-macos.log
             selftest-macos.log
+            e2e-macos.log
+            e2e-codemode-macos.log
           retention-days: 14
 
   # ------------------------------------------------------------- the jail

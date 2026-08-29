@@ -12,7 +12,7 @@ import (
 // reported as zero failures is the shape of a false pass.
 func TestPlatformGateStopsTheProbesAndSaysSo(t *testing.T) {
 	var out strings.Builder
-	if platformGate(&out, jail.PlatformFor("darwin")) {
+	if platformGate(&out, jail.PlatformFor("windows")) {
 		t.Fatal("the probes must not run on a build with no jail")
 	}
 	if !strings.Contains(out.String(), "UNSUPPORTED PLATFORM") {
@@ -30,15 +30,25 @@ func TestPlatformGateLetsLinuxThrough(t *testing.T) {
 	}
 }
 
+func TestPlatformGateLetsDarwinThrough(t *testing.T) {
+	var out strings.Builder
+	if !platformGate(&out, jail.PlatformFor("darwin")) {
+		t.Fatal("darwin must run the real Seatbelt probes")
+	}
+	if strings.TrimSpace(out.String()) != "" {
+		t.Fatalf("a supported platform prints no verdict here:\n%s", out.String())
+	}
+}
+
 // The self-test's one refusal that is not a probe failure: a build with
 // no jail for its platform. Exercised from Linux against the pure report
 // builder, because the only host that could drive the live path is a Mac
 // and none has ever run this code.
 func TestUnsupportedPlatformIsNotAPass(t *testing.T) {
-	report := unsupportedPlatformReport(jail.PlatformFor("darwin"))
+	report := unsupportedPlatformReport(jail.PlatformFor("windows"))
 	for _, want := range []string{
 		"NOT RUN",
-		"Seatbelt",
+		"Windows",
 		"nothing was attempted",
 		"RESULT: UNSUPPORTED PLATFORM",
 	} {

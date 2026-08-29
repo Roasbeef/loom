@@ -273,14 +273,12 @@ smoke-testing its own artifact:
 |---|---|---|
 | `linux-x86_64` | a Linux x86_64 runner with Gleam, OTP, Go, rebar3 | built and smoke-tested |
 | `linux-arm64` | the same on arm64 | never run |
-| `macos-arm64` | a macOS runner | never run, **and the helper has no jail there** |
+| `macos-arm64` | a macOS runner | not yet published; helper runs under Seatbelt |
 
-The macOS row carries a caveat the other two do not. `loom-exec`
-compiles for darwin but has no jail: it reports `platform-unsupported`
-and refuses to serve without `--allow-unenforced`. A macOS release would
-therefore ship a server that cannot run a tool call unless the operator
-explicitly opts out of enforcement, which is the correct behaviour and a
-poor download. Packaging is not what is missing there.
+The macOS helper uses the system `/usr/bin/sandbox-exec` with a generated
+Seatbelt profile. That binary is intentionally not bundled: the absolute
+system path is part of the trust boundary. Release smoke and CI run the live
+profile rather than accepting profile text as proof of confinement.
 
 `loom-tui` is the exception: Go cross-compiles it with `GOOS`/`GOARCH`
 alone, so client binaries for every platform can be built anywhere. The
@@ -464,9 +462,6 @@ on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
 Nothing about the helper ladder: #101 is closed above, and the launcher
 is three lines shorter for it.
 
-Two things this did not touch. **A macOS release still ships a helper
-with no jail** — `loom-exec` compiles for darwin, reports
-`platform-unsupported` and refuses to serve without `--allow-unenforced`
-— so packaging is not what is missing there. And **`make dist` still
-builds `loom-tui` for the host only**, though Go cross-compiles it with
+One thing this did not touch: **`make dist` still builds `loom-tui` for the
+host only**, though Go cross-compiles it with
 `GOOS`/`GOARCH` alone, because that is what has been built and tested.

@@ -232,8 +232,8 @@ seeds the helper.
 fd 3, speak the protocol on stdio), stage 2 (restrict itself and exec the
 target), and `--self-test`. It runs **one execution at a time** — a
 second `exec_start` gets a `busy` error, and concurrency lives in the
-broker's pool, which runs more helpers, so "kill the pgroup" stays
-unambiguous. One execution takes this shape:
+broker's pool, which runs more helpers, so lifecycle ownership stays
+unambiguous. A Linux execution takes this shape:
 
 ```
   helper ─spawn(setsid)─▶ bwrap ─▶ loom-exec --exec ─execve─▶ target
@@ -244,6 +244,17 @@ unambiguous. One execution takes this shape:
     └ output caps, wall     │            └ seccomp: network off │ the cage
                             └ namespaces + the mount view ──────┘
 ```
+
+On macOS, the helper wraps the same stage 2 in the pinned
+`/usr/bin/sandbox-exec` and a generated deny-default Seatbelt profile.
+The host filesystem is readable and read-only by default; typed writable
+roots and a fresh private scratch directory are grants, while protected
+logical and resolved paths are final subtractive denies. AF_UNIX remains
+available for capability sockets. Internet bind/connect is absent unless
+the policy says `NetworkFull`. Paths cross into SBPL only through `-D`
+parameters, never string interpolation, and the fd-4 report witnesses that
+stage 2 actually started inside the profile before `seatbelt` or its audit
+tags are published.
 
 **bwrap owns every namespace and mount.** This is load-bearing, not a
 preference: the Go runtime is multithreaded from the first instruction,
@@ -300,13 +311,24 @@ network and fall back keep working. Installation uses
 runtime — without it another thread could simply make the blocked call —
 and a partial sync is an error rather than a success.
 
-Memory and process-count ceilings need cgroup v2, because `RLIMIT_AS` is
+Linux memory and process-count ceilings need cgroup v2, because `RLIMIT_AS` is
 per-process and escaped by forking and `RLIMIT_NPROC` is per-user. Each
 execution gets its own group with `memory.max` and `pids.max`, and
 descendants inherit membership, which is what makes the pids cap
 fork-bomb-proof. The group's own `pids.events` counter is the ground
 truth for whether the cap fired, rather than shell complaints about
 failed forks.
+
+Darwin has no per-execution cgroup equivalent. Stage 2 attempts a finite
+`RLIMIT_AS`; current kernels reject it with `EINVAL`, which becomes an
+explicit `skip:rlimit-address-space` and therefore fails a strict demand.
+`RLIMIT_NPROC` is per-user, so Loom first measures the account's live process
+floor. It applies the ceiling only when that floor leaves a 16-process reserve
+below the request; otherwise it reports `skip:rlimit-processes` rather than
+breaking every legitimate fork on a busy developer account. The reserve
+narrows, but cannot eliminate, a race with concurrent same-user forks between
+the sample and `setrlimit`. This is deliberately weaker than Linux cgroups and
+the report says so.
 
 Everything else is plumbing with teeth. The child's environment is
 **constructed, never inherited**: a variable absent from `env_allow` is
@@ -362,25 +384,41 @@ clean success for an execution that was truncated, and `code=143` is
 what `sh -c 'exit 143'` reports with no cancel at all
 (`protocol-change/006`).
 
+Darwin has no PID namespace. The helper therefore starts behind a gate,
+records observed descendants with both PID and birth time, and sends TERM and
+KILL to both the original process group and the still-live recorded set. The
+group gives immediate delivery to ordinary descendants; the tracker covers an
+observed child that called `setsid(2)`, rechecking its birth immediately before
+signaling. Darwin has no stable process handle, so that check is not atomic
+with `kill(2)`. Nor can it close the interval between process-table samples: a
+rapid daemonizing double-fork can be reparented to `launchd` before its ancestry
+is recorded. The helper bounds output draining, so even an untracked process
+holding a pipe cannot hold the execution result open forever.
+Every Darwin execution therefore carries `skip:darwin-process-lifecycle`, so
+`FullEnforcement` refuses the stronger claim. Seatbelt itself is inherited
+across forks; a missed descendant remains filesystem- and network-confined,
+but may violate execution-lifetime and wall-clock cleanup guarantees.
+
 ### Enforced versus reported
 
 A helper on a kernel that cannot provide a layer does not pretend. It
 reports what it has in `hello.features` and, per execution, in an
 `enforcement` list and a `degraded` flag: strings like `bwrap`,
 `mounts:ro=2,rw=1,mask=3,scratch=tmpfs,plan=…`, `landlock:abi=5`,
-`seccomp-net`, `rlimit-cpu`, `skip:landlock: ...`. The broker decides
+`seccomp-net`, `seatbelt-net`, `rlimit-cpu`, `skip:landlock: ...`. The broker decides
 what to do about it. `FullEnforcement` refuses a degraded helper at
 dispatch on its hello features *and* fails any execution whose
 `exec_exit` reports degraded — the ground-truth check, because features
 are a promise and the exit report is a fact. `BestEffort` accepts what is
 available and still hands the report to the caller.
 
-**Presence is the claim, and silence is a skip.** The report is checked
-against the layer set the *policy* calls for — `bwrap`, `mounts`,
-`landlock` and `no-new-privs` always, plus `seccomp-net` under a
-network-off or proxy policy, `cgroup-v2` under a memory or pid ceiling,
-`rlimit-cpu` and `rlimit-fsize` under theirs — and a required layer that
-never appears fails the demand exactly as a `skip:` entry does. The
+**Presence is the claim, and silence is a skip.** The helper's hello selects
+the platform matrix. Linux requires `bwrap`, `mounts`, `landlock` and
+`no-new-privs`, plus `seccomp-net` and `cgroup-v2` when their policy fields
+are active. Darwin requires `seatbelt`, `seatbelt-fs`, `seatbelt-net`, and
+the requested rlimit tags. Both require `rlimit-cpu` and `rlimit-fsize` under
+theirs. A required layer that never appears fails the demand exactly as a
+`skip:` entry does. The
 earlier test was "no `skip:` entries", which a *silent* helper passes: a
 stage 2 that died before writing fd 4 produced `enforcement: ["bwrap"]`,
 containing no skip, and satisfied a full-enforcement demand with the
@@ -407,23 +445,23 @@ One gap is deliberately not folded into that vocabulary. A kernel missing
 a layer is an *environmental* gap, and degraded is the honest word for it.
 A build with no jail for its operating system is a gap in Loom, and
 running under `BestEffort` there would mean model-influenced code
-executing with `network: off` in its policy and nothing enforcing it. Only
-Linux has a jail: macOS Seatbelt is WP-H phase 2 and the Windows sandbox
-phase 3, both specified and unbuilt. So the helper compiles for those
-platforms — the non-Linux halves of the seccomp and `no_new_privs` layers
-are stubs that report themselves unavailable — and then **refuses to serve
-on them** unless started with `--allow-unenforced`. Where it is asked to
-serve anyway, `hello.features` carries `platform-unsupported`, every
+executing with `network: off` in its policy and nothing enforcing it. Linux
+and macOS now have phase-appropriate jails. Windows and unknown targets
+remain unsupported, so the helper **refuses to serve on them** unless started
+with `--allow-unenforced`. Where it is asked to serve anyway,
+`hello.features` carries `platform-unsupported`, every
 `enforcement` list leads with `skip:jail: ...`, and `--self-test` prints
 `RESULT: UNSUPPORTED PLATFORM` and exits nonzero instead of calling zero
-attempted probes a pass. None of that path has ever executed; it is
-written from Linux and its acceptance is a run on a real Mac.
+attempted probes a pass.
 
-`loom-exec --self-test` runs seven probes through the real jail path:
-write outside the writable roots, write to a protected path, create a
-socket under network-off, read a non-allowlisted environment variable,
-fork-bomb against the pids cap, flood output past the cap, and orphan a
-grandchild. A probe whose layer the environment cannot provide prints
+`loom-exec --self-test` runs nine probes through the real jail path: write
+outside the writable roots, read or write a protected path, create a socket
+under network-off, read a non-allowlisted environment variable, fork-bomb
+against the pids cap, flood output past the cap, orphan a grandchild, escape
+the process group with `setsid` long enough to be observed, and load a hostile
+unvetted BEAM. The Darwin result does not generalize that observed case into
+rapid-reparenting containment; its per-exec skip records the remaining gap. A probe
+whose layer the environment cannot provide prints
 `SKIPPED` with the reason — never faking a pass, never failing the run —
 while a probe whose layer *is* available must enforce or the run exits
 nonzero. The summary lists enforced and skipped separately, so a green

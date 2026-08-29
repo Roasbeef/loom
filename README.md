@@ -391,7 +391,7 @@ rule about what may *not* be built, which is the half worth having first.
   writing outside the writable roots, reading or writing a protected path,
   opening a socket under network-off, reading a non-allowlisted
   environment variable, a fork bomb against the process cap, an output
-  flood, an orphaned grandchild, a `setsid` escape from the process group,
+  flood, an orphaned grandchild, an observed `setsid` escape from the process group,
   and a hand-written, never-vetted Erlang module loaded straight into a
   jailed node. A probe whose layer the environment cannot provide prints
   `SKIPPED` with the reason; a probe whose layer is available must enforce
@@ -413,10 +413,20 @@ rule about what may *not* be built, which is the half worth having first.
   taken, and every claim about what Landlock does here is read from its
   documentation rather than measured. That matters most in degraded mode,
   where Landlock is promoted from second filesystem layer to the only
-  one. The Linux jail is also the only jail that exists — macOS Seatbelt
-  and the Windows sandbox are specified and unbuilt. The helper builds on
-  those platforms and *refuses to serve* on them (`--allow-unenforced`
-  overrides), rather than running with nothing enforcing the policy.
+  one. macOS now has the phase-2 Seatbelt jail: a generated deny-default
+  profile with parameterized filesystem grants and policy-driven network
+  access. Windows remains specified and unbuilt; the helper refuses to serve
+  there (`--allow-unenforced` overrides) rather than running with nothing
+  enforcing the policy.
+
+  Darwin's process-table tracker reaps descendants it observes outside the
+  original process group, but it is not a PID namespace: a rapid daemonizing
+  double-fork can be reparented between samples, and no stable process handle
+  makes its last birth check plus signal atomic. Output drainage is bounded so
+  a missed descendant cannot hold the result open forever. Every Darwin
+  execution reports `skip:darwin-process-lifecycle`, so `FullEnforcement`
+  refuses that stronger lifecycle claim. The descendant still inherits
+  Seatbelt filesystem and network confinement.
 
 ## What is not built
 
@@ -441,9 +451,9 @@ can check whether it is still true.
   but code mode clears through the broker directly rather than through
   the tool context, so a policy refusal inside it raises no escalation
   record for a human to approve (#97).
-- **There is no jail on macOS or Windows.** Both are specified. The
-  helper compiles on them, reports itself unsupported rather than
-  degraded, and refuses to serve without `--allow-unenforced`.
+- **There is no jail on Windows.** It remains specified as WP-H phase 3.
+  The helper reports itself unsupported and refuses to serve there without
+  `--allow-unenforced`. Linux and macOS have native phase-appropriate jails.
 - **`lsp_*` and `dap_*` do not exist**, and neither does triggered-rule
   injection or hindsight memory — all of M5. The tool set a model actually
   sees today is bash, hash-anchored read/write/edit, grep, the `agent_*`
@@ -456,11 +466,9 @@ can check whether it is still true.
   from L1 upward is design, not code.
 - **The chaos runner is unbuilt.** `make soak` is the deterministic
   seed soak; random process kills under load are not tested.
-- **CI is configured and has never completed a run.** `.github/workflows/`
-  carries a Linux gate, a macOS gate, a jail job that installs the kernel
-  layers the self-test needs, and a nightly soak — but every run to date
-  has failed at job startup, so every claim of green in this repository
-  still means green under `make check` on one Linux development container.
+- **CI is configured on both kernels.** `.github/workflows/` carries Linux
+  and macOS gates, a Linux jail job that installs the required kernel layers,
+  strict Seatbelt probes on macOS, and a nightly soak.
 
 ## Running Loom
 
@@ -494,9 +502,8 @@ A release is built for one platform and cannot be otherwise: it carries
 this machine's runtime system and `esqlite3_nif.so`, which is compiled C.
 `make release` refuses a `GOOS`/`GOARCH` that is not the host rather than
 producing a tree whose name lies about what is in it. Only the Linux
-x86_64 artifact has been built and smoke-tested; the macOS one would ship
-a helper with no jail, which refuses to serve without
-`--allow-unenforced`, so packaging is not what is missing there.
+x86_64 artifact has been published; a macOS build uses the system Seatbelt
+jail and must be built and smoke-tested on its native runner.
 `docs/distribution.md` is the whole argument — the mechanism, what was
 rejected, why the helper ships beside the server rather than inside it,
 and every size above with how it was measured.

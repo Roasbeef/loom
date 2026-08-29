@@ -609,7 +609,9 @@ fn announce(reports: enforcement.Enforcement) -> Nil {
   let network_off =
     list.any([reports.build, reports.node], fn(report) {
       let #(applied, _skipped) = enforcement.layers(report)
-      list.contains(applied, "seccomp-net")
+      list.any(applied, fn(layer) {
+        list.contains(["seccomp-net", "seatbelt-net"], layer)
+      })
     })
   case network_off {
     True ->

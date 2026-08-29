@@ -5,10 +5,7 @@ import (
 	"testing"
 )
 
-// Everything here tests the non-Linux answers from Linux, which is the
-// only place they can be tested at all: no macOS or Windows host has ever
-// run this code, and until WP-H phases 2 and 3 exist none should be able
-// to mistake these strings for evidence that one did.
+// PlatformFor is pure so every build can pin all three backend decisions.
 
 func TestPlatformSupportLinuxIsImplemented(t *testing.T) {
 	p := PlatformFor("linux")
@@ -23,33 +20,16 @@ func TestPlatformSupportLinuxIsImplemented(t *testing.T) {
 	}
 }
 
-func TestPlatformSupportDarwinNamesSeatbeltAndRefuses(t *testing.T) {
+func TestPlatformSupportDarwinIsImplemented(t *testing.T) {
 	p := PlatformFor("darwin")
-	if p.Implemented {
-		t.Fatal("darwin has no jail: nothing in this tree has ever run on it")
+	if !p.Implemented {
+		t.Fatalf("darwin must have the WP-H phase 2 backend: %+v", p)
 	}
-	// The reason has to say what is missing, not merely that something
-	// is: a bare "unsupported" would be indistinguishable from a kernel
-	// that failed a probe.
-	for _, want := range []string{"Seatbelt", "WP-H phase 2", "network filter"} {
-		if !strings.Contains(p.Reason, want) {
-			t.Fatalf("darwin reason %q must mention %q", p.Reason, want)
-		}
+	if p.Reason != "" {
+		t.Fatalf("an implemented platform carries no skip reason: %q", p.Reason)
 	}
-	// It is a skip reason, so it must read as one in the report, where it
-	// is emitted with a "skip:" prefix.
-	if !strings.HasPrefix(p.Reason, "jail: ") {
-		t.Fatalf("reason %q must be prefixed for the skip: vocabulary", p.Reason)
-	}
-	refusal := p.Refusal(false)
-	if refusal == "" {
-		t.Fatal("darwin must refuse to serve by default")
-	}
-	if !strings.Contains(refusal, AllowUnenforcedFlag) {
-		t.Fatalf("the refusal %q must name the opt-out", refusal)
-	}
-	if got := p.Refusal(true); got != "" {
-		t.Fatalf("an explicit opt-in must be honoured: %q", got)
+	if refusal := p.Refusal(false); refusal != "" {
+		t.Fatalf("darwin must not require the unenforced opt-out: %q", refusal)
 	}
 }
 
@@ -79,13 +59,24 @@ func TestPlatformSupportUnknownOSFailsClosed(t *testing.T) {
 // --- how the absence reaches the wire ------------------------------------
 
 func TestFeaturesListFlagsAnUnsupportedPlatform(t *testing.T) {
-	f := Features{Platform: PlatformFor("darwin")}
+	f := Features{Platform: PlatformFor("windows")}
 	list := strings.Join(f.List(), ",")
 	if !strings.Contains(list, PlatformUnsupportedFeature) {
 		t.Fatalf("hello.features %q must carry %q", list, PlatformUnsupportedFeature)
 	}
 	if !f.Degraded() {
 		t.Fatal("a build with no jail is degraded whatever else it found")
+	}
+}
+
+func TestFeaturesListReportsSeatbeltOnDarwin(t *testing.T) {
+	f := Features{Platform: PlatformFor("darwin"), SeatbeltPath: SeatbeltExecutable}
+	list := strings.Join(f.List(), ",")
+	if !strings.Contains(list, "seatbelt") || strings.Contains(list, "degraded") {
+		t.Fatalf("a usable Darwin backend must advertise Seatbelt without degradation: %q", list)
+	}
+	if f.Degraded() {
+		t.Fatal("the pinned Seatbelt executable is an available Darwin confinement backend")
 	}
 }
 
@@ -101,14 +92,14 @@ func TestFeaturesListSaysNothingExtraOnLinux(t *testing.T) {
 }
 
 func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
-	feat := Features{Platform: PlatformFor("darwin")}
+	feat := Features{Platform: PlatformFor("windows")}
 	rep := Report{Applied: []string{"rlimit-cpu"}, Skipped: []string{"landlock: nope"}}
-	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{},
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, nil,
 		stage2Report{rep: rep, received: true})
 	if len(got) == 0 || !strings.HasPrefix(got[0], "skip:jail: ") {
 		t.Fatalf("the platform skip must lead the summary: %v", got)
 	}
-	if !strings.Contains(got[0], "Seatbelt") {
+	if !strings.Contains(got[0], "Windows") {
 		t.Fatalf("the leading entry must name what is missing: %v", got)
 	}
 	// Nothing about the platform may turn a skip into an applied entry.
@@ -119,13 +110,32 @@ func TestEnforcementEntriesLeadWithTheUnsupportedPlatform(t *testing.T) {
 	}
 }
 
+func TestEnforcementEntriesPublishWitnessedSeatbeltPlan(t *testing.T) {
+	feat := Features{Platform: PlatformFor("darwin"), SeatbeltPath: SeatbeltExecutable}
+	seatbelt := []string{"seatbelt", "seatbelt-fs:rw=1,mask=1,scratch=private-dir,plan=abcd", "seatbelt-net"}
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, seatbelt,
+		stage2Report{rep: Report{Applied: []string{"rlimit-cpu"}}, received: true})
+	if strings.Join(got, "|") != strings.Join(append(seatbelt, "rlimit-cpu"), "|") {
+		t.Fatalf("witnessed Seatbelt plan was not reported exactly: %v", got)
+	}
+}
+
+func TestEnforcementEntriesRefuseUnwitnessedSeatbeltPlan(t *testing.T) {
+	feat := Features{Platform: PlatformFor("darwin"), SeatbeltPath: SeatbeltExecutable}
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, []string{"seatbelt"}, stage2Report{})
+	joined := strings.Join(got, "|")
+	if !strings.Contains(joined, "skip:"+SeatbeltUnwitnessedSkip) || strings.Contains(joined, "|seatbelt|") {
+		t.Fatalf("unwitnessed Seatbelt profile must be skipped, never claimed: %v", got)
+	}
+}
+
 func TestEnforcementEntriesUnchangedOnASupportedPlatform(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap"}
 	rep := Report{Applied: []string{"rlimit-cpu", "seccomp-net"}, Skipped: []string{"landlock: nope"}}
 	mounts := MountReport{Applied: "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0011223344556677"}
 	got := enforcementEntries(feat,
 		cgroupOutcome{ceilings: CgroupCeilings{Mem: true}, attached: true},
-		mounts, stage2Report{rep: rep, received: true})
+		mounts, nil, stage2Report{rep: rep, received: true})
 	want := []string{
 		"bwrap", mounts.Applied, "cgroup-v2", "rlimit-cpu", "seccomp-net",
 		"skip:landlock: nope",

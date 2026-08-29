@@ -22,7 +22,7 @@ func TestEnforcementEntriesSkipUnappliedCgroupCeilings(t *testing.T) {
 		reason:   feat.CgroupReason,
 	}
 
-	got := enforcementEntries(feat, cg, MountReport{},
+	got := enforcementEntries(feat, cg, MountReport{}, nil,
 		stage2Report{rep: rep, received: true})
 
 	var skips []string
@@ -58,7 +58,7 @@ func TestEnforcementEntriesStaySilentWhenNoCeilingWasAsked(t *testing.T) {
 		BwrapPath:    "/usr/bin/bwrap",
 		CgroupReason: "no cgroup v2 unified hierarchy at /sys/fs/cgroup",
 	}
-	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{},
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, nil,
 		stage2Report{rep: Report{Applied: []string{"rlimit-cpu"}}, received: true})
 	for _, e := range got {
 		if strings.HasPrefix(e, "skip:") {
@@ -70,7 +70,7 @@ func TestEnforcementEntriesStaySilentWhenNoCeilingWasAsked(t *testing.T) {
 func TestEnforcementEntriesReportAnAttachedCgroupAsApplied(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), CgroupDir: "/sys/fs/cgroup/loom"}
 	cg := cgroupOutcome{ceilings: CgroupCeilings{Pids: true}, attached: true}
-	got := enforcementEntries(feat, cg, MountReport{},
+	got := enforcementEntries(feat, cg, MountReport{}, nil,
 		stage2Report{rep: Report{Applied: []string{"no-new-privs"}}, received: true})
 	if strings.Join(got, "|") != "cgroup-v2|no-new-privs" {
 		t.Fatalf("an applied cgroup is one plain entry, got %v", got)
@@ -111,7 +111,7 @@ func TestCgroupSkipNamesOnlyTheCeilingsThatWereAskedFor(t *testing.T) {
 // be claimed when nothing witnessed it being built.
 func TestEnforcementEntriesSkipWhenStage2NeverReported(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap"}
-	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, stage2Report{})
+	got := enforcementEntries(feat, cgroupOutcome{}, MountReport{}, nil, stage2Report{})
 
 	var skips []string
 	for _, e := range got {
@@ -138,7 +138,7 @@ func TestEnforcementEntriesReportTheMountPlanWhenStage2Spoke(t *testing.T) {
 	feat := Features{Platform: PlatformFor("linux"), BwrapPath: "/usr/bin/bwrap"}
 	s2 := stage2Report{rep: Report{Applied: []string{"no-new-privs"}}, received: true}
 	mounts := MountReport{Applied: "mounts:ro=1,rw=1,mask=1,scratch=tmpfs,plan=abcd"}
-	got := enforcementEntries(feat, cgroupOutcome{}, mounts, s2)
+	got := enforcementEntries(feat, cgroupOutcome{}, mounts, nil, s2)
 	joined := strings.Join(got, "|")
 	if !strings.Contains(joined, "bwrap") || !strings.Contains(joined, mounts.Applied) {
 		t.Fatalf("a witnessed jail reports both bwrap and its mount plan: %v", got)
