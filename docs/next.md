@@ -98,10 +98,17 @@ The debt wave that follows it is **built and in review as four PRs**,
 not yet merged: **#125** (events test hygiene, closing #119),
 **#126** (dead-strand rule holds, closing #113), **#128** (#91's four
 remaining defects), and **#130** (the erasure cascade, closing #115).
-**Merge #125 first** — the events flake it fixes went deterministic and
-runs before every other package, so it currently stops `make check`
-tree-wide; the other three were each gated in a scratch worktree with
-it merged in.
+**Merge #125 first, then the other three in any order.** Only #125 is
+genuinely ordered: the events flake it fixes went deterministic and
+runs before every other package, so until it lands `make check` cannot
+reach `client` at all. The remaining three share no source file — their
+only common surface is `packages/client/CLAUDE.md` and its mirror,
+which they append to in separate regions. Measured rather than assumed:
+all four merge clean in sequence, and the combined four-branch tree
+passes the full gate and `doc-check`. If a tiebreak is wanted, take
+#128 first of the three — it is the widest (four packages plus the
+regenerated prelude), so it lands while the others are still cheap to
+rebase.
 
 ---
 
