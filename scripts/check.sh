@@ -26,7 +26,10 @@ done
 for pkg in "${targets[@]}"; do
   if [ "$pkg" = "sandbox" ] || [ "$pkg" = "tui" ]; then
     echo "==> $pkg (Go)"
-    (cd "packages/$pkg" && gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$')
+    # -z on the listing, not a wc -l count: macOS wc pads its output with
+    # spaces, so a '^0$' grep never matches and the gate fails with a
+    # clean tree. gofmt -l already prints nothing when there is nothing.
+    (cd "packages/$pkg" && test -z "$(gofmt -l . | tee /dev/stderr)")
     (cd "packages/$pkg" && go vet ./... && go build ./... && go test ./...)
     continue
   fi
