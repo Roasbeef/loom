@@ -465,6 +465,34 @@ pub type StreamHandle {
   )
 }
 
+/// A provider stream whose owner exists while its work remains parked.
+///
+/// Callers publish `handle.owner` to their own custodian before invoking
+/// `begin`. This makes crossing a composition boundary failure-atomic: if
+/// publication is rejected, cancellation can retire the parked owner without
+/// starting external work.
+pub type PreparedStream {
+  PreparedStream(
+    /// The cancellable handle available before external work starts.
+    handle: StreamHandle,
+    /// The idempotent permit which lets the prepared request start.
+    begin: fn() -> Nil,
+  )
+}
+
+/// Starts a prepared stream and returns its already-published handle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let handle = stream.start_prepared(prepared)
+/// ```
+///
+pub fn start_prepared(prepared: PreparedStream) -> StreamHandle {
+  prepared.begin()
+  prepared.handle
+}
+
 /// Constructs a stream backed by asynchronous work whose owner is a drain
 /// witness for the whole subtree.
 ///

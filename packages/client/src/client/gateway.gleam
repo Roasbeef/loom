@@ -470,20 +470,36 @@ pub fn tap_provider(
   surface: effects.ProviderSurface,
   to name: Name(Message),
 ) -> effects.ProviderSurface {
-  effects.ProviderSurface(timeout_ms: surface.timeout_ms, request: fn(spec) {
-    let operation = case spec {
-      effects.GenerationRequest(operation:, ..) -> operation
-      effects.PollRequest(operation:, ..) -> operation
-      effects.SummaryRequest(operation:, ..) -> operation
+  effects.PreparedProviderSurface(
+    timeout_ms: effects.provider_timeout_ms(surface),
+    request: fn(spec) {
+      provider_relay.wrap(surface, spec, observe_provider(name, spec))
+    },
+    prepare: fn(spec) {
+      provider_relay.prepare(surface, spec, observe_provider(name, spec))
+    },
+  )
+}
+
+// Constructing the callback from the durable operation id in one place keeps
+// the immediate facade and the prepared production path observationally
+// identical.
+fn observe_provider(
+  name: Name(Message),
+  spec: effects.RequestSpec,
+) -> fn(stream.StreamEvent) -> Nil {
+  let operation = case spec {
+    effects.GenerationRequest(operation:, ..) -> operation
+    effects.PollRequest(operation:, ..) -> operation
+    effects.SummaryRequest(operation:, ..) -> operation
+  }
+  fn(event) {
+    case event {
+      stream.Delta(delta:) ->
+        send_if_alive(name, ProviderDelta(operation:, delta:))
+      stream.Settled(..) | stream.Failed(..) -> Nil
     }
-    provider_relay.wrap(surface, spec, fn(event) {
-      case event {
-        stream.Delta(delta:) ->
-          send_if_alive(name, ProviderDelta(operation:, delta:))
-        stream.Settled(..) | stream.Failed(..) -> Nil
-      }
-    })
-  })
+  }
 }
 
 // Sends a hub message only while a live process is registered under the

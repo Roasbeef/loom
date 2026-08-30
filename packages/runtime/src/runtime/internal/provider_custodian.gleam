@@ -1,14 +1,17 @@
 //// The runtime-owned provider boundary.
 ////
-//// `ProviderSurface.request` is intentionally synchronous: it returns a live
-//// `StreamHandle`. Calling it directly from the effect worker leaves one bad
-//// instruction window between that return and publication of the handle to
-//// the incarnation reaper. If the worker dies there, recovery can begin while
-//// the just-started request is still cancelling.
+//// An immediate `ProviderSurface.request` returns a live `StreamHandle`.
+//// Calling an asynchronous implementation through that shape leaves one bad
+//// instruction window between the return and publication of the handle to the
+//// incarnation reaper. If the worker dies there, recovery can begin while the
+//// just-started request is still cancelling. Production therefore supplies a
+//// `PreparedProviderSurface`, while the immediate shape remains for in-memory
+//// fakes which own no external work.
 ////
-//// `prepare` closes the window without changing the frozen surface. A minimal
-//// custodian is published while the request worker is parked. Only after the
-//// reaper accepts that witness does `begin` let the worker call the surface.
+//// `prepare` closes the window at both composition layers. A minimal custodian
+//// is published while the request worker is parked. Only after the reaper
+//// accepts that witness does `begin` let the worker prepare and adopt the
+//// inner owner, then grant the inner begin permit.
 //// The custodian executes no provider callback: if the worker dies, it retains
 //// and cancels the adopted inner handle and retires only after the inner owner
 //// does. The worker is linked to the provider effect because they are one
@@ -29,8 +32,8 @@
 ////   `-- call begin only after the reaper acknowledges it
 //// ```
 ////
-//// This order removes the interval in which `surface.request` has started
-//// native work but the reaper does not yet know what to cancel. The linked
+//// This order removes the interval in which provider work has started but the
+//// reaper does not yet know what to cancel. The linked
 //// worker preserves the old failure semantics; the unlinked custodian
 //// preserves the new drain evidence. They are separate because one PID cannot
 //// both propagate a provider crash and remain alive to witness its cleanup.
@@ -43,6 +46,11 @@ import runtime/effects
 
 type Start {
   Begin(custodian.Custodian)
+}
+
+type ParkedEvent {
+  StartRequest(custodian.Custodian)
+  StopBeforeStart
 }
 
 type WorkerEvent {
@@ -70,7 +78,7 @@ pub type Prepared {
 /// Prepares a parked runtime custodian around one provider request.
 ///
 /// This function returns only after the worker and custodian exist, but before
-/// `surface.request` is called. The returned `begin` capability completes the
+/// the provider surface is prepared. The returned `begin` capability completes the
 /// prepare/publish/begin protocol described in the module documentation.
 ///
 /// ## Examples
@@ -94,15 +102,34 @@ pub fn prepare(
       let start = process.new_subject()
       let stop = process.new_subject()
       process.send(ready, #(start, stop))
-      let Begin(owner) = process.receive_forever(start)
-      let inner = surface.request(spec)
-      case custodian.adopt(owner, inner.owner, inner.cancel) {
-        True -> forward(inner, consumer, events, stop)
-        // A rejected permit means teardown won the race or its witness died,
-        // but the provider may already have queued a real terminal. Preserve
-        // that terminal while the consumer lives; its Down changes the same
-        // loop into drain-only teardown.
-        False -> cancel(inner, consumer, events, stop)
+      // The stop capability exists before publication. Selecting it here lets
+      // a rejected reaper adoption retire the parked worker without ever
+      // crossing the provider seam.
+      let parked =
+        process.new_selector()
+        |> process.select_map(start, fn(message) {
+          let Begin(owner) = message
+          StartRequest(owner)
+        })
+        |> process.select_map(stop, fn(_stop) { StopBeforeStart })
+        |> process.selector_receive_forever()
+      case parked {
+        StopBeforeStart -> Nil
+        StartRequest(owner) -> {
+          let stream.PreparedStream(handle: inner, begin:) =
+            effects.prepare_provider(surface, spec)
+          case custodian.adopt(owner, inner.owner, inner.cancel) {
+            True -> {
+              begin()
+              forward(inner, consumer, events, stop)
+            }
+            // Prepared production work is still parked here, but legacy
+            // in-memory surfaces may already carry a real terminal. The
+            // cancellation loop preserves that terminal without granting a
+            // begin permit to asynchronous work.
+            False -> cancel(inner, consumer, events, stop)
+          }
+        }
       }
     })
   let #(start, stop) = process.receive_forever(ready)

@@ -1226,6 +1226,41 @@ fn cancellation_spec() -> effects.RequestSpec {
   )
 }
 
+fn prepared_probe(started: Subject(Nil)) -> stream.PreparedStream {
+  let begin = process.new_subject()
+  let cancel = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let should_start =
+        process.new_selector()
+        |> process.select_map(begin, fn(_nil) { True })
+        |> process.select_map(cancel, fn(_nil) { False })
+        |> process.selector_receive_forever()
+      case should_start {
+        False -> Nil
+        True -> {
+          process.send(started, Nil)
+          let _cancel = process.receive_forever(cancel)
+          Nil
+        }
+      }
+    })
+  stream.PreparedStream(
+    handle: stream.owned(events: process.new_subject(), owner:, cancel: fn() {
+      process.send(cancel, Nil)
+    }),
+    begin: fn() { process.send(begin, Nil) },
+  )
+}
+
+fn prepared_provider(started: Subject(Nil)) -> effects.ProviderSurface {
+  effects.PreparedProviderSurface(
+    timeout_ms: 1000,
+    request: fn(_spec) { prepared_probe(started) |> stream.start_prepared },
+    prepare: fn(_spec) { prepared_probe(started) },
+  )
+}
+
 pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   let cancelled = process.new_subject()
   let tapped =
@@ -1241,6 +1276,23 @@ pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
     stream.next(handle, within: 1000)
   assert stream.next(handle, within: 10) == Error(Nil)
+}
+
+pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
+  let started = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      prepared_provider(started),
+      to: process.new_name(prefix: "loom_parked_tap_test"),
+    )
+  let stream.PreparedStream(handle:, begin:) =
+    effects.prepare_provider(tapped, cancellation_spec())
+
+  stream.cancel(handle)
+  assert stream.await_stopped(handle, within: 1000)
+  begin()
+
+  assert process.receive(started, within: 50) == Error(Nil)
 }
 
 pub fn provider_tap_cancels_when_its_consumer_dies_test() {

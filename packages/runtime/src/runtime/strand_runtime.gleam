@@ -1444,15 +1444,11 @@ fn reap(
       process.send(reply_with, committed)
       case committed {
         True -> reap(driver, commands, effects)
-        False -> {
-          // A monitor allocated during a racing publication must not escape
-          // merely because the driver crossed into drain first.
-          let effects = case accepted {
-            True -> unpublish_provider_owner(effects, effect)
-            False -> effects
-          }
-          reap(driver, commands, effects)
-        }
+        // Publication is irreversible even when driver death rejects the
+        // worker's start permit. The worker will cancel locally, while the
+        // reaper retains its independent owner monitor in case that worker
+        // dies before cleanup finishes.
+        False -> reap(driver, commands, effects)
       }
     }
     LinkedExit(process.ExitMessage(pid:, reason: _)) ->
@@ -1540,25 +1536,6 @@ fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
       }
     }
   }
-}
-
-// Publication lost a race with driver death. Tear down the monitor here; the
-// provider worker that received `False` owns cancellation and the final wait.
-fn unpublish_provider_owner(
-  effects: List(AdoptedEffect),
-  published_by: Pid,
-) -> List(AdoptedEffect) {
-  list.map(effects, fn(effect) {
-    case effect.pid == published_by, effect.provider {
-      True, ProviderWatching(monitor:, ..) -> {
-        process.demonitor_process(monitor)
-        AdoptedEffect(..effect, provider: ProviderUnpublished)
-      }
-      True, ProviderDrained ->
-        AdoptedEffect(..effect, provider: ProviderUnpublished)
-      _, _ -> effect
-    }
-  })
 }
 
 // An effect Down is not necessarily a drain. A published provider owner stays
@@ -1736,7 +1713,14 @@ fn spawn_provider(
         }
         True -> {
           begin()
-          case await_provider(handle, stop, driver, surface.timeout_ms) {
+          case
+            await_provider(
+              handle,
+              stop,
+              driver,
+              effects.provider_timeout_ms(surface),
+            )
+          {
             None -> Nil
             Some(terminal) -> {
               // The terminal and the owner drain are separate facts. Keeping

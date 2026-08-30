@@ -1,3 +1,10 @@
+//// Provider-gateway behavior at the process boundary.
+////
+//// These tests use observable fixture transports to pin routing, settlement,
+//// and cancellation order. In particular, the prepared-request test proves
+//// that cancellation can retire the published owner before route resolution,
+//// secret lookup, or transport startup becomes possible.
+
 import core/clock
 import core/message
 import gleam/erlang/process
@@ -236,6 +243,24 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
     == Ok("https://primary.test/v1/messages")
   assert process.receive(started, within: 100) == Error(Nil)
   assert process.receive(cancelled, within: 100) == Error(Nil)
+}
+
+pub fn cancellation_before_begin_starts_no_provider_work_test() {
+  let started = process.new_subject()
+  let transport =
+    http.Transport(start_streaming: fn(_request, _events) {
+      process.send(started, Nil)
+      Error("a cancelled prepared request must not reach transport")
+    })
+  let stream.PreparedStream(handle:, begin:) =
+    gateway.prepare(two_provider_gateway(transport), main_request())
+
+  stream.cancel(handle)
+  assert stream.await_stopped(handle, within: 1000)
+  begin()
+
+  assert process.receive(started, within: 50) == Error(Nil)
+  assert stream.next(handle, within: 50) == Error(Nil)
 }
 
 pub fn cancellation_after_settlement_is_a_noop_test() {

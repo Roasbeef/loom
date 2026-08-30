@@ -6,8 +6,11 @@
 //// task) fills this record with the real provider gateway, the
 //// ToolBroker, and the tool registry; tests fill it with scripted fakes.
 //// The provider surface is type-compatible with `provider/stream`'s
-//// `StreamHandle` contract (zero or more deltas, exactly one terminal),
-//// and the tool-runner shape is modeled on the broker's `clear_call`
+//// `StreamHandle` contract (zero or more deltas, exactly one terminal). Its
+//// production variant separates preparation from begin so the runtime can
+//// publish the provider owner to its reaper before work crosses the seam;
+//// immediate in-memory fakes retain the smaller synchronous constructor.
+//// The tool-runner shape is modeled on the broker's `clear_call`
 //// settlement events without depending on the broker package: the M2
 //// integration adapts `broker.CallOutcome` into `ToolOutcome` here.
 ////
@@ -34,7 +37,9 @@ import machine/planner.{
 }
 import machine/strand.{type StrandConfiguration}
 import provider/retry
-import provider/stream.{type ProviderError, type StreamHandle}
+import provider/stream.{
+  type PreparedStream, type ProviderError, type StreamHandle,
+}
 
 /// One provider request as the driver dispatches it. The variants mirror
 /// the machine's provider-shaped effect intents; production wiring maps
@@ -78,6 +83,8 @@ pub type RequestSpec {
 /// The provider surface: called on the effect process, which owns the
 /// returned handle and consumes it with `stream.await_terminal`.
 pub type ProviderSurface {
+  /// A synchronous surface for immediate, in-memory implementations.
+  /// Asynchronous production surfaces use `PreparedProviderSurface`.
   ProviderSurface(
     /// Starts one request and returns its live stream.
     request: fn(RequestSpec) -> StreamHandle,
@@ -85,6 +92,58 @@ pub type ProviderSurface {
     /// milliseconds, before settling the attempt as a transport failure.
     timeout_ms: Int,
   )
+  /// A surface which can publish a parked owner before provider work starts.
+  PreparedProviderSurface(
+    /// The compatibility facade which prepares and immediately begins.
+    request: fn(RequestSpec) -> StreamHandle,
+    /// Creates the owner while leaving provider work behind its begin gate.
+    prepare: fn(RequestSpec) -> PreparedStream,
+    /// How long the effect process waits for the terminal event.
+    timeout_ms: Int,
+  )
+}
+
+/// Prepares a provider request when the surface supports failure-atomic
+/// publication.
+///
+/// Production composition must use `PreparedProviderSurface`. The legacy
+/// variant exists for immediate test surfaces which own no asynchronous work.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let prepared = effects.prepare_provider(surface, request)
+/// ```
+///
+pub fn prepare_provider(
+  surface: ProviderSurface,
+  request: RequestSpec,
+) -> PreparedStream {
+  case surface {
+    PreparedProviderSurface(prepare:, ..) -> prepare(request)
+    ProviderSurface(request: start, ..) -> {
+      let handle = start(request)
+      stream.PreparedStream(handle:, begin: fn() { Nil })
+    }
+  }
+}
+
+/// Returns the deadline shared by both provider-surface representations.
+///
+/// Keeping this dispatch beside `prepare_provider` prevents callers from
+/// depending on the constructors' different field layouts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let deadline = effects.provider_timeout_ms(surface)
+/// ```
+///
+pub fn provider_timeout_ms(surface: ProviderSurface) -> Int {
+  case surface {
+    ProviderSurface(timeout_ms:, ..)
+    | PreparedProviderSurface(timeout_ms:, ..) -> timeout_ms
+  }
 }
 
 /// One tool execution as the driver dispatches it.

@@ -4,7 +4,10 @@
 ////
 //// The gateway is pure data plus injected effects: a `Transport` (HTTP),
 //// a `SecretStore` (API keys), and a `Clock` (timestamps). Construction
-//// is the builder pattern; nothing touches the network until `request`.
+//// is the builder pattern; `prepare` allocates only a parked owner, and
+//// nothing resolves a route, reads a secret, or touches the network until its
+//// begin permit is granted. `request` is the synchronous facade which grants
+//// that permit after constructing the handle.
 ////
 //// Dispatch semantics:
 ////
@@ -58,6 +61,11 @@ type RequestControl {
 
 type RequestStart {
   BeginRequest(custodian.Custodian)
+}
+
+type ParkedRequestEvent {
+  StartRequest(custodian.Custodian)
+  StopBeforeRequest
 }
 
 type AttemptRegistration {
@@ -247,7 +255,9 @@ fn find_provider(
 /// The handle's subject is owned by the calling process. A minimal public
 /// custodian owns its lifecycle while a guard and private pump run the
 /// fallback walk. Both workers are adopted before they begin, so this returns
-/// immediately without making either worker's crash a false drain signal.
+/// without making either worker's crash a false drain signal. Call `prepare`
+/// when another owner must adopt this request before route or network work can
+/// begin.
 ///
 /// ## Examples
 ///
@@ -263,6 +273,29 @@ fn find_provider(
 /// ```
 ///
 pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
+  prepare(gateway, request)
+  |> stream.start_prepared
+}
+
+/// Prepares a routed provider request without starting role resolution,
+/// secret lookup, or transport work.
+///
+/// The returned owner is the publication point for wrappers. They must adopt
+/// it before invoking `begin`; cancellation before that permit retires the
+/// parked request without reading a secret or opening a socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let prepared = gateway.prepare(gw, request)
+/// // Publish `prepared.handle.owner` to the parent custodian first.
+/// let handle = stream.start_prepared(prepared)
+/// ```
+///
+pub fn prepare(
+  gateway: Gateway,
+  request: ProviderRequest,
+) -> stream.PreparedStream {
   let consumer = process.self()
   let events = process.new_subject()
   let ready = process.new_subject()
@@ -272,72 +305,26 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
       let control = process.new_subject()
       let begin = process.new_subject()
       process.send(ready, #(control, begin))
-      let BeginRequest(custodian) = process.receive_forever(begin)
-      let pump_ready = process.new_subject()
-      let pump_events = process.new_subject()
-      let pump_attempts = process.new_subject()
-      let self = process.self()
-      let pump_owner =
-        process.spawn_unlinked(fn() {
-          let pump_control = process.new_subject()
-          let pump_begin = process.new_subject()
-          process.send(pump_ready, #(pump_control, pump_begin))
-          let _begin = process.receive_forever(pump_begin)
-          pump(
+      let parked =
+        process.new_selector()
+        |> process.select_map(begin, fn(message) {
+          let BeginRequest(owner) = message
+          StartRequest(owner)
+        })
+        |> process.select_map(control, fn(_cancel) { StopBeforeRequest })
+        |> process.selector_receive_forever()
+      case parked {
+        StopBeforeRequest -> Nil
+        StartRequest(custodian) ->
+          start_request(
             gateway,
             request,
             now,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            self,
+            events,
+            control,
+            consumer,
+            custodian,
           )
-        })
-      let consumer_monitor = process.monitor(consumer)
-      let pump_monitor = process.monitor(pump_owner)
-      let pump_started =
-        process.new_selector()
-        |> process.select_map(pump_ready, Ok)
-        |> process.select_specific_monitor(pump_monitor, fn(_down) {
-          Error(Nil)
-        })
-        |> process.selector_receive(request_start_timeout_ms)
-      case pump_started {
-        Ok(Ok(#(pump_control, pump_begin))) -> {
-          let adopted =
-            custodian.adopt_owner(custodian, pump_owner, fn() {
-              process.send(pump_control, Cancel)
-            })
-          process.send(pump_begin, Nil)
-          case adopted {
-            True ->
-              guard_request(
-                custodian,
-                events,
-                control,
-                pump_events,
-                pump_attempts,
-                pump_control,
-                consumer_monitor,
-                pump_owner,
-                pump_monitor,
-                None,
-              )
-            False ->
-              stop_for_dead_consumer(
-                custodian,
-                pump_control,
-                pump_attempts,
-                consumer_monitor,
-                pump_monitor,
-                None,
-              )
-          }
-        }
-        Ok(Error(Nil)) | Error(Nil) -> {
-          process.kill(pump_owner)
-          forget_request(consumer_monitor, pump_monitor)
-        }
       }
     })
   let monitor = process.monitor(owner)
@@ -350,10 +337,14 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
   case started {
     Ok(Ok(#(control, begin))) -> {
       let custodian = custodian.start(owner, control, CancelRequest, consumer)
-      process.send(begin, BeginRequest(custodian))
-      stream.owned(events:, owner: custodian.owner(custodian), cancel: fn() {
-        custodian.cancel(custodian)
-      })
+      stream.PreparedStream(
+        handle: stream.owned(
+          events:,
+          owner: custodian.owner(custodian),
+          cancel: fn() { custodian.cancel(custodian) },
+        ),
+        begin: fn() { process.send(begin, BeginRequest(custodian)) },
+      )
     }
     Ok(Error(Nil)) | Error(Nil) -> {
       process.kill(owner)
@@ -363,7 +354,84 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
           reason: "provider request owner did not start",
         )),
       )
-      stream.immediate(events:, cancel: fn() { Nil })
+      stream.PreparedStream(
+        handle: stream.immediate(events:, cancel: fn() { Nil }),
+        begin: fn() { Nil },
+      )
+    }
+  }
+}
+
+fn start_request(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
+  events: process.Subject(StreamEvent),
+  control: process.Subject(RequestControl),
+  consumer: process.Pid,
+  custodian: custodian.Custodian,
+) -> Nil {
+  let pump_ready = process.new_subject()
+  let pump_events = process.new_subject()
+  let pump_attempts = process.new_subject()
+  let self = process.self()
+  let pump_owner =
+    process.spawn_unlinked(fn() {
+      let pump_control = process.new_subject()
+      let pump_begin = process.new_subject()
+      process.send(pump_ready, #(pump_control, pump_begin))
+      let _begin = process.receive_forever(pump_begin)
+      pump(
+        gateway,
+        request,
+        now,
+        pump_events,
+        pump_attempts,
+        pump_control,
+        self,
+      )
+    })
+  let consumer_monitor = process.monitor(consumer)
+  let pump_monitor = process.monitor(pump_owner)
+  let pump_started =
+    process.new_selector()
+    |> process.select_map(pump_ready, Ok)
+    |> process.select_specific_monitor(pump_monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive(request_start_timeout_ms)
+  case pump_started {
+    Ok(Ok(#(pump_control, pump_begin))) -> {
+      let adopted =
+        custodian.adopt_owner(custodian, pump_owner, fn() {
+          process.send(pump_control, Cancel)
+        })
+      case adopted {
+        True -> {
+          process.send(pump_begin, Nil)
+          guard_request(
+            custodian,
+            events,
+            control,
+            pump_events,
+            pump_attempts,
+            pump_control,
+            consumer_monitor,
+            pump_owner,
+            pump_monitor,
+            None,
+          )
+        }
+        False -> {
+          // The pump has not crossed its begin gate. Rejection means this
+          // process retains teardown responsibility if the custodian died, so
+          // kill the parked pump instead of starting secret lookup.
+          process.kill(pump_owner)
+          forget_request(consumer_monitor, pump_monitor)
+        }
+      }
+    }
+    Ok(Error(Nil)) | Error(Nil) -> {
+      process.kill(pump_owner)
+      forget_request(consumer_monitor, pump_monitor)
     }
   }
 }

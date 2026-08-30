@@ -289,8 +289,9 @@ pub fn build_effects(config: Config) -> Effects {
     entropy: config.entropy,
     timers: effects.real_timers(),
     provider: recording_summaries(
-      effects.ProviderSurface(
+      effects.PreparedProviderSurface(
         request: fn(spec) { dispatch(config, spec) },
+        prepare: fn(spec) { prepare_dispatch(config, spec) },
         timeout_ms: config.provider_timeout_ms,
       ),
       into: config.summaries,
@@ -370,21 +371,38 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
 // Dispatches one request spec. Generation and summary requests go to the
 // gateway; polls settle immediately in-band (see the module doc).
 fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
+  prepare_dispatch(config, spec)
+  |> stream.start_prepared
+}
+
+// Production dispatch keeps role resolution and secret lookup behind the
+// begin permit. The immediate error cases still use the same shape so every
+// wrapper can apply one prepare, publish, begin protocol.
+fn prepare_dispatch(
+  config: Config,
+  spec: effects.RequestSpec,
+) -> stream.PreparedStream {
   case spec {
     effects.GenerationRequest(..) ->
-      gateway.request(config.gateway, provider_request(config, spec))
+      gateway.prepare(config.gateway, provider_request(config, spec))
     effects.PollRequest(..) ->
-      unsupported("deferred polls are not wired to a provider surface yet")
+      prepared_unsupported(
+        "deferred polls are not wired to a provider surface yet",
+      )
     effects.SummaryRequest(..) ->
       case summary_provider_request(config, spec) {
-        Ok(request) -> gateway.request(config.gateway, request)
+        Ok(request) -> gateway.prepare(config.gateway, request)
         // No preparation register behind a dispatched summary request is
         // corruption, not a transient fault: the machine writes the
         // preparation and the intent in one transaction. Fail it
         // terminally rather than asking a provider to summarize nothing.
-        Error(reason) -> unsupported(reason)
+        Error(reason) -> prepared_unsupported(reason)
       }
   }
+}
+
+fn prepared_unsupported(reason: String) -> stream.PreparedStream {
+  stream.PreparedStream(handle: unsupported(reason), begin: fn() { Nil })
 }
 
 // --- recording a settled summary -------------------------------------------
@@ -418,17 +436,36 @@ pub fn recording_summaries(
   surface: effects.ProviderSurface,
   into summaries: Summaries,
 ) -> effects.ProviderSurface {
-  effects.ProviderSurface(timeout_ms: surface.timeout_ms, request: fn(spec) {
-    case spec {
-      effects.SummaryRequest(operation:, task_id:, attempt:, ..) -> {
-        let key = summaries.key(operation, task_id, attempt)
-        provider_relay.wrap(surface, spec, fn(event) {
-          record_summary_event(event, summaries, key)
-        })
+  effects.PreparedProviderSurface(
+    timeout_ms: effects.provider_timeout_ms(surface),
+    request: fn(spec) {
+      case summary_observer(spec, summaries) {
+        Some(observe) -> provider_relay.wrap(surface, spec, observe)
+        None -> surface.request(spec)
       }
-      _ -> surface.request(spec)
+    },
+    prepare: fn(spec) {
+      case summary_observer(spec, summaries) {
+        Some(observe) -> provider_relay.prepare(surface, spec, observe)
+        None -> effects.prepare_provider(surface, spec)
+      }
+    },
+  )
+}
+
+// The callback is derived before either facade starts work, keeping summary
+// identity identical across immediate callers and the runtime's prepared path.
+fn summary_observer(
+  spec: effects.RequestSpec,
+  summaries: Summaries,
+) -> Option(fn(stream.StreamEvent) -> Nil) {
+  case spec {
+    effects.SummaryRequest(operation:, task_id:, attempt:, ..) -> {
+      let key = summaries.key(operation, task_id, attempt)
+      Some(fn(event) { record_summary_event(event, summaries, key) })
     }
-  })
+    _ -> None
+  }
 }
 
 fn record_summary_event(
