@@ -98,6 +98,10 @@ pub const summary_text = "[summary] the conversation so far"
 /// timeout fault reaches it.
 pub const provider_timeout_ms = 60
 
+const intervention_admission_attempts = 100
+
+const intervention_retry_delay_ms = 5
+
 /// Builds the effect surface. `raw` is the *uninstrumented* session,
 /// which the hooks read so that a scheduled read fault aimed at the
 /// driver cannot be swallowed by a hook.
@@ -947,10 +951,23 @@ fn apply_on(
   let claimed = claim_interventions(ctl, due)
   case claimed, awaited {
     [], _ -> Nil
-    [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
+    [_, ..], True ->
+      admit_claimed(
+        ctl,
+        raw,
+        runtime,
+        claimed,
+        attempts: intervention_admission_attempts,
+      )
     [_, ..], False ->
       control.detached(fn() {
-        admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
+        admit_claimed(
+          ctl,
+          raw,
+          runtime,
+          claimed,
+          attempts: intervention_admission_attempts,
+        )
       })
   }
 }
@@ -1001,7 +1018,10 @@ fn admit_claimed(
       case unresolved, attempts > 1 {
         [], _ -> Nil
         [_, ..], True -> {
-          process.sleep(10)
+          // A reply-losing crash can be followed by a full rest-for-one tree
+          // rebuild. The runner owns this carrier, so retry across that bounded
+          // recovery window instead of spending a five-step scheduler race.
+          process.sleep(intervention_retry_delay_ms)
           admit_claimed(ctl, raw, runtime, unresolved, attempts: attempts - 1)
         }
         [_, ..], False -> control.mark(ctl, "admission-unobserved")
