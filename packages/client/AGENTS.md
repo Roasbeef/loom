@@ -57,13 +57,15 @@ over one session file. WP-L.
   name, which is what lets it be supervised and restarted without the
   writer noticing.
 - `client/provider_relay.wrap` — the shared provider-wrapper ownership seam:
-  a public guard is published before it calls the inner surface, remains that
-  surface's direct consumer, and runs the synchronous observer through a
-  separately monitored callback worker before forwarding each event. Cancel
-  travels inward, an unacknowledged cancel becomes terminal
-  `CancellationUnconfirmed` after one fixed grace,
-  and the guard remains alive until the inner owner drains. Observer death
-  becomes a prompt in-band transport failure only after that drain is proved.
+  a minimal public custodian is published before it releases the guard. The
+  guard remains the inner surface's direct consumer, and a separately
+  monitored observer runs the synchronous callback before each event is
+  forwarded. The custodian adopts the guard, observer, and inner stream owner
+  before each begins work. Cancel travels inward, an unacknowledged cancel
+  becomes terminal `CancellationUnconfirmed` after one fixed grace, and the
+  custodian remains alive until the registered subtree drains. Guard or
+  observer death becomes a prompt in-band transport failure only after that
+  drain is proved.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
@@ -1178,15 +1180,15 @@ over one session file. WP-L.
   through the ordinary monitor path.
 - **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
   `wiring.recording_summaries` each return a new `StreamHandle`, so each
-  publishes a guard before beginning the inner request. The guard owns the
-  public cancel capability and remains the inner stream's direct consumer;
-  only each synchronous observer call moves to a monitored worker. The guard
-  monitors its caller, forwards cancellation inward, and bounds missing
-  acknowledgement with `CancellationUnconfirmed`, then stays alive until the
-  inner owner exits. This keeps the chain continuous from driver reaper to
-  effect, relay guard, gateway guard and pump, transport custodian
-  and receiver, and the native HTTP request; no wrapper may turn consumer death
-  into a detached request.
+  publishes a minimal custodian before beginning the inner request. The guard
+  remains the inner stream's direct consumer; only each synchronous observer
+  call moves to a monitored worker. The custodian adopts both and the inner
+  owner, forwards cancellation inward, and bounds missing acknowledgement with
+  `CancellationUnconfirmed`, then stays alive until the registered subtree
+  exits. This keeps the chain continuous from driver reaper to runtime
+  custodian, relay custodian and guard, gateway custodian, guard and pump,
+  transport custodian and worker, receiver, and native HTTP request; no wrapper
+  may turn consumer death into a detached request.
 - **A park is bounded by the configured window *and* by the call's own
   budget deadline, and the deadline is re-read immediately before the
   consuming commit.** The second bound is not politeness: the broker's

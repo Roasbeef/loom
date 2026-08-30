@@ -1290,7 +1290,7 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
     |> process.selector_receive(1000)
 }
 
-pub fn provider_relay_guard_owns_inner_request_from_start_test() {
+pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
   let callers = process.new_subject()
   let surface =
     effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
@@ -1302,9 +1302,14 @@ pub fn provider_relay_guard_owns_inner_request_from_start_test() {
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
   let assert stream.StreamHandle(owner: Some(owner), ..) = handle
-    as "the relay must publish a guard-backed handle"
+    as "the relay must publish a custodian-backed handle"
+  let assert Ok(inner_consumer) = process.receive(callers, within: 1000)
 
-  assert process.receive(callers, within: 1000) == Ok(owner)
+  assert inner_consumer != owner
+    as "fallible stream consumption must not be the public drain witness"
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000)
 }
 
 pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
@@ -1394,6 +1399,43 @@ pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
     stream.next(handle, within: 2500)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(owner)
+  assert !stream.await_stopped(handle, within: 20)
+  process.send(release, Nil)
+  assert stream.await_stopped(handle, within: 1000)
+}
+
+pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
+  let cancelled = process.new_subject()
+  let started = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let guard = process.self()
+      let events = process.new_subject()
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(started, #(guard, owner, release))
+      stream.owned(events:, owner:, cancel: fn() {
+        process.send(cancelled, Nil)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert Ok(#(guard, inner_owner, release)) =
+    process.receive(started, within: 1000)
+  let assert stream.StreamHandle(owner: Some(witness), ..) = handle
+
+  process.kill(guard)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert process.is_alive(inner_owner)
+  assert process.is_alive(witness)
   assert !stream.await_stopped(handle, within: 20)
   process.send(release, Nil)
   assert stream.await_stopped(handle, within: 1000)

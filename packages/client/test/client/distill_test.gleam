@@ -1373,16 +1373,22 @@ fn gateway_routing(roles: List(model.Role)) -> provider_gateway.Gateway {
 
 pub fn gateway_distiller_cancels_a_timed_out_request_test() {
   let cancelled = process.new_subject()
+  let owners = process.new_subject()
   let transport =
     http.Transport(start_streaming: fn(_request, _events) {
+      let ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
-          process.receive_forever(process.new_subject())
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
         })
+      let release = process.receive_forever(ready)
+      process.send(owners, #(owner, release))
       Ok(
         http.RunningRequest(owner:, cancel: fn() {
           process.send(cancelled, Nil)
-          process.kill(owner)
         }),
       )
     })
@@ -1413,10 +1419,20 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
       timeout_ms: 10,
     )
 
-  let assert Error(reason) = distiller.ask("remember this")
-
-  assert string.contains(reason, "timeout")
+  let answered = process.new_subject()
+  let _asker =
+    process.spawn_unlinked(fn() {
+      process.send(answered, distiller.ask("remember this"))
+    })
+  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+
+  assert process.is_alive(owner)
+  assert process.receive(answered, within: 20) == Error(Nil)
+    as "the next distillation step must wait for this owner to drain"
+  process.send(release, Nil)
+  let assert Ok(Error(reason)) = process.receive(answered, within: 1000)
+  assert string.contains(reason, "timeout")
 }
 
 // --- small helpers ----------------------------------------------------------

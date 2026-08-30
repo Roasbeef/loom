@@ -1273,6 +1273,10 @@ pub fn gateway_distiller(
     case stream.await_terminal(handle, within: timeout_ms) {
       Error(Nil) -> {
         stream.cancel(handle)
+        // `extract_all` may issue the next billable distillation request as
+        // soon as this call returns. A timeout ends the receive, not the work;
+        // keep this fold step private until the old provider subtree is gone.
+        stream.await_stopped_forever(handle)
         Error("the model did not answer inside the timeout")
       }
       Ok(#(_deltas, stream.Failed(error:))) -> Error(string.inspect(error))

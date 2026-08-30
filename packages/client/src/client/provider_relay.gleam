@@ -1,20 +1,22 @@
 //// A cancellation-transparent wrapper around one provider stream.
 ////
-//// The public guard is published before the inner request is allowed to
-//// start, then remains that request's direct consumer until its owner drains.
-//// This continuity is the important part: no crashable worker ever holds an
-//// unpublished `StreamHandle`. A second process runs only the synchronous
-//// observer callback. Its crash is visible to the guard, which can still
-//// cancel the inner request because the handle never left guard state.
+//// A minimal custodian is published before the guard is allowed to start the
+//// inner request. The guard remains that request's direct consumer, while a
+//// second process runs only the synchronous observer callback. Both are
+//// adopted by the custodian before their work begins. This continuity is the
+//// important part: a guard crash cannot discard the inner `StreamHandle`, and
+//// an observer crash cannot erase the witness that still owns cancellation.
 ////
 //// Explicit cancellation enters through the guard. It is handed to the inner
 //// owner, then the guard waits one fixed grace timer for the owner-authored
 //// terminal. The timer is scheduled once, so a stream of late deltas cannot
 //// extend teardown indefinitely. If no terminal arrives, the guard reports
-//// `CancellationUnconfirmed` but remains alive until the inner owner drains;
-//// its public pid is therefore a transitive teardown acknowledgement.
+//// `CancellationUnconfirmed`; the custodian nevertheless remains alive until
+//// the guard, observer, and inner owner drain. Its public pid is therefore a
+//// transitive teardown acknowledgement rather than another working actor.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
+import provider/custodian
 import provider/stream
 import runtime/effects
 
@@ -28,7 +30,7 @@ type Control {
 }
 
 type StartEvent {
-  Begin
+  Begin(custodian.Custodian)
   StartConsumerDown(process.Down)
 }
 
@@ -69,7 +71,7 @@ pub fn wrap(
     process.spawn_unlinked(fn() {
       guard(surface, spec, observe, consumer, outer, ready)
     })
-  await_handle(outer, ready, guard)
+  await_handle(outer, ready, guard, consumer)
 }
 
 fn guard(
@@ -78,7 +80,7 @@ fn guard(
   observe: fn(stream.StreamEvent) -> Nil,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
-  ready: Subject(#(Subject(Control), Subject(Nil))),
+  ready: Subject(#(Subject(Control), Subject(custodian.Custodian))),
 ) -> Nil {
   let control = process.new_subject()
   let begin = process.new_subject()
@@ -86,26 +88,46 @@ fn guard(
   process.send(ready, #(control, begin))
   let start =
     process.new_selector()
-    |> process.select_map(begin, fn(_begin) { Begin })
+    |> process.select_map(begin, Begin)
     |> process.select_specific_monitor(consumer_monitor, StartConsumerDown)
     |> process.selector_receive_forever()
   case start {
     StartConsumerDown(_down) -> process.demonitor_process(consumer_monitor)
-    Begin -> {
-      let inner = surface.request(spec)
+    Begin(owner) -> {
+      // Publish the observer before the inner request begins. Cancellation can
+      // reach the public custodian as soon as `wrap` returns; if it wins this
+      // startup race, an owner-authored terminal must still pass through the
+      // observer before it reaches the caller.
       let #(observer, observer_control, observer_monitor) =
         start_observer(observe)
-      forward(
-        inner,
-        observer,
-        observer_control,
-        outer,
-        consumer,
-        control,
-        consumer_monitor,
-        observer_monitor,
-        surface.timeout_ms + 100,
-      )
+      let _observer_permit =
+        custodian.adopt_owner(owner, observer, fn() { process.kill(observer) })
+      let inner = surface.request(spec)
+      case custodian.adopt(owner, inner.owner, inner.cancel) {
+        False -> {
+          cancel_during_start(
+            inner,
+            observer,
+            observer_control,
+            outer,
+            consumer,
+            consumer_monitor,
+            observer_monitor,
+          )
+        }
+        True ->
+          forward(
+            inner,
+            observer,
+            observer_control,
+            outer,
+            consumer,
+            control,
+            consumer_monitor,
+            observer_monitor,
+            surface.timeout_ms + 100,
+          )
+      }
     }
   }
 }
@@ -136,8 +158,9 @@ fn observer_loop(
 
 fn await_handle(
   outer: Subject(stream.StreamEvent),
-  ready: Subject(#(Subject(Control), Subject(Nil))),
+  ready: Subject(#(Subject(Control), Subject(custodian.Custodian))),
   guard: Pid,
+  consumer: Pid,
 ) -> stream.StreamHandle {
   let monitor = process.monitor(guard)
   let started =
@@ -148,9 +171,10 @@ fn await_handle(
   process.demonitor_process(monitor)
   case started {
     Ok(Ok(#(control, begin))) -> {
-      process.send(begin, Nil)
-      stream.owned(events: outer, owner: guard, cancel: fn() {
-        process.send(control, Cancel)
+      let owner = custodian.start(guard, control, Cancel, consumer)
+      process.send(begin, owner)
+      stream.owned(events: outer, owner: custodian.owner(owner), cancel: fn() {
+        custodian.cancel(owner)
       })
     }
     Ok(Error(Nil)) -> failed_handle(outer, "provider relay guard exited")
@@ -375,6 +399,49 @@ fn forward_cancelling(
         observer_monitor,
       )
   }
+}
+
+fn cancel_during_start(
+  inner: stream.StreamHandle,
+  observer: Pid,
+  observer_control: Subject(ObserverMessage),
+  outer: Subject(stream.StreamEvent),
+  consumer: Pid,
+  consumer_monitor: Monitor,
+  observer_monitor: Monitor,
+) -> Nil {
+  stream.cancel(inner)
+  let terminal = stream.await_terminal(inner, within: cancel_grace_ms)
+  case terminal, process.is_alive(consumer) {
+    Ok(#(_deltas, event)), True -> {
+      let acknowledged = process.new_subject()
+      process.send(observer_control, Observe(event, acknowledged:))
+      let observed =
+        process.new_selector()
+        |> process.select_map(acknowledged, fn(_acknowledged) { True })
+        |> process.select_specific_monitor(consumer_monitor, fn(_down) { False })
+        |> process.select_specific_monitor(observer_monitor, fn(_down) { False })
+        |> process.selector_receive(within: cancel_grace_ms)
+      case observed {
+        Ok(True) -> process.send(outer, event)
+        Ok(False) | Error(Nil) ->
+          case process.is_alive(consumer) {
+            True ->
+              process.send(
+                outer,
+                stream.Failed(error: stream.CancellationUnconfirmed),
+              )
+            False -> Nil
+          }
+      }
+    }
+    Error(Nil), True ->
+      process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
+    _, False -> Nil
+  }
+  stream.await_stopped_forever(inner)
+  stop_observer(observer, observer_monitor)
+  forget_relay(consumer_monitor, observer_monitor)
 }
 
 fn observe_cancelling(
