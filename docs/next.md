@@ -37,20 +37,24 @@ Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
 `httpc` cancellation as an asynchronous cast rather than a socket-drain
 acknowledgement. Three small externals prepare, begin, and cancel one native
 owner. The typed transport returns `PreparedRequest(running, begin)`, so its
-raw owner is publishable before `begin` can touch the network. That owner finds
-the dedicated handler under `httpc_handler_sup`, disables redirects and
-supported automatic retries that could migrate the handler behind a stable
-request id, cancels the exact handler without consulting a replacement
-manager, and waits for handler Down. Provider
-ownership above that raw mailbox, fallback, deadlines, and terminal
-arbitration remain typed Gleam.
+raw owner is publishable before `begin` can touch the network. That owner
+disables redirects and supported automatic retries that could migrate the
+handler behind a stable request id. A disposable discovery worker scans every
+live `httpc_handler` with bounded calls, including handlers orphaned by
+supervisor replacement; the owner cancels the exact match without consulting a
+replacement manager and waits for handler Down. A manager or handler-
+supervisor generation change during a failed public admission keeps the owner
+as an ambiguous witness until a raw response supplies the request id. Provider
+ownership above that raw mailbox, fallback, deadlines, and terminal arbitration
+remain typed Gleam.
 
 The runtime closes both ends of its former publication gap. Production exposes
 a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
 publishes its custodian to the parent owner, and only then grants the begin
 permit. Route resolution, secret lookup, transport startup, and socket work all
 remain behind that permit. Immediate `ProviderSurface` values remain for
-in-memory fakes which own no asynchronous descendants. Reaper generations live
+in-memory fakes which own no external work; they may still use a self-reaping
+in-memory owner to model cancellation. Reaper generations live
 in a drain ledger before the restartable name registry, so a replacement waits
 for every older generation. `api.close` captures and monitors the live ledger
 before terminating the root, then releases the lease only for its clean
@@ -60,14 +64,19 @@ before begin, startup death, wrapper and gateway worker crashes,
 handler-delayed socket closure, manager replacement, redirect cancellation,
 timeout drain, restart ordering, and close/reopen exclusion.
 
-The first cold review rejected the previous head and the corrective focused
-gates are now green: provider 124, runtime 83, client 556, and conformance 67.
-The review also exposed that seed 33's carrier allowed only five scheduler
-turns for a whole rest-for-one rebuild; the bounded simulation-only retry
-window now covers that recovery. The complete `make check` exits zero,
-`make doc-check` reports zero errors, the 200-seed CI range is clean, and seed
-33 passes five additional consecutive package runs. Refreshed cold review and
-exact-head CI remain required before merge.
+The first cold review and exact-head CI rejected `fd0c9e3`. CI seed 33 proved
+that even a 500 ms wall-clock retry budget could expire while a rest-for-one
+tree was still rebuilding. Intervention admission now retries while the root
+supervisor remains alive; a dead root, rather than scheduler timing, is the
+failure boundary. Review also found that a handler-supervisor restart can
+orphan a live `httpc_handler`, an unbounded diagnostic call can pin
+cancellation, and abnormal reaper or owner exits must not count as drain.
+
+The corrective focused gates are green: provider 127, runtime 85, client 556,
+and conformance 67. Seed 33 passes five consecutive package runs and the
+200-seed range from 1 is clean. The full `make check` exits zero and
+`make doc-check` reports zero errors. Refreshed cold review and exact-head CI
+remain required before merge.
 
 ## Platform-strict enforcement is the production default
 
