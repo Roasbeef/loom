@@ -30,6 +30,21 @@ pub fn details_test() {
   assert command.parse("/details") == command.Details
 }
 
+pub fn steer_and_queue_commands_test() {
+  assert command.parse("/steer use the new constraint")
+    == command.Steer("use the new constraint")
+  assert command.parse("/queue review the result")
+    == command.Queue("review the result")
+  assert command.parse("/queue") == command.MissingArgument("queue")
+}
+
+pub fn steer_and_follow_up_frames_test() {
+  assert protocol.steer(7, "main", "now")
+    == "{\"v\":1,\"id\":7,\"cmd\":\"steer\",\"body\":{\"strand\":\"main\",\"text\":\"now\"}}"
+  assert protocol.follow_up(8, "main", "later")
+    == "{\"v\":1,\"id\":8,\"cmd\":\"follow_up\",\"body\":{\"strand\":\"main\",\"text\":\"later\"}}"
+}
+
 pub fn model_argument_test() {
   assert command.parse(" /model baseten-kimi-k3 ")
     == command.Model("baseten-kimi-k3")

@@ -14,50 +14,135 @@ import gleam/result
 
 /// One strand from a snapshot.
 pub type Strand {
-  Strand(id: String, name: Option(String), live_phase: Option(String))
+  Strand(
+    /// The stable wire identifier used by subsequent commands.
+    id: String,
+    /// The optional operator-facing strand name.
+    name: Option(String),
+    /// The open-set operation phase, or `None` when the strand is idle.
+    live_phase: Option(String),
+  )
 }
 
 /// One model catalogue row.
 pub type ModelInfo {
   ModelInfo(
+    /// The stable catalogue name accepted by `set_config`.
     name: String,
+    /// The provider dialect that shapes model requests.
     dialect: String,
+    /// The upstream provider's model identifier.
     model_id: String,
+    /// The orchestration roles this model can fill.
     roles: List(String),
+    /// The roles currently routed to this model.
     active: List(String),
   )
 }
 
 /// One entry attributed to its strand.
 pub type EntryRecord {
-  EntryRecord(strand: String, entry: Entry)
+  EntryRecord(
+    /// The strand whose durable history owns the entry.
+    strand: String,
+    /// The entry decoded through the shared core codec.
+    entry: Entry,
+  )
 }
 
 /// One event the terminal needs to render.
 pub type Event {
+  /// An authoritative replacement for all client-visible session state.
   FullSnapshot(
+    /// The subscribed session identifier.
     session: String,
+    /// Every strand visible to this connection.
     strands: List(Strand),
+    /// Durable conversation entries in replay order.
     entries: List(EntryRecord),
   )
-  StrandsSnapshot(strands: List(Strand))
-  ModelsSnapshot(models: List(ModelInfo))
-  ConfigSnapshot(model_name: Option(String))
-  EntryAdded(record: EntryRecord)
-  StreamDelta(strand: String, kind: String, text: String)
-  OperationChanged(strand: String, phase: String)
-  UsageChanged(total_tokens: Int)
-  EscalationPending(id: String, tool: String, preview: String)
-  ServerError(code: String, message: String)
-  Ignored(name: String)
+  /// An authoritative replacement for the visible strand set.
+  StrandsSnapshot(
+    /// Every strand visible to this connection.
+    strands: List(Strand),
+  )
+  /// An authoritative replacement for the model catalogue.
+  ModelsSnapshot(
+    /// Every model the server exposes to this session.
+    models: List(ModelInfo),
+  )
+  /// The active strand's effective model selection.
+  ConfigSnapshot(
+    /// The selected catalogue name, when one is configured.
+    model_name: Option(String),
+  )
+  /// A newly durable entry that supersedes matching transient fragments.
+  EntryAdded(
+    /// The owning strand and decoded entry.
+    record: EntryRecord,
+  )
+  /// One transient provider fragment that has not become durable yet.
+  StreamDelta(
+    /// The strand receiving the fragment.
+    strand: String,
+    /// The open-set stream kind, such as `thinking` or `text`.
+    kind: String,
+    /// The sanitized-later fragment bytes.
+    text: String,
+  )
+  /// A liveness transition for one strand operation.
+  OperationChanged(
+    /// The strand whose operation moved.
+    strand: String,
+    /// The open-set display phase; `done` clears liveness.
+    phase: String,
+  )
+  /// A replacement for the session's cumulative token usage.
+  UsageChanged(
+    /// The server-authoritative total token count.
+    total_tokens: Int,
+  )
+  /// A tool action awaiting an explicit operator decision.
+  EscalationPending(
+    /// The escalation identifier used by a later decision command.
+    id: String,
+    /// The requested tool name.
+    tool: String,
+    /// A bounded, untrusted description of the requested action.
+    preview: String,
+  )
+  /// A structured server refusal or request failure.
+  ServerError(
+    /// The stable machine-readable error code.
+    code: String,
+    /// The untrusted operator-facing explanation.
+    message: String,
+  )
+  /// A forward-compatible event the current client does not render.
+  Ignored(
+    /// The unknown event name retained for diagnostics.
+    name: String,
+  )
 }
 
 /// Encodes a full-session subscription.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.subscribe(1, "session-a")
+/// ```
 pub fn subscribe(id: Int, session: String) -> String {
   command(id, "subscribe", [#("session", json.String(session))])
 }
 
 /// Encodes a prompt for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.prompt(2, "main", "inspect the tree")
+/// ```
 pub fn prompt(id: Int, strand: String, text: String) -> String {
   command(id, "prompt", [
     #("strand", json.String(strand)),
@@ -65,12 +150,52 @@ pub fn prompt(id: Int, strand: String, text: String) -> String {
   ])
 }
 
+/// Encodes an immediate steer for one live strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.steer(3, "main", "use the narrower invariant")
+/// ```
+pub fn steer(id: Int, strand: String, text: String) -> String {
+  command(id, "steer", [
+    #("strand", json.String(strand)),
+    #("text", json.String(text)),
+  ])
+}
+
+/// Encodes a turn queued behind one live strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.follow_up(4, "main", "review the result")
+/// ```
+pub fn follow_up(id: Int, strand: String, text: String) -> String {
+  command(id, "follow_up", [
+    #("strand", json.String(strand)),
+    #("text", json.String(text)),
+  ])
+}
+
 /// Encodes a model-catalogue request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.models(5)
+/// ```
 pub fn models(id: Int) -> String {
   command(id, "models", [])
 }
 
 /// Encodes a by-name model switch for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.set_model(6, "main", "baseten-kimi-k3")
+/// ```
 pub fn set_model(id: Int, strand: String, name: String) -> String {
   command(id, "set_config", [
     #("strand", json.String(strand)),
@@ -79,11 +204,23 @@ pub fn set_model(id: Int, strand: String, name: String) -> String {
 }
 
 /// Encodes an abort for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.abort(7, "main")
+/// ```
 pub fn abort(id: Int, strand: String) -> String {
   command(id, "abort", [#("strand", json.String(strand))])
 }
 
 /// Encodes a branch-scope fork of one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.fork(8, "main", "review")
+/// ```
 pub fn fork(id: Int, strand: String, name: String) -> String {
   command(id, "fork", [
     #("strand", json.String(strand)),
@@ -93,6 +230,12 @@ pub fn fork(id: Int, strand: String, name: String) -> String {
 }
 
 /// Encodes a standalone compaction for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.compact(9, "main")
+/// ```
 pub fn compact(id: Int, strand: String) -> String {
   command(id, "compact", [#("strand", json.String(strand))])
 }
@@ -108,6 +251,12 @@ fn command(id: Int, name: String, body: List(#(String, JsonValue))) -> String {
 }
 
 /// Decodes one server event without panicking on malformed input.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = protocol.decode_event("not json")
+/// ```
 pub fn decode_event(text: String) -> Result(Event, String) {
   use value <- result.try(
     json.parse(text)

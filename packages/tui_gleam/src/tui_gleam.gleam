@@ -1,6 +1,12 @@
 //// A pure-Gleam Loom terminal client built on etui.
 ////
-//// The model is immutable and the view is a pure render over that model.
+//// The terminal process owns one immutable `Model`. Keyboard, mouse, paste,
+//// websocket, and periodic inbox events each reduce that model before `view`
+//// renders the next frame; no widget owns hidden conversation state. The
+//// websocket actor owns transport I/O, while this process alone decides which
+//// frozen ClientGateway command an operator action means. Durable entries
+//// replace matching transient streams, keeping replay and live output from
+//// appearing twice at the settlement boundary.
 
 import argv
 import core/entry
@@ -69,6 +75,11 @@ type Launch {
   Invalid(reason: String)
 }
 
+type SubmissionMode {
+  SteerNow
+  QueueAfter
+}
+
 type Model {
   Model(
     quit: Bool,
@@ -76,6 +87,7 @@ type Model {
     height: Int,
     input: text_area.TextAreaState,
     attachments: List(composer.Attachment),
+    submission_mode: SubmissionMode,
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
@@ -98,6 +110,12 @@ type Model {
 }
 
 /// Runs the interactive terminal client.
+///
+/// ## Examples
+///
+/// ```sh
+/// gleam run -- --addr ws://127.0.0.1:8080/v1/ws --session demo
+/// ```
 pub fn main() {
   let inbox = connection.new_inbox()
   let base =
@@ -107,6 +125,7 @@ pub fn main() {
       height: 24,
       input: text_area.state_new(),
       attachments: [],
+      submission_mode: SteerNow,
       transcript: [
         Line(System, "etui input and gateway paths ready"),
         Line(
@@ -166,7 +185,7 @@ pub fn main() {
   }
   let _ =
     app.run_buffered_cursor(
-      default.new(),
+      default.new_with_options(backend.Options(mouse: True, paste: True)),
       initial,
       view,
       update,
@@ -239,9 +258,10 @@ fn view(
     block.block_new()
     |> block.with_border(block.Rounded)
     |> block.with_colors(theme.signal, style.Default)
-    |> block.with_title(input_title(model.attachments), block.Top)
+    |> block.with_title(input_title(model), block.Top)
   let transcript_area = block.inner(transcript_panel, transcript_block)
-  let editor_area = block.inner(input_area, input_block)
+  let #(paste_area, editor_area) =
+    input_layout(block.inner(input_area, input_block), model.attachments)
   let editor =
     text_area.textarea_new()
     |> text_area.with_max_lines(1)
@@ -258,6 +278,7 @@ fn view(
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
     |> block.render(input_area, input_block)
+    |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, model.input)
     |> render_footer(footer_area, model)
   let rendered = case model.overlay {
@@ -456,18 +477,41 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  let shortcuts = case active_strand_live(model) {
+    True ->
+      case model.submission_mode {
+        SteerNow -> [
+          span.span_styled(" enter ", theme.signal_bold()),
+          span.span_styled("steer now   ", theme.quiet_text()),
+          span.span_styled("tab ", theme.signal_bold()),
+          span.span_styled("queue message   ", theme.quiet_text()),
+        ]
+        QueueAfter -> [
+          span.span_styled(" enter ", theme.signal_bold()),
+          span.span_styled("queue message   ", theme.quiet_text()),
+          span.span_styled("tab ", theme.signal_bold()),
+          span.span_styled("steer now   ", theme.quiet_text()),
+        ]
+      }
+    False -> [
+      span.span_styled(" /help ", theme.signal_bold()),
+      span.span_styled("commands   ", theme.quiet_text()),
+      span.span_styled("/agents ", theme.signal_bold()),
+      span.span_styled("agents   ", theme.quiet_text()),
+    ]
+  }
   let bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([
-      span.line_new([
-        span.span_styled(" /help ", theme.signal_bold()),
-        span.span_styled("commands   ", theme.quiet_text()),
-        span.span_styled("tab ", theme.signal_bold()),
-        span.span_styled("agents   ", theme.quiet_text()),
-        span.span_styled("ctrl+g ", theme.signal_bold()),
-        span.span_styled("detail", theme.quiet_text()),
-      ]),
+      span.line_new(
+        list.append(shortcuts, [
+          span.span_styled("shift+tab ", theme.signal_bold()),
+          span.span_styled("rail   ", theme.quiet_text()),
+          span.span_styled("ctrl+g ", theme.signal_bold()),
+          span.span_styled("detail", theme.quiet_text()),
+        ]),
+      ),
     ])
     |> statusbar.with_right([
       span.line_new([
@@ -480,10 +524,83 @@ fn render_footer(
   statusbar.render(buf, area, bar)
 }
 
-fn input_title(attachments: List(composer.Attachment)) -> String {
+fn input_layout(
+  area: Rect,
+  attachments: List(composer.Attachment),
+) -> #(Rect, Rect) {
   case composer.summary(attachments) {
-    Some(summary) -> " prompt · " <> summary <> " · / commands "
-    None -> " prompt · / commands "
+    None -> #(geometry.rect_zero(), area)
+    Some(summary) -> {
+      let width = int.min(area.size.width, string.length(summary) + 3)
+      case geometry.split_h(area, [Length(width), Fill]) {
+        [paste_area, editor_area] -> #(paste_area, editor_area)
+        _ -> #(area, geometry.rect_zero())
+      }
+    }
+  }
+}
+
+fn input_title(model: Model) -> String {
+  case active_status_label(model), model.submission_mode {
+    None, _ -> " prompt · / commands "
+    Some(_), QueueAfter -> " queue after turn · enter queues · tab steers "
+    Some(status), SteerNow -> " " <> status <> " · enter steers · tab queues "
+  }
+}
+
+// The operation phase is authoritative for liveness, while the latest stream
+// kind supplies the finer distinction the protocol phase cannot express. In
+// particular, `assistant` begins before the first reasoning delta, so treating
+// it as a completed response would make a steerable turn look stuck.
+fn active_status_label(model: Model) -> Option(String) {
+  case active_strand_phase(model) {
+    None -> None
+    Some("assistant") ->
+      Some(case active_stream_kind(model) {
+        Some("text") -> "responding"
+        Some("tool_call") -> "calling tool"
+        _ -> "thinking"
+      })
+    Some("tools") -> Some("running tools")
+    Some("starting") -> Some("starting")
+    Some("checkpoint") -> Some("checkpointing")
+    Some("compacting") -> Some("compacting")
+    Some("awaiting_deferred") -> Some("waiting")
+    Some("failure_drain") -> Some("finishing failure")
+    Some("cancel_requested") -> Some("stopping")
+    Some(phase) -> Some(text_hygiene.single_line(phase))
+  }
+}
+
+fn active_stream_kind(model: Model) -> Option(String) {
+  model.streams
+  |> list.reverse
+  |> list.find(fn(stream) {
+    let Stream(strand:, ..) = stream
+    strand == model.active_strand
+  })
+  |> result.map(fn(stream) {
+    let Stream(kind:, ..) = stream
+    kind
+  })
+  |> result.map(Some)
+  |> result.unwrap(None)
+}
+
+fn render_paste_chip(
+  buf: buffer.Buffer,
+  area: Rect,
+  attachments: List(composer.Attachment),
+) -> buffer.Buffer {
+  case composer.summary(attachments), area.size.width > 0 {
+    Some(summary), True ->
+      paragraph.render_styled(buf, area, [
+        span.line_new([
+          span.span_styled("[" <> summary <> "]", theme.signal_bold()),
+          span.span_plain(" "),
+        ]),
+      ])
+    _, _ -> buf
   }
 }
 
@@ -826,6 +943,13 @@ fn assistant_block_lines(
 ///
 /// This is internal because the shape belongs to the transcript projection;
 /// it is public only so the executed-program display law can be pinned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let arguments = json.Object([#("program", json.String("pub fn main() {}"))])
+/// let assert Some(source) = tui_gleam.code_mode_program("code_mode", arguments, True)
+/// ```
 @internal
 pub fn code_mode_program(
   name: String,
@@ -944,13 +1068,8 @@ fn update_model_selector(
 fn update_main_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open {
     keys.Ctrl("g"), _ -> toggle_details(model)
-    keys.Tab, False -> {
-      let visible = !model.agent_rail_visible
-      Model(..model, agent_rail_visible: visible, notice: case visible {
-        True -> "agent rail shown"
-        False -> "agent rail hidden"
-      })
-    }
+    keys.Tab, False -> toggle_submission_mode(model)
+    keys.BackTab, False -> toggle_agent_rail(model)
     keys.PageUp, False -> scroll_transcript(model, True, 10)
     keys.PageDown, False -> scroll_transcript(model, False, 10)
     keys.Escape, True -> Model(..model, help_open: False, notice: "help closed")
@@ -1002,6 +1121,13 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
 ///
 /// This is internal because transcript offsets belong to the terminal model;
 /// it is public only so the input law can be pinned without running a PTY.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui_gleam.scroll_offset(3, False, 10) == 0
+/// assert tui_gleam.scroll_offset(3, True, 10) == 13
+/// ```
 @internal
 pub fn scroll_offset(offset: Int, older: Bool, rows: Int) -> Int {
   case older {
@@ -1014,7 +1140,8 @@ fn submit(model: Model) -> Model {
   let input = text_area.value(model.input)
   let expanded = composer.expand(input, model.attachments)
   let cleared = Model(..model, input: text_area.state_new())
-  let prompt_cleared = Model(..cleared, attachments: [])
+  let prompt_cleared =
+    Model(..cleared, attachments: [], submission_mode: SteerNow)
   case command.parse(input) {
     command.Empty ->
       case model.attachments {
@@ -1082,10 +1209,22 @@ fn submit(model: Model) -> Model {
         append_system(cleared, "abort queued for " <> cleared.active_strand),
         protocol.abort(cleared.next_id, cleared.active_strand),
       )
+    command.Steer(text) ->
+      send_steer(prompt_cleared, composer.expand(text, model.attachments))
+    command.Queue(text) ->
+      send_follow_up(prompt_cleared, composer.expand(text, model.attachments))
     command.Unknown(name) -> append_error(cleared, "unknown command /" <> name)
     command.MissingArgument(name) ->
       append_error(cleared, "/" <> name <> " needs an argument")
-    command.Prompt(_) -> send_prompt(prompt_cleared, expanded)
+    command.Prompt(_) -> send_user_text(prompt_cleared, expanded, model)
+  }
+}
+
+fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
+  case active_strand_live(before), before.submission_mode {
+    False, _ -> send_prompt(cleared, text)
+    True, SteerNow -> send_steer(cleared, text)
+    True, QueueAfter -> send_follow_up(cleared, text)
   }
 }
 
@@ -1106,6 +1245,58 @@ fn send_prompt(model: Model, text: String) -> Model {
         notice: "prompt accepted",
       )
   }
+}
+
+fn send_steer(model: Model, text: String) -> Model {
+  send_frame(
+    Model(..model, notice: "steered " <> model.active_strand),
+    protocol.steer(model.next_id, model.active_strand, text),
+  )
+}
+
+fn send_follow_up(model: Model, text: String) -> Model {
+  send_frame(
+    Model(..model, notice: "queued after " <> model.active_strand),
+    protocol.follow_up(model.next_id, model.active_strand, text),
+  )
+}
+
+fn toggle_submission_mode(model: Model) -> Model {
+  case active_strand_live(model), model.submission_mode {
+    False, _ -> Model(..model, notice: "queue is available while an agent runs")
+    True, SteerNow ->
+      Model(..model, submission_mode: QueueAfter, notice: "queue message")
+    True, QueueAfter ->
+      Model(..model, submission_mode: SteerNow, notice: "steer now")
+  }
+}
+
+fn toggle_agent_rail(model: Model) -> Model {
+  let visible = !model.agent_rail_visible
+  Model(..model, agent_rail_visible: visible, notice: case visible {
+    True -> "agent rail shown"
+    False -> "agent rail hidden"
+  })
+}
+
+fn active_strand_live(model: Model) -> Bool {
+  case active_strand_phase(model) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+fn active_strand_phase(model: Model) -> Option(String) {
+  model.strands
+  |> list.find_map(fn(strand) {
+    let Strand(id:, live_phase:, ..) = strand
+    case id == model.active_strand, live_phase {
+      True, Some(phase) -> Ok(phase)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> result.map(Some)
+  |> result.unwrap(None)
 }
 
 fn toggle_details(model: Model) -> Model {

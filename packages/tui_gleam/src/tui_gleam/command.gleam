@@ -14,7 +14,10 @@ pub type Command {
   /// Show the model catalogue.
   Models
   /// Switch the active strand to one catalogue model by name.
-  Model(name: String)
+  Model(
+    /// The stable catalogue name selected by the operator.
+    name: String,
+  )
   /// Show the strand list.
   Strands
   /// Inspect the session's agents and sub-agents.
@@ -22,23 +25,48 @@ pub type Command {
   /// Toggle expanded reasoning and tool detail.
   Details
   /// Switch the active strand by name.
-  Strand(name: String)
+  Strand(
+    /// The stable strand name to make active.
+    name: String,
+  )
   /// Fork the active strand.
-  Fork(name: String)
+  Fork(
+    /// The operator-facing name for the new branch strand.
+    name: String,
+  )
   /// Compact the active strand.
   Compact
   /// Abort the active strand's live operation.
   Abort
+  /// Inject text into the active strand's live operation.
+  Steer(
+    /// The instruction that must affect the in-flight turn.
+    text: String,
+  )
+  /// Queue text to run after the active strand's live operation.
+  Queue(
+    /// The instruction that must wait for the in-flight turn to settle.
+    text: String,
+  )
   /// Clear only this client's rendered transcript.
   Clear
   /// Leave the client.
   Quit
   /// Send ordinary text as a prompt.
-  Prompt(text: String)
+  Prompt(
+    /// The user-authored prompt text.
+    text: String,
+  )
   /// A slash command the client does not know.
-  Unknown(name: String)
+  Unknown(
+    /// The first slash-prefixed word that was not recognized.
+    name: String,
+  )
   /// A known command whose required argument is absent.
-  MissingArgument(name: String)
+  MissingArgument(
+    /// The command name whose argument is missing.
+    name: String,
+  )
   /// Ignore an empty submission.
   Empty
 }
@@ -70,6 +98,8 @@ pub fn parse(input: String) -> Command {
     "/details" -> Details
     "/compact" -> Compact
     "/abort" -> Abort
+    "/steer" -> MissingArgument("steer")
+    "/queue" -> MissingArgument("queue")
     "/clear" -> Clear
     "/quit" -> Quit
     "/strand" -> MissingArgument("strand")
@@ -77,6 +107,8 @@ pub fn parse(input: String) -> Command {
     "/model " <> rest -> required_argument("model", rest, Model)
     "/strand " <> rest -> required_argument("strand", rest, Strand)
     "/fork " <> rest -> required_argument("fork", rest, Fork)
+    "/steer " <> rest -> required_argument("steer", rest, Steer)
+    "/queue " <> rest -> required_argument("queue", rest, Queue)
     "/" <> rest -> Unknown(command_name(rest))
     text -> Prompt(text)
   }
@@ -108,6 +140,12 @@ fn result_or(value: Result(a, Nil), fallback: a) -> a {
 }
 
 /// The command reference rendered by `/help`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert command.help_text() |> string.contains("/model")
+/// ```
 pub fn help_text() -> String {
   "/help             show this command reference\n"
   <> "/model            open the model selector\n"
@@ -119,6 +157,8 @@ pub fn help_text() -> String {
   <> "/fork <name>      fork the active strand\n"
   <> "/compact          compact the active strand\n"
   <> "/abort            abort the live operation\n"
+  <> "/steer <text>     inject into the live operation\n"
+  <> "/queue <text>     run after the live operation\n"
   <> "/clear            clear this local transcript\n"
   <> "/quit             leave the client"
 }
