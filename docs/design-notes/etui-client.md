@@ -112,7 +112,10 @@ Once Mork identifies a fenced Gleam block, a small presentation-only scanner
 styles keywords, types, strings, numbers, comments, and punctuation. It emits
 the same text as separate spans rather than formatting or validating it. A
 model's indentation and syntax therefore remain visible evidence, including
-when they are wrong.
+when they are wrong. Preformatted rows bypass etui's prose word wrapper,
+because that wrapper intentionally collapses leading separators. Structured
+`code_mode.program` arguments use the same fenced renderer: twelve source rows
+in the quiet view and the full program when detail is expanded.
 
 Model text is normalized before parsing. C0 and C1 controls, DEL, bidi
 formatting controls, zero-width formatters, variation selectors, BOM, and tag

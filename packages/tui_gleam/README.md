@@ -124,6 +124,12 @@ line into styled spans without rewriting its text, so indentation and invalid
 syntax remain exactly as the model emitted them. Other fenced languages retain
 the code-rail treatment without pretending that Loom has parsed them.
 
+A structured `code_mode` call takes this same path: the `program` field is
+shown as fenced Gleam rather than escaped JSON. The normal view bounds long
+programs to twelve source rows, while `/details` reveals the full call. Code
+rows bypass etui's prose word wrapper so leading indentation survives the
+terminal projection.
+
 There is no HTML render-and-reparse step and no ANSI intermediate. Raw HTML is
 shown as quiet text, not interpreted. Links retain an OSC 8 destination through
 etui's own span field, while model-authored escape bytes cannot become terminal

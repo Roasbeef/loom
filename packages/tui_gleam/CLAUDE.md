@@ -24,7 +24,9 @@ reconnect portions of the existing client's contract.
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
 - `tui_gleam/markdown` walks Mork's public CommonMark tree and emits etui
-  spans directly. It never passes model text through HTML or an ANSI renderer.
+  spans directly. Preformatted rows bypass prose wrapping so source
+  indentation remains visible. It never passes model text through HTML or an
+  ANSI renderer.
 - `tui_gleam/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
@@ -71,6 +73,10 @@ reconnect portions of the existing client's contract.
   etui styles and OSC 8 links. Fenced Gleam token styling preserves the exact
   model-authored text; it never acts as a formatter or compiler. No raw
   model-authored ANSI or HTML is executed.
+- **Executed programs stay inspectable.** A structured `code_mode.program`
+  renders through the fenced Gleam path instead of appearing as escaped JSON.
+  The normal view bounds long programs to twelve rows; detail mode reveals the
+  whole source.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
   prompt editing is inert. `Ctrl+C` remains global so every overlay can be
   escaped by terminating the client.

@@ -78,7 +78,7 @@ replace repeated role names, Page Up/Page Down and the mouse wheel share a
 tail-relative transcript viewport, and fenced Gleam blocks gain token contrast
 without rewriting model-authored text.
 
-The package's warning-free build and 16 tests pass, its R0-R8 lint census is
+The package's warning-free build and 18 tests pass, its R0-R8 lint census is
 zero, and the doc graph recognizes its mirrored package docs. The measured
 compatibility cost remains: etui needs Gleam 1.16+, and Mork's Erlang path needs
 OTP 28+, above Loom's advertised OTP 27 floor. It is therefore absent from the
@@ -93,6 +93,14 @@ compilation because address-space and process-count rlimits plus descendant
 lifecycle enforcement were incomplete. The client/provider route is therefore
 live, but that run is not a successful combined eTUI-to-jailed-tool terminal
 proof.
+
+An explicit `--best-effort` control run did complete that combined path. K3
+emitted one `code_mode` call, the native client rendered its structured program
+as fenced Gleam, and the satellite returned `code mode live`. Both the
+hermetic-build and satellite reports enforced Seatbelt filesystem/network plus
+file-size and CPU rlimits; both reported only the documented Darwin
+address-space, process-count, and descendant-lifecycle gaps. This is evidence
+for the route and presentation, not permission to weaken the default policy.
 
 Before adoption, implement protocol-change/007 approval with exact action and
 grant echo, then sparse-sequence reconnect/catch-up behavior. After those gates
