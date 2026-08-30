@@ -81,10 +81,13 @@
 ////
 //// ## The system prompt
 ////
-//// Assembled once, at the first open of a session, and pinned into the
-//// reserved `prompt/` blackboard cell; every later boot sends the pinned
-//// bytes rather than deriving them again. `client/system_prompt` owns
-//// the whole story, including why re-deriving would be expensive. Two
+//// Assembled at the first open of a session and pinned into the reserved
+//// `prompt/` blackboard cells; later boots send the pinned bytes rather
+//// than deriving them again while the enforcement demand is unchanged.
+//// Changing that demand deliberately re-renders and re-pins once, because
+//// a byte-stable prompt that describes a stronger sandbox than the broker
+//// demands would be a lie. `client/system_prompt` owns the whole story,
+//// including why every other re-derivation would be expensive. Two
 //// environment variables reach it:
 ////
 //// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
@@ -1403,9 +1406,12 @@ fn assemble(
   ])
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
-  // cell is therefore read straight off the store here — legal, nothing
-  // owns it yet — and written back through the writer after the open.
-  use pinned <- result.try(system_prompt.pinned_in(opened))
+  // cells are therefore read straight off the store here — legal, nothing
+  // owns them yet — and written back through the writer after the open.
+  // The enforcement identity participates in that read: a changed or
+  // legacy identity returns no reusable pin and deliberately buys one
+  // truthful render.
+  use pinned <- result.try(system_prompt.pinned_for(opened, settings.demand))
   use assembled <- result.try(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
       render_prompt(settings, base_policy, pool, tool.names(tool_registry))
@@ -1533,10 +1539,14 @@ fn assemble(
     }),
   )
   // The writer exists now, so the other half of the pin can land: the
-  // bytes every strand of this session will send, recorded durably so the
-  // next boot reads them rather than deriving them again from inputs that
-  // may have moved.
-  use Nil <- result.try(system_prompt.pin(runtime, assembled))
+  // bytes every strand of this session will send and the enforcement
+  // demand they describe, recorded durably so an unchanged next boot reads
+  // them rather than deriving them again from inputs that may have moved.
+  use Nil <- result.try(system_prompt.pin_for(
+    runtime,
+    assembled,
+    settings.demand,
+  ))
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller

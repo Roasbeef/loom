@@ -19,7 +19,10 @@
 //// *sources* of those inputs are not: the agent may edit `CLAUDE.md`, the
 //// host's kernel may change under a restart, a flag may differ. So the
 //// assembled string is written once and read thereafter — re-deriving it
-//// on resume is what would move the bytes.
+//// on resume is what would move the bytes. The enforcement demand is the
+//// one exception because it changes whether those bytes tell the truth: its
+//// identity is pinned beside the prompt, and a changed or legacy identity
+//// deliberately pays one new render and cache write.
 ////
 //// ## The order the pin has to survive
 ////
@@ -70,9 +73,11 @@ import session/session.{type Session}
 import simplifile
 import storage/storage
 
-/// The reserved `fact.custom` key the assembled prompt is pinned under.
-/// `api.reserved_fact_key` covers it, so no model-reachable `put_fact`
-/// can rewrite the operator's channel.
+/// The reserved `fact.custom` key the assembled prompt and its enforcement
+/// identity are pinned under. Keeping the two in one register makes their
+/// behavioural relationship atomic across a failed boot.
+/// `api.reserved_fact_key` covers it, so no model-reachable `put_fact` can
+/// rewrite the operator's channel.
 pub const system_key = "prompt/system"
 
 /// The reserved key carrying the pinned prompt's provenance — where it
@@ -493,6 +498,14 @@ fn explicit(override: Option(String)) -> Option(String) {
 
 // --- the pinned cell ------------------------------------------------------
 
+// The old release wrote the text as a bare JSON string. A bound value keeps
+// the text and the only mutable host fact that can make it untruthful in one
+// register, so no partial commit can pair one demand with another's words.
+type PinnedValue {
+  Legacy(text: String)
+  Bound(text: String, enforcement: String)
+}
+
 /// Reads the pinned prompt straight off an open session store, before
 /// any writer exists. This is the read half of the ordering constraint:
 /// `wiring.Config.system` has to hold the string before `api.open`, and
@@ -505,12 +518,47 @@ fn explicit(override: Option(String)) -> Option(String) {
 /// ```
 ///
 pub fn pinned_in(session: Session) -> Result(Option(String), String) {
+  use pinned <- result.try(pinned_value_in(session))
+  Ok(option.map(pinned, pinned_text))
+}
+
+/// Reads a pinned prompt only when it was rendered for this enforcement
+/// demand. A legacy pin has no enforcement identity and is treated like no
+/// pin, as is a pin made under a different demand: the boot re-renders once
+/// and records the current identity rather than sending stale, stronger
+/// sandbox claims to the model.
+///
+/// Corrupt identity is different from absence. It refuses the boot rather
+/// than silently replacing evidence that the harness-owned namespace was
+/// written with a shape this version never produces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.pinned_for(opened, exec.PlatformEnforcement)
+/// // == Ok(option.Some("You are an agent ..."))
+/// ```
+pub fn pinned_for(
+  session: Session,
+  demand: EnforcementDemand,
+) -> Result(Option(String), String) {
+  use pinned <- result.try(pinned_value_in(session))
+  let demand = demand_name(demand)
+  case pinned {
+    None -> Ok(None)
+    Some(Legacy(..)) -> Ok(None)
+    Some(Bound(text:, enforcement:)) if enforcement == demand -> Ok(Some(text))
+    Some(Bound(..)) -> Ok(None)
+  }
+}
+
+fn pinned_value_in(session: Session) -> Result(Option(PinnedValue), String) {
   case storage.get_register(session.store, register.FactCustom, system_key) {
     Error(error) ->
       Error("the pinned system prompt is unreadable: " <> string.inspect(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, ..))) ->
-      decode_text(value.payload)
+      decode_pinned(value.payload)
       |> result.map(Some)
       |> result.map_error(refuse_corrupt)
   }
@@ -532,14 +580,18 @@ pub fn pinned(runtime: Runtime) -> Result(Option(String), String) {
       Error("the pinned system prompt is unreadable: " <> string.inspect(error))
     Ok(None) -> Ok(None)
     Ok(Some(payload)) ->
-      decode_text(payload)
+      decode_pinned(payload)
+      |> result.map(pinned_text)
       |> result.map(Some)
       |> result.map_error(refuse_corrupt)
   }
 }
 
-/// Writes the assembled prompt and its provenance into the reserved
-/// `prompt/` cells, unless the pin already holds exactly these bytes.
+/// Writes an unbound assembled prompt and its provenance into the reserved
+/// `prompt/` cells, unless the pin already holds exactly these bytes. This is
+/// the legacy-compatible primitive used by embeddings and migration tests;
+/// production boot uses `pin_for` so enforcement identity is atomic with the
+/// text.
 /// The write goes through `api.put_reserved_fact`, so it is journaled
 /// like every other commit; the matching read happened before the open,
 /// when nothing owned the store.
@@ -564,16 +616,66 @@ pub fn pin(runtime: Runtime, assembled: Assembled) -> Result(Nil, String) {
         system_key,
         json.String(assembled.text),
       ))
-      write(
-        runtime,
-        pack_key,
-        json.Object(fields: [
-          #("origin", json.String(named(assembled.origin))),
-          #("version", json.String(assembled.version)),
-          #("digest", json.String(assembled.digest)),
-        ]),
-      )
+      write_provenance(runtime, assembled)
     }
+  }
+}
+
+/// Pins the prompt and the enforcement demand it was rendered against in one
+/// register. Production boot uses this paired form so a later boot can
+/// distinguish a byte-stable resume from an enforcement change that must
+/// re-render, without a failed write tearing identity away from text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.pin_for(runtime, assembled, exec.PlatformEnforcement)
+/// // == Ok(Nil)
+/// ```
+pub fn pin_for(
+  runtime: Runtime,
+  assembled: Assembled,
+  demand: EnforcementDemand,
+) -> Result(Nil, String) {
+  case assembled.fresh {
+    False -> Ok(Nil)
+    True -> {
+      use Nil <- result.try(write(
+        runtime,
+        system_key,
+        json.Object(fields: [
+          #("text", json.String(assembled.text)),
+          #("enforcement", json.String(demand_name(demand))),
+        ]),
+      ))
+      write_provenance(runtime, assembled)
+    }
+  }
+}
+
+// Provenance may trail the behavioural write because it is diagnostic only:
+// a failed provenance commit loses attribution, never the binding between the
+// words a model reads and the demand the broker enforces.
+fn write_provenance(
+  runtime: Runtime,
+  assembled: Assembled,
+) -> Result(Nil, String) {
+  write(
+    runtime,
+    pack_key,
+    json.Object(fields: [
+      #("origin", json.String(named(assembled.origin))),
+      #("version", json.String(assembled.version)),
+      #("digest", json.String(assembled.digest)),
+    ]),
+  )
+}
+
+fn demand_name(demand: EnforcementDemand) -> String {
+  case demand {
+    exec.FullEnforcement -> "full"
+    exec.PlatformEnforcement -> "platform"
+    exec.BestEffort -> "best-effort"
   }
 }
 
@@ -591,20 +693,62 @@ fn write(
   })
 }
 
-// The pinned cell's total decoder. The only shape ever written there is a
-// JSON string; anything else means something reached past the
-// reservation, and re-rendering over it would hide exactly the thing
-// worth seeing.
-fn decode_text(payload: JsonValue) -> Result(String, CorruptionReport) {
+// The pinned cell's total decoder accepts the old bare string and the current
+// exact two-field record. Any other shape means something reached past the
+// reservation, and re-rendering over it would hide exactly the thing worth
+// seeing.
+fn decode_pinned(payload: JsonValue) -> Result(PinnedValue, CorruptionReport) {
   case payload {
-    json.String(value:) -> Ok(value)
-    other ->
-      Error(corruption.report(
-        at: "client/system_prompt.decode_text",
-        on: system_key,
-        expected: "a JSON string holding the pinned system prompt",
-        context: string.inspect(other),
+    json.String(value:) -> Ok(Legacy(text: value))
+    json.Object(fields:) -> decode_bound(fields, payload)
+    other -> invalid_pinned(other)
+  }
+}
+
+fn decode_bound(
+  fields: List(#(String, JsonValue)),
+  payload: JsonValue,
+) -> Result(PinnedValue, CorruptionReport) {
+  case list.length(fields) == 2 {
+    False -> invalid_pinned(payload)
+    True -> {
+      use text <- result.try(pinned_string_field(fields, "text", payload))
+      use enforcement <- result.try(pinned_string_field(
+        fields,
+        "enforcement",
+        payload,
       ))
+      case enforcement {
+        "full" | "platform" | "best-effort" -> Ok(Bound(text:, enforcement:))
+        _ -> invalid_pinned(payload)
+      }
+    }
+  }
+}
+
+fn pinned_string_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  payload: JsonValue,
+) -> Result(String, CorruptionReport) {
+  case list.key_find(fields, key) {
+    Ok(json.String(value:)) -> Ok(value)
+    _ -> invalid_pinned(payload)
+  }
+}
+
+fn invalid_pinned(payload: JsonValue) -> Result(a, CorruptionReport) {
+  Error(corruption.report(
+    at: "client/system_prompt.decode_pinned",
+    on: system_key,
+    expected: "a legacy prompt string or {text, enforcement} string record",
+    context: string.inspect(payload),
+  ))
+}
+
+fn pinned_text(pinned: PinnedValue) -> String {
+  case pinned {
+    Legacy(text:) | Bound(text:, ..) -> text
   }
 }
 

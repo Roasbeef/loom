@@ -839,9 +839,11 @@ our code left in its address space.
 A helper on a kernel that cannot provide a layer does not pretend. It
 reports what it has in `hello.features` and, per execution, in an
 `enforcement` list and a `degraded` flag; the broker decides.
-`FullEnforcement` — what production passes — refuses a degraded helper at
-dispatch *and* fails any execution whose `exec_exit` reports degraded,
-because features are a promise and the exit report is a fact.
+`PlatformEnforcement` — what production passes — refuses a degraded helper at
+dispatch *and* fails any execution whose `exec_exit` omits a mandatory layer
+or reports an unexpected skip. It is identical to `FullEnforcement` on Linux;
+on Darwin it admits only ADR-006's three explicitly reported resource and
+lifecycle gaps. Features are a promise and the exit report is a fact.
 `docs/architecture/effects.md` covers the threat model, the bwrap argv
 order, why network-off is enforced at socket creation rather than at
 connect, and why cgroups rather than rlimits bound memory and process

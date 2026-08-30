@@ -572,9 +572,10 @@ over one session file. WP-L.
   result) and `op.meta`/`op.state` through the session's typed accessors
   to build snapshots and detect terminals; reads the runtime's escalation
   records under `fact.custom`'s reserved `escalation/` prefix, and the
-  assembled system prompt under the reserved `prompt/` prefix — read off
-  the session store directly before `api.open`, written back through
-  `api.put_reserved_fact` after it. The rule scanner owns the reserved
+  assembled system prompt and its enforcement identity under the reserved
+  `prompt/` prefix — read off the session store directly before `api.open`,
+  written back through `api.put_reserved_fact` after it. The rule scanner
+  owns the reserved
   `rule/` prefix: `rule/fired/<strand>/<name>` write-once marks, committed
   with the injection they authorize, and `rule/cursor/<strand>`
   checkpoints, written lazily. Every one of the scanner's *reads* goes
@@ -667,16 +668,20 @@ over one session file. WP-L.
   Neither moves the authorization line: `wiring.clear` admits a call by
   `list.contains` on this same list, and set membership is blind to
   order and multiplicity.
-- **The system prompt is assembled once, at a session's first open, and
-  pinned.** Every later boot sends the pinned bytes rather than deriving
-  them again — the agent may have edited `CLAUDE.md`, the kernel may have
-  changed under a restart, a flag may differ, and a prompt re-derived
-  from moved inputs is a full one-hour cache write on the first turn
-  after every restart. The pin lives in the reserved `prompt/` cell, so
-  no model-reachable `put_fact` can rewrite the operator's channel.
+- **The system prompt is assembled at a session's first open and pinned
+  with its enforcement demand.** Every later boot at the same demand sends
+  the pinned bytes rather than deriving them again — the agent may have
+  edited `CLAUDE.md`, the kernel may have changed under a restart, and a
+  prompt re-derived from moved inputs is a full one-hour cache write on the
+  first turn after every restart. The demand is the one deliberate cache
+  break: a changed flag or a legacy pin with no demand identity renders and
+  pins once, because keeping bytes that claim stronger enforcement than the
+  broker now demands would trade truth for cache stability. Both cells live
+  under the reserved `prompt/` prefix, so no model-reachable `put_fact` can
+  rewrite the operator's channel.
 - **The pin is read before `api.open` and written after it.**
   `wiring.Config.system` must hold the string before the open, and the
-  open is what stands the writer up — so the cell is read straight off
+  open is what stands the writer up — so the cells are read straight off
   the session store while nothing owns it, and written back through
   `api.put_reserved_fact` once there is a writer to journal it. Same knot
   as the Agency's, solved by ordering rather than by a name because the

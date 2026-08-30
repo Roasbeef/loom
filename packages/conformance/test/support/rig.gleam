@@ -116,9 +116,10 @@ pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
     // This container's helper runs degraded (no bwrap/Landlock/cgroup
     // in the dev image), so the demand must accept degraded enforcement
     // and the tests assert on the helper's honest per-exec report
-    // instead. Production sessions demand `exec.FullEnforcement`, which
-    // refuses degraded helpers at dispatch and degraded exec_exit
-    // reports at settlement (spec-gaps WP-G item 6).
+    // instead. Production sessions demand `exec.PlatformEnforcement`, which
+    // still refuses this helper at dispatch; only Darwin's exact, explicitly
+    // reported ADR-006 gaps differ from full enforcement (spec-gaps WP-G
+    // item 6).
     demand: exec.BestEffort,
     env: jail_rig.env,
     // Deliberately a little ahead of the jail's broker clock: budget

@@ -332,6 +332,43 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
   serve.shutdown(second)
 }
 
+/// The enforcement demand is part of the prompt's durable identity. A
+/// changed demand re-renders once so the prompt cannot claim a stronger
+/// sandbox than the broker requires; the next boot at that demand reuses
+/// the new bytes.
+pub fn a_changed_enforcement_demand_repins_the_system_prompt_test() {
+  let demand_root = "build/serve-test-prompt-demand"
+  let _stale = simplifile.delete(demand_root)
+  let workspace = demand_root <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+    as "the workspace must exist"
+
+  let best_effort = settings_under(demand_root)
+  let assert Ok(first) = serve.boot(best_effort)
+    as "the first boot must succeed"
+  assert first.prompt.origin == system_prompt.Shipped
+  assert string.contains(first.prompt.text, "best-effort mode")
+  let best_effort_text = first.prompt.text
+  serve.shutdown(first)
+
+  let platform = serve.Settings(..best_effort, demand: exec.PlatformEnforcement)
+  let assert Ok(second) = serve.boot(platform)
+    as "the changed demand must render a truthful replacement"
+  assert second.prompt.origin == system_prompt.Shipped
+  assert second.prompt.fresh
+  assert second.prompt.text != best_effort_text
+  assert !string.contains(second.prompt.text, "best-effort mode")
+  let platform_text = second.prompt.text
+  serve.shutdown(second)
+
+  let assert Ok(third) = serve.boot(platform)
+    as "the unchanged demand must reuse the replacement"
+  assert third.prompt.origin == system_prompt.Pinned
+  assert !third.prompt.fresh
+  assert third.prompt.text == platform_text
+  serve.shutdown(third)
+}
+
 /// `LOOM_SYSTEM_PROMPT` still bypasses the pack entirely, and beats an
 /// existing pin, because setting it is a deliberate act.
 pub fn an_explicit_override_bypasses_the_pack_test() {

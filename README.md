@@ -552,10 +552,12 @@ agents on. The sandbox is only as strong as the layers that machine
 provides, and the self-test is how you find out which ones those are —
 it prints ENFORCED or SKIPPED per probe and summarizes the two
 separately, so a green run in a neutered container cannot be mistaken for
-a verified sandbox. By default the server demands full enforcement, under
-which a kernel that cannot provide the jail layers gets its tool calls
-refused; `--best-effort` accepts a degraded helper for development
-machines.
+a verified sandbox. By default the server demands platform enforcement:
+Linux is fully strict, while Darwin admits only ADR-006's three explicitly
+reported resource and lifecycle gaps. A missing jail, an unexpected gap, or
+a silent layer still refuses the tool call. `--full-enforcement` demands the
+stronger cross-platform contract; `--best-effort` accepts broader degradation
+for development machines.
 
 The server's full configuration surface, flags first:
 

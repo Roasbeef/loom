@@ -435,6 +435,58 @@ pub fn a_pinned_prompt_reads_back_identically_twice_test() {
   let _closed = api.close(runtime)
 }
 
+pub fn an_enforcement_matched_pin_is_reused_test() {
+  let runtime = open_runtime("pin-enforcement-match")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin_for(runtime, assembled, exec.FullEnforcement)
+    == Ok(Nil)
+  let assert Ok(Some(text)) =
+    system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    as "a pin made under the same demand must be reusable"
+  assert text == assembled.text
+  let _closed = api.close(runtime)
+}
+
+pub fn a_changed_enforcement_demand_invalidates_the_pin_test() {
+  let runtime = open_runtime("pin-enforcement-change")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin_for(runtime, assembled, exec.FullEnforcement)
+    == Ok(Nil)
+  assert system_prompt.pinned_for(runtime.session, exec.PlatformEnforcement)
+    == Ok(None)
+  assert system_prompt.pinned_for(runtime.session, exec.BestEffort) == Ok(None)
+  let _closed = api.close(runtime)
+}
+
+pub fn a_legacy_pin_is_rendered_again_once_test() {
+  let runtime = open_runtime("pin-enforcement-legacy")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin(runtime, assembled) == Ok(Nil)
+  assert system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    == Ok(None)
+  let _closed = api.close(runtime)
+}
+
+pub fn a_corrupt_enforcement_identity_refuses_the_pin_test() {
+  let runtime = open_runtime("pin-enforcement-corrupt")
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      system_prompt.system_key,
+      json.Object(fields: [
+        #("text", json.String("strong words")),
+        #("enforcement", json.String("strong-ish")),
+      ]),
+    )
+    as "the invalid harness-owned identity must land"
+  let assert Error(reason) =
+    system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    as "a corrupt identity must refuse rather than silently re-render"
+  assert string.contains(reason, "pinned system prompt is corrupt")
+  assert string.contains(reason, system_prompt.system_key)
+  let _closed = api.close(runtime)
+}
+
 pub fn the_model_cannot_overwrite_the_pin_test() {
   let runtime = open_runtime("pin-reserved")
   assert system_prompt.pin(runtime, assembled_from(rendered(host()))) == Ok(Nil)

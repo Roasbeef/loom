@@ -9,7 +9,7 @@ worth more than any status comment.
 
 ---
 
-## In flight: a working platform-strict default
+## Platform-strict enforcement is the production default
 
 PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates
 `SandboxPolicyV1` into a generated,
@@ -35,12 +35,12 @@ containment.
 
 That truthful report exposed the next product bug: the production default also
 selected `FullEnforcement`, so every ordinary Darwin `code_mode` call failed
-before compilation. Branch `fix/darwin-default-enforcement` introduces
-`PlatformEnforcement`. Linux remains fully strict. Darwin requires Seatbelt,
-all enforceable rlimits, and an explicit applied-or-skipped report for every
-layer, but may admit only ADR-006's three named gaps. `--full-enforcement` keeps
-the stronger cross-platform contract and `--best-effort` remains the broad
-development override.
+before compilation. `PlatformEnforcement` is now the production default. Linux
+remains fully strict. Darwin requires Seatbelt, all enforceable rlimits, and an
+explicit applied-or-skipped report for every layer, but may admit only
+ADR-006's three named gaps. `--full-enforcement` keeps the stronger
+cross-platform contract and `--best-effort` remains the broad development
+override.
 
 The focused broker, prompt, and client gates are green. `make check` also
 passes with its own exit status, including the 208-test real code-mode suite
@@ -50,7 +50,18 @@ enforcement override, and asked K3 to run a minimal `code_mode` program. The
 durable result completed with `platform strict live`; both the build and node
 reported Seatbelt filesystem and network confinement, CPU and file-size
 rlimits, and only ADR-006's three skipped layers. The remaining exit criterion
-is the cold security review.
+was an adversarial review of the exact change.
+
+That review is complete. It found one behavioral defect before the PR: prompt
+bytes were pinned without the enforcement demand that made their sandbox claim
+true, so a resumed session could keep stronger words while booting under a
+weaker demand. `prompt/system` now stores `{text, enforcement}` atomically. A
+same-demand boot reuses the bytes; a changed demand or a legacy string pin
+renders and pins once; a malformed harness-owned record refuses the boot. The
+review also found three stale descriptions of the production default and
+corrected them. The full `make check` gate passes at the reviewed head after a
+transient Hex fetch failure on the first attempt, and `make doc-check` reports
+zero errors.
 
 ---
 
