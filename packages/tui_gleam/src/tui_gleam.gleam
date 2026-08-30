@@ -40,6 +40,7 @@ type Speaker {
   Assistant
   Reasoning
   Tool
+  ToolCode
   ToolFailure
   Failure
 }
@@ -356,9 +357,8 @@ fn render_transcript(
   // from the newest wrapped row, so new output never disappears below a
   // clipped paragraph and no widget holds a second copy of conversation data.
   let visible =
-    content
-    |> span.wrap(area.size.width)
-    |> fn(wrapped) { wrapped.lines }
+    content.lines
+    |> markdown.wrap_lines(area.size.width)
     |> list.reverse
     |> list.drop(model.scroll_offset)
     |> list.take(area.size.height)
@@ -379,11 +379,12 @@ fn render_line(line: Line) -> List(span.Line) {
     Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ reason ", theme.quiet_text())
     Tool -> #("✓ tool   ", theme.current_bold())
+    ToolCode -> #("✓ tool   ", theme.current_bold())
     ToolFailure -> #("× tool   ", theme.danger_text())
     Failure -> #("! error  ", theme.danger_text())
   }
   case line.speaker {
-    Assistant ->
+    Assistant | ToolCode ->
       markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
     System | User | Reasoning | Tool | ToolFailure | Failure ->
@@ -781,13 +782,61 @@ fn assistant_block_lines(
     message.AssistantToolCall(call:) -> {
       let message.ToolCall(name:, arguments:, ..) = call
       let rendered = json.to_string(arguments)
-      [
-        Line(Tool, case details_expanded {
-          True -> name <> "\n" <> rendered
-          False -> name <> " · " <> compact(rendered, 120)
-        }),
-      ]
+      case code_mode_program(name, arguments, details_expanded) {
+        Some(program) -> [Line(ToolCode, program)]
+        None -> [
+          Line(Tool, case details_expanded {
+            True -> name <> "\n" <> rendered
+            False -> name <> " · " <> compact(rendered, 120)
+          }),
+        ]
+      }
     }
+  }
+}
+
+/// Renders a structured code-mode call as bounded fenced Gleam.
+///
+/// This is internal because the shape belongs to the transcript projection;
+/// it is public only so the executed-program display law can be pinned.
+@internal
+pub fn code_mode_program(
+  name: String,
+  arguments: json.JsonValue,
+  details_expanded: Bool,
+) -> Option(String) {
+  case name, arguments {
+    "code_mode", json.Object(fields) ->
+      case list.key_find(fields, "program") {
+        Ok(json.String(program)) -> {
+          let source = case details_expanded {
+            True -> program
+            False -> program_preview(program, 12)
+          }
+          Some(fenced_gleam(source))
+        }
+        Ok(_) | Error(Nil) -> None
+      }
+    _, _ -> None
+  }
+}
+
+fn fenced_gleam(source: String) -> String {
+  case string.ends_with(source, "\n") {
+    True -> "```gleam\n" <> source <> "```"
+    False -> "```gleam\n" <> source <> "\n```"
+  }
+}
+
+fn program_preview(program: String, limit: Int) -> String {
+  let lines = string.split(program, "\n")
+  case list.drop(lines, limit) {
+    [] -> program
+    _ ->
+      lines
+      |> list.take(limit)
+      |> list.append(["// …"])
+      |> string.join("\n")
   }
 }
 

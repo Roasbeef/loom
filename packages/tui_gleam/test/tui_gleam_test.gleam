@@ -1,4 +1,7 @@
+import core/json
 import etui/keys
+import gleam/option.{Some}
+import gleam/string
 import gleeunit
 import tui_gleam
 import tui_gleam/command
@@ -63,4 +66,41 @@ pub fn transcript_scroll_clamps_at_the_live_tail_test() {
   assert tui_gleam.scroll_offset(12, True, 3) == 15
   assert tui_gleam.scroll_offset(12, False, 3) == 9
   assert tui_gleam.scroll_offset(2, False, 3) == 0
+}
+
+pub fn code_mode_program_renders_as_gleam_test() {
+  let arguments =
+    json.Object([
+      #(
+        "program",
+        json.String(
+          "import cap/report\n\npub fn main() {\n  report.text(\"live\")\n}",
+        ),
+      ),
+    ])
+
+  assert tui_gleam.code_mode_program("code_mode", arguments, False)
+    == Some(
+      "```gleam\nimport cap/report\n\npub fn main() {\n  report.text(\"live\")\n}\n```",
+    )
+}
+
+pub fn code_mode_program_preview_is_bounded_test() {
+  let arguments =
+    json.Object([
+      #(
+        "program",
+        json.String(
+          "line-01\nline-02\nline-03\nline-04\nline-05\nline-06\nline-07\nline-08\nline-09\nline-10\nline-11\nline-12\nline-13",
+        ),
+      ),
+    ])
+  let assert Some(collapsed) =
+    tui_gleam.code_mode_program("code_mode", arguments, False)
+  let assert Some(expanded) =
+    tui_gleam.code_mode_program("code_mode", arguments, True)
+
+  assert !string.contains(collapsed, "line-13")
+  assert string.contains(collapsed, "// …")
+  assert string.contains(expanded, "line-13")
 }

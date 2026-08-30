@@ -26,6 +26,7 @@ pub fn gleam_code_distinguishes_tokens_without_changing_text_test() {
     markdown.render(
       "```gleam\npub fn main() -> report.Outcome {\n  // exact bytes\n  report.text(\"live\")\n}\n```",
     )
+    |> markdown.wrap_lines(80)
   let spans =
     list.flat_map(rendered, fn(line) {
       let span.Line(spans:, ..) = line

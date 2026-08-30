@@ -72,6 +72,33 @@ pub fn render(markdown: String) -> List(span.Line) {
   list.flat_map(blocks, render_block(document, _))
 }
 
+/// Wraps flowing Markdown while preserving preformatted code rows.
+///
+/// Etui's word wrapper intentionally discards leading separators. Code rows
+/// bypass it so indentation remains visible; the terminal renderer clips a
+/// source row that is wider than the available cells.
+@internal
+pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
+  case width <= 0 {
+    True -> []
+    False ->
+      list.flat_map(lines, fn(line) {
+        case is_code_row(line) {
+          True -> [line]
+          False -> span.wrap_line(line, width)
+        }
+      })
+  }
+}
+
+fn is_code_row(line: span.Line) -> Bool {
+  let span.Line(spans:, ..) = line
+  list.any(spans, fn(value) {
+    let span.Span(content:, style:, ..) = value
+    content == "│ " && style == theme.signal_bold()
+  })
+}
+
 fn render_block(document: Document, block: Block) -> List(span.Line) {
   case block {
     Heading(level:, inlines:, ..) ->
