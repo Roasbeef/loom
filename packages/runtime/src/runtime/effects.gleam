@@ -107,7 +107,8 @@ pub type ProviderSurface {
 /// publication.
 ///
 /// Production composition must use `PreparedProviderSurface`. The legacy
-/// variant exists for immediate test surfaces which own no asynchronous work.
+/// variant exists for immediate test surfaces which own no external work; a
+/// fixture may still use a self-reaping in-memory owner to model cancellation.
 ///
 /// ## Examples
 ///

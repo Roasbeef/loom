@@ -68,9 +68,10 @@ extended by the M3 runtime wave.
   reaper claims through `runtime/internal/drain_registry` so a name-registry
   restart cannot erase ownership barriers.
 - `runtime/internal/drain_registry.Message` — the session-local actor owning
-  each logical strand's complete live reaper chain. It precedes the restartable
-  registry and is a significant temporary child: its own death stops the
-  session tree instead of starting an empty ownership history.
+  each logical strand's complete unadjudicated reaper chain. It precedes the
+  restartable registry and is a significant temporary child: only a normal
+  reaper `Down` retires a generation, while an abnormal `Down` kills the ledger
+  and stops the session instead of inventing an empty ownership history.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
@@ -213,7 +214,8 @@ extended by the M3 runtime wave.
     `runtime/api` when it rings a doorbell or addresses a sibling strand.
   - `runtime/internal/drain_registry.Message` (call):
     `Claim(strand, reaper, reply_with)` atomically publishes the new
-    incarnation and returns every still-live predecessor. Sender:
+    incarnation and returns every predecessor whose original monitor has not
+    proved normal drain. Sender:
     `runtime/strand_runtime` during initialization through the closure the
     supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
@@ -299,11 +301,14 @@ extended by the M3 runtime wave.
   response. Production surfaces return a `PreparedStream`: the worker
   publishes its parked owner to the reaper before granting the begin permit,
   so a rejected publication cannot leave unowned provider work. Immediate
-  `ProviderSurface` values remain only for in-memory fakes with no asynchronous
-  descendants. The custodian is unlinked and survives both long enough to drain
-  their adopted descendants. The separate drain ledger remembers every
-  still-live reaper for the strand, and a replacement waits for them before
-  starting recovery. `SessionTree` retains the ledger's stable name, so
+  `ProviderSurface` values remain only for in-memory fakes with no external
+  work; they may still carry self-reaping owners to model cancellation. The
+  custodian is unlinked and survives both long enough to drain their adopted
+  descendants. The separate drain ledger remembers every unadjudicated reaper
+  for the strand, and a replacement waits for them before starting recovery.
+  A provider owner or reaper must exit normally to discharge its obligation;
+  killed, abnormal, and late `noproc` observations fail closed. `SessionTree`
+  retains the ledger's stable name, so
   `shutdown` waits it independently even when the root supervisor was killed
   abnormally. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.

@@ -1457,7 +1457,10 @@ fn reap(
         False -> reap(driver, commands, effect_departed(effects, pid))
       }
     OwnedStreamDown(down) ->
-      reap(driver, commands, provider_owner_departed(effects, down))
+      case provider_owner_departed(effects, down) {
+        Ok(effects) -> reap(driver, commands, effects)
+        Error(Nil) -> process.kill(process.self())
+      }
   }
 }
 
@@ -1500,7 +1503,10 @@ fn await_drain(
         LinkedExit(process.ExitMessage(pid:, reason: _)) ->
           await_drain(commands, effect_departed(effects, pid))
         OwnedStreamDown(down) ->
-          await_drain(commands, provider_owner_departed(effects, down))
+          case provider_owner_departed(effects, down) {
+            Ok(effects) -> await_drain(commands, effects)
+            Error(Nil) -> process.kill(process.self())
+          }
       }
     }
   }
@@ -1533,13 +1539,10 @@ fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
     None -> ProviderDrained
     Some(owner) -> {
       let monitor = process.monitor(owner)
-      case process.is_alive(owner) {
-        True -> ProviderWatching(handle:, monitor:)
-        False -> {
-          process.demonitor_process(monitor)
-          ProviderDrained
-        }
-      }
+      // Even an already-dead owner remains unadjudicated until this original
+      // monitor supplies its reason. An is_alive pre-filter would collapse a
+      // lost witness into the same state as a normal drain.
+      ProviderWatching(handle:, monitor:)
     }
   }
 }
@@ -1568,20 +1571,24 @@ fn effect_departed(
 fn provider_owner_departed(
   effects: List(AdoptedEffect),
   down: process.Down,
-) -> List(AdoptedEffect) {
+) -> Result(List(AdoptedEffect), Nil) {
   case down {
-    process.PortDown(..) -> effects
-    process.ProcessDown(monitor:, ..) ->
-      list.filter_map(effects, fn(effect) {
-        case effect.provider {
-          ProviderWatching(monitor: watched, ..) if watched == monitor ->
-            case effect.exited {
-              True -> Error(Nil)
-              False -> Ok(AdoptedEffect(..effect, provider: ProviderDrained))
-            }
-          _ -> Ok(effect)
-        }
-      })
+    process.PortDown(..) -> Ok(effects)
+    process.ProcessDown(reason: process.Killed, ..)
+    | process.ProcessDown(reason: process.Abnormal(_), ..) -> Error(Nil)
+    process.ProcessDown(monitor:, reason: process.Normal, ..) ->
+      Ok(
+        list.filter_map(effects, fn(effect) {
+          case effect.provider {
+            ProviderWatching(monitor: watched, ..) if watched == monitor ->
+              case effect.exited {
+                True -> Error(Nil)
+                False -> Ok(AdoptedEffect(..effect, provider: ProviderDrained))
+              }
+            _ -> Ok(effect)
+          }
+        }),
+      )
   }
 }
 
@@ -1591,15 +1598,17 @@ fn await_previous_reapers(
 ) -> Result(Nil, String) {
   list.try_each(previous, fn(reaper) {
     let monitor = process.monitor(reaper)
-    let drained =
+    let down =
       process.new_selector()
-      |> process.select_specific_monitor(monitor, fn(_down) { True })
+      |> process.select_specific_monitor(monitor, fn(down) { down })
       |> process.selector_receive(within_ms)
-      |> result.unwrap(False)
     process.demonitor_process(monitor)
-    case drained {
-      True -> Ok(Nil)
-      False -> Error("the previous effect generation did not drain")
+    case down {
+      Ok(process.ProcessDown(reason: process.Normal, ..)) -> Ok(Nil)
+      Ok(process.ProcessDown(reason: process.Killed, ..))
+      | Ok(process.ProcessDown(reason: process.Abnormal(_), ..))
+      | Ok(process.PortDown(..))
+      | Error(Nil) -> Error("the previous effect generation did not drain")
     }
   })
 }

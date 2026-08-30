@@ -148,6 +148,50 @@ pub fn provider_timeout_cancels_before_settling_test() {
   process.kill(rt.tree.supervisor)
 }
 
+/// A provider owner which dies before publication has not proved drain. The
+/// late monitor can observe only `noproc`, so the safe outcome is to poison the
+/// reaper and stop the session rather than admit recovery beside unknown work.
+pub fn dead_provider_owner_fails_session_closed_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let _requested = recorder.bump(rec, "dead-owner-requested")
+        let stopped = process.new_subject()
+        let owner =
+          process.spawn_unlinked(fn() {
+            process.send(stopped, Nil)
+            process.kill(process.self())
+          })
+        let assert Ok(Nil) = process.receive(stopped, within: 1000)
+        process.sleep(5)
+        stream.owned(events: process.new_subject(), owner:, cancel: fn() { Nil })
+      }),
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+  let root_monitor = process.monitor(rt.tree.supervisor)
+  let assert Ok(_op) = api.prompt(rt, [fake.user("lose the owner")])
+
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(root_monitor, fn(_down) { True })
+    |> process.selector_receive(5000)
+    as "unknown provider ownership must stop the session"
+  assert recorder.read(rec, "dead-owner-requested") == 1
+}
+
 /// The parked request worker is an ownership boundary, not a new failure
 /// domain. If the injected provider crashes that worker unexpectedly, the
 /// linked effect must fault as it did before the boundary existed; recovery

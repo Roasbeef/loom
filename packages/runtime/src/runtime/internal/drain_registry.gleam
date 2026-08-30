@@ -33,7 +33,7 @@ import gleam/result
 pub opaque type Message {
   /// Atomically publishes a new reaper and returns its live predecessors.
   Claim(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
-  /// Removes a reaper after its monitor proves that generation drained.
+  /// Adjudicates whether a reaper proved drain or destroyed its proof.
   ReaperDown(process.Down)
   /// Begins root shutdown without discarding any still-live generation.
   ParentExit(process.ExitMessage)
@@ -95,22 +95,27 @@ pub fn supervised(name: Name(Message)) -> ChildSpecification(Subject(Message)) {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Claim(strand:, reaper:, reply_with:) -> {
-      let previous =
-        dict.get(state.chains, strand)
-        |> result.unwrap([])
-        |> list.filter(process.is_alive)
+      // The ledger's original monitor owns the exit reason. Filtering by
+      // is_alive here would turn a dead-but-unadjudicated reaper into an empty
+      // predecessor set and let recovery overtake its still-draining children.
+      let previous = dict.get(state.chains, strand) |> result.unwrap([])
       process.send(reply_with, previous)
-      let chains = case process.is_alive(reaper) {
-        True -> {
-          let _monitor = process.monitor(reaper)
-          dict.insert(state.chains, strand, [reaper, ..previous])
-        }
-        False -> dict.insert(state.chains, strand, previous)
-      }
+      let _monitor = process.monitor(reaper)
+      let chains = dict.insert(state.chains, strand, [reaper, ..previous])
       continue_or_stop(State(..state, chains:))
     }
-    ReaperDown(process.ProcessDown(pid:, ..)) ->
+    ReaperDown(process.ProcessDown(pid:, reason: process.Normal, ..)) ->
       continue_or_stop(State(..state, chains: forget(state.chains, pid)))
+    ReaperDown(process.ProcessDown(reason: process.Killed, ..))
+    | ReaperDown(process.ProcessDown(reason: process.Abnormal(_), ..)) -> {
+      // No replacement process can reconstruct the killed reaper's ownership
+      // set. This actor traps its supervisor's exit, so actor.stop_abnormal
+      // would trap its own reason and then return normally. An untrappable
+      // kill preserves the outward failure fact: the significant child stops
+      // the session and close cannot release the lease.
+      process.kill(process.self())
+      actor.stop()
+    }
     ReaperDown(process.PortDown(..)) -> actor.continue(state)
     ParentExit(_exit) -> continue_or_stop(State(..state, closing: True))
   }
@@ -126,18 +131,22 @@ fn forget(
 }
 
 fn continue_or_stop(state: State) -> actor.Next(State, Message) {
+  // Entries remain authoritative until their original monitor supplies a
+  // Normal Down. A dead PID still present here is pending adjudication, not an
+  // empty generation.
   let reapers_remain =
     dict.values(state.chains)
-    |> list.any(fn(reapers) { list.any(reapers, process.is_alive) })
+    |> list.any(fn(reapers) { !list.is_empty(reapers) })
   case state.closing && !reapers_remain {
     True -> actor.stop()
     False -> actor.continue(state)
   }
 }
 
-/// Publishes one incarnation's reaper and returns every predecessor that is
-/// still alive. The publish and read are one actor turn, so two replacements
-/// cannot both mistake themselves for the only generation.
+/// Publishes one incarnation's reaper and returns every predecessor whose
+/// original monitor has not yet proved normal drain. The publish and read are
+/// one actor turn, so two replacements cannot both mistake themselves for the
+/// only generation.
 ///
 /// The caller must monitor and await every returned PID before dispatching
 /// recovered effects. The new reaper is recorded before this function returns.
