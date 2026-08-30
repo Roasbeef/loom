@@ -98,8 +98,6 @@ pub const summary_text = "[summary] the conversation so far"
 /// timeout fault reaches it.
 pub const provider_timeout_ms = 60
 
-const intervention_admission_attempts = 100
-
 const intervention_retry_delay_ms = 5
 
 /// Builds the effect surface. `raw` is the *uninstrumented* session,
@@ -951,24 +949,9 @@ fn apply_on(
   let claimed = claim_interventions(ctl, due)
   case claimed, awaited {
     [], _ -> Nil
-    [_, ..], True ->
-      admit_claimed(
-        ctl,
-        raw,
-        runtime,
-        claimed,
-        attempts: intervention_admission_attempts,
-      )
+    [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed)
     [_, ..], False ->
-      control.detached(fn() {
-        admit_claimed(
-          ctl,
-          raw,
-          runtime,
-          claimed,
-          attempts: intervention_admission_attempts,
-        )
-      })
+      control.detached(fn() { admit_claimed(ctl, raw, runtime, claimed) })
   }
 }
 
@@ -1004,7 +987,6 @@ fn admit_claimed(
   raw: Session,
   runtime: api.Runtime,
   claimed: List(script.Intervention),
-  attempts attempts: Int,
 ) -> Nil {
   let action = fn() {
     list.map(claimed, fn(intervention) {
@@ -1015,14 +997,16 @@ fn admit_claimed(
     control.Answered(outcomes) -> settle_answered(ctl, raw, outcomes)
     control.Raised | control.Expired -> {
       let unresolved = settle_durable(ctl, raw, claimed)
-      case unresolved, attempts > 1 {
+      case unresolved, process.is_alive(runtime.tree.supervisor) {
         [], _ -> Nil
         [_, ..], True -> {
           // A reply-losing crash can be followed by a full rest-for-one tree
-          // rebuild. The runner owns this carrier, so retry across that bounded
-          // recovery window instead of spending a five-step scheduler race.
+          // rebuild. The root supervisor is the readiness boundary: while it
+          // lives, its permanent writer must either return or make the root
+          // fail. Retry until one of those process facts occurs rather than
+          // spending a wall-clock budget whose result depends on runner load.
           process.sleep(intervention_retry_delay_ms)
-          admit_claimed(ctl, raw, runtime, unresolved, attempts: attempts - 1)
+          admit_claimed(ctl, raw, runtime, unresolved)
         }
         [_, ..], False -> control.mark(ctl, "admission-unobserved")
       }
