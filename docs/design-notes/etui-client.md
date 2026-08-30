@@ -70,7 +70,10 @@ and Charm's Crush rather than presenting every record at equal weight:
 - reasoning is a dim summary row by default;
 - tool calls and results are compact state rows with bounded previews;
 - `Ctrl+G` or `/details` reveals the full durable reasoning and tool text;
-- Page Up and Page Down move through a tail-following transcript viewport.
+- Page Up, Page Down, and the mouse wheel move through one tail-following
+  transcript viewport;
+- compact marks distinguish operator and assistant rows without repeating
+  role or product names beside every message.
 
 This keeps the normal reading path quiet. Detail remains reachable without
 making a long tool result the visual center of the session.
@@ -104,6 +107,12 @@ Mork 1.12.1 owns CommonMark parsing. The adapter walks its public `Document`
 tree and emits styled etui lines for headings, paragraphs, emphasis, strong
 text, code, lists, links, images, quotes, tables, thematic breaks, and hard
 breaks. Links retain OSC 8 destinations where the terminal supports them.
+
+Once Mork identifies a fenced Gleam block, a small presentation-only scanner
+styles keywords, types, strings, numbers, comments, and punctuation. It emits
+the same text as separate spans rather than formatting or validating it. A
+model's indentation and syntax therefore remain visible evidence, including
+when they are wrong.
 
 Model text is normalized before parsing. C0 and C1 controls, DEL, bidi
 formatting controls, zero-width formatters, variation selectors, BOM, and tag

@@ -72,8 +72,10 @@ sequenceDiagram
 
 Reasoning and tool material stay subordinate to the answer. The normal view
 uses one dim, bounded preview row for each; `Ctrl+G` or `/details` reveals the
-full durable content. Page Up and Page Down move backward and forward through
-the wrapped transcript while the default position follows its newest row.
+full durable content. Page Up, Page Down, and the mouse wheel move backward and
+forward through the wrapped transcript while the default position follows its
+newest row. Speaker identity uses compact marks rather than repeating product
+and role names beside every message.
 
 ## Commands are part of the visible language
 
@@ -115,6 +117,12 @@ formatters, variation selectors, and tag characters with a visible replacement
 glyph. Newlines survive only in the multiline path used by the block parser.
 Then Mork parses the safe text into its public `Document` tree, and the adapter
 maps that tree to etui lines and styles.
+
+Fenced Gleam blocks receive lightweight token highlighting after Mork has
+identified the block and its language. The highlighter splits the original
+line into styled spans without rewriting its text, so indentation and invalid
+syntax remain exactly as the model emitted them. Other fenced languages retain
+the code-rail treatment without pretending that Loom has parsed them.
 
 There is no HTML render-and-reparse step and no ANSI intermediate. Raw HTML is
 shown as quiet text, not interpreted. Links retain an OSC 8 destination through

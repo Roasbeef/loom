@@ -52,7 +52,8 @@ reconnect portions of the existing client's contract.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
   actions. `/model` opens the selector, `/agents` opens the inspector, `Tab`
   toggles the compact agent rail, `Ctrl+G` toggles reasoning/tool detail, and
-  Page Up/Page Down traverse transcript scrollback.
+  Page Up/Page Down traverse transcript scrollback. Mouse-wheel events share
+  that same tail-relative scroll law.
 
 ## Invariants
 
@@ -67,7 +68,9 @@ reconnect portions of the existing client's contract.
   codepoints before data reaches etui spans. Newlines survive only where the
   markdown block parser needs them.
 - **Markdown stays structured.** Mork parses CommonMark and the adapter emits
-  etui styles and OSC 8 links. No raw model-authored ANSI or HTML is executed.
+  etui styles and OSC 8 links. Fenced Gleam token styling preserves the exact
+  model-authored text; it never acts as a formatter or compiler. No raw
+  model-authored ANSI or HTML is executed.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
   prompt editing is inert. `Ctrl+C` remains global so every overlay can be
   escaped by terminating the client.

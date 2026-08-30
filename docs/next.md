@@ -73,15 +73,26 @@ client. The client now works in a real Herdr PTY, attaches to the real gateway,
 uses slash commands, opens a searchable `/model` overlay, projects live strands
 as agents, renders assistant CommonMark through Mork into etui spans, and keeps
 reasoning/tool detail collapsed until `Ctrl+G` or `/details` asks for it. The
-agent rail is hidden by default and toggled with `Tab`.
+agent rail is hidden by default and toggled with `Tab`. Compact speaker marks
+replace repeated role names, Page Up/Page Down and the mouse wheel share a
+tail-relative transcript viewport, and fenced Gleam blocks gain token contrast
+without rewriting model-authored text.
 
-The package's warning-free build and 14 tests pass, its R0-R8 lint census is
+The package's warning-free build and 16 tests pass, its R0-R8 lint census is
 zero, and the doc graph recognizes its mirrored package docs. The measured
 compatibility cost remains: etui needs Gleam 1.16+, and Mork's Erlang path needs
 OTP 28+, above Loom's advertised OTP 27 floor. It is therefore absent from the
 root package and release lists. `docs/design-notes/etui-client.md` holds the
 measurements, source/screenshot influences, protocol coverage, and Baseten
 catalogue mapping.
+
+A fresh Baseten Kimi K3 session also proved that `code_mode` appears in the
+durable tool set and is invoked through the native client. Under strict
+`FullEnforcement`, the Darwin helper refused the hermetic build before
+compilation because address-space and process-count rlimits plus descendant
+lifecycle enforcement were incomplete. The client/provider route is therefore
+live, but that run is not a successful combined eTUI-to-jailed-tool terminal
+proof.
 
 Before adoption, implement protocol-change/007 approval with exact action and
 grant echo, then sparse-sequence reconnect/catch-up behavior. After those gates
