@@ -11,7 +11,10 @@
 //// reaper accepts that witness does `begin` let the worker call the surface.
 //// The custodian executes no provider callback: if the worker dies, it retains
 //// and cancels the adopted inner handle and retires only after the inner owner
-//// does. The whole boundary is a Gleam process protocol.
+//// does. The worker is linked to the provider effect because they are one
+//// failure domain: an unexpected surface crash must fault the effect and let
+//// recovery run behind the custodian, not become a fabricated provider
+//// response. The whole boundary is a Gleam process protocol.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/option.{type Option, None, Some}
@@ -44,7 +47,7 @@ pub fn prepare(
   let events = process.new_subject()
   let ready = process.new_subject()
   let worker =
-    process.spawn_unlinked(fn() {
+    process.spawn(fn() {
       let start = process.new_subject()
       let stop = process.new_subject()
       process.send(ready, #(start, stop))

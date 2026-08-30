@@ -148,6 +148,55 @@ pub fn provider_timeout_cancels_before_settling_test() {
   process.kill(rt.tree.supervisor)
 }
 
+/// The parked request worker is an ownership boundary, not a new failure
+/// domain. If the injected provider crashes that worker unexpectedly, the
+/// linked effect must fault as it did before the boundary existed; recovery
+/// then runs only after the published custodian drains.
+pub fn provider_surface_crash_faults_the_effect_and_recovers_test() {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Reply(fake.answer("recovered", 5)) },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 100, request: fn(spec) {
+        case recorder.bump(rec, "provider-requested") {
+          1 -> {
+            process.kill(process.self())
+            process.receive_forever(process.new_subject())
+          }
+          _ -> base.provider.request(spec)
+        }
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("survive the provider crash")])
+    as "the prompt must be accepted"
+
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 5000)
+    as "the recovered provider attempt must complete"
+  harness.assert_completed(last)
+  assert recorder.read(rec, "provider-requested") == 2
+    as "recovery must replace the crashed provider request exactly once"
+  process.kill(rt.tree.supervisor)
+}
+
 pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
   let rec = recorder.start()
   let assert Ok(sess) =

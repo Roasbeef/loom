@@ -293,7 +293,11 @@ extended by the M3 runtime wave.
   minimal custodian, publishes that custodian to the reaper, and only then
   permits the worker to call the frozen provider surface. The reaper monitors
   the public owner independently, cancels it when the effect exits, and cannot
-  finish until both are gone. The separate drain ledger remembers every
+  finish until both are gone. The parked worker is linked to the provider
+  effect because they are one failure domain: an unexpected surface crash must
+  still fault the effect and recover, not become a fabricated provider
+  response. The custodian is unlinked and survives both long enough to drain
+  their adopted descendants. The separate drain ledger remembers every
   still-live reaper for the strand, and a replacement waits for them before
   starting recovery. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.

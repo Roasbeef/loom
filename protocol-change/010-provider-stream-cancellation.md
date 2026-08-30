@@ -193,7 +193,10 @@ before the runtime can ask for summary progress.
   cancels and observes its handle before reporting a terminal. It does not
   report `ProviderDone` until that owner drains. The reaper independently
   monitors both pids and thereby remains a transitive drain barrier if the
-  effect dies first. Replacement recovery waits for all prior reapers in a
+  effect dies first. The parked worker is linked to its effect: an unexpected
+  provider-surface crash still faults the operation and enters recovery, while
+  the unlinked custodian survives to drain any adopted descendants.
+  Replacement recovery waits for all prior reapers in a
   dedicated drain ledger that precedes the restartable strand-name registry.
   During session close that ledger traps the root's shutdown and remains until
   every registered reaper exits, so the writer lease cannot be released beside
