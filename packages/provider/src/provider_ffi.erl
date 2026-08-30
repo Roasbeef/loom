@@ -3,7 +3,8 @@
 %% between Erlang conventions (charlists, raw httpc messages) and the
 %% Gleam callback signatures at the boundary, per the house FFI rules.
 -module(provider_ffi).
--export([start_stream_request/8, cancel_stream_request/1, get_env/1]).
+-export([prepare_stream_request/4, begin_stream_request/5,
+         cancel_stream_request/1, get_env/1]).
 
 %% Total receive-loop timeout for one streamed response, in milliseconds.
 -define(RESPONSE_TIMEOUT, 300000).
@@ -16,39 +17,69 @@ get_env(Name) ->
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
 
-%% Starts one HTTP request via httpc:request/4 with {sync, false} and
-%% {stream, self}: 2xx bodies arrive chunked as {http, {Id, stream_start
-%% | stream | stream_end, ...}} messages, while non-streamable responses
-%% (error statuses) arrive as one complete {http, {Id, Result}} message.
-%% Both shapes are normalized into the same callback sequence. The request id
-%% is returned as an opaque value so typed Gleam code can own cancellation and
-%% monitoring without decoding OTP's private identifier.
-start_stream_request(Method, Url, Headers, Body,
-                     OnStatus, OnChunk, OnEnd, OnFailure) ->
-    try
-        Receiver = spawn(fun() ->
-            receive
-                {request_id, RequestId} ->
-                    receive_loop(RequestId, OnStatus, OnChunk,
-                                 OnEnd, OnFailure)
-            end
-        end),
-        start_native_request(Receiver, Method, Url, Headers, Body)
-    catch
-        _Class:_CaughtReason ->
-            {error, <<"http request owner failed to start">>}
-    end.
+%% Allocates the one native owner before any application, DNS, socket, or HTTP
+%% work begins. Gleam publishes this pid to its custodian and only then sends
+%% the begin permit. The owner is both the raw httpc receiver and the drain
+%% acknowledgement, so there is no unowned receiver between those two facts.
+prepare_stream_request(OnStatus, OnChunk, OnEnd, OnFailure) ->
+    Parent = self(),
+    spawn(fun() ->
+        native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure)
+    end).
 
-%% Cancels an opaque native request. Cancellation is safe after completion and
-%% returns only after the request's dedicated handler has stopped.
-cancel_stream_request(Request) ->
-    cancel_native(Request),
+%% Grants the parked native owner permission to capture the current manager and
+%% issue the request. Sending is deliberately asynchronous: cancellation can
+%% queue behind the small synchronous startup section without losing the pid
+%% which must remain alive until that startup either fails or becomes
+%% cancellable.
+begin_stream_request(Owner, Method, Url, Headers, Body) ->
+    Owner ! {begin_request, Method, Url, Headers, Body},
     nil.
 
-start_native_request(Receiver, Method, Url, Headers, Body) ->
+%% Requests cancellation without confusing that request with its drain
+%% acknowledgement. Gleam monitors the owner pid when it must wait; sends to a
+%% process which has already completed are harmless.
+cancel_stream_request(Owner) ->
+    Owner ! cancel,
+    nil.
+
+native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure) ->
+    process_flag(trap_exit, true),
+    ParentMonitor = erlang:monitor(process, Parent),
+    receive
+        {begin_request, Method, Url, Headers, Body} ->
+            start_native_request(Method, Url, Headers, Body, ParentMonitor,
+                                 OnStatus, OnChunk, OnEnd, OnFailure);
+        cancel ->
+            ok;
+        {'DOWN', ParentMonitor, process, Parent, _Reason} ->
+            ok
+    end.
+
+start_native_request(Method, Url, Headers, Body, ParentMonitor,
+                     OnStatus, OnChunk, OnEnd, OnFailure) ->
     try
         {ok, _} = application:ensure_all_started(inets),
         {ok, _} = application:ensure_all_started(ssl),
+        Manager = whereis(httpc_manager),
+        true = is_pid(Manager),
+        ManagerMonitor = erlang:monitor(process, Manager),
+        start_managed_request(Manager, ManagerMonitor,
+                              Method, Url, Headers, Body, ParentMonitor,
+                              OnStatus, OnChunk, OnEnd, OnFailure)
+    catch
+        _Class:_CaughtReason ->
+            safe_callback(OnFailure, [<<"http request startup failed">>])
+    end.
+
+%% Once the admitting manager generation is known, every failing branch drops
+%% its monitor before reporting failure. Keeping that cleanup in a scope which
+%% already owns the monitor prevents an exception during request construction
+%% from fabricating a still-live manager witness.
+start_managed_request(Manager, ManagerMonitor,
+                      Method, Url, Headers, Body, ParentMonitor,
+                      OnStatus, OnChunk, OnEnd, OnFailure) ->
+    try
         HeaderList =
             [{unicode:characters_to_list(K), unicode:characters_to_list(V)}
              || {K, V} <- Headers],
@@ -58,123 +89,126 @@ start_native_request(Receiver, Method, Url, Headers, Body) ->
                 <<"GET">> -> {UrlList, HeaderList};
                 _ -> {UrlList, HeaderList, content_type(HeaderList), Body}
             end,
-        HttpOptions = migration_safe_http_options(),
-        %% A non-empty socket option forces httpc to allocate a fresh handler
-        %% instead of reusing a keep-alive session. That gives this request one
-        %% monitorable native owner whose DOWN is a socket-drain acknowledgement.
         Options = [{sync, false}, {stream, self}, {body_format, binary},
-                   {receiver, Receiver}, {socket_opts, [{nodelay, true}]}],
-        case httpc:request(method_atom(Method), Request, HttpOptions, Options) of
+                   {receiver, self()}, {socket_opts, [{nodelay, true}]}],
+        case httpc:request(method_atom(Method), Request,
+                           migration_safe_http_options(), Options) of
             {ok, RequestId} ->
-                Receiver ! {request_id, RequestId},
-                Handler = request_handler(RequestId, Receiver),
-                {ok, {Receiver, {RequestId, Handler, Receiver}}};
+                Handlers = request_handlers(RequestId),
+                HandlerMonitors = monitor_processes(Handlers),
+                native_loop(RequestId, Manager, ManagerMonitor,
+                            HandlerMonitors, ParentMonitor,
+                            OnStatus, OnChunk, OnEnd, OnFailure);
             {error, _Reason} ->
-                exit(Receiver, kill),
-                {error, <<"http request startup failed">>}
+                erlang:demonitor(ManagerMonitor, [flush]),
+                safe_callback(OnFailure, [<<"http request startup failed">>])
         end
     catch
         _Class:_CaughtReason ->
-            exit(Receiver, kill),
-            {error, <<"http request startup failed">>}
+            erlang:demonitor(ManagerMonitor, [flush]),
+            safe_callback(OnFailure, [<<"http request startup failed">>])
     end.
 
-receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure) ->
+native_loop(RequestId, Manager, ManagerMonitor, HandlerMonitors, ParentMonitor,
+            OnStatus, OnChunk, OnEnd, OnFailure) ->
     receive
         {http, {RequestId, stream_start, Headers}} ->
-            OnStatus(200, normalize_headers(Headers)),
-            receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure);
+            case safe_callback(OnStatus, [200, normalize_headers(Headers)]) of
+                ok ->
+                    native_loop(RequestId, Manager, ManagerMonitor,
+                                HandlerMonitors, ParentMonitor,
+                                OnStatus, OnChunk, OnEnd, OnFailure);
+                error ->
+                    finish_native(RequestId, Manager, ManagerMonitor,
+                                  HandlerMonitors)
+            end;
         {http, {RequestId, stream, Chunk}} ->
-            OnChunk(Chunk),
-            receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure);
+            case safe_callback(OnChunk, [Chunk]) of
+                ok ->
+                    native_loop(RequestId, Manager, ManagerMonitor,
+                                HandlerMonitors, ParentMonitor,
+                                OnStatus, OnChunk, OnEnd, OnFailure);
+                error ->
+                    finish_native(RequestId, Manager, ManagerMonitor,
+                                  HandlerMonitors)
+            end;
         {http, {RequestId, stream_end, _Headers}} ->
-            OnEnd();
-        {http, {RequestId, {{_Version, Status, _Reason}, Headers, ResponseBody}}} ->
-            OnStatus(Status, normalize_headers(Headers)),
-            OnChunk(ResponseBody),
-            OnEnd();
+            safe_callback(OnEnd, []),
+            finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors);
+        {http, {RequestId, {{_Version, Status, _Reason}, Headers,
+                           ResponseBody}}} ->
+            safe_callback(OnStatus, [Status, normalize_headers(Headers)]),
+            safe_callback(OnChunk, [ResponseBody]),
+            safe_callback(OnEnd, []),
+            finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors);
         {http, {RequestId, {error, _Reason}}} ->
-            OnFailure(<<"http transport failed">>)
+            safe_callback(OnFailure, [<<"http transport failed">>]),
+            finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors);
+        cancel ->
+            finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors);
+        {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
+            finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors);
+        {'DOWN', ManagerMonitor, process, Manager, _Reason} ->
+            await_processes(HandlerMonitors),
+            safe_callback(OnFailure, [<<"http transport failed">>]);
+        {'DOWN', HandlerMonitor, process, _Handler, _Reason} ->
+            Remaining = lists:keydelete(HandlerMonitor, 1, HandlerMonitors),
+            finish_native(RequestId, Manager, ManagerMonitor, Remaining),
+            safe_callback(OnFailure, [<<"http transport failed">>]);
+        {'EXIT', Manager, _Reason} ->
+            native_loop(RequestId, Manager, ManagerMonitor,
+                        HandlerMonitors, ParentMonitor,
+                        OnStatus, OnChunk, OnEnd, OnFailure)
     after ?RESPONSE_TIMEOUT ->
-        cast_cancel_native(RequestId),
-        OnFailure(<<"timed out waiting for the http response">>)
+        finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors),
+        safe_callback(OnFailure, [<<"timed out waiting for the http response">>])
     end.
 
-cancel_native({RequestId, Handler, Receiver}) ->
-    HandlerMonitor = monitor_handler(Handler),
-    ReceiverMonitor = erlang:monitor(process, Receiver),
-    try
-        cast_cancel_native(RequestId),
-        await_handler(HandlerMonitor),
-        exit(Receiver, kill),
-        await_receiver(ReceiverMonitor),
-        ok
+%% The default manager inserts a fresh handler before replying with the request
+%% id. A non-empty socket option disables connection reuse, so the matching pid
+%% is this request's sole socket owner. If the manager disappears after the
+%% reply, its monitor remains independent evidence and a captured handler is
+%% still awaited rather than being forgotten with the manager's table.
+request_handlers(RequestId) ->
+    case httpc:info() of
+        Info when is_list(Info) ->
+            [Pid || {Pid, RequestIds, _Details} <-
+                        proplists:get_value(handlers, Info, []),
+                    lists:member(RequestId, RequestIds)];
+        _ -> []
+    end.
+
+monitor_processes(Pids) ->
+    [begin
+         link(Pid),
+         {erlang:monitor(process, Pid), Pid}
+     end || Pid <- Pids].
+
+finish_native(RequestId, Manager, ManagerMonitor, HandlerMonitors) ->
+    try httpc:cancel_request(RequestId)
     catch
-        _Class:_CaughtReason ->
-            await_handler(HandlerMonitor),
-            exit(Receiver, kill),
-            await_receiver(ReceiverMonitor),
-            ok
-    end.
-
-cast_cancel_native(RequestId) ->
-    _ = httpc:cancel_request(RequestId),
+        _:_ -> ok
+    end,
+    await_processes(HandlerMonitors),
+    erlang:demonitor(ManagerMonitor, [flush]),
+    %% Keep the manager argument in the state transition: its monitor identifies
+    %% the exact manager generation which admitted this request.
+    _ = Manager,
     ok.
 
-%% httpc cancellation is an asynchronous manager cast. Capture the dedicated
-%% handler before exposing the request id, then wait for its DOWN after cancel;
-%% the handler closes its socket in terminate/2 before that signal is emitted.
-request_handler(RequestId, Receiver) ->
-    try
-        case httpc:info() of
-            Info when is_list(Info) ->
-                Handlers = proplists:get_value(handlers, Info, []),
-                case find_request_handler(RequestId, Handlers) of
-                    undefined -> retry_request_handler(RequestId, Receiver);
-                    Handler -> Handler
-                end;
-            {error, _Reason} ->
-                retry_request_handler(RequestId, Receiver)
-        end
-    catch
-        _Class:_CaughtReason -> retry_request_handler(RequestId, Receiver)
-    end.
-
-%% The request has already been admitted when handler discovery runs. If the
-%% manager is restarting, keep the custodian inside startup and retry instead
-%% of returning an owner that could later fabricate a drain acknowledgement.
-retry_request_handler(RequestId, Receiver) ->
-    case is_process_alive(Receiver) of
-        false -> undefined;
-        true ->
-            receive
-            after 10 -> request_handler(RequestId, Receiver)
-            end
-    end.
-
-find_request_handler(_RequestId, []) ->
-    undefined;
-find_request_handler(RequestId, [{Pid, RequestIds, _Info} | Rest]) ->
-    case lists:member(RequestId, RequestIds) of
-        true -> Pid;
-        false -> find_request_handler(RequestId, Rest)
-    end.
-
-monitor_handler(undefined) ->
-    undefined;
-monitor_handler(Handler) ->
-    erlang:monitor(process, Handler).
-
-await_handler(undefined) ->
+await_processes([]) ->
     ok;
-await_handler(Monitor) ->
+await_processes([{Monitor, Pid} | Rest]) ->
     receive
-        {'DOWN', Monitor, process, _Handler, _Reason} -> ok
+        {'DOWN', Monitor, process, Pid, _Reason} -> await_processes(Rest)
     end.
 
-await_receiver(Monitor) ->
-    receive
-        {'DOWN', Monitor, process, _Receiver, _Reason} -> ok
+safe_callback(Function, Arguments) ->
+    try
+        apply(Function, Arguments),
+        ok
+    catch
+        _:_ -> error
     end.
 
 %% Redirects and Retry-After retries retain the public request id while moving

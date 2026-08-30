@@ -4,36 +4,18 @@
 //// `HttpRequest` to an injected `Transport`, which delivers the response
 //// as a stream of `HttpEvent` messages to a subject. Tests inject a
 //// transport that replays fixture events; production wires the Erlang
-//// `httpc` streaming shim via `httpc_transport`. A minimal Gleam custodian
-//// witnesses a worker, the raw receiver, and the native request beneath it;
-//// parsing and response folds above the `HttpEvent` boundary retain the
-//// sans-io shape from the style guide.
+//// `httpc` streaming shim via `httpc_transport`. The native owner is both the
+//// raw-message receiver and the published drain witness. It captures the
+//// request's dedicated handler before forwarding events and does not exit
+//// until that handler has stopped. Parsing and response folds above the
+//// `HttpEvent` boundary retain the sans-io shape from the style guide.
 ////
 //// Secrets (API keys) appear only inside `HttpRequest.headers`, which
 //// flows exclusively into the transport. No `HttpEvent`, error, or stream
 //// event ever carries the request back out (spec §3.3 invariant 4).
 
 import gleam/erlang/process.{type Pid, type Subject}
-import provider/custodian
 import provider/internal/ffi_httpc
-
-type NativeControl {
-  CancelNative
-}
-
-type NativeMessage {
-  NativeStatus(status: Int, headers: List(#(String, String)))
-  NativeChunk(chunk: BitArray)
-  NativeEnd
-  NativeFailure(reason: String)
-}
-
-type NativeEvent {
-  Control(NativeControl)
-  Http(NativeMessage)
-  ParentDown(process.Down)
-  ReceiverDown(process.Down)
-}
 
 /// One outbound HTTP request, fully built.
 ///
@@ -80,7 +62,7 @@ pub type HttpEvent {
 /// not kill the owner: its lifetime is the drain acknowledgement.
 pub type RunningRequest {
   RunningRequest(
-    /// The process whose exit proves the native request and receiver stopped.
+    /// The process whose exit proves the native request and handler stopped.
     owner: Pid,
     /// The idempotent capability which asks that owner to tear down the request.
     cancel: fn() -> Nil,
@@ -140,15 +122,13 @@ pub type Transport {
 
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
-/// A small Gleam custodian exists before native startup and queues
-/// cancellation. Its worker retains the opaque OTP request id and forwards
-/// `HttpEvent`s; once the raw receiver exists, the worker publishes both that
-/// pid and native cancel capability to the custodian. The public custodian can
-/// therefore outlive a crashed worker and retires only after the receiver and
-/// any cancellation helper are gone. The FFI is limited to starting `httpc`,
-/// selecting its raw messages, and turning OTP's asynchronous cancellation
-/// into handler-and-receiver exit acknowledgement. Lifecycle policy remains
-/// here in typed Gleam.
+/// The native owner is allocated while parked, then receives its begin permit
+/// only after its PID exists as the returned drain witness. It captures and
+/// monitors the dedicated OTP handler before forwarding any event, so a shared
+/// manager restart cannot erase the socket witness. The FFI is limited to the
+/// raw `httpc` mailbox and native teardown which Gleam cannot express;
+/// response folding, timeout policy, retries, and terminal arbitration remain
+/// in typed Gleam.
 ///
 /// ## Examples
 ///
@@ -167,163 +147,25 @@ fn start_httpc(
   request: HttpRequest,
   subject: Subject(HttpEvent),
 ) -> Result(RunningRequest, String) {
-  let parent = process.self()
-  let ready = process.new_subject()
-  let worker =
-    process.spawn_unlinked(fn() {
-      let control = process.new_subject()
-      let begin = process.new_subject()
-      process.send(ready, #(control, begin))
-      let owner = process.receive_forever(begin)
-      let parent_monitor = process.monitor(parent)
-      let native = process.new_subject()
-      case
-        ffi_httpc.start_stream_request(
-          request.method,
-          request.url,
-          request.headers,
-          request.body,
-          fn(status, headers) {
-            process.send(native, NativeStatus(status:, headers:))
-          },
-          fn(chunk) { process.send(native, NativeChunk(chunk:)) },
-          fn() { process.send(native, NativeEnd) },
-          fn(reason) { process.send(native, NativeFailure(reason:)) },
-        )
-      {
-        Error(reason) -> {
-          process.demonitor_process(parent_monitor)
-          process.send(subject, RequestFailed(reason:))
-        }
-        Ok(#(receiver, request_id)) -> {
-          let receiver_monitor = process.monitor(receiver)
-          let adopted =
-            custodian.adopt_owner(owner, receiver, fn() {
-              ffi_httpc.cancel_stream_request(request_id)
-            })
-          case adopted {
-            True ->
-              own_native_request(
-                request_id,
-                receiver,
-                subject,
-                control,
-                native,
-                parent_monitor,
-                receiver_monitor,
-              )
-            False ->
-              finish_native(
-                request_id,
-                receiver,
-                parent_monitor,
-                receiver_monitor,
-              )
-          }
-        }
-      }
-    })
-  let #(control, begin) = process.receive_forever(ready)
-  let owner = custodian.start(worker, control, CancelNative, parent)
-  process.send(begin, owner)
+  let owner =
+    ffi_httpc.prepare_stream_request(
+      fn(status, headers) {
+        process.send(subject, ResponseStatus(status:, headers:))
+      },
+      fn(chunk) { process.send(subject, ResponseChunk(chunk:)) },
+      fn() { process.send(subject, ResponseEnd) },
+      fn(reason) { process.send(subject, RequestFailed(reason:)) },
+    )
+  ffi_httpc.begin_stream_request(
+    owner,
+    request.method,
+    request.url,
+    request.headers,
+    request.body,
+  )
   Ok(
-    RunningRequest(owner: custodian.owner(owner), cancel: fn() {
-      custodian.cancel(owner)
+    RunningRequest(owner:, cancel: fn() {
+      ffi_httpc.cancel_stream_request(owner)
     }),
   )
-}
-
-fn own_native_request(
-  request_id: ffi_httpc.RequestId,
-  receiver: Pid,
-  subject: Subject(HttpEvent),
-  control: Subject(NativeControl),
-  native: Subject(NativeMessage),
-  parent_monitor: process.Monitor,
-  receiver_monitor: process.Monitor,
-) -> Nil {
-  let event =
-    process.new_selector()
-    |> process.select_map(control, Control)
-    |> process.select_map(native, Http)
-    |> process.select_specific_monitor(parent_monitor, ParentDown)
-    |> process.select_specific_monitor(receiver_monitor, ReceiverDown)
-    |> process.selector_receive_forever()
-  case event {
-    Control(CancelNative) | ParentDown(_down) ->
-      stop_native(request_id, receiver, parent_monitor, receiver_monitor)
-    ReceiverDown(_down) -> {
-      ffi_httpc.cancel_stream_request(request_id)
-      process.demonitor_process(parent_monitor)
-      process.send(
-        subject,
-        RequestFailed(reason: "http event receiver stopped unexpectedly"),
-      )
-    }
-    Http(NativeStatus(status:, headers:)) -> {
-      process.send(subject, ResponseStatus(status:, headers:))
-      own_native_request(
-        request_id,
-        receiver,
-        subject,
-        control,
-        native,
-        parent_monitor,
-        receiver_monitor,
-      )
-    }
-    Http(NativeChunk(chunk:)) -> {
-      process.send(subject, ResponseChunk(chunk:))
-      own_native_request(
-        request_id,
-        receiver,
-        subject,
-        control,
-        native,
-        parent_monitor,
-        receiver_monitor,
-      )
-    }
-    Http(NativeEnd) -> {
-      process.send(subject, ResponseEnd)
-      finish_native(request_id, receiver, parent_monitor, receiver_monitor)
-    }
-    Http(NativeFailure(reason:)) -> {
-      process.send(subject, RequestFailed(reason:))
-      finish_native(request_id, receiver, parent_monitor, receiver_monitor)
-    }
-  }
-}
-
-fn stop_native(
-  request_id: ffi_httpc.RequestId,
-  receiver: Pid,
-  parent_monitor: process.Monitor,
-  receiver_monitor: process.Monitor,
-) -> Nil {
-  finish_native(request_id, receiver, parent_monitor, receiver_monitor)
-}
-
-fn finish_native(
-  request_id: ffi_httpc.RequestId,
-  receiver: Pid,
-  parent_monitor: process.Monitor,
-  receiver_monitor: process.Monitor,
-) -> Nil {
-  // OTP cancellation is asynchronous, but the FFI does not return until the
-  // dedicated native handler has exited and closed its socket.
-  ffi_httpc.cancel_stream_request(request_id)
-  process.kill(receiver)
-  case process.is_alive(receiver) {
-    False -> Nil
-    True -> {
-      let _down =
-        process.new_selector()
-        |> process.select_specific_monitor(receiver_monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
-    }
-  }
-  process.demonitor_process(parent_monitor)
-  process.demonitor_process(receiver_monitor)
 }

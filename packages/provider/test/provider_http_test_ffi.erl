@@ -3,17 +3,35 @@
 -module(provider_http_test_ffi).
 -export([start_hanging_server/2, start_malformed_server/0,
          start_redirect_pair/1, stop_servers/1,
-         suspend_active_handlers/0, resume_handlers/1]).
+         with_suspended_request_handlers/2]).
 
-suspend_active_handlers() ->
-    Handlers = proplists:get_value(handlers, httpc:info(), []),
-    Pids = [Pid || {Pid, _Requests, _Info} <- Handlers],
-    lists:foreach(fun(Pid) -> true = erlang:suspend_process(Pid) end, Pids),
-    Pids.
-
-resume_handlers(Pids) ->
-    lists:foreach(fun(Pid) -> true = erlang:resume_process(Pid) end, Pids),
+%% The native owner links only the handler captured for this request. Suspending
+%% that closed set cannot affect another test's request, and the after clause
+%% prevents a failed Gleam assertion from poisoning the remainder of the suite.
+with_suspended_request_handlers(Owner, Test) ->
+    Handlers = await_request_handlers(Owner, 1000),
+    lists:foreach(fun(Pid) -> true = erlang:suspend_process(Pid) end, Handlers),
+    try Test(Handlers)
+    after
+        lists:foreach(fun resume_if_alive/1, Handlers)
+    end,
     nil.
+
+await_request_handlers(_Owner, 0) ->
+    [];
+await_request_handlers(Owner, Remaining) ->
+    case process_info(Owner, links) of
+        {links, []} ->
+            receive after 1 -> await_request_handlers(Owner, Remaining - 1) end;
+        {links, Handlers} -> Handlers;
+        undefined -> []
+    end.
+
+resume_if_alive(Pid) ->
+    case is_process_alive(Pid) of
+        true -> erlang:resume_process(Pid);
+        false -> true
+    end.
 
 start_hanging_server(OnAccepted, OnClosed) ->
     {ok, Listener} =

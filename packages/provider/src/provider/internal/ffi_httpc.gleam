@@ -8,77 +8,85 @@
 ////
 //// There is intentionally no provider policy here. Selection, retries,
 //// timeouts, terminal arbitration, and transitive ownership remain in Gleam.
-//// These two externals expose only what OTP does not provide as typed Gleam
-//// values: start a raw `httpc` message stream, then cancel that exact stream
-//// while waiting for its handler and receiver to exit.
+//// These three externals expose only what OTP does not provide as typed Gleam
+//// values: allocate a parked raw-message owner, grant that owner permission to
+//// start, then cancel it while waiting for its private handler to exit.
 
 import gleam/erlang/process.{type Pid}
 
-/// The opaque native handle for one asynchronous HTTP request.
+/// The native process which owns one asynchronous HTTP request.
 ///
-/// Besides OTP's request id, the Erlang shim retains the dedicated handler and
-/// raw receiver whose exits prove that cancellation closed the request socket
-/// and stopped raw message delivery.
-pub type RequestId
+/// This alias remains a `Pid` so Gleam custodians can monitor and publish it,
+/// while the only valid messages remain confined to this FFI module.
+pub type RequestOwner =
+  Pid
 
-/// Starts one HTTP request and streams the response through the callbacks:
-/// `on_status` once, then `on_chunk` per body fragment, then `on_end`
-/// once — or `on_failure` once at any point. Returns the spawned event receiver
-/// and opaque native request id; startup failure is returned directly.
+/// Allocates a parked owner for one HTTP request.
 ///
-/// Uses `httpc:request/4` with `{sync, false}` and `{stream, self}` so
-/// body chunks arrive as messages in the owner process's mailbox, which
-/// the Erlang shim (`provider_ffi:start_stream_request/8`) receives
-/// selectively and forwards. No pure alternative exists: chunked response delivery is
-/// only available through `httpc`'s message protocol (or a third-party
-/// client), and selective receive on `{http, ...}` tuples cannot be
-/// expressed in Gleam. The shim disables redirects and supported automatic
-/// retries so the captured handler cannot migrate behind the stable request
-/// id, and waits through a transient `httpc_manager` restart rather than
-/// publishing an unknown drain witness. It also calls
-/// `application:ensure_all_started/1` for `inets` and `ssl` so the client works
-/// without a release boot script.
+/// Allocation starts no application and opens no socket. The caller publishes
+/// this PID before granting `begin_stream_request`; that ordering is the reason
+/// preparation cannot be folded into the begin external.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_httpc.start_stream_request(
-///   "POST",
-///   "https://api.example.test/v1/responses",
-///   headers,
-///   body,
+/// let owner = ffi_httpc.prepare_stream_request(
 ///   on_status,
 ///   on_chunk,
 ///   on_end,
 ///   on_failure,
 /// )
-/// // -> Ok(#(receiver, request_id))
+/// // No network work has started yet.
 /// ```
 ///
-@external(erlang, "provider_ffi", "start_stream_request")
-pub fn start_stream_request(
-  method: String,
-  url: String,
-  headers: List(#(String, String)),
-  body: String,
+@external(erlang, "provider_ffi", "prepare_stream_request")
+pub fn prepare_stream_request(
   on_status: fn(Int, List(#(String, String))) -> Nil,
   on_chunk: fn(BitArray) -> Nil,
   on_end: fn() -> Nil,
   on_failure: fn(String) -> Nil,
-) -> Result(#(Pid, RequestId), String)
+) -> RequestOwner
 
-/// Cancels the exact OTP request identified by `request_id` and returns only
-/// after its dedicated native handler and raw receiver have exited. OTP
-/// cancellation itself is asynchronous and may race a response already in
-/// flight, so the provider request owner remains the only process allowed to
-/// choose a terminal event.
+/// Grants a prepared owner permission to start its request.
+///
+/// The native owner captures the exact handler registered for the request
+/// before forwarding callbacks. It also monitors the manager generation which
+/// admitted that handler, so a manager restart cannot be mistaken for a
+/// completed drain. `httpc` startup failure is reported through `on_failure`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_httpc.cancel_stream_request(request_id)
-/// // Returns after the handler and raw receiver have exited.
+/// ffi_httpc.begin_stream_request(
+///   owner,
+///   "POST",
+///   "https://api.example.test/v1/responses",
+///   headers,
+///   body,
+/// )
+/// ```
+///
+@external(erlang, "provider_ffi", "begin_stream_request")
+pub fn begin_stream_request(
+  owner: RequestOwner,
+  method: String,
+  url: String,
+  headers: List(#(String, String)),
+  body: String,
+) -> Nil
+
+/// Requests cancellation of the native owner.
+///
+/// Calls before begin and calls after normal completion are harmless. OTP
+/// cancellation remains asynchronous internally; the owner's eventual `Down`
+/// is the separate drain acknowledgement consumed by the Gleam custodian.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_httpc.cancel_stream_request(owner)
+/// // Monitor `owner` when the native request subtree must be drained.
 /// ```
 ///
 @external(erlang, "provider_ffi", "cancel_stream_request")
-pub fn cancel_stream_request(request_id: RequestId) -> Nil
+pub fn cancel_stream_request(owner: RequestOwner) -> Nil

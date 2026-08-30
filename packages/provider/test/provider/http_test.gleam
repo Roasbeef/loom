@@ -1,4 +1,10 @@
 //// Production HTTP transport ownership tests.
+////
+//// Loopback peers make socket closure observable without using an external
+//// network. The cancellation test temporarily suspends only the handler linked
+//// to the request's native owner: while that handler cannot acknowledge exit,
+//// the public owner must remain alive. Releasing it must close the peer socket
+//// before the owner's `Down`, which is the drain contract higher layers trust.
 
 import gleam/erlang/process.{type Pid}
 import gleam/int
@@ -21,11 +27,11 @@ fn start_redirect_pair(on_target_accepted: fn() -> Nil) -> #(Int, List(Pid))
 @external(erlang, "provider_http_test_ffi", "stop_servers")
 fn stop_servers(servers: List(Pid)) -> Nil
 
-@external(erlang, "provider_http_test_ffi", "suspend_active_handlers")
-fn suspend_active_handlers() -> List(Pid)
-
-@external(erlang, "provider_http_test_ffi", "resume_handlers")
-fn resume_handlers(handlers: List(Pid)) -> Nil
+@external(erlang, "provider_http_test_ffi", "with_suspended_request_handlers")
+fn with_suspended_request_handlers(
+  owner: Pid,
+  check: fn(List(Pid)) -> Nil,
+) -> Nil
 
 pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let accepted = process.new_subject()
@@ -51,16 +57,14 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let server_monitor = process.monitor(server)
   let assert Ok(Nil) = process.receive(accepted, within: 2000)
     as "the loopback peer must accept the production request"
-  let handlers = suspend_active_handlers()
-  assert !list.is_empty(handlers)
-
-  http.cancel(running)
-
-  process.sleep(50)
-  assert process.is_alive(http.owner(running))
-    as "the custodian must wait for native handler acknowledgement"
-  assert process.receive(closed, within: 20) == Error(Nil)
-  resume_handlers(handlers)
+  with_suspended_request_handlers(http.owner(running), fn(handlers) {
+    assert !list.is_empty(handlers)
+    http.cancel(running)
+    process.sleep(50)
+    assert process.is_alive(http.owner(running))
+      as "the native owner must wait for handler acknowledgement"
+    assert process.receive(closed, within: 20) == Error(Nil)
+  })
 
   let assert Ok(Nil) = process.receive(closed, within: 2000)
     as "httpc cancellation must close the active loopback request"
