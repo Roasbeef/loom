@@ -89,25 +89,31 @@ Every effect the driver dispatches — a provider request, a tool run, a
 parked escalation call — is a process the driver `spawn`s and monitors
 directly, and each driver incarnation also spawns its own **reaper**: a
 small trapping process, linked to the driver, that every effect links to
-at birth. The moment the driver dies, the reaper dies with it and takes
-every effect it was holding down too — so a strand-actor restart can
-never leak a live effect into the next incarnation. That is what makes
-the exclusivity gate and the "is this an orphan or a live replay"
-decision sound: both read the incarnation-local `live` list, and neither
-would mean anything if an effect could survive past its incarnation.
+at birth. The moment the driver dies, the reaper traps that exit, asks every
+effect to stop, and remains alive until every effect and published provider
+owner has exited. A session-local drain ledger remembers those reapers across
+registry and driver restarts. A replacement driver publishes its own reaper
+and waits for all predecessors before it recovers durable work. That is what
+makes the exclusivity gate and the "is this an orphan or a live replay"
+decision sound: both read the incarnation-local `live` list, and neither would
+mean anything if old work could overlap the next incarnation.
 
-An effect process that dies without ever reporting settles **in band** —
-a synthetic tool error, or an orphaned-provider-request classification —
-never by faulting the strand. The harness never wedges on a dead worker,
-and it never blames the strand for one either.
+A tool effect which dies without reporting settles **in band** as a synthetic
+tool error because the worker's exit proves that no tool process remains. A
+provider effect death instead faults the strand. It may have descendants below
+the worker, so fabricating a retryable transport result could start a second
+request beside the first. The reaper cancels the published stream owner, the
+replacement waits for that owner to drain, and only then may recovery retry.
 
 Provider effects also own a cancellable stream handle. If the ordinary wait
 deadline expires, the effect first cancels that handle and allows a bounded
-acknowledgement grace before reporting `ProviderCancelled`. If abort or a
-driver crash kills the effect first, the provider wrappers and gateway monitor
-their direct consumers and propagate teardown to the active HTTP request.
-This closes the ownership chain below the reaper: no relay, fallback pump, or
-socket request gets to outlive the effect that justified it.
+acknowledgement grace before reporting the provider-authored terminal or
+`CancellationUnconfirmed`. An abort keeps that grace because a real terminal,
+including its billed usage, may already be queued. Driver death has no
+surviving terminal consumer: the effect requests cancellation and exits, while
+the reaper's independent owner monitor holds the restart barrier until the
+provider wrappers, fallback pump, transport receiver, and socket request have
+all drained.
 
 ## Correlation travels as a value, through the spawn
 

@@ -151,17 +151,23 @@ The first selected terminal-class event decides the result:
   retryable provider failure. Its reaper cancels the already-published stream
   owner, the driver restarts, and replacement recovery waits for that owner's
   complete drain.
+- A runtime abort keeps its driver alive and spends the acknowledgement grace,
+  because a real terminal with billable usage may already be queued. Driver
+  death has no terminal consumer: the provider effect requests cancellation
+  and exits, while the reaper's independent owner monitor retains the drain
+  barrier.
 - A retryable failure may advance to the next route entry only after checking
   the shared cancel endpoint again. Once cancellation is selected, no fallback
   can start.
 
-The owner observes bounded transport-owner death after invoking cancel. A
-transport owner that does not retire is not killed from above, because doing so
-would erase the only acknowledgement that its native descendant stopped. The
-boundary emits `CancellationUnconfirmed` and remains alive until the owner
-eventually exits. The production transport custodian has already issued
-`httpc:cancel_request/1` for the exact request id and waits for the dedicated
-handler and raw receiver before it exits.
+The terminal-arbitrating worker waits only a bounded grace after invoking
+cancel. A transport owner that does not retire is not killed from above,
+because doing so would erase the only acknowledgement that its native
+descendant stopped. The boundary emits `CancellationUnconfirmed`, while its
+custodian remains alive until the owner eventually exits. The production
+transport custodian has already issued `httpc:cancel_request/1` for the exact
+request id and waits for the dedicated handler and raw receiver before it
+exits.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
 The wrapper publishes a minimal custodian before releasing its guard. The guard

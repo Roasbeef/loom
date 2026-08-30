@@ -13,6 +13,34 @@
 //// already began, the custodian rejects the permit, invokes cancellation, and
 //// still waits for both the child and the worker. The public owner therefore
 //// retires only after the complete registered subtree is gone.
+////
+//// ## The process shape
+////
+//// The custodian is not another worker. It is the small, unlinked process that
+//// remembers every process which can still own work:
+////
+//// ```text
+//// caller --cancel--> custodian --stop--> worker
+////                       |                  |
+////                       |                  +-- starts child
+////                       |<----- adopt(child, cancel)
+////                       |
+////                       +-- exits only after worker, child, and cancellation
+////                           helpers have all exited
+//// ```
+////
+//// Code which monitors `owner(custodian)` consequently learns a stronger fact
+//// than "the worker returned": it learns that cancellation has crossed every
+//// registered ownership boundary. Keeping callbacks off the custodian itself
+//// matters because a crashing callback must not destroy that evidence.
+////
+//// ## The ownership protocol
+////
+//// A worker starts a child parked, calls `adopt`, and starts the child only
+//// when `adopt` returns `True`. A `False` result means teardown already won;
+//// the worker must not begin new work. `owner: None` is reserved for work with
+//// no asynchronous descendant. Its cancellation closure may run, but there is
+//// no child process for the custodian to retain.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/list
@@ -53,12 +81,35 @@ type State(stop) {
   )
 }
 
-/// The typed capability for a running drain custodian.
+/// The typed capability for one transitive drain witness.
+///
+/// The constructor is opaque so callers can request cancellation, publish
+/// children, or monitor the witness without sending arbitrary process
+/// messages.
 pub opaque type Custodian {
   Custodian(commands: Subject(Message), owner: Pid)
 }
 
-/// Starts a custodian for `worker` and its eventual children.
+// --- Public protocol -------------------------------------------------------
+
+/// Starts a custodian for `worker` and every child it later adopts.
+///
+/// `worker_stop` is the worker's typed cooperative-stop capability. `consumer`
+/// is monitored because a stream nobody can receive must cancel itself. The
+/// returned custodian is unlinked: its purpose is to survive a crashing worker
+/// long enough to account for the worker's descendants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let stop = process.new_subject()
+/// let worker = process.spawn_unlinked(fn() { process.receive_forever(stop) })
+/// let witness =
+///   custodian.start(worker, stop, Nil, consumer: process.self())
+/// custodian.cancel(witness)
+/// // custodian.owner(witness) exits after `worker` exits.
+/// ```
+///
 pub fn start(
   worker: Pid,
   worker_stop: Subject(stop),
@@ -89,17 +140,54 @@ pub fn start(
   Custodian(commands:, owner:)
 }
 
-/// Returns the PID whose Down proves that the registered subtree drained.
+/// Returns the PID whose `Down` proves that the registered subtree drained.
+///
+/// Monitoring this PID is the acknowledgement side of cancellation. Callers
+/// must not kill it: doing so would erase the evidence they are waiting for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let owner = custodian.owner(witness)
+/// // process.monitor(owner)
+/// ```
+///
 pub fn owner(custodian: Custodian) -> Pid {
   custodian.owner
 }
 
-/// Requests cooperative teardown. Repeated calls are harmless.
+/// Requests cooperative teardown of the worker and its adopted children.
+///
+/// The request is asynchronous and idempotent. Monitor `owner(custodian)` when
+/// the caller must know that teardown finished rather than merely began.
+///
+/// ## Examples
+///
+/// ```gleam
+/// custodian.cancel(witness)
+/// custodian.cancel(witness)
+/// // Both calls request the same teardown.
+/// ```
+///
 pub fn cancel(custodian: Custodian) -> Nil {
   process.send(custodian.commands, Cancel)
 }
 
-/// Publishes an optional owner/cancel pair before work begins.
+/// Publishes an optional child owner and its cancellation capability.
+///
+/// The call is synchronous. `True` transfers teardown custody to the witness;
+/// the worker may now start or expose the child. `False` means cancellation or
+/// witness death won the race, so the worker must leave the child parked and
+/// tear it down. An owner published after cancellation is still retained until
+/// it exits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let accepted = custodian.adopt(witness, Some(child), cancel_child)
+/// // accepted == True means `witness` now accounts for `child`.
+/// ```
+///
 pub fn adopt(
   custodian: Custodian,
   owner: Option(Pid),
@@ -118,7 +206,20 @@ pub fn adopt(
   accepted
 }
 
-/// Publishes an owner/cancel pair that is not itself a `StreamHandle`.
+/// Publishes a required owner/cancel pair that is not a `StreamHandle`.
+///
+/// This is the convenient form for observers, pumps, and transport receivers,
+/// all of which necessarily have a process owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// custodian.adopt_owner(witness, observer, fn() {
+///   process.kill(observer)
+/// })
+/// // -> True
+/// ```
+///
 pub fn adopt_owner(
   custodian: Custodian,
   owner: Pid,
@@ -127,6 +228,11 @@ pub fn adopt_owner(
   adopt(custodian, Some(owner), cancel)
 }
 
+// --- Ownership loop -------------------------------------------------------
+
+// One mailbox serializes the two facts which would otherwise race: whether
+// cancellation has begun, and which descendants teardown must still cover.
+// Monitors turn process death into data for the same transition loop.
 fn loop(state: State(stop)) -> Nil {
   let event =
     process.new_selector()
@@ -174,6 +280,8 @@ fn monitor_child(owner: Option(Pid), cancel: fn() -> Nil) -> Child {
   }
 }
 
+// Closing first tells the worker to stop producing descendants. Children are
+// cancelled after worker death, when the adoption set can no longer grow.
 fn begin_close(state: State(stop)) -> State(stop) {
   case state.closing {
     True -> state
@@ -184,6 +292,9 @@ fn begin_close(state: State(stop)) -> State(stop) {
   }
 }
 
+// Cancellation callbacks are external behavior and may crash. A disposable
+// helper contains that failure while its monitor keeps the witness alive until
+// the callback itself has returned or died.
 fn cancel_child(state: State(stop), child: Child) -> State(stop) {
   case child.cancelling {
     True -> state
@@ -215,6 +326,8 @@ fn mark_cancelling(children: List(Child), target: Child) -> List(Child) {
   })
 }
 
+// A worker Down closes the adoption frontier. At that point every retained
+// child is known, so cancellation can fan out without missing a late publish.
 fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
   case down {
     process.PortDown(..) -> state
@@ -238,6 +351,9 @@ fn forget_child(children: List(Child), monitor: Monitor) -> List(Child) {
   list.filter(children, fn(child) { child.monitor != Some(monitor) })
 }
 
+// The witness exits only at the conjunction which gives `owner` its meaning:
+// the worker is gone, every asynchronous child is gone, and no cancellation
+// callback remains live. Until then a monitorable proof still has work to do.
 fn continue_or_stop(state: State(stop)) -> Nil {
   let async_children =
     list.any(state.children, fn(child) { child.owner != None })

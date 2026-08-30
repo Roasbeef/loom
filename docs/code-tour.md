@@ -1143,9 +1143,11 @@ capability and waits a bounded acknowledgement grace. An owner-authored
 the effect reports the distinct terminal `CancellationUnconfirmed`; it cannot
 truthfully claim cancellation succeeded, but it must not retry beside work
 that may still exist. The effect then remains alive until the handle's owner
-exits. On abort or driver death the reaper uses the same cooperative stop path,
-so the relay and gateway receive cancellation without losing the outer drain
-witness first.
+exits. An abort keeps the driver alive and therefore keeps that terminal race:
+a settlement already in the mailbox still contributes its real usage to the
+aborted result. Driver death has no terminal consumer. The effect requests
+cancellation and exits, while the reaper's independent owner monitor keeps
+recovery behind the relay, gateway, and transport drain.
 
 The interleave harness turns "kill it anywhere" into an enumeration using
 the writer's `after_commit` seam, and the deterministic simulation runner

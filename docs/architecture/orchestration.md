@@ -217,14 +217,15 @@ rather than the VM's timer wheel directly, so a simulated session runs
 them on logical time; production passes `effects.real_timers()`. `Fault` stops the actor abnormally, as does exhausting
 the loop's fuel bound of ten thousand planning steps.
 
-Two failure paths deserve naming. A commit refused with
+Three failure paths deserve naming. A commit refused with
 `StaleExpectation` means someone else — usually an admission from the
 session API — won the seq race; the driver reloads and plans again,
-pushing any unconsumed observation back to the front of its queue. And an
-effect process that dies without reporting settles **in band**: the
-monitor fires and the driver feeds itself a transport-failure response or
-a synthetic tool error through the ordinary outcome path, so a dead
-worker never wedges a strand or faults one.
+pushing any unconsumed observation back to the front of its queue. A tool
+effect which dies without reporting settles **in band** as a synthetic tool
+error because its worker exit is also its complete drain. A provider effect
+death faults the driver instead: descendants may remain below the worker, so
+an in-band retry could overlap them. Its reaper cancels the already-published
+stream owner and retains the restart barrier until that transitive owner exits.
 
 ## One run, end to end
 

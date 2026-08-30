@@ -13,6 +13,14 @@
 //// solely to grant that drain an unbounded shutdown interval. Consequently
 //// the root cannot die, and `api.close` cannot release the writer lease, while
 //// an old provider subtree is still live.
+////
+//// ```text
+//// old driver Down -> old reaper drains -----------+
+////                                                  |
+//// new driver -> claim(new reaper) -> wait(old) ----+-> recovery begins
+////                                                  |
+//// root shutdown -----------------> ledger waits ---+-> lease may close
+//// ```
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject}
@@ -24,8 +32,11 @@ import gleam/result
 /// Messages understood by the drain ledger. Callers use `claim` rather than
 /// constructing messages directly.
 pub opaque type Message {
+  /// Atomically publishes a new reaper and returns its live predecessors.
   Claim(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
+  /// Removes a reaper after its monitor proves that generation drained.
   ReaperDown(process.Down)
+  /// Begins root shutdown without discarding any still-live generation.
   ParentExit(process.ExitMessage)
 }
 
@@ -34,6 +45,18 @@ type State {
 }
 
 /// Starts the drain ledger under its stable, session-local name.
+///
+/// The ledger traps its supervisor's shutdown exit. Once closing, it accepts
+/// no unsafe shortcut: it exits only after all monitored reapers have exited.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let name = process.new_name(prefix: "loom_drains")
+/// drain_registry.start(name)
+/// // -> Ok(subject)
+/// ```
+///
 pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(1000, fn(subject) {
     process.trap_exits(True)
@@ -53,6 +76,19 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
 }
 
 /// Describes the drain ledger as the root's unbounded shutdown barrier.
+///
+/// The session supervisor marks this specification significant and temporary.
+/// An unexpected ledger exit therefore stops the session instead of replacing
+/// the ledger with an empty ownership history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let child =
+///   drain_registry.supervised(process.new_name(prefix: "loom_drains"))
+/// // Add `child` before every restartable session component.
+/// ```
+///
 pub fn supervised(name: Name(Message)) -> ChildSpecification(Subject(Message)) {
   supervision.supervisor(fn() { start(name) })
 }
@@ -103,6 +139,17 @@ fn continue_or_stop(state: State) -> actor.Next(State, Message) {
 /// Publishes one incarnation's reaper and returns every predecessor that is
 /// still alive. The publish and read are one actor turn, so two replacements
 /// cannot both mistake themselves for the only generation.
+///
+/// The caller must monitor and await every returned PID before dispatching
+/// recovered effects. The new reaper is recorded before this function returns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let previous = drain_registry.claim(ledger, "main", new_reaper)
+/// // Recovery waits for every PID in `previous`.
+/// ```
+///
 pub fn claim(
   ledger: Subject(Message),
   strand: String,

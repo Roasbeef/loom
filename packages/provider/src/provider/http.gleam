@@ -79,16 +79,44 @@ pub type HttpEvent {
 /// `cancel` signals that owner and is safe during native startup. Callers must
 /// not kill the owner: its lifetime is the drain acknowledgement.
 pub type RunningRequest {
-  RunningRequest(owner: Pid, cancel: fn() -> Nil)
+  RunningRequest(
+    /// The process whose exit proves the native request and receiver stopped.
+    owner: Pid,
+    /// The idempotent capability which asks that owner to tear down the request.
+    cancel: fn() -> Nil,
+  )
 }
 
 /// Cancels a live transport request. Repeated calls and calls after transport
 /// completion are harmless.
+///
+/// Cancellation is a request, not a drain acknowledgement. Monitor
+/// `http.owner(request)` when subsequent work must wait for the native socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// http.cancel(request)
+/// http.cancel(request)
+/// // Both calls address the same native request.
+/// ```
+///
 pub fn cancel(request: RunningRequest) -> Nil {
   request.cancel()
 }
 
-/// The monitorable process that owns the live transport request.
+/// Returns the process whose exit acknowledges transport teardown.
+///
+/// The owner may outlive terminal response delivery while the receiver and
+/// native handler finish closing. Callers monitor it; they do not kill it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let monitor = process.monitor(http.owner(request))
+/// // The monitor fires after the transport subtree drains.
+/// ```
+///
 pub fn owner(request: RunningRequest) -> Pid {
   request.owner
 }

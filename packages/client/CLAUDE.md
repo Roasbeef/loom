@@ -1189,6 +1189,10 @@ over one session file. WP-L.
   custodian, relay custodian and guard, gateway custodian, guard and pump,
   transport custodian and worker, receiver, and native HTTP request; no wrapper
   may turn consumer death into a detached request.
+- **Wrapper comments narrate ownership handoffs.** The module story names why
+  the guard, observer, and custodian are separate; comments at publication and
+  adoption say what becomes safe after each acknowledgement. Do not reduce
+  this to comments which merely restate a `spawn`, `send`, or monitor call.
 - **A park is bounded by the configured window *and* by the call's own
   budget deadline, and the deadline is re-read immediately before the
   consuming commit.** The second bound is not politeness: the broker's

@@ -34,6 +34,27 @@ Before writing any code, read these in order:
    design doc conflict, the spec wins on mechanics, the design doc on
    intent.
 
+## Literate code
+
+Comments are part of Loom's design, not decoration added after the code. A
+reader should be able to follow a module's ownership model, state transitions,
+and failure behavior by reading its prose in order. Start every module with
+`////` documentation that explains why the boundary exists and how work moves
+through it. Document every public type, constructor field, variant, and
+function with `///`, including an `## Examples` section for functions.
+
+Write the reasoning the syntax cannot show. Explain the invariant being
+preserved, the failure or race which shaped the code, and why this mechanism
+owns the responsibility. Before a selector, recursive loop, or subtle `case`
+arm, state what event or transition it represents. Do not narrate the next
+line: `// Send the message` above `process.send` adds nothing. Prefer `// The
+acknowledgement transfers restart custody before work begins`, which tells the
+reader what ordering would break if the send moved.
+
+Treat missing explanatory prose as unfinished work when reviewing a change.
+`docs/gleam-style.md` Part III, "Doc comments" and "Plain comments: the
+literate register", gives the complete conventions and examples.
+
 ## Ground rules
 
 - Design priorities, in order: security & isolation, correctness,

@@ -59,6 +59,16 @@ type ObservationEvent {
 /// The observer must return promptly and must not receive from the stream.
 /// Cancellation remains owned by the inner request owner; this wrapper carries
 /// its capability and terminal acknowledgement across the composition boundary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let wrapped = provider_relay.wrap(surface, request, fn(event) {
+///   summaries.record(event)
+/// })
+/// // wrapped.owner stays alive until the inner provider subtree drains.
+/// ```
+///
 pub fn wrap(
   surface: effects.ProviderSurface,
   spec: effects.RequestSpec,

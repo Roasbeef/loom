@@ -308,9 +308,11 @@ extended by the M3 runtime wave.
   classification; the latter says teardown could not be proved and therefore
   cannot authorize another attempt. The effect withholds `ProviderDone` until
   its public stream owner exits, so the current driver cannot progress beside
-  the old subtree either. Abort and driver death use that same cooperative
-  stop path, so client relays and the gateway receive cancellation before an
-  orderly effect can disappear. If the effect crashes first, its reaper is the
+  the old subtree either. An abort keeps the driver alive and spends the
+  acknowledgement grace because a real terminal may already be queued; its
+  usage still belongs in the aborted result. Driver death has no remaining
+  terminal consumer, so the effect requests cancellation and exits without
+  spending that grace. Its reaper already monitors the public owner and is the
   surviving drain witness: a provider pump or HTTP request may temporarily
   outlive the effect pid, but never the barrier that prevents replacement.
 - **`after_commit` is the crash seam.** It runs in the writer process after

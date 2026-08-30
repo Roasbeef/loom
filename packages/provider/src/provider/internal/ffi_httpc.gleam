@@ -5,6 +5,12 @@
 //// only), so the shim drives OTP's `httpc` in asynchronous streaming mode
 //// and forwards each response event to an injected callback. Everything
 //// above this raw chunk stream is pure Gleam.
+////
+//// There is intentionally no provider policy here. Selection, retries,
+//// timeouts, terminal arbitration, and transitive ownership remain in Gleam.
+//// These two externals expose only what OTP does not provide as typed Gleam
+//// values: start a raw `httpc` message stream, then cancel that exact stream
+//// while waiting for its handler and receiver to exit.
 
 import gleam/erlang/process.{type Pid}
 
@@ -32,6 +38,23 @@ pub type RequestId
 /// publishing an unknown drain witness. It also calls
 /// `application:ensure_all_started/1` for `inets` and `ssl` so the client works
 /// without a release boot script.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_httpc.start_stream_request(
+///   "POST",
+///   "https://api.example.test/v1/responses",
+///   headers,
+///   body,
+///   on_status,
+///   on_chunk,
+///   on_end,
+///   on_failure,
+/// )
+/// // -> Ok(#(receiver, request_id))
+/// ```
+///
 @external(erlang, "provider_ffi", "start_stream_request")
 pub fn start_stream_request(
   method: String,
@@ -49,5 +72,13 @@ pub fn start_stream_request(
 /// cancellation itself is asynchronous and may race a response already in
 /// flight, so the provider request owner remains the only process allowed to
 /// choose a terminal event.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_httpc.cancel_stream_request(request_id)
+/// // Returns after the handler and raw receiver have exited.
+/// ```
+///
 @external(erlang, "provider_ffi", "cancel_stream_request")
 pub fn cancel_stream_request(request_id: RequestId) -> Nil

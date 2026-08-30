@@ -456,14 +456,31 @@ pub type ResponseMachine(state) {
 /// terminal or entirely local fixture with no work to drain.
 pub type StreamHandle {
   StreamHandle(
+    /// The single-consumer channel carrying ordered deltas and one terminal.
     events: Subject(StreamEvent),
+    /// The idempotent capability which begins cooperative teardown.
     cancel: fn() -> Nil,
+    /// The process whose exit acknowledges complete transitive teardown.
     owner: Option(Pid),
   )
 }
 
 /// Constructs a stream backed by asynchronous work whose owner is a drain
 /// witness for the whole subtree.
+///
+/// Use this constructor whenever request work can outlive the function which
+/// returns the handle. The owner must remain alive after terminal delivery
+/// until every process, port, socket, and retry attempt beneath it has stopped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let handle = stream.owned(events:, owner:, cancel: fn() {
+///   process.send(stop, Nil)
+/// })
+/// // handle.owner == Some(owner)
+/// ```
+///
 pub fn owned(
   events events: Subject(StreamEvent),
   cancel cancel: fn() -> Nil,
@@ -473,6 +490,20 @@ pub fn owned(
 }
 
 /// Constructs a stream with no asynchronous work to drain.
+///
+/// This is for an already-produced terminal or a local fixture whose
+/// cancellation closure owns no process, port, or socket. A producer that
+/// merely happens to be fast still uses `owned` if work can remain live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let events = process.new_subject()
+/// process.send(events, stream.Failed(error: stream.ProviderCancelled))
+/// let handle = stream.immediate(events:, cancel: fn() { Nil })
+/// assert stream.await_stopped(handle, within: 0)
+/// ```
+///
 pub fn immediate(
   events events: Subject(StreamEvent),
   cancel cancel: fn() -> Nil,
@@ -482,12 +513,37 @@ pub fn immediate(
 
 /// Requests cancellation of the whole provider request. The request owner
 /// decides the cancellation/terminal race and makes repeated calls harmless.
+///
+/// This function requests teardown; it does not acknowledge teardown. Use
+/// `await_stopped` or monitor `handle.owner` when ordering later work depends
+/// on the old request being gone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// stream.cancel(handle)
+/// stream.cancel(handle)
+/// // Repeated cancellation is harmless.
+/// ```
+///
 pub fn cancel(handle: StreamHandle) -> Nil {
   handle.cancel()
 }
 
 /// Waits up to `within` milliseconds for the stream's complete ownership tree
 /// to drain. An immediate handle is already stopped.
+///
+/// A `False` result means only that the deadline elapsed. It does not kill the
+/// owner and must not be treated as proof that replacement work is safe.
+///
+/// ## Examples
+///
+/// ```gleam
+/// stream.cancel(handle)
+/// let drained = stream.await_stopped(handle, within: 2_000)
+/// // drained is `True` only after `handle.owner` exits.
+/// ```
+///
 pub fn await_stopped(handle: StreamHandle, within timeout: Int) -> Bool {
   case handle.owner {
     None -> True
@@ -505,6 +561,18 @@ pub fn await_stopped(handle: StreamHandle, within timeout: Int) -> Bool {
 }
 
 /// Waits until the stream's complete ownership tree has drained.
+///
+/// This is deliberately unbounded. Callers use it only at an ordering barrier
+/// where proceeding beside unconfirmed old work would violate exclusivity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// stream.cancel(handle)
+/// stream.await_stopped_forever(handle)
+/// // Replacement work may now begin.
+/// ```
+///
 pub fn await_stopped_forever(handle: StreamHandle) -> Nil {
   case handle.owner {
     None -> Nil
@@ -567,6 +635,7 @@ fn await_terminal_loop(
 /// Control messages accepted by the provider request owner. The subject is
 /// created by that owner and captured by `StreamHandle.cancel`.
 pub type Control {
+  /// Requests cancellation of the current attempt.
   Cancel
 }
 
@@ -575,9 +644,13 @@ pub type Control {
 /// `AttemptTerminal` is eligible for ordinary fallback classification;
 /// `AttemptCancelled` and `ConsumerGone` stop the whole route walk.
 pub type AttemptOutcome {
+  /// The provider produced the attempt's single terminal event.
   AttemptTerminal(terminal: StreamEvent)
+  /// Cancellation was acknowledged before another terminal won the race.
   AttemptCancelled
+  /// Cancellation began, but no terminal acknowledged it within the grace.
   AttemptCancellationUnconfirmed
+  /// The process which could consume deltas exited, so the attempt was drained.
   ConsumerGone
 }
 
@@ -648,6 +721,27 @@ pub fn run(
 /// Runs one request attempt and publishes the live transport capability before
 /// waiting on it. The gateway uses this to retain a cancellation path even if
 /// its fallback pump crashes.
+///
+/// `started` is part of the ownership protocol, not an observation hook. The
+/// prepared transport remains parked until that callback returns, so the
+/// caller must publish its owner/cancel pair before returning from `started`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// stream.run_tracked(
+///   transport,
+///   request,
+///   machine,
+///   deliver,
+///   fn(running) { publish_transport_owner(running) },
+///   control: process.new_subject(),
+///   consumer: process.self(),
+///   within: 300_000,
+/// )
+/// // -> stream.AttemptTerminal(terminal)
+/// ```
+///
 pub fn run_tracked(
   transport: Transport,
   request: HttpRequest,

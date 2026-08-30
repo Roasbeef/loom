@@ -20,8 +20,9 @@ variable are the package's complete inventory of impurity.
 ## One request, arriving in parts
 
 `gateway.request` returns immediately. The work happens on a pump process
-it spawns, and the returned `StreamHandle` carries an event subject plus an
-idempotent cancellation capability.
+it spawns, and the returned `StreamHandle` carries an event subject, an
+idempotent cancellation capability, and the PID whose exit proves that the
+whole request subtree has drained.
 
 ```mermaid
 sequenceDiagram
@@ -32,7 +33,7 @@ sequenceDiagram
   participant M as ResponseMachine
 
   C->>G: gateway.request(gw, ProviderRequest)
-  Note over C,G: returns StreamHandle(events, cancel) at once
+  Note over C,G: returns StreamHandle(events, cancel, owner) at once
   G->>R: stream.run(transport, http_request, machine, deliver, within:)
   R->>T: start_streaming(request, private_http_events)
   T-->>R: http.ResponseStatus(status, headers)
@@ -49,7 +50,9 @@ sequenceDiagram
     C-->>G: cancel or DOWN
     G-->>R: Cancel
     R-->>T: cancel exact native request
-    T-->>R: DOWN within bounded grace
+    R-->>G: owner terminal or CancellationUnconfirmed after grace
+    T-->>R: DOWN when native work has actually stopped
+    Note over C,T: StreamHandle.owner remains alive until this Down
   end
 ```
 
@@ -66,10 +69,12 @@ Cancellation uses the same single owner as settlement and fallback. The pump
 monitors its direct consumer; `stream.run` monitors the active transport
 owner; every fallback attempt has a fresh private HTTP subject. When cancel,
 consumer death, or timeout wins, the transport cancellation capability runs
-before bounded owner reaping. Production retains the exact OTP request id and
-calls `httpc:cancel_request/1`, so teardown stops external work instead of
-only dropping its late answer. `ProviderCancelled` is terminal and never
-advances a fallback chain.
+before the terminal-acknowledgement grace. Expiry reports
+`CancellationUnconfirmed`; it does not kill the owner or claim native work is
+gone. The public custodian remains alive until every adopted owner exits.
+Production retains the exact OTP request id and calls
+`httpc:cancel_request/1`, so teardown stops external work instead of only
+dropping its late answer. Both cancellation terminals stop the fallback walk.
 
 `ResponseMachine` is the seam each adapter fills: `init`, `on_status`,
 `on_chunk`, `on_end`, `on_failure`, all pure. A body that ends without

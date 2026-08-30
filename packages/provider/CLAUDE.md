@@ -97,6 +97,11 @@ shell around that sans-io core. WP-F.
 
 ## Invariants
 
+- **Ownership documentation states the proof carried by each PID.** Public
+  stream, custodian, and transport APIs document why the owner exists, how
+  cancellation reaches it, and what its Down acknowledges. A comment that
+  only says a function "starts a process" is incomplete here: callers need to
+  know whether that process does work or survives work as its drain witness.
 - **Secrets exist only in request memory.** A key is read from the
   `SecretStore` at dispatch, copied into one outbound header, and appears
   nowhere else — not in the gateway value, not in an accumulator, not in
