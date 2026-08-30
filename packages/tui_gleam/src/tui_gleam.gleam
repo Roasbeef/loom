@@ -328,10 +328,7 @@ fn render_header(
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([
-      span.line_new([
-        span.span_styled(" LOOM ", theme.signal_bold()),
-        span.span_styled("NATIVE CLIENT", theme.quiet_text()),
-      ]),
+      span.line_new([span.span_styled(" ◆ ", theme.signal_bold())]),
     ])
     |> statusbar.with_center([
       span.line_new([
