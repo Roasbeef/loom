@@ -21,6 +21,29 @@ pub fn headings_lists_and_code_keep_semantic_text_test() {
   rendered |> string.contains("pub fn main() {}") |> should.be_true
 }
 
+pub fn gleam_code_distinguishes_tokens_without_changing_text_test() {
+  let rendered =
+    markdown.render(
+      "```gleam\npub fn main() -> report.Outcome {\n  // exact bytes\n  report.text(\"live\")\n}\n```",
+    )
+  let spans =
+    list.flat_map(rendered, fn(line) {
+      let span.Line(spans:, ..) = line
+      spans
+    })
+  let assert Ok(span.Span(style: keyword_style, ..)) =
+    list.find(spans, fn(value) { value.content == "pub" })
+  let assert Ok(span.Span(style: string_style, ..)) =
+    list.find(spans, fn(value) { value.content == "\"live\"" })
+  let assert Ok(span.Span(style: comment_style, ..)) =
+    list.find(spans, fn(value) { value.content == "// exact bytes" })
+
+  assert keyword_style != string_style
+  assert string_style != comment_style
+  assert visible_text(rendered)
+    |> string.contains("  // exact bytes\n│   report.text(\"live\")")
+}
+
 pub fn links_remain_clickable_test() {
   let links =
     markdown.render("read [the docs](https://example.com/docs)")

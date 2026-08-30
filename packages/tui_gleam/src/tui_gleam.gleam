@@ -374,9 +374,9 @@ fn transcript_content(lines: List(Line)) -> span.Text {
 
 fn render_line(line: Line) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
-    System -> #("◇ system ", theme.quiet_text())
-    User -> #("◆ you    ", theme.signal_bold())
-    Assistant -> #("◆ loom   ", theme.current_bold())
+    System -> #("◇ ", theme.quiet_text())
+    User -> #("› ", theme.signal_bold())
+    Assistant -> #("◆ ", theme.current_bold())
     Reasoning -> #("∴ reason ", theme.quiet_text())
     Tool -> #("✓ tool   ", theme.current_bold())
     ToolFailure -> #("× tool   ", theme.danger_text())
@@ -393,7 +393,7 @@ fn render_line(line: Line) -> List(span.Line) {
       |> list.index_map(fn(text, index) {
         let prefix = case index == 0 {
           True -> mark
-          False -> "         "
+          False -> string.repeat(" ", string.length(mark))
         }
         span.line_new([
           span.span_styled(prefix, mark_style),
@@ -414,7 +414,7 @@ fn prefix_rendered_lines(
     let span.Line(spans:, alignment:) = line
     let prefix = case index == 0 {
       True -> mark
-      False -> "         "
+      False -> string.repeat(" ", string.length(mark))
     }
     span.Line(
       spans: [span.span_styled(prefix, mark_style), ..spans],
@@ -483,9 +483,9 @@ fn update(event: backend.InputEvent, model: Model) -> Model {
     backend.KeyPress(key) -> update_key(keys.match(key), model)
     backend.Paste(text) ->
       Model(..model, input: text_area.state_from_string(text))
+    backend.MouseScroll(_, _, up) -> scroll_transcript(model, up, 3)
     backend.MousePress(..)
     | backend.MouseRelease(..)
-    | backend.MouseScroll(..)
     | backend.MouseDrag(..)
     | backend.MouseMove(..) -> model
   }
@@ -875,21 +875,8 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
         False -> "agent rail hidden"
       })
     }
-    keys.PageUp, False ->
-      Model(
-        ..model,
-        scroll_offset: model.scroll_offset + 10,
-        notice: "scrollback",
-      )
-    keys.PageDown, False ->
-      Model(
-        ..model,
-        scroll_offset: int.max(0, model.scroll_offset - 10),
-        notice: case model.scroll_offset <= 10 {
-          True -> "following output"
-          False -> "scrollback"
-        },
-      )
+    keys.PageUp, False -> scroll_transcript(model, True, 10)
+    keys.PageDown, False -> scroll_transcript(model, False, 10)
     keys.Escape, True -> Model(..model, help_open: False, notice: "help closed")
     keys.Enter, False -> submit(model)
     keys.Backspace, False ->
@@ -910,6 +897,29 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
       )
     }
     _, _ -> model
+  }
+}
+
+// Transcript movement has one definition for keyboard and wheel input. The
+// offset is measured backward from the newest wrapped row, so moving toward
+// the present clamps at zero and resumes tail following.
+fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
+  let scroll_offset = scroll_offset(model.scroll_offset, older, rows)
+  Model(..model, scroll_offset:, notice: case scroll_offset == 0 {
+    True -> "following output"
+    False -> "scrollback"
+  })
+}
+
+/// Moves a transcript offset without allowing it to cross the live tail.
+///
+/// This is internal because transcript offsets belong to the terminal model;
+/// it is public only so the input law can be pinned without running a PTY.
+@internal
+pub fn scroll_offset(offset: Int, older: Bool, rows: Int) -> Int {
+  case older {
+    True -> offset + rows
+    False -> int.max(0, offset - rows)
   }
 }
 

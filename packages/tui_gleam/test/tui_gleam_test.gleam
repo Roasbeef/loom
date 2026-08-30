@@ -1,5 +1,6 @@
 import etui/keys
 import gleeunit
+import tui_gleam
 import tui_gleam/command
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo}
@@ -56,4 +57,10 @@ pub fn model_selector_accepts_initials_test() {
     model_selector.update(keys.Down, state)
   assert model_selector.update(keys.Enter, next)
     == model_selector.Choose("baseten-glm-5-3-flash")
+}
+
+pub fn transcript_scroll_clamps_at_the_live_tail_test() {
+  assert tui_gleam.scroll_offset(12, True, 3) == 15
+  assert tui_gleam.scroll_offset(12, False, 3) == 9
+  assert tui_gleam.scroll_offset(2, False, 3) == 0
 }

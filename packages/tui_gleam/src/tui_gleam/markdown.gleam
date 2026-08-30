@@ -29,6 +29,31 @@ type InlinePart {
   Break
 }
 
+// Code blocks keep the model's bytes but give common Gleam token classes
+// enough contrast to scan quickly. This is presentation, not parsing: the
+// compiler remains the only authority on whether a program is valid.
+type CodePart {
+  CodePart(text: String, kind: CodeKind)
+}
+
+type CodeKind {
+  CodePlain
+  CodeKeyword
+  CodeType
+  CodeString
+  CodeNumber
+  CodeComment
+  CodePunctuation
+}
+
+type CodeCharacter {
+  SpaceCharacter
+  IdentifierCharacter
+  NumberCharacter
+  QuoteCharacter
+  PunctuationCharacter
+}
+
 /// Parses model markdown and returns wrapped-ready styled terminal lines.
 pub fn render(markdown: String) -> List(span.Line) {
   let safe = text_hygiene.multiline(markdown)
@@ -65,7 +90,7 @@ fn render_block(document: Document, block: Block) -> List(span.Line) {
       |> list.map(fn(line) {
         span.line_new([
           span.span_styled("│ ", theme.signal_bold()),
-          span.span_styled(line, code_style()),
+          ..code_spans(lang, line)
         ])
       })
       |> prepend_code_language(lang)
@@ -100,7 +125,199 @@ fn heading_style(level: Int) -> style.Style {
 }
 
 fn code_style() -> style.Style {
-  style.new(theme.signal, style.Default, style.none())
+  style.new(theme.paper, style.Default, style.none())
+}
+
+fn code_spans(language: Option(String), line: String) -> List(span.Span) {
+  case language {
+    Some(name) ->
+      case string.lowercase(string.trim(name)) {
+        "gleam" ->
+          line
+          |> string.to_graphemes
+          |> gleam_parts([])
+          |> list.map(code_span)
+        _ -> [span.span_styled(line, code_style())]
+      }
+    None -> [span.span_styled(line, code_style())]
+  }
+}
+
+fn gleam_parts(
+  characters: List(String),
+  accumulated: List(CodePart),
+) -> List(CodePart) {
+  case characters {
+    [] -> list.reverse(accumulated)
+    ["/", "/", ..rest] ->
+      list.reverse([
+        CodePart("//" <> string.concat(rest), CodeComment),
+        ..accumulated
+      ])
+    [character, ..rest] ->
+      case code_character(character) {
+        QuoteCharacter -> {
+          let #(text, remaining) = quoted_text(rest, [character], False)
+          gleam_parts(remaining, [CodePart(text, CodeString), ..accumulated])
+        }
+        SpaceCharacter -> {
+          let #(tail, remaining) =
+            take_code_characters(rest, SpaceCharacter, [])
+          let text = string.concat([character, ..tail])
+          gleam_parts(remaining, [CodePart(text, CodePlain), ..accumulated])
+        }
+        IdentifierCharacter -> {
+          let #(tail, remaining) = take_identifier_characters(rest, [])
+          let text = string.concat([character, ..tail])
+          gleam_parts(remaining, [
+            CodePart(text, word_kind(text)),
+            ..accumulated
+          ])
+        }
+        NumberCharacter -> {
+          let #(tail, remaining) = take_number_characters(rest, [])
+          let text = string.concat([character, ..tail])
+          gleam_parts(remaining, [CodePart(text, CodeNumber), ..accumulated])
+        }
+        PunctuationCharacter ->
+          gleam_parts(rest, [
+            CodePart(character, CodePunctuation),
+            ..accumulated
+          ])
+      }
+  }
+}
+
+fn code_character(character: String) -> CodeCharacter {
+  case character {
+    " " | "\t" -> SpaceCharacter
+    "\"" -> QuoteCharacter
+    _ ->
+      case
+        string.contains(
+          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_@",
+          character,
+        )
+      {
+        True -> IdentifierCharacter
+        False ->
+          case string.contains("0123456789", character) {
+            True -> NumberCharacter
+            False -> PunctuationCharacter
+          }
+      }
+  }
+}
+
+fn take_code_characters(
+  characters: List(String),
+  wanted: CodeCharacter,
+  accumulated: List(String),
+) -> #(List(String), List(String)) {
+  case characters {
+    [character, ..rest] ->
+      case code_character(character) == wanted {
+        True -> take_code_characters(rest, wanted, [character, ..accumulated])
+        False -> #(list.reverse(accumulated), characters)
+      }
+    [] -> #(list.reverse(accumulated), [])
+  }
+}
+
+fn take_identifier_characters(
+  characters: List(String),
+  accumulated: List(String),
+) -> #(List(String), List(String)) {
+  case characters {
+    [character, ..rest] ->
+      case code_character(character) {
+        IdentifierCharacter | NumberCharacter ->
+          take_identifier_characters(rest, [character, ..accumulated])
+        SpaceCharacter | QuoteCharacter | PunctuationCharacter -> #(
+          list.reverse(accumulated),
+          characters,
+        )
+      }
+    [] -> #(list.reverse(accumulated), [])
+  }
+}
+
+fn take_number_characters(
+  characters: List(String),
+  accumulated: List(String),
+) -> #(List(String), List(String)) {
+  case characters {
+    [character, ..rest] ->
+      case code_character(character) {
+        NumberCharacter ->
+          take_number_characters(rest, [character, ..accumulated])
+        IdentifierCharacter if character == "_" ->
+          take_number_characters(rest, [character, ..accumulated])
+        SpaceCharacter
+        | IdentifierCharacter
+        | QuoteCharacter
+        | PunctuationCharacter -> #(list.reverse(accumulated), characters)
+      }
+    [] -> #(list.reverse(accumulated), [])
+  }
+}
+
+fn quoted_text(
+  characters: List(String),
+  accumulated: List(String),
+  escaped: Bool,
+) -> #(String, List(String)) {
+  case characters, escaped {
+    [], _ -> #(string.concat(list.reverse(accumulated)), [])
+    [character, ..rest], True ->
+      quoted_text(rest, [character, ..accumulated], False)
+    ["\\", ..rest], False -> quoted_text(rest, ["\\", ..accumulated], True)
+    ["\"", ..rest], False -> #(
+      string.concat(list.reverse(["\"", ..accumulated])),
+      rest,
+    )
+    [character, ..rest], False ->
+      quoted_text(rest, [character, ..accumulated], False)
+  }
+}
+
+fn word_kind(word: String) -> CodeKind {
+  case
+    list.contains(
+      [
+        "as", "assert", "case", "const", "echo", "fn", "if", "import", "let",
+        "opaque", "panic", "pub", "todo", "type", "use",
+      ],
+      word,
+    )
+  {
+    True -> CodeKeyword
+    False ->
+      case string.to_graphemes(word) {
+        [first, ..] ->
+          case string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", first) {
+            True -> CodeType
+            False -> CodePlain
+          }
+        [] -> CodePlain
+      }
+  }
+}
+
+fn code_span(part: CodePart) -> span.Span {
+  let CodePart(text:, kind:) = part
+  let rendered = case kind {
+    CodePlain -> code_style()
+    CodeKeyword -> theme.current_bold()
+    CodeType -> style.new(theme.signal, style.Default, style.bold())
+    CodeString | CodeNumber ->
+      style.new(theme.signal, style.Default, style.none())
+    CodeComment ->
+      theme.quiet_text()
+      |> style.add_modifier(style.italic())
+    CodePunctuation -> theme.quiet_text()
+  }
+  span.span_styled(text, rendered)
 }
 
 fn render_list(
