@@ -116,15 +116,23 @@ pub type Config {
 /// its members.
 pub type SessionTree {
   SessionTree(
+    /// The root supervisor whose death ends ordinary session liveness.
     supervisor: Pid,
+    /// The stable drain-ledger name retained across abnormal root death.
+    drains: Name(drain_registry.Message),
+    /// The stable name of the session's sole durable writer.
     writer: Name(writer.Message),
+    /// The stable logical-strand to process-name registry.
     registry: Name(registry.Message),
+    /// The primary-strand dynamic supervisor.
     strands: Name(
       factory_supervisor.Message(String, Subject(strand_runtime.Message)),
     ),
+    /// The separately budgeted subagent-strand dynamic supervisor.
     subagent_strands: Name(
       factory_supervisor.Message(String, Subject(strand_runtime.Message)),
     ),
+    /// The pure classification used to choose one of the two factories.
     subagent: fn(String) -> Bool,
   )
 }
@@ -217,6 +225,7 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
       process.unlink(started.pid)
       Ok(SessionTree(
         supervisor: started.pid,
+        drains: drains_name,
         writer: writer_name,
         registry: registry_name,
         strands: strands_name,
@@ -242,7 +251,8 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// drain ledger is an unbounded-shutdown child and will not let that happen
 /// while an incarnation reaper still owns provider work. Killing the root on
 /// expiry would erase the only barrier that makes releasing the writer lease
-/// safe. Idempotent — a tree that is already dead returns at once.
+/// safe. The drain ledger is awaited independently because it can outlive an
+/// abnormally killed root. Idempotent after both processes have stopped.
 ///
 /// ## Examples
 ///
@@ -251,9 +261,19 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// ```
 ///
 pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
-  use <- bool.guard(when: !process.is_alive(tree.supervisor), return: Nil)
-  let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
+  let drain_owner = process.subject_owner(process.named_subject(tree.drains))
+  case process.is_alive(tree.supervisor) {
+    True -> {
+      let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
+      Nil
+    }
+    False -> Nil
+  }
   await_death(tree.supervisor)
+  case drain_owner {
+    Ok(pid) -> await_death(pid)
+    Error(Nil) -> Nil
+  }
 }
 
 // Polling rather than monitoring keeps shutdown callable from any process,
