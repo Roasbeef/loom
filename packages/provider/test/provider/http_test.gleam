@@ -33,6 +33,9 @@ fn with_suspended_request_handlers(
   check: fn(List(Pid)) -> Nil,
 ) -> Nil
 
+@external(erlang, "provider_http_test_ffi", "restart_httpc_manager")
+fn restart_httpc_manager() -> Nil
+
 pub fn production_cancel_retires_owner_and_closes_socket_test() {
   let accepted = process.new_subject()
   let closed = process.new_subject()
@@ -41,9 +44,9 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
     start_hanging_server(fn() { process.send(accepted, Nil) }, fn() {
       process.send(closed, Nil)
     })
-  let http.Transport(start_streaming:) = http.httpc_transport()
-  let assert Ok(running) =
-    start_streaming(
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
       http.HttpRequest(
         method: "GET",
         url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
@@ -53,6 +56,7 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
       events,
     )
     as "the production transport owner must start"
+  begin()
   let owner_monitor = process.monitor(http.owner(running))
   let server_monitor = process.monitor(server)
   let assert Ok(Nil) = process.receive(accepted, within: 2000)
@@ -81,12 +85,54 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
   assert process.receive(events, within: 20) == Error(Nil)
 }
 
+/// Replacing `httpc_manager` must not erase the handler which still owns this
+/// request's socket. The native owner addresses the captured handler directly
+/// and remains alive until that exact process acknowledges termination.
+pub fn production_cancel_survives_httpc_manager_restart_test() {
+  let accepted = process.new_subject()
+  let closed = process.new_subject()
+  let events = process.new_subject()
+  let #(port, server) =
+    start_hanging_server(fn() { process.send(accepted, Nil) }, fn() {
+      process.send(closed, Nil)
+    })
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
+      http.HttpRequest(
+        method: "GET",
+        url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
+        headers: [],
+        body: "",
+      ),
+      events,
+    )
+  begin()
+  let assert Ok(Nil) = process.receive(accepted, within: 2000)
+  let owner_monitor = process.monitor(http.owner(running))
+  with_suspended_request_handlers(http.owner(running), fn(handlers) {
+    assert !list.is_empty(handlers)
+    restart_httpc_manager()
+    http.cancel(running)
+    process.sleep(50)
+    assert process.is_alive(http.owner(running))
+      as "manager replacement cannot stand in for handler drain"
+  })
+
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(_down) { True })
+    |> process.selector_receive(2000)
+  stop_servers([server])
+}
+
 pub fn production_transport_redacts_raw_httpc_errors_test() {
   let #(port, server) = start_malformed_server()
   let events = process.new_subject()
-  let http.Transport(start_streaming:) = http.httpc_transport()
-  let assert Ok(running) =
-    start_streaming(
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
       http.HttpRequest(
         method: "GET",
         url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
@@ -95,6 +141,7 @@ pub fn production_transport_redacts_raw_httpc_errors_test() {
       ),
       events,
     )
+  begin()
   let assert Ok(http.RequestFailed(reason:)) =
     process.receive(events, within: 2000)
     as "the malformed peer response must fail the production transport"
@@ -113,9 +160,9 @@ pub fn production_cancel_never_follows_a_redirect_to_hanging_peer_test() {
   let #(port, servers) =
     start_redirect_pair(fn() { process.send(target_accepted, Nil) })
   let events = process.new_subject()
-  let http.Transport(start_streaming:) = http.httpc_transport()
-  let assert Ok(running) =
-    start_streaming(
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
       http.HttpRequest(
         method: "GET",
         url: "http://127.0.0.1:" <> int.to_string(port) <> "/redirect",
@@ -124,6 +171,7 @@ pub fn production_cancel_never_follows_a_redirect_to_hanging_peer_test() {
       ),
       events,
     )
+  begin()
   let owner_monitor = process.monitor(http.owner(running))
   let assert Ok(http.ResponseStatus(status: 302, ..)) =
     process.receive(events, within: 2000)

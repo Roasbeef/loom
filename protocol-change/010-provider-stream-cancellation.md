@@ -77,12 +77,16 @@ pub type RunningRequest {
   RunningRequest(owner: Pid, cancel: fn() -> Nil)
 }
 
+pub type PreparedRequest {
+  PreparedRequest(running: RunningRequest, begin: fn() -> Nil)
+}
+
 pub type Transport {
   Transport(
-    start_streaming: fn(
+    prepare_streaming: fn(
       HttpRequest,
       Subject(HttpEvent),
-    ) -> Result(RunningRequest, String),
+    ) -> Result(PreparedRequest, String),
   )
 }
 ```
@@ -111,31 +115,33 @@ prepares its child, publishes `handle.owner`, and only then invokes `begin`.
 The ordinary `request` function performs those steps synchronously for callers
 which do not participate in an outer ownership protocol.
 
-`RunningRequest.owner` is monitorable and is the sole sender of that attempt's
-HTTP events. The cancellation closure stops the transport-native request. The
-production native owner retains the exact OTP request id returned by
-`httpc:request/4`; cancellation invokes `httpc:cancel_request/1` and awaits the
-captured handler before that owner exits. Startup failures surface as one
-redacted `RequestFailed`, never as a secret-bearing exception string.
+`prepare_streaming` creates the monitorable owner without admitting network
+work. The caller publishes `RunningRequest.owner`, installs its monitor, and
+only then invokes `begin`. The cancellation closure stops the transport-native
+request and is valid before begin. The production native owner retains the
+exact OTP request id returned by `httpc:request/4`; cancellation addresses that
+handler directly and awaits its Down before the owner exits. Startup failures
+surface as one redacted `RequestFailed`, never as a secret-bearing exception
+string.
 
-OTP 27's contract matters here. `httpc:cancel_request/1` targets the default
-profile used by Loom's `httpc:request/4` call, returns `ok`, and is asynchronous.
-It explicitly does not guarantee that a response already in flight will not be
-delivered. Therefore cancellation of the socket and selection of the public
-terminal are separate facts: late HTTP messages are confined to the cancelled
-attempt's private subject and cannot produce another `StreamEvent` terminal.
-If Loom later uses `httpc:request/5` with a non-default profile, the owner must
-retain that profile and use `httpc:cancel_request/2`.
+OTP's public cancellation contract is asynchronous and routes through the
+currently registered manager. It explicitly does not guarantee that a response
+already in flight will not be delivered. Loom instead confines the required
+OTP-specific work to the native owner: it locates the exact request under
+`httpc_handler_sup`, invokes `httpc_handler:cancel/2`, and waits for that
+handler's monitor. This is an intentional internal-OTP dependency; the benefit
+is that a manager restart cannot retarget cancellation or erase drain evidence.
+Late HTTP messages remain confined to the cancelled attempt's private subject.
 
 The production shim closes that acknowledgement gap without moving provider
 policy into Erlang. It first allocates one parked native owner, which is both
 the raw `httpc` receiver and the monitorable drain witness. Only after Gleam
 publishes that PID does `begin_stream_request` admit work. A non-empty socket
-option gives the request a dedicated, non-reused handler; the owner captures
-that handler through public `httpc:info/0`, monitors the manager generation
-which admitted it, issues the cancellation cast, and waits for the handler's
-Down. The handler closes its socket during termination before that signal is
-delivered. Redirects are disabled because they retain a request id while
+option gives the request a dedicated, non-reused handler; the owner scans the
+handler supervisor and supports the OTP 27 and OTP 29 diagnostic layouts while
+matching the exact request id. It monitors that handler, issues cancellation to
+the handler itself, and waits for Down. The handler closes its socket during
+termination before that signal is delivered. Redirects are disabled because they retain a request id while
 moving work to another handler. Automatic Retry-After retries are also
 disabled where the running OTP version supports that option; older supported
 releases predate it. Raw tuple selection, prepare/begin, and the OTP-specific

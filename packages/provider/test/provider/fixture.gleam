@@ -76,7 +76,7 @@ pub fn error_response(
 
 /// A transport that replays the same scripted events for every request.
 pub fn transport(events: List(HttpEvent)) -> Transport {
-  Transport(start_streaming: fn(_request, subject) {
+  Transport(prepare_streaming: fn(_request, subject) {
     Ok(
       scripted_request(fn() {
         list.each(events, fn(event) { process.send(subject, event) })
@@ -90,7 +90,7 @@ pub fn transport(events: List(HttpEvent)) -> Transport {
 pub fn routing_transport(
   script: fn(HttpRequest) -> List(HttpEvent),
 ) -> Transport {
-  Transport(start_streaming: fn(request, subject) {
+  Transport(prepare_streaming: fn(request, subject) {
     Ok(
       scripted_request(fn() {
         list.each(script(request), fn(event) { process.send(subject, event) })
@@ -99,9 +99,20 @@ pub fn routing_transport(
   })
 }
 
-fn scripted_request(run: fn() -> Nil) -> http.RunningRequest {
-  let owner = process.spawn_unlinked(run)
-  http.RunningRequest(owner:, cancel: fn() { process.kill(owner) })
+fn scripted_request(run: fn() -> Nil) -> http.PreparedRequest {
+  let ready = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let begin = process.new_subject()
+      process.send(ready, begin)
+      let _permit = process.receive_forever(begin)
+      run()
+    })
+  let begin = process.receive_forever(ready)
+  http.PreparedRequest(
+    running: http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }),
+    begin: fn() { process.send(begin, Nil) },
+  )
 }
 
 /// Drives a response machine purely — no processes — over one response:

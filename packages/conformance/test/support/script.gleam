@@ -60,9 +60,24 @@ pub fn transport(turns: List(Turn)) -> Transport {
 pub fn owned_transport(
   replay: fn(http.HttpRequest, Subject(HttpEvent)) -> Nil,
 ) -> Transport {
-  http.Transport(start_streaming: fn(request, subject) {
-    let owner = process.spawn_unlinked(fn() { replay(request, subject) })
-    Ok(http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }))
+  http.Transport(prepare_streaming: fn(request, subject) {
+    let ready = process.new_subject()
+    let owner =
+      process.spawn_unlinked(fn() {
+        let begin = process.new_subject()
+        process.send(ready, begin)
+        let _permit = process.receive_forever(begin)
+        replay(request, subject)
+      })
+    let begin = process.receive_forever(ready)
+    Ok(
+      http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
+          process.kill(owner)
+        }),
+        begin: fn() { process.send(begin, Nil) },
+      ),
+    )
   })
 }
 

@@ -1375,7 +1375,7 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
   let cancelled = process.new_subject()
   let owners = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       let ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
@@ -1387,9 +1387,12 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
       let release = process.receive_forever(ready)
       process.send(owners, #(owner, release))
       Ok(
-        http.RunningRequest(owner:, cancel: fn() {
-          process.send(cancelled, Nil)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+          }),
+          begin: fn() { Nil },
+        ),
       )
     })
   let gateway =

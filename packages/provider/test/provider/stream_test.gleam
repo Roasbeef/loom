@@ -381,16 +381,21 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
   let deltas = process_subject()
   let outcomes = process_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, events) {
+    http.Transport(prepare_streaming: fn(_request, events) {
+      let begin_ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
+          let begin = process.new_subject()
+          process.send(begin_ready, begin)
+          let _permit = process.receive_forever(begin)
           process.send(events, http.ResponseStatus(status: 200, headers: []))
           process.send(events, http.ResponseChunk(<<"first":utf8>>))
           process.receive_forever(process.new_subject())
         })
+      let begin = process.receive_forever(begin_ready)
       process.send(owners, owner)
-      Ok(
-        http.RunningRequest(owner:, cancel: fn() {
+      Ok(http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
           process.send(cancelled, Nil)
           // This simulates an HTTP terminal already in flight when cancellation
           // wins. The attempt's private subject may receive it, but no second
@@ -398,7 +403,8 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
           process.send(events, http.ResponseEnd)
           process.kill(owner)
         }),
-      )
+        begin: fn() { process.send(begin, Nil) },
+      ))
     })
   let _runner =
     process.spawn_unlinked(fn() {
@@ -441,16 +447,19 @@ pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
   let owners = process_subject()
   let cancelled = process_subject()
   let stubborn =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       let owner =
         process.spawn_unlinked(fn() {
           process.receive_forever(process.new_subject())
         })
       process.send(owners, owner)
       Ok(
-        http.RunningRequest(owner:, cancel: fn() {
-          process.send(cancelled, Nil)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+          }),
+          begin: fn() { Nil },
+        ),
       )
     })
   let outcome =
@@ -472,9 +481,24 @@ pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
 
 pub fn run_transport_death_fails_in_band_test() {
   let dead =
-    http.Transport(start_streaming: fn(_request, _subject) {
-      let owner = process.spawn_unlinked(fn() { Nil })
-      Ok(http.RunningRequest(owner:, cancel: fn() { Nil }))
+    http.Transport(prepare_streaming: fn(_request, _subject) {
+      let begin_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process.new_subject()
+          process.send(begin_ready, begin)
+          let _permit = process.receive_forever(begin)
+          Nil
+        })
+      let begin = process.receive_forever(begin_ready)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.kill(owner)
+          }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
     })
   let outcome =
     stream.run(
@@ -496,7 +520,7 @@ pub fn run_transport_death_fails_in_band_test() {
 
 pub fn run_start_failure_fails_once_in_band_test() {
   let failed =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       Error("unavailable")
     })
   let outcome =
@@ -520,9 +544,22 @@ pub fn run_tracked_publishes_owner_before_transport_start_test() {
   let transport_started = process_subject()
   let outcomes = process_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
-      process.send(transport_started, Nil)
-      Error("fixture stopped")
+    http.Transport(prepare_streaming: fn(_request, _events) {
+      let owner =
+        process.spawn_unlinked(fn() {
+          process.receive_forever(process.new_subject())
+        })
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.kill(owner)
+          }),
+          begin: fn() {
+            process.send(transport_started, Nil)
+            process.kill(owner)
+          },
+        ),
+      )
     })
   let _runner =
     process.spawn_unlinked(fn() {
@@ -558,18 +595,18 @@ pub fn run_tracked_publishes_owner_before_transport_start_test() {
     == Ok(
       stream.AttemptTerminal(
         stream.Failed(stream.TransportFailed(
-          reason: "start failed: fixture stopped",
+          reason: "provider transport stopped before a terminal response",
         )),
       ),
     )
 }
 
-pub fn run_tracked_owner_drains_inner_after_runner_death_test() {
+pub fn run_tracked_publishes_cancel_capability_before_runner_death_test() {
   let published = process_subject()
   let inner_ready = process_subject()
   let cancelled = process_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       let ready = process_subject()
       let inner =
         process.spawn_unlinked(fn() {
@@ -581,9 +618,12 @@ pub fn run_tracked_owner_drains_inner_after_runner_death_test() {
       let release = process.receive_forever(ready)
       process.send(inner_ready, #(inner, release))
       Ok(
-        http.RunningRequest(owner: inner, cancel: fn() {
-          process.send(cancelled, Nil)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner: inner, cancel: fn() {
+            process.send(cancelled, Nil)
+          }),
+          begin: fn() { Nil },
+        ),
       )
     })
   let runner =
@@ -612,6 +652,7 @@ pub fn run_tracked_owner_drains_inner_after_runner_death_test() {
 
   process.kill(runner)
 
+  http.cancel(running)
   assert receive_from(cancelled, 1000) == Ok(Nil)
   assert process.is_alive(inner)
   assert process.is_alive(http.owner(running))
@@ -623,16 +664,19 @@ pub fn run_tracked_owner_drains_inner_after_runner_death_test() {
 }
 
 fn silent_transport(cancelled: process.Subject(Nil)) -> http.Transport {
-  http.Transport(start_streaming: fn(_request, _events) {
+  http.Transport(prepare_streaming: fn(_request, _events) {
     let owner =
       process.spawn_unlinked(fn() {
         process.receive_forever(process.new_subject())
       })
     Ok(
-      http.RunningRequest(owner:, cancel: fn() {
-        process.send(cancelled, Nil)
-        process.kill(owner)
-      }),
+      http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+          process.kill(owner)
+        }),
+        begin: fn() { Nil },
+      ),
     )
   })
 }

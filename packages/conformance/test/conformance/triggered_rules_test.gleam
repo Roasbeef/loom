@@ -335,8 +335,8 @@ fn settled_events(text: String) -> List(http.HttpEvent) {
     script.transport([
       script.AnswerTurn(text:, input_tokens: 100, output_tokens: 9),
     ])
-  let assert Ok(_running) =
-    one_shot.start_streaming(
+  let assert Ok(http.PreparedRequest(begin:, ..)) =
+    one_shot.prepare_streaming(
       http.HttpRequest(
         method: "POST",
         url: "https://captured.test",
@@ -345,6 +345,7 @@ fn settled_events(text: String) -> List(http.HttpEvent) {
       ),
       captured,
     )
+  begin()
   collect(captured, [])
 }
 

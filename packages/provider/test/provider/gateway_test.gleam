@@ -219,17 +219,19 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
   let started = process.new_subject()
   let cancelled = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(request, _events) {
+    http.Transport(prepare_streaming: fn(request, _events) {
       let owner =
         process.spawn_unlinked(fn() {
           process.receive_forever(process.new_subject())
         })
-      process.send(started, request.url)
       Ok(
-        http.RunningRequest(owner:, cancel: fn() {
-          process.send(cancelled, request.url)
-          process.kill(owner)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, request.url)
+            process.kill(owner)
+          }),
+          begin: fn() { process.send(started, request.url) },
+        ),
       )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
@@ -248,7 +250,7 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
 pub fn cancellation_before_begin_starts_no_provider_work_test() {
   let started = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       process.send(started, Nil)
       Error("a cancelled prepared request must not reach transport")
     })
@@ -276,13 +278,13 @@ pub fn cancellation_after_settlement_is_a_noop_test() {
   assert stream.next(handle, within: 100) == Error(Nil)
 }
 
-pub fn transport_start_crash_fails_promptly_in_band_test() {
+pub fn transport_prepare_crash_fails_closed_test() {
   let crashing =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       panic as "transport seam crashed"
     })
   let handle = gateway.request(two_provider_gateway(crashing), main_request())
-  let assert Ok(#([], stream.Failed(stream.TransportFailed(..)))) =
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
     stream.await_terminal(handle, within: 1000)
 }
 
@@ -291,7 +293,7 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   let owners = process.new_subject()
   let cancelled = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       let ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
@@ -302,13 +304,19 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
         })
       let release = process.receive_forever(ready)
       let start_gate = process.new_subject()
-      process.send(entered, start_gate)
-      let _release_start = process.receive_forever(start_gate)
       process.send(owners, #(owner, release))
       Ok(
-        http.RunningRequest(owner:, cancel: fn() {
-          process.send(cancelled, Nil)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+            process.send(start_gate, Nil)
+          }),
+          begin: fn() {
+            process.send(entered, start_gate)
+            let _release_start = process.receive_forever(start_gate)
+            Nil
+          },
+        ),
       )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
@@ -331,20 +339,29 @@ pub fn retryable_terminal_does_not_fallback_before_transport_drains_test() {
   let attempts = process.new_subject()
   let ready = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(request, events) {
-      process.send(attempts, request.url)
+    http.Transport(prepare_streaming: fn(request, events) {
       let owner_ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
           let release = process.new_subject()
-          process.send(owner_ready, release)
+          let begin = process.new_subject()
+          process.send(owner_ready, #(release, begin))
+          let _permit = process.receive_forever(begin)
           process.send(events, http.RequestFailed(reason: "overloaded"))
           let _release = process.receive_forever(release)
           Nil
         })
-      let release = process.receive_forever(owner_ready)
+      let #(release, begin) = process.receive_forever(owner_ready)
       process.send(ready, #(owner, release))
-      Ok(http.RunningRequest(owner:, cancel: fn() { Nil }))
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() { Nil }),
+          begin: fn() {
+            process.send(attempts, request.url)
+            process.send(begin, Nil)
+          },
+        ),
+      )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
   let assert Ok(#(owner, release)) = process.receive(ready, within: 1000)
@@ -364,17 +381,20 @@ pub fn consumer_death_cancels_and_reaps_transport_test() {
   let owners = process.new_subject()
   let cancelled = process.new_subject()
   let transport =
-    http.Transport(start_streaming: fn(_request, _events) {
+    http.Transport(prepare_streaming: fn(_request, _events) {
       let owner =
         process.spawn_unlinked(fn() {
           process.receive_forever(process.new_subject())
         })
       process.send(owners, owner)
       Ok(
-        http.RunningRequest(owner:, cancel: fn() {
-          process.send(cancelled, Nil)
-          process.kill(owner)
-        }),
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+            process.kill(owner)
+          }),
+          begin: fn() { Nil },
+        ),
       )
     })
   let consumer =

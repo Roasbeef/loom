@@ -689,22 +689,6 @@ type AttemptEvent {
   TransportExited(down: process.Down)
 }
 
-type PreparedControl {
-  BeginPrepared
-  CancelPrepared
-}
-
-type PreparedEvent {
-  PreparedControl(PreparedControl)
-  PreparedHttp(http.HttpEvent)
-  PreparedParentExited(process.Down)
-  PreparedTransportExited(process.Down)
-}
-
-type PreparedRequest {
-  PreparedRequest(running: http.RunningRequest, begin: fn() -> Nil)
-}
-
 /// Runs one request attempt to completion on the calling request-owner
 /// process. It starts a monitorable transport, folds the response machine,
 /// selects cancellation and consumer/transport death alongside HTTP events,
@@ -781,195 +765,36 @@ pub fn run_tracked(
   within timeout: Int,
 ) -> AttemptOutcome {
   let http_events = process.new_subject()
-  let PreparedRequest(running:, begin:) =
-    prepare_request(transport, request, http_events)
-  started(running)
-  begin()
-  let consumer_monitor = process.monitor(consumer)
-  let transport_monitor = process.monitor(http.owner(running))
-  let selector =
-    process.new_selector()
-    |> process.select_map(http_events, Http)
-    |> process.select_map(control, fn(_cancel) { Cancelled })
-    |> process.select_specific_monitor(consumer_monitor, ConsumerExited)
-    |> process.select_specific_monitor(transport_monitor, TransportExited)
-  run_loop(
-    selector,
-    running,
-    consumer_monitor,
-    transport_monitor,
-    machine,
-    machine.init,
-    deliver,
-    timeout,
-  )
-}
-
-// The prepared custodian closes the otherwise unavoidable gap between an
-// injected transport creating work and the gateway retaining its cancellation
-// capability. `started` runs while this process is still parked before
-// `BeginPrepared`, so a pump fault cannot lose either the custodian or work
-// beneath it. The custodian is also the sole sender on `events` and exits only
-// after the injected transport owner exits.
-fn prepare_request(
-  transport: Transport,
-  request: HttpRequest,
-  events: Subject(http.HttpEvent),
-) -> PreparedRequest {
-  let parent = process.self()
-  let ready = process.new_subject()
-  let owner =
-    process.spawn_unlinked(fn() {
-      let control = process.new_subject()
-      process.send(ready, control)
-      let parent_monitor = process.monitor(parent)
-      await_prepared_start(transport, request, events, control, parent_monitor)
-    })
-  let control = process.receive_forever(ready)
-  PreparedRequest(
-    running: http.RunningRequest(owner:, cancel: fn() {
-      process.send(control, CancelPrepared)
-    }),
-    begin: fn() { process.send(control, BeginPrepared) },
-  )
-}
-
-fn await_prepared_start(
-  transport: Transport,
-  request: HttpRequest,
-  events: Subject(http.HttpEvent),
-  control: Subject(PreparedControl),
-  parent_monitor: Monitor,
-) -> Nil {
-  let selector =
-    process.new_selector()
-    |> process.select_map(control, PreparedControl)
-    |> process.select_specific_monitor(parent_monitor, PreparedParentExited)
-  case process.selector_receive_forever(selector) {
-    PreparedControl(BeginPrepared) ->
-      start_prepared_transport(
-        transport,
-        request,
-        events,
-        control,
-        parent_monitor,
-      )
-    PreparedControl(CancelPrepared) | PreparedParentExited(_down) ->
-      process.demonitor_process(parent_monitor)
-    PreparedHttp(_) | PreparedTransportExited(_) ->
-      await_prepared_start(transport, request, events, control, parent_monitor)
-  }
-}
-
-fn start_prepared_transport(
-  transport: Transport,
-  request: HttpRequest,
-  events: Subject(http.HttpEvent),
-  control: Subject(PreparedControl),
-  parent_monitor: Monitor,
-) -> Nil {
-  let inner_events = process.new_subject()
-  let http.Transport(start_streaming:) = transport
-  case start_streaming(request, inner_events) {
+  let http.Transport(prepare_streaming:) = transport
+  case prepare_streaming(request, http_events) {
     Error(reason) -> {
-      process.send(events, http.RequestFailed("start failed: " <> reason))
-      process.demonitor_process(parent_monitor)
+      AttemptTerminal(Failed(TransportFailed("start failed: " <> reason)))
     }
-    Ok(running) -> {
+    Ok(http.PreparedRequest(running:, begin:)) -> {
+      // Publication precedes admission at the transport seam itself. There is
+      // no wrapper process whose begin handler can create untracked work.
+      started(running)
+      let consumer_monitor = process.monitor(consumer)
       let transport_monitor = process.monitor(http.owner(running))
-      own_prepared_transport(
-        running,
-        events,
-        inner_events,
-        control,
-        parent_monitor,
-        transport_monitor,
-      )
-    }
-  }
-}
-
-fn own_prepared_transport(
-  running: http.RunningRequest,
-  events: Subject(http.HttpEvent),
-  inner_events: Subject(http.HttpEvent),
-  control: Subject(PreparedControl),
-  parent_monitor: Monitor,
-  transport_monitor: Monitor,
-) -> Nil {
-  let selector =
-    process.new_selector()
-    |> process.select_map(inner_events, PreparedHttp)
-    |> process.select_map(control, PreparedControl)
-    |> process.select_specific_monitor(parent_monitor, PreparedParentExited)
-    |> process.select_specific_monitor(
-      transport_monitor,
-      PreparedTransportExited,
-    )
-  case process.selector_receive_forever(selector) {
-    PreparedControl(CancelPrepared) | PreparedParentExited(_down) -> {
-      http.cancel(running)
-      await_prepared_transport(running, transport_monitor)
-      forget_prepared(parent_monitor, transport_monitor)
-    }
-    PreparedControl(BeginPrepared) ->
-      own_prepared_transport(
-        running,
-        events,
-        inner_events,
-        control,
-        parent_monitor,
-        transport_monitor,
-      )
-    PreparedTransportExited(_down) -> {
-      process.send(
-        events,
-        http.RequestFailed(
-          "provider transport stopped before a terminal response",
-        ),
-      )
-      forget_prepared(parent_monitor, transport_monitor)
-    }
-    PreparedHttp(event) -> {
-      process.send(events, event)
-      case event {
-        http.ResponseStatus(..) | http.ResponseChunk(..) ->
-          own_prepared_transport(
-            running,
-            events,
-            inner_events,
-            control,
-            parent_monitor,
-            transport_monitor,
-          )
-        http.ResponseEnd | http.RequestFailed(..) -> {
-          await_prepared_transport(running, transport_monitor)
-          forget_prepared(parent_monitor, transport_monitor)
-        }
-      }
-    }
-  }
-}
-
-fn await_prepared_transport(
-  running: http.RunningRequest,
-  monitor: Monitor,
-) -> Nil {
-  case process.is_alive(http.owner(running)) {
-    False -> Nil
-    True -> {
-      let _down =
+      begin()
+      let selector =
         process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
+        |> process.select_map(http_events, Http)
+        |> process.select_map(control, fn(_cancel) { Cancelled })
+        |> process.select_specific_monitor(consumer_monitor, ConsumerExited)
+        |> process.select_specific_monitor(transport_monitor, TransportExited)
+      run_loop(
+        selector,
+        running,
+        consumer_monitor,
+        transport_monitor,
+        machine,
+        machine.init,
+        deliver,
+        timeout,
+      )
     }
   }
-}
-
-fn forget_prepared(parent_monitor: Monitor, transport_monitor: Monitor) -> Nil {
-  process.demonitor_process(parent_monitor)
-  process.demonitor_process(transport_monitor)
 }
 
 fn run_loop(

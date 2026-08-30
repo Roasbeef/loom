@@ -69,6 +69,20 @@ pub type RunningRequest {
   )
 }
 
+/// A transport request whose drain witness exists before network work starts.
+///
+/// The caller must publish `running.owner` to its own failure boundary before
+/// invoking `begin`. Cancellation is valid on the parked request and prevents
+/// a later begin from opening a socket.
+pub type PreparedRequest {
+  PreparedRequest(
+    /// The request capability which is safe to publish immediately.
+    running: RunningRequest,
+    /// The one-way permit which admits transport work after publication.
+    begin: fn() -> Nil,
+  )
+}
+
 /// Cancels a live transport request. Repeated calls and calls after transport
 /// completion are harmless.
 ///
@@ -106,17 +120,18 @@ pub fn owner(request: RunningRequest) -> Pid {
 /// A streaming HTTP transport as a record of functions, so tests can
 /// inject fixtures and production can inject `httpc_transport`.
 ///
-/// Constructor invariants: `start_streaming` returns a monitorable owner
-/// without waiting for response completion. Cancellation sent while the native
-/// request starts must remain queued until that request's identity is known.
-/// `RunningRequest.owner` is the sole sender of response events, delivers them
-/// in contract order, and either delivers a terminal
+/// Constructor invariants: `prepare_streaming` returns a parked, monitorable
+/// owner without starting external work. Cancellation before `begin` prevents
+/// startup; cancellation during startup remains queued until the native
+/// request identity is known. `RunningRequest.owner` is the sole sender of
+/// response events, delivers them in contract order, and either delivers a terminal
 /// `ResponseEnd`/`RequestFailed` before exiting or exits so its monitor reports
 /// transport death.
 pub type Transport {
   Transport(
-    start_streaming: fn(HttpRequest, Subject(HttpEvent)) ->
-      Result(RunningRequest, String),
+    /// Prepares one parked request without admitting external work.
+    prepare_streaming: fn(HttpRequest, Subject(HttpEvent)) ->
+      Result(PreparedRequest, String),
   )
 }
 
@@ -138,7 +153,7 @@ pub type Transport {
 /// ```
 ///
 pub fn httpc_transport() -> Transport {
-  Transport(start_streaming: fn(request, subject) {
+  Transport(prepare_streaming: fn(request, subject) {
     start_httpc(request, subject)
   })
 }
@@ -146,7 +161,7 @@ pub fn httpc_transport() -> Transport {
 fn start_httpc(
   request: HttpRequest,
   subject: Subject(HttpEvent),
-) -> Result(RunningRequest, String) {
+) -> Result(PreparedRequest, String) {
   let owner =
     ffi_httpc.prepare_stream_request(
       fn(status, headers) {
@@ -156,16 +171,20 @@ fn start_httpc(
       fn() { process.send(subject, ResponseEnd) },
       fn(reason) { process.send(subject, RequestFailed(reason:)) },
     )
-  ffi_httpc.begin_stream_request(
-    owner,
-    request.method,
-    request.url,
-    request.headers,
-    request.body,
-  )
   Ok(
-    RunningRequest(owner:, cancel: fn() {
-      ffi_httpc.cancel_stream_request(owner)
-    }),
+    PreparedRequest(
+      running: RunningRequest(owner:, cancel: fn() {
+        ffi_httpc.cancel_stream_request(owner)
+      }),
+      begin: fn() {
+        ffi_httpc.begin_stream_request(
+          owner,
+          request.method,
+          request.url,
+          request.headers,
+          request.body,
+        )
+      },
+    ),
   )
 }

@@ -10,9 +10,24 @@ import provider/http
 pub fn transport(
   replay: fn(http.HttpRequest, Subject(http.HttpEvent)) -> Nil,
 ) -> http.Transport {
-  http.Transport(start_streaming: fn(request, events) {
-    let owner = process.spawn_unlinked(fn() { replay(request, events) })
-    Ok(http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }))
+  http.Transport(prepare_streaming: fn(request, events) {
+    let ready = process.new_subject()
+    let owner =
+      process.spawn_unlinked(fn() {
+        let begin = process.new_subject()
+        process.send(ready, begin)
+        let _permit = process.receive_forever(begin)
+        replay(request, events)
+      })
+    let begin = process.receive_forever(ready)
+    Ok(
+      http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
+          process.kill(owner)
+        }),
+        begin: fn() { process.send(begin, Nil) },
+      ),
+    )
   })
 }
 

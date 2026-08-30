@@ -208,8 +208,8 @@ fn host_of(head: Bool) -> String {
 fn settled_events(turn: script.Turn) -> List(http.HttpEvent) {
   let captured = process.new_subject()
   let one_shot = script.transport([turn])
-  let assert Ok(_running) =
-    one_shot.start_streaming(
+  let assert Ok(http.PreparedRequest(begin:, ..)) =
+    one_shot.prepare_streaming(
       http.HttpRequest(
         method: "POST",
         url: "https://captured.test",
@@ -218,6 +218,7 @@ fn settled_events(turn: script.Turn) -> List(http.HttpEvent) {
       ),
       captured,
     )
+  begin()
   collect(captured, [])
 }
 

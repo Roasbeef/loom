@@ -68,6 +68,11 @@ type ParkedRequestEvent {
   StopBeforeRequest
 }
 
+type ParkedPumpEvent {
+  StartPump
+  StopBeforePump
+}
+
 type AttemptRegistration {
   AttemptRegistration(running: RunningRequest, permit: process.Subject(Bool))
 }
@@ -380,16 +385,28 @@ fn start_request(
       let pump_control = process.new_subject()
       let pump_begin = process.new_subject()
       process.send(pump_ready, #(pump_control, pump_begin))
-      let _begin = process.receive_forever(pump_begin)
-      pump(
-        gateway,
-        request,
-        now,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        self,
-      )
+      // Adoption and begin are separate messages from separate processes. If
+      // the guard dies between them, its custodian cancels this parked pump.
+      // Selecting both gates keeps that cancellation from becoming an
+      // unconsumed mailbox message which would pin the whole drain chain.
+      let parked =
+        process.new_selector()
+        |> process.select_map(pump_begin, fn(_nil) { StartPump })
+        |> process.select_map(pump_control, fn(_control) { StopBeforePump })
+        |> process.selector_receive_forever()
+      case parked {
+        StopBeforePump -> Nil
+        StartPump ->
+          pump(
+            gateway,
+            request,
+            now,
+            pump_events,
+            pump_attempts,
+            pump_control,
+            self,
+          )
+      }
     })
   let consumer_monitor = process.monitor(consumer)
   let pump_monitor = process.monitor(pump_owner)

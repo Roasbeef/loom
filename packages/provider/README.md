@@ -35,7 +35,10 @@ sequenceDiagram
   C->>G: gateway.request(gw, ProviderRequest)
   Note over C,G: returns StreamHandle(events, cancel, owner) at once
   G->>R: stream.run(transport, http_request, machine, deliver, within:)
-  R->>T: start_streaming(request, private_http_events)
+  R->>T: prepare_streaming(request, private_http_events)
+  T-->>R: PreparedRequest(owner, cancel, begin)
+  Note over R,T: publish and monitor owner before begin
+  R->>T: begin()
   T-->>R: http.ResponseStatus(status, headers)
   R->>M: on_status
   T-->>R: http.ResponseChunk(bytes)

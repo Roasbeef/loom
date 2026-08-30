@@ -64,9 +64,11 @@ processful shell around that sans-io core. WP-F.
   cancellation as an asynchronous cast rather than a socket-drain
   acknowledgement. The shim therefore forces a non-reused handler, disables
   handler migration through redirects and supported automatic retries,
-  captures that handler through public `httpc:info/0`, and exposes only the
-  owner's monitorable pid. All ownership, fallback, deadline, and terminal state
-  machines stay in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  locates that handler under `httpc_handler_sup`, cancels the exact PID directly,
+  and exposes only the owner's monitorable pid. The internal OTP dependency is
+  confined to this shim and covered across the OTP 27 and OTP 29 diagnostic
+  layouts. All ownership, fallback, deadline, and terminal state machines stay
+  in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 

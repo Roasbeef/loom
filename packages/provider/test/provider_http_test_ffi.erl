@@ -3,10 +3,29 @@
 -module(provider_http_test_ffi).
 -export([start_hanging_server/2, start_malformed_server/0,
          start_redirect_pair/1, stop_servers/1,
-         with_suspended_request_handlers/2]).
+         restart_httpc_manager/0, with_suspended_request_handlers/2]).
 
-%% The native owner links only the handler captured for this request. Suspending
-%% that closed set cannot affect another test's request, and the after clause
+%% Replaces only the default manager generation. Request handlers live under
+%% their own supervisor, which is exactly why manager death cannot stand in for
+%% request drain.
+restart_httpc_manager() ->
+    Old = whereis(httpc_manager),
+    exit(Old, kill),
+    await_replacement_manager(Old, 1000),
+    nil.
+
+await_replacement_manager(_Old, 0) ->
+    erlang:error(httpc_manager_did_not_restart);
+await_replacement_manager(Old, Remaining) ->
+    case whereis(httpc_manager) of
+        New when is_pid(New), New =/= Old -> ok;
+        _ -> receive after 1 ->
+                 await_replacement_manager(Old, Remaining - 1)
+             end
+    end.
+
+%% The native owner monitors only the handler captured for this request.
+%% Suspending that closed set cannot affect another test's request, and the after clause
 %% prevents a failed Gleam assertion from poisoning the remainder of the suite.
 with_suspended_request_handlers(Owner, Test) ->
     Handlers = await_request_handlers(Owner, 1000),
@@ -20,11 +39,30 @@ with_suspended_request_handlers(Owner, Test) ->
 await_request_handlers(_Owner, 0) ->
     [];
 await_request_handlers(Owner, Remaining) ->
-    case process_info(Owner, links) of
-        {links, []} ->
+    case process_info(Owner, monitors) of
+        {monitors, []} ->
             receive after 1 -> await_request_handlers(Owner, Remaining - 1) end;
-        {links, Handlers} -> Handlers;
+        {monitors, Monitors} ->
+            Handlers = [Pid || {process, Pid} <- Monitors,
+                               is_request_handler(Pid)],
+            case Handlers of
+                [] ->
+                    receive after 1 ->
+                        await_request_handlers(Owner, Remaining - 1)
+                    end;
+                _ -> Handlers
+            end;
         undefined -> []
+    end.
+
+is_request_handler(Pid) ->
+    try
+        Info = httpc_handler:info(Pid),
+        lists:keymember(id, 1, Info) orelse
+            lists:keymember(
+              id, 1, proplists:get_value(current_request, Info, []))
+    catch
+        _:_ -> false
     end.
 
 resume_if_alive(Pid) ->
