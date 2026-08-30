@@ -204,10 +204,10 @@ pub fn platform(raw: #(String, String)) -> String {
 /// and the coarse `degraded` flag a helper advertised in its hello.
 ///
 /// Best effort was asked for explicitly, so it reports itself whatever
-/// the helper says. Full enforcement against a degraded helper is
-/// `DegradedRefusing` — every jailed execution is refused before dispatch
-/// — which the pack states as a host failure rather than a policy denial,
-/// because retrying against it never clears.
+/// the helper says. Both strict demands refuse a degraded helper before
+/// dispatch. A healthy platform demand says that the platform's mandatory
+/// boundary is enforced while its explicitly reported portability gaps may
+/// remain; full enforcement claims the stronger, gap-free posture.
 ///
 /// ## Examples
 ///
@@ -222,6 +222,8 @@ pub fn enforcement(
 ) -> pack.Enforcement {
   case demand, degraded {
     exec.BestEffort, _ -> pack.BestEffort
+    exec.PlatformEnforcement, True -> pack.DegradedRefusing
+    exec.PlatformEnforcement, False -> pack.PlatformEnforced
     exec.FullEnforcement, True -> pack.DegradedRefusing
     exec.FullEnforcement, False -> pack.FullyEnforced
   }

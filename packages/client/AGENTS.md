@@ -460,6 +460,12 @@ over one session file. WP-L.
   startup line out, and either `SIGTERM` or a fatal fault runs the same
   `shutdown` so the lease is released rather than left to its TTL.
   `client.main` delegates here for the shipment's entrypoint.
+- `client/serve.Settings.demand` — the broker's enforcement contract.
+  `main` selects `PlatformEnforcement` by default, which is strict on Linux
+  and admits only ADR-006's three reported Darwin gaps. The
+  `--full-enforcement` flag asks for Linux-equivalent containment on every
+  platform; `--best-effort` explicitly accepts any honest degradation. The
+  two flags are mutually exclusive.
 - `client/serve.{helper_ladder, seed_ladder}` — the two lookup orders,
   taken as rungs rather than performed inline, because *order* is the
   whole of what they decide and a lookup against the host running a test

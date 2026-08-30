@@ -76,6 +76,15 @@ pub type EnforcementDemand {
   /// policy called for was not applied, and the result is refused even
   /// when the bool stayed false.
   FullEnforcement
+  /// Require every kernel boundary the selected platform promises, and
+  /// refuse degraded helpers, missing mandatory layers, silent reports,
+  /// and unexpected skips. On Darwin only, the three gaps ADR-006 proves
+  /// the platform cannot close are accepted when they are reported
+  /// explicitly: address-space rlimits, account-wide process rlimits,
+  /// and descendant lifecycle containment. This is the production
+  /// default: usable on macOS without turning a missing Seatbelt layer
+  /// into an accepted best-effort execution.
+  PlatformEnforcement
   /// Accept whatever the helper could enforce (development containers,
   /// self-tests). The enforcement report still reaches the caller.
   BestEffort
@@ -319,6 +328,10 @@ type RunningExec {
     /// because the report arrives long after the request that named
     /// them, and "what was asked for" is half of the check.
     required: List(String),
+    /// Platform-known gaps that may be reported as skipped for this
+    /// execution. Every one must still appear in the report, either as
+    /// applied or as `skip:`; silence is not tolerance.
+    tolerated: List(String),
     cancel_timer: Option(Timer),
   )
 }
@@ -773,6 +786,8 @@ fn handle_run(
       case request.demand, degraded_features(features) {
         FullEnforcement, True ->
           refuse_run(state, reply, DegradedHelper(features:))
+        PlatformEnforcement, True ->
+          refuse_run(state, reply, DegradedHelper(features:))
         _, _ -> dispatch_exec(state, request, features, events, reply)
       }
   }
@@ -814,7 +829,16 @@ fn dispatch_exec(
       id:,
       events:,
       demand: request.demand,
-      required: required_layers_for_features(request.policy, features),
+      required: required_layers_for_demand(
+        request.policy,
+        features,
+        request.demand,
+      ),
+      tolerated: tolerated_layers_for_demand(
+        request.policy,
+        features,
+        request.demand,
+      ),
       cancel_timer: None,
     )
   let state = State(..state, exec: Some(exec))
@@ -872,6 +896,44 @@ pub fn required_layers_for_features(
     False -> "linux"
   }
   required_layers_for(policy, os_name)
+}
+
+// The mandatory half of a demand. PlatformEnforcement keeps the Darwin
+// resource layers out of this list because ADR-006 proves they are not
+// platform guarantees; `tolerated_layers_for_demand` still requires an
+// explicit applied-or-skipped report for each one.
+fn required_layers_for_demand(
+  policy: Option(SandboxPolicy),
+  features: List(String),
+  demand: EnforcementDemand,
+) -> List(String) {
+  let required = required_layers_for_features(policy, features)
+  let tolerated = tolerated_layers_for_demand(policy, features, demand)
+  list.filter(required, fn(layer) { !list.contains(tolerated, layer) })
+}
+
+// Darwin's documented gaps are tolerated only by PlatformEnforcement and
+// only when the report names them. Linux has no corresponding relaxation:
+// its platform-strict demand is byte-for-byte as strict as full enforcement.
+fn tolerated_layers_for_demand(
+  policy: Option(SandboxPolicy),
+  features: List(String),
+  demand: EnforcementDemand,
+) -> List(String) {
+  case demand, list.contains(features, "seatbelt") {
+    PlatformEnforcement, True -> {
+      let resource = case policy {
+        None -> []
+        Some(policy) ->
+          list.flatten([
+            optional_layer(policy.limits.mem_bytes > 0, "rlimit-address-space"),
+            optional_layer(policy.limits.pids > 0, "rlimit-processes"),
+          ])
+      }
+      list.append(resource, ["darwin-process-lifecycle"])
+    }
+    _, _ -> []
+  }
 }
 
 /// `required_layers` with an explicit OS name, so both platform matrices are
@@ -982,6 +1044,44 @@ fn degraded_report(
   degraded
   || list.any(enforcement, fn(entry) { string.starts_with(entry, "skip:") })
   || unapplied_layers(enforcement, required) != []
+}
+
+// Platform enforcement is strict about the platform's real boundary and
+// permissive only about the exact Darwin gaps ADR-006 names. A tolerated
+// layer must still speak: accepting an omitted report would recreate #54's
+// silent-stage-2 hole under a different demand.
+fn platform_degraded_report(
+  enforcement: List(String),
+  degraded: Bool,
+  required: List(String),
+  tolerated: List(String),
+) -> Bool {
+  degraded
+  || list.any(enforcement, fn(entry) {
+    string.starts_with(entry, "skip:")
+    && !list.contains(tolerated, report_layer_tag(entry))
+  })
+  || unapplied_layers(enforcement, required) != []
+  || unreported_layers(enforcement, tolerated) != []
+}
+
+fn unreported_layers(
+  enforcement: List(String),
+  expected: List(String),
+) -> List(String) {
+  let reported = list.map(enforcement, report_layer_tag)
+  list.filter(expected, fn(layer) { !list.contains(reported, layer) })
+}
+
+// `layer_tag` deliberately sees a skip as the `skip` tag because the full
+// demand removes skipped entries before calling it. Platform enforcement
+// also needs the name *inside* a skip so it can compare that name with its
+// narrow tolerated set.
+fn report_layer_tag(entry: String) -> String {
+  case string.starts_with(entry, "skip:") {
+    True -> layer_tag(string.drop_start(entry, 5))
+    False -> layer_tag(entry)
+  }
 }
 
 fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
@@ -1143,10 +1243,20 @@ fn handle_exec_exit(state: State, id: Int, result: ExecResult) -> State {
       // mentions, which is how a dead stage 2 used to pass (#54).
       let event = case
         exec.demand,
-        degraded_report(result.enforcement, result.degraded, exec.required)
+        degraded_report(result.enforcement, result.degraded, exec.required),
+        platform_degraded_report(
+          result.enforcement,
+          result.degraded,
+          exec.required,
+          exec.tolerated,
+        )
       {
-        FullEnforcement, True -> Failed(failure: DegradedExecution(result:))
-        FullEnforcement, False | BestEffort, _ -> Exited(result:)
+        FullEnforcement, True, _ -> Failed(failure: DegradedExecution(result:))
+        PlatformEnforcement, _, True ->
+          Failed(failure: DegradedExecution(result:))
+        FullEnforcement, False, _ -> Exited(result:)
+        PlatformEnforcement, _, False -> Exited(result:)
+        BestEffort, _, _ -> Exited(result:)
       }
       process.send(exec.events, event)
       State(..state, exec: None)

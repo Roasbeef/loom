@@ -1673,9 +1673,9 @@ fn live_ctx(
     source_index: 0,
     base_policy: base,
     grants: [],
-    // The kernels this runs on vary; the point here is the wiring, and
-    // the result says which layers were really applied.
-    demand: exec.BestEffort,
+    // Exercise the production demand on each CI kernel. Linux must apply
+    // its complete boundary; Darwin may report only ADR-006's three gaps.
+    demand: exec.PlatformEnforcement,
     env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
     clock: wall,
     filesystem: no_filesystem(),

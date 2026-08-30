@@ -37,11 +37,15 @@
 ////   `both` need a messaging plane, which this boot always wires, and
 ////   `both` is what lets a submission choose per program
 ////   (`docs/architecture/code-mode.md`, "Two seams").
-//// - `--best-effort` — accept a degraded sandbox helper (development
-////   kernels without bwrap/Landlock). The default demands full
-////   enforcement, under which a degraded helper is refused at dispatch
-////   — the server still runs, tool calls fail in-band. Run
-////   `make selftest` to learn which posture your kernel supports.
+//// - `--full-enforcement` — require every requested resource and lifecycle
+////   layer, including the ones current Darwin kernels cannot provide. The
+////   default is platform enforcement: it still refuses a missing jail or
+////   any unexpected skip, while admitting the three Darwin gaps ADR-006
+////   documents when the helper reports them explicitly.
+//// - `--best-effort` — accept any degraded sandbox helper (development
+////   kernels without bwrap/Landlock). This is weaker than the default and
+////   remains an explicit opt-in. Run `make selftest` to learn which posture
+////   your kernel supports.
 //// - `LOOM_HELPER_POOL` — how many `loom-exec` helpers may run at
 ////   once (not a flag: it is a property of the host, not of the
 ////   session). Default `exec.default_pool_size()`, the node's
@@ -480,7 +484,7 @@ type Flags {
     config: Option(String),
     codemode_seed: Option(String),
     codemode_seams: Option(String),
-    best_effort: Bool,
+    demand: Option(EnforcementDemand),
   )
 }
 
@@ -496,7 +500,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       config: None,
       codemode_seed: None,
       codemode_seams: None,
-      best_effort: False,
+      demand: None,
     ),
   )
 }
@@ -521,7 +525,9 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
     ["--codemode-seams", value, ..rest] ->
       parse_loop(rest, Flags(..flags, codemode_seams: Some(value)))
     ["--best-effort", ..rest] ->
-      parse_loop(rest, Flags(..flags, best_effort: True))
+      set_demand(rest, flags, exec.BestEffort, "--best-effort")
+    ["--full-enforcement", ..rest] ->
+      set_demand(rest, flags, exec.FullEnforcement, "--full-enforcement")
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
   }
 }
@@ -534,7 +540,26 @@ const usage = "usage: loom-server --session <path.db>
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
   [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed, then the bundled one)
   [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
-  [--best-effort]          accept a degraded sandbox helper"
+  [--full-enforcement]     require every requested resource and lifecycle layer
+  [--best-effort]          accept any degraded sandbox helper"
+
+fn set_demand(
+  rest: List(String),
+  flags: Flags,
+  demand: EnforcementDemand,
+  flag: String,
+) -> Result(Flags, String) {
+  case flags.demand {
+    None -> parse_loop(rest, Flags(..flags, demand: Some(demand)))
+    Some(_) ->
+      Error(
+        "`"
+        <> flag
+        <> "` cannot be combined with another enforcement flag\n"
+        <> usage,
+      )
+  }
+}
 
 // Fills every default and builds the provider gateway from the model
 // catalogue — the `--config` file when given, the environment-shaped
@@ -591,10 +616,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     helper_path:,
     helper_pool_size:,
     session_id: session_id_of(session_path),
-    demand: case flags.best_effort {
-      True -> exec.BestEffort
-      False -> exec.FullEnforcement
-    },
+    demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
     gateway: catalog.gateway(
       catalogue,
       transport: http.httpc_transport(),

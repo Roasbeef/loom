@@ -97,6 +97,7 @@ fn enforcement_line(enforcement: pack.Enforcement) -> String {
   let text =
     "%% section sandbox\n{enforcement}\n"
     <> "%% section _enforcement_enforced\nenforced\n"
+    <> "%% section _enforcement_platform\nplatform\n"
     <> "%% section _enforcement_degraded\ndegraded\n"
     <> "%% section _enforcement_best_effort\nbest effort"
   pack.render(
@@ -116,6 +117,7 @@ fn enforcement_line(enforcement: pack.Enforcement) -> String {
 
 pub fn render_selects_the_enforcement_fragment_test() {
   assert enforcement_line(pack.FullyEnforced) == "enforced"
+  assert enforcement_line(pack.PlatformEnforced) == "platform"
   assert enforcement_line(pack.DegradedRefusing) == "degraded"
   assert enforcement_line(pack.BestEffort) == "best effort"
 }

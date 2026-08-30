@@ -35,7 +35,7 @@
 /// ```
 ///
 pub const source = "%% loom-prompt-pack 1
-%% version loom-default-1
+%% version loom-default-2
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -164,6 +164,13 @@ general permission is not a thing anyone can grant you.
 Confinement on this host is complete. A command that could not be
 confined as specified is refused rather than run unconfined, so a
 command that ran, ran jailed.
+
+%% section _enforcement_platform
+Confinement on this host is platform-strict. A command runs only when the
+platform's mandatory jail is active; a missing jail, an unexpected gap, or a
+silent required layer is refused. This platform may have declared resource or
+process-lifecycle limits that full enforcement would reject. Those limits are
+reported with each execution and never weaken filesystem or network policy.
 
 %% section _enforcement_degraded
 This host cannot provide the confinement this session requires, so

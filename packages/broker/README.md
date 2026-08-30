@@ -154,6 +154,13 @@ knob entirely: it opts a genuinely unsupported *platform* out of the
 refusal-to-serve, and passing it in place of `FullEnforcement`'s honest
 skip report would replace a decision with a silence.
 
+Production uses `PlatformEnforcement`. It is identical to
+`FullEnforcement` on Linux. On Darwin it accepts only the three explicit
+ADR-006 gaps, and only when each layer appears as applied or `skip:` in the
+execution report. A missing Seatbelt layer, an unexpected skip, or a silent
+report still fails. `--full-enforcement` asks for Linux-equivalent containment
+on every platform; `--best-effort` is the broader development override.
+
 ## The modules
 
 | Module | What it holds |
