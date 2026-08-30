@@ -37,8 +37,8 @@ Editing one must not reprice the other.
   list field. Workspace, platform, shell, tools, enforcement, network
   posture, protected paths, repository guidance. Nothing else, and
   nothing numeric.
-- `prompt/pack.Enforcement` — `FullyEnforced` / `DegradedRefusing` /
-  `BestEffort`. Behavioural posture, not a layer inventory; see
+- `prompt/pack.Enforcement` — `FullyEnforced` / `PlatformEnforced` /
+  `DegradedRefusing` / `BestEffort`. Behavioural posture, not a layer inventory; see
   Invariants.
 - `prompt/pack.NetworkPosture` — `NetworkBlocked` /
   `NetworkProxied(allow)` / `NetworkOpen`, mirrored from
@@ -223,8 +223,8 @@ written by whoever calls `render`, not here.
 - **The enforcement line is present on every host.** Its presence
   everywhere is what makes its variation meaningful.
 - **A degraded host's sentence names a host failure, not a policy
-  denial.** Under `FullEnforcement` — the production default — a
-  degraded helper means every jailed execution is refused, before
+  denial.** Under `FullEnforcement` and the production
+  `PlatformEnforcement` default, a degraded helper means every jailed execution is refused, before
   dispatch and again after the run. Escalation cannot clear it and
   retrying cannot either, and an agent that mistakes it for a policy
   denial retries forever against a wall. The two demand different

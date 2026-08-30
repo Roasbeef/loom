@@ -62,6 +62,13 @@ pub type Script {
   /// A report that is complete except for the seccomp network filter a
   /// network-off policy calls for.
   NoSeccompEntry
+  /// Darwin applies its Seatbelt boundary and enforceable rlimits while
+  /// reporting the three platform gaps ADR-006 permits the default to carry.
+  DarwinDeclaredGaps
+  /// Darwin's report contains a skip outside ADR-006's tolerated set.
+  DarwinUnexpectedSkip
+  /// Darwin omits the lifecycle report entirely, recreating a silent layer.
+  DarwinSilentGap
 }
 
 /// Messages driving the fake helper process.
@@ -257,6 +264,11 @@ fn wait_attach(script: Script, inbox: Subject(FakeMsg)) -> Nil {
 fn features(script: Script) -> List(String) {
   case script {
     Degraded -> ["rlimits", "pgroup", "degraded"]
+    DarwinDeclaredGaps | DarwinUnexpectedSkip | DarwinSilentGap -> [
+      "rlimits",
+      "pgroup",
+      "seatbelt",
+    ]
     _ -> ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"]
   }
 }
@@ -411,6 +423,9 @@ fn exec_start(
         | SkippedLayer
         | SilentStage2
         | NoSeccompEntry
+        | DarwinDeclaredGaps
+        | DarwinUnexpectedSkip
+        | DarwinSilentGap
         | DeafHeartbeat
         | NoHello
         | WrongProto -> {
@@ -534,6 +549,35 @@ fn exit_body(
       "bwrap", "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",
       "no-new-privs", "seccomp-net", "rlimits", "pgroup",
       "skip:landlock: unavailable in this test",
+    ]
+    DarwinDeclaredGaps -> [
+      "seatbelt",
+      "seatbelt-fs:rw=1,mask=0,scratch=private-dir,plan=0000000000000000",
+      "seatbelt-net",
+      "rlimit-cpu",
+      "rlimit-fsize",
+      "skip:rlimit-address-space: invalid argument",
+      "skip:rlimit-processes: account already exceeds the requested limit",
+      "skip:darwin-process-lifecycle: no PID namespace or stable handle",
+    ]
+    DarwinUnexpectedSkip -> [
+      "seatbelt",
+      "seatbelt-fs:rw=1,mask=0,scratch=private-dir,plan=0000000000000000",
+      "rlimit-cpu",
+      "rlimit-fsize",
+      "skip:seatbelt-net: unavailable in this test",
+      "skip:rlimit-address-space: invalid argument",
+      "skip:rlimit-processes: account already exceeds the requested limit",
+      "skip:darwin-process-lifecycle: no PID namespace or stable handle",
+    ]
+    DarwinSilentGap -> [
+      "seatbelt",
+      "seatbelt-fs:rw=1,mask=0,scratch=private-dir,plan=0000000000000000",
+      "seatbelt-net",
+      "rlimit-cpu",
+      "rlimit-fsize",
+      "skip:rlimit-address-space: invalid argument",
+      "skip:rlimit-processes: account already exceeds the requested limit",
     ]
     _ -> [
       "bwrap", "mounts:ro=0,rw=1,mask=0,scratch=tmpfs,plan=0000000000000000",

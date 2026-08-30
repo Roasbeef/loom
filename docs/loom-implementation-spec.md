@@ -325,6 +325,12 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 - Egress proxy sidecar for `Proxy(allowlist)` (CONNECT-only, host-glob allowlist, per-execution logs).
 **Exit**: the **sandbox regression suite** (WP-T, runs in CI on real kernels): write-outside-roots, protected-path write, direct socket under Off, non-allowlisted host under Proxy, env leakage, setsid escape, fork-bomb vs pids limit, output-flood truncation, orphaned-grandchild reaping. `loom-exec --self-test` runs the suite locally. Filesystem and network probes must fail closed on both platforms. Resource and lifecycle probes must either prove the named kernel mechanism or report the missing layer; `FullEnforcement` refuses either a skip or a missing layer. ADR-006 records why sampled descendant cleanup and account-wide `RLIMIT_NPROC` are observations rather than macOS equivalents of PID namespaces and cgroups.
 
+Production uses `PlatformEnforcement`: it is equivalent to `FullEnforcement`
+on Linux, while Darwin may accept only ADR-006's three explicitly reported
+resource and lifecycle gaps. Missing Seatbelt layers, unexpected skips, and
+silent reports still fail the demand. Callers that require cross-platform
+Linux equivalence select `FullEnforcement` explicitly.
+
 ### WP-I `tools` — core tool set
 
 **Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed), `dap_*`.
@@ -663,7 +669,7 @@ and rewriting their acceptance would erase what was actually accepted.
 |---|---|---|
 | Six `agent_*` tools — spawn, wait over a list against one deadline, send, note/notes, roster — over a seam `tools` names without depending on `runtime` | `tools/agent`, `client/agency` | the model-facing half of M3's durable messaging; M3's row predates it |
 | The durable lineage ledger: one cell per child naming its parent, minting operation, and an *absolute* deadline, under a reserved prefix with its own read door | `runtime/api`, `runtime/lineage` | what makes the descendant-only rule enforceable across restarts |
-| A system-prompt pack — named sections, total decoder, rendered against an environment, no clock in its dependency graph — assembled at boot and pinned durably, the pin winning on resume | `packages/prompt`, `client/serve` | no row named a system prompt; spec-gaps M2 integration 8 recorded that it had no home in the frozen contracts |
+| A system-prompt pack — named sections, total decoder, rendered against an environment, no clock in its dependency graph — assembled at boot and pinned durably with its enforcement demand; the pin wins on a same-demand resume and is replaced once when the demand changes | `packages/prompt`, `client/serve` | no row named a system prompt; spec-gaps M2 integration 8 recorded that it had no home in the frozen contracts |
 | Anthropic prompt caching at four breakpoints, and cache writes counted toward the overflow comparison | `provider/adapter/anthropic` | no row; spec-gaps WP-F 8, 9 |
 | The `code_mode` tool and its wiring behind a discovered build seed — a host without one registers no tool rather than one that always refuses | `tools/codemode`, `client/codemode` | M4 integrated WP-J but no row required a door to it |
 | The macOS Seatbelt jail and live regression gate | `packages/sandbox`, `.github/workflows/ci.yml` | the delivered M3 `H(macOS)` half, with exact resource-limit skips surfaced |

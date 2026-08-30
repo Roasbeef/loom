@@ -143,9 +143,9 @@ pub type Pack {
 /// What kind of confinement the host actually delivers, stated
 /// behaviourally rather than as a list of kernel layers.
 ///
-/// The three values are exactly what the harness can know at session
+/// The four values are exactly what the harness can know at session
 /// open without inventing a probe: the demanded posture (`serve`'s
-/// `demand`, `FullEnforcement` unless `--best-effort` was passed) paired
+/// `demand`, `PlatformEnforcement` unless an override was passed) paired
 /// with the coarse `degraded` flag the helper advertises in its hello
 /// (`broker/exec.degraded_features`). Nothing here enumerates layers,
 /// because no per-layer report exists at open — the `skip:` list lives
@@ -156,6 +156,11 @@ pub type Enforcement {
   /// a command that could not be confined as specified is refused rather
   /// than run unconfined, so a command that runs, ran jailed.
   FullyEnforced
+  /// The platform's mandatory confinement boundary is demanded and the
+  /// helper advertises no degradation. Known platform gaps may be accepted
+  /// only when the execution report names them explicitly; a missing jail,
+  /// an unexpected skip, or a silent required layer is still refused.
+  PlatformEnforced
   /// Full enforcement demanded but the helper advertises degradation.
   /// Every jailed execution fails — refused before dispatch, and refused
   /// again after the run if its enforcement report carries a `skip:`.
@@ -318,9 +323,10 @@ pub const canonical_sections = [
 /// silent about something on some host, which is why `problems` reports
 /// it.
 pub const required_fragments = [
-  "_enforcement_enforced", "_enforcement_degraded", "_enforcement_best_effort",
-  "_network_blocked", "_network_proxied", "_network_open", "_protected_paths",
-  "_repository_guidance", "_repository_guidance_truncated",
+  "_enforcement_enforced", "_enforcement_platform", "_enforcement_degraded",
+  "_enforcement_best_effort", "_network_blocked", "_network_proxied",
+  "_network_open", "_protected_paths", "_repository_guidance",
+  "_repository_guidance_truncated",
 ]
 
 /// Every placeholder name a pack may use. The closed list is half of why
@@ -872,6 +878,7 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
 fn enforcement_fragment(enforcement: Enforcement) -> String {
   case enforcement {
     FullyEnforced -> "_enforcement_enforced"
+    PlatformEnforced -> "_enforcement_platform"
     DegradedRefusing -> "_enforcement_degraded"
     BestEffort -> "_enforcement_best_effort"
   }

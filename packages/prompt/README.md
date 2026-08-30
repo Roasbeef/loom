@@ -28,7 +28,7 @@ comment. Anything else is corruption.
 
 ```
 %% loom-prompt-pack 1
-%% version loom-default-1
+%% version loom-default-2
 
 %% section identity
 You are an agent working inside Loom, a coding-agent harness running on
@@ -275,8 +275,8 @@ inventory.** Naming which kernel layers a host does or does not enforce
 hands an injection payload a map of the holes, for something it could
 read from one shell command anyway, and tells a cooperative agent nothing
 it can act on. `pack.Enforcement` is therefore `FullyEnforced` /
-`DegradedRefusing` / `BestEffort` and carries only what the harness can
-know at session open — the demanded posture plus the coarse degraded flag
+`PlatformEnforced` / `DegradedRefusing` / `BestEffort` and carries only what
+the harness can know at session open — the demanded posture plus the coarse degraded flag
 from the helper's hello. There is no per-layer report at that moment, so
 no field pretends there is.
 

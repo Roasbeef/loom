@@ -110,6 +110,11 @@ pub fn degraded_helper_refused_on_full_enforcement_test() {
   let assert Error(exec.DegradedHelper(features)) =
     exec.run(helper, request(exec.FullEnforcement), events:, waiting: 1000)
   assert features == ["rlimits", "pgroup", "degraded"]
+  // The production platform demand refuses the same missing jail. It is
+  // narrower than FullEnforcement only after a healthy Darwin helper has
+  // reported the exact gaps ADR-006 allows.
+  let assert Error(exec.DegradedHelper(_)) =
+    exec.run(helper, request(exec.PlatformEnforcement), events:, waiting: 1000)
   // BestEffort accepts and the honest report reaches the caller.
   let assert Ok(Nil) =
     exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
@@ -117,6 +122,104 @@ pub fn degraded_helper_refused_on_full_enforcement_test() {
   let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
   assert result.degraded == True
   exec.shutdown(helper)
+}
+
+pub fn platform_enforcement_accepts_only_declared_darwin_gaps_test() {
+  let helper = fake_helper.start_helper(fake_helper.DarwinDeclaredGaps)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      exec.ExecRequest(
+        ..request(exec.PlatformEnforcement),
+        policy: Some(darwin_policy()),
+      ),
+      events:,
+      waiting: 1000,
+    )
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert list.contains(result.enforcement, "seatbelt-net")
+  assert list.any(result.enforcement, string.starts_with(
+    _,
+    "skip:darwin-process-lifecycle:",
+  ))
+
+  // The same honest report remains insufficient for callers that demand
+  // Linux-equivalent resource and lifecycle containment.
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      exec.ExecRequest(
+        ..request(exec.FullEnforcement),
+        policy: Some(darwin_policy()),
+      ),
+      events:,
+      waiting: 1000,
+    )
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(_))) =
+    process.receive(events, 1000)
+  exec.shutdown(helper)
+}
+
+pub fn platform_enforcement_refuses_unexpected_darwin_skip_test() {
+  let helper = fake_helper.start_helper(fake_helper.DarwinUnexpectedSkip)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      exec.ExecRequest(
+        ..request(exec.PlatformEnforcement),
+        policy: Some(darwin_policy()),
+      ),
+      events:,
+      waiting: 1000,
+    )
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
+  assert list.any(result.enforcement, string.starts_with(
+    _,
+    "skip:seatbelt-net:",
+  ))
+  exec.shutdown(helper)
+}
+
+pub fn platform_enforcement_refuses_silent_darwin_gap_test() {
+  let helper = fake_helper.start_helper(fake_helper.DarwinSilentGap)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(
+      helper,
+      exec.ExecRequest(
+        ..request(exec.PlatformEnforcement),
+        policy: Some(darwin_policy()),
+      ),
+      events:,
+      waiting: 1000,
+    )
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
+  assert !list.any(result.enforcement, string.starts_with(
+    _,
+    "skip:darwin-process-lifecycle:",
+  ))
+  exec.shutdown(helper)
+}
+
+fn darwin_policy() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..network_off_policy(),
+    limits: policy.Limits(
+      ..network_off_policy().limits,
+      cpu_s: 2,
+      mem_bytes: 1024,
+      pids: 8,
+      fsize_bytes: 4096,
+    ),
+  )
 }
 
 pub fn degraded_exit_ground_truth_checked_test() {
@@ -145,6 +248,23 @@ pub fn skip_entry_fails_full_enforcement_test() {
   let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
     process.receive(events, 1000)
   assert result.degraded == False
+  assert list.contains(
+    result.enforcement,
+    "skip:landlock: unavailable in this test",
+  )
+  exec.shutdown(helper)
+}
+
+pub fn platform_enforcement_keeps_linux_skip_refusal_test() {
+  // Platform enforcement relaxes only ADR-006's named Darwin gaps. A
+  // Linux helper that skips Landlock remains a refused execution.
+  let helper = fake_helper.start_helper(fake_helper.SkippedLayer)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.PlatformEnforcement), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
   assert list.contains(
     result.enforcement,
     "skip:landlock: unavailable in this test",
@@ -738,6 +858,21 @@ pub fn best_effort_still_runs_a_silent_report_test() {
     exec.run(helper, request(exec.BestEffort), events:, waiting: 1000)
   let assert Ok(exec.Output(..)) = process.receive(events, 1000)
   let assert Ok(exec.Exited(result)) = process.receive(events, 1000)
+  assert result.enforcement == ["bwrap"]
+  exec.shutdown(helper)
+}
+
+pub fn platform_enforcement_keeps_linux_silence_refusal_test() {
+  // The platform demand has no Linux tolerance set. A stage that says
+  // only `bwrap` therefore fails the same presence check as full
+  // enforcement instead of turning silence into success.
+  let helper = fake_helper.start_helper(fake_helper.SilentStage2)
+  let events = process.new_subject()
+  let assert Ok(Nil) =
+    exec.run(helper, request(exec.PlatformEnforcement), events:, waiting: 1000)
+  let assert Ok(exec.Output(..)) = process.receive(events, 1000)
+  let assert Ok(exec.Failed(exec.DegradedExecution(result))) =
+    process.receive(events, 1000)
   assert result.enforcement == ["bwrap"]
   exec.shutdown(helper)
 }

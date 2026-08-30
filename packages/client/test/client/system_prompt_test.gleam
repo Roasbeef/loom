@@ -98,6 +98,12 @@ pub fn enforcement_tracks_the_demand_and_degraded_pair_test() {
   // policy denial: every jailed execution is refused before dispatch.
   assert system_prompt.enforcement(exec.FullEnforcement, True)
     == pack.DegradedRefusing
+  // Platform enforcement is strict about a missing jail, but a healthy
+  // helper advertises the usable default posture.
+  assert system_prompt.enforcement(exec.PlatformEnforcement, False)
+    == pack.PlatformEnforced
+  assert system_prompt.enforcement(exec.PlatformEnforcement, True)
+    == pack.DegradedRefusing
   // Best effort was asked for explicitly, so it reports itself whatever
   // the helper says about itself.
   assert system_prompt.enforcement(exec.BestEffort, False) == pack.BestEffort
@@ -110,11 +116,16 @@ pub fn the_enforcement_line_is_present_on_every_host_test() {
   let degraded = rendered(system_prompt.Host(..host(), degraded: True)).text
   let effort =
     rendered(system_prompt.Host(..host(), demand: exec.BestEffort)).text
+  let platform =
+    rendered(system_prompt.Host(..host(), demand: exec.PlatformEnforcement)).text
   assert string.contains(enforced, "Confinement on this host is complete")
+  assert string.contains(platform, "platform-strict")
   assert string.contains(degraded, "host failure, not")
   assert string.contains(effort, "best-effort mode")
   // And the three are genuinely different prompts.
   assert enforced != degraded
+  assert enforced != platform
+  assert platform != degraded
   assert degraded != effort
 }
 
@@ -173,7 +184,7 @@ pub fn the_shipped_prompt_is_complete_and_affordable_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-1"
+  assert rendered.version == "loom-default-2"
   assert rendered.digest == pack.fingerprint(default.source)
   // Every byte here is paid on every request of every strand for the life
   // of the session. The bound is loose; it is here to make a prompt that
@@ -421,6 +432,58 @@ pub fn a_pinned_prompt_reads_back_identically_twice_test() {
     as "the pinned prompt must read back again"
   assert first == assembled.text
   assert first == second
+  let _closed = api.close(runtime)
+}
+
+pub fn an_enforcement_matched_pin_is_reused_test() {
+  let runtime = open_runtime("pin-enforcement-match")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin_for(runtime, assembled, exec.FullEnforcement)
+    == Ok(Nil)
+  let assert Ok(Some(text)) =
+    system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    as "a pin made under the same demand must be reusable"
+  assert text == assembled.text
+  let _closed = api.close(runtime)
+}
+
+pub fn a_changed_enforcement_demand_invalidates_the_pin_test() {
+  let runtime = open_runtime("pin-enforcement-change")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin_for(runtime, assembled, exec.FullEnforcement)
+    == Ok(Nil)
+  assert system_prompt.pinned_for(runtime.session, exec.PlatformEnforcement)
+    == Ok(None)
+  assert system_prompt.pinned_for(runtime.session, exec.BestEffort) == Ok(None)
+  let _closed = api.close(runtime)
+}
+
+pub fn a_legacy_pin_is_rendered_again_once_test() {
+  let runtime = open_runtime("pin-enforcement-legacy")
+  let assembled = assembled_from(rendered(host()))
+  assert system_prompt.pin(runtime, assembled) == Ok(Nil)
+  assert system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    == Ok(None)
+  let _closed = api.close(runtime)
+}
+
+pub fn a_corrupt_enforcement_identity_refuses_the_pin_test() {
+  let runtime = open_runtime("pin-enforcement-corrupt")
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      system_prompt.system_key,
+      json.Object(fields: [
+        #("text", json.String("strong words")),
+        #("enforcement", json.String("strong-ish")),
+      ]),
+    )
+    as "the invalid harness-owned identity must land"
+  let assert Error(reason) =
+    system_prompt.pinned_for(runtime.session, exec.FullEnforcement)
+    as "a corrupt identity must refuse rather than silently re-render"
+  assert string.contains(reason, "pinned system prompt is corrupt")
+  assert string.contains(reason, system_prompt.system_key)
   let _closed = api.close(runtime)
 }
 

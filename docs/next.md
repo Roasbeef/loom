@@ -9,10 +9,10 @@ worth more than any status comment.
 
 ---
 
-## In flight: the macOS Seatbelt boundary
+## Platform-strict enforcement is the production default
 
-`wp-h/macos-seatbelt` implements WP-H phase 2 on top of the green CI-repair
-head `120bac1`. The helper now translates `SandboxPolicyV1` into a generated,
+PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates
+`SandboxPolicyV1` into a generated,
 deny-default Seatbelt profile: host-visible reads, parameterized writable
 roots, final protected-path carveouts, private scratch, local capability
 sockets, and no internet access unless the policy grants `NetworkFull`. The
@@ -33,17 +33,35 @@ is the ruling; do not
 turn the passing observed-escape probe into a claim of kernel lifecycle
 containment.
 
-The local gate passed `make check` on macOS with its own exit status captured
-(`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced probes,
-both code-mode network-off runs are enforced, and the house lint has zero
-errors. A cold adversarial review found seven cleanup and probe defects;
-`7ec3d99` fixes each one, and the same reviewer verified the repairs without a
-new finding. CI then exposed one bookkeeping defect: the live Seatbelt test
-was defined on Linux only to call `t.Skip`. `dc4bb22` moves that test, unchanged,
-behind a Darwin build constraint; the reviewer verified that the portable
-profile tests remain shared and no macOS coverage moved. PR #134 carries the
-seven-commit series. Its source head passed all four jobs in Actions run
-33261689498: both platform gates, the Linux jail lane, and the 200-seed soak.
+That truthful report exposed the next product bug: the production default also
+selected `FullEnforcement`, so every ordinary Darwin `code_mode` call failed
+before compilation. `PlatformEnforcement` is now the production default. Linux
+remains fully strict. Darwin requires Seatbelt, all enforceable rlimits, and an
+explicit applied-or-skipped report for every layer, but may admit only
+ADR-006's three named gaps. `--full-enforcement` keeps the stronger
+cross-platform contract and `--best-effort` remains the broad development
+override.
+
+The focused broker, prompt, and client gates are green. `make check` also
+passes with its own exit status, including the 208-test real code-mode suite
+under `PlatformEnforcement`, and `make doc-check` reports zero errors. A second
+agent rebased the native eTUI onto `4f5e012`, started a fresh server with no
+enforcement override, and asked K3 to run a minimal `code_mode` program. The
+durable result completed with `platform strict live`; both the build and node
+reported Seatbelt filesystem and network confinement, CPU and file-size
+rlimits, and only ADR-006's three skipped layers. The remaining exit criterion
+was an adversarial review of the exact change.
+
+That review is complete. It found one behavioral defect before the PR: prompt
+bytes were pinned without the enforcement demand that made their sandbox claim
+true, so a resumed session could keep stronger words while booting under a
+weaker demand. `prompt/system` now stores `{text, enforcement}` atomically. A
+same-demand boot reuses the bytes; a changed demand or a legacy string pin
+renders and pins once; a malformed harness-owned record refuses the boot. The
+review also found three stale descriptions of the production default and
+corrected them. The full `make check` gate passes at the reviewed head after a
+transient Hex fetch failure on the first attempt, and `make doc-check` reports
+zero errors.
 
 ---
 

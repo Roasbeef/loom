@@ -37,11 +37,15 @@
 ////   `both` need a messaging plane, which this boot always wires, and
 ////   `both` is what lets a submission choose per program
 ////   (`docs/architecture/code-mode.md`, "Two seams").
-//// - `--best-effort` — accept a degraded sandbox helper (development
-////   kernels without bwrap/Landlock). The default demands full
-////   enforcement, under which a degraded helper is refused at dispatch
-////   — the server still runs, tool calls fail in-band. Run
-////   `make selftest` to learn which posture your kernel supports.
+//// - `--full-enforcement` — require every requested resource and lifecycle
+////   layer, including the ones current Darwin kernels cannot provide. The
+////   default is platform enforcement: it still refuses a missing jail or
+////   any unexpected skip, while admitting the three Darwin gaps ADR-006
+////   documents when the helper reports them explicitly.
+//// - `--best-effort` — accept any degraded sandbox helper (development
+////   kernels without bwrap/Landlock). This is weaker than the default and
+////   remains an explicit opt-in. Run `make selftest` to learn which posture
+////   your kernel supports.
 //// - `LOOM_HELPER_POOL` — how many `loom-exec` helpers may run at
 ////   once (not a flag: it is a property of the host, not of the
 ////   session). Default `exec.default_pool_size()`, the node's
@@ -77,10 +81,13 @@
 ////
 //// ## The system prompt
 ////
-//// Assembled once, at the first open of a session, and pinned into the
-//// reserved `prompt/` blackboard cell; every later boot sends the pinned
-//// bytes rather than deriving them again. `client/system_prompt` owns
-//// the whole story, including why re-deriving would be expensive. Two
+//// Assembled at the first open of a session and pinned into the reserved
+//// `prompt/` blackboard cells; later boots send the pinned bytes rather
+//// than deriving them again while the enforcement demand is unchanged.
+//// Changing that demand deliberately re-renders and re-pins once, because
+//// a byte-stable prompt that describes a stronger sandbox than the broker
+//// demands would be a lie. `client/system_prompt` owns the whole story,
+//// including why every other re-derivation would be expensive. Two
 //// environment variables reach it:
 ////
 //// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
@@ -480,7 +487,7 @@ type Flags {
     config: Option(String),
     codemode_seed: Option(String),
     codemode_seams: Option(String),
-    best_effort: Bool,
+    demand: Option(EnforcementDemand),
   )
 }
 
@@ -496,7 +503,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       config: None,
       codemode_seed: None,
       codemode_seams: None,
-      best_effort: False,
+      demand: None,
     ),
   )
 }
@@ -521,7 +528,9 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
     ["--codemode-seams", value, ..rest] ->
       parse_loop(rest, Flags(..flags, codemode_seams: Some(value)))
     ["--best-effort", ..rest] ->
-      parse_loop(rest, Flags(..flags, best_effort: True))
+      set_demand(rest, flags, exec.BestEffort, "--best-effort")
+    ["--full-enforcement", ..rest] ->
+      set_demand(rest, flags, exec.FullEnforcement, "--full-enforcement")
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
   }
 }
@@ -534,7 +543,26 @@ const usage = "usage: loom-server --session <path.db>
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
   [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed, then the bundled one)
   [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
-  [--best-effort]          accept a degraded sandbox helper"
+  [--full-enforcement]     require every requested resource and lifecycle layer
+  [--best-effort]          accept any degraded sandbox helper"
+
+fn set_demand(
+  rest: List(String),
+  flags: Flags,
+  demand: EnforcementDemand,
+  flag: String,
+) -> Result(Flags, String) {
+  case flags.demand {
+    None -> parse_loop(rest, Flags(..flags, demand: Some(demand)))
+    Some(_) ->
+      Error(
+        "`"
+        <> flag
+        <> "` cannot be combined with another enforcement flag\n"
+        <> usage,
+      )
+  }
+}
 
 // Fills every default and builds the provider gateway from the model
 // catalogue — the `--config` file when given, the environment-shaped
@@ -591,10 +619,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     helper_path:,
     helper_pool_size:,
     session_id: session_id_of(session_path),
-    demand: case flags.best_effort {
-      True -> exec.BestEffort
-      False -> exec.FullEnforcement
-    },
+    demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
     gateway: catalog.gateway(
       catalogue,
       transport: http.httpc_transport(),
@@ -1381,9 +1406,12 @@ fn assemble(
   ])
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
-  // cell is therefore read straight off the store here — legal, nothing
-  // owns it yet — and written back through the writer after the open.
-  use pinned <- result.try(system_prompt.pinned_in(opened))
+  // cells are therefore read straight off the store here — legal, nothing
+  // owns them yet — and written back through the writer after the open.
+  // The enforcement identity participates in that read: a changed or
+  // legacy identity returns no reusable pin and deliberately buys one
+  // truthful render.
+  use pinned <- result.try(system_prompt.pinned_for(opened, settings.demand))
   use assembled <- result.try(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
       render_prompt(settings, base_policy, pool, tool.names(tool_registry))
@@ -1511,10 +1539,14 @@ fn assemble(
     }),
   )
   // The writer exists now, so the other half of the pin can land: the
-  // bytes every strand of this session will send, recorded durably so the
-  // next boot reads them rather than deriving them again from inputs that
-  // may have moved.
-  use Nil <- result.try(system_prompt.pin(runtime, assembled))
+  // bytes every strand of this session will send and the enforcement
+  // demand they describe, recorded durably so an unchanged next boot reads
+  // them rather than deriving them again from inputs that may have moved.
+  use Nil <- result.try(system_prompt.pin_for(
+    runtime,
+    assembled,
+    settings.demand,
+  ))
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller

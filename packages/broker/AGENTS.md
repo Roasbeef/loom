@@ -361,6 +361,14 @@ protocol (spec Part 1.4). WP-G.
   guarantee ownership after rapid reparenting. The ordinary "any skip"
   ground-truth check therefore refuses `FullEnforcement` even when every
   requested filesystem, network, and rlimit tag is present.
+- **`PlatformEnforcement` is strict about the platform's real boundary.**
+  It is the production default and remains identical to `FullEnforcement`
+  on Linux. On Darwin it accepts only ADR-006's
+  `rlimit-address-space`, `rlimit-processes`, and
+  `darwin-process-lifecycle` gaps. Each tag must still appear as applied or
+  `skip:`. A degraded helper, missing Seatbelt layer, unexpected skip, or
+  silent report fails the execution. `FullEnforcement` remains the explicit
+  demand for Linux-equivalent containment on every platform.
 - **`--allow-unenforced` is for an unsupported platform, never a degraded
   one.** A Linux host missing bwrap or Landlock still enforces something
   and reports what it could not; that report is what `FullEnforcement`

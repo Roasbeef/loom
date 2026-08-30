@@ -89,3 +89,29 @@ executor or another kernel-backed process container. It may not delete the
 lifecycle skip until an adversarial rapid double-fork test proves that a
 reparented survivor is killed, while concurrent sandboxes and unrelated host
 processes remain untouched.
+
+## Addendum: the production demand follows the platform boundary
+
+**Date**: 2026-08-30
+
+The original decision made `FullEnforcement` the production default. That
+demand was truthful, but it also made every default code-mode call on Darwin
+fail before compilation: every execution reports the lifecycle gap, and common
+hosts also report the two resource gaps above. A working Darwin jail was thus
+available only through the much broader `BestEffort` override.
+
+The production default is now `PlatformEnforcement`. On Linux it is identical
+to `FullEnforcement`. On Darwin it requires Seatbelt filesystem and network
+confinement, CPU and file-size rlimits when requested, and an explicit report
+for every layer. It may accept only these three applied-or-skipped tags:
+`rlimit-address-space`, `rlimit-processes`, and
+`darwin-process-lifecycle`. A degraded helper, a missing mandatory layer, an
+unexpected `skip:`, or silence for any required or tolerated tag still refuses
+the execution.
+
+`FullEnforcement` remains available through `--full-enforcement` for callers
+that need Linux-equivalent resource and lifecycle containment. `BestEffort`
+also remains explicit through `--best-effort`; it accepts gaps beyond this
+ADR's narrow Darwin set. This split lets the default use the kernel boundary
+Darwin can enforce without turning a missing Seatbelt layer into a successful
+execution.
