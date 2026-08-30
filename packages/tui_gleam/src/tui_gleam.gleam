@@ -27,6 +27,7 @@ import gleam/string
 import simplifile
 import tui_gleam/agents
 import tui_gleam/command
+import tui_gleam/composer
 import tui_gleam/connection
 import tui_gleam/markdown
 import tui_gleam/model_selector
@@ -74,6 +75,7 @@ type Model {
     width: Int,
     height: Int,
     input: text_area.TextAreaState,
+    attachments: List(composer.Attachment),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
@@ -104,6 +106,7 @@ pub fn main() {
       width: 80,
       height: 24,
       input: text_area.state_new(),
+      attachments: [],
       transcript: [
         Line(System, "etui input and gateway paths ready"),
         Line(
@@ -236,7 +239,7 @@ fn view(
     block.block_new()
     |> block.with_border(block.Rounded)
     |> block.with_colors(theme.signal, style.Default)
-    |> block.with_title(" prompt · / commands ", block.Top)
+    |> block.with_title(input_title(model.attachments), block.Top)
   let transcript_area = block.inner(transcript_panel, transcript_block)
   let editor_area = block.inner(input_area, input_block)
   let editor =
@@ -477,18 +480,36 @@ fn render_footer(
   statusbar.render(buf, area, bar)
 }
 
+fn input_title(attachments: List(composer.Attachment)) -> String {
+  case composer.summary(attachments) {
+    Some(summary) -> " prompt · " <> summary <> " · / commands "
+    None -> " prompt · / commands "
+  }
+}
+
 fn update(event: backend.InputEvent, model: Model) -> Model {
   case event {
     backend.Resize(width, height) -> Model(..model, width:, height:)
     backend.Tick -> drain_connection(model, 64)
     backend.KeyPress(key) -> update_key(keys.match(key), model)
-    backend.Paste(text) ->
-      Model(..model, input: text_area.state_from_string(text))
+    backend.Paste(text) -> handle_paste(model, text)
     backend.MouseScroll(_, _, up) -> scroll_transcript(model, up, 3)
     backend.MousePress(..)
     | backend.MouseRelease(..)
     | backend.MouseDrag(..)
     | backend.MouseMove(..) -> model
+  }
+}
+
+fn handle_paste(model: Model, text: String) -> Model {
+  case composer.classify(text) {
+    composer.Inline(text) ->
+      Model(..model, input: text_area.state_from_string(text))
+    composer.Compact(attachment) -> {
+      let attachments = list.append(model.attachments, [attachment])
+      let notice = composer.summary(attachments) |> option.unwrap("pasted text")
+      Model(..model, attachments:, notice:)
+    }
   }
 }
 
@@ -733,7 +754,13 @@ fn message_lines(
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, ..) -> [
-      Line(User, content |> list.map(user_block_text) |> string.join("\n")),
+      Line(
+        User,
+        content
+          |> list.map(user_block_text)
+          |> string.join("\n")
+          |> composer.transcript_text(details_expanded),
+      ),
     ]
     message.AssistantMessage(content:, ..) ->
       list.flat_map(content, assistant_block_lines(_, details_expanded))
@@ -929,7 +956,18 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
     keys.Escape, True -> Model(..model, help_open: False, notice: "help closed")
     keys.Enter, False -> submit(model)
     keys.Backspace, False ->
-      Model(..model, input: text_area.backspace(model.input))
+      case text_area.value(model.input), model.attachments {
+        "", [_, ..] -> {
+          let attachments = composer.drop_last(model.attachments)
+          Model(
+            ..model,
+            attachments:,
+            notice: composer.summary(attachments)
+              |> option.unwrap("paste removed"),
+          )
+        }
+        _, _ -> Model(..model, input: text_area.backspace(model.input))
+      }
     keys.Left, False ->
       Model(..model, input: text_area.move_cursor_left(model.input))
     keys.Right, False ->
@@ -974,9 +1012,15 @@ pub fn scroll_offset(offset: Int, older: Bool, rows: Int) -> Int {
 
 fn submit(model: Model) -> Model {
   let input = text_area.value(model.input)
+  let expanded = composer.expand(input, model.attachments)
   let cleared = Model(..model, input: text_area.state_new())
+  let prompt_cleared = Model(..cleared, attachments: [])
   case command.parse(input) {
-    command.Empty -> cleared
+    command.Empty ->
+      case model.attachments {
+        [] -> cleared
+        _ -> send_prompt(prompt_cleared, expanded)
+      }
     command.Quit -> quit(cleared)
     command.Help -> Model(..cleared, help_open: True, notice: "/help")
     command.Clear ->
@@ -1041,23 +1085,26 @@ fn submit(model: Model) -> Model {
     command.Unknown(name) -> append_error(cleared, "unknown command /" <> name)
     command.MissingArgument(name) ->
       append_error(cleared, "/" <> name <> " needs an argument")
-    command.Prompt(text) ->
-      case cleared.socket {
-        Some(_) ->
-          send_frame(
-            Model(..cleared, notice: "prompt sent to " <> cleared.active_strand),
-            protocol.prompt(cleared.next_id, cleared.active_strand, text),
-          )
-        None ->
-          Model(
-            ..cleared,
-            transcript: list.append(cleared.transcript, [
-              Line(User, text),
-              Line(Assistant, "Design-preview echo received."),
-            ]),
-            notice: "prompt accepted",
-          )
-      }
+    command.Prompt(_) -> send_prompt(prompt_cleared, expanded)
+  }
+}
+
+fn send_prompt(model: Model, text: String) -> Model {
+  case model.socket {
+    Some(_) ->
+      send_frame(
+        Model(..model, notice: "prompt sent to " <> model.active_strand),
+        protocol.prompt(model.next_id, model.active_strand, text),
+      )
+    None ->
+      Model(
+        ..model,
+        transcript: list.append(model.transcript, [
+          Line(User, composer.transcript_text(text, model.details_expanded)),
+          Line(Assistant, "Design-preview echo received."),
+        ]),
+        notice: "prompt accepted",
+      )
   }
 }
 

@@ -5,6 +5,7 @@ import gleam/string
 import gleeunit
 import tui_gleam
 import tui_gleam/command
+import tui_gleam/composer
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo}
 
@@ -66,6 +67,47 @@ pub fn transcript_scroll_clamps_at_the_live_tail_test() {
   assert tui_gleam.scroll_offset(12, True, 3) == 15
   assert tui_gleam.scroll_offset(12, False, 3) == 9
   assert tui_gleam.scroll_offset(2, False, 3) == 0
+}
+
+pub fn large_paste_becomes_a_compact_attachment_test() {
+  let text = string.repeat("x", 2000)
+
+  assert composer.classify(text)
+    == composer.Compact(composer.Attachment(text:, estimated_tokens: 500))
+  assert composer.summary([composer.Attachment(text:, estimated_tokens: 500)])
+    == Some("pasted ~500 tokens")
+}
+
+pub fn line_heavy_paste_becomes_a_compact_attachment_test() {
+  let text = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"
+
+  let assert composer.Compact(_) = composer.classify(text)
+}
+
+pub fn compact_paste_expands_without_changing_its_bytes_test() {
+  let pasted = "first\nsecond\nthird"
+  let attachments = [composer.Attachment(pasted, 5)]
+
+  assert composer.expand("summarize this", attachments)
+    == "summarize this\n\nfirst\nsecond\nthird"
+  assert composer.expand("", attachments) == pasted
+}
+
+pub fn compact_user_turn_is_reversible_in_detail_mode_test() {
+  let text = string.repeat("four", 500)
+  let collapsed = composer.transcript_text(text, False)
+
+  assert string.contains(collapsed, "[~500 tokens · Ctrl+G to expand]")
+  assert string.length(collapsed) < string.length(text)
+  assert composer.transcript_text(text, True) == text
+}
+
+pub fn backspace_drops_only_the_newest_paste_test() {
+  let first = composer.Attachment("first", 2)
+  let second = composer.Attachment("second", 2)
+
+  assert composer.drop_last([first, second]) == [first]
+  assert composer.drop_last([]) == []
 }
 
 pub fn code_mode_program_renders_as_gleam_test() {
