@@ -325,6 +325,12 @@ native shim — record it in an ADR at that point, do not bend the Go rule.
 - Egress proxy sidecar for `Proxy(allowlist)` (CONNECT-only, host-glob allowlist, per-execution logs).
 **Exit**: the **sandbox regression suite** (WP-T, runs in CI on real kernels): write-outside-roots, protected-path write, direct socket under Off, non-allowlisted host under Proxy, env leakage, setsid escape, fork-bomb vs pids limit, output-flood truncation, orphaned-grandchild reaping. `loom-exec --self-test` runs the suite locally. Filesystem and network probes must fail closed on both platforms. Resource and lifecycle probes must either prove the named kernel mechanism or report the missing layer; `FullEnforcement` refuses either a skip or a missing layer. ADR-006 records why sampled descendant cleanup and account-wide `RLIMIT_NPROC` are observations rather than macOS equivalents of PID namespaces and cgroups.
 
+Production uses `PlatformEnforcement`: it is equivalent to `FullEnforcement`
+on Linux, while Darwin may accept only ADR-006's three explicitly reported
+resource and lifecycle gaps. Missing Seatbelt layers, unexpected skips, and
+silent reports still fail the demand. Callers that require cross-platform
+Linux equivalence select `FullEnforcement` explicitly.
+
 ### WP-I `tools` — core tool set
 
 **Scope**: tool behaviour (`name, schema, replay: Never|Safe, execution_mode, requirements → run(ctx, args)`); `bash` (via broker exec), `fs_read` (hashline anchors: per-line `xxh3(content)[:8]`; large files: windowed reads), `fs_edit` (anchor-checked replace/insert/delete; multi-hunk; stale-anchor → structured rejection listing fresh anchors), `fs_write`, `grep` (rg via exec). Later in M5: `lsp_*` (client over stdio port, per-project supervised, sandboxed), `dap_*`.

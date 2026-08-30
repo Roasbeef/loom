@@ -395,9 +395,12 @@ rapid daemonizing double-fork can be reparented to `launchd` before its ancestry
 is recorded. The helper bounds output draining, so even an untracked process
 holding a pipe cannot hold the execution result open forever.
 Every Darwin execution therefore carries `skip:darwin-process-lifecycle`, so
-`FullEnforcement` refuses the stronger claim. Seatbelt itself is inherited
-across forks; a missed descendant remains filesystem- and network-confined,
-but may violate execution-lifetime and wall-clock cleanup guarantees.
+`FullEnforcement` refuses the stronger claim. The production
+`PlatformEnforcement` demand accepts this one declared lifecycle gap, plus the
+two Darwin resource-limit gaps in ADR-006, only when the report names each one.
+Seatbelt itself is inherited across forks; a missed descendant remains
+filesystem- and network-confined, but may violate execution-lifetime and
+wall-clock cleanup guarantees.
 
 ### Enforced versus reported
 
@@ -406,11 +409,12 @@ reports what it has in `hello.features` and, per execution, in an
 `enforcement` list and a `degraded` flag: strings like `bwrap`,
 `mounts:ro=2,rw=1,mask=3,scratch=tmpfs,plan=…`, `landlock:abi=5`,
 `seccomp-net`, `seatbelt-net`, `rlimit-cpu`, `skip:landlock: ...`. The broker decides
-what to do about it. `FullEnforcement` refuses a degraded helper at
-dispatch on its hello features *and* fails any execution whose
-`exec_exit` reports degraded — the ground-truth check, because features
-are a promise and the exit report is a fact. `BestEffort` accepts what is
-available and still hands the report to the caller.
+what to do about it. `PlatformEnforcement`, the production default, refuses a
+degraded helper and requires every layer the selected platform promises. On
+Darwin it tolerates only ADR-006's three named gaps, each reported explicitly.
+On Linux it has the same result as `FullEnforcement`, which rejects every gap
+on either platform. `BestEffort` accepts what is available and still hands the
+report to the caller.
 
 **Presence is the claim, and silence is a skip.** The helper's hello selects
 the platform matrix. Linux requires `bwrap`, `mounts`, `landlock` and
@@ -670,9 +674,9 @@ Finally, the honest enforcement matrix. In the development container
 binary, no Landlock in the kernel, no delegated cgroup v2 hierarchy — so
 four of the seven self-test probes enforce there and the three needing
 the missing layers skip. The suites therefore run with `BestEffort` and
-assert on the helper's honest report, while production sessions pass
-`FullEnforcement`, which refuses a degraded helper at dispatch and fails
-a degraded execution after the fact.
+assert on the helper's honest report. Production sessions pass
+`PlatformEnforcement`: strict on Linux, and strict about Darwin's real
+Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 
 ## Where the code lives
 

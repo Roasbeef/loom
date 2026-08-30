@@ -9,10 +9,10 @@ worth more than any status comment.
 
 ---
 
-## In flight: the macOS Seatbelt boundary
+## In flight: a working platform-strict default
 
-`wp-h/macos-seatbelt` implements WP-H phase 2 on top of the green CI-repair
-head `120bac1`. The helper now translates `SandboxPolicyV1` into a generated,
+PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates
+`SandboxPolicyV1` into a generated,
 deny-default Seatbelt profile: host-visible reads, parameterized writable
 roots, final protected-path carveouts, private scratch, local capability
 sockets, and no internet access unless the policy grants `NetworkFull`. The
@@ -33,17 +33,22 @@ is the ruling; do not
 turn the passing observed-escape probe into a claim of kernel lifecycle
 containment.
 
-The local gate passed `make check` on macOS with its own exit status captured
-(`MAKE_CHECK_EXIT=0`): the live jail self-test reports nine enforced probes,
-both code-mode network-off runs are enforced, and the house lint has zero
-errors. A cold adversarial review found seven cleanup and probe defects;
-`7ec3d99` fixes each one, and the same reviewer verified the repairs without a
-new finding. CI then exposed one bookkeeping defect: the live Seatbelt test
-was defined on Linux only to call `t.Skip`. `dc4bb22` moves that test, unchanged,
-behind a Darwin build constraint; the reviewer verified that the portable
-profile tests remain shared and no macOS coverage moved. PR #134 carries the
-seven-commit series. Its source head passed all four jobs in Actions run
-33261689498: both platform gates, the Linux jail lane, and the 200-seed soak.
+That truthful report exposed the next product bug: the production default also
+selected `FullEnforcement`, so every ordinary Darwin `code_mode` call failed
+before compilation. Branch `fix/darwin-default-enforcement` introduces
+`PlatformEnforcement`. Linux remains fully strict. Darwin requires Seatbelt,
+all enforceable rlimits, and an explicit applied-or-skipped report for every
+layer, but may admit only ADR-006's three named gaps. `--full-enforcement` keeps
+the stronger cross-platform contract and `--best-effort` remains the broad
+development override.
+
+The focused broker, prompt, and client gates are green. `make check` also
+passes with its own exit status, including the 208-test real code-mode suite
+under `PlatformEnforcement`, and `make doc-check` reports zero errors. The
+remaining exit criteria are a cold security review and a fresh eTUI session
+that runs a real `code_mode` program under the default demand. The coordinating
+agent has already reproduced the pre-fix refusal and is waiting for the exact
+fix commit to run that final proof.
 
 ---
 

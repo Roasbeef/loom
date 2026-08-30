@@ -425,8 +425,10 @@ rule about what may *not* be built, which is the half worth having first.
   makes its last birth check plus signal atomic. Output drainage is bounded so
   a missed descendant cannot hold the result open forever. Every Darwin
   execution reports `skip:darwin-process-lifecycle`, so `FullEnforcement`
-  refuses that stronger lifecycle claim. The descendant still inherits
-  Seatbelt filesystem and network confinement.
+  refuses that stronger lifecycle claim. The production default uses
+  `PlatformEnforcement`, which admits only this and ADR-006's two reported
+  Darwin resource gaps while still requiring Seatbelt filesystem and network
+  confinement. The descendant inherits both boundaries.
 
 ## What is not built
 
