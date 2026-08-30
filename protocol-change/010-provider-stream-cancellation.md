@@ -106,21 +106,29 @@ retain that profile and use `httpc:cancel_request/2`.
 The production shim closes that acknowledgement gap without moving the
 lifecycle into Erlang. A non-empty socket option gives each Loom request a
 dedicated, non-reused `httpc` handler; the shim captures that handler through
-public `httpc:info/0`, issues the cancellation cast, and waits for its Down.
-The handler closes its socket during termination before that Down is delivered.
-Raw tuple selection and this one OTP-specific wait remain in the shim; request,
-fallback, timeout, and terminal state stay in Gleam.
+public `httpc:info/0`, issues the cancellation cast, and waits for both its Down
+and the raw receiver's Down. The handler closes its socket during termination
+before that signal is delivered. Redirects are disabled because they retain a
+request id while moving work to another handler. Automatic Retry-After retries
+are also disabled where the running OTP version supports that option; older
+supported releases predate it. If `httpc_manager` restarts during handler
+discovery, startup remains unpublished and retries while the receiver is live
+instead of treating an unknown handler as a completed drain. Raw tuple
+selection and these OTP-specific waits remain in the shim; request, fallback,
+timeout, and terminal state stay in Gleam.
 
 ## Ownership and race semantics
 
-`provider/gateway.request` starts a public guard and a private pump for the
-whole role walk. The guard owns the returned cancel endpoint, monitors its
-direct consumer and the pump, and retains the latest `RunningRequest` published
-by the pump. Every attempt gets a fresh HTTP subject. The guard can therefore
-cancel and observe the live transport even if the pump crashes. Together they
-select HTTP events, explicit cancellation, consumer death, transport death,
-and the attempt timeout without making the long-running pump its own public
-crash boundary.
+`provider/gateway.request` first publishes a minimal custodian, then releases a
+guard and private pump for the whole role walk. The custodian performs no
+provider or transport work. It monitors the direct consumer and adopts the
+guard, pump, and every `RunningRequest` before each is permitted to begin. The
+guard retains the latest attempt published by the pump, and every attempt gets
+a fresh HTTP subject. A guard or pump crash can therefore trigger cancellation
+without turning that worker's Down into a false drain acknowledgement.
+Together the workers select HTTP events, explicit cancellation, consumer
+death, transport death, and the attempt timeout; only the custodian's Down
+acknowledges that the complete registered subtree is gone.
 
 The first selected terminal-class event decides the result:
 
@@ -152,18 +160,20 @@ transport owner that does not retire is not killed from above, because doing so
 would erase the only acknowledgement that its native descendant stopped. The
 boundary emits `CancellationUnconfirmed` and remains alive until the owner
 eventually exits. The production transport custodian has already issued
-`httpc:cancel_request/1` for the exact request id and retires its raw receiver
-before it exits.
+`httpc:cancel_request/1` for the exact request id and waits for the dedicated
+handler and raw receiver before it exits.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
-Its public guard monitors both the direct consumer and a private worker; the
-worker is the inner stream's direct consumer and runs the observer. Explicit
-cancellation or consumer death propagates to the inner handle. Worker death
-becomes a prompt in-band transport failure only when inner drain is confirmed;
-otherwise it becomes `CancellationUnconfirmed` and the guard stays alive as
-the drain witness. A terminal observer still runs before the same terminal is forwarded;
-in particular, the summary wrapper records a settled summary before the
-runtime can ask for summary progress.
+The wrapper publishes a minimal custodian before releasing its guard. The guard
+remains the inner stream's direct consumer, while a separate observer process
+runs the synchronous callback; the custodian adopts both processes and the
+inner handle before their work begins. Explicit cancellation or consumer death
+propagates to the inner handle. Guard or observer death becomes a prompt
+in-band transport failure only when inner drain is confirmed; otherwise it
+becomes `CancellationUnconfirmed` and the custodian stays alive as the drain
+witness. A terminal observer still runs before the same terminal is forwarded;
+in particular, the summary wrapper records a settled or cancelled attempt
+before the runtime can ask for summary progress.
 
 ## Impact
 
@@ -174,17 +184,21 @@ runtime can ask for summary progress.
   `RunningRequest`. Fixture transports expose cancellation probes so tests can
   prove work stopped rather than merely prove a late result was ignored.
 - `provider/gateway` owns cancellation, fallback, crash translation, and the
-  one-terminal law through its guard-and-pump pair.
+  one-terminal law through its custodian, guard, and pump.
 - `client/gateway.tap_provider` and `client/wiring.recording_summaries`
   propagate cancellation and consumer death inward.
-- `runtime/strand_runtime` cancels a timed-out handle before reporting its
-  terminal observation. Provider effects publish the handle owner to their
-  incarnation reaper before consuming events and do not report `ProviderDone`
-  until that owner drains. The reaper independently monitors both pids and
-  thereby remains a transitive drain barrier if the effect dies first.
-  Replacement recovery waits for all prior reapers in a dedicated drain
-  ledger that precedes the restartable strand-name registry. The ledger's own
-  death stops the session tree rather than erasing those barriers.
+- `runtime/strand_runtime` creates a parked provider worker inside a public
+  custodian, publishes the custodian to the incarnation reaper, and only then
+  permits the worker to call the frozen provider surface. A timed-out effect
+  cancels and observes its handle before reporting a terminal. It does not
+  report `ProviderDone` until that owner drains. The reaper independently
+  monitors both pids and thereby remains a transitive drain barrier if the
+  effect dies first. Replacement recovery waits for all prior reapers in a
+  dedicated drain ledger that precedes the restartable strand-name registry.
+  During session close that ledger traps the root's shutdown and remains until
+  every registered reaper exits, so the writer lease cannot be released beside
+  live provider work. The ledger's own unexpected death stops the session tree
+  rather than erasing those barriers.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.
 

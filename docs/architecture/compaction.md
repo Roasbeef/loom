@@ -323,13 +323,14 @@ no tool array, so a call in the answer means it did something else — and
 so is an answer with no text (`settlement_of`,
 `client/wiring.gleam:437`).
 
-Ownership flows inward on the same relay. Its public guard monitors the effect
-consumer and private observer worker; the worker alone consumes the inner
-stream. Explicit cancellation of the wrapper cancels the inner handle, and
-abort or driver restart does the same without waiting for the provider
-deadline. A worker crash becomes an in-band transport failure, while a silent
-inner owner becomes terminal `CancellationUnconfirmed` after one fixed grace,
-and the wrapper remains alive as a drain witness until that owner exits.
+Ownership flows inward on the same relay. Its public custodian monitors the
+effect consumer and adopts the guard, private observer, and inner stream owner
+before their work begins; the guard alone consumes the inner stream. Explicit
+cancellation of the wrapper cancels the inner handle, and abort or driver
+restart does the same without waiting for the provider deadline. A guard or
+observer crash becomes an in-band transport failure, while a silent inner
+owner becomes terminal `CancellationUnconfirmed` after one fixed grace. The
+custodian remains alive as a drain witness until the registered subtree exits.
 Consumer death records nothing. The record-before-forward law still applies
 when a real settlement wins the race; cancellation never manufactures a
 summary record.

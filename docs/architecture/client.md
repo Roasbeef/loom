@@ -350,17 +350,18 @@ to the hub on the way past. The hub broadcasts them to subscribed
 connections as `stream_delta` events with `ephemeral: true`, no seq, no
 replay, wholly superseded by the settled `entry` for the same operation.
 
-The relay is also an ownership boundary, split deliberately into two
-processes. A public guard owns the returned handle and monitors both the effect
-consumer and a private worker. The worker is the inner stream's direct
-consumer and runs the observer. Explicit cancellation and effect death travel
-through the guard to the inner provider handle. Worker death becomes an in-band
-transport failure only after the inner owner drains. A silent inner owner is
-bounded by one fixed timer and reported honestly as terminal
-`CancellationUnconfirmed`, not fabricated `ProviderCancelled`; the guard then
-stays alive until that inner owner exits. Thus the tap preserves both event
-order and the transitive cancellation chain; it is not another
-independently-lived request.
+The relay is also an ownership boundary, split deliberately into three small
+processes. A minimal public custodian owns the returned handle but performs no
+provider or callback work. It releases the guard only after that public witness
+exists, then adopts the guard, the callback observer, and the inner stream
+owner before each begins work. The guard remains the inner stream's direct
+consumer. Explicit cancellation and effect death travel through it to the
+inner handle. A guard or observer crash becomes an in-band transport failure
+only after the inner owner drains. A silent inner owner is bounded by one fixed
+timer and reported honestly as terminal `CancellationUnconfirmed`, not
+fabricated `ProviderCancelled`; the custodian remains alive until the complete
+registered subtree exits. Thus the tap preserves both event order and the
+transitive cancellation chain; it is not another independently-lived request.
 
 `client/provider_relay.wrap` holds that mechanism once for both the delta tap
 and the summary recorder. Its observer runs before it forwards an event, so

@@ -238,11 +238,12 @@ provider-neutral `ProviderRequest`.
 The same neutrality applies to lifetime. A request returns a
 provider-neutral `StreamHandle` whose cancel capability reaches the active
 transport owner and whose optional owner pid acknowledges the complete drain.
-Today the lowest owner retains an OTP `httpc` request id; a future Responses or
-subscription-backed adapter may retain a different native handle without
-changing the gateway, fallback policy, runtime, or client wrappers. This is an
-ownership seam inside the process tree, not an HTTP server or proxy between
-Loom and the provider.
+Today the lowest owner is a Gleam custodian around a worker whose opaque native
+handle retains an OTP `httpc` request id, dedicated handler, and raw receiver;
+a future Responses or subscription-backed adapter may retain a different
+native handle without changing the gateway, fallback policy, runtime, or
+client wrappers. This is an ownership seam inside the process tree, not an
+HTTP server or proxy between Loom and the provider.
 
 The payoff showed up the first time the seam was tested against an
 endpoint neither adapter was written for. Baseten hosts

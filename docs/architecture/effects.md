@@ -578,19 +578,20 @@ depend on: zero or more `Delta` events, then exactly one `Settled` or
 nothing about settlement.
 
 The returned `StreamHandle` carries the event subject, an idempotent cancel
-capability, and an optional drain-witness pid. A public gateway guard owns that
-capability, monitors the direct consumer and private fallback pump, and tracks
-the pump's current transport. The pump owns the provider terminal race and
-will not start another fallback until that transport drains. Each attempt has
-a private HTTP-event subject and a monitorable transport owner. Teardown first
-invokes the transport's cancellation capability, then observes bounded owner
-death. If it does not retire, the guard reports uncertainty but remains alive;
-killing the witness would erase the proof that native work stopped. The
-production owner is a small Gleam custodian retaining the exact opaque OTP
-`httpc` request id and its dedicated request-handler pid. The narrow Erlang FFI
-starts the raw request, normalizes its messages, issues OTP's asynchronous
-cancel cast, and waits for that handler to exit after closing the socket. The
-request and terminal state machines remain Gleam. Raw OTP errors become
+capability, and an optional drain-witness pid. A minimal public custodian owns
+that capability but performs no provider work. It adopts the gateway guard,
+private fallback pump, and every transport owner before each begins. The guard
+tracks the pump's current transport; the pump owns the provider terminal race
+and will not start another fallback until that transport drains. Teardown
+first invokes the transport's cancellation capability, then observes bounded
+owner death. If it does not retire, the guard reports uncertainty while the
+custodian remains alive; killing the witness would erase the proof that native
+work stopped. The production transport follows the same Gleam
+custodian-and-worker pattern. Its narrow Erlang FFI retains the exact opaque
+OTP `httpc` request id, dedicated request-handler pid, and raw receiver pid. It
+starts the raw request, selects its messages, disables handler migration,
+issues OTP's asynchronous cancel cast, and waits for both processes to exit.
+The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.
 
