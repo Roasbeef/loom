@@ -30,6 +30,9 @@ reconnect portions of the existing client's contract.
 - `tui_gleam/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
+- `tui_gleam/composer` separates editable prompt text from large pasted-text
+  attachments. It owns the approximate token indicator and expands the exact
+  pasted bytes only when a prompt crosses the gateway boundary.
 
 ## Relationships
 
@@ -56,6 +59,10 @@ reconnect portions of the existing client's contract.
   toggles the compact agent rail, `Ctrl+G` toggles reasoning/tool detail, and
   Page Up/Page Down traverse transcript scrollback. Mouse-wheel events share
   that same tail-relative scroll law.
+- **Paste**: small pastes retain the ordinary editor path. A paste estimated
+  at 400 tokens or spanning eight lines becomes a compact attachment in the
+  prompt border; the full bytes are appended to the editable instruction only
+  when the prompt is sent. Backspace on an empty editor drops the newest one.
 
 ## Invariants
 
@@ -77,6 +84,9 @@ reconnect portions of the existing client's contract.
   renders through the fenced Gleam path instead of appearing as escaped JSON.
   The normal view bounds long programs to twelve rows; detail mode reveals the
   whole source.
+- **Large context stays bounded without data loss.** Compact paste indicators
+  are presentation state only. Submission expands the original bytes, and a
+  durable large user turn stays previewed until detail mode asks for it.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
   prompt editing is inert. `Ctrl+C` remains global so every overlay can be
   escaped by terminating the client.
