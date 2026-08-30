@@ -1718,6 +1718,7 @@ fn spawn_provider(
   spec: effects.RequestSpec,
 ) -> State {
   let parent = state.self
+  let driver = process.self()
   let surface = state.effects.provider
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
@@ -1735,12 +1736,17 @@ fn spawn_provider(
         }
         True -> {
           begin()
-          let terminal = await_provider(handle, stop, surface.timeout_ms)
-          // The terminal and the owner drain are separate facts. Keeping this
-          // effect private until the public owner exits prevents both the current
-          // driver and a replacement from dispatching beside the old subtree.
-          stream.await_stopped_forever(handle)
-          wake(parent, ProviderDone(token:, terminal:))
+          case await_provider(handle, stop, driver, surface.timeout_ms) {
+            None -> Nil
+            Some(terminal) -> {
+              // The terminal and the owner drain are separate facts. Keeping
+              // this effect private until the public owner exits prevents both
+              // the current driver and a replacement from dispatching beside
+              // the old subtree.
+              stream.await_stopped_forever(handle)
+              wake(parent, ProviderDone(token:, terminal:))
+            }
+          }
         }
       }
     })
@@ -1755,36 +1761,54 @@ fn spawn_provider(
 // timeout. A request owner normally answers immediately after it has handed
 // cancellation to its active transport; the short bound keeps a broken owner
 // from delaying the strand after the original wait has already expired.
+// `Some(terminal)` belongs to a still-live driver. `None` means driver death
+// transferred the only remaining obligation to the reaper's owner monitor, so
+// this effect exits without fabricating or forwarding an outcome.
 const provider_cancel_grace_ms = 2000
 
 fn await_provider(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
+  driver: Pid,
   timeout_ms: Int,
-) -> stream.StreamEvent {
+) -> Option(stream.StreamEvent) {
   case next_provider_event(handle, stop, timeout_ms) {
-    Ok(stream.Delta(..)) -> await_provider(handle, stop, timeout_ms)
+    Ok(stream.Delta(..)) -> await_provider(handle, stop, driver, timeout_ms)
     Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
-      terminal
+      Some(terminal)
     Error(True) -> {
       stream.cancel(handle)
-      await_provider_cancel(handle, stop, provider_cancel_grace_ms)
+      case process.is_alive(driver) {
+        True ->
+          await_provider_cancel(handle, stop, driver, provider_cancel_grace_ms)
+        // The reaper sent this stop after observing the driver's Down. No
+        // caller remains to consume a terminal, and the reaper independently
+        // retains `handle.owner`, so exiting transfers teardown to that
+        // monitor instead of spending a grace interval on discarded output.
+        False -> None
+      }
     }
     Error(False) -> {
       stream.cancel(handle)
       case next_provider_event(handle, stop, provider_cancel_grace_ms) {
         Ok(stream.Delta(..)) ->
-          await_provider_cancel(handle, stop, provider_cancel_grace_ms)
+          await_provider_cancel(handle, stop, driver, provider_cancel_grace_ms)
         Ok(stream.Settled(..) as terminal)
-        | Ok(stream.Failed(..) as terminal) -> terminal
+        | Ok(stream.Failed(..) as terminal) -> Some(terminal)
         Error(True) -> {
-          stream.await_stopped_forever(handle)
-          stream.Failed(error: stream.CancellationUnconfirmed)
+          case process.is_alive(driver) {
+            True -> {
+              stream.await_stopped_forever(handle)
+              Some(stream.Failed(error: stream.CancellationUnconfirmed))
+            }
+            False -> None
+          }
         }
         // The owner alone can prove cancellation won. Keep an unconfirmed
         // outcome terminal: retrying could overlap new work with a request
         // that failed to prove it stopped.
-        Error(False) -> stream.Failed(error: stream.CancellationUnconfirmed)
+        Error(False) ->
+          Some(stream.Failed(error: stream.CancellationUnconfirmed))
       }
     }
   }
@@ -1793,17 +1817,23 @@ fn await_provider(
 fn await_provider_cancel(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
+  driver: Pid,
   timeout_ms: Int,
-) -> stream.StreamEvent {
+) -> Option(stream.StreamEvent) {
   case next_provider_event(handle, stop, timeout_ms) {
-    Ok(stream.Delta(..)) -> await_provider_cancel(handle, stop, timeout_ms)
+    Ok(stream.Delta(..)) ->
+      await_provider_cancel(handle, stop, driver, timeout_ms)
     Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
-      terminal
-    Error(True) -> {
-      stream.await_stopped_forever(handle)
-      stream.Failed(error: stream.CancellationUnconfirmed)
-    }
-    Error(False) -> stream.Failed(error: stream.CancellationUnconfirmed)
+      Some(terminal)
+    Error(True) ->
+      case process.is_alive(driver) {
+        True -> {
+          stream.await_stopped_forever(handle)
+          Some(stream.Failed(error: stream.CancellationUnconfirmed))
+        }
+        False -> None
+      }
+    Error(False) -> Some(stream.Failed(error: stream.CancellationUnconfirmed))
   }
 }
 

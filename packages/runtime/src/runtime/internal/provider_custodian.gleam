@@ -15,6 +15,25 @@
 //// failure domain: an unexpected surface crash must fault the effect and let
 //// recovery run behind the custodian, not become a fabricated provider
 //// response. The whole boundary is a Gleam process protocol.
+////
+//// ## The publication order
+////
+//// ```text
+//// prepare
+////   |-- spawn linked request worker, parked
+////   |-- spawn unlinked custodian around that worker
+////   `-- return { handle: custodian, begin }
+////
+//// strand runtime
+////   |-- publish handle.owner to the incarnation reaper
+////   `-- call begin only after the reaper acknowledges it
+//// ```
+////
+//// This order removes the interval in which `surface.request` has started
+//// native work but the reaper does not yet know what to cancel. The linked
+//// worker preserves the old failure semantics; the unlinked custodian
+//// preserves the new drain evidence. They are separate because one PID cannot
+//// both propagate a provider crash and remain alive to witness its cleanup.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/option.{type Option, None, Some}
@@ -33,12 +52,36 @@ type WorkerEvent {
   InnerOwnerDown(process.Down)
 }
 
-/// A provider handle whose worker is parked until `begin` is invoked.
+const cancel_grace_ms = 2000
+
+/// A provider handle whose request worker is parked until `begin` is invoked.
+///
+/// Constructing the value starts no provider work. The caller first publishes
+/// `handle.owner` to its restart barrier, then invokes `begin` exactly once.
 pub type Prepared {
-  Prepared(handle: stream.StreamHandle, begin: fn() -> Nil)
+  Prepared(
+    /// The immediately publishable outer stream and drain witness.
+    handle: stream.StreamHandle,
+    /// The one-way permit which lets the parked worker call the provider.
+    begin: fn() -> Nil,
+  )
 }
 
-/// Publishes a parked runtime custodian around one provider request.
+/// Prepares a parked runtime custodian around one provider request.
+///
+/// This function returns only after the worker and custodian exist, but before
+/// `surface.request` is called. The returned `begin` capability completes the
+/// prepare/publish/begin protocol described in the module documentation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let provider_custodian.Prepared(handle:, begin:) =
+///   provider_custodian.prepare(surface, request)
+/// publish_to_reaper(handle)
+/// begin()
+/// ```
+///
 pub fn prepare(
   surface: effects.ProviderSurface,
   spec: effects.RequestSpec,
@@ -55,8 +98,10 @@ pub fn prepare(
       let inner = surface.request(spec)
       case custodian.adopt(owner, inner.owner, inner.cancel) {
         True -> forward(inner, consumer, events, stop)
-        // A rejected permit means teardown won the race or its witness died.
-        // Do not wait for a stop message that a dead custodian cannot send.
+        // A rejected permit means teardown won the race or its witness died,
+        // but the provider may already have queued a real terminal. Preserve
+        // that terminal while the consumer lives; its Down changes the same
+        // loop into drain-only teardown.
         False -> cancel(inner, consumer, events, stop)
       }
     })
@@ -70,6 +115,11 @@ pub fn prepare(
   )
 }
 
+// --- Event forwarding -----------------------------------------------------
+
+// The worker, rather than the custodian, receives provider events. This keeps
+// parsing and terminal arbitration in the effect failure domain while the
+// custodian remains a reliable witness if any of that work crashes.
 fn forward(
   inner: stream.StreamHandle,
   consumer: Pid,
@@ -102,6 +152,7 @@ fn cancel(
     outer,
     consumer_monitor,
     owner_monitor,
+    cancel_grace_ms,
     selector,
   )
 }
@@ -134,15 +185,21 @@ fn forward_selected(
           finish(inner, consumer_monitor, owner_monitor)
       }
     }
-    Stop | ConsumerDown(_down) ->
-      cancel_and_forward(
-        inner,
-        consumer,
-        outer,
-        consumer_monitor,
-        owner_monitor,
-        selector,
-      )
+    Stop ->
+      case process.is_alive(consumer) {
+        True ->
+          cancel_and_forward(
+            inner,
+            consumer,
+            outer,
+            consumer_monitor,
+            owner_monitor,
+            cancel_grace_ms,
+            selector,
+          )
+        False -> drain(inner, consumer_monitor, owner_monitor)
+      }
+    ConsumerDown(_down) -> drain(inner, consumer_monitor, owner_monitor)
     InnerOwnerDown(_down) -> {
       send_unconfirmed(consumer, outer)
       forget(consumer_monitor, owner_monitor)
@@ -150,12 +207,17 @@ fn forward_selected(
   }
 }
 
+// Cancellation has two outcomes to report and one stronger fact to preserve.
+// A provider-authored terminal may arrive during the grace and is forwarded;
+// otherwise the caller gets `CancellationUnconfirmed`. Either way this worker
+// does not exit until the inner owner's Down proves the subtree is gone.
 fn cancel_and_forward(
   inner: stream.StreamHandle,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
   owner_monitor: Option(Monitor),
+  within_ms: Int,
   selector: process.Selector(WorkerEvent),
 ) -> Nil {
   // Cancellation is fallible work, so it runs on this worker rather than on
@@ -163,16 +225,18 @@ fn cancel_and_forward(
   // invokes its retained copy on a disposable helper while keeping the inner
   // owner in the drain set.
   stream.cancel(inner)
-  case process.selector_receive(selector, within: 2000) {
-    Ok(Inner(stream.Delta(..))) | Ok(Stop) | Ok(ConsumerDown(_)) ->
+  case process.selector_receive(selector, within: within_ms) {
+    Ok(Inner(stream.Delta(..))) | Ok(Stop) ->
       cancel_and_forward(
         inner,
         consumer,
         outer,
         consumer_monitor,
         owner_monitor,
+        within_ms,
         selector,
       )
+    Ok(ConsumerDown(_down)) -> drain(inner, consumer_monitor, owner_monitor)
     Ok(Inner(stream.Settled(..) as terminal))
     | Ok(Inner(stream.Failed(..) as terminal)) -> {
       case process.is_alive(consumer) {
@@ -187,6 +251,19 @@ fn cancel_and_forward(
       forget(consumer_monitor, owner_monitor)
     }
   }
+}
+
+// Once the consumer is dead, no process can use a terminal event. Waiting for
+// one would delay restart without preserving information, so this path keeps
+// only the stronger obligation: cancel and prove the inner owner is gone.
+fn drain(
+  inner: stream.StreamHandle,
+  consumer_monitor: Monitor,
+  owner_monitor: Option(Monitor),
+) -> Nil {
+  stream.cancel(inner)
+  stream.await_stopped_forever(inner)
+  forget(consumer_monitor, owner_monitor)
 }
 
 fn selector(
