@@ -283,7 +283,7 @@ pub fn main() -> report.Outcome {
     )
   {
     Ok(found) -> report.text(mcp.text(found) <> " " <> echoed(found))
-    Error(mcp.ToolFailed(message: message, content: _content)) ->
+    Error(mcp.ToolFailed(message:, content: _content)) ->
       report.failure("the tool ran and refused: " <> message)
     Error(mcp.ServerUnavailable(reason: reason)) ->
       report.failure("the server never answered: " <> reason)
@@ -315,10 +315,9 @@ vocabulary every seam already carries, so an MCP argument map is composed
 the way an `Outcome` is. `ToolFailed` and `ServerUnavailable` are
 genuinely different events — the first is a *tool* verdict on a call that
 settled, the second is a call that never reached a tool — and nothing
-below the program can tell them apart for it. And the patterns are
-written out in full (`message: message`, not `message:`), because vetting
-parses a slightly narrower Gleam than the compiler and label shorthand is
-one of the things it does not take.
+below the program can tell them apart for it. Label shorthand in the patterns
+is ordinary Gleam syntax and passes through the same vetter as every other
+submitted construct.
 
 ## A worked example: an issue triage pass
 
@@ -655,11 +654,11 @@ fn text_field(value: report.Value, key: String) -> String {
 /// Why a triage pass stopped, in the program's own words.
 fn explain(error: mcp.McpError) -> String {
   case error {
-    mcp.ToolFailed(message: message, content: _content) ->
+    mcp.ToolFailed(message:, content: _content) ->
       "the tool ran and refused: " <> message
     mcp.ServerUnavailable(reason: reason) ->
       "the server never answered: " <> reason
-    mcp.McpDenied(code: code, message: message) ->
+    mcp.McpDenied(code:, message:) ->
       "the call was denied as " <> code <> ": " <> message
     mcp.ResultMalformed(reason: reason) ->
       "the answer did not decode: " <> reason
