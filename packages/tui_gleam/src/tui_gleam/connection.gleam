@@ -22,18 +22,48 @@ pub opaque type Connection {
 
 /// One connection lifecycle message for the terminal process.
 pub type Message {
+  /// The socket actor completed its handshake and can accept commands.
   Connected
-  Incoming(String)
-  Closed(String)
-  NetworkFault(String)
+  /// A text frame arrived from the ClientGateway.
+  Incoming(
+    /// The undecoded wire payload.
+    text: String,
+  )
+  /// The peer or local actor closed the websocket.
+  Closed(
+    /// The backend's diagnostic close reason.
+    reason: String,
+  )
+  /// The socket remained alive long enough to report an I/O violation.
+  NetworkFault(
+    /// The backend's diagnostic failure reason.
+    reason: String,
+  )
 }
 
 /// Creates the inbox the terminal process will own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let inbox = connection.new_inbox()
+/// ```
 pub fn new_inbox() -> Subject(Message) {
   process.new_subject()
 }
 
 /// Opens a websocket and starts its socket-owning actor.
+///
+/// The returned handle never exposes the socket itself. All reads cross the
+/// terminal-owned inbox, and all writes cross the actor mailbox, preserving
+/// one owner for websocket lifecycle state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let inbox = connection.new_inbox()
+/// let result = connection.connect("ws://127.0.0.1:8080/v1/ws", "token", inbox)
+/// ```
 pub fn connect(
   address: String,
   token: String,
@@ -86,18 +116,36 @@ pub fn connect(
 }
 
 /// Sends one text frame without blocking the terminal process on socket I/O.
+///
+/// ## Examples
+///
+/// ```gleam
+/// connection.send(socket, "{\"v\":1}")
+/// ```
 pub fn send(connection: Connection, text: String) -> Nil {
   let Connection(subject) = connection
   process.send(subject, stratus.to_user_message(SendText(text)))
 }
 
 /// Requests a graceful websocket close.
+///
+/// ## Examples
+///
+/// ```gleam
+/// connection.close(socket)
+/// ```
 pub fn close(connection: Connection) -> Nil {
   let Connection(subject) = connection
   process.send(subject, stratus.to_user_message(Stop))
 }
 
 /// Receives one queued connection message, if one is ready.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next = connection.receive(inbox)
+/// ```
 pub fn receive(inbox: Subject(Message)) -> Result(Message, Nil) {
   process.receive(inbox, 0)
 }

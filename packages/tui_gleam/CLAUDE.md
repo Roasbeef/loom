@@ -49,26 +49,35 @@ reconnect portions of the existing client's contract.
 ## Traffic
 
 - **Commands out**: `subscribe`, `prompt`, `models`, `set_config`, `abort`,
-  branch-scope `fork`, and standalone `compact`.
+  `steer`, `follow_up`, branch-scope `fork`, and standalone `compact`.
 - **Events in**: full/strand/model/config snapshots, durable entries, stream
   deltas, operation transitions, usage, escalation notices, and server
   errors. Unknown event names are accepted and ignored for forward
   compatibility.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
-  actions. `/model` opens the selector, `/agents` opens the inspector, `Tab`
-  toggles the compact agent rail, `Ctrl+G` toggles reasoning/tool detail, and
-  Page Up/Page Down traverse transcript scrollback. Mouse-wheel events share
-  that same tail-relative scroll law.
+  actions. `/model` opens the selector, `/agents` opens the inspector,
+  `Shift+Tab` toggles the compact rail, `Ctrl+G` toggles reasoning/tool detail,
+  and Page Up/Page Down traverse transcript scrollback. Mouse-wheel events
+  share that same tail-relative scroll law.
+- **Live submission**: Enter steers the current live operation by default.
+  Tab changes one draft to a `follow_up` queued after that operation, then
+  resets to steer mode. `/steer` and `/queue` expose both paths explicitly.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
   at 400 tokens or spanning eight lines becomes a compact attachment in the
-  prompt border; the full bytes are appended to the editable instruction only
-  when the prompt is sent. Backspace on an empty editor drops the newest one.
+  input row; the full bytes are appended to the editable instruction only
+  when the prompt is sent. The backend enables bracketed-paste mode so a real
+  terminal paste arrives as one event. Backspace on an empty editor drops the
+  newest attachment.
 
 ## Invariants
 
 - **The server remains authoritative.** The client derives models, strands,
   operation phases, and entries from snapshots and events. It persists
   nothing and invents no lifecycle state.
+- **Live intent stays visible.** The composer title derives liveness from the
+  active strand's operation phase and refines `assistant` with its latest
+  stream kind. Before text arrives it says `thinking`; once text arrives it
+  says `responding`. The same title states whether Enter steers or queues.
 - **Durable and transient output do not alias.** Stream fragments live in a
   strand-and-kind keyed list and disappear when that strand's settled entry
   arrives. This prevents the final assistant message from rendering twice.
@@ -77,9 +86,10 @@ reconnect portions of the existing client's contract.
   codepoints before data reaches etui spans. Newlines survive only where the
   markdown block parser needs them.
 - **Markdown stays structured.** Mork parses CommonMark and the adapter emits
-  etui styles and OSC 8 links. Fenced Gleam token styling preserves the exact
-  model-authored text; it never acts as a formatter or compiler. No raw
-  model-authored ANSI or HTML is executed.
+  etui styles and OSC 8 links. Tables become stacked labelled records so their
+  relationships survive narrow terminals. Fenced Gleam token styling
+  preserves the exact model-authored text; it never acts as a formatter or
+  compiler. No raw model-authored ANSI or HTML is executed.
 - **Executed programs stay inspectable.** A structured `code_mode.program`
   renders through the fenced Gleam path instead of appearing as escaped JSON.
   The normal view bounds long programs to twelve rows; detail mode reveals the

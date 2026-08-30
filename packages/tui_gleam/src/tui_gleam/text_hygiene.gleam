@@ -10,6 +10,12 @@ import gleam/string
 
 /// Replaces invisible and direction-changing codepoints while preserving line
 /// feeds for markdown block parsing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert text_hygiene.multiline("one\r\ntwo") == "one\ntwo"
+/// ```
 pub fn multiline(text: String) -> String {
   text
   |> string.replace("\r\n", "\n")
@@ -27,6 +33,12 @@ pub fn multiline(text: String) -> String {
 }
 
 /// Produces a terminal-safe value that cannot escape its current row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert text_hygiene.single_line("one\ntwo") == "one two"
+/// ```
 pub fn single_line(text: String) -> String {
   text |> multiline |> string.replace("\n", " ")
 }

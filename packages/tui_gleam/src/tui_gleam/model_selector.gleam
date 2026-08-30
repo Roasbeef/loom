@@ -20,22 +20,50 @@ import tui_gleam/theme
 
 /// The selector's local interaction state.
 pub type State {
-  State(models: List(ModelInfo), query: String, selected: Int)
+  State(
+    /// The latest authoritative catalogue rows.
+    models: List(ModelInfo),
+    /// The operator's local, unsent search text.
+    query: String,
+    /// The zero-based cursor within the filtered rows.
+    selected: Int,
+  )
 }
 
 /// The result of one selector keystroke.
 pub type Action {
-  Continue(State)
-  Choose(String)
+  /// Keep the overlay open with replacement local state.
+  Continue(
+    /// The state to render on the next frame.
+    state: State,
+  )
+  /// Close the overlay and request one catalogue model by name.
+  Choose(
+    /// The selected model's stable catalogue name.
+    name: String,
+  )
+  /// Close the overlay without changing the model configuration.
   Close
 }
 
 /// Opens a selector over the latest catalogue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = model_selector.new(models, "baseten-kimi-k3")
+/// ```
 pub fn new(models: List(ModelInfo), current: String) -> State {
   State(models:, query: "", selected: selected_model(models, current, 0))
 }
 
 /// Replaces catalogue rows while preserving the current query.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let refreshed = model_selector.replace_models(state, models, current)
+/// ```
 pub fn replace_models(
   state: State,
   models: List(ModelInfo),
@@ -50,6 +78,12 @@ pub fn replace_models(
 }
 
 /// Handles one key while the selector owns input focus.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let action = model_selector.update(keys.Down, state)
+/// ```
 pub fn update(key: keys.Key, state: State) -> Action {
   let visible = filter_models(state.models, state.query)
   case key {
@@ -94,6 +128,12 @@ pub fn update(key: keys.Key, state: State) -> Action {
 }
 
 /// Renders the selector above the main interface.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next_buffer = model_selector.render(buffer, screen, state)
+/// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   let width = int.max(1, int.min(76, screen.size.width - 4))
   let height = int.max(1, int.min(22, screen.size.height - 4))

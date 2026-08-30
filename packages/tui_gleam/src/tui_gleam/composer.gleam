@@ -16,16 +16,35 @@ const compact_line_threshold = 8
 
 /// One pasted text attachment and its deliberately approximate token count.
 pub type Attachment {
-  Attachment(text: String, estimated_tokens: Int)
+  Attachment(
+    /// The exact pasted bytes retained until submission.
+    text: String,
+    /// A display-only estimate that must never replace the exact bytes.
+    estimated_tokens: Int,
+  )
 }
 
 /// Whether pasted text belongs inline in the editor or behind an attachment.
 pub type Paste {
-  Inline(text: String)
-  Compact(attachment: Attachment)
+  /// Text small enough for the ordinary one-row editor.
+  Inline(
+    /// The exact pasted bytes.
+    text: String,
+  )
+  /// Text retained outside the editor so rendering stays bounded.
+  Compact(
+    /// The attachment that owns the exact bytes and its approximate size.
+    attachment: Attachment,
+  )
 }
 
 /// Classifies a paste without changing the bytes that will reach the server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.classify("small") == composer.Inline("small")
+/// ```
 pub fn classify(text: String) -> Paste {
   let estimated_tokens = estimate_tokens(text)
   let line_count = list.length(string.split(text, "\n"))
@@ -39,6 +58,12 @@ pub fn classify(text: String) -> Paste {
 }
 
 /// Estimates tokens from UTF-8 bytes and always labels the result approximate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.estimate_tokens("loom") == 1
+/// ```
 pub fn estimate_tokens(text: String) -> Int {
   let bytes = string.byte_size(text)
   case bytes == 0 {
@@ -47,7 +72,14 @@ pub fn estimate_tokens(text: String) -> Int {
   }
 }
 
-/// Describes all compact pastes in the prompt border.
+/// Describes all compact pastes in the input row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let attachment = composer.Attachment("data", 1)
+/// assert composer.summary([attachment]) == Some("pasted ~1 tokens")
+/// ```
 pub fn summary(attachments: List(Attachment)) -> Option(String) {
   case attachments {
     [] -> None
@@ -70,6 +102,13 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
 }
 
 /// Expands attachment bytes after the editable instruction text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let attachment = composer.Attachment("context", 2)
+/// assert composer.expand("review", [attachment]) == "review\n\ncontext"
+/// ```
 pub fn expand(input: String, attachments: List(Attachment)) -> String {
   let pasted =
     attachments
@@ -86,6 +125,14 @@ pub fn expand(input: String, attachments: List(Attachment)) -> String {
 }
 
 /// Drops the newest attachment when backspace reaches an empty editor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let first = composer.Attachment("first", 2)
+/// let second = composer.Attachment("second", 2)
+/// assert composer.drop_last([first, second]) == [first]
+/// ```
 pub fn drop_last(attachments: List(Attachment)) -> List(Attachment) {
   case list.reverse(attachments) {
     [] -> []
@@ -94,6 +141,12 @@ pub fn drop_last(attachments: List(Attachment)) -> List(Attachment) {
 }
 
 /// Bounds a large durable user turn until transcript detail is requested.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.transcript_text("short", False) == "short"
+/// ```
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
   case classify(text), details_expanded {
     Compact(Attachment(estimated_tokens:, ..)), False ->

@@ -19,6 +19,12 @@ import tui_gleam/text_hygiene
 import tui_gleam/theme
 
 /// Renders the always-visible agent rail on wide terminals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next_buffer = agents.render_rail(buffer, area, strands, "main")
+/// ```
 pub fn render_rail(
   buf: buffer.Buffer,
   area: Rect,
@@ -45,6 +51,12 @@ pub fn render_rail(
 }
 
 /// Renders a centered agent inspector above the main interface.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next_buffer = agents.render_overlay(buffer, screen, strands, "main")
+/// ```
 pub fn render_overlay(
   buf: buffer.Buffer,
   screen: Rect,
@@ -87,6 +99,12 @@ pub fn render_overlay(
 }
 
 /// Returns a compact summary for narrow-terminal status bars.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agents.summary([]) == "0 live / 0 agents"
+/// ```
 pub fn summary(strands: List(Strand)) -> String {
   let live =
     list.count(strands, fn(strand) {
