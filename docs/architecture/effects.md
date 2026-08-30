@@ -572,7 +572,10 @@ yields the same events, and the whole parser is property-tested without a
 single process. Adapters compose it with their own pure
 accumulator into a response machine, a fold over HTTP events; only `run`
 is impure, starting a monitorable transport owner and forwarding deltas as
-they appear. The consumption contract is narrow enough to
+they appear. Composition uses a prepare-publish-begin seam: a
+`PreparedStream` exposes its parked owner before route resolution, secret
+lookup, or transport work starts, and the runtime grants the begin permit only
+after its reaper has adopted that owner. The consumption contract is narrow enough to
 depend on: zero or more `Delta` events, then exactly one `Settled` or
 `Failed`, and nothing after. Deltas are ephemeral display data and prove
 nothing about settlement.
@@ -586,11 +589,11 @@ and will not start another fallback until that transport drains. Teardown
 first invokes the transport's cancellation capability, then observes bounded
 owner death. If it does not retire, the guard reports uncertainty while the
 custodian remains alive; killing the witness would erase the proof that native
-work stopped. The production transport follows the same Gleam
-custodian-and-worker pattern. Its narrow Erlang FFI retains the exact opaque
-OTP `httpc` request id, dedicated request-handler pid, and raw receiver pid. It
-starts the raw request, selects its messages, disables handler migration,
-issues OTP's asynchronous cancel cast, and waits for both processes to exit.
+work stopped. The production transport uses one native owner rather than
+another Gleam custodian-and-worker pair. Its narrow Erlang FFI retains the
+exact opaque OTP `httpc` request id and dedicated request-handler pid. The
+owner receives the raw messages itself, disables handler migration, issues
+OTP's asynchronous cancel cast, and waits for that handler to exit.
 The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.

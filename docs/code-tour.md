@@ -186,7 +186,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1205`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:1221`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -519,9 +519,10 @@ on every turn. Neither step touches authorization — `clear` admits a call
 by `list.contains` on the same list, and set membership is blind to order.
 
 The driver spawns the request on its own process
-(`runtime/strand_runtime.gleam`) and waits for a message.
-`gateway.request` (`provider/gateway.gleam`) spawns a public guard and a
-private fallback pump. The pump walks the role's chain only on
+(`runtime/strand_runtime.gleam`) and waits for a message. Production first
+calls `gateway.prepare` (`provider/gateway.gleam`), publishes the parked public
+owner to the runtime reaper, and only then grants its begin permit. The
+resulting guard spawns a private fallback pump. The pump walks the role's chain only on
 *retryably*-classified failures and calls `stream.run` per attempt
 (`provider/stream.gleam`); the guard owns the returned handle and translates
 a pump crash into a prompt in-band failure. The processful shell is small.
@@ -552,10 +553,10 @@ after the inner owner drains; otherwise it becomes
 `CancellationUnconfirmed`, and the guard remains the public drain witness.
 
 That chain reaches the socket. `StreamHandle.cancel` signals the gateway
-guard, which asks the pump to cancel its current `RunningRequest`; the
-production Gleam custodian calls the narrow FFI with the exact opaque request
-id and dedicated handler pid. Erlang starts and cancels `httpc`, normalizes its
-raw messages, and waits for the handler Down that follows socket closure.
+guard, which asks the pump to cancel its current `RunningRequest`; the native
+owner calls the narrow FFI path with the exact request id and dedicated handler
+pid. That same owner receives and normalizes raw `httpc` messages, then waits
+for the handler Down that follows socket closure.
 Request routing, deadlines, and the cancellation state machine remain in
 typed Gleam. Each grace period is bounded; a public owner that cannot prove
 teardown remains alive until its lower owner exits. Ignoring late events
@@ -597,7 +598,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:553`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:569`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -723,7 +724,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1332`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1345`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1382`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -731,7 +732,7 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`client/wiring.gleam:413`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1206`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
 `tool.dispatch` is total (`tools/tool.gleam:360`): an unknown name yields

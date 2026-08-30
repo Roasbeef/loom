@@ -6,15 +6,16 @@ The provider SDK: a typed registry of provider configurations and role
 routes, a pure incremental server-sent-events parser, two wire adapters
 (Anthropic Messages, OpenAI chat-completions), retry and overflow
 classification, and the secret-injection seam. SSE parsing and adapter folds
-are pure Gleam; the gateway and transport custodians are the small processful
-shell around that sans-io core. WP-F.
+are pure Gleam; the gateway custodian and native transport owner are the small
+processful shell around that sans-io core. WP-F.
 
 ## Key Types
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `with_attempt_timeout`); exposes the
-  frozen contract `resolve(gw, role)` and `request(gw, req)`. Nothing
-  touches the network until `request`.
+  frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
+  additionally exposes the internal prepare-publish-begin seam: it returns a
+  parked owner before route resolution, secret lookup, or network work starts.
 - `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
   ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
   static model facts an adapter needs: context window, output ceiling,
@@ -29,6 +30,9 @@ shell around that sans-io core. WP-F.
   `Failed`, and nothing after it. Its cancel capability signals the one
   gateway owner that decides the cancellation/terminal race; its optional
   owner pid is a drain witness for every asynchronous descendant.
+- `provider/stream.PreparedStream` — a `StreamHandle` whose owner exists while
+  work is parked, plus the idempotent begin permit. Composition layers publish
+  the handle first and grant the permit only after adoption succeeds.
 - `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
   `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
   the same events.
@@ -52,23 +56,25 @@ shell around that sans-io core. WP-F.
   type-compatible with `StreamHandle`, and `settle_failure` bridges
   `retry.classify` into the machine's retryability convention),
   `conformance` (wiring and the e2e).
-- **FFI**: `provider/internal/ffi_httpc` — starts and cancels OTP `httpc` in
-  asynchronous streaming mode, selects its raw messages, and waits for the
-  dedicated request handler and raw receiver to exit after cancellation.
+- **FFI**: `provider/internal/ffi_httpc` — prepares, begins, and cancels one OTP
+  `httpc` owner in asynchronous streaming mode. That owner selects its own raw
+  messages and waits for the dedicated request handler to exit after
+  cancellation.
   Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
   cancellation as an asynchronous cast rather than a socket-drain
   acknowledgement. The shim therefore forces a non-reused handler, disables
   handler migration through redirects and supported automatic retries,
-  captures that handler through public `httpc:info/0`, and returns one opaque
-  native handle. All ownership, fallback, deadline, and terminal state
+  captures that handler through public `httpc:info/0`, and exposes only the
+  owner's monitorable pid. All ownership, fallback, deadline, and terminal state
   machines stay in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
 ## Traffic
 
-- **Actor messages**: `gateway.request` first publishes a minimal custodian,
-  then releases a guard and private pump for the whole fallback walk. The
+- **Actor messages**: `gateway.prepare` first publishes a minimal custodian;
+  its begin permit then releases a guard and private pump for the whole
+  fallback walk. The
   custodian adopts both workers and every transport owner before work begins;
   its pid, rather than a crashable worker, is the public drain witness. The
   guard monitors the direct consumer and retains each active transport
@@ -112,9 +118,9 @@ shell around that sans-io core. WP-F.
   terminal. The gateway owner is the sole terminal sender.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
-  The production transport custodian retains the exact OTP request id, calls
-  `httpc:cancel_request/1`, and waits for both the dedicated request handler's
-  Down and the raw receiver's Down before exiting. An
+  The production native owner retains the exact OTP request id, receives the
+  raw `httpc` messages itself, calls `httpc:cancel_request/1`, and waits for the
+  dedicated request handler's Down before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
   the acknowledgement chain. `ProviderCancelled` and

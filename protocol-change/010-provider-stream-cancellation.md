@@ -87,12 +87,36 @@ pub type Transport {
 }
 ```
 
+Composition adds one in-VM preparation envelope without changing the public
+`gateway.request` facade:
+
+```gleam
+pub type PreparedStream {
+  PreparedStream(handle: StreamHandle, begin: fn() -> Nil)
+}
+
+pub type ProviderSurface {
+  ProviderSurface(request: fn(RequestSpec) -> StreamHandle, timeout_ms: Int)
+  PreparedProviderSurface(
+    request: fn(RequestSpec) -> StreamHandle,
+    prepare: fn(RequestSpec) -> PreparedStream,
+    timeout_ms: Int,
+  )
+}
+```
+
+`PreparedProviderSurface` is the production representation. The immediate
+variant remains for local fixtures which own no asynchronous work. A wrapper
+prepares its child, publishes `handle.owner`, and only then invokes `begin`.
+The ordinary `request` function performs those steps synchronously for callers
+which do not participate in an outer ownership protocol.
+
 `RunningRequest.owner` is monitorable and is the sole sender of that attempt's
 HTTP events. The cancellation closure stops the transport-native request. The
-production owner retains the exact OTP request id returned by
-`httpc:request/4`; cancellation invokes `httpc:cancel_request/1` before the
-local owner exits. Startup failures surface as one redacted `RequestFailed`,
-never as a secret-bearing exception string.
+production native owner retains the exact OTP request id returned by
+`httpc:request/4`; cancellation invokes `httpc:cancel_request/1` and awaits the
+captured handler before that owner exits. Startup failures surface as one
+redacted `RequestFailed`, never as a secret-bearing exception string.
 
 OTP 27's contract matters here. `httpc:cancel_request/1` targets the default
 profile used by Loom's `httpc:request/4` call, returns `ok`, and is asynchronous.
@@ -103,24 +127,27 @@ attempt's private subject and cannot produce another `StreamEvent` terminal.
 If Loom later uses `httpc:request/5` with a non-default profile, the owner must
 retain that profile and use `httpc:cancel_request/2`.
 
-The production shim closes that acknowledgement gap without moving the
-lifecycle into Erlang. A non-empty socket option gives each Loom request a
-dedicated, non-reused `httpc` handler; the shim captures that handler through
-public `httpc:info/0`, issues the cancellation cast, and waits for both its Down
-and the raw receiver's Down. The handler closes its socket during termination
-before that signal is delivered. Redirects are disabled because they retain a
-request id while moving work to another handler. Automatic Retry-After retries
-are also disabled where the running OTP version supports that option; older
-supported releases predate it. If `httpc_manager` restarts during handler
-discovery, startup remains unpublished and retries while the receiver is live
-instead of treating an unknown handler as a completed drain. Raw tuple
-selection and these OTP-specific waits remain in the shim; request, fallback,
-timeout, and terminal state stay in Gleam.
+The production shim closes that acknowledgement gap without moving provider
+policy into Erlang. It first allocates one parked native owner, which is both
+the raw `httpc` receiver and the monitorable drain witness. Only after Gleam
+publishes that PID does `begin_stream_request` admit work. A non-empty socket
+option gives the request a dedicated, non-reused handler; the owner captures
+that handler through public `httpc:info/0`, monitors the manager generation
+which admitted it, issues the cancellation cast, and waits for the handler's
+Down. The handler closes its socket during termination before that signal is
+delivered. Redirects are disabled because they retain a request id while
+moving work to another handler. Automatic Retry-After retries are also
+disabled where the running OTP version supports that option; older supported
+releases predate it. Raw tuple selection, prepare/begin, and the OTP-specific
+drain wait are the whole shim; request, fallback, timeout, redaction, and
+terminal state stay in Gleam.
 
 ## Ownership and race semantics
 
-`provider/gateway.request` first publishes a minimal custodian, then releases a
-guard and private pump for the whole role walk. The custodian performs no
+`provider/gateway.prepare` first returns a minimal parked custodian; its caller
+publishes that owner and only then grants the begin permit which releases a
+guard and private pump for the whole role walk. The synchronous
+`provider/gateway.request` facade performs those two steps back to back. The custodian performs no
 provider or transport work. It monitors the direct consumer and adopts the
 guard, pump, and every `RunningRequest` before each is permitted to begin. The
 guard retains the latest attempt published by the pump, and every attempt gets
@@ -165,15 +192,14 @@ cancel. A transport owner that does not retire is not killed from above,
 because doing so would erase the only acknowledgement that its native
 descendant stopped. The boundary emits `CancellationUnconfirmed`, while its
 custodian remains alive until the owner eventually exits. The production
-transport custodian has already issued `httpc:cancel_request/1` for the exact
-request id and waits for the dedicated handler and raw receiver before it
-exits.
+transport owner has already issued `httpc:cancel_request/1` for the exact
+request id and waits for the dedicated handler before it exits.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
-The wrapper publishes a minimal custodian before releasing its guard. The guard
-remains the inner stream's direct consumer, while a separate observer process
-runs the synchronous callback; the custodian adopts both processes and the
-inner handle before their work begins. Explicit cancellation or consumer death
+Its prepared surface publishes a minimal custodian before releasing its guard.
+The guard remains the inner stream's direct consumer, while a separate observer
+process runs the synchronous callback; the custodian adopts both processes and
+the inner handle before their work begins. Explicit cancellation or consumer death
 propagates to the inner handle. Guard or observer death becomes a prompt
 in-band transport failure only when inner drain is confirmed; otherwise it
 becomes `CancellationUnconfirmed` and the custodian stays alive as the drain
@@ -206,8 +232,10 @@ before the runtime can ask for summary progress.
   dedicated drain ledger that precedes the restartable strand-name registry.
   During session close that ledger traps the root's shutdown and remains until
   every registered reaper exits, so the writer lease cannot be released beside
-  live provider work. The ledger's own unexpected death stops the session tree
-  rather than erasing those barriers.
+  live provider work. `SessionTree` retains the ledger's name separately, so
+  `api.close` also awaits it when an abnormal root death happened before close
+  began. The ledger's own unexpected death stops the session tree rather than
+  erasing those barriers.
 - Pure SSE parsing and provider adapter state machines do not change. Request
   headers and secrets remain below the provider seam.
 

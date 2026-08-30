@@ -9,6 +9,60 @@ worth more than any status comment.
 
 ---
 
+## Current work: provider stream ownership (#131)
+
+PR #133 (`provider/cancellable-streams`) is rebased on `main` at `0354314`.
+It implements #131 across the provider, runtime, and client wrapper boundaries.
+A `StreamHandle` carries an idempotent cancellation capability and an optional
+owner pid; when present, owner exit acknowledges that every asynchronous
+descendant has stopped. That pid is a deliberately boring custodian rather
+than a worker that can crash while retaining live children. A custodian
+publishes first, adopts each worker and child owner synchronously, and only
+then permits work to begin. Cancellation closures run on disposable helpers,
+so a faulty closure cannot take the public drain witness with it.
+
+The operational invariant is stronger than late-result suppression: once a
+strand effect no longer owns a provider request, its runtime worker, client
+relay and observer, fallback guard and pump, native HTTP owner, and dedicated
+request handler must all drain before replacement work begins. Runtime
+timeout, explicit abort, driver restart, worker crash, wrapper death, and
+direct consumer death now propagate along that chain. A bounded grace decides
+whether the public terminal is confirmed or `CancellationUnconfirmed`; it does
+not authorize killing the drain witness. Both cancellation results are
+terminal and cannot advance a fallback or retry. The frozen contract change
+and race table are in `protocol-change/010-provider-stream-cancellation.md`.
+
+The only provider-specific Erlang remains the existing `provider_ffi` shim.
+Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
+`httpc` cancellation as an asynchronous cast rather than a socket-drain
+acknowledgement. Three small externals prepare, begin, and cancel one native
+owner. That owner receives the raw messages itself, captures the dedicated
+handler, disables redirects and supported automatic retries that could migrate
+the handler behind a stable request id, and waits for handler Down. Provider
+ownership above that raw mailbox, fallback, deadlines, and terminal
+arbitration remain typed Gleam.
+
+The runtime closes both ends of its former publication gap. Production exposes
+a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
+publishes its custodian to the parent owner, and only then grants the begin
+permit. Route resolution, secret lookup, transport startup, and socket work all
+remain behind that permit. Immediate `ProviderSurface` values remain for
+in-memory fakes which own no asynchronous descendants. Reaper generations live
+in a drain ledger before the restartable name registry, so a replacement waits
+for every older generation. `SessionTree` retains the ledger's stable name
+separately, so `api.close` still waits for old provider work after abnormal root
+death and does not release the writer lease early. Tests pin cancellation
+before begin, startup death, wrapper and gateway worker crashes,
+handler-delayed socket closure, redirect cancellation, timeout drain, restart
+ordering, and close/reopen exclusion.
+
+The local gates are green on the current tree: provider 123, runtime 82, client
+551, and conformance 67; pinned simulation seed 33 is independently green; and
+the complete `make check` exits zero. Provider, runtime, and client package
+docs are synchronized with their `AGENTS.md` mirrors, and `make doc-check`
+reports zero errors. Merge remains conditional on a refreshed cold review and
+exact-head CI.
+
 ## Platform-strict enforcement is the production default
 
 PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates

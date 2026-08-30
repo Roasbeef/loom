@@ -296,10 +296,16 @@ extended by the M3 runtime wave.
   finish until both are gone. The parked worker is linked to the provider
   effect because they are one failure domain: an unexpected surface crash must
   still fault the effect and recover, not become a fabricated provider
-  response. The custodian is unlinked and survives both long enough to drain
+  response. Production surfaces return a `PreparedStream`: the worker
+  publishes its parked owner to the reaper before granting the begin permit,
+  so a rejected publication cannot leave unowned provider work. Immediate
+  `ProviderSurface` values remain only for in-memory fakes with no asynchronous
+  descendants. The custodian is unlinked and survives both long enough to drain
   their adopted descendants. The separate drain ledger remembers every
   still-live reaper for the strand, and a replacement waits for them before
-  starting recovery. This transitive drain barrier, rather than scheduler
+  starting recovery. `SessionTree` retains the ledger's stable name, so
+  `shutdown` waits it independently even when the root supervisor was killed
+  abnormally. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
 - **Provider ownership continues below the effect process.** A provider
   effect that reaches its receive deadline cancels its stream and waits a

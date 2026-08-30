@@ -56,8 +56,10 @@ over one session file. WP-L.
   forwarder registers under a name and the writer subscribes to that
   name, which is what lets it be supervised and restarted without the
   writer noticing.
-- `client/provider_relay.wrap` — the shared provider-wrapper ownership seam:
-  a minimal public custodian is published before it releases the guard. The
+- `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
+  ownership seam: `prepare` returns a minimal public custodian before it
+  releases the guard, while `wrap` is the prepare-and-begin compatibility
+  facade. The
   guard remains the inner surface's direct consumer, and a separately
   monitored observer runs the synchronous callback before each event is
   forwarded. The custodian adopts the guard, observer, and inner stream owner
@@ -1179,16 +1181,18 @@ over one session file. WP-L.
   driver restart kills the parked call and the driver settles it in band
   through the ordinary monitor path.
 - **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
-  `wiring.recording_summaries` each return a new `StreamHandle`, so each
-  publishes a minimal custodian before beginning the inner request. The guard
+  `wiring.recording_summaries` each return a prepared provider surface. Each
+  wrapper publishes a minimal custodian while its guard is parked; only after
+  the parent adopts that owner does the guard prepare and adopt the inner
+  stream, then grant its begin permit. The guard
   remains the inner stream's direct consumer; only each synchronous observer
   call moves to a monitored worker. The custodian adopts both and the inner
   owner, forwards cancellation inward, and bounds missing acknowledgement with
   `CancellationUnconfirmed`, then stays alive until the registered subtree
   exits. This keeps the chain continuous from driver reaper to runtime
-  custodian, relay custodian and guard, gateway custodian, guard and pump,
-  transport custodian and worker, receiver, and native HTTP request; no wrapper
-  may turn consumer death into a detached request.
+  custodian, relay custodian and guard, gateway custodian, guard and pump, and
+  the native HTTP owner plus its dedicated handler; no wrapper may turn
+  consumer death into a detached request.
 - **Wrapper comments narrate ownership handoffs.** The module story names why
   the guard, observer, and custodian are separate; comments at publication and
   adoption say what becomes safe after each acknowledgement. Do not reduce
