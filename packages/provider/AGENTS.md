@@ -63,12 +63,16 @@ processful shell around that sans-io core. WP-F.
   Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
   cancellation as an asynchronous cast rather than a socket-drain
   acknowledgement. The shim therefore forces a non-reused handler, disables
-  handler migration through redirects and supported automatic retries,
-  locates that handler under `httpc_handler_sup`, cancels the exact PID directly,
-  and exposes only the owner's monitorable pid. The internal OTP dependency is
-  confined to this shim and covered across the OTP 27 and OTP 29 diagnostic
-  layouts. All ownership, fallback, deadline, and terminal state machines stay
-  in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  handler migration through redirects and supported automatic retries. A
+  disposable discovery worker probes every live `httpc_handler` with a bounded
+  call, including a handler orphaned by supervisor replacement, and the owner
+  cancels the exact matching PID directly. If admission loses its reply across
+  a manager or supervisor generation change, the owner remains an ambiguous
+  witness until a raw response supplies the request id; exhausting the request
+  deadline fails that witness abnormally rather than claiming drain. The
+  internal OTP dependency is confined to this shim and covered across the OTP
+  27 and OTP 29 diagnostic layouts. All ownership, fallback, deadline, and
+  terminal state machines stay in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
@@ -129,6 +133,11 @@ processful shell around that sans-io core. WP-F.
   `CancellationUnconfirmed` are terminal and never walk to a fallback. Raw
   OTP errors are collapsed to constant diagnostics before crossing the FFI so
   request headers and credentials cannot appear in a durable provider error.
+- **Only the original monitor adjudicates drain.** The custodian records every
+  child before begin. A normal child `Down` retires that obligation; an
+  unexpected killed or abnormal `Down` poisons the custodian and propagates
+  failure after the remaining known frontier is cancelled. A waiter which
+  attaches after exit cannot recover this fact because Erlang reports `noproc`.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash.

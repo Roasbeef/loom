@@ -309,6 +309,7 @@ pub fn prepare(
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
       let begin = process.new_subject()
+      let creator_monitor = process.monitor(consumer)
       process.send(ready, #(control, begin))
       let parked =
         process.new_selector()
@@ -317,10 +318,16 @@ pub fn prepare(
           StartRequest(owner)
         })
         |> process.select_map(control, fn(_cancel) { StopBeforeRequest })
+        |> process.select_specific_monitor(creator_monitor, fn(_down) {
+          StopBeforeRequest
+        })
         |> process.selector_receive_forever()
       case parked {
-        StopBeforeRequest -> Nil
-        StartRequest(custodian) ->
+        StopBeforeRequest -> process.demonitor_process(creator_monitor)
+        StartRequest(custodian) -> {
+          // The public custodian monitors the consumer after publication, so
+          // this temporary edge is needed only across prepare's return gap.
+          process.demonitor_process(creator_monitor)
           start_request(
             gateway,
             request,
@@ -330,6 +337,7 @@ pub fn prepare(
             consumer,
             custodian,
           )
+        }
       }
     })
   let monitor = process.monitor(owner)
@@ -384,6 +392,7 @@ fn start_request(
     process.spawn_unlinked(fn() {
       let pump_control = process.new_subject()
       let pump_begin = process.new_subject()
+      let creator_monitor = process.monitor(self)
       process.send(pump_ready, #(pump_control, pump_begin))
       // Adoption and begin are separate messages from separate processes. If
       // the guard dies between them, its custodian cancels this parked pump.
@@ -393,10 +402,16 @@ fn start_request(
         process.new_selector()
         |> process.select_map(pump_begin, fn(_nil) { StartPump })
         |> process.select_map(pump_control, fn(_control) { StopBeforePump })
+        |> process.select_specific_monitor(creator_monitor, fn(_down) {
+          StopBeforePump
+        })
         |> process.selector_receive_forever()
       case parked {
-        StopBeforePump -> Nil
-        StartPump ->
+        StopBeforePump -> process.demonitor_process(creator_monitor)
+        StartPump -> {
+          // Custody has crossed to the guard's custodian before this permit;
+          // the creator monitor must not compete with that durable edge.
+          process.demonitor_process(creator_monitor)
           pump(
             gateway,
             request,
@@ -406,6 +421,7 @@ fn start_request(
             pump_control,
             self,
           )
+        }
       }
     })
   let consumer_monitor = process.monitor(consumer)

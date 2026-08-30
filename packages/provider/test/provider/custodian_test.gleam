@@ -51,3 +51,37 @@ pub fn worker_crash_keeps_witness_until_child_drain_test() {
     |> process.selector_receive(1000)
     == Ok(True)
 }
+
+/// An unexpected abnormal child exit destroys the custodian's drain proof.
+/// The public owner must therefore exit abnormally instead of presenting that
+/// missing witness as a clean cancellation acknowledgement.
+pub fn abnormal_child_exit_poisoned_witness_test() {
+  let worker_ready = process.new_subject()
+  let child_ready = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(worker_ready, stop)
+      let _stop = process.receive_forever(stop)
+      Nil
+    })
+  let child =
+    process.spawn_unlinked(fn() {
+      process.send(child_ready, Nil)
+      process.receive_forever(process.new_subject())
+    })
+  let stop = process.receive_forever(worker_ready)
+  let assert Ok(Nil) = process.receive(child_ready, within: 1000)
+  let witness = custodian.start(worker, stop, Nil, process.self())
+  assert custodian.adopt_owner(witness, child, fn() { Nil })
+  let owner_monitor = process.monitor(custodian.owner(witness))
+
+  process.kill(child)
+
+  let assert Ok(process.ProcessDown(reason:, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+  assert reason == process.Killed
+    as "lost child ownership must never look like a clean drain"
+}

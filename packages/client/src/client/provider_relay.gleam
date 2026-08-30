@@ -46,6 +46,11 @@ type ObserverMessage {
   Observe(stream.StreamEvent, acknowledged: Subject(Nil))
 }
 
+type ObserverEvent {
+  ObserverCommand(ObserverMessage)
+  ObserverCreatorDown(process.Down)
+}
+
 type RelayEvent {
   Inner(stream.StreamEvent)
   ConsumerDown(process.Down)
@@ -141,15 +146,12 @@ fn guard(
       // startup race, an owner-authored terminal must still pass through the
       // observer before it reaches the caller.
       let #(observer, observer_control, observer_monitor) =
-        start_observer(observe)
-      case
-        custodian.adopt_owner(owner, observer, fn() { process.kill(observer) })
-      {
+        start_observer(observe, process.self())
+      case custodian.adopt_owner(owner, observer, fn() { Nil }) {
         False -> {
-          // Rejection leaves startup with the caller. Killing the still-parked
-          // observer covers both a closing custodian and a custodian that died
-          // before it could retain the child; no inner request may start.
-          process.kill(observer)
+          // Rejection leaves startup with the guard. Returning drops the
+          // creator monitor normally, so the still-parked observer follows
+          // without manufacturing an abnormal child exit.
           process.demonitor_process(consumer_monitor)
           process.demonitor_process(observer_monitor)
           process.send(acknowledged, Nil)
@@ -194,13 +196,14 @@ fn guard(
 
 fn start_observer(
   observe: fn(stream.StreamEvent) -> Nil,
+  creator: Pid,
 ) -> #(Pid, Subject(ObserverMessage), Monitor) {
   let ready = process.new_subject()
   let observer =
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
       process.send(ready, control)
-      observer_loop(control, observe)
+      observer_loop(control, observe, process.monitor(creator))
     })
   let control = process.receive_forever(ready)
   #(observer, control, process.monitor(observer))
@@ -209,11 +212,24 @@ fn start_observer(
 fn observer_loop(
   control: Subject(ObserverMessage),
   observe: fn(stream.StreamEvent) -> Nil,
+  creator_monitor: Monitor,
 ) -> Nil {
-  let Observe(event, acknowledged:) = process.receive_forever(control)
-  observe(event)
-  process.send(acknowledged, Nil)
-  observer_loop(control, observe)
+  let event =
+    process.new_selector()
+    |> process.select_map(control, ObserverCommand)
+    |> process.select_specific_monitor(creator_monitor, ObserverCreatorDown)
+    |> process.selector_receive_forever()
+  case event {
+    ObserverCommand(Observe(event, acknowledged:)) -> {
+      observe(event)
+      process.send(acknowledged, Nil)
+      observer_loop(control, observe, creator_monitor)
+    }
+    // Before adoption, the guard is the observer's only reachable owner.
+    // After adoption, the same edge closes the leaf promptly while the public
+    // custodian still adjudicates whether the guard itself drained normally.
+    ObserverCreatorDown(_down) -> process.demonitor_process(creator_monitor)
+  }
 }
 
 fn await_prepared(
@@ -491,7 +507,7 @@ fn forward_cancelling(
 
 fn cancel_during_start(
   inner: stream.StreamHandle,
-  observer: Pid,
+  _observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
   consumer: Pid,
@@ -528,7 +544,7 @@ fn cancel_during_start(
     _, False -> Nil
   }
   stream.await_stopped_forever(inner)
-  stop_observer(observer, observer_monitor)
+  release_observer(observer_monitor)
   forget_relay(consumer_monitor, observer_monitor)
 }
 
@@ -630,12 +646,12 @@ fn relay_selector(
 
 fn fail_and_drain(
   inner: stream.StreamHandle,
-  observer: Pid,
+  _observer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
-  stop_observer(observer, observer_monitor)
+  release_observer(observer_monitor)
   stream.cancel(inner)
   case stream.await_stopped(inner, within: cancel_grace_ms) {
     True ->
@@ -655,12 +671,12 @@ fn fail_and_drain(
 
 fn cancellation_unconfirmed(
   inner: stream.StreamHandle,
-  observer: Pid,
+  _observer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
-  stop_observer(observer, observer_monitor)
+  release_observer(observer_monitor)
   process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
   stream.cancel(inner)
   stream.await_stopped_forever(inner)
@@ -669,14 +685,14 @@ fn cancellation_unconfirmed(
 
 fn stop_for_dead_consumer(
   inner: stream.StreamHandle,
-  observer: Pid,
+  _observer: Pid,
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
   // Consumer death closes the observation boundary before cancellation can
   // produce a terminal event. This keeps wrapper-local side effects, such as
   // summary recording, from outliving the consumer that requested them.
-  stop_observer(observer, observer_monitor)
+  release_observer(observer_monitor)
   stream.cancel(inner)
   stream.await_stopped_forever(inner)
   forget_relay(consumer_monitor, observer_monitor)
@@ -684,27 +700,21 @@ fn stop_for_dead_consumer(
 
 fn finish_relay(
   inner: stream.StreamHandle,
-  observer: Pid,
+  _observer: Pid,
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
   stream.await_stopped_forever(inner)
-  stop_observer(observer, observer_monitor)
+  release_observer(observer_monitor)
   forget_relay(consumer_monitor, observer_monitor)
 }
 
-fn stop_observer(observer: Pid, monitor: Monitor) -> Nil {
-  case process.is_alive(observer) {
-    False -> Nil
-    True -> {
-      process.kill(observer)
-      let _down =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
-    }
-  }
+// The observer's creator monitor, rather than an untyped kill, closes this
+// leaf. The guard cannot synchronously await that edge because the observer
+// learns of creator death only after the guard returns. The public custodian
+// keeps its independent monitor and therefore remains the drain witness.
+fn release_observer(monitor: Monitor) -> Nil {
+  process.demonitor_process(monitor)
 }
 
 fn forget_relay(consumer_monitor: Monitor, observer_monitor: Monitor) -> Nil {

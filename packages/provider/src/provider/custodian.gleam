@@ -12,7 +12,9 @@
 //// must register a child before permitting that child to start. If teardown
 //// already began, the custodian rejects the permit, invokes cancellation, and
 //// still waits for both the child and the worker. The public owner therefore
-//// retires only after the complete registered subtree is gone.
+//// retires normally only after the complete registered subtree is gone. An
+//// unexpected abnormal child exit destroys that proof and is propagated as
+//// an abnormal custodian exit after every still-known child is cancelled.
 ////
 //// ## The process shape
 ////
@@ -30,8 +32,9 @@
 //// ```
 ////
 //// Code which monitors `owner(custodian)` consequently learns a stronger fact
-//// than "the worker returned": it learns that cancellation has crossed every
-//// registered ownership boundary. Keeping callbacks off the custodian itself
+//// than "the worker returned": a normal `Down` proves cancellation crossed
+//// every registered ownership boundary, while an abnormal `Down` explicitly
+//// reports that the proof was lost. Keeping callbacks off the custodian itself
 //// matters because a crashing callback must not destroy that evidence.
 ////
 //// ## The ownership protocol
@@ -78,6 +81,7 @@ type State(stop) {
     children: List(Child),
     cancellers: List(Monitor),
     closing: Bool,
+    poisoned: Bool,
   )
 }
 
@@ -132,6 +136,7 @@ pub fn start(
           children: [],
           cancellers: [],
           closing: False,
+          poisoned: False,
         )
       process.send(ready, commands)
       loop(state)
@@ -268,14 +273,10 @@ fn monitor_child(owner: Option(Pid), cancel: fn() -> Nil) -> Child {
     None -> Child(owner:, monitor: None, cancel:, cancelling: False)
     Some(pid) -> {
       let monitor = process.monitor(pid)
-      case process.is_alive(pid) {
-        True ->
-          Child(owner:, monitor: Some(monitor), cancel:, cancelling: False)
-        False -> {
-          process.demonitor_process(monitor)
-          Child(owner: None, monitor: None, cancel:, cancelling: False)
-        }
-      }
+      // Keep even an already-dead owner until its Down is adjudicated. An
+      // is_alive pre-filter would erase the only distinction between a normal
+      // drain and an owner which crashed after abandoning descendants.
+      Child(owner:, monitor: Some(monitor), cancel:, cancelling: False)
     }
   }
 }
@@ -338,12 +339,32 @@ fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
     }
     process.ProcessDown(monitor:, ..) if monitor == state.consumer_monitor ->
       begin_close(state)
-    process.ProcessDown(monitor:, ..) ->
-      State(
-        ..state,
-        children: forget_child(state.children, monitor),
-        cancellers: list.filter(state.cancellers, fn(held) { held != monitor }),
-      )
+    process.ProcessDown(monitor:, reason:, ..) -> {
+      let lost_proof = case reason {
+        process.Normal -> False
+        // A child may stop via its cancellation capability after custody has
+        // already marked it as cancelling. Before that transfer, an abnormal
+        // exit is unexpected and cannot certify any descendants it owned.
+        process.Killed | process.Abnormal(_) ->
+          list.any(state.children, fn(child) {
+            child.monitor == Some(monitor) && !child.cancelling
+          })
+      }
+      let state =
+        State(
+          ..state,
+          children: forget_child(state.children, monitor),
+          cancellers: list.filter(state.cancellers, fn(held) { held != monitor }),
+          poisoned: state.poisoned || lost_proof,
+        )
+      // Once a child witness dies abnormally, no later event can recreate its
+      // transitive proof. Stop the remaining frontier and propagate an
+      // abnormal owner exit after every still-known child has been cancelled.
+      case lost_proof {
+        True -> begin_close(state)
+        False -> state
+      }
+    }
   }
 }
 
@@ -363,7 +384,11 @@ fn continue_or_stop(state: State(stop)) -> Nil {
     && !async_children
     && list.is_empty(state.cancellers)
   {
-    True -> forget(state)
+    True ->
+      case state.poisoned {
+        True -> process.kill(process.self())
+        False -> forget(state)
+      }
     False -> loop(state)
   }
 }

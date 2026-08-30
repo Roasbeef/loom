@@ -3,7 +3,8 @@
 -module(provider_http_test_ffi).
 -export([start_hanging_server/2, start_malformed_server/0,
          start_redirect_pair/1, stop_servers/1,
-         restart_httpc_manager/0, with_suspended_request_handlers/2]).
+         restart_httpc_manager/0, restart_httpc_handler_supervisor/0,
+         with_suspended_request_handlers/2]).
 
 %% Replaces only the default manager generation. Request handlers live under
 %% their own supervisor, which is exactly why manager death cannot stand in for
@@ -14,13 +15,28 @@ restart_httpc_manager() ->
     await_replacement_manager(Old, 1000),
     nil.
 
+%% Replaces the handler supervisor without touching its unlinked children.
+%% This recreates the OTP topology that made a supervisor-only scan unsound:
+%% the live request remains owned by a handler the replacement supervisor has
+%% never seen.
+restart_httpc_handler_supervisor() ->
+    Old = whereis(httpc_handler_sup),
+    exit(Old, kill),
+    await_replacement(httpc_handler_sup, Old, 1000),
+    nil.
+
 await_replacement_manager(_Old, 0) ->
     erlang:error(httpc_manager_did_not_restart);
 await_replacement_manager(Old, Remaining) ->
-    case whereis(httpc_manager) of
+    await_replacement(httpc_manager, Old, Remaining).
+
+await_replacement(_Name, _Old, 0) ->
+    erlang:error(httpc_process_did_not_restart);
+await_replacement(Name, Old, Remaining) ->
+    case whereis(Name) of
         New when is_pid(New), New =/= Old -> ok;
         _ -> receive after 1 ->
-                 await_replacement_manager(Old, Remaining - 1)
+                 await_replacement(Name, Old, Remaining - 1)
              end
     end.
 
