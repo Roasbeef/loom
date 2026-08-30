@@ -57,7 +57,6 @@ type WorkerEvent {
   Inner(stream.StreamEvent)
   Stop
   ConsumerDown(process.Down)
-  InnerOwnerDown(process.Down)
 }
 
 const cancel_grace_ms = 2000
@@ -227,10 +226,6 @@ fn forward_selected(
         False -> drain(inner, consumer_monitor, owner_monitor)
       }
     ConsumerDown(_down) -> drain(inner, consumer_monitor, owner_monitor)
-    InnerOwnerDown(_down) -> {
-      send_unconfirmed(consumer, outer)
-      forget(consumer_monitor, owner_monitor)
-    }
   }
 }
 
@@ -272,7 +267,7 @@ fn cancel_and_forward(
       }
       finish(inner, consumer_monitor, owner_monitor)
     }
-    Ok(InnerOwnerDown(_down)) | Error(Nil) -> {
+    Error(Nil) -> {
       send_unconfirmed(consumer, outer)
       stream.await_stopped_forever(inner)
       forget(consumer_monitor, owner_monitor)
@@ -307,10 +302,10 @@ fn selector(
     None -> #(selector, None)
     Some(owner) -> {
       let monitor = process.monitor(owner)
-      #(
-        process.select_specific_monitor(selector, monitor, InnerOwnerDown),
-        Some(monitor),
-      )
+      // Owner death is drain evidence, not a provider outcome. Selecting this
+      // monitor beside the event subject would race two independent senders
+      // and could fabricate CancellationUnconfirmed ahead of a queued terminal.
+      #(selector, Some(monitor))
     }
   }
 }

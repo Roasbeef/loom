@@ -189,7 +189,7 @@ pub fn close_releases_the_writer_lease_test() {
       path:,
       owner: "writer-2",
       lease_ttl_ms: 60_000,
-      clock: clock.stepping(from: 2_000_000, by: 7),
+      clock: clock.stepping(from: 1_000_100, by: 7),
     )
     as "a second opener must win the lease immediately"
   assert reopened.lease_interval_ms == Some(20_000)
@@ -323,4 +323,32 @@ pub fn close_after_root_death_still_waits_for_provider_drain_test() {
     )
     as "the lease must reopen immediately after the retained drain completes"
   let _sealed = session.close(reopened)
+}
+
+/// Losing the drain ledger is not equivalent to observing an empty ledger.
+///
+/// The significant child stops the root, but its abnormal death cannot attest
+/// that independently monitored provider owners drained. `close` therefore
+/// leaves the writer lease held instead of authorizing an overlapping opener.
+pub fn close_fails_closed_when_the_drain_ledger_dies_test() {
+  let #(path, runtime) = open_idle("close_rejects_dead_drain_ledger")
+  let assert Ok(ledger) =
+    process.subject_owner(process.named_subject(runtime.tree.drains))
+    as "the live tree must publish its drain ledger"
+  process.kill(ledger)
+
+  let assert Error(_) = api.close(runtime)
+    as "an abnormal ledger death cannot attest a clean drain"
+  let assert Error(_) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-2",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 1_000_100, by: 7),
+    )
+    as "failed shutdown must leave the writer lease held"
+
+  // This test has no provider work. Direct sealing is test cleanup only; the
+  // production close path correctly refused to infer that stronger fact.
+  let _sealed = session.close(runtime.session)
 }

@@ -691,9 +691,11 @@ pub fn abort(runtime: Runtime) -> Nil {
 ///
 /// Lease release depends on the shutdown barrier. Provider reapers may
 /// deliberately outlive strand drivers while a native request drains, so
-/// `close` waits for the root (and therefore those reapers) before sealing the
-/// handle. Reopening beside an unconfirmed old request would be a worse failure
-/// than a slow close. Callable from any process, and idempotent.
+/// `close` monitors the live drain ledger before stopping the root and accepts
+/// only its clean termination after every reaper is gone. A missing or
+/// abnormally dead ledger returns `BackendFault` and deliberately leaves the
+/// lease held. Reopening beside an unconfirmed old request would be a worse
+/// failure than delayed recovery through the lease TTL.
 ///
 /// ## Examples
 ///
@@ -702,7 +704,14 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// ```
 ///
 pub fn close(runtime: Runtime) -> Result(Nil, storage.StorageError) {
-  supervisor.shutdown(runtime.tree, grace_ms: close_grace_ms)
+  use _nil <- result.try(
+    supervisor.shutdown(runtime.tree, grace_ms: close_grace_ms)
+    |> result.map_error(fn(_nil) {
+      storage.BackendFault(
+        reason: "runtime drain ledger stopped without a clean acknowledgement",
+      )
+    }),
+  )
   session.close(runtime.session)
 }
 

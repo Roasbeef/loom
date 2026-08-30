@@ -1487,7 +1487,13 @@ fn await_drain(
           process.send(reply_with, False)
           await_drain(commands, effects)
         }
-        ReaperCommand(TrackProvider(effect: _, handle: _, reply_with:)) -> {
+        ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
+          let #(effects, _published) =
+            publish_provider_owner(effects, effect, handle)
+          // Publication is irreversible even after draining begins. Rejecting
+          // the begin permit stops new work, but retaining the monitor covers
+          // the worker-death race in which only the reaper remains able to
+          // prove that the already-created owner has disappeared.
           process.send(reply_with, False)
           await_drain(commands, effects)
         }

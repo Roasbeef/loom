@@ -9,10 +9,9 @@
 //// The same ledger closes the whole-session race. Reapers deliberately
 //// outlive their drivers while cooperative provider cancellation drains. On
 //// supervisor shutdown this actor traps its parent's exit and remains alive
-//// until every registered reaper is Down. OTP treats it as a supervisor child
-//// solely to grant that drain an unbounded shutdown interval. Consequently
-//// the root cannot die, and `api.close` cannot release the writer lease, while
-//// an old provider subtree is still live.
+//// until every registered reaper is Down. Its normal exit is the positive
+//// acknowledgement; a missing ledger or any abnormal exit fails shutdown
+//// closed and cannot authorize writer-lease release.
 ////
 //// ```text
 //// old driver Down -> old reaper drains -----------+

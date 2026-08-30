@@ -64,7 +64,9 @@
 
 import core/register
 import gleam/bool
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/dynamic/decode
+import gleam/erlang/atom
+import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
@@ -251,8 +253,10 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// drain ledger is an unbounded-shutdown child and will not let that happen
 /// while an incarnation reaper still owns provider work. Killing the root on
 /// expiry would erase the only barrier that makes releasing the writer lease
-/// safe. The drain ledger is awaited independently because it can outlive an
-/// abnormally killed root. Idempotent after both processes have stopped.
+/// safe. The drain ledger is monitored before root termination and its exit
+/// reason is checked independently because it can outlive an abnormally killed
+/// root. `Error(Nil)` means no live ledger could be captured or that ledger
+/// died without the clean `normal`/OTP `shutdown` acknowledgement.
 ///
 /// ## Examples
 ///
@@ -260,8 +264,11 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// // supervisor.shutdown(tree, grace_ms: 5000)
 /// ```
 ///
-pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
-  let drain_owner = process.subject_owner(process.named_subject(tree.drains))
+pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Result(Nil, Nil) {
+  let drains = process.named_subject(tree.drains)
+  use drain_owner <- result.try(process.subject_owner(drains))
+  use <- bool.guard(when: !process.is_alive(drain_owner), return: Error(Nil))
+  let witness = register_drain_witness(drain_owner)
   case process.is_alive(tree.supervisor) {
     True -> {
       let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
@@ -270,9 +277,40 @@ pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
     False -> Nil
   }
   await_death(tree.supervisor)
-  case drain_owner {
-    Ok(pid) -> await_death(pid)
-    Error(Nil) -> Nil
+  await_drain_witness(witness)
+}
+
+type DrainWitness {
+  DrainWitness(monitor: Monitor, owner: Pid)
+}
+
+fn register_drain_witness(owner: Pid) -> DrainWitness {
+  let monitor = process.monitor(owner)
+  DrainWitness(monitor:, owner:)
+}
+
+fn await_drain_witness(witness: DrainWitness) -> Result(Nil, Nil) {
+  let down =
+    process.new_selector()
+    |> process.select_specific_monitor(witness.monitor, fn(down) { down })
+    |> process.selector_receive_forever()
+  process.demonitor_process(witness.monitor)
+  case down {
+    process.ProcessDown(pid:, reason: process.Normal, ..)
+      if pid == witness.owner
+    -> Ok(Nil)
+    process.ProcessDown(pid:, reason: process.Abnormal(reason), ..)
+      if pid == witness.owner
+    ->
+      case decode.run(reason, atom.decoder()) {
+        Ok(reason) ->
+          case atom.to_string(reason) == "shutdown" {
+            True -> Ok(Nil)
+            False -> Error(Nil)
+          }
+        Error(_) -> Error(Nil)
+      }
+    process.ProcessDown(..) | process.PortDown(..) -> Error(Nil)
   }
 }
 
