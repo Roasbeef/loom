@@ -58,8 +58,7 @@ start_native_request(Receiver, Method, Url, Headers, Body) ->
                 <<"GET">> -> {UrlList, HeaderList};
                 _ -> {UrlList, HeaderList, content_type(HeaderList), Body}
             end,
-        HttpOptions =
-            [{timeout, ?RESPONSE_TIMEOUT}, {connect_timeout, 30000}],
+        HttpOptions = migration_safe_http_options(),
         %% A non-empty socket option forces httpc to allocate a fresh handler
         %% instead of reusing a keep-alive session. That gives this request one
         %% monitorable native owner whose DOWN is a socket-drain acknowledgement.
@@ -67,9 +66,9 @@ start_native_request(Receiver, Method, Url, Headers, Body) ->
                    {receiver, Receiver}, {socket_opts, [{nodelay, true}]}],
         case httpc:request(method_atom(Method), Request, HttpOptions, Options) of
             {ok, RequestId} ->
-                Handler = request_handler(RequestId),
                 Receiver ! {request_id, RequestId},
-                {ok, {Receiver, {RequestId, Handler}}};
+                Handler = request_handler(RequestId, Receiver),
+                {ok, {Receiver, {RequestId, Handler, Receiver}}};
             {error, _Reason} ->
                 exit(Receiver, kill),
                 {error, <<"http request startup failed">>}
@@ -101,15 +100,20 @@ receive_loop(RequestId, OnStatus, OnChunk, OnEnd, OnFailure) ->
         OnFailure(<<"timed out waiting for the http response">>)
     end.
 
-cancel_native({RequestId, Handler}) ->
-    Monitor = monitor_handler(Handler),
+cancel_native({RequestId, Handler, Receiver}) ->
+    HandlerMonitor = monitor_handler(Handler),
+    ReceiverMonitor = erlang:monitor(process, Receiver),
     try
         cast_cancel_native(RequestId),
-        await_handler(Monitor),
+        await_handler(HandlerMonitor),
+        exit(Receiver, kill),
+        await_receiver(ReceiverMonitor),
         ok
     catch
         _Class:_CaughtReason ->
-            await_handler(Monitor),
+            await_handler(HandlerMonitor),
+            exit(Receiver, kill),
+            await_receiver(ReceiverMonitor),
             ok
     end.
 
@@ -120,25 +124,32 @@ cast_cancel_native(RequestId) ->
 %% httpc cancellation is an asynchronous manager cast. Capture the dedicated
 %% handler before exposing the request id, then wait for its DOWN after cancel;
 %% the handler closes its socket in terminate/2 before that signal is emitted.
-request_handler(RequestId) ->
+request_handler(RequestId, Receiver) ->
     try
         case httpc:info() of
             Info when is_list(Info) ->
                 Handlers = proplists:get_value(handlers, Info, []),
-                find_request_handler(RequestId, Handlers);
+                case find_request_handler(RequestId, Handlers) of
+                    undefined -> retry_request_handler(RequestId, Receiver);
+                    Handler -> Handler
+                end;
             {error, _Reason} ->
-                retry_request_handler(RequestId)
+                retry_request_handler(RequestId, Receiver)
         end
     catch
-        _Class:_CaughtReason -> retry_request_handler(RequestId)
+        _Class:_CaughtReason -> retry_request_handler(RequestId, Receiver)
     end.
 
 %% The request has already been admitted when handler discovery runs. If the
 %% manager is restarting, keep the custodian inside startup and retry instead
 %% of returning an owner that could later fabricate a drain acknowledgement.
-retry_request_handler(RequestId) ->
-    receive
-    after 10 -> request_handler(RequestId)
+retry_request_handler(RequestId, Receiver) ->
+    case is_process_alive(Receiver) of
+        false -> undefined;
+        true ->
+            receive
+            after 10 -> request_handler(RequestId, Receiver)
+            end
     end.
 
 find_request_handler(_RequestId, []) ->
@@ -159,6 +170,37 @@ await_handler(undefined) ->
 await_handler(Monitor) ->
     receive
         {'DOWN', Monitor, process, _Handler, _Reason} -> ok
+    end.
+
+await_receiver(Monitor) ->
+    receive
+        {'DOWN', Monitor, process, _Receiver, _Reason} -> ok
+    end.
+
+%% Redirects and Retry-After retries retain the public request id while moving
+%% work to a different handler. Disable both migrations so the captured handler
+%% remains authoritative. `autoretry` arrived in inets 9.6 (OTP 28.4); older
+%% supported OTP releases reject the option and did not implement that retry.
+migration_safe_http_options() ->
+    Base = [{timeout, ?RESPONSE_TIMEOUT},
+            {connect_timeout, 30000},
+            {autoredirect, false}],
+    case supports_autoretry_option() of
+        true -> [{autoretry, 0} | Base];
+        false -> Base
+    end.
+
+supports_autoretry_option() ->
+    try application:get_key(inets, vsn) of
+        {ok, Vsn} ->
+            case [list_to_integer(N) || N <- string:tokens(Vsn, ".")] of
+                [Major, Minor | _] -> Major > 9 orelse
+                                      (Major =:= 9 andalso Minor >= 6);
+                _ -> false
+            end;
+        _ -> false
+    catch
+        _:_ -> false
     end.
 
 content_type(HeaderList) ->

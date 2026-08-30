@@ -10,8 +10,9 @@ import gleam/erlang/process.{type Pid}
 
 /// The opaque native handle for one asynchronous HTTP request.
 ///
-/// Besides OTP's request id, the Erlang shim retains the dedicated handler
-/// process whose exit proves that cancellation closed the request socket.
+/// Besides OTP's request id, the Erlang shim retains the dedicated handler and
+/// raw receiver whose exits prove that cancellation closed the request socket
+/// and stopped raw message delivery.
 pub type RequestId
 
 /// Starts one HTTP request and streams the response through the callbacks:
@@ -25,8 +26,12 @@ pub type RequestId
 /// selectively and forwards. No pure alternative exists: chunked response delivery is
 /// only available through `httpc`'s message protocol (or a third-party
 /// client), and selective receive on `{http, ...}` tuples cannot be
-/// expressed in Gleam. The shim also calls `application:ensure_all_started/1`
-/// for `inets` and `ssl` so the client works without a release boot script.
+/// expressed in Gleam. The shim disables redirects and supported automatic
+/// retries so the captured handler cannot migrate behind the stable request
+/// id, and waits through a transient `httpc_manager` restart rather than
+/// publishing an unknown drain witness. It also calls
+/// `application:ensure_all_started/1` for `inets` and `ssl` so the client works
+/// without a release boot script.
 @external(erlang, "provider_ffi", "start_stream_request")
 pub fn start_stream_request(
   method: String,
@@ -40,8 +45,9 @@ pub fn start_stream_request(
 ) -> Result(#(Pid, RequestId), String)
 
 /// Cancels the exact OTP request identified by `request_id` and returns only
-/// after its dedicated native handler has exited. OTP cancellation itself is
-/// asynchronous and may race a response already in flight, so the provider
-/// request owner remains the only process allowed to choose a terminal event.
+/// after its dedicated native handler and raw receiver have exited. OTP
+/// cancellation itself is asynchronous and may race a response already in
+/// flight, so the provider request owner remains the only process allowed to
+/// choose a terminal event.
 @external(erlang, "provider_ffi", "cancel_stream_request")
 pub fn cancel_stream_request(request_id: RequestId) -> Nil

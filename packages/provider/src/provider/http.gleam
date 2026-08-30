@@ -4,15 +4,17 @@
 //// `HttpRequest` to an injected `Transport`, which delivers the response
 //// as a stream of `HttpEvent` messages to a subject. Tests inject a
 //// transport that replays fixture events; production wires the Erlang
-//// `httpc` streaming shim via `httpc_transport`. The socket and its Gleam
-//// custodian form the processful shell; parsing and response folds above the
-//// `HttpEvent` boundary retain the sans-io shape from the style guide.
+//// `httpc` streaming shim via `httpc_transport`. A minimal Gleam custodian
+//// witnesses a worker, the raw receiver, and the native request beneath it;
+//// parsing and response folds above the `HttpEvent` boundary retain the
+//// sans-io shape from the style guide.
 ////
 //// Secrets (API keys) appear only inside `HttpRequest.headers`, which
 //// flows exclusively into the transport. No `HttpEvent`, error, or stream
 //// event ever carries the request back out (spec §3.3 invariant 4).
 
 import gleam/erlang/process.{type Pid, type Subject}
+import provider/custodian
 import provider/internal/ffi_httpc
 
 type NativeControl {
@@ -110,13 +112,15 @@ pub type Transport {
 
 /// The production transport: Erlang `httpc` in asynchronous streaming
 /// mode, wrapped so chunks arrive as `HttpEvent` messages on the subject.
-/// A small Gleam custodian exists before native startup, queues cancellation,
-/// retains the opaque OTP request id once known, and monitors both the raw
-/// event receiver and provider request owner. It alone forwards `HttpEvent`s,
-/// so its exit is the complete transport drain acknowledgement. The FFI is
-/// limited to starting `httpc`, normalizing raw messages, and turning OTP's
-/// asynchronous cancellation into a handler-exit acknowledgement. The
-/// lifecycle state machine remains here in typed Gleam.
+/// A small Gleam custodian exists before native startup and queues
+/// cancellation. Its worker retains the opaque OTP request id and forwards
+/// `HttpEvent`s; once the raw receiver exists, the worker publishes both that
+/// pid and native cancel capability to the custodian. The public custodian can
+/// therefore outlive a crashed worker and retires only after the receiver and
+/// any cancellation helper are gone. The FFI is limited to starting `httpc`,
+/// selecting its raw messages, and turning OTP's asynchronous cancellation
+/// into handler-and-receiver exit acknowledgement. Lifecycle policy remains
+/// here in typed Gleam.
 ///
 /// ## Examples
 ///
@@ -137,10 +141,12 @@ fn start_httpc(
 ) -> Result(RunningRequest, String) {
   let parent = process.self()
   let ready = process.new_subject()
-  let custodian =
+  let worker =
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
-      process.send(ready, control)
+      let begin = process.new_subject()
+      process.send(ready, #(control, begin))
+      let owner = process.receive_forever(begin)
       let parent_monitor = process.monitor(parent)
       let native = process.new_subject()
       case
@@ -163,22 +169,38 @@ fn start_httpc(
         }
         Ok(#(receiver, request_id)) -> {
           let receiver_monitor = process.monitor(receiver)
-          own_native_request(
-            request_id,
-            receiver,
-            subject,
-            control,
-            native,
-            parent_monitor,
-            receiver_monitor,
-          )
+          let adopted =
+            custodian.adopt_owner(owner, receiver, fn() {
+              ffi_httpc.cancel_stream_request(request_id)
+            })
+          case adopted {
+            True ->
+              own_native_request(
+                request_id,
+                receiver,
+                subject,
+                control,
+                native,
+                parent_monitor,
+                receiver_monitor,
+              )
+            False ->
+              finish_native(
+                request_id,
+                receiver,
+                parent_monitor,
+                receiver_monitor,
+              )
+          }
         }
       }
     })
-  let control = process.receive_forever(ready)
+  let #(control, begin) = process.receive_forever(ready)
+  let owner = custodian.start(worker, control, CancelNative, parent)
+  process.send(begin, owner)
   Ok(
-    RunningRequest(owner: custodian, cancel: fn() {
-      process.send(control, CancelNative)
+    RunningRequest(owner: custodian.owner(owner), cancel: fn() {
+      custodian.cancel(owner)
     }),
   )
 }

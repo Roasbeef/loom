@@ -32,6 +32,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/openai
+import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
 import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
@@ -53,6 +54,10 @@ const request_cancel_grace_ms = 1500
 type RequestControl {
   CancelRequest
   CancelDeadline
+}
+
+type RequestStart {
+  BeginRequest(custodian.Custodian)
 }
 
 type AttemptRegistration {
@@ -239,9 +244,10 @@ fn find_provider(
 /// module documentation for the fallback-walk semantics and
 /// `provider/stream` for the handle's consumption contract.
 ///
-/// The handle's subject is owned by the calling process; a public guard owns
-/// its lifecycle while a private pump runs the fallback walk, so this returns
-/// immediately without making a pump crash indistinguishable from silence.
+/// The handle's subject is owned by the calling process. A minimal public
+/// custodian owns its lifecycle while a guard and private pump run the
+/// fallback walk. Both workers are adopted before they begin, so this returns
+/// immediately without making either worker's crash a false drain signal.
 ///
 /// ## Examples
 ///
@@ -264,6 +270,9 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
   let owner =
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
+      let begin = process.new_subject()
+      process.send(ready, #(control, begin))
+      let BeginRequest(custodian) = process.receive_forever(begin)
       let pump_ready = process.new_subject()
       let pump_events = process.new_subject()
       let pump_attempts = process.new_subject()
@@ -271,7 +280,9 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
       let pump_owner =
         process.spawn_unlinked(fn() {
           let pump_control = process.new_subject()
-          process.send(pump_ready, pump_control)
+          let pump_begin = process.new_subject()
+          process.send(pump_ready, #(pump_control, pump_begin))
+          let _begin = process.receive_forever(pump_begin)
           pump(
             gateway,
             request,
@@ -292,19 +303,36 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
         })
         |> process.selector_receive(request_start_timeout_ms)
       case pump_started {
-        Ok(Ok(pump_control)) -> {
-          process.send(ready, control)
-          guard_request(
-            events,
-            control,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            consumer_monitor,
-            pump_owner,
-            pump_monitor,
-            None,
-          )
+        Ok(Ok(#(pump_control, pump_begin))) -> {
+          let adopted =
+            custodian.adopt_owner(custodian, pump_owner, fn() {
+              process.send(pump_control, Cancel)
+            })
+          process.send(pump_begin, Nil)
+          case adopted {
+            True ->
+              guard_request(
+                custodian,
+                events,
+                control,
+                pump_events,
+                pump_attempts,
+                pump_control,
+                consumer_monitor,
+                pump_owner,
+                pump_monitor,
+                None,
+              )
+            False ->
+              stop_for_dead_consumer(
+                custodian,
+                pump_control,
+                pump_attempts,
+                consumer_monitor,
+                pump_monitor,
+                None,
+              )
+          }
         }
         Ok(Error(Nil)) | Error(Nil) -> {
           process.kill(pump_owner)
@@ -320,10 +348,13 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
     |> process.selector_receive(request_start_timeout_ms)
   process.demonitor_process(monitor: monitor)
   case started {
-    Ok(Ok(control)) ->
-      stream.owned(events:, owner:, cancel: fn() {
-        process.send(control, CancelRequest)
+    Ok(Ok(#(control, begin))) -> {
+      let custodian = custodian.start(owner, control, CancelRequest, consumer)
+      process.send(begin, BeginRequest(custodian))
+      stream.owned(events:, owner: custodian.owner(custodian), cancel: fn() {
+        custodian.cancel(custodian)
       })
+    }
     Ok(Error(Nil)) | Error(Nil) -> {
       process.kill(owner)
       process.send(
@@ -342,6 +373,7 @@ pub fn request(gateway: Gateway, request: ProviderRequest) -> StreamHandle {
 // crashes after startup. It also makes cancellation bounded without asking the
 // caller to understand the pump's monitor or the active fallback attempt.
 fn guard_request(
+  custodian: custodian.Custodian,
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
@@ -362,8 +394,13 @@ fn guard_request(
     )
   case process.selector_receive_forever(selector) {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
-      process.send(permit, True)
+      let accepted =
+        custodian.adopt_owner(custodian, http.owner(running), fn() {
+          http.cancel(running)
+        })
+      process.send(permit, accepted)
       guard_request(
+        custodian,
         events,
         control,
         pump_events,
@@ -380,6 +417,7 @@ fn guard_request(
       case event {
         Delta(..) ->
           guard_request(
+            custodian,
             events,
             control,
             pump_events,
@@ -399,6 +437,7 @@ fn guard_request(
     }
     ConsumerDown(_down) ->
       stop_for_dead_consumer(
+        custodian,
         pump_control,
         pump_attempts,
         consumer_monitor,
@@ -426,6 +465,7 @@ fn guard_request(
       let _timer =
         process.send_after(control, request_cancel_grace_ms, CancelDeadline)
       guard_cancelling(
+        custodian,
         events,
         control,
         pump_events,
@@ -439,6 +479,7 @@ fn guard_request(
     }
     CancelExpired ->
       guard_request(
+        custodian,
         events,
         control,
         pump_events,
@@ -456,6 +497,7 @@ fn guard_request(
 // pump terminal if one arrives; pump death or expiry only proves that the
 // request could not confirm which side of the race won.
 fn guard_cancelling(
+  custodian: custodian.Custodian,
   events: process.Subject(StreamEvent),
   control: process.Subject(RequestControl),
   pump_events: process.Subject(StreamEvent),
@@ -476,8 +518,13 @@ fn guard_cancelling(
     )
   case process.selector_receive_forever(selector) {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      let _accepted =
+        custodian.adopt_owner(custodian, http.owner(running), fn() {
+          http.cancel(running)
+        })
       process.send(permit, False)
       guard_cancelling(
+        custodian,
         events,
         control,
         pump_events,
@@ -493,6 +540,7 @@ fn guard_cancelling(
       case event {
         Delta(..) ->
           guard_cancelling(
+            custodian,
             events,
             control,
             pump_events,
@@ -512,6 +560,7 @@ fn guard_cancelling(
       }
     ConsumerDown(_down) ->
       stop_for_dead_consumer(
+        custodian,
         pump_control,
         pump_attempts,
         consumer_monitor,
@@ -535,6 +584,7 @@ fn guard_cancelling(
     }
     CancelRequested ->
       guard_cancelling(
+        custodian,
         events,
         control,
         pump_events,
@@ -573,6 +623,7 @@ fn request_selector(
 // bypass an injected transport's cancel capability and would make the test
 // seam weaker than the production custodian.
 fn stop_for_dead_consumer(
+  custodian: custodian.Custodian,
   pump_control: process.Subject(Control),
   pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
@@ -581,7 +632,13 @@ fn stop_for_dead_consumer(
 ) -> Nil {
   process.send(pump_control, Cancel)
   http_cancel(active)
-  abandon_request(pump_attempts, consumer_monitor, pump_monitor, active)
+  abandon_request(
+    custodian,
+    pump_attempts,
+    consumer_monitor,
+    pump_monitor,
+    active,
+  )
 }
 
 // The pump may be blocked handing a freshly prepared attempt to the guard when
@@ -589,6 +646,7 @@ fn stop_for_dead_consumer(
 // the pump exits; otherwise both processes could wait forever before the
 // underlying transport had even been allowed to start.
 fn abandon_request(
+  custodian: custodian.Custodian,
   pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
@@ -601,9 +659,14 @@ fn abandon_request(
     |> process.selector_receive_forever()
   case event {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      let _accepted =
+        custodian.adopt_owner(custodian, http.owner(running), fn() {
+          http.cancel(running)
+        })
       process.send(permit, False)
       http.cancel(running)
       abandon_request(
+        custodian,
         pump_attempts,
         consumer_monitor,
         pump_monitor,
@@ -615,7 +678,13 @@ fn abandon_request(
       forget_request(consumer_monitor, pump_monitor)
     }
     PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
-      abandon_request(pump_attempts, consumer_monitor, pump_monitor, active)
+      abandon_request(
+        custodian,
+        pump_attempts,
+        consumer_monitor,
+        pump_monitor,
+        active,
+      )
   }
 }
 

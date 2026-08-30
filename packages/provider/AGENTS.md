@@ -53,25 +53,28 @@ shell around that sans-io core. WP-F.
   `retry.classify` into the machine's retryability convention),
   `conformance` (wiring and the e2e).
 - **FFI**: `provider/internal/ffi_httpc` — starts and cancels OTP `httpc` in
-  asynchronous streaming mode, normalizes its raw messages, and waits for the
-  dedicated request handler to exit after cancellation. Gleam cannot
-  selectively receive raw `httpc` tuples, and OTP exposes cancellation as an
-  asynchronous cast rather than a socket-drain acknowledgement. The shim
-  therefore forces a non-reused handler, captures it through public
-  `httpc:info/0`, and returns the opaque `{request id, handler pid}`. All
-  request, fallback, deadline, and terminal state machines stay in typed
-  Gleam. `provider/internal/
-  ffi_env` — `os:getenv` for the environment secret store. These two are
-  the package's complete inventory of impurity.
+  asynchronous streaming mode, selects its raw messages, and waits for the
+  dedicated request handler and raw receiver to exit after cancellation.
+  Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
+  cancellation as an asynchronous cast rather than a socket-drain
+  acknowledgement. The shim therefore forces a non-reused handler, disables
+  handler migration through redirects and supported automatic retries,
+  captures that handler through public `httpc:info/0`, and returns one opaque
+  native handle. All ownership, fallback, deadline, and terminal state
+  machines stay in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  the environment secret store. These two are the package's complete inventory
+  of impurity.
 
 ## Traffic
 
-- **Actor messages**: `gateway.request` spawns a public guard and a private
-  pump for the whole fallback walk. The guard owns the cancel endpoint,
-  monitors the direct consumer and pump, and retains each active transport
-  capability the pump publishes. The pump selects active-transport DOWN,
-  attempt timeout, and private per-attempt HTTP events. Together they
-  deliver `StreamEvent`s to the caller's subject:
+- **Actor messages**: `gateway.request` first publishes a minimal custodian,
+  then releases a guard and private pump for the whole fallback walk. The
+  custodian adopts both workers and every transport owner before work begins;
+  its pid, rather than a crashable worker, is the public drain witness. The
+  guard monitors the direct consumer and retains each active transport
+  capability the pump publishes. The pump selects active-transport Down,
+  attempt timeout, and private per-attempt HTTP events. Together they deliver
+  `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
   from the transport into that pump.
@@ -105,8 +108,8 @@ shell around that sans-io core. WP-F.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production transport custodian retains the exact OTP request id, calls
-  `httpc:cancel_request/1`, waits for the dedicated request handler's Down, and
-  retires its raw receiver before exiting. An
+  `httpc:cancel_request/1`, and waits for both the dedicated request handler's
+  Down and the raw receiver's Down before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
   the acknowledgement chain. `ProviderCancelled` and

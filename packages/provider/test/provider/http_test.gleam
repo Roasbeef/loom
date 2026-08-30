@@ -15,6 +15,12 @@ fn start_hanging_server(
 @external(erlang, "provider_http_test_ffi", "start_malformed_server")
 fn start_malformed_server() -> #(Int, Pid)
 
+@external(erlang, "provider_http_test_ffi", "start_redirect_pair")
+fn start_redirect_pair(on_target_accepted: fn() -> Nil) -> #(Int, List(Pid))
+
+@external(erlang, "provider_http_test_ffi", "stop_servers")
+fn stop_servers(servers: List(Pid)) -> Nil
+
 @external(erlang, "provider_http_test_ffi", "suspend_active_handlers")
 fn suspend_active_handlers() -> List(Pid)
 
@@ -96,4 +102,36 @@ pub fn production_transport_redacts_raw_httpc_errors_test() {
     |> process.select_specific_monitor(server_monitor, fn(_down) { True })
     |> process.selector_receive(2000)
   http.cancel(running)
+}
+
+pub fn production_cancel_never_follows_a_redirect_to_hanging_peer_test() {
+  let target_accepted = process.new_subject()
+  let #(port, servers) =
+    start_redirect_pair(fn() { process.send(target_accepted, Nil) })
+  let events = process.new_subject()
+  let http.Transport(start_streaming:) = http.httpc_transport()
+  let assert Ok(running) =
+    start_streaming(
+      http.HttpRequest(
+        method: "GET",
+        url: "http://127.0.0.1:" <> int.to_string(port) <> "/redirect",
+        headers: [],
+        body: "",
+      ),
+      events,
+    )
+  let owner_monitor = process.monitor(http.owner(running))
+  let assert Ok(http.ResponseStatus(status: 302, ..)) =
+    process.receive(events, within: 2000)
+    as "the redirect must be returned instead of migrated to a new handler"
+
+  http.cancel(running)
+
+  assert process.receive(target_accepted, within: 100) == Error(Nil)
+    as "the production transport must not open the redirect target socket"
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(_down) { True })
+    |> process.selector_receive(2000)
+  stop_servers(servers)
 }
