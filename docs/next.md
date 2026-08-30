@@ -44,11 +44,13 @@ development override.
 
 The focused broker, prompt, and client gates are green. `make check` also
 passes with its own exit status, including the 208-test real code-mode suite
-under `PlatformEnforcement`, and `make doc-check` reports zero errors. The
-remaining exit criteria are a cold security review and a fresh eTUI session
-that runs a real `code_mode` program under the default demand. The coordinating
-agent has already reproduced the pre-fix refusal and is waiting for the exact
-fix commit to run that final proof.
+under `PlatformEnforcement`, and `make doc-check` reports zero errors. A second
+agent rebased the native eTUI onto `4f5e012`, started a fresh server with no
+enforcement override, and asked K3 to run a minimal `code_mode` program. The
+durable result completed with `platform strict live`; both the build and node
+reported Seatbelt filesystem and network confinement, CPU and file-size
+rlimits, and only ADR-006's three skipped layers. The remaining exit criterion
+is the cold security review.
 
 ---
 
