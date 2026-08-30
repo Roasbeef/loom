@@ -828,13 +828,10 @@ fn occurrences(haystack: String, needle: String) -> Int {
   list.length(string.split(haystack, needle)) - 1
 }
 
-pub fn a_parse_rejection_says_what_the_parser_will_not_accept_test() {
-  // Vetting reads the submission with a standalone parser that accepts a
-  // narrower Gleam than the compiler: label shorthand does not parse,
-  // though `gleam build` takes it. A program can therefore be refused at
-  // a byte offset for syntax that is perfectly legal, and the refusal is
-  // where someone hits it — so it is where the note lives, rather than in
-  // a description every request pays for.
+pub fn a_parse_rejection_does_not_claim_an_obsolete_dialect_gap_test() {
+  // The vetter now accepts Gleam's labelled-argument shorthand. Keeping the
+  // old workaround in the rejection would teach models to avoid valid house
+  // style even though the parser boundary no longer requires that sacrifice.
   let outcome =
     call(
       scripted(codemode.Execution(
@@ -850,10 +847,8 @@ pub fn a_parse_rejection_says_what_the_parser_will_not_accept_test() {
       )),
       [#("program", json.String("..."))],
     )
-  assert string.contains(text_of(outcome), "Label shorthand")
-  assert string.contains(text_of(outcome), "write each label's value out")
-  // And nothing about the shorthand is in the sentence every request pays
-  // for.
+  assert string.contains(text_of(outcome), "unexpected token")
+  assert !string.contains(text_of(outcome), "Label shorthand")
   assert !string.contains(codemode.description(echoing()), "shorthand")
 }
 

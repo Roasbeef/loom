@@ -976,10 +976,6 @@ fn vet_outcome(offer: SeamOffer, rejections: List(Rejection)) -> ToolOutcome {
           <> joined(offer.allowed_imports),
         ]
       },
-      case list.any(rejections, is_parse_rejection) {
-        False -> []
-        True -> [parser_note]
-      },
       ["fix the program and submit it again."],
     ]
     |> list.flatten
@@ -1001,27 +997,8 @@ fn vet_outcome(offer: SeamOffer, rejections: List(Rejection)) -> ToolOutcome {
   )
 }
 
-/// What a parse rejection adds: the one way a program can be legal Gleam
-/// and still fail to parse here.
-///
-/// Vetting reads the submission with `glance`, a standalone parser rather
-/// than the compiler's own, and `glance` 1.1 does not accept label
-/// shorthand — in a call or in a pattern — though `gleam build` does. So
-/// a submitted program is held to a slightly narrower language than the
-/// one that will compile it, and the difference surfaces as an
-/// `Unparseable` rejection at a byte offset for syntax that is perfectly
-/// legal. It is stated here rather than in the tool description for the
-/// reason every byte of that description is argued over: this is where
-/// someone actually hits it, and a reader who never writes the shorthand
-/// never pays for the sentence.
-pub const parser_note = "note: vetting parses the submission with a standalone parser that accepts a slightly narrower Gleam than the compiler. Label shorthand — `f(value:)` in a call, `Pending(handle:, waited_ms:)` in a pattern — does not parse here; write each label's value out."
-
 fn is_import_rejection(rejection: Rejection) -> Bool {
   rejection.rule == ImportNotAllowed
-}
-
-fn is_parse_rejection(rejection: Rejection) -> Bool {
-  rejection.rule == Unparseable
 }
 
 fn rejection_text(rejection: Rejection) -> String {

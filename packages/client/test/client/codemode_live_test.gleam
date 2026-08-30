@@ -436,10 +436,9 @@ pub fn mcp_process_program_source() -> String {
   <> "    Ok(_result) -> \""
   <> no_failure
   <> "\"\n"
-  // Written out rather than as label shorthand: vetting parses a
-  // slightly narrower Gleam than the compiler, and `message:` in a
-  // pattern is one of the things it does not take.
-  <> "    Error(mcp.ToolFailed(message: message, content: _content)) -> \""
+  // The live program deliberately uses house-style label shorthand so the
+  // end-to-end gate catches parser drift before stored programs encounter it.
+  <> "    Error(mcp.ToolFailed(message:, content: _content)) -> \""
   <> tool_failed_label
   <> "\" <> message\n"
   <> "    Error(_other) -> \""
@@ -1041,8 +1040,6 @@ pub fn write_bridge_program_source() -> String {
   <> "    Ok(Nil) -> \""
   <> not_refused
   <> "\"\n"
-  // Written out rather than as label shorthand: vetting parses a
-  // slightly narrower Gleam than the compiler does.
   <> "    Error(fs.StaleContent(path: _path, message: _message)) -> \""
   <> stale_label
   <> "\"\n"

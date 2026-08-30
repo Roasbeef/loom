@@ -124,6 +124,10 @@ pub fn external_on_non_function_definitions_test() {
     "@external(erlang, \"a\", \"b\")\npub type Foo\n",
     "@external(erlang, \"a\", \"b\")\npub const x = 1\n",
     "@external(erlang, \"a\", \"b\")\nimport cap/fs\n",
+    // Glance 4+ surfaces attributes on individual variants separately from
+    // the definition-level list. The token backstop must keep that newly
+    // parsed location inside the same fail-closed attribute class.
+    "pub type Choice {\n  @deprecated(\"legacy\")\n  Legacy\n}\n",
   ]
   assert all_rejected_with(cases, NoForeignInterface)
 }
@@ -410,6 +414,15 @@ pub fn pure_stdlib_programs_pass_test() {
     "import gleam/set\nimport gleam/order\nimport gleam/pair\npub fn main() { 1 }\n",
     "import gleam/float\nimport gleam/bool\nimport gleam/function\npub fn main() { 1 }\n",
     "import gleam/string_tree\npub fn main() { string_tree.new() }\n",
+    // Vetting must accept the same labelled-argument shorthand that Gleam's
+    // compiler and Loom's own house style accept. Rejecting it strands stored
+    // skills before their source can reach the hermetic compiler.
+    "fn keep(value value: Int) -> Int { value }\npub fn main() { let value = 1 keep(value:) }\n",
+    "pub type Box { Box(value: Int) }\npub fn main() { let value = 1 case Box(value:) { Box(value:) -> value } }\n",
+    "pub fn main() { assert 1 == 1 }\n",
+    "pub fn main() { let assert Ok(value) = Ok(1) as \"message\" value }\n",
+    "pub fn main() { let value = 1 echo value value }\n",
+    "pub fn main() { case \"abc\" { \"a\" as prefix <> rest -> #(prefix, rest) value -> #(value, \"\") } }\n",
   ]
   assert all_passed(cases)
 }
