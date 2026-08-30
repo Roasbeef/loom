@@ -284,7 +284,81 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
   process.kill(rt.tree.supervisor)
 }
 
-pub fn provider_effect_exit_waits_for_its_published_owner_test() {
+pub fn strand_exit_during_provider_start_waits_for_parked_custodian_test() {
+  let rec = recorder.start()
+  let entered = process.new_subject()
+  let cancelled = process.new_subject()
+  let drained = process.new_subject()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let events = process.new_subject()
+        case recorder.bump(rec, "provider-started") {
+          1 -> {
+            let gate = process.new_subject()
+            process.send(entered, gate)
+            let _release_start = process.receive_forever(gate)
+            let ready = process.new_subject()
+            let owner =
+              process.spawn_unlinked(fn() {
+                let stop = process.new_subject()
+                process.send(ready, stop)
+                let _stop = process.receive_forever(stop)
+                process.sleep(100)
+                process.send(drained, Nil)
+              })
+            let stop = process.receive_forever(ready)
+            stream.owned(events:, owner:, cancel: fn() {
+              process.send(cancelled, Nil)
+              process.send(stop, Nil)
+            })
+          }
+          _ -> {
+            process.send(events, stream.Failed(error: stream.ProviderCancelled))
+            stream.immediate(events:, cancel: fn() { Nil })
+          }
+        }
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      poll_interval_ms: 25,
+      tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+  let assert Ok(_operation) = api.prompt(rt, [fake.user("wait")])
+  let assert Ok(release_start) = process.receive(entered, within: 5000)
+
+  kill_strand(rt, "main")
+
+  process.sleep(25)
+  assert recorder.read(rec, "provider-started") == 1
+    as "recovery must remain behind the already-published parked custodian"
+  process.send(release_start, Nil)
+  let assert Ok(Nil) = process.receive(cancelled, within: 5000)
+  assert process.receive(drained, within: 20) == Error(Nil)
+  let assert Ok(Nil) = process.receive(drained, within: 5000)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-started") >= 2 },
+    5000,
+    "the replacement provider request",
+  )
+  process.kill(rt.tree.supervisor)
+}
+
+pub fn strand_exit_waits_for_its_published_provider_owner_test() {
   let rec = recorder.start()
   let consumers = pid_log()
   let owners = pid_log()
@@ -319,12 +393,10 @@ pub fn provider_effect_exit_waits_for_its_published_owner_test() {
     5000,
     "the first provider handle",
   )
-  // The handle publication is a synchronous reaper call immediately after
-  // `request` returns. Let that actor turn complete, then simulate the
-  // unexpected death whose old path fabricated a retryable result at once.
-  process.sleep(25)
-  let assert [first_consumer, ..] = logged_pids(consumers)
-  process.kill(first_consumer)
+  // Kill the driver while its effect is consuming the published runtime
+  // custodian. The reaper must cancel that witness and keep recovery behind
+  // the inner owner's independent drain.
+  kill_strand(rt, "main")
   wait_for_named(
     fn() { recorder.read(rec, "provider-cancel-called") >= 1 },
     5000,
@@ -345,6 +417,8 @@ pub fn provider_effect_exit_waits_for_its_published_owner_test() {
     "the replacement provider request",
   )
   assert recorder.read(rec, "provider-overlap") == 0
+  let assert [first_consumer, ..] = logged_pids(consumers)
+  assert !process.is_alive(first_consumer)
   process.kill(rt.tree.supervisor)
 }
 

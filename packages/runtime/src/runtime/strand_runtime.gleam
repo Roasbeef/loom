@@ -68,6 +68,7 @@ import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
 import runtime/effects.{type Effects}
 import runtime/escalation
+import runtime/internal/provider_custodian
 import runtime/writer
 import session/session
 import storage/storage
@@ -1725,13 +1726,15 @@ fn spawn_provider(
   ])
   let #(pid, stop) =
     spawn_provider_effect(state.reaper, logger, fn(stop) {
-      let handle = surface.request(spec)
+      let provider_custodian.Prepared(handle:, begin:) =
+        provider_custodian.prepare(surface, spec)
       case track_provider_owner(state.reaper, handle) {
         False -> {
           stream.cancel(handle)
           stream.await_stopped_forever(handle)
         }
         True -> {
+          begin()
           let terminal = await_provider(handle, stop, surface.timeout_ms)
           // The terminal and the owner drain are separate facts. Keeping this
           // effect private until the public owner exits prevents both the current
@@ -1765,8 +1768,7 @@ fn await_provider(
       terminal
     Error(True) -> {
       stream.cancel(handle)
-      stream.await_stopped_forever(handle)
-      stream.Failed(error: stream.CancellationUnconfirmed)
+      await_provider_cancel(handle, stop, provider_cancel_grace_ms)
     }
     Error(False) -> {
       stream.cancel(handle)
