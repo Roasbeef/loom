@@ -15,6 +15,7 @@ import gleam/erlang/process.{type Pid, Abnormal, Killed, Normal, ProcessDown}
 import gleam/list
 import gleam/option.{Some}
 import machine/operation.{ReplayNever}
+import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/supervisor
@@ -187,5 +188,68 @@ pub fn close_releases_the_writer_lease_test() {
     )
     as "a second opener must win the lease immediately"
   assert reopened.lease_interval_ms == Some(20_000)
+  let _sealed = session.close(reopened)
+}
+
+/// A provider reaper may outlive every ordinary worker while native teardown
+/// is still in flight. The drain ledger is the last root child to stop, so
+/// close must keep both the supervisor and the SQLite lease alive until that
+/// reaper's independently monitored owner exits.
+pub fn close_holds_the_lease_until_provider_reapers_drain_test() {
+  let path = fresh_path("close_waits_provider_drain")
+  let rec = recorder.start()
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-1",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 1_000_000, by: 7),
+    )
+  let base = idle_effects(rec)
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let events = process.new_subject()
+        let ready = process.new_subject()
+        let owner =
+          process.spawn_unlinked(fn() {
+            let release = process.new_subject()
+            process.send(ready, release)
+            let _release = process.receive_forever(release)
+            Nil
+          })
+        let release = process.receive_forever(ready)
+        process.send(started, #(owner, release))
+        stream.owned(events:, owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+        })
+      }),
+    )
+  let assert Ok(runtime) =
+    api.open(opened, eff, api.default_options(harness.configuration()))
+  let assert Ok(_operation) = api.prompt(runtime, [fake.user("wait")])
+  let assert Ok(#(owner, release)) = process.receive(started, within: 5000)
+  let closed = process.new_subject()
+  let _closer =
+    process.spawn_unlinked(fn() { process.send(closed, api.close(runtime)) })
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 5000)
+  assert process.is_alive(owner)
+  assert process.receive(closed, within: 20) == Error(Nil)
+    as "close must not release the writer lease ahead of provider drain"
+  process.send(release, Nil)
+  let assert Ok(Ok(Nil)) = process.receive(closed, within: 5000)
+
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-2",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 2_000_000, by: 7),
+    )
+    as "the drained session must reopen immediately"
   let _sealed = session.close(reopened)
 }

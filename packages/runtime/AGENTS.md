@@ -51,7 +51,9 @@ extended by the M3 runtime wave.
   routing each to its factory).
 - `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
   `api.close` is built on: children terminated in reverse start order
-  with reason `shutdown`, killed only if the grace is spent. The tree
+  with reason `shutdown`. The grace bounds the `sys:terminate` handshake, but
+  the drain ledger then keeps the root alive until every provider reaper has
+  stopped; the writer lease is not released on an inconclusive drain. The tree
   unlinks from its starter, so a host that wants to hear about its death
   monitors `SessionTree.supervisor` (`client/host` does).
 - `runtime/lineage.{Lineage, CallSite}` — the durable ledger of who
@@ -287,13 +289,14 @@ extended by the M3 runtime wave.
   process linked to the driver. Every effect links and receives an adoption
   acknowledgement before doing work. On driver death the reaper invokes every
   adopted effect's stop capability and remains alive until all their exits
-  arrive. A provider effect synchronously publishes its `StreamHandle` owner
-  to the reaper before consuming events. The reaper monitors that owner
-  independently, cancels it when the effect exits, and cannot finish until
-  both are gone. The separate drain ledger remembers every still-live reaper
-  for the strand, and a replacement waits for them before starting recovery.
-  This transitive drain barrier, rather than scheduler timing, makes the
-  incarnation-local `live` list sound.
+  arrive. A provider effect first creates a parked request worker inside a
+  minimal custodian, publishes that custodian to the reaper, and only then
+  permits the worker to call the frozen provider surface. The reaper monitors
+  the public owner independently, cancels it when the effect exits, and cannot
+  finish until both are gone. The separate drain ledger remembers every
+  still-live reaper for the strand, and a replacement waits for them before
+  starting recovery. This transitive drain barrier, rather than scheduler
+  timing, makes the incarnation-local `live` list sound.
 - **Provider ownership continues below the effect process.** A provider
   effect that reaches its receive deadline cancels its stream and waits a
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
@@ -455,16 +458,18 @@ extended by the M3 runtime wave.
   summarizer as transcript; its retained tail *is* re-summarized,
   because those messages survived one compaction and the next would
   otherwise drop them silently.
-- **Close is an orderly shutdown, and the lease release does not depend
-  on it.** `close` terminates the tree the way OTP terminates one —
+- **Close is an orderly shutdown, and lease release depends on its drain
+  barrier.** `close` terminates the tree the way OTP terminates one —
   reverse start order, reason `shutdown` — so every strand driver is
   gone before the writer it commits through, and a close that was asked
   for is distinguishable in the logs from a fault. Durable state stops
   at a commit boundary either way, because commits are atomic in the
-  storage actor. A tree that will not stop inside the grace is killed
-  and the handle is closed regardless: a session locked out for a whole
-  lease TTL is the worse failure. Nothing terminal is written; reopening
-  recovers the open operation.
+  storage actor. The configured grace bounds only the root's system-message
+  handshake. The drain ledger has an unbounded OTP shutdown interval and keeps
+  the root alive until every provider reaper exits; `close` seals the handle
+  and releases the writer lease only afterward. A slow close is preferable to
+  reopening beside an unconfirmed native request. Nothing terminal is written;
+  reopening recovers the open operation.
 - **A hint with nowhere to go is a non-event, and never the writer's
   death.** Post-commit publication skips a subscriber whose owner is
   gone. Sending into an *unregistered name* crashes the sender, so

@@ -17,8 +17,8 @@ import gleam/erlang/process.{type Pid}
 /// terminating, so `Ok(Nil)` means the shutdown is under way; callers
 /// wait for the pid to die. `Error(Nil)` covers a pid that was already
 /// dead, a process that answers no system messages, and a shutdown that
-/// outran `timeout_ms` — all of which leave the caller with the same
-/// recourse, which is to kill.
+/// outran `timeout_ms`. The runtime still observes the PID after either
+/// result; it must never replace an inconclusive provider drain with `kill`.
 @external(erlang, "runtime_ffi", "terminate_supervisor")
 pub fn terminate_supervisor(
   supervisor supervisor: Pid,

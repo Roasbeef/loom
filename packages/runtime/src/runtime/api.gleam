@@ -689,10 +689,11 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// is that no strand is still running when its writer goes, and that a
 /// close asked for logs no crash report.
 ///
-/// The lease release does not depend on the shutdown succeeding: a tree
-/// that will not stop inside `close_grace_ms` is killed and the handle
-/// is closed regardless, because a session locked out for a whole lease
-/// TTL is the worse failure. Callable from any process, and idempotent.
+/// Lease release depends on the shutdown barrier. Provider reapers may
+/// deliberately outlive strand drivers while a native request drains, so
+/// `close` waits for the root (and therefore those reapers) before sealing the
+/// handle. Reopening beside an unconfirmed old request would be a worse failure
+/// than a slow close. Callable from any process, and idempotent.
 ///
 /// ## Examples
 ///
@@ -705,10 +706,9 @@ pub fn close(runtime: Runtime) -> Result(Nil, storage.StorageError) {
   session.close(runtime.session)
 }
 
-/// How long `close` lets the session tree stop before killing it. Five
-/// seconds is the OTP worker default, and every child in the tree is a
-/// plain actor that dies on the shutdown signal at once — the grace is
-/// headroom for a busy scheduler, not an expected wait.
+/// How long `close` lets the root acknowledge its `sys:terminate` request.
+/// Provider drain after that handshake is deliberately unbounded: the writer
+/// lease is not released until the teardown witness is conclusive.
 pub const close_grace_ms = 5000
 
 /// Polls (reading the session store directly, so it survives tree

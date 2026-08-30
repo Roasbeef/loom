@@ -237,11 +237,12 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// be mid-commit when the writer goes, and no supervisor report is
 /// logged for a shutdown that was asked for.
 ///
-/// Blocks until the supervisor pid is gone, or `grace_ms` elapses. A
-/// supervisor that will not answer, or will not finish inside the
-/// grace, is killed: the caller's next act is usually to release the
-/// writer lease, and a tree that refuses to stop must not hold that up.
-/// Idempotent — a tree that is already dead returns at once.
+/// `grace_ms` bounds the `sys:terminate` handshake, not provider teardown.
+/// Once shutdown begins, this waits until the supervisor PID is gone. The
+/// drain ledger is an unbounded-shutdown child and will not let that happen
+/// while an incarnation reaper still owns provider work. Killing the root on
+/// expiry would erase the only barrier that makes releasing the writer lease
+/// safe. Idempotent — a tree that is already dead returns at once.
 ///
 /// ## Examples
 ///
@@ -251,31 +252,16 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 ///
 pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
   use <- bool.guard(when: !process.is_alive(tree.supervisor), return: Nil)
-  case ffi_sup.terminate_supervisor(tree.supervisor, grace_ms) {
-    Ok(Nil) -> Nil
-    Error(Nil) -> process.kill(tree.supervisor)
-  }
-  await_death(tree.supervisor, grace_ms)
+  let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
+  await_death(tree.supervisor)
 }
 
-// Waits out a terminating supervisor in 5 ms slices, killing it if the
-// grace is spent. Polling rather than monitoring keeps this callable
-// from any process, including one that is already selecting on its own
-// mailbox.
-//
-// The inner check stays a `case` rather than a `bool.guard`: its `True`
-// arm kills the process, and `bool.guard`'s `return:` is evaluated
-// unconditionally, which would kill the supervisor on every slice
-// instead of only the last one.
-fn await_death(supervisor: Pid, remaining_ms: Int) -> Nil {
+// Polling rather than monitoring keeps shutdown callable from any process,
+// including one that is already selecting on its own mailbox.
+fn await_death(supervisor: Pid) -> Nil {
   use <- bool.guard(when: !process.is_alive(supervisor), return: Nil)
-  case remaining_ms <= 0 {
-    True -> process.kill(supervisor)
-    False -> {
-      process.sleep(5)
-      await_death(supervisor, remaining_ms - 5)
-    }
-  }
+  process.sleep(5)
+  await_death(supervisor)
 }
 
 /// Ensures a driver is running for `strand`, starting one through the
