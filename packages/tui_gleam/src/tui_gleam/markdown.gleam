@@ -55,6 +55,12 @@ type CodeCharacter {
 }
 
 /// Parses model markdown and returns wrapped-ready styled terminal lines.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let lines = markdown.render("**bounded** output")
+/// ```
 pub fn render(markdown: String) -> List(span.Line) {
   let safe = text_hygiene.multiline(markdown)
   // Chat output is content, not a document envelope. Enable the extensions
@@ -77,6 +83,12 @@ pub fn render(markdown: String) -> List(span.Line) {
 /// Etui's word wrapper intentionally discards leading separators. Code rows
 /// bypass it so indentation remains visible; the terminal renderer clips a
 /// source row that is wider than the available cells.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let wrapped = markdown.wrap_lines(markdown.render("one two"), 4)
+/// ```
 @internal
 pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
   case width <= 0 {
@@ -375,50 +387,87 @@ fn render_table(
   header: List(THead),
   rows: List(List(Cell)),
 ) -> List(span.Line) {
-  let header_line =
+  let headings =
     header
     |> list.map(fn(cell) {
       let THead(inlines:, ..) = cell
       inline_spans(document, inlines, theme.current_bold())
+      |> trim_span_edges
     })
-    |> table_row
-  let body =
-    rows
-    |> list.map(fn(row) {
-      row
-      |> list.map(fn(cell) {
+  rows
+  |> list.flat_map(fn(row) {
+    let cells =
+      list.map(row, fn(cell) {
         let Cell(inlines:, ..) = cell
         inline_spans(document, inlines, style.default_style())
+        |> trim_span_edges
       })
-      |> table_row
-    })
-  [
-    header_line,
-    span.line_new([span.span_styled("  ────────────────", theme.quiet_text())]),
-    ..body
-  ]
-  |> trailing_blank
+    table_record(headings, cells, True)
+    |> list.append([span.line_plain("")])
+  })
 }
 
-fn table_row(cells: List(List(span.Span))) -> span.Line {
-  span.line_new([
-    span.span_styled("  ", theme.quiet_text()),
-    ..join_span_groups(cells, [
-      span.span_styled(" │ ", theme.quiet_text()),
-    ])
-  ])
+// Tables in chat are usually comparisons, and terminals are usually too
+// narrow to preserve their source columns. Rendering each source row as one
+// labelled record preserves the relationships without horizontal scrolling.
+fn table_record(
+  headings: List(List(span.Span)),
+  cells: List(List(span.Span)),
+  first: Bool,
+) -> List(span.Line) {
+  case headings, cells {
+    [], _ | _, [] -> []
+    [heading, ..rest_headings], [cell, ..rest_cells] -> {
+      let marker = case first {
+        True -> span.span_styled("▌ ", theme.signal_bold())
+        False -> span.span_plain("  ")
+      }
+      let label = case span_text(heading) {
+        "" -> []
+        _ -> list.append(heading, [span.span_styled(": ", theme.quiet_text())])
+      }
+      [
+        span.line_new([marker, ..list.append(label, cell)]),
+        ..table_record(rest_headings, rest_cells, False)
+      ]
+    }
+  }
 }
 
-fn join_span_groups(
-  groups: List(List(span.Span)),
-  separator: List(span.Span),
+fn span_text(spans: List(span.Span)) -> String {
+  spans
+  |> list.map(fn(value) {
+    let span.Span(content:, ..) = value
+    content
+  })
+  |> string.concat
+  |> string.trim
+}
+
+// CommonMark keeps the padding around pipe-delimited cells. Removing only the
+// outer edges retains meaningful spaces between differently styled inline
+// spans while preventing the terminal labels from drifting apart.
+fn trim_span_edges(spans: List(span.Span)) -> List(span.Span) {
+  spans
+  |> trim_span_start(string.trim_start)
+  |> list.reverse
+  |> trim_span_start(string.trim_end)
+  |> list.reverse
+}
+
+fn trim_span_start(
+  spans: List(span.Span),
+  trim: fn(String) -> String,
 ) -> List(span.Span) {
-  case groups {
+  case spans {
     [] -> []
-    [first, ..rest] ->
-      list.fold(rest, first, fn(joined, group) {
-        list.append(joined, list.append(separator, group))
-      })
+    [value, ..rest] -> {
+      let span.Span(content:, ..) = value
+      case trim(content) {
+        "" -> trim_span_start(rest, trim)
+        content -> [span.Span(..value, content:), ..rest]
+      }
+    }
   }
 }
 

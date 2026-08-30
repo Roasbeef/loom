@@ -78,6 +78,19 @@ pub fn leading_thematic_break_does_not_hide_chat_content_test() {
   rendered |> string.contains("body") |> should.be_true
 }
 
+pub fn tables_stack_each_row_as_a_labelled_record_test() {
+  let rendered =
+    markdown.render(
+      "| | Committed | Your version |\n|---|---|---|\n| Transport | fire-and-forget | cancellable handle |",
+    )
+    |> visible_text
+
+  rendered
+  |> should.equal(
+    "▌ Transport\n  Committed: fire-and-forget\n  Your version: cancellable handle\n",
+  )
+}
+
 pub fn model_controls_never_reach_terminal_spans_test() {
   [
     "\u{1b}[31mred",
