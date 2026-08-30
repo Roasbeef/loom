@@ -572,7 +572,7 @@ the whole loop.
 
 **The simulation never fails a summarizer.** Its `summary_progress` hook
 answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:1215`), so no seed drives
+(`hooks`, `conformance/simulation/surface.gleam:1200`), so no seed drives
 a structural failure and the seeded soak proves the survival rule only by
 *not* regressing around it. Adding a refusing summarizer means a new
 `script.Structural` variant, and drawing it would reshuffle every seed's
