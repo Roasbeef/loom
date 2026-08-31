@@ -86,8 +86,9 @@ reconnect portions of the existing client's contract.
   input, output, cache-read, cache-write, and cost fields independently. The
   footer never infers a price from a model name. It discovers the surrounding
   repository once before the event loop, then shows workspace and branch beside
-  the model. Repository marker and HEAD reads accept only regular files up to 4
-  KiB, and displayed refs are shape- and length-bounded. When all sections
+  the model. Repository marker and HEAD reads validate and read one descriptor,
+  accept only regular files up to 4 KiB, and keep displayed refs shape- and
+  length-bounded. When all sections
   cannot share one row, usage and agent status move to a second row; if those
   collide, status takes a third row so the usage tail remains visible.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC

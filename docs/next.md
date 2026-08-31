@@ -249,10 +249,11 @@ clients. It discovers the surrounding repository once at startup, showing its
 abbreviated path and branch beside the selected model. At narrower widths it
 reserves a second row for the complete usage ledger and agent status. If those
 sections collide, agent status moves to a third row so etui cannot truncate the
-usage tail first. Repository marker and HEAD reads are limited to regular 4 KiB
-files with bounded ref display. Expanded tool output also strips complete ANSI
-CSI and OSC sequences before rendering, so a captured terminal session cannot
-leave formatting payloads visible in the transcript.
+usage tail first. Repository marker and HEAD reads validate and consume one
+descriptor, accept only regular files up to 4 KiB, and bound displayed refs.
+Expanded tool output also strips complete ANSI CSI and OSC sequences before
+rendering. Malformed sequences stay visibly inert instead of consuming the
+ordinary transcript text after them.
 
 Websocket startup now runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error
