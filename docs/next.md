@@ -271,11 +271,16 @@ ADR-006's three named gaps. Do not replace this proof with `--best-effort`; the
 supported Darwin contract is `PlatformEnforcement`.
 
 Image drop is deliberately not smuggled through the text-only command.
-`protocol-change/010-prompt-content-blocks.md` proposes an additive
-`prompt_content` command carrying the existing total `UserBlock` codec. The new
-name makes an old gateway refuse rather than claim success after silently
-dropping an unknown image field. It remains **PROPOSED**; do not implement the
-wire or claim drag-and-drop support before approval.
+`protocol-change/010-prompt-content-blocks.md` is accepted and adds the
+version-skew-safe `prompt_content` command carrying the existing total
+`UserBlock` codec. The gateway preserves block order and admits exactly one
+durable user message; malformed, empty, or unknown content refuses the whole
+command. The eTUI recognizes one regular PNG, JPEG, GIF, or WebP from terminal
+paste, bounds the read at 20 MiB, keeps local paths off the wire, and leaves
+live-strand steering text-only. Package tests cover the classifier, bounded
+reader, ordered wire frame, total decoder, and durable admission. A real
+terminal drag event remains outside the automated harness, so do not mistake
+the protocol and transition coverage for terminal-emulator proof.
 
 Escape still exposes a server-side cancellation boundary beyond this client
 wave. Admission can now send an abort during the prompt-to-live transition, but
