@@ -7,6 +7,7 @@
 
 import core/clock
 import core/message
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -272,6 +273,49 @@ pub fn reflected_secret_is_scrubbed_from_malformed_response_test() {
   let rendered = stream.describe_error(error)
   assert !string.contains(rendered, secret_value)
   assert string.contains(rendered, "[REDACTED]")
+}
+
+pub fn reflected_secret_is_scrubbed_from_successful_content_test() {
+  let handle =
+    gateway.request(
+      two_provider_gateway(
+        fixture.transport(
+          fixture.ok_response(happy_transcript("reflected " <> secret_value)),
+        ),
+      ),
+      main_request(),
+    )
+  let assert Ok(#(
+    [stream.TextDelta(text: delta, ..)],
+    stream.Settled(message: settled, ..),
+  )) = stream.await_terminal(handle, within: 2000)
+  let assert message.AssistantMessage(
+    content: [message.AssistantText(text:, ..)],
+    ..,
+  ) = stream.message(settled)
+  assert !string.contains(delta, secret_value)
+  assert !string.contains(text, secret_value)
+  assert string.contains(delta, "[REDACTED]")
+  assert string.contains(text, "[REDACTED]")
+}
+
+pub fn remote_diagnostics_are_bounded_by_bytes_not_graphemes_test() {
+  let one_large_grapheme = "a" <> string.repeat("́", 2000)
+  let body =
+    "{\"type\":\"error\",\"error\":{\"type\":\"remote\",\"message\":\""
+    <> one_large_grapheme
+    <> "\"}}"
+  let handle =
+    gateway.request(
+      two_provider_gateway(
+        fixture.transport(fixture.error_response(400, [], body)),
+      ),
+      main_request(),
+    )
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert bit_array.byte_size(bit_array.from_string(rendered)) < 1024
 }
 
 pub fn cancellation_is_terminal_and_prevents_fallback_test() {
