@@ -77,6 +77,13 @@ type AttemptRegistration {
   AttemptRegistration(running: RunningRequest, permit: process.Subject(Bool))
 }
 
+// The guard keeps the monitor created before it publishes an attempt permit.
+// Carrying the monitor with the capability prevents a later pump failure from
+// collapsing normal drain, abnormal exit, and a late `noproc` into one Boolean.
+type ActiveAttempt {
+  ActiveAttempt(running: RunningRequest, monitor: process.Monitor)
+}
+
 type RequestEvent {
   PumpEvent(StreamEvent)
   AttemptStarted(AttemptRegistration)
@@ -483,7 +490,7 @@ fn guard_request(
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
   pump_monitor: process.Monitor,
-  active: Option(RunningRequest),
+  active: Option(ActiveAttempt),
 ) -> Nil {
   let selector =
     request_selector(
@@ -495,6 +502,9 @@ fn guard_request(
     )
   case process.selector_receive_forever(selector) {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      release_active(active)
+      let active =
+        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
       let accepted =
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
@@ -510,13 +520,13 @@ fn guard_request(
         consumer_monitor,
         pump_owner,
         pump_monitor,
-        Some(running),
+        Some(active),
       )
     }
     PumpEvent(event) -> {
-      process.send(events, event)
       case event {
-        Delta(..) ->
+        Delta(..) -> {
+          process.send(events, event)
           guard_request(
             custodian,
             events,
@@ -529,8 +539,13 @@ fn guard_request(
             pump_monitor,
             active,
           )
+        }
         Settled(..) | Failed(..) -> {
-          await_active_forever(active)
+          let terminal = case await_active_forever(active) {
+            stream.Drained -> event
+            stream.TimedOut | stream.ProofLost -> Failed(stream.DrainProofLost)
+          }
+          process.send(events, terminal)
           await_pump_down_forever(pump_owner, pump_monitor)
           forget_request(consumer_monitor, pump_monitor)
         }
@@ -548,17 +563,19 @@ fn guard_request(
     PumpDown(_down) -> {
       process.demonitor_process(consumer_monitor)
       case stop_active(active, request_cancel_grace_ms) {
-        True ->
+        stream.Drained ->
           process.send(
             events,
             Failed(stream.TransportFailed(
               reason: "provider request pump stopped before a terminal response",
             )),
           )
-        False -> {
+        stream.TimedOut -> {
           process.send(events, Failed(stream.CancellationUnconfirmed))
-          await_active_forever(active)
+          let _drained = await_active_forever(active)
+          Nil
         }
+        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
       }
     }
     CancelRequested -> {
@@ -607,7 +624,7 @@ fn guard_cancelling(
   consumer_monitor: process.Monitor,
   pump_owner: process.Pid,
   pump_monitor: process.Monitor,
-  active: Option(RunningRequest),
+  active: Option(ActiveAttempt),
 ) -> Nil {
   let selector =
     request_selector(
@@ -619,6 +636,9 @@ fn guard_cancelling(
     )
   case process.selector_receive_forever(selector) {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      release_active(active)
+      let active =
+        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
       let _accepted =
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
@@ -634,7 +654,7 @@ fn guard_cancelling(
         consumer_monitor,
         pump_owner,
         pump_monitor,
-        Some(running),
+        Some(active),
       )
     }
     PumpEvent(event) ->
@@ -652,9 +672,21 @@ fn guard_cancelling(
             pump_monitor,
             active,
           )
-        Settled(..) | Failed(..) -> {
+        Settled(..) | Failed(stream.CancellationUnconfirmed) -> {
+          // CancellationUnconfirmed is deliberately bounded for the public
+          // caller. The guard remains alive behind that terminal until the
+          // retained witness eventually adjudicates the real owner exit.
           process.send(events, event)
-          await_active_forever(active)
+          let _drained = await_active_forever(active)
+          await_pump_down_forever(pump_owner, pump_monitor)
+          forget_request(consumer_monitor, pump_monitor)
+        }
+        Failed(..) -> {
+          let terminal = case await_active_forever(active) {
+            stream.Drained -> event
+            stream.TimedOut | stream.ProofLost -> Failed(stream.DrainProofLost)
+          }
+          process.send(events, terminal)
           await_pump_down_forever(pump_owner, pump_monitor)
           forget_request(consumer_monitor, pump_monitor)
         }
@@ -669,17 +701,34 @@ fn guard_cancelling(
         active,
       )
     PumpDown(_down) -> {
-      process.send(pump_control, Cancel)
-      http_cancel(active)
-      process.send(events, Failed(stream.CancellationUnconfirmed))
-      await_active_forever(active)
       process.demonitor_process(consumer_monitor)
+      case stop_active(active, request_cancel_grace_ms) {
+        stream.Drained ->
+          process.send(events, Failed(stream.CancellationUnconfirmed))
+        stream.TimedOut -> {
+          process.send(events, Failed(stream.CancellationUnconfirmed))
+          let _drained = await_active_forever(active)
+          Nil
+        }
+        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
+      }
     }
     CancelExpired -> {
       process.send(pump_control, Cancel)
       http_cancel(active)
-      process.send(events, Failed(stream.CancellationUnconfirmed))
-      await_active_forever(active)
+      let outcome = await_active(active, within: 0)
+      case outcome {
+        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
+        stream.Drained | stream.TimedOut ->
+          process.send(events, Failed(stream.CancellationUnconfirmed))
+      }
+      case outcome {
+        stream.TimedOut -> {
+          let _drained = await_active_forever(active)
+          Nil
+        }
+        stream.Drained | stream.ProofLost -> Nil
+      }
       await_pump_down_forever(pump_owner, pump_monitor)
       forget_request(consumer_monitor, pump_monitor)
     }
@@ -729,7 +778,7 @@ fn stop_for_dead_consumer(
   pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
-  active: Option(RunningRequest),
+  active: Option(ActiveAttempt),
 ) -> Nil {
   process.send(pump_control, Cancel)
   http_cancel(active)
@@ -751,7 +800,7 @@ fn abandon_request(
   pump_attempts: process.Subject(AttemptRegistration),
   consumer_monitor: process.Monitor,
   pump_monitor: process.Monitor,
-  active: Option(RunningRequest),
+  active: Option(ActiveAttempt),
 ) -> Nil {
   let event =
     process.new_selector()
@@ -760,6 +809,9 @@ fn abandon_request(
     |> process.selector_receive_forever()
   case event {
     AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      release_active(active)
+      let active =
+        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
       let _accepted =
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
@@ -771,11 +823,11 @@ fn abandon_request(
         pump_attempts,
         consumer_monitor,
         pump_monitor,
-        Some(running),
+        Some(active),
       )
     }
     PumpDown(_down) -> {
-      await_active_forever(active)
+      let _drained = await_active_forever(active)
       forget_request(consumer_monitor, pump_monitor)
     }
     PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
@@ -789,46 +841,72 @@ fn abandon_request(
   }
 }
 
-fn http_cancel(active: Option(RunningRequest)) -> Nil {
+fn http_cancel(active: Option(ActiveAttempt)) -> Nil {
   case active {
     None -> Nil
-    Some(running) -> http.cancel(running)
+    Some(ActiveAttempt(running:, ..)) -> http.cancel(running)
   }
 }
 
-fn stop_active(active: Option(RunningRequest), within: Int) -> Bool {
-  case active {
-    None -> False
-    Some(running) -> {
-      http.cancel(running)
-      await_running_down(running, within)
-    }
-  }
+fn stop_active(
+  active: Option(ActiveAttempt),
+  within timeout: Int,
+) -> stream.DrainOutcome {
+  http_cancel(active)
+  await_active(active, within: timeout)
 }
 
-fn await_active_forever(active: Option(RunningRequest)) -> Nil {
+fn await_active(
+  active: Option(ActiveAttempt),
+  within timeout: Int,
+) -> stream.DrainOutcome {
   case active {
-    None -> Nil
-    Some(running) -> {
-      let monitor = process.monitor(http.owner(running))
-      let _down =
+    None -> stream.Drained
+    Some(ActiveAttempt(monitor:, ..)) -> {
+      let outcome =
         process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
+        |> process.select_specific_monitor(monitor, active_drain_outcome)
+        |> process.selector_receive(timeout)
+        |> result.unwrap(stream.TimedOut)
+      case outcome {
+        stream.TimedOut -> Nil
+        stream.Drained | stream.ProofLost -> process.demonitor_process(monitor)
+      }
+      outcome
     }
   }
 }
 
-fn await_running_down(running: RunningRequest, within: Int) -> Bool {
-  let monitor = process.monitor(http.owner(running))
-  let down =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(_down) { True })
-    |> process.selector_receive(within)
-    |> result.unwrap(False)
-  process.demonitor_process(monitor)
-  down
+fn await_active_forever(active: Option(ActiveAttempt)) -> stream.DrainOutcome {
+  case active {
+    None -> stream.Drained
+    Some(ActiveAttempt(monitor:, ..)) -> {
+      let outcome =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, active_drain_outcome)
+        |> process.selector_receive_forever()
+      process.demonitor_process(monitor)
+      outcome
+    }
+  }
+}
+
+fn active_drain_outcome(down: process.Down) -> stream.DrainOutcome {
+  case down {
+    process.ProcessDown(reason:, ..) ->
+      case reason {
+        process.Normal -> stream.Drained
+        process.Killed | process.Abnormal(_) -> stream.ProofLost
+      }
+    process.PortDown(..) -> stream.ProofLost
+  }
+}
+
+fn release_active(active: Option(ActiveAttempt)) -> Nil {
+  case active {
+    None -> Nil
+    Some(ActiveAttempt(monitor:, ..)) -> process.demonitor_process(monitor)
+  }
 }
 
 fn await_pump_down_forever(

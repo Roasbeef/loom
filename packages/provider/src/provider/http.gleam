@@ -73,7 +73,10 @@ pub type RunningRequest {
 ///
 /// The caller must publish `running.owner` to its own failure boundary before
 /// invoking `begin`. Cancellation is valid on the parked request and prevents
-/// a later begin from opening a socket.
+/// a later begin from opening a socket. The prepared owner must monitor the
+/// process executing `prepare_streaming` until `begin` transfers custody; if
+/// that creator dies before returning or granting the permit, the owner exits
+/// normally instead of becoming an unpublished orphan.
 pub type PreparedRequest {
   PreparedRequest(
     /// The request capability which is safe to publish immediately.
@@ -122,11 +125,13 @@ pub fn owner(request: RunningRequest) -> Pid {
 ///
 /// Constructor invariants: `prepare_streaming` returns a parked, monitorable
 /// owner without starting external work. Cancellation before `begin` prevents
-/// startup; cancellation during startup remains queued until the native
-/// request identity is known. `RunningRequest.owner` is the sole sender of
-/// response events, delivers them in contract order, and either delivers a terminal
-/// `ResponseEnd`/`RequestFailed` before exiting or exits so its monitor reports
-/// transport death.
+/// startup; the parked owner monitors the preparing process until `begin`, so
+/// failure between allocation and publication cannot leak it. Cancellation
+/// during startup remains queued until the native request identity is known.
+/// `RunningRequest.owner` is the sole sender of response events, delivers them
+/// in contract order, and either delivers a terminal `ResponseEnd` or
+/// `RequestFailed` before exiting or exits so its monitor reports transport
+/// death.
 pub type Transport {
   Transport(
     /// Prepares one parked request without admitting external work.

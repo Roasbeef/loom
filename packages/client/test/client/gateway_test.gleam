@@ -1287,9 +1287,10 @@ pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
     )
   let stream.PreparedStream(handle:, begin:) =
     effects.prepare_provider(tapped, cancellation_spec())
+  let drain_witness = stream.watch_drain(handle)
 
   stream.cancel(handle)
-  assert stream.await_stopped(handle, within: 1000) == stream.Drained
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
   begin()
 
   assert process.receive(started, within: 50) == Error(Nil)
@@ -1328,6 +1329,7 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
   let assert Ok(direct_consumer) = process.receive(consumers, within: 1000)
   let direct_monitor = process.monitor(direct_consumer)
 
@@ -1340,6 +1342,7 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
     process.new_selector()
     |> process.select_specific_monitor(direct_monitor, fn(_down) { True })
     |> process.selector_receive(1000)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
 pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
@@ -1353,6 +1356,7 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
   let assert stream.StreamHandle(owner: Some(owner), ..) = handle
     as "the relay must publish a custodian-backed handle"
   let assert Ok(inner_consumer) = process.receive(callers, within: 1000)
@@ -1361,7 +1365,7 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
     as "fallible stream consumption must not be the public drain witness"
   let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
     stream.next(handle, within: 1000)
-  assert stream.await_stopped(handle, within: 1000) == stream.Drained
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
 pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
@@ -1380,6 +1384,7 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
   let assert stream.StreamHandle(owner: Some(owner), ..) = handle
     as "the relay must publish its guard before inner startup"
   let assert Ok(start_gate) = process.receive(entered, within: 1000)
@@ -1392,7 +1397,7 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
   assert stream.next(handle, within: 1000)
     == Ok(stream.Failed(error: stream.ProviderCancelled))
-  assert stream.await_stopped(handle, within: 1000) == stream.Drained
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
@@ -1410,11 +1415,13 @@ pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
       panic as "observer crash"
     })
+  let drain_witness = stream.watch_drain(handle)
 
   let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
     stream.next(handle, within: 1000)
   assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
 pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
@@ -1445,15 +1452,16 @@ pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
       panic as "observer crash"
     })
+  let drain_witness = stream.watch_drain(handle)
   let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
 
   let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
     stream.next(handle, within: 2500)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(owner)
-  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
+  assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000) == stream.Drained
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
 pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
@@ -1479,6 +1487,7 @@ pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
   let assert Ok(#(guard, inner_owner, release)) =
     process.receive(started, within: 1000)
   let assert stream.StreamHandle(owner: Some(witness), ..) = handle
@@ -1488,7 +1497,7 @@ pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(inner_owner)
   assert process.is_alive(witness)
-  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
+  assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000) == stream.Drained
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }

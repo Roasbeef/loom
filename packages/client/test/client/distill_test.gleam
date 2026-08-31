@@ -1438,6 +1438,64 @@ pub fn gateway_distiller_cancels_a_timed_out_request_test() {
   assert string.contains(reason, "timeout")
 }
 
+pub fn gateway_distiller_retains_fast_cancel_exit_reason_test() {
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, _events) {
+      let creator = process.self()
+      let stop = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let creator_monitor = process.monitor(creator)
+          let _stop =
+            process.new_selector()
+            |> process.select_map(stop, fn(_nil) { Nil })
+            |> process.select_specific_monitor(creator_monitor, fn(_down) {
+              Nil
+            })
+            |> process.selector_receive_forever()
+          process.demonitor_process(creator_monitor)
+        })
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(stop, Nil)
+          }),
+          begin: fn() { Nil },
+        ),
+      )
+    })
+  let gateway =
+    provider_gateway.new(
+      transport:,
+      secrets: secret.from_list([#("ACME_KEY", "unit-test-key")]),
+      clock: clock.fixed(at: 0),
+    )
+    |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
+      name: "acme",
+      base_url: "https://acme.invalid",
+      api_key_secret: "ACME_KEY",
+    ))
+    |> provider_gateway.route(model.Main, [
+      model.ResolvedModel(
+        provider: "acme",
+        model_id: "loom-1",
+        thinking: model.ThinkingOff,
+        context_window: 100_000,
+        max_output_tokens: 4096,
+      ),
+    ])
+  let distiller =
+    distill.gateway_distiller(
+      gateway,
+      model.ForRole(role: model.Main, thinking: None),
+      timeout_ms: 10,
+    )
+
+  let assert Error(reason) = distiller.ask("remember this")
+    as "a fast normal cancel must remain distinguishable from lost proof"
+  assert string.contains(reason, "timeout")
+}
+
 // --- small helpers ----------------------------------------------------------
 
 fn a_clock() -> clock.Clock {

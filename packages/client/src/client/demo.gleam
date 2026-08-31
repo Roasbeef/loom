@@ -1344,23 +1344,10 @@ fn demo_gateway() -> provider_gateway.Gateway {
     )
   provider_gateway.new(
     transport: http.Transport(prepare_streaming: fn(_request, _subject) {
-      let ready = process.new_subject()
-      let owner =
-        process.spawn_unlinked(fn() {
-          let begin = process.new_subject()
-          process.send(ready, begin)
-          let _permit = process.receive_forever(begin)
-          Nil
-        })
-      let begin = process.receive_forever(ready)
-      Ok(
-        http.PreparedRequest(
-          running: http.RunningRequest(owner:, cancel: fn() {
-            process.kill(owner)
-          }),
-          begin: fn() { process.send(begin, Nil) },
-        ),
-      )
+      // The demo supplies generation through runtime hooks, so reaching this
+      // seam is a wiring error. Failing directly avoids inventing a parked
+      // process whose lifecycle the demo never intends to exercise.
+      Error("the demo provider transport is unreachable")
     }),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),

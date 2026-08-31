@@ -1037,12 +1037,19 @@ fn stop_attempt(
   transport_monitor: Monitor,
 ) -> DrainOutcome {
   http.cancel(running)
-  finish_attempt(consumer_monitor, transport_monitor)
+  let outcome =
+    process.new_selector()
+    |> process.select_specific_monitor(transport_monitor, drain_outcome)
+    |> process.selector_receive(100)
+    |> result.unwrap(TimedOut)
+  release_attempt_monitors(consumer_monitor, transport_monitor)
+  outcome
 }
 
-// A transport terminal is a message, not proof its owner stopped. This bounded
-// observation decides whether a retry is safe; the gateway retains the live
-// capability and remains the transitive drain witness when it is not.
+// A transport terminal is a message, not proof its owner stopped. Unlike an
+// explicit cancellation, normal completion has no reporting grace which can
+// replace a valid provider result. The attempt therefore remains at this
+// ordering barrier until the already-installed monitor reports the real exit.
 fn finish_attempt(
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
@@ -1050,11 +1057,17 @@ fn finish_attempt(
   let outcome =
     process.new_selector()
     |> process.select_specific_monitor(transport_monitor, drain_outcome)
-    |> process.selector_receive(100)
-    |> result.unwrap(TimedOut)
+    |> process.selector_receive_forever()
+  release_attempt_monitors(consumer_monitor, transport_monitor)
+  outcome
+}
+
+fn release_attempt_monitors(
+  consumer_monitor: Monitor,
+  transport_monitor: Monitor,
+) -> Nil {
   process.demonitor_process(consumer_monitor)
   process.demonitor_process(transport_monitor)
-  outcome
 }
 
 // Delivers deltas in order and returns the first terminal event, dropping
