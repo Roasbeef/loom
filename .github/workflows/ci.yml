@@ -55,7 +55,7 @@ env:
   # Exact, never floating. The rationale for each number, and where it
   # came from, is in .github/actions/setup-toolchain/action.yml.
   GLEAM_VERSION: "1.18.1"
-  OTP_VERSION: "28.5.0.5"
+  OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.24.7"
   # Bump to invalidate every cache at once.
@@ -102,6 +102,42 @@ jobs:
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
 
+      # The downloadable server carries this runner's ERTS and SQLite NIF.
+      # Building it on the Linux gate proves the OTP pin reaches the shipped
+      # artifact rather than stopping at source tests.
+      - name: Build and smoke-test Linux deliverables
+        run: |
+          set -euo pipefail
+          scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
+          make dist 2>&1 | tee distribution-linux.log
+          test -x build/release/loom/erts-17.0.5/bin/erl
+          measure() {
+            for path in "$@"; do
+              du -sh "$path"
+            done
+          }
+          {
+            echo "==> measured distribution with code mode"
+            measure build/erlang-shipment \
+              build/release/loom/erts-17.0.5 \
+              build/release/loom/lib/compiler-* \
+              build/release/loom/lib \
+              build/release/loom/bin/loom-exec \
+              build/release/loom/bin/gleam \
+              build/release/loom/share/codemode-seed \
+              build/release/loom \
+              dist/loom-0.1.0-linux-x86_64.tar.gz \
+              dist/loom-tui-0.1.0-linux-x86_64
+          } | tee -a distribution-linux.log
+          DIST_CODEMODE=0 make dist 2>&1 | tee -a distribution-linux.log
+          {
+            echo "==> measured distribution without code mode"
+            measure build/release/loom/erts-17.0.5 \
+              build/release/loom/lib build/release/loom/bin/loom-exec \
+              build/release/loom \
+              dist/loom-0.1.0-linux-x86_64.tar.gz
+          } | tee -a distribution-linux.log
+
       # The gate installed every prerequisite above, so any skip left in
       # the log is coverage this run is not entitled to claim.
       - name: Skip census
@@ -115,6 +151,8 @@ jobs:
           path: |
             check.log
             doc-check.log
+            server-shipment-smoke.log
+            distribution-linux.log
           retention-days: 14
 
   # --------------------------------------------------------- the second OS

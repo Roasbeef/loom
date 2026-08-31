@@ -17,6 +17,12 @@ import provider/model.{
 }
 import provider/stream.{type ResponseMachine, type StreamEvent}
 
+type ScriptControl {
+  BeginScript
+  CancelScript
+  CreatorExited
+}
+
 /// A resolved identity used across the adapter tests.
 pub fn resolved(
   provider provider: String,
@@ -76,8 +82,12 @@ pub fn error_response(
 
 /// A transport that replays the same scripted events for every request.
 pub fn transport(events: List(HttpEvent)) -> Transport {
-  Transport(send_streaming: fn(_request, subject) {
-    list.each(events, fn(event) { process.send(subject, event) })
+  Transport(prepare_streaming: fn(_request, subject) {
+    Ok(
+      scripted_request(fn() {
+        list.each(events, fn(event) { process.send(subject, event) })
+      }),
+    )
   })
 }
 
@@ -86,9 +96,75 @@ pub fn transport(events: List(HttpEvent)) -> Transport {
 pub fn routing_transport(
   script: fn(HttpRequest) -> List(HttpEvent),
 ) -> Transport {
-  Transport(send_streaming: fn(request, subject) {
-    list.each(script(request), fn(event) { process.send(subject, event) })
+  Transport(prepare_streaming: fn(request, subject) {
+    Ok(
+      scripted_request(fn() {
+        list.each(script(request), fn(event) { process.send(subject, event) })
+      }),
+    )
   })
+}
+
+fn scripted_request(run: fn() -> Nil) -> http.PreparedRequest {
+  scripted_request_before_return(run, fn(_owner) { Nil })
+}
+
+fn scripted_request_before_return(
+  run: fn() -> Nil,
+  before_return: fn(process.Pid) -> Nil,
+) -> http.PreparedRequest {
+  let creator = process.self()
+  let ready = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let control = process.new_subject()
+      let creator_monitor = process.monitor(creator)
+      process.send(ready, control)
+      let command =
+        process.new_selector()
+        |> process.select_map(control, fn(command) { command })
+        |> process.select_specific_monitor(creator_monitor, fn(_down) {
+          CreatorExited
+        })
+        |> process.selector_receive_forever()
+      process.demonitor_process(creator_monitor)
+      case command {
+        BeginScript -> run()
+        CancelScript | CreatorExited -> Nil
+      }
+    })
+  let control = process.receive_forever(ready)
+  before_return(owner)
+  http.PreparedRequest(
+    running: http.RunningRequest(owner:, cancel: fn() {
+      process.send(control, CancelScript)
+    }),
+    begin: fn() { process.send(control, BeginScript) },
+  )
+}
+
+pub fn parked_owner_reaps_if_prepare_dies_before_return_test() {
+  let owners = process.new_subject()
+  let creator =
+    process.spawn_unlinked(fn() {
+      let _request =
+        scripted_request_before_return(fn() { Nil }, fn(owner) {
+          process.send(owners, owner)
+          process.receive_forever(process.new_subject())
+        })
+      Nil
+    })
+  let assert Ok(owner) = process.receive(owners, within: 1000)
+    as "the parked owner must exist while prepare is still blocked"
+  let owner_monitor = process.monitor(owner)
+
+  process.kill(creator)
+
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "creator death must retire the unpublished owner normally"
 }
 
 /// Drives a response machine purely — no processes — over one response:

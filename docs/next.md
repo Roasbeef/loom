@@ -9,6 +9,135 @@ worth more than any status comment.
 
 ---
 
+## Provider stream ownership (#131)
+
+PR #133 (`provider/cancellable-streams`) is rebased on `main` at `9849b3f`.
+It implements #131 across the provider, runtime, and client wrapper boundaries.
+A `StreamHandle` carries an idempotent cancellation capability and an optional
+owner pid; when present, normal owner exit acknowledges that every asynchronous
+descendant has stopped. That pid is a deliberately boring custodian rather
+than a worker that can crash while retaining live children. A custodian
+publishes first, adopts each worker and child owner synchronously, and only
+then permits work to begin. Cancellation closures run on disposable helpers,
+so a faulty closure cannot take the public drain witness with it.
+
+The operational invariant is stronger than late-result suppression: once a
+strand effect no longer owns a provider request, its runtime worker, client
+relay and observer, fallback guard and pump, native HTTP owner, and dedicated
+request handler must all drain before replacement work begins. Runtime
+timeout, explicit abort, driver restart, worker crash, wrapper death, and
+direct consumer death now propagate along that chain. A bounded grace decides
+whether the public terminal is confirmed or `CancellationUnconfirmed`; it does
+not authorize killing the drain witness. `DrainProofLost` separately records
+an abnormal transitive owner exit; none of these terminal results can advance a
+fallback or retry. Critical callers install a `DrainWitness` before begin, so
+they retain the original exit reason rather than observing a late `noproc`.
+The frozen contract change and race table are in
+`protocol-change/010-provider-stream-cancellation.md`.
+
+The only provider-specific Erlang remains the existing `provider_ffi` shim.
+Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
+`httpc` cancellation as an asynchronous cast rather than a socket-drain
+acknowledgement. Three small externals prepare, begin, and cancel one native
+owner. The typed transport returns `PreparedRequest(running, begin)`, so its
+raw owner is publishable before `begin` can touch the network. That owner
+disables redirects and automatic retries that could migrate the
+handler behind a stable request id. The manager publishes the request's exact
+handler PID in its protected table before successful admission returns; a
+request-local unlimited handler allowance also prevents this dedicated request
+from entering the manager's queue. The response callback pauses inside the
+handler until the owner acknowledges that its exact monitor is installed, so a
+fast terminal cannot delete that row first. The normal capture path remains one
+O(1) lookup. Any miss enters a deadline-bounded scan which asks `httpc_handler`
+processes for their current request. A busy handler, no match, or an unfamiliar
+private layout keeps recovery inconclusive and the owner alive rather than
+authorizing drain; expiry destroys the witness abnormally. Provider ownership
+above that raw mailbox, fallback, deadlines, and terminal arbitration remain
+typed Gleam.
+
+The runtime closes both ends of its former publication gap. Production exposes
+a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
+publishes its custodian to the parent owner, and only then grants the begin
+permit. Route resolution, secret lookup, transport startup, and socket work all
+remain behind that permit. Immediate `ProviderSurface` values remain for
+in-memory fakes which own no external work; they may still use a self-reaping
+in-memory owner to model cancellation. Reaper generations live
+in a drain ledger before the restartable name registry, so a replacement waits
+for the ledger's original monitors to acknowledge every older generation.
+`api.close` captures and monitors the live ledger
+before terminating the root, then releases the lease only for its clean
+normal/OTP-shutdown exit. A missing or killed ledger fails closed and leaves
+the lease to its TTL. Tests pin cancellation
+before begin, startup death, wrapper and gateway worker crashes,
+handler-delayed socket closure, manager replacement, redirect cancellation,
+fast terminal capture, timeout drain, restart ordering, and close/reopen
+exclusion. Shared fixture transports also monitor their preparing process until
+begin transfers custody; failure inside `prepare_streaming` therefore retires
+the parked owner instead of leaving it unpublished.
+
+The first cold review and exact-head CI rejected `fd0c9e3`. CI seed 33 proved
+that even a 500 ms wall-clock retry budget could expire while a rest-for-one
+tree was still rebuilding. Intervention admission now retries while the root
+supervisor remains alive; a dead root, rather than scheduler timing, is the
+failure boundary. Review also found that a handler-supervisor restart can
+orphan a live `httpc_handler`, that handler discovery itself introduced
+latency and orphan risks, and that abnormal reaper or transitive-owner exits
+must not count as drain. The corrective pass made exact table capture the normal
+path and distinguishes leaf completion from transitive proof. A second review
+found the fast-terminal deletion race, late monitors in the gateway and
+distiller, and the fixture publication gap; the current callback handshake and
+retained typed witnesses close those paths. The final adversarial pass found
+two more timing assumptions: each late post-cancel delta renewed a relative
+grace timeout, and a replacement installed a fresh monitor after the drain
+ledger returned predecessor PIDs. Cancellation now schedules one deadline per
+layer, while the ledger retains each claim until its original monitors prove
+that exact predecessor snapshot drained. Deterministic delta-flood and
+ledger-barrier tests pin both failures. The replacement initializes before that
+potentially long barrier, while its reaper claims the ledger directly. A
+private PID-bound subject returns the claim and every other incarnation-local
+callback, so the actor can retain an abort request without admitting recovery
+work and a predecessor cannot settle replayed work through the replacement's
+stable name. A negative control restores the old stable-name retry route and
+makes the regression admit a second provider attempt. The same pass found that
+a gateway guard stopped consuming attempt registrations after cancellation
+expired; it now rejects late prepared attempts until the pump exits, preserving
+both transitive ownership publication and bounded drain.
+
+Issue #141 is folded into this branch by explicit operator direction. Every
+package now requires Gleam 1.18, the supported runtime floor is OTP 29, and PR
+and nightly CI pin the exact local pair Gleam 1.18.1 plus OTP 29.0.5 (ERTS
+17.0.5). OTP-only compatibility branches and old-style Erlang catches are gone.
+The Linux gate builds and smokes both release profiles so its retained log can
+replace the distribution guide's old OTP 28 measurements with observed OTP 29
+values.
+
+The completed focused gates are green: provider 149, runtime 90, client 576,
+and conformance 68. `make check` exits zero, `make e2e-codemode` passes 210
+tests, and the OTP 29 release and both distribution profiles pass their
+no-host-Erlang smoke with the bundled SQLite NIF. The first 200-seed soak
+exposed two one-second ownership-handshake timeouts: under scheduler pressure a
+live reaper could answer late and make a provider effect disappear without a
+terminal. Those handshakes now wait for either their typed acknowledgement or
+the reaper's monitored death, and the complete 200-seed rerun passes.
+
+Three independent cold reviews approved the simplified implementation head
+without a P0, P1, or P2 finding. That final simplification removed native
+accounting which could not truthfully bound `httpc` before delivery and removed
+fragment-local redaction which could not protect secrets split across streamed
+deltas. Issue #147 owns a transport boundary that can bound non-success bodies
+before buffering, and issue #148 owns stateful cross-fragment response
+redaction. Neither limitation weakens #131's cancellation and drain ownership
+contract; keeping them separate avoids claiming security properties the
+current transport does not provide.
+
+The final 2,000-seed Nightly found seed 584 before merge. A fault-free script
+put an abort and a steer at the same logical trigger; because abort is an
+asynchronous cast, Linux closed the run before the synchronous admission while
+macOS admitted the steer first. The simulation now preserves queue-admission
+order and sends same-moment aborts after those admissions, giving its comparison
+oracle one baseline without changing the runtime's abort race. Seed 584 is a
+pinned corpus test.
+
 ## Platform-strict enforcement is the production default
 
 PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates

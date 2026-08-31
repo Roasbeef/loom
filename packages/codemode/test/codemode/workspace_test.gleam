@@ -301,7 +301,7 @@ pub fn an_emit_answers_the_id_field_test() {
 
 // `count` zero bytes, built by doubling rather than by a bit-array size
 // expression: a segment size computed from a constant needs Gleam 1.12
-// and this package's `gleam.toml` admits 1.11.
+// and this package's `gleam.toml` admits 1.18.
 fn zeros(count: Int) -> BitArray {
   grow(<<0>>, count)
 }

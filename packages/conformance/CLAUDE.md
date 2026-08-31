@@ -120,6 +120,11 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
+- **Starved provider owners end with their consumers.** The simulation's
+  one-shot timeout owner monitors the effect process that requested it. A
+  killed effect therefore removes both the owner and its unused terminal
+  capability instead of leaving a synthetic process behind the conformance
+  run.
 - **A composition-layer service is proved absent, not merely
   well-behaved.** `conformance/triggered_rules_test` is the end-to-end
   for issue #27: real wiring, real gateway, real adapter, real runtime,
@@ -178,7 +183,10 @@ them from their own test mains.
   its durable state on every pass, so an early wake costs one wasted
   planning pass. A deadline is removed when it fires, so a wake delivered
   to a dead process is simply lost, exactly as a real timer's message
-  would be.
+  would be. The drive budget counts consecutive silent passes, not the
+  operation's lifetime: every writer commit proves durable progress and
+  replenishes it. Charging progress against the stall allowance made loaded
+  Linux runs fail at moving seeds even though each immediate replay passed.
 - **One clock, one era.** The storage backend's timestamps, the strand
   driver, the effect scripts, and id minting all read the same `Clockwork`.
   Separate real clocks across runtime, tools, and broker drift, and that
@@ -205,7 +213,12 @@ them from their own test mains.
   write-once fact into the admission transaction. A retry after a lost reply
   can therefore ask whether the payload is already durable: a landed first
   attempt closes the debt, while an absent fact permits a new carrier without
-  admitting the turn twice.
+  admitting the turn twice. When queue admissions and an abort share one
+  logical trigger, `surface.fire_due` preserves the queue admissions' script
+  order but sends the abort after them. The abort API is an asynchronous cast;
+  sending it first made seed 584's fault-free transcript depend on whether the
+  Linux or macOS scheduler processed the cast before the next synchronous
+  admission.
 - **A live intervention's decision belongs to the runner, never to the
   effect that reached its trigger** (#57, diagnosed under #44). A
   `DuringTurn`/`DuringCall` trigger is reached from inside a real effect

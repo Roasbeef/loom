@@ -12,9 +12,9 @@ import gleam/int
 import gleam/option.{type Option, None}
 import gleam/string
 import provider/stream.{
-  type ProviderError, HttpError, MalformedStream, NoIdentity, NoSecret,
-  StreamDisconnected, StreamError, TransportFailed, UnknownProvider,
-  UnmappedStopReason,
+  type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
+  MalformedStream, NoIdentity, NoSecret, ProviderCancelled, StreamDisconnected,
+  StreamError, TransportFailed, UnknownProvider, UnmappedStopReason,
 }
 
 /// Whether an error is worth retrying.
@@ -65,6 +65,9 @@ pub type RetryPolicy {
 ///
 pub fn classify(error: ProviderError) -> RetryClass {
   case error {
+    ProviderCancelled -> Terminal
+    CancellationUnconfirmed -> Terminal
+    DrainProofLost -> Terminal
     TransportFailed(reason: _) -> Retryable(backoff_hint_ms: None)
     StreamDisconnected(context: _) -> Retryable(backoff_hint_ms: None)
     HttpError(status:, api_error_type:, message:, retry_after_ms:) -> {

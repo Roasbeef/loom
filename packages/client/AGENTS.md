@@ -51,9 +51,25 @@ over one session file. WP-L.
   post-commit publication becomes a pull hint, and an injected
   `effects.ProviderSurface` is wrapped so provider deltas tee to the hub
   while the runtime's effect process consumes the stream unchanged. The
+  wrapper forwards explicit cancellation and monitors that effect process;
+  either cancellation or consumer death tears down the inner handle. The
   forwarder registers under a name and the writer subscribes to that
   name, which is what lets it be supervised and restarted without the
   writer noticing.
+- `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
+  ownership seam: `prepare` returns a minimal public custodian before it
+  releases the guard, while `wrap` is the prepare-and-begin compatibility
+  facade. The
+  guard remains the inner surface's direct consumer, and a separately
+  monitored observer runs the synchronous callback before each event is
+  forwarded. The guard registers an original `DrainWitness`, and the custodian
+  adopts the guard, leaf observer, and transitive inner stream owner before
+  each begins work. A terminal is not forwarded until that original witness
+  reports `Drained`. Cancel travels inward, an unacknowledged cancel
+  becomes terminal `CancellationUnconfirmed` after one fixed grace, and the
+  custodian remains alive until the registered subtree drains. Guard or
+  observer death becomes a prompt in-band transport failure only after that
+  drain is proved.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
@@ -433,7 +449,9 @@ over one session file. WP-L.
   strand's durable projection, `VerdictGenerate` for every structural
   decision, and the progress hook. `recording_summaries` wraps a
   provider surface so a settled summary is filed in the sink on its way
-  past — the same composition shape as `gateway.tap_provider`.
+  past — the same composition shape as `gateway.tap_provider`. The summary
+  relay also propagates cancellation and consumer death inward, but records
+  nothing when the consumer is gone.
 - `client/wiring.{summary_provider_request, settlement_of,
   summary_progress, resolution}` — the summary path in pieces: the
   request a structural summary is made as, how a settled response reads,
@@ -1164,6 +1182,33 @@ over one session file. WP-L.
   effect process is linked to the driver's reaper, so an abort or a
   driver restart kills the parked call and the driver settles it in band
   through the ordinary monitor path.
+- **Provider wrappers inherit stream ownership.** `gateway.tap_provider` and
+  `wiring.recording_summaries` each return a prepared provider surface. Each
+  wrapper publishes a minimal custodian while its guard is parked; only after
+  the parent adopts that owner does the guard prepare and adopt the inner
+  stream, then grant its begin permit. The guard
+  remains the inner stream's direct consumer; only each synchronous observer
+  call moves to a monitored worker. The custodian adopts both and the inner
+  owner, while the guard retains its own pre-begin drain monitor. It forwards
+  cancellation inward and bounds missing acknowledgement with
+  `CancellationUnconfirmed`, then stays alive until the registered subtree
+  exits. An abnormal transitive Down becomes terminal `DrainProofLost`, never
+  retry permission. This keeps the chain continuous from driver reaper to runtime
+  custodian, relay custodian and guard, gateway custodian, guard and pump, and
+  the native HTTP owner plus its dedicated handler; no wrapper may turn
+  consumer death into a detached request.
+- **Named helper traffic binds observation and delivery to one incarnation.**
+  Ephemeral commit hints, provider deltas, hub casts, and holder calls resolve
+  a registered name once, then send its tagged envelope directly to that PID.
+  If an optional hub unregisters before resolution its hint is dropped; if it
+  exits afterward the PID send is a no-op or the caller's existing monitor
+  reports unavailability. Re-resolving the name inside `process.send` would
+  leave a race that converts an ordinary restart into a caller crash, or asks a
+  replacement while still monitoring its predecessor.
+- **Wrapper comments narrate ownership handoffs.** The module story names why
+  the guard, observer, and custodian are separate; comments at publication and
+  adoption say what becomes safe after each acknowledgement. Do not reduce
+  this to comments which merely restate a `spawn`, `send`, or monitor call.
 - **A park is bounded by the configured window *and* by the call's own
   budget deadline, and the deadline is re-read immediately before the
   consuming commit.** The second bound is not politeness: the broker's

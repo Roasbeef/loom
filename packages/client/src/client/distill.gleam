@@ -118,6 +118,7 @@ import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
 import gleam/bool
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
@@ -1259,8 +1260,8 @@ pub fn gateway_distiller(
   timeout_ms timeout_ms: Int,
 ) -> Distiller {
   Distiller(ask: fn(prompt) {
-    let handle =
-      provider_gateway.request(
+    let stream.PreparedStream(handle:, begin:) =
+      provider_gateway.prepare(
         gateway,
         model.ProviderRequest(
           target:,
@@ -1270,13 +1271,37 @@ pub fn gateway_distiller(
           max_output_tokens: None,
         ),
       )
+    // The timeout path cannot reconstruct an exit reason after a fast owner
+    // has gone. Retaining the monitor before begin makes the later drain wait
+    // an observation of the real exit rather than a `noproc` guess.
+    let drain_witness = stream.watch_drain(handle)
+    begin()
     case stream.await_terminal(handle, within: timeout_ms) {
-      Error(Nil) -> Error("the model did not answer inside the timeout")
-      Ok(#(_deltas, stream.Failed(error:))) -> Error(string.inspect(error))
-      Ok(#(_deltas, stream.Delta(..))) ->
+      Error(Nil) -> {
+        stream.cancel(handle)
+        // `extract_all` may issue the next billable distillation request as
+        // soon as this call returns. A timeout ends the receive, not the work;
+        // keep this fold step private until the old provider subtree is gone.
+        case stream.await_drain_forever(drain_witness) {
+          stream.Drained -> Error("the model did not answer inside the timeout")
+          stream.TimedOut | stream.ProofLost -> {
+            process.kill(process.self())
+            Error("the provider owner exited without proving drain")
+          }
+        }
+      }
+      Ok(#(_deltas, stream.Failed(error:))) -> {
+        stream.release_drain(drain_witness)
+        Error(string.inspect(error))
+      }
+      Ok(#(_deltas, stream.Delta(..))) -> {
+        stream.release_drain(drain_witness)
         Error("the stream ended on a delta, which cannot happen")
-      Ok(#(_deltas, stream.Settled(message:, usage:))) ->
+      }
+      Ok(#(_deltas, stream.Settled(message:, usage:))) -> {
+        stream.release_drain(drain_witness)
         Ok(Answer(text: settled_text(stream.message(message)), usage:))
+      }
     }
   })
 }

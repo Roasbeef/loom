@@ -139,6 +139,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import client/escalate.{type Escalations}
 import client/grants
+import client/provider_relay
 import client/summaries.{type Summaries}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
@@ -288,8 +289,9 @@ pub fn build_effects(config: Config) -> Effects {
     entropy: config.entropy,
     timers: effects.real_timers(),
     provider: recording_summaries(
-      effects.ProviderSurface(
+      effects.PreparedProviderSurface(
         request: fn(spec) { dispatch(config, spec) },
+        prepare: fn(spec) { prepare_dispatch(config, spec) },
         timeout_ms: config.provider_timeout_ms,
       ),
       into: config.summaries,
@@ -369,21 +371,38 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
 // Dispatches one request spec. Generation and summary requests go to the
 // gateway; polls settle immediately in-band (see the module doc).
 fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
+  prepare_dispatch(config, spec)
+  |> stream.start_prepared
+}
+
+// Production dispatch keeps role resolution and secret lookup behind the
+// begin permit. The immediate error cases still use the same shape so every
+// wrapper can apply one prepare, publish, begin protocol.
+fn prepare_dispatch(
+  config: Config,
+  spec: effects.RequestSpec,
+) -> stream.PreparedStream {
   case spec {
     effects.GenerationRequest(..) ->
-      gateway.request(config.gateway, provider_request(config, spec))
+      gateway.prepare(config.gateway, provider_request(config, spec))
     effects.PollRequest(..) ->
-      unsupported("deferred polls are not wired to a provider surface yet")
+      prepared_unsupported(
+        "deferred polls are not wired to a provider surface yet",
+      )
     effects.SummaryRequest(..) ->
       case summary_provider_request(config, spec) {
-        Ok(request) -> gateway.request(config.gateway, request)
+        Ok(request) -> gateway.prepare(config.gateway, request)
         // No preparation register behind a dispatched summary request is
         // corruption, not a transient fault: the machine writes the
         // preparation and the intent in one transaction. Fail it
         // terminally rather than asking a provider to summarize nothing.
-        Error(reason) -> unsupported(reason)
+        Error(reason) -> prepared_unsupported(reason)
       }
   }
+}
+
+fn prepared_unsupported(reason: String) -> stream.PreparedStream {
+  stream.PreparedStream(handle: unsupported(reason), begin: fn() { Nil })
 }
 
 // --- recording a settled summary -------------------------------------------
@@ -403,8 +422,8 @@ fn dispatch(config: Config, spec: effects.RequestSpec) -> StreamHandle {
 /// The relay owns the inner stream and records the terminal **before**
 /// forwarding it, so by the time the effect process reports the request
 /// settled and the driver asks for progress, the text is already there.
-/// If the relay dies, the effect process times out exactly as it would
-/// for a dead provider: in band, never a crash.
+/// The shared relay also propagates explicit cancellation and consumer
+/// death to the inner stream.
 ///
 /// ## Examples
 ///
@@ -417,52 +436,53 @@ pub fn recording_summaries(
   surface: effects.ProviderSurface,
   into summaries: Summaries,
 ) -> effects.ProviderSurface {
-  effects.ProviderSurface(timeout_ms: surface.timeout_ms, request: fn(spec) {
-    case spec {
-      effects.SummaryRequest(operation:, task_id:, attempt:, ..) -> {
-        let key = summaries.key(operation, task_id, attempt)
-        // The outer subject is owned by the calling effect process, so
-        // `stream.next` on the returned handle behaves identically.
-        let outer = process.new_subject()
-        let _relay =
-          process.spawn_unlinked(fn() {
-            relay_summary(
-              surface.request(spec),
-              outer,
-              summaries,
-              key,
-              surface.timeout_ms + 100,
-            )
-          })
-        stream.StreamHandle(events: outer)
+  effects.PreparedProviderSurface(
+    timeout_ms: effects.provider_timeout_ms(surface),
+    request: fn(spec) {
+      case summary_observer(spec, summaries) {
+        Some(observe) -> provider_relay.wrap(surface, spec, observe)
+        None -> surface.request(spec)
       }
-      _ -> surface.request(spec)
-    }
-  })
+    },
+    prepare: fn(spec) {
+      case summary_observer(spec, summaries) {
+        Some(observe) -> provider_relay.prepare(surface, spec, observe)
+        None -> effects.prepare_provider(surface, spec)
+      }
+    },
+  )
 }
 
-fn relay_summary(
-  inner: StreamHandle,
-  outer: process.Subject(stream.StreamEvent),
+// The callback is derived before either facade starts work, keeping summary
+// identity identical across immediate callers and the runtime's prepared path.
+fn summary_observer(
+  spec: effects.RequestSpec,
+  summaries: Summaries,
+) -> Option(fn(stream.StreamEvent) -> Nil) {
+  case spec {
+    effects.SummaryRequest(operation:, task_id:, attempt:, ..) -> {
+      let key = summaries.key(operation, task_id, attempt)
+      Some(fn(event) { record_summary_event(event, summaries, key) })
+    }
+    _ -> None
+  }
+}
+
+fn record_summary_event(
+  event: stream.StreamEvent,
   sink: Summaries,
   key: String,
-  timeout_ms: Int,
 ) -> Nil {
-  case stream.next(inner, within: timeout_ms) {
-    Error(Nil) -> Nil
-    Ok(stream.Delta(delta:)) -> {
-      process.send(outer, stream.Delta(delta:))
-      relay_summary(inner, outer, sink, key, timeout_ms)
-    }
-    Ok(stream.Settled(message:, usage:)) -> {
+  case event {
+    stream.Delta(..) -> Nil
+    stream.Settled(message:, usage:) -> {
       summaries.record(
         sink,
         key:,
         settlement: settlement_of(stream.message(message), usage),
       )
-      process.send(outer, stream.Settled(message:, usage:))
     }
-    Ok(stream.Failed(error:)) -> {
+    stream.Failed(error:) -> {
       summaries.record(
         sink,
         key:,
@@ -474,7 +494,6 @@ fn relay_summary(
           },
         ),
       )
-      process.send(outer, stream.Failed(error:))
     }
   }
 }
@@ -858,7 +877,7 @@ fn unsupported(reason: String) -> StreamHandle {
       message: reason,
     )),
   )
-  stream.StreamHandle(events:)
+  stream.immediate(events:, cancel: fn() { Nil })
 }
 
 /// Maps a generation or poll spec onto the provider-neutral request

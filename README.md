@@ -602,7 +602,7 @@ with `:models` and switches the active strand's model by name.
 
 ## Working on Loom
 
-You need Gleam 1.11 or newer, Erlang/OTP 27 or newer, and Go 1.24 or
+You need Gleam 1.18 or newer, Erlang/OTP 29 or newer, and Go 1.24 or
 newer for the sandbox helper and the terminal client. `make release`
 additionally needs `rebar3`, `strip` and a prepared build seed (`make
 codemode-seed`, once, with the network); nothing else does. Nothing is

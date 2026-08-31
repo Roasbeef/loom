@@ -18,6 +18,12 @@ import gleam/list
 import gleam/string
 import provider/http.{type HttpEvent, type Transport}
 
+type ScriptControl {
+  BeginScript
+  CancelScript
+  CreatorExited
+}
+
 /// One scripted settlement.
 pub type Turn {
   /// Settle with a single tool call (`stop_reason: tool_use`).
@@ -36,7 +42,7 @@ pub type Turn {
 /// results. A request beyond the script fails the attempt in-band, so
 /// an over-long run fails loudly instead of looping.
 pub fn transport(turns: List(Turn)) -> Transport {
-  http.Transport(send_streaming: fn(request, subject) {
+  owned_transport(fn(request, subject) {
     let index = tool_results_in(request.body)
     case
       turns
@@ -53,6 +59,43 @@ pub fn transport(turns: List(Turn)) -> Transport {
           ),
         )
     }
+  })
+}
+
+/// A monitorable transport for in-memory conformance scripts.
+pub fn owned_transport(
+  replay: fn(http.HttpRequest, Subject(HttpEvent)) -> Nil,
+) -> Transport {
+  http.Transport(prepare_streaming: fn(request, subject) {
+    let creator = process.self()
+    let ready = process.new_subject()
+    let owner =
+      process.spawn_unlinked(fn() {
+        let control = process.new_subject()
+        let creator_monitor = process.monitor(creator)
+        process.send(ready, control)
+        let command =
+          process.new_selector()
+          |> process.select_map(control, fn(command) { command })
+          |> process.select_specific_monitor(creator_monitor, fn(_down) {
+            CreatorExited
+          })
+          |> process.selector_receive_forever()
+        process.demonitor_process(creator_monitor)
+        case command {
+          BeginScript -> replay(request, subject)
+          CancelScript | CreatorExited -> Nil
+        }
+      })
+    let control = process.receive_forever(ready)
+    Ok(
+      http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
+          process.send(control, CancelScript)
+        }),
+        begin: fn() { process.send(control, BeginScript) },
+      ),
+    )
   })
 }
 

@@ -1,18 +1,30 @@
 //// The SessionSupervisor: the OTP tree that turns an open session into a
 //// living one.
 ////
-//// Shape (design §4.1): a rest-for-one supervisor over five children, in
+//// Shape (design §4.1): a rest-for-one supervisor over six children, in
 //// order —
 ////
-//// 1. the **strand registry** (name ↔ process-name map, so restarts keep
+//// 1. the **drain ledger** (logical strand → live effect reapers),
+//// 2. the **strand registry** (name ↔ process-name map, so restarts keep
 ////    every strand addressable),
-//// 2. the **StorageWriter**,
-//// 3. the **StrandSupervisor** — a factory (simple-one-for-one) of strand
+//// 3. the **StorageWriter**,
+//// 4. the **StrandSupervisor** — a factory (simple-one-for-one) of strand
 ////    drivers, one per strand, restarted individually on crash,
-//// 4. the **subagent StrandSupervisor** — a second factory, with its own
+//// 5. the **subagent StrandSupervisor** — a second factory, with its own
 ////    restart tolerance, for strands a model spawned,
-//// 5. the **strand booter** — a worker whose start lists the `strand.*`
+//// 6. the **strand booter** — a worker whose start lists the `strand.*`
 ////    registers in the store and starts a driver for every strand found.
+////
+//// ## Why the drain ledger is separate
+////
+//// The name registry is meant to restart: rest-for-one then rebuilds the
+//// writer and every driver beneath it. Effect reapers have the opposite
+//// requirement. They must remain discoverable while those old drivers die,
+//// or a replacement can replay durable work beside an undrained predecessor.
+//// The drain ledger therefore precedes the name registry and survives its
+//// restart. It is a significant temporary child: if the ledger itself dies,
+//// the supervisor stops the whole session instead of restarting with an empty
+//// ownership history.
 ////
 //// ## Why subagents get their own factory
 ////
@@ -52,7 +64,9 @@
 
 import core/register
 import gleam/bool
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/dynamic/decode
+import gleam/erlang/atom
+import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
@@ -60,6 +74,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
 import gleam/result
+import runtime/internal/drain_registry
 import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
@@ -103,15 +118,23 @@ pub type Config {
 /// its members.
 pub type SessionTree {
   SessionTree(
+    /// The root supervisor whose death ends ordinary session liveness.
     supervisor: Pid,
+    /// The stable drain-ledger name retained across abnormal root death.
+    drains: Name(drain_registry.Message),
+    /// The stable name of the session's sole durable writer.
     writer: Name(writer.Message),
+    /// The stable logical-strand to process-name registry.
     registry: Name(registry.Message),
+    /// The primary-strand dynamic supervisor.
     strands: Name(
       factory_supervisor.Message(String, Subject(strand_runtime.Message)),
     ),
+    /// The separately budgeted subagent-strand dynamic supervisor.
     subagent_strands: Name(
       factory_supervisor.Message(String, Subject(strand_runtime.Message)),
     ),
+    /// The pure classification used to choose one of the two factories.
     subagent: fn(String) -> Bool,
   )
 }
@@ -128,12 +151,20 @@ pub type SessionTree {
 /// ```
 ///
 pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
+  let drains_name = process.new_name(prefix: "loom_drains")
   let registry_name = process.new_name(prefix: "loom_registry")
   let writer_name = process.new_name(prefix: "loom_writer")
   let strands_name = process.new_name(prefix: "loom_strands")
   let subagent_strands_name = process.new_name(prefix: "loom_subagent_strands")
+  let drains_subject = process.named_subject(drains_name)
   let template =
-    strand_runtime.Options(..config.strand_options, writer: writer_name)
+    strand_runtime.Options(
+      ..config.strand_options,
+      writer: writer_name,
+      claim_reaper: fn(strand, reaper) {
+        drain_registry.claim(drains_subject, strand, reaper)
+      },
+    )
   let factory = fn(strand_name) {
     let name =
       registry.ensure(process.named_subject(registry_name), strand_name)
@@ -144,9 +175,15 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   }
   let tree =
     sup.new(sup.RestForOne)
+    |> sup.auto_shutdown(sup.AnySignificant)
     |> sup.restart_tolerance(
       intensity: config.tolerance.intensity,
       period: config.tolerance.period,
+    )
+    |> sup.add(
+      drain_registry.supervised(drains_name)
+      |> supervision.restart(supervision.Temporary)
+      |> supervision.significant(True),
     )
     |> sup.add(registry.supervised(registry_name))
     |> sup.add(writer.supervised(config.writer_options, writer_name))
@@ -190,6 +227,7 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
       process.unlink(started.pid)
       Ok(SessionTree(
         supervisor: started.pid,
+        drains: drains_name,
         writer: writer_name,
         registry: registry_name,
         strands: strands_name,
@@ -210,11 +248,15 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// be mid-commit when the writer goes, and no supervisor report is
 /// logged for a shutdown that was asked for.
 ///
-/// Blocks until the supervisor pid is gone, or `grace_ms` elapses. A
-/// supervisor that will not answer, or will not finish inside the
-/// grace, is killed: the caller's next act is usually to release the
-/// writer lease, and a tree that refuses to stop must not hold that up.
-/// Idempotent — a tree that is already dead returns at once.
+/// `grace_ms` bounds the `sys:terminate` handshake, not provider teardown.
+/// Once shutdown begins, this waits until the supervisor PID is gone. The
+/// drain ledger is an unbounded-shutdown child and will not let that happen
+/// while an incarnation reaper still owns provider work. Killing the root on
+/// expiry would erase the only barrier that makes releasing the writer lease
+/// safe. The drain ledger is monitored before root termination and its exit
+/// reason is checked independently because it can outlive an abnormally killed
+/// root. `Error(Nil)` means no live ledger could be captured or that ledger
+/// died without the clean `normal`/OTP `shutdown` acknowledgement.
 ///
 /// ## Examples
 ///
@@ -222,33 +264,62 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 /// // supervisor.shutdown(tree, grace_ms: 5000)
 /// ```
 ///
-pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Nil {
-  use <- bool.guard(when: !process.is_alive(tree.supervisor), return: Nil)
-  case ffi_sup.terminate_supervisor(tree.supervisor, grace_ms) {
-    Ok(Nil) -> Nil
-    Error(Nil) -> process.kill(tree.supervisor)
+pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Result(Nil, Nil) {
+  let drains = process.named_subject(tree.drains)
+  use drain_owner <- result.try(process.subject_owner(drains))
+  use <- bool.guard(when: !process.is_alive(drain_owner), return: Error(Nil))
+  let witness = register_drain_witness(drain_owner)
+  case process.is_alive(tree.supervisor) {
+    True -> {
+      let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
+      Nil
+    }
+    False -> Nil
   }
-  await_death(tree.supervisor, grace_ms)
+  await_death(tree.supervisor)
+  await_drain_witness(witness)
 }
 
-// Waits out a terminating supervisor in 5 ms slices, killing it if the
-// grace is spent. Polling rather than monitoring keeps this callable
-// from any process, including one that is already selecting on its own
-// mailbox.
-//
-// The inner check stays a `case` rather than a `bool.guard`: its `True`
-// arm kills the process, and `bool.guard`'s `return:` is evaluated
-// unconditionally, which would kill the supervisor on every slice
-// instead of only the last one.
-fn await_death(supervisor: Pid, remaining_ms: Int) -> Nil {
-  use <- bool.guard(when: !process.is_alive(supervisor), return: Nil)
-  case remaining_ms <= 0 {
-    True -> process.kill(supervisor)
-    False -> {
-      process.sleep(5)
-      await_death(supervisor, remaining_ms - 5)
-    }
+type DrainWitness {
+  DrainWitness(monitor: Monitor, owner: Pid)
+}
+
+fn register_drain_witness(owner: Pid) -> DrainWitness {
+  let monitor = process.monitor(owner)
+  DrainWitness(monitor:, owner:)
+}
+
+fn await_drain_witness(witness: DrainWitness) -> Result(Nil, Nil) {
+  let down =
+    process.new_selector()
+    |> process.select_specific_monitor(witness.monitor, fn(down) { down })
+    |> process.selector_receive_forever()
+  process.demonitor_process(witness.monitor)
+  case down {
+    process.ProcessDown(pid:, reason: process.Normal, ..)
+      if pid == witness.owner
+    -> Ok(Nil)
+    process.ProcessDown(pid:, reason: process.Abnormal(reason), ..)
+      if pid == witness.owner
+    ->
+      case decode.run(reason, atom.decoder()) {
+        Ok(reason) ->
+          case atom.to_string(reason) == "shutdown" {
+            True -> Ok(Nil)
+            False -> Error(Nil)
+          }
+        Error(_) -> Error(Nil)
+      }
+    process.ProcessDown(..) | process.PortDown(..) -> Error(Nil)
   }
+}
+
+// Polling rather than monitoring keeps shutdown callable from any process,
+// including one that is already selecting on its own mailbox.
+fn await_death(supervisor: Pid) -> Nil {
+  use <- bool.guard(when: !process.is_alive(supervisor), return: Nil)
+  process.sleep(5)
+  await_death(supervisor)
 }
 
 /// Ensures a driver is running for `strand`, starting one through the

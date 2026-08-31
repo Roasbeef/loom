@@ -9,7 +9,7 @@
 %% proves the client actor's behaviour without an OS process anywhere.
 %% This is the other half — a checked-in third-party server that the
 %% harness spawns, hand-shakes with, lists and calls exactly as it would
-%% a real one, over a real pipe. It is an OTP-27 escript with zero
+%% a real one, over a real pipe. It is an OTP-29 escript with zero
 %% dependencies (the `json` module ships in the stdlib) so that nothing
 %% has to be built before the e2e can run.
 %%

@@ -5,15 +5,17 @@
 The provider SDK: a typed registry of provider configurations and role
 routes, a pure incremental server-sent-events parser, two wire adapters
 (Anthropic Messages, OpenAI chat-completions), retry and overflow
-classification, and the secret-injection seam. Everything above the raw
-HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
+classification, and the secret-injection seam. SSE parsing and adapter folds
+are pure Gleam; the gateway custodian and native transport owner are the small
+processful shell around that sans-io core. WP-F.
 
 ## Key Types
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `with_attempt_timeout`); exposes the
-  frozen contract `resolve(gw, role)` and `request(gw, req)`. Nothing
-  touches the network until `request`.
+  frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
+  additionally exposes the internal prepare-publish-begin seam: it returns a
+  parked owner before route resolution, secret lookup, or network work starts.
 - `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
   ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
   static model facts an adapter needs: context window, output ceiling,
@@ -25,18 +27,36 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   target the walk attempts.
 - `provider/stream.StreamHandle` — the consumption contract WP-E relies
   on: zero or more `Delta` events, then exactly one terminal `Settled` or
-  `Failed`, and nothing after it.
+  `Failed`, and nothing after it. Its cancel capability signals the one
+  gateway owner that decides the cancellation/terminal race; its optional
+  owner pid is a drain witness for every asynchronous descendant.
+- `provider/stream.{DrainWitness, DrainOutcome}` — the original monitor and
+  its reason-bearing result. Critical callers install the witness before
+  `begin`; only `Drained` permits replacement work, while `TimedOut` leaves
+  the monitor live and `ProofLost` preserves an abnormal owner exit.
+- `provider/stream.PreparedStream` — a `StreamHandle` whose owner exists while
+  work is parked, plus the idempotent begin permit. Composition layers publish
+  the handle first and grant the permit only after adoption succeeds.
 - `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
   `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
-  the same events.
+  the same events. A line and one event are each bounded to 4 MiB, one event
+  may retain at most 4096 `data:` fields, and one attempt may feed at most
+  16 MiB of response body.
 - `provider/stream.ResponseMachine(state)` — a fold over `HttpEvent`s
   producing `StreamEvent`s; each adapter supplies one.
-- `provider/http.{Transport, HttpRequest, HttpEvent}` — the injected
-  transport seam; `httpc_transport()` is the production wiring.
+- `provider/http.{Transport, RunningRequest, HttpRequest, HttpEvent}` — the
+  injected transport seam. A running request exposes a monitorable owner and
+  cancel capability; normal owner exit acknowledges that native work has
+  stopped, while abnormal exit loses that proof.
+  `httpc_transport()` is the production wiring.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
   `is_overflow_message`, `overflow_message`.
+- `provider/internal/diagnostic` — the pure resource and redaction boundary for
+  remote failures after transport delivery: a 64 KiB retained body budget,
+  byte-bounded diagnostic fields, and exact scrubbing of the request key before
+  an error leaves the gateway.
 
 ## Relationships
 
@@ -47,19 +67,47 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   type-compatible with `StreamHandle`, and `settle_failure` bridges
   `retry.classify` into the machine's retryability convention),
   `conformance` (wiring and the e2e).
-- **FFI**: `provider/internal/ffi_httpc` — drives OTP `httpc` in
-  asynchronous streaming mode, because the Gleam ecosystem has no streaming
-  HTTP client (`gleam_httpc` is synchronous only). `provider/internal/
-  ffi_env` — `os:getenv` for the environment secret store. These two are
-  the package's complete inventory of impurity.
+- **FFI**: `provider/internal/ffi_httpc` — prepares, begins, and cancels one OTP
+  `httpc` owner in asynchronous streaming mode. That owner selects its own raw
+  messages and waits for the dedicated request handler to exit after
+  cancellation.
+  Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
+  cancellation as an asynchronous cast rather than a socket-drain
+  acknowledgement. The shim therefore forces a non-reused, non-queued handler
+  and disables handler migration through redirects and automatic retries. OTP
+  29 publishes the exact request-ID-to-handler row before successful admission
+  returns. The response callback remains inside the handler until the owner
+  acknowledges that its monitor is installed, so a fast terminal cannot erase
+  that row first. One O(1) protected-table read is the normal capture path. Any
+  lookup miss enters a deadline-bounded recovery scan which asks only
+  `httpc_handler` processes for their current request and never turns a missing
+  or inconclusive answer into drain. A later OTP with unfamiliar private
+  shapes falls back to the callback's exact producer identity; if no callback
+  arrives, the request deadline ends the owner abnormally rather than claiming
+  drain. The internal OTP dependency is
+  confined to callback receipt, exact capture, and direct cancel. All
+  ownership, fallback, deadline, and terminal state machines stay in typed
+  Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  the environment secret store. These two are the package's complete inventory
+  of impurity.
 
 ## Traffic
 
-- **Actor messages**: `stream.run` spawns the transport on its own process
-  and delivers `StreamEvent`s to the caller's subject:
+- **Actor messages**: `gateway.prepare` first publishes a minimal custodian;
+  its begin permit then releases a guard and private pump for the whole
+  fallback walk. The
+  custodian adopts both workers and every transport owner before work begins;
+  its pid, rather than a crashable worker, is the public drain witness. The
+  guard monitors the direct consumer and retains each active transport
+  capability the pump publishes. The pump selects active-transport Down,
+  absolute attempt deadline, cumulative response budget, and private
+  per-attempt HTTP events. Together they deliver
+  `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
-  from the transport into that pump.
+  from the transport into that pump. Cancellation expiry closes the public
+  response window but not the pump's ownership frontier: the guard continues
+  adopting and rejecting late attempt registrations until the pump exits.
 - **Commits / registers**: none. This package persists nothing; the
   durable identity it resolves is stored by `machine` and committed by
   `runtime`.
@@ -79,14 +127,49 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
 
 ## Invariants
 
+- **Ownership documentation states the proof carried by each PID.** Public
+  stream, custodian, and transport APIs document why the owner exists, how
+  cancellation reaches it, and what its Down acknowledges. A comment that
+  only says a function "starts a process" is incomplete here: callers need to
+  know whether that process does work or survives work as its drain witness.
+  Only normal exit proves drain; abnormal exit means the witness was lost.
 - **Secrets exist only in request memory.** A key is read from the
   `SecretStore` at dispatch, copied into one outbound header, and appears
-  nowhere else — not in the gateway value, not in an accumulator, not in
-  any `StreamEvent`, error, or persisted structure. `ProviderError` carries
-  secret *names* only (spec §3.3 invariant 4).
+  nowhere else locally — not in the gateway value, not in an accumulator, and
+  not in a locally constructed error or persisted structure. `ProviderError`
+  carries secret *names* only (spec §3.3 invariant 4). Because a remote endpoint
+  can reflect the key it received, the gateway scrubs that exact value from
+  terminal errors before retry classification or delivery. Successful streamed
+  content is provider-controlled and is not credential-redacted across fragment
+  boundaries; callers must not treat it as a secret-filtering boundary.
+  Diagnostic strings are byte-bounded in the same pass. Issue #148 owns the
+  stateful response-redaction work.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
-  terminal.
+  terminal. The gateway owner is the sole terminal sender. Response activity
+  does not renew the attempt deadline, and the cumulative 16 MiB response cap
+  includes every chunk rather than only bytes retained by the SSE parser.
+- **Cancellation reaches native work.** Explicit cancel and direct-consumer
+  death cancel and drain the active transport before ending the route walk.
+  The production native owner retains the exact OTP request id, receives the
+  raw `httpc` callbacks itself, calls `httpc_handler:cancel/2`, and waits for
+  the dedicated request handler's Down before exiting. An
+  owner that misses the fixed grace is not killed from above: the guard emits
+  `CancellationUnconfirmed` but stays alive until the owner drains, preserving
+  the acknowledgement chain. A transport which finishes preparation after
+  expiry is still published to that chain and receives a rejection permit, so
+  neither the pump nor its parked owner can escape drain. `ProviderCancelled`,
+  `CancellationUnconfirmed`, and `DrainProofLost` are terminal and never walk
+  to a fallback. Raw
+  OTP errors are collapsed to constant diagnostics before crossing the FFI so
+  request headers and credentials cannot appear in a durable provider error.
+- **Only the original monitor adjudicates drain.** The custodian records every
+  child before begin. A leaf owns no descendants, so its own Down completes its
+  lifetime; a transitive child requires `Normal`. An unexpected killed or
+  abnormal transitive `Down` poisons the custodian even after cancellation has
+  begun and propagates failure after the remaining known frontier is cancelled.
+  A waiter which attaches after exit cannot recover this fact because Erlang
+  reports `noproc`; critical callers retain a `DrainWitness` across `begin`.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash.
@@ -112,11 +195,15 @@ HTTP chunk stream is pure Gleam — the sans-io pattern. WP-F.
   cache-read exceeding the context window with negligible output (≤ 64
   tokens) — settles as stop reason `error` with `retry.overflow_message`,
   preserving the raw stop reason.
-- **The SSE parser is bounded.** The carry buffer never exceeds
-  `max_line_bytes` (4 MiB) and every byte is scanned exactly once, so a
-  hostile or broken proxy streaming a terminator-less line fails the stream
-  in-band as a framing defect rather than exhausting memory or driving
-  quadratic re-scans.
+- **Remote buffering is bounded.** The SSE carry buffer never exceeds
+  `max_line_bytes` (4 MiB), and the completed `data:` lines waiting for one
+  blank-line dispatch never exceed `max_event_bytes` (4 MiB). Every byte is
+  scanned exactly once, so both a terminator-less line and an endless sequence
+  of terminated data lines fail in-band instead of growing parser state. A
+  delivered non-success HTTP body has a separate 64 KiB retained budget and
+  fails immediately if the next chunk would cross it. OTP `httpc` buffers
+  non-200/206 bodies before delivery, so this does not bound native error-body
+  memory; issue #147 owns transport replacement or isolation.
 - **Wire leniency is deliberate and asymmetric.** SSE `data:` payloads must
   parse as JSON (malformed data fails the stream in-band as
   `MalformedStream`), but *fields* are read leniently — absent usage

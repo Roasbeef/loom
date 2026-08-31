@@ -279,7 +279,7 @@ fn transport(
   scanner: Name(writer.Event),
   sent: Subject(Sent),
 ) -> http.Transport {
-  http.Transport(send_streaming: fn(request: http.HttpRequest, subject) {
+  script.owned_transport(fn(request: http.HttpRequest, subject) {
     let turn = record(sent, request.body)
     case turn == 1 && answers.kill {
       True -> kill_scanner(scanner)
@@ -335,15 +335,17 @@ fn settled_events(text: String) -> List(http.HttpEvent) {
     script.transport([
       script.AnswerTurn(text:, input_tokens: 100, output_tokens: 9),
     ])
-  one_shot.send_streaming(
-    http.HttpRequest(
-      method: "POST",
-      url: "https://captured.test",
-      headers: [],
-      body: "",
-    ),
-    captured,
-  )
+  let assert Ok(http.PreparedRequest(begin:, ..)) =
+    one_shot.prepare_streaming(
+      http.HttpRequest(
+        method: "POST",
+        url: "https://captured.test",
+        headers: [],
+        body: "",
+      ),
+      captured,
+    )
+  begin()
   collect(captured, [])
 }
 

@@ -105,6 +105,7 @@ import runtime/escalation as runtime_escalation
 import simplifile
 import support/internal/ffi_proc
 import support/internal/ffi_ws
+import support/provider as provider_test
 import support/terminal.{type Terminal}
 
 const root = "build/tui-e2e"
@@ -646,7 +647,7 @@ fn give_up(message: String) -> a {
 // was handed. That is what makes the marker in the pane a proof of the
 // round trip rather than of a fixture.
 fn scripted_transport() -> http.Transport {
-  http.Transport(send_streaming: fn(request, subject) {
+  provider_test.transport(fn(request, subject) {
     process.send(
       subject,
       http.ResponseStatus(status: 200, headers: [

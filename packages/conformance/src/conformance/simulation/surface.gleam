@@ -76,6 +76,10 @@ pub const sub_model_id = "loom-sub"
 /// subagent, not main.
 pub const sub_strand = "sub:1"
 
+type SimulatedCancel {
+  ReleaseStarved
+}
+
 /// The text of the durable cross-strand message the runner sends back to
 /// the main strand once the subagent finishes. A generation whose newest
 /// user input is this report is answered directly — never from the
@@ -93,6 +97,8 @@ pub const summary_text = "[summary] the conversation so far"
 /// wall-clock wait a simulated session still makes, and only a scripted
 /// timeout fault reaches it.
 pub const provider_timeout_ms = 60
+
+const intervention_retry_delay_ms = 5
 
 /// Builds the effect surface. `raw` is the *uninstrumented* session,
 /// which the hooks read so that a scheduled read fault aimed at the
@@ -147,8 +153,8 @@ fn request(
   spec: effects.RequestSpec,
 ) -> stream.StreamHandle {
   let index = control.bump(ctl, "effect")
+  let consumer = process.self()
   let events = process.new_subject()
-  let handle = stream.StreamHandle(events:)
   let on_strand = strand_of_spec(spec, strand)
   case
     effect_fault(
@@ -160,7 +166,15 @@ fn request(
       loss_allowed: retryable(spec),
     )
   {
-    Killed | Starved -> handle
+    Killed -> stream.immediate(events:, cancel: fn() { Nil })
+    Starved ->
+      // The scripted provider timeout has already won before the runtime's
+      // outer deadline asks the handle to stop. Releasing that preselected
+      // transport failure on cancel preserves the fault's retry semantics;
+      // it is not a cancellation terminal and owns no external process. A
+      // one-shot owner supplies the mutable edge: repeated cancellation sends
+      // to a dead subject instead of fabricating a second terminal event.
+      starved_handle(events, consumer)
     Ran -> {
       mark_request(ctl, spec)
       intervene(ctl, script, trigger_of_request(spec))
@@ -168,12 +182,45 @@ fn request(
         Some(settle) -> {
           mark_settlement(ctl, settle)
           send_settlement(events, settle)
-          handle
+          stream.immediate(events:, cancel: fn() { Nil })
         }
-        None -> handle
+        None -> stream.immediate(events:, cancel: fn() { Nil })
       }
     }
   }
+}
+
+fn starved_handle(
+  events: process.Subject(stream.StreamEvent),
+  consumer: process.Pid,
+) -> stream.StreamHandle {
+  let ready = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let control = process.new_subject()
+      process.send(ready, control)
+      let event =
+        process.new_selector()
+        |> process.select_map(control, fn(_release) { True })
+        |> process.select_specific_monitor(process.monitor(consumer), fn(_down) {
+          False
+        })
+        |> process.selector_receive_forever()
+      case event {
+        False -> Nil
+        True ->
+          process.send(
+            events,
+            stream.Failed(error: stream.TransportFailed(
+              reason: "simulated provider effect timeout",
+            )),
+          )
+      }
+    })
+  let control = process.receive_forever(ready)
+  stream.owned(events:, owner:, cancel: fn() {
+    process.send(control, ReleaseStarved)
+  })
 }
 
 fn mark_request(ctl: Control, spec: effects.RequestSpec) -> Nil {
@@ -795,8 +842,9 @@ fn interventions_due(
 /// see `intervene`'s comment for why that distinction is the whole
 /// point.
 ///
-/// Everything due at one trigger fires on one disposable process, in script
-/// order. A steer and a follow-up scripted at the same turn are two halves of
+/// Everything due at one trigger fires on one disposable process. Queue
+/// admissions retain script order and precede aborts from that same logical
+/// moment. A steer and a follow-up scripted at the same turn are two halves of
 /// one scripted moment, and the trigger that names them is a *phase*. If the
 /// carrier dies between them, the atomic facts written with the completed
 /// prefix identify exactly which admissions landed; another carrier retries
@@ -902,11 +950,9 @@ fn apply_on(
   let claimed = claim_interventions(ctl, due)
   case claimed, awaited {
     [], _ -> Nil
-    [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
+    [_, ..], True -> admit_claimed(ctl, raw, runtime, claimed)
     [_, ..], False ->
-      control.detached(fn() {
-        admit_claimed(ctl, raw, runtime, claimed, attempts: 5)
-      })
+      control.detached(fn() { admit_claimed(ctl, raw, runtime, claimed) })
   }
 }
 
@@ -942,10 +988,22 @@ fn admit_claimed(
   raw: Session,
   runtime: api.Runtime,
   claimed: List(script.Intervention),
-  attempts attempts: Int,
 ) -> Nil {
   let action = fn() {
-    list.map(claimed, fn(intervention) {
+    // An abort is an asynchronous cast, while steer and follow-up wait for
+    // their queue transactions. Sending an abort first made the BEAM scheduler
+    // decide whether another intervention from the same logical moment saw an
+    // active run. Queueing first gives the fault-free oracle one stable
+    // baseline without weakening the abort race exercised after this boundary.
+    let #(admissions, aborts) =
+      list.partition(claimed, fn(intervention) {
+        case intervention {
+          script.Abort(..) -> False
+          script.Steer(..) | script.FollowUp(..) -> True
+        }
+      })
+    list.append(admissions, aborts)
+    |> list.map(fn(intervention) {
       #(intervention, perform(runtime, intervention))
     })
   }
@@ -953,11 +1011,16 @@ fn admit_claimed(
     control.Answered(outcomes) -> settle_answered(ctl, raw, outcomes)
     control.Raised | control.Expired -> {
       let unresolved = settle_durable(ctl, raw, claimed)
-      case unresolved, attempts > 1 {
+      case unresolved, process.is_alive(runtime.tree.supervisor) {
         [], _ -> Nil
         [_, ..], True -> {
-          process.sleep(10)
-          admit_claimed(ctl, raw, runtime, unresolved, attempts: attempts - 1)
+          // A reply-losing crash can be followed by a full rest-for-one tree
+          // rebuild. The root supervisor is the readiness boundary: while it
+          // lives, its permanent writer must either return or make the root
+          // fail. Retry until one of those process facts occurs rather than
+          // spending a wall-clock budget whose result depends on runner load.
+          process.sleep(intervention_retry_delay_ms)
+          admit_claimed(ctl, raw, runtime, unresolved)
         }
         [_, ..], False -> control.mark(ctl, "admission-unobserved")
       }

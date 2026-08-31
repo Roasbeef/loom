@@ -40,8 +40,9 @@ extended by the M3 runtime wave.
   the harness-only door to the reserved corners of `fact.custom`, and the
   predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
   which refuse and hide the same keys.
-- `runtime/supervisor.SessionTree` — a rest-for-one supervisor over five
-  children in order: the strand **registry**, the **StorageWriter**, the
+- `runtime/supervisor.SessionTree` — a rest-for-one supervisor over six
+  children in order: the significant temporary **drain ledger**, the
+  restartable strand **registry**, the **StorageWriter**, the
   **StrandSupervisor** (a `factory_supervisor` of strand drivers, one per
   strand, restarted individually), the **subagent StrandSupervisor** (a
   second factory with its own tolerance, for strands a host's `subagent`
@@ -50,7 +51,9 @@ extended by the M3 runtime wave.
   routing each to its factory).
 - `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
   `api.close` is built on: children terminated in reverse start order
-  with reason `shutdown`, killed only if the grace is spent. The tree
+  with reason `shutdown`. The grace bounds the `sys:terminate` handshake, but
+  the drain ledger then keeps the root alive until every provider reaper has
+  stopped; the writer lease is not released on an inconclusive drain. The tree
   unlinks from its starter, so a host that wants to hear about its death
   monitors `SessionTree.supervisor` (`client/host` does).
 - `runtime/lineage.{Lineage, CallSite}` — the durable ledger of who
@@ -59,8 +62,15 @@ extended by the M3 runtime wave.
   the brief operation, the child's tools, an **absolute** deadline, the
   detach flag, and the durable reap mark. `is_descendant` is the walk the
   addressing rule is decided by, and it fails closed.
-- `runtime/registry.Message` — the strand-name registry actor: strand name
-  ↔ the process name its driver registers under.
+- `runtime/registry.Message` — the strand-incarnation registry actor: strand
+  name ↔ the process name its driver registers under. Reaper claims live only
+  in `runtime/internal/drain_registry`; keeping them out of this restartable
+  actor prevents a name-registry restart from erasing ownership barriers.
+- `runtime/internal/drain_registry.Message` — the session-local actor owning
+  each logical strand's complete unadjudicated reaper chain. It precedes the
+  restartable registry and is a significant temporary child: only a normal
+  reaper `Down` retires a generation, while an abnormal `Down` kills the ledger
+  and stops the session instead of inventing an empty ownership history.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
@@ -191,14 +201,31 @@ extended by the M3 runtime wave.
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
     conformance harnesses.
   - `strand_runtime.Message` (all casts): `Nudge` (the doorbell),
+    `PredecessorsResolved(result)` (the ledger barrier acknowledgement),
     `PollTick` (the checkpoint poll, which also grants one deferred poll
     permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
-    `ToolDone(token, outcome)`, `EffectExit(down)`.
+    `ToolDone(token, outcome)`, `EffectExit(down)`. Callers use the stable
+    registered subject, while the reaper, effect workers, and timers use a
+    private direct subject bound to this driver incarnation. The split prevents
+    a predecessor's late result from resolving the stable name to a replacement
+    and settling newly replayed work with the same durable token. Before the
+    ledger acknowledgement, the actor retains abort intent but does not drive
+    effects.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
-    `Lookup(strand, reply_with)` and `Known(reply_with)`. Senders:
-    `runtime/supervisor`'s strand factory and booter, and `runtime/api`
-    when it rings a doorbell or addresses a sibling strand.
+    `Lookup(strand, reply_with)` and `Known(reply_with)`.
+    Senders: `runtime/supervisor`'s strand factory and booter, and
+    `runtime/api` when it rings a doorbell or addresses a sibling strand.
+  - `runtime/internal/drain_registry.Message` (call):
+    `Claim(strand, reaper, reply_with)` atomically publishes the new
+    incarnation, snapshots its predecessors, and releases the caller only once
+    the ledger's original monitors have proved that entire snapshot drained
+    normally. The reaper performs that potentially long call after handing its
+    command subject to the driver initializer, then sends
+    `PredecessorsResolved`. Claiming from the reaper itself keeps its PID alive
+    until the ledger has installed the original monitor; meanwhile the driver
+    remains able to retain `RequestAbort` while the barrier is closed. Sender:
+    `runtime/strand_runtime` through the closure the supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -222,8 +249,10 @@ extended by the M3 runtime wave.
   `put_fact_expecting` is the same write with the caller's read seq
   asserted, which is what makes a shared cell safely updatable.
 - **Wire**: consumes `provider/stream.StreamEvent` — zero or more `Delta`
-  then exactly one `Settled` or `Failed` — from a `StreamHandle`, and
-  `effects.ToolOutcome` from the tool surface.
+  then exactly one `Settled` or `Failed` — from a cancellable `StreamHandle`,
+  and `effects.ToolOutcome` from the tool surface. A provider wait deadline
+  invokes the handle's cancellation capability before returning a terminal
+  observation.
 
 ## Invariants
 
@@ -247,10 +276,12 @@ extended by the M3 runtime wave.
   start what is missing". Subagents created mid-session seed their
   registers first, which is why every later reboot finds them.
 - **Process names are minted once per strand and outlive their drivers.**
-  The registry sits first in the rest-for-one order, so it survives writer
-  and strand crashes; a replacement driver registers under the *same* name
-  and stays addressable, and doorbells resolve through `lookup` at ring
-  time rather than caching pids. Only a whole-tree reboot starts it empty.
+  The registry precedes the writer in the rest-for-one order, so it survives
+  writer and strand crashes; a replacement driver registers under the *same*
+  name and stays addressable, and doorbells resolve through `lookup` at ring
+  time rather than caching pids. A registry crash remints names while the
+  earlier drain ledger preserves effect ordering; only a whole-tree reboot
+  starts both actors empty.
 - **Inter-strand messaging is the queue machinery, not a mailbox.**
   `send_to_strand` durably enqueues a steer onto the target's open run — or
   accepts a fresh run when it is idle — and only then rings the doorbell,
@@ -261,17 +292,63 @@ extended by the M3 runtime wave.
   own surfaces as a stale expectation, forcing a reload that sees it. The
   `_quietly` admission variants commit without ringing at all.
 - **Effect processes are monitored by the driver and linked to its
-  reaper.** An effect process that dies without reporting settles
-  **in-band** — a transport failure response or a synthetic tool error —
-  so the harness never wedges and never faults the strand on a worker's
-  death. Each driver incarnation also spawns a *reaper*: a tiny trapping
-  process, linked to the driver, that every effect links to at birth and
-  that kills itself (taking the linked effects with it) the moment the
-  driver dies. A strand-actor restart therefore cannot leak a live effect
-  into the next incarnation — the exclusivity gate and the
-  orphan-versus-live replay decision read the incarnation-local `live`
-  list, and both are sound only because no effect outlives its
-  incarnation.
+  reaper.** A tool process that dies without reporting settles as a synthetic
+  in-band tool error. A provider death instead faults the driver: fabricating
+  a retryable transport failure could dispatch beside the stream subtree that
+  outlived it. Each driver incarnation also spawns a *reaper*: a small trapping
+  process linked to the driver. Every effect links and receives an adoption
+  acknowledgement before doing work. On driver death the reaper invokes every
+  adopted effect's stop capability and remains alive until all their exits
+  arrive. A provider effect first creates a parked request worker inside a
+  minimal custodian, publishes that custodian to the reaper, and only then
+  permits the worker to call the frozen provider surface. The reaper monitors
+  the public owner independently, cancels it when the effect exits, and cannot
+  finish until both are gone. The parked worker is linked to the provider
+  effect because they are one failure domain: an unexpected surface crash must
+  still fault the effect and recover, not become a fabricated provider
+  response. Production surfaces return a `PreparedStream`: the worker
+  publishes its parked owner to the reaper before granting the begin permit,
+  so a rejected publication cannot leave unowned provider work. Immediate
+  `ProviderSurface` values remain only for in-memory fakes with no external
+  work; they may still carry self-reaping owners to model cancellation. The
+  custodian is unlinked and survives both long enough to drain their adopted
+  descendants. The separate drain ledger remembers every unadjudicated reaper
+  for the strand, and releases a replacement only after its original monitors
+  prove that exact predecessor snapshot drained normally.
+  The effect installs a `DrainWitness` before granting begin, so it can delay
+  `ProviderDone` until the original monitor reports `Drained`; the reaper holds
+  an independent monitor for recovery. A provider owner or reaper must exit
+  normally to discharge its obligation; killed, abnormal, and late `noproc`
+  observations fail closed. `SessionTree`
+  retains the ledger's stable name, so
+  `shutdown` waits it independently even when the root supervisor was killed
+  abnormally. This transitive drain barrier, rather than scheduler
+  timing, makes the incarnation-local `live` list sound.
+- **Internal events are addressed to one incarnation, not one logical
+  strand.** The public registered subject remains the address for `Nudge` and
+  external abort requests across a restart. Provider completions, tool
+  completions, recovery acknowledgements, poll ticks, retry wakes, and internal
+  abort retries instead capture the driver's direct subject. A durable effect
+  token is intentionally reused when recovery replays an effect, so token-only
+  correlation is safe only after a message has first been confined to the
+  incarnation that created its `Live` entry. Sending those messages through
+  the stable name would let a predecessor remove a replacement's live worker.
+- **Provider ownership continues below the effect process.** A provider
+  effect has one absolute receive deadline which deltas cannot renew. Reaching
+  it cancels the stream and waits a
+  bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
+  locally reported `CancellationUnconfirmed` are both terminal under retry
+  classification; the latter says teardown could not be proved and therefore
+  cannot authorize another attempt. The acknowledgement grace is a second,
+  single scheduled timer, so late deltas cannot extend it. The effect withholds
+  `ProviderDone` until its public stream owner exits, so the current driver
+  cannot progress beside the old subtree either. An abort keeps the driver alive and spends the
+  acknowledgement grace because a real terminal may already be queued; its
+  usage still belongs in the aborted result. Driver death has no remaining
+  terminal consumer, so the effect requests cancellation and exits without
+  spending that grace. Its reaper already monitors the public owner and is the
+  surviving drain witness: a provider pump or HTTP request may temporarily
+  outlive the effect pid, but never the barrier that prevents replacement.
 - **`after_commit` is the crash seam.** It runs in the writer process after
   the commit is durable and published but *before* the committer's reply,
   so an observer that kills the writer produces exactly "commit N durable,
@@ -421,16 +498,18 @@ extended by the M3 runtime wave.
   summarizer as transcript; its retained tail *is* re-summarized,
   because those messages survived one compaction and the next would
   otherwise drop them silently.
-- **Close is an orderly shutdown, and the lease release does not depend
-  on it.** `close` terminates the tree the way OTP terminates one —
+- **Close is an orderly shutdown, and lease release depends on its drain
+  barrier.** `close` terminates the tree the way OTP terminates one —
   reverse start order, reason `shutdown` — so every strand driver is
   gone before the writer it commits through, and a close that was asked
   for is distinguishable in the logs from a fault. Durable state stops
   at a commit boundary either way, because commits are atomic in the
-  storage actor. A tree that will not stop inside the grace is killed
-  and the handle is closed regardless: a session locked out for a whole
-  lease TTL is the worse failure. Nothing terminal is written; reopening
-  recovers the open operation.
+  storage actor. The configured grace bounds only the root's system-message
+  handshake. The drain ledger has an unbounded OTP shutdown interval and keeps
+  the root alive until every provider reaper exits; `close` seals the handle
+  and releases the writer lease only afterward. A slow close is preferable to
+  reopening beside an unconfirmed native request. Nothing terminal is written;
+  reopening recovers the open operation.
 - **A hint with nowhere to go is a non-event, and never the writer's
   death.** Post-commit publication skips a subscriber whose owner is
   gone. Sending into an *unregistered name* crashes the sender, so
@@ -448,14 +527,20 @@ extended by the M3 runtime wave.
   at all; `process.send` on it never re-resolves anything.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
-  an idle timer at a third of the TTL. A commit that races the renewal
-  loses too, and arrives as `tx.LeaseLost`: `runtime/api` turns it into
-  `SessionStolen`, and `runtime/strand_runtime` halts the strand on it
-  rather than reloading, because reloading reads the same file and meets
-  the same fence.
+  an idle timer at a third of the TTL. That timer targets a private subject
+  bound to the current writer PID; the public registered name remains only
+  the caller address. Otherwise each predecessor timer would resolve the name
+  to the replacement and add another permanent renewal cadence after every
+  restart. A commit that races the renewal loses too, and arrives as
+  `tx.LeaseLost`: `runtime/api` turns it into `SessionStolen`, and
+  `runtime/strand_runtime` halts the strand on it rather than reloading,
+  because reloading reads the same file and meets the same fence.
 - **The names, not the pids, are the addresses.** The writer and each
   strand register under fresh process names so restarts keep them
-  addressable.
+  addressable. Loss-tolerant public strand messages resolve that name once and
+  send the tagged envelope directly to the resolved PID; checking and then
+  sending through the name would leave an unregistration race between two
+  lookups.
 - **Log context reaches an effect process because the closure carries
   it, not because anything is inherited.** `spawn_effect` takes the
   step-scoped logger as an argument, and the body that runs on the new

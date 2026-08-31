@@ -8,6 +8,11 @@
 //// child dies with, and the order the children die in. The third, that
 //// the writer lease is released on the way out, is what makes the file
 //// reopenable at once instead of after its lease TTL.
+////
+//// Provider drains add a second lifetime. The drain ledger may outlive an
+//// abnormally killed root while an old request still owns native work, so
+//// close must await that stable name independently before releasing the
+//// writer lease. The final test kills the root first to pin that distinction.
 
 import core/clock
 import gleam/erlang/atom
@@ -15,6 +20,7 @@ import gleam/erlang/process.{type Pid, Abnormal, Killed, Normal, ProcessDown}
 import gleam/list
 import gleam/option.{Some}
 import machine/operation.{ReplayNever}
+import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/supervisor
@@ -183,9 +189,166 @@ pub fn close_releases_the_writer_lease_test() {
       path:,
       owner: "writer-2",
       lease_ttl_ms: 60_000,
-      clock: clock.stepping(from: 2_000_000, by: 7),
+      clock: clock.stepping(from: 1_000_100, by: 7),
     )
     as "a second opener must win the lease immediately"
   assert reopened.lease_interval_ms == Some(20_000)
   let _sealed = session.close(reopened)
+}
+
+/// A provider reaper may outlive every ordinary worker while native teardown
+/// is still in flight. The drain ledger is the last root child to stop, so
+/// close must keep both the supervisor and the SQLite lease alive until that
+/// reaper's independently monitored owner exits.
+pub fn close_holds_the_lease_until_provider_reapers_drain_test() {
+  let path = fresh_path("close_waits_provider_drain")
+  let rec = recorder.start()
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-1",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 1_000_000, by: 7),
+    )
+  let base = idle_effects(rec)
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let events = process.new_subject()
+        let ready = process.new_subject()
+        let owner =
+          process.spawn_unlinked(fn() {
+            let release = process.new_subject()
+            process.send(ready, release)
+            let _release = process.receive_forever(release)
+            Nil
+          })
+        let release = process.receive_forever(ready)
+        process.send(started, #(owner, release))
+        stream.owned(events:, owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+        })
+      }),
+    )
+  let assert Ok(runtime) =
+    api.open(opened, eff, api.default_options(harness.configuration()))
+  let assert Ok(_operation) = api.prompt(runtime, [fake.user("wait")])
+  let assert Ok(#(owner, release)) = process.receive(started, within: 5000)
+  let closed = process.new_subject()
+  let _closer =
+    process.spawn_unlinked(fn() { process.send(closed, api.close(runtime)) })
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 5000)
+  assert process.is_alive(owner)
+  assert process.receive(closed, within: 20) == Error(Nil)
+    as "close must not release the writer lease ahead of provider drain"
+  process.send(release, Nil)
+  let assert Ok(Ok(Nil)) = process.receive(closed, within: 5000)
+
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-2",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 2_000_000, by: 7),
+    )
+    as "the drained session must reopen immediately"
+  let _sealed = session.close(reopened)
+}
+
+/// An abnormal root death must not erase the independent drain barrier.
+///
+/// This is the case an orderly shutdown test cannot cover: the root has
+/// already disappeared before `api.close` begins, while its trapped-exit drain
+/// ledger and an old provider reaper still own a stubborn request.
+pub fn close_after_root_death_still_waits_for_provider_drain_test() {
+  let path = fresh_path("close_after_root_death_waits_provider_drain")
+  let rec = recorder.start()
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-1",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 1_000_000, by: 7),
+    )
+  let base = idle_effects(rec)
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
+        let events = process.new_subject()
+        let ready = process.new_subject()
+        let owner =
+          process.spawn_unlinked(fn() {
+            let release = process.new_subject()
+            process.send(ready, release)
+            let _release = process.receive_forever(release)
+            Nil
+          })
+        let release = process.receive_forever(ready)
+        process.send(started, #(owner, release))
+        stream.owned(events:, owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+        })
+      }),
+    )
+  let assert Ok(runtime) =
+    api.open(opened, eff, api.default_options(harness.configuration()))
+  let assert Ok(_operation) = api.prompt(runtime, [fake.user("wait")])
+  let assert Ok(#(owner, release)) = process.receive(started, within: 5000)
+
+  process.kill(runtime.tree.supervisor)
+  let assert Ok(Nil) = process.receive(cancelled, within: 5000)
+  let closed = process.new_subject()
+  let _closer =
+    process.spawn_unlinked(fn() { process.send(closed, api.close(runtime)) })
+
+  assert process.is_alive(owner)
+  assert process.receive(closed, within: 20) == Error(Nil)
+    as "close must retain the lease after the root dies but before drain"
+  process.send(release, Nil)
+  let assert Ok(Ok(Nil)) = process.receive(closed, within: 5000)
+
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-2",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 2_000_000, by: 7),
+    )
+    as "the lease must reopen immediately after the retained drain completes"
+  let _sealed = session.close(reopened)
+}
+
+/// Losing the drain ledger is not equivalent to observing an empty ledger.
+///
+/// The significant child stops the root, but its abnormal death cannot attest
+/// that independently monitored provider owners drained. `close` therefore
+/// leaves the writer lease held instead of authorizing an overlapping opener.
+pub fn close_fails_closed_when_the_drain_ledger_dies_test() {
+  let #(path, runtime) = open_idle("close_rejects_dead_drain_ledger")
+  let assert Ok(ledger) =
+    process.subject_owner(process.named_subject(runtime.tree.drains))
+    as "the live tree must publish its drain ledger"
+  process.kill(ledger)
+
+  let assert Error(_) = api.close(runtime)
+    as "an abnormal ledger death cannot attest a clean drain"
+  let assert Error(_) =
+    session.open_sqlite(
+      path:,
+      owner: "writer-2",
+      lease_ttl_ms: 60_000,
+      clock: clock.stepping(from: 1_000_100, by: 7),
+    )
+    as "failed shutdown must leave the writer lease held"
+
+  // This test has no provider work. Direct sealing is test cleanup only; the
+  // production close path correctly refused to infer that stronger fact.
+  let _sealed = session.close(runtime.session)
 }

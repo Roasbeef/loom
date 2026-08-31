@@ -15,10 +15,13 @@
 //// restored registers, spec §3.1). `strand.last_result` is never read.
 ////
 //// Live effects run on spawned processes the driver monitors; their
-//// outcomes come back as ordinary messages. An effect process that dies
-//// without reporting settles in-band (a transport-failure response or a
-//// synthetic tool error) — the harness never wedges. Every effect
-//// process is also linked to the incarnation's **reaper** (a tiny
+//// outcomes come back as ordinary messages. A tool process that dies without
+//// reporting settles as a synthetic tool error. A provider process instead
+//// faults the driver: its reaper cancels the published stream owner and the
+//// replacement waits for that owner to drain before recovery may dispatch.
+//// Converting such a death directly into a retryable provider result would
+//// let the current incarnation retry beside cleanup it no longer owns.
+//// Every effect process is also linked to the incarnation's **reaper** (a tiny
 //// trapping companion process that dies when the driver does), so a
 //// driver restart cannot leak a live effect into the next incarnation:
 //// the exclusivity gate and the replay decision both read the
@@ -44,7 +47,7 @@ import core/register
 import core/tx
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Pid, type Subject, type Timer}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -65,6 +68,8 @@ import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
 import runtime/effects.{type Effects}
 import runtime/escalation
+import runtime/internal/ffi_sup
+import runtime/internal/provider_custodian
 import runtime/writer
 import session/session
 import storage/storage
@@ -79,6 +84,8 @@ import telemetry/log.{type Logger}
 /// is the runtime-owned opaque options bag snapshotted into generation
 /// steps; `retry_policy` is the normalized policy snapshotted likewise;
 /// `poll_interval_ms` is the checkpoint-poll period (positive);
+/// `claim_reaper` publishes this incarnation's effect reaper and does not
+/// return until the ledger has acknowledged older generations as drained;
 /// `logger` is injected (§0.2) and need not carry a strand — `start`
 /// scopes it to the strand it is starting.
 pub type Options {
@@ -89,6 +96,7 @@ pub type Options {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    claim_reaper: fn(String, Pid) -> List(Pid),
     logger: Logger,
   )
 }
@@ -122,6 +130,8 @@ pub type EffectToken {
 /// the rest are internal wiring exposed only through the api module's
 /// functions.
 pub opaque type Message {
+  /// Reports the ledger-authored prior-generation drain acknowledgement.
+  PredecessorsResolved(Result(Nil, String))
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
   /// The periodic checkpoint poll; also grants one deferred poll permit.
@@ -139,10 +149,64 @@ pub opaque type Message {
   EffectExit(down: process.Down)
 }
 
+type ReaperMessage {
+  Adopt(effect: Pid, stop: fn() -> Nil, reply_with: Subject(Bool))
+  TrackProvider(
+    effect: Pid,
+    handle: stream.StreamHandle,
+    reply_with: Subject(Bool),
+  )
+}
+
+type ReaperEvent {
+  ReaperCommand(ReaperMessage)
+  LinkedExit(process.ExitMessage)
+  OwnedStreamDown(process.Down)
+}
+
+type Reaper {
+  Reaper(commands: Subject(ReaperMessage), pid: Pid)
+}
+
+type AdoptedEffect {
+  AdoptedEffect(
+    pid: Pid,
+    stop: fn() -> Nil,
+    provider: ProviderOwnership,
+    exited: Bool,
+  )
+}
+
+// Provider ownership has a publication phase because the reaper must
+// distinguish "not a provider" from "a provider with no asynchronous work".
+// A watched owner is retained even after the effect exits; only its monitor's
+// Down proves the transitive stream subtree has drained.
+type ProviderOwnership {
+  ProviderUnpublished
+  ProviderDrained
+  ProviderWatching(handle: stream.StreamHandle, monitor: process.Monitor)
+}
+
+type ProviderWaitEvent {
+  ProviderStream(stream.StreamEvent)
+  StopProvider
+  ProviderDeadline
+  ProviderCancelExpired
+}
+
+// Registration makes the named mailbox reachable before the drain claim can
+// finish. This phase prevents early or stale traffic from driving effects
+// until the prior generation's original monitors have opened the barrier.
+type RecoveryGate {
+  AwaitingPredecessors(abort_requested: Bool)
+  RecoveryReady
+}
+
 type Live {
   Live(
     token: EffectToken,
     pid: Pid,
+    stop: fn() -> Nil,
     monitor: process.Monitor,
     /// The captured identity of the dispatching intent, for synthetic
     /// failure settlements.
@@ -154,7 +218,10 @@ type Live {
 
 type State {
   State(
-    self: Subject(Message),
+    // This direct subject is bound to this incarnation's PID. Effects and
+    // timers report here so their messages disappear with the process that
+    // dispatched them instead of crossing a restart boundary.
+    internal: Subject(Message),
     writer: Subject(writer.Message),
     strand: String,
     effects: Effects,
@@ -162,6 +229,7 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    recovery_gate: RecoveryGate,
     /// This driver's logger, already scoped to the strand. Every log
     /// call narrows *from* this value rather than reading ambient
     /// state, which is what carries `{session, strand, op, step}` into
@@ -170,7 +238,7 @@ type State {
     /// This incarnation's reaper process: every effect process links to
     /// it at birth, and it kills itself (taking the linked effects with
     /// it) the moment this driver process dies. See `start_reaper`.
-    reaper: Pid,
+    reaper: Reaper,
     live: List(Live),
     observations: List(Observation),
     poll_permit: Bool,
@@ -228,10 +296,10 @@ type Outcome {
   Halt(String)
 }
 
-/// Starts a strand driver registered under `name`. The driver immediately
-/// nudges itself, so an open operation restored from storage resumes
-/// without external input — crash recovery and cold start are the same
-/// path.
+/// Starts a strand driver registered under `name`. The initialized actor first
+/// waits on the prior-generation drain barrier, then drives immediately, so an
+/// open operation restored from storage resumes without external input — crash
+/// recovery and cold start are the same path.
 ///
 /// ## Examples
 ///
@@ -244,23 +312,28 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
+    // The public subject may be a registered name which does not exist until
+    // this initializer returns. It deliberately stays out of State: callers
+    // use that durable address, while callbacks must be unable to capture it
+    // and cross an incarnation boundary. The direct endpoint also lets a fast
+    // first claim acknowledge recovery before actor registration completes.
+    let internal = process.new_subject()
+    let reaper = start_reaper(options, internal)
     let selector =
       process.new_selector()
       |> process.select(subject)
+      |> process.select(internal)
       |> process.select_monitors(EffectExit)
-    // Recovery is just the first drive: kick ourselves.
-    process.send(subject, Nudge)
-    options.effects.timers.after(options.poll_interval_ms, fn() {
-      wake(subject, PollTick)
-    })
     let logger = log.for_strand(options.logger, options.strand)
     // Every line this incarnation writes is correlated from here on;
     // the driver process itself also stamps the context so an OTP crash
     // report about *this* process is not orphaned.
     log.adopt(logger)
-    log.info(logger, "strand.started", [])
+    // The reaper performs the potentially long predecessor claim after it has
+    // handed its command subject back to this initializer. The actor can
+    // therefore enter its receive loop without weakening the claim handshake.
     actor.initialised(State(
-      self: subject,
+      internal:,
       writer: process.named_subject(options.writer),
       strand: options.strand,
       effects: options.effects,
@@ -268,8 +341,9 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
+      recovery_gate: AwaitingPredecessors(abort_requested: False),
       logger:,
-      reaper: start_reaper(),
+      reaper:,
       live: [],
       observations: [],
       poll_permit: False,
@@ -309,7 +383,7 @@ pub fn supervised(
 /// ```
 ///
 pub fn nudge(strand: Subject(Message)) -> Nil {
-  process.send(strand, Nudge)
+  send_if_registered(strand, Nudge)
 }
 
 /// Asks the strand to durably request cancellation of its open operation
@@ -324,19 +398,65 @@ pub fn nudge(strand: Subject(Message)) -> Nil {
 /// ```
 ///
 pub fn request_abort(strand: Subject(Message)) -> Nil {
-  process.send(strand, RequestAbort)
+  send_if_registered(strand, RequestAbort)
+}
+
+// Public strand addresses may be registered names which disappear between a
+// liveness check and `process.send`'s second lookup. Resolve the name exactly
+// once and send its tagged envelope to that PID. Delivery to a PID which exits
+// after resolution is a harmless no-op; a direct subject needs no lookup.
+fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
+  case process.subject_name(subject) {
+    Error(Nil) -> process.send(subject, message)
+    Ok(name) ->
+      case process.named(name) {
+        Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, message))
+        Error(Nil) -> Nil
+      }
+  }
 }
 
 // --- message handling -----------------------------------------------------
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
-  case message {
-    Nudge -> finish(logger, drive(state))
-    PollTick -> {
-      let self = state.self
+  case state.recovery_gate, message {
+    AwaitingPredecessors(abort_requested:), PredecessorsResolved(resolved) -> {
+      case resolved {
+        Ok(Nil) -> {
+          // Recovery and its poll clock both begin after the ledger-authored
+          // acknowledgement. Before this point, queued doorbells are harmless
+          // because no durable work has crossed the effect boundary.
+          state.effects.timers.after(state.poll_interval_ms, fn() {
+            wake(state.internal, PollTick)
+          })
+          log.info(logger, "strand.started", [])
+          let state = State(..state, recovery_gate: RecoveryReady)
+          case abort_requested {
+            True -> finish(logger, abort(state))
+            False -> finish(logger, drive(state))
+          }
+        }
+        Error(reason) -> finish(logger, Halt(reason))
+      }
+    }
+    AwaitingPredecessors(_), RequestAbort ->
+      // Abort is the one pre-barrier message carrying unique intent. Retain it
+      // in state; doorbells and stale effect events need no queue because the
+      // first post-barrier drive reloads durable truth.
+      actor.continue(
+        State(
+          ..state,
+          recovery_gate: AwaitingPredecessors(abort_requested: True),
+        ),
+      )
+    AwaitingPredecessors(_), _ -> actor.continue(state)
+    RecoveryReady, PredecessorsResolved(_) -> actor.continue(state)
+    RecoveryReady, Nudge -> finish(logger, drive(state))
+    RecoveryReady, PollTick -> {
+      let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(self, PollTick)
+        wake(internal, PollTick)
       })
       let out = drive(State(..state, poll_permit: True))
       case out {
@@ -345,13 +465,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Halt(reason) -> finish(logger, Halt(reason))
       }
     }
-    RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
-    RequestAbort -> finish(logger, abort(state))
-    ProviderDone(token:, terminal:) ->
+    RecoveryReady, RetryDue ->
+      finish(logger, drive(State(..state, retry_wake: None)))
+    RecoveryReady, RequestAbort -> finish(logger, abort(state))
+    RecoveryReady, ProviderDone(token:, terminal:) ->
       finish(logger, provider_done(state, token, terminal))
-    ToolDone(token:, outcome:) ->
+    RecoveryReady, ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
-    EffectExit(down:) -> finish(logger, effect_exit(state, down))
+    RecoveryReady, EffectExit(down:) -> finish(logger, effect_exit(state, down))
   }
 }
 
@@ -603,21 +724,16 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
           |> option.from_result,
         otherwise: state,
       )
-      // The effect process died without reporting: settle in-band
-      // through the ordinary outcome paths. Degraded, not fatal — the
-      // level policy's `warning`.
+      // The effect process died without reporting. Tools have no descendant
+      // ownership after the worker dies, so an in-band synthetic result is
+      // safe. A provider may still have a transport subtree: halt the driver
+      // and let the old reaper's published owner become the restart barrier.
       log.warn(step_logger(state, live.token), "effect.exited", [
         field.text(key: "kind", value: effect_kind(live.token)),
       ])
       case live.token {
         AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
-          provider_done(
-            state,
-            live.token,
-            stream.Failed(error: stream.TransportFailed(
-              reason: "the effect process exited before settling",
-            )),
-          )
+          Halt("a provider effect exited before its stream owner drained")
         ToolEffect(..) ->
           tool_done(
             state,
@@ -643,9 +759,9 @@ fn abort(state: State) -> Outcome {
     // idempotent, every retry re-reads the durable state, and the loop
     // converges as soon as the concurrent committers quiet down.
     AbortRaceLost -> {
-      let self = state.self
+      let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(self, RequestAbort)
+        wake(internal, RequestAbort)
       })
       Continue(state)
     }
@@ -724,7 +840,7 @@ fn commit_abort_marker(
 // `effect_exit` and settles synthetically. Either way reconciliation
 // sees exactly one outcome per reserved id.
 fn interrupt_live_effects(state: State) -> State {
-  list.each(state.live, fn(live) { process.kill(live.pid) })
+  list.each(state.live, fn(live) { live.stop() })
   state
 }
 
@@ -878,11 +994,11 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
     Some(wake) if wake == at -> Continue(state)
     _ -> {
       let delay = int_max(1, at - now)
-      let self = state.self
+      let internal = state.internal
       log.warn(state.logger, "retry.armed", [
         field.count(key: "delay_ms", value: delay),
       ])
-      state.effects.timers.after(delay, fn() { wake(self, RetryDue) })
+      state.effects.timers.after(delay, fn() { wake(internal, RetryDue) })
       Continue(State(..state, retry_wake: Some(at)))
     }
   }
@@ -1327,75 +1443,343 @@ fn with_projection(
 // no effect process may outlive the driver incarnation that dispatched
 // it.
 //
-// Linking effects to the driver directly would force the driver to trap
-// exits, entangling the actor's supervision shutdown with effect
-// lifecycle. Instead each incarnation spawns one *reaper*: a tiny
-// process, linked to the driver, that traps exits and does exactly one
-// thing — when the driver dies (any reason: a fault halt, a supervisor
-// shutdown, a kill), it kills itself, and every effect process linked to
-// it dies with it. Effect deaths reach the reaper as trapped messages it
-// discards; the driver still learns of them through its monitors, so the
-// in-band settlement paths are unchanged.
+// Linking effects to the driver directly would force the driver to trap exits,
+// entangling supervision shutdown with effect settlement. Each incarnation
+// instead owns one linked reaper. An effect must link to it *and* receive an
+// adoption acknowledgement before running user-visible work. The reaper can
+// therefore enumerate every effect that crossed the execution boundary.
 //
-// The chain is race-free by construction. The reaper exists before any
-// effect is spawned, and an effect's *first* act is linking to the
-// reaper: if the reaper is already gone (its driver died between the
-// spawn and the link), the link refuses and the effect exits without
-// performing its work; if the link lands, any later reaper death kills
-// the effect. The reap is asynchronous — exit signals, not a barrier —
-// but the signal to the effects is emitted at the moment the reaper
-// dies, which itself is triggered by the driver's death, strictly before
-// the factory restarts the driver; the replacement then performs several
-// storage round-trips before it can dispatch any recovery replay.
+// Driver death begins a drain rather than merely broadcasting exit signals.
+// The reaper invokes every adopted effect's stop capability and stays alive
+// until every linked exit has arrived. Tool effects use a hard stop; provider
+// effects cancel cooperatively and do not exit until the public stream owner
+// has drained. The drain ledger remembers all still-live reapers for a logical
+// strand independently of the restartable name registry; a replacement driver
+// claims its own reaper, then waits for every older one to disappear before it
+// nudges recovery. This is the barrier the old timing argument lacked:
+// recovery cannot dispatch beside a predecessor that is merely scheduled to
+// die.
 
-// Spawns this incarnation's reaper: linked to the calling driver,
-// trapping exits from the moment before any effect can exist.
-fn start_reaper() -> Pid {
+fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
   let driver = process.self()
-  process.spawn(fn() {
-    process.trap_exits(True)
-    reap_when_driver_dies(driver)
-  })
+  let ready = process.new_subject()
+  let pid =
+    process.spawn(fn() {
+      process.trap_exits(True)
+      let commands = process.new_subject()
+      process.send(ready, commands)
+      // The reaper itself makes the ledger claim. If the driver dies while the
+      // ledger is still draining an older generation, its trapped exit remains
+      // queued here and this PID stays alive until the ledger has installed its
+      // original monitor. A disposable helper could die with the driver first,
+      // leaving the ledger to observe only `noproc` and correctly poison the
+      // session because the reaper's exit reason had been lost.
+      let resolved =
+        options.claim_reaper(options.strand, process.self())
+        |> await_previous_reapers(4000)
+      process.send(internal, PredecessorsResolved(resolved))
+      reap(driver, commands, [])
+    })
+  let commands = process.receive_forever(ready)
+  Reaper(commands:, pid:)
 }
 
-// Waits for the driver's exit among the trapped link signals. Effect
-// exits (normal completions and abnormal deaths alike) are discarded —
-// the driver's monitors own settlement — and only the driver's own death
-// triggers the reap. `process.kill` is untrappable, so the reaper dies
-// even though it traps, and its linked effects receive the `killed`
-// signal none of them trap.
-fn reap_when_driver_dies(driver: Pid) -> Nil {
-  let exits =
+fn reap(
+  driver: Pid,
+  commands: Subject(ReaperMessage),
+  effects: List(AdoptedEffect),
+) -> Nil {
+  let event =
     process.new_selector()
-    |> process.select_trapped_exits(fn(message) { message })
-  let process.ExitMessage(pid:, reason: _) =
-    process.selector_receive_forever(exits)
-  case pid == driver {
-    True -> process.kill(process.self())
-    False -> reap_when_driver_dies(driver)
+    |> process.select_map(commands, ReaperCommand)
+    |> process.select_trapped_exits(LinkedExit)
+    |> process.select_monitors(OwnedStreamDown)
+    |> process.selector_receive_forever()
+  case event {
+    ReaperCommand(Adopt(effect:, stop:, reply_with:)) -> {
+      let accepted = process.is_alive(driver) && process.is_alive(effect)
+      process.send(reply_with, accepted)
+      case accepted {
+        True ->
+          reap(driver, commands, [
+            AdoptedEffect(
+              pid: effect,
+              stop:,
+              provider: ProviderUnpublished,
+              exited: False,
+            ),
+            ..effects
+          ])
+        False -> reap(driver, commands, effects)
+      }
+    }
+    ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
+      let #(effects, accepted) = publish_provider_owner(effects, effect, handle)
+      let committed = accepted && process.is_alive(driver)
+      process.send(reply_with, committed)
+      case committed {
+        True -> reap(driver, commands, effects)
+        // Publication is irreversible even when driver death rejects the
+        // worker's start permit. The worker will cancel locally, while the
+        // reaper retains its independent owner monitor in case that worker
+        // dies before cleanup finishes.
+        False -> reap(driver, commands, effects)
+      }
+    }
+    LinkedExit(process.ExitMessage(pid:, reason: _)) ->
+      case pid == driver {
+        True -> drain(commands, effects)
+        False -> reap(driver, commands, effect_departed(effects, pid))
+      }
+    OwnedStreamDown(down) ->
+      case provider_owner_departed(effects, down) {
+        Ok(effects) -> reap(driver, commands, effects)
+        Error(Nil) -> process.kill(process.self())
+      }
   }
 }
 
-// Spawns one effect process bound to this incarnation: unlinked from the
-// driver (a worker's death must settle in-band, never fault the strand),
-// but linked to the reaper as its first act so it cannot outlive the
-// incarnation. A refused link means the incarnation is already gone —
-// the effect exits without running, exactly as if the reap had caught it
-// a moment later.
-fn spawn_effect(reaper: Pid, logger: Logger, body: fn() -> Nil) -> Pid {
-  process.spawn_unlinked(fn() {
-    case process.link(reaper) {
-      True -> {
-        // The context travels as a value inside `body`'s closure; this
-        // additionally stamps it onto the new process's `logger`
-        // metadata, so a crash report or a library line from *this*
-        // process is correlated too (see `telemetry/context`).
-        log.adopt(logger)
-        body()
+fn drain(
+  commands: Subject(ReaperMessage),
+  effects: List(AdoptedEffect),
+) -> Nil {
+  list.each(effects, fn(effect) { effect.stop() })
+  await_drain(commands, effects)
+}
+
+fn await_drain(
+  commands: Subject(ReaperMessage),
+  effects: List(AdoptedEffect),
+) -> Nil {
+  case effects {
+    [] -> Nil
+    [_, ..] -> {
+      let event =
+        process.new_selector()
+        |> process.select_map(commands, ReaperCommand)
+        |> process.select_trapped_exits(LinkedExit)
+        |> process.select_monitors(OwnedStreamDown)
+        |> process.selector_receive_forever()
+      case event {
+        ReaperCommand(Adopt(effect: _, stop: _, reply_with:)) -> {
+          process.send(reply_with, False)
+          await_drain(commands, effects)
+        }
+        ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
+          let #(effects, _published) =
+            publish_provider_owner(effects, effect, handle)
+          // Publication is irreversible even after draining begins. Rejecting
+          // the begin permit stops new work, but retaining the monitor covers
+          // the worker-death race in which only the reaper remains able to
+          // prove that the already-created owner has disappeared.
+          process.send(reply_with, False)
+          await_drain(commands, effects)
+        }
+        LinkedExit(process.ExitMessage(pid:, reason: _)) ->
+          await_drain(commands, effect_departed(effects, pid))
+        OwnedStreamDown(down) ->
+          case provider_owner_departed(effects, down) {
+            Ok(effects) -> await_drain(commands, effects)
+            Error(Nil) -> process.kill(process.self())
+          }
       }
-      False -> Nil
+    }
+  }
+}
+
+fn publish_provider_owner(
+  effects: List(AdoptedEffect),
+  published_by: Pid,
+  handle: stream.StreamHandle,
+) -> #(List(AdoptedEffect), Bool) {
+  case effects {
+    [] -> #([], False)
+    [effect, ..rest] if effect.pid == published_by ->
+      case effect.provider, effect.exited {
+        ProviderUnpublished, False -> {
+          let ownership = monitor_provider_owner(handle)
+          #([AdoptedEffect(..effect, provider: ownership), ..rest], True)
+        }
+        _, _ -> #(effects, False)
+      }
+    [effect, ..rest] -> {
+      let #(rest, accepted) = publish_provider_owner(rest, published_by, handle)
+      #([effect, ..rest], accepted)
+    }
+  }
+}
+
+fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
+  case handle.owner {
+    None -> ProviderDrained
+    Some(owner) -> {
+      let monitor = process.monitor(owner)
+      // Even an already-dead owner remains unadjudicated until this original
+      // monitor supplies its reason. An is_alive pre-filter would collapse a
+      // lost witness into the same state as a normal drain.
+      ProviderWatching(handle:, monitor:)
+    }
+  }
+}
+
+// An effect Down is not necessarily a drain. A published provider owner stays
+// in the ledger until its independent monitor fires; everything else can be
+// forgotten as soon as the worker itself is gone.
+fn effect_departed(
+  effects: List(AdoptedEffect),
+  departed: Pid,
+) -> List(AdoptedEffect) {
+  case effects {
+    [] -> []
+    [effect, ..rest] if effect.pid == departed ->
+      case effect.provider {
+        ProviderWatching(handle:, ..) -> {
+          stream.cancel(handle)
+          [AdoptedEffect(..effect, exited: True), ..rest]
+        }
+        ProviderUnpublished | ProviderDrained -> rest
+      }
+    [effect, ..rest] -> [effect, ..effect_departed(rest, departed)]
+  }
+}
+
+fn provider_owner_departed(
+  effects: List(AdoptedEffect),
+  down: process.Down,
+) -> Result(List(AdoptedEffect), Nil) {
+  case down {
+    process.PortDown(..) -> Ok(effects)
+    process.ProcessDown(reason: process.Killed, ..)
+    | process.ProcessDown(reason: process.Abnormal(_), ..) -> Error(Nil)
+    process.ProcessDown(monitor:, reason: process.Normal, ..) ->
+      Ok(
+        list.filter_map(effects, fn(effect) {
+          case effect.provider {
+            ProviderWatching(monitor: watched, ..) if watched == monitor ->
+              case effect.exited {
+                True -> Error(Nil)
+                False -> Ok(AdoptedEffect(..effect, provider: ProviderDrained))
+              }
+            _ -> Ok(effect)
+          }
+        }),
+      )
+  }
+}
+
+fn await_previous_reapers(
+  previous: List(Pid),
+  within_ms: Int,
+) -> Result(Nil, String) {
+  list.try_each(previous, fn(reaper) {
+    let monitor = process.monitor(reaper)
+    let down =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(down) { down })
+      |> process.selector_receive(within_ms)
+    process.demonitor_process(monitor)
+    case down {
+      Ok(process.ProcessDown(reason: process.Normal, ..)) -> Ok(Nil)
+      Ok(process.ProcessDown(reason: process.Killed, ..))
+      | Ok(process.ProcessDown(reason: process.Abnormal(_), ..))
+      | Ok(process.PortDown(..))
+      | Error(Nil) -> Error("the previous effect generation did not drain")
     }
   })
+}
+
+// A worker links before asking for adoption. If the reaper is already gone,
+// or starts draining before it can acknowledge, the worker exits without
+// running. Once acknowledged, the reaper has recorded the pid and cannot
+// finish its own drain until this worker is dead.
+fn spawn_effect(
+  reaper: Reaper,
+  logger: Logger,
+  body: fn() -> Nil,
+) -> #(Pid, fn() -> Nil) {
+  let pid =
+    process.spawn_unlinked(fn() {
+      let self = process.self()
+      adopt_and_run(reaper, logger, fn() { process.kill(self) }, body)
+    })
+  #(pid, fn() { process.kill(pid) })
+}
+
+// Provider effects receive a cooperative stop because their process is the
+// top-level drain witness. Killing it would start cleanup below it while
+// allowing the reaper to report completion too early.
+fn spawn_provider_effect(
+  reaper: Reaper,
+  logger: Logger,
+  body: fn(Subject(Nil)) -> Nil,
+) -> #(Pid, fn() -> Nil) {
+  let ready = process.new_subject()
+  let pid =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(ready, stop)
+      adopt_and_run(reaper, logger, fn() { process.send(stop, Nil) }, fn() {
+        body(stop)
+      })
+    })
+  let stop = process.receive_forever(ready)
+  #(pid, fn() { process.send(stop, Nil) })
+}
+
+fn adopt_and_run(
+  reaper: Reaper,
+  logger: Logger,
+  stop: fn() -> Nil,
+  body: fn() -> Nil,
+) -> Nil {
+  let Reaper(commands:, pid: reaper_pid) = reaper
+  let reaper_monitor = process.monitor(reaper_pid)
+  case process.link(reaper_pid) {
+    False -> process.demonitor_process(reaper_monitor)
+    True -> {
+      let reply = process.new_subject()
+      process.send(commands, Adopt(process.self(), stop, reply))
+      // Admission is bounded by the reaper's monitor, not a scheduling guess.
+      // Timing out a live but delayed reaper would make this effect disappear
+      // without either running its body or reporting a terminal result.
+      let accepted =
+        process.new_selector()
+        |> process.select_map(reply, fn(value) { value })
+        |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
+        |> process.selector_receive_forever()
+      process.demonitor_process(reaper_monitor)
+      case accepted {
+        True -> {
+          // The context travels inside `body`; stamping it here also
+          // correlates a crash report emitted by this worker process.
+          log.adopt(logger)
+          body()
+        }
+        False -> process.unlink(reaper_pid)
+      }
+    }
+  }
+}
+
+// The worker publishes the stream's transitive owner before it waits for one
+// byte. This acknowledgement transfers the restart barrier to the reaper. If
+// the reaper is already draining, ownership stays here: cancel and wait before
+// this worker is allowed to exit.
+fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
+  let Reaper(commands:, pid: reaper_pid) = reaper
+  let reaper_monitor = process.monitor(reaper_pid)
+  let reply = process.new_subject()
+  process.send(commands, TrackProvider(process.self(), handle, reply))
+  // The reply commits an ownership transfer. Only that reply or the reaper's
+  // Down can resolve it; a wall-clock timeout cannot tell whether the reaper
+  // recorded the owner and would create an ambiguous double custodian.
+  let accepted =
+    process.new_selector()
+    |> process.select_map(reply, fn(value) { value })
+    |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
+    |> process.selector_receive_forever()
+  process.demonitor_process(reaper_monitor)
+  accepted
 }
 
 fn spawn_provider(
@@ -1404,32 +1788,179 @@ fn spawn_provider(
   configuration: StrandConfiguration,
   spec: effects.RequestSpec,
 ) -> State {
-  let parent = state.self
+  let parent = state.internal
+  let driver = process.self()
   let surface = state.effects.provider
   let logger = step_logger(state, token)
   log.debug(logger, "effect.dispatched", [
     field.text(key: "kind", value: effect_kind(token)),
     field.text(key: "model", value: configuration.model.model_id),
   ])
-  let pid =
-    spawn_effect(state.reaper, logger, fn() {
-      let handle = surface.request(spec)
-      let terminal = case
-        stream.await_terminal(handle, within: surface.timeout_ms)
-      {
-        Ok(#(_deltas, terminal)) -> terminal
-        Error(Nil) ->
-          stream.Failed(error: stream.TransportFailed(
-            reason: "timed out waiting for the provider stream to settle",
-          ))
+  let #(pid, stop) =
+    spawn_provider_effect(state.reaper, logger, fn(stop) {
+      let provider_custodian.Prepared(handle:, begin:) =
+        provider_custodian.prepare(surface, spec)
+      let drain = stream.watch_drain(handle)
+      case track_provider_owner(state.reaper, handle) {
+        False -> {
+          stream.cancel(handle)
+          require_provider_drain(drain)
+        }
+        True -> {
+          begin()
+          case
+            await_provider(
+              handle,
+              stop,
+              driver,
+              effects.provider_timeout_ms(surface),
+            )
+          {
+            None -> stream.release_drain(drain)
+            Some(terminal) -> {
+              // The terminal and the owner drain are separate facts. Keeping
+              // this effect private until the public owner exits prevents both
+              // the current driver and a replacement from dispatching beside
+              // the old subtree.
+              require_provider_drain(drain)
+              wake(parent, ProviderDone(token:, terminal:))
+            }
+          }
+        }
       }
-      wake(parent, ProviderDone(token:, terminal:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, monitor:, configuration:, call: None),
+    Live(token:, pid:, stop:, monitor:, configuration:, call: None),
     ..state.live
   ])
+}
+
+// The cancellation grace is an acknowledgement window, not another provider
+// timeout. A request owner normally answers immediately after it has handed
+// cancellation to its active transport; the short bound keeps a broken owner
+// from delaying the strand after the original wait has already expired.
+// `Some(terminal)` belongs to a still-live driver. `None` means driver death
+// transferred the only remaining obligation to the reaper's owner monitor, so
+// this effect exits without fabricating or forwarding an outcome.
+const provider_cancel_grace_ms = 2000
+
+fn await_provider(
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  driver: Pid,
+  timeout_ms: Int,
+) -> Option(stream.StreamEvent) {
+  let deadline = process.new_subject()
+  let deadline_timer = process.send_after(deadline, timeout_ms, Nil)
+  let selector =
+    process.new_selector()
+    |> process.select_map(handle.events, ProviderStream)
+    |> process.select_map(stop, fn(_nil) { StopProvider })
+    |> process.select_map(deadline, fn(_nil) { ProviderDeadline })
+  await_provider_selected(selector, handle, stop, driver, deadline_timer)
+}
+
+// Retain one selector carrying one scheduled deadline across every delta. A
+// per-receive timeout would turn ordinary stream activity into a lease which a
+// broken endpoint could renew forever without ever settling the operation.
+fn await_provider_selected(
+  selector: process.Selector(ProviderWaitEvent),
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  driver: Pid,
+  deadline_timer: Timer,
+) -> Option(stream.StreamEvent) {
+  case process.selector_receive_forever(selector) {
+    ProviderStream(stream.Delta(..)) ->
+      await_provider_selected(selector, handle, stop, driver, deadline_timer)
+    ProviderStream(stream.Settled(..) as terminal)
+    | ProviderStream(stream.Failed(..) as terminal) -> {
+      retire_provider_deadline(deadline_timer)
+      Some(terminal)
+    }
+    StopProvider -> {
+      retire_provider_deadline(deadline_timer)
+      stream.cancel(handle)
+      case process.is_alive(driver) {
+        True -> await_provider_cancel(handle, stop, driver)
+        // The reaper sent this stop after observing the driver's Down. No
+        // caller remains to consume a terminal, and the reaper independently
+        // retains `handle.owner`, so exiting transfers teardown to that
+        // monitor instead of spending a grace interval on discarded output.
+        False -> None
+      }
+    }
+    ProviderDeadline -> {
+      retire_provider_deadline(deadline_timer)
+      stream.cancel(handle)
+      await_provider_cancel(handle, stop, driver)
+    }
+    ProviderCancelExpired -> {
+      retire_provider_deadline(deadline_timer)
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+    }
+  }
+}
+
+// A provider may settle long before its deadline. Cancelling that timer here
+// prevents completed effects from leaving timer resources and stale messages
+// behind while the effect process publishes and drains its result.
+fn retire_provider_deadline(timer: Timer) -> Nil {
+  let _cancelled = process.cancel_timer(timer)
+  Nil
+}
+
+fn await_provider_cancel(
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  driver: Pid,
+) -> Option(stream.StreamEvent) {
+  let deadline = process.new_subject()
+  let _timer = process.send_after(deadline, provider_cancel_grace_ms, Nil)
+  let selector =
+    process.new_selector()
+    |> process.select_map(handle.events, ProviderStream)
+    |> process.select_map(stop, fn(_nil) { StopProvider })
+    |> process.select_map(deadline, fn(_nil) { ProviderCancelExpired })
+  await_provider_cancel_selected(selector, driver)
+}
+
+// This loop retains the selector carrying the one scheduled deadline. Late
+// deltas are discarded without refreshing the grace period, so a noisy or
+// broken transport cannot keep an effect live forever after cancellation.
+fn await_provider_cancel_selected(
+  selector: process.Selector(ProviderWaitEvent),
+  driver: Pid,
+) -> Option(stream.StreamEvent) {
+  case process.selector_receive_forever(selector) {
+    ProviderStream(stream.Delta(..)) ->
+      await_provider_cancel_selected(selector, driver)
+    ProviderStream(stream.Settled(..) as terminal)
+    | ProviderStream(stream.Failed(..) as terminal) -> Some(terminal)
+    StopProvider ->
+      case process.is_alive(driver) {
+        True -> {
+          Some(stream.Failed(error: stream.CancellationUnconfirmed))
+        }
+        False -> None
+      }
+    ProviderCancelExpired ->
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+    ProviderDeadline ->
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+  }
+}
+
+// The reaper can safely retire this effect only after the provider owner's
+// normal Down proves its whole registered subtree drained. An abnormal Down
+// must remain abnormal at this boundary so the enclosing reaper cannot mistake
+// lost ownership for a completed effect.
+fn require_provider_drain(witness: stream.DrainWitness) -> Nil {
+  case stream.await_drain_forever(witness) {
+    stream.Drained -> Nil
+    stream.TimedOut | stream.ProofLost -> process.kill(process.self())
+  }
 }
 
 fn spawn_tool(
@@ -1438,7 +1969,7 @@ fn spawn_tool(
   configuration: StrandConfiguration,
   run: effects.ToolRun,
 ) -> State {
-  let parent = state.self
+  let parent = state.internal
   let runner = state.effects.tools.run
   let call = run.call
   let logger = step_logger(state, token)
@@ -1447,14 +1978,14 @@ fn spawn_tool(
     field.text(key: "tool", value: run.call.name),
     field.flag(key: "replay", value: run.replay == operation.ReplaySafe),
   ])
-  let pid =
+  let #(pid, stop) =
     spawn_effect(state.reaper, logger, fn() {
       let outcome = runner(run)
       wake(parent, ToolDone(token:, outcome:))
     })
   let monitor = process.monitor(pid)
   State(..state, live: [
-    Live(token:, pid:, monitor:, configuration:, call: Some(call)),
+    Live(token:, pid:, stop:, monitor:, configuration:, call: Some(call)),
     ..state.live
   ])
 }

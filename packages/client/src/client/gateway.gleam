@@ -84,6 +84,7 @@ import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
 }
+import client/provider_relay
 import client/wiring
 import core/clock
 import core/entry.{type Entry, type UsageRow}
@@ -114,6 +115,7 @@ import runtime/api
 import runtime/effects
 import runtime/escalation as runtime_escalation
 import runtime/hooks
+import runtime/internal/ffi_sup
 import runtime/writer
 import session/session
 import storage/storage
@@ -360,13 +362,15 @@ pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
 /// ```
 ///
 pub fn attached(gateway: Gateway) -> Int {
-  let subject = process.named_subject(gateway.name)
-  case process.subject_owner(subject) {
+  case process.named(gateway.name) {
     Error(Nil) -> 0
     Ok(owner) -> {
       let monitor = process.monitor(owner)
       let reply_to = process.new_subject()
-      process.send(subject, Attached(reply: reply_to))
+      // The monitored PID is the incarnation this question belongs to. Sending
+      // through the name would resolve it again and could crash or ask a
+      // replacement which the monitor does not describe.
+      ffi_sup.send_to_pid(owner, #(gateway.name, Attached(reply: reply_to)))
       let answer =
         process.new_selector()
         |> process.select(reply_to)
@@ -387,7 +391,7 @@ pub fn attached(gateway: Gateway) -> Int {
 /// ```
 ///
 pub fn detach(gateway: Gateway, connection: Int) -> Nil {
-  process.send(process.named_subject(gateway.name), Detach(connection))
+  send_if_alive(gateway.name, Detach(connection))
 }
 
 /// Feeds one inbound text frame from a connection into the hub.
@@ -399,10 +403,7 @@ pub fn detach(gateway: Gateway, connection: Int) -> Nil {
 /// ```
 ///
 pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
-  process.send(
-    process.named_subject(gateway.name),
-    FromClient(connection, text),
-  )
+  send_if_alive(gateway.name, FromClient(connection, text))
 }
 
 /// Starts a forwarder that turns the runtime writer's post-commit
@@ -455,9 +456,8 @@ pub fn supervised_commit_forwarder(
 /// Wraps a provider surface so every streamed delta is teed to the hub
 /// as an ephemeral `stream_delta` broadcast while the runtime's effect
 /// process consumes the stream unchanged (same events, same terminal,
-/// same timeout discipline). The relay owns the inner stream; if it
-/// dies, the effect process times out exactly as it would for a dead
-/// provider — in-band, never a crash.
+/// same timeout discipline). The shared relay forwards explicit
+/// cancellation and consumer death to the inner stream.
 ///
 /// ## Examples
 ///
@@ -470,63 +470,44 @@ pub fn tap_provider(
   surface: effects.ProviderSurface,
   to name: Name(Message),
 ) -> effects.ProviderSurface {
-  effects.ProviderSurface(timeout_ms: surface.timeout_ms, request: fn(spec) {
-    let operation = case spec {
-      effects.GenerationRequest(operation:, ..) -> operation
-      effects.PollRequest(operation:, ..) -> operation
-      effects.SummaryRequest(operation:, ..) -> operation
-    }
-    // The outer subject is owned by the calling effect process, so
-    // `stream.next` on the returned handle behaves identically.
-    let outer = process.new_subject()
-    let _relay =
-      process.spawn_unlinked(fn() {
-        let inner = surface.request(spec)
-        relay_stream(inner, outer, operation, name, surface.timeout_ms)
-      })
-    stream.StreamHandle(events: outer)
-  })
+  effects.PreparedProviderSurface(
+    timeout_ms: effects.provider_timeout_ms(surface),
+    request: fn(spec) {
+      provider_relay.wrap(surface, spec, observe_provider(name, spec))
+    },
+    prepare: fn(spec) {
+      provider_relay.prepare(surface, spec, observe_provider(name, spec))
+    },
+  )
 }
 
-// Forwards stream events to the effect process, teeing deltas to the
-// hub, until the terminal event or a stalled stream (the effect process
-// applies its own timeout on the outer subject either way).
-fn relay_stream(
-  inner: stream.StreamHandle,
-  outer: Subject(stream.StreamEvent),
-  operation: OpId,
+// Constructing the callback from the durable operation id in one place keeps
+// the immediate facade and the prepared production path observationally
+// identical.
+fn observe_provider(
   name: Name(Message),
-  timeout_ms: Int,
-) -> Nil {
-  case stream.next(inner, within: timeout_ms + 100) {
-    Error(Nil) -> Nil
-    Ok(event) -> {
-      case event {
-        stream.Delta(delta:) ->
-          send_if_alive(name, ProviderDelta(operation:, delta:))
-        stream.Settled(..) | stream.Failed(..) -> Nil
-      }
-      process.send(outer, event)
-      case event {
-        stream.Delta(..) ->
-          relay_stream(inner, outer, operation, name, timeout_ms)
-        stream.Settled(..) | stream.Failed(..) -> Nil
-      }
+  spec: effects.RequestSpec,
+) -> fn(stream.StreamEvent) -> Nil {
+  let operation = case spec {
+    effects.GenerationRequest(operation:, ..) -> operation
+    effects.PollRequest(operation:, ..) -> operation
+    effects.SummaryRequest(operation:, ..) -> operation
+  }
+  fn(event) {
+    case event {
+      stream.Delta(delta:) ->
+        send_if_alive(name, ProviderDelta(operation:, delta:))
+      stream.Settled(..) | stream.Failed(..) -> Nil
     }
   }
 }
 
-// Sends a hub message only while a live process is registered under the
-// name: sending into an unregistered name would crash the sender, and
-// every message routed this way is loss-tolerant.
+// Resolve the hub name once, then send the tagged envelope straight to that
+// PID. A second name lookup would leave an unregistration race which turns a
+// lost stream hint into an observer crash and provider cancellation.
 fn send_if_alive(name: Name(Message), message: Message) -> Nil {
-  let subject = process.named_subject(name)
-  case process.subject_owner(subject) {
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        True -> process.send(subject, message)
-        False -> Nil
-      }
+  case process.named(name) {
+    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, message))
     Error(Nil) -> Nil
   }
 }

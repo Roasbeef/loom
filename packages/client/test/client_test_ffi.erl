@@ -135,6 +135,9 @@ collect(Port, Acc) ->
         {Port, {data, Data}} -> collect(Port, <<Acc/binary, Data/binary>>);
         {Port, {exit_status, Status}} -> {ok, {Status, Acc}}
     after 300000 ->
-        catch erlang:port_close(Port),
+        try erlang:port_close(Port)
+        catch
+            _:_ -> ok
+        end,
         {error, <<"the program did not exit within five minutes">>}
     end.

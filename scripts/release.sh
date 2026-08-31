@@ -44,9 +44,9 @@ SMOKE=0
 if [ "$SMOKE" = 0 ]; then
   missing=""
   need() { command -v "$1" >/dev/null 2>&1 || missing="$missing  $1 — $2\n"; }
-  need gleam  "exports the client package as an erlang shipment (>= 1.11)"
+  need gleam  "exports the client package as an erlang shipment (>= 1.18)"
   need rebar3 "assembles the OTP release and copies ERTS into it"
-  need erl    "the runtime system that gets copied in (OTP >= 27)"
+  need erl    "the runtime system that gets copied in (OTP >= 29)"
   need go     "builds the loom-exec sandbox helper (>= 1.24)"
   if [ "$STRIP_ERTS" = 1 ]; then
     need strip "strips the copied ERTS binaries (DIST_STRIP_ERTS=0 to skip)"
@@ -179,14 +179,35 @@ if [ "$SMOKE" = 1 ]; then
   # the witness that SIGTERM took the graceful route rather than killing a
   # server mid-lease.
   kill -TERM "$SERVER_PID" 2>/dev/null || true
+  CLOSED=0
+  STOPPED=0
   for _ in $(seq 1 50); do
-    if grep -q '"event":"server.stopped"' "$LOG"; then break; fi
+    if grep -q '"event":"server.stopped"' "$LOG"; then CLOSED=1; fi
+    SERVER_STATE="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
+    case "$SERVER_STATE" in
+      ""|Z*) STOPPED=1 ;;
+    esac
+    [ "$CLOSED" = 1 ] && [ "$STOPPED" = 1 ] && break
     sleep 0.2
   done
-  wait "$SERVER_PID" 2>/dev/null || true
+  if [ "$STOPPED" != 1 ]; then
+    # A broken SIGTERM path must fail this smoke promptly rather than leave the
+    # caller blocked until its outer CI timeout.
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    trap - EXIT
+    echo "release.sh: the release did not stop within 10 seconds of SIGTERM:" >&2
+    tail -40 "$LOG" >&2
+    exit 1
+  fi
+  SERVER_STATUS=0
+  wait "$SERVER_PID" 2>/dev/null || SERVER_STATUS=$?
   trap - EXIT
-  grep -q '"event":"server.stopped"' "$LOG" || {
-    echo "release.sh: the release did not close cleanly on SIGTERM:" >&2; tail -40 "$LOG" >&2; exit 1; }
+  if [ "$CLOSED" != 1 ] || [ "$SERVER_STATUS" != 0 ]; then
+    echo "release.sh: the release did not close cleanly (status $SERVER_STATUS):" >&2
+    tail -40 "$LOG" >&2
+    exit 1
+  fi
 
   # Registration says the release found a compiler, an emulator and a
   # seed it verified. It does not say they *work* together, and the two
@@ -409,7 +430,7 @@ fi
 SHA256=sha256sum
 command -v sha256sum >/dev/null 2>&1 || SHA256="shasum -a 256"
 ( cd "$REL" && { find . -type f -perm -u+x; \
-                 [ -d share ] && find ./share -type f; } \
+                 if [ -d share ]; then find ./share -type f; fi; } \
     | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0 $SHA256 > SHA256SUMS )
 
 echo

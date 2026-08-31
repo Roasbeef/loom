@@ -267,6 +267,14 @@ pub fn intervention_commit_reply_loss_corpus_test() {
   repeat_seed(33, times: 12)
 }
 
+pub fn simultaneous_abort_and_steer_corpus_test() {
+  // Seed 584 puts an abort and a steer at the same live trigger. Linux ran the
+  // abort cast before the following admission on every corroboration, while
+  // macOS admitted the steer first. The script must have one fault-free
+  // baseline rather than asking the scheduler which transcript is canonical.
+  repeat_seed(584, times: 12)
+}
+
 fn repeat_seed(seed: Int, times times: Int) -> Nil {
   case times <= 0 {
     True -> Nil

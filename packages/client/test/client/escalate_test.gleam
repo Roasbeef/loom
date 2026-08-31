@@ -56,6 +56,7 @@ import runtime/effects
 import runtime/escalation
 import session/session
 import simplifile
+import support/provider as provider_test
 import tools/codemode as codemode_tool
 
 // --- the harness -----------------------------------------------------------
@@ -96,7 +97,7 @@ fn counting_clock(from: Int, by: Int) -> #(Clock, Subject(CounterMessage)) {
 }
 
 fn dead_transport() -> http.Transport {
-  http.Transport(send_streaming: fn(_request, _subject) { Nil })
+  provider_test.silent()
 }
 
 fn routed_gateway() -> gateway.Gateway {
@@ -304,7 +305,7 @@ fn summary_sink() -> summaries.Summaries {
 
 // A provider that never answers; nothing in this suite generates.
 fn stream_handle_that_never_settles() -> stream.StreamHandle {
-  stream.StreamHandle(events: process.new_subject())
+  stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
 }
 
 // --- the call under test ---------------------------------------------------

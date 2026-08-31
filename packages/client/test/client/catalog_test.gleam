@@ -10,10 +10,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import mcp/name
 import provider/gateway as provider_gateway
-import provider/http
 import provider/model
 import provider/secret
 import simplifile
+import support/provider as provider_test
 
 // The example the docs ship is itself a fixture: it must always parse,
 // and its shape is what the rest of these tests rely on.
@@ -81,7 +81,7 @@ pub fn gateway_resolves_routed_roles_test() {
   let gateway =
     catalog.gateway(
       example(),
-      transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+      transport: provider_test.silent(),
       secrets: secret.from_list([]),
       clock: clock.fixed(at: 0),
     )

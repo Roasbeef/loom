@@ -379,7 +379,7 @@ pub fn project_toml(dependencies: List(Dependency)) -> String {
   <> package_name
   <> "\"\n"
   <> "version = \"0.0.0\"\n"
-  <> "gleam = \">= 1.11.0\"\n\n"
+  <> "gleam = \">= 1.18.0\"\n\n"
   <> "[dependencies]\n"
   <> string.join(lines, "\n")
   <> "\n"

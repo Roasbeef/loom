@@ -20,21 +20,25 @@ variable are the package's complete inventory of impurity.
 ## One request, arriving in parts
 
 `gateway.request` returns immediately. The work happens on a pump process
-it spawns, and the caller's only interface is the subject inside the
-returned `StreamHandle`.
+it spawns, and the returned `StreamHandle` carries an event subject, an
+idempotent cancellation capability, and the PID whose exit proves that the
+whole request subtree has drained.
 
 ```mermaid
 sequenceDiagram
   participant C as caller (a strand)
   participant G as gateway pump process
   participant R as stream.run
-  participant T as transport process
+  participant T as transport owner
   participant M as ResponseMachine
 
   C->>G: gateway.request(gw, ProviderRequest)
-  Note over C,G: returns a StreamHandle at once
+  Note over C,G: returns StreamHandle(events, cancel, owner) at once
   G->>R: stream.run(transport, http_request, machine, deliver, within:)
-  R->>T: spawn — send_streaming(request, http_events)
+  R->>T: prepare_streaming(request, private_http_events)
+  T-->>R: PreparedRequest(owner, cancel, begin)
+  Note over R,T: publish and monitor owner before begin
+  R->>T: begin()
   T-->>R: http.ResponseStatus(status, headers)
   R->>M: on_status
   T-->>R: http.ResponseChunk(bytes)
@@ -45,6 +49,14 @@ sequenceDiagram
   R->>M: on_chunk
   M-->>R: [Settled(message, usage)]
   R-->>C: Settled — exactly one terminal, nothing after it
+  opt caller cancellation or caller death
+    C-->>G: cancel or DOWN
+    G-->>R: Cancel
+    R-->>T: cancel exact native request
+    R-->>G: owner terminal or CancellationUnconfirmed after grace
+    T-->>R: DOWN when native work has actually stopped
+    Note over C,T: StreamHandle.owner remains alive until this Down
+  end
 ```
 
 The contract the rest of the harness leans on is narrow enough to depend
@@ -55,6 +67,27 @@ terminal, so an adapter bug cannot double-settle. Deltas are ephemeral
 display data and prove nothing about settlement — the settled message is
 always the authority, and `stream.await_terminal` is the convenience that
 collects both.
+
+Cancellation uses the same single owner as settlement and fallback. The pump
+monitors its direct consumer; `stream.run` monitors the active transport
+owner; every fallback attempt has a fresh private HTTP subject. When cancel,
+consumer death, or timeout wins, the transport cancellation capability runs
+before the terminal-acknowledgement grace. Expiry reports
+`CancellationUnconfirmed`; it does not kill the owner or claim native work is
+gone. The public custodian remains alive until every adopted owner exits.
+Production retains the exact OTP request id and calls
+`httpc_handler:cancel/2` on its dedicated handler, then waits for that handler's
+`Down`, so teardown stops external work instead of only dropping its late
+answer. The public `httpc:cancel_request/1` route is only a conservative
+fallback while handler identity is still being recovered. A deadline-bounded
+global handler scan survives manager or handler-supervisor replacement and
+cannot pin the native owner's cancellation mailbox on one connecting handler.
+Both cancellation terminals stop the fallback walk.
+
+The attempt timeout is one absolute deadline from transport start through
+settlement, not an idle timeout refreshed by each chunk. A provider therefore
+cannot keep an attempt, its monitors, and its billing path alive forever by
+emitting deltas without a terminal event.
 
 `ResponseMachine` is the seam each adapter fills: `init`, `on_status`,
 `on_chunk`, `on_end`, `on_failure`, all pure. A body that ends without
@@ -79,16 +112,25 @@ stateDiagram-v2
   Fields --> Dispatched: a blank line
   Dispatched --> Empty: SseMessage(event, data) emitted
   Buffering --> Overflowed: carry would exceed max_line_bytes (4 MiB)
+  Fields --> Overflowed: event exceeds 4 MiB or 4096 data fields
   Overflowed --> Empty: SseMalformed emitted, buffered line discarded, parser stays usable
 ```
 
 Two properties are worth stating because they are defences, not
 optimizations. The carry buffer never exceeds `max_line_bytes`, so a
 hostile or broken proxy streaming a line that never terminates fails the
-stream in band as a framing defect rather than exhausting memory. And
-every byte is scanned exactly once — `feed` resumes past the prefix an
+stream in band as a framing defect rather than exhausting memory. One event
+is independently bounded to 4 MiB and 4096 `data:` fields, because empty fields
+consume list cells without consuming payload bytes. The whole successful HTTP
+response is capped at 16 MiB after transport delivery, so a peer cannot evade
+the per-event limits with an endless sequence of small valid events. Complete
+events accumulate in reverse and are restored once, keeping the fold linear.
+Every byte is scanned exactly once — `feed` resumes past the prefix an
 earlier feed already ruled out as terminator-free — so the same proxy
-cannot drive quadratic re-scanning either.
+cannot drive quadratic re-scanning either. OTP `httpc` buffers non-200/206
+bodies before delivery, so this typed cap does not claim to bound native error-
+body memory; replacing or isolating that transport is separate hardening work.
+Issue #147 owns that transport boundary.
 
 Decoding posture here is deliberately asymmetric to the rest of Loom. A
 `data:` payload must parse as JSON, and malformed data fails the stream
@@ -171,15 +213,18 @@ flowchart LR
   ST["SecretStore = fn(String) -> Result(String, Nil)<br/>injected at gateway construction"] --> LK
   LK -->|"Error(Nil)"| NS["Failed(NoSecret(provider, secret_name))<br/>names only — never a value"]
   LK -->|"Ok(key)"| HDR["copied into one outbound request header"]
-  HDR --> X["and nowhere else:<br/>not in the Gateway value, not in an accumulator,<br/>not in a StreamEvent, an error, or anything persisted"]
+  HDR --> X["and nowhere else locally:<br/>not in the Gateway value or an accumulator,<br/>and scrubbed from terminal errors"]
 ```
 
 **Secrets exist only in provider request memory.** The lookup has exactly
 one call site — gateway dispatch — and the value goes straight into the
 header of the request being built. `ProviderError` carries secret names
-and status codes and never headers, bodies, or values, so nothing the
-gateway returns or persists can embed a key. The check is a grep-based
-leak test over a full session fixture.
+and status codes and never headers or request values; terminal errors are
+also scrubbed against the exact key. Successful response content remains
+provider-controlled and can span streaming fragments, so this is not a
+general secret-redaction boundary. The local-flow check is a grep-based
+leak test over a full session fixture. Issue #148 owns stateful cross-fragment
+redaction.
 
 Be honest about what ships: **`secret.env()` is the only real backend
 today**, reading process environment variables. `from_list` is for tests
@@ -231,13 +276,13 @@ Nothing invalidates anything.
 
 | Path | What it holds |
 |---|---|
-| `src/provider/gateway.gleam` | The registry and builder, `resolve`, `request`, the pump process, and the fallback walk. |
-| `src/provider/stream.gleam` | `StreamEvent` and its consumption contract, the pure parser, `ResponseMachine`, and `run`. |
+| `src/provider/gateway.gleam` | The registry and builder, `resolve`, `request`, the cancellable pump owner, and the fallback walk. |
+| `src/provider/stream.gleam` | `StreamHandle`, `StreamEvent`, cancellation arbitration, the pure parser, `ResponseMachine`, and `run`. |
 | `src/provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget`, `ProviderRequest`, `ToolSpec` — the durable identity and the static model facts an adapter needs. |
 | `src/provider/adapter/` | The two wire adapters: request construction, accumulation, stop-reason mapping, overflow, cache breakpoints. |
 | `src/provider/retry.gleam` | `classify`, `backoff_ms`, and the overflow message patterns. |
 | `src/provider/secret.gleam` | The lookup seam and its backends. |
-| `src/provider/http.gleam` | The injected transport type and `httpc_transport()`. |
+| `src/provider/http.gleam` | The injected `RunningRequest` transport contract and `httpc_transport()`. |
 
 [`CLAUDE.md`](CLAUDE.md) is the reference doc for changing this code. For
 the plane this package sits in — the one door, the wire, the jail — read

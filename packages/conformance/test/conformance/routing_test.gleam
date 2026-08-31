@@ -182,7 +182,7 @@ fn transport(
 ) -> http.Transport {
   let answer =
     script.AnswerTurn(text: answer_text, input_tokens: 100, output_tokens: 9)
-  http.Transport(send_streaming: fn(request: http.HttpRequest, subject) {
+  script.owned_transport(fn(request: http.HttpRequest, subject) {
     let head = string.contains(request.url, "primary.test")
     process.send(counter, Bump(host: host_of(head)))
     let events = case head, tail_answers {
@@ -208,15 +208,17 @@ fn host_of(head: Bool) -> String {
 fn settled_events(turn: script.Turn) -> List(http.HttpEvent) {
   let captured = process.new_subject()
   let one_shot = script.transport([turn])
-  one_shot.send_streaming(
-    http.HttpRequest(
-      method: "POST",
-      url: "https://captured.test",
-      headers: [],
-      body: "",
-    ),
-    captured,
-  )
+  let assert Ok(http.PreparedRequest(begin:, ..)) =
+    one_shot.prepare_streaming(
+      http.HttpRequest(
+        method: "POST",
+        url: "https://captured.test",
+        headers: [],
+        body: "",
+      ),
+      captured,
+    )
+  begin()
   collect(captured, [])
 }
 
@@ -560,7 +562,7 @@ pub fn a_mid_wait_switch_leaves_the_steps_admission_alone_test() {
 fn recovering_transport(counter: process.Subject(Tally)) -> http.Transport {
   let answer =
     script.AnswerTurn(text: answer_text, input_tokens: 100, output_tokens: 9)
-  http.Transport(send_streaming: fn(request: http.HttpRequest, subject) {
+  script.owned_transport(fn(request: http.HttpRequest, subject) {
     let head = string.contains(request.url, "primary.test")
     let host = host_of(head)
     process.send(counter, Bump(host:))

@@ -56,6 +56,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
+import provider/internal/diagnostic
 import provider/internal/wire
 import provider/model.{
   type ProviderRequest, type ResolvedModel, type ToolSpec, ThinkingHigh,
@@ -601,18 +602,33 @@ fn on_chunk(
     200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
       let acc = Accumulator(..acc, sse:)
-      list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
-        let #(acc, events) = folded
-        let #(acc, new_events) = handle_sse(acc, sse_event)
-        #(acc, list.append(events, new_events))
-      })
+      let #(acc, reversed_events) =
+        list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
+          let #(acc, reversed_events) = folded
+          let #(acc, new_events) = handle_sse(acc, sse_event)
+          #(
+            acc,
+            list.fold(new_events, reversed_events, fn(events, event) {
+              [event, ..events]
+            }),
+          )
+        })
+      #(acc, list.reverse(reversed_events))
     }
     // Error statuses stream their body too; collect it for the error
     // report at end-of-body.
-    _ -> #(
-      Accumulator(..acc, error_body: bit_array.append(acc.error_body, chunk)),
-      [],
-    )
+    _ ->
+      case diagnostic.append_error_body(acc.error_body, chunk) {
+        Ok(error_body) -> #(Accumulator(..acc, error_body:), [])
+        Error(Nil) ->
+          fail(
+            acc,
+            MalformedStream(corruption_report(
+              "an error response no larger than 65536 bytes",
+              "provider error response exceeded its byte budget",
+            )),
+          )
+      }
   }
 }
 

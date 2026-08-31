@@ -1653,10 +1653,10 @@ fn assemble(
 }
 
 /// Takes a booted server apart, front to back: the listener first so no
-/// new client arrives mid-teardown, then the service supervisor (hub,
-/// Agency holder, commit forwarder), then the runtime — whose close
+/// new client arrives mid-teardown, then the runtime — whose close
 /// stops the strand drivers before the writer they commit through and
-/// releases the session lease — and finally the effect plane, broker
+/// releases the session lease while its drain witness is still observable —
+/// then the service supervisor and finally the effect plane, broker
 /// before pool because the broker is what holds helpers out on loan.
 ///
 /// Idempotent and callable from any process, which both paths need: the
@@ -1674,8 +1674,8 @@ fn assemble(
 ///
 pub fn shutdown(booted: Booted) -> Nil {
   server.stop(booted.served)
-  stop_services(booted.services)
   let _closed = api.close(booted.runtime)
+  stop_services(booted.services)
   broker.stop(booted.broker)
   exec.stop_pool(booted.pool)
   summaries.stop(booted.summaries)

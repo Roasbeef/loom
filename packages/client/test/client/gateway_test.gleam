@@ -8,6 +8,7 @@ import client/catalog
 import client/gateway
 import client/grants
 import client/protocol
+import client/provider_relay
 import client/serve
 import core/clock
 import core/ids
@@ -140,7 +141,7 @@ fn start_harness_full(
           events,
           stream.Settled(message: settled, usage: effects.zero_usage()),
         )
-        stream.StreamHandle(events:)
+        stream.immediate(events:, cancel: fn() { Nil })
       }),
       tools: effects.ToolSurface(
         clear: fn(_query) { effects.ClearanceRefused(reason: "no tools") },
@@ -1196,4 +1197,355 @@ pub fn approve_of_a_decided_record_is_not_pending_test() {
     protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
   )
   expect_error(harness, 36, "not_pending")
+}
+
+// --- provider tap cancellation --------------------------------------------
+
+fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
+    let events = process.new_subject()
+    stream.immediate(events:, cancel: fn() {
+      process.send(cancelled, Nil)
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+    })
+  })
+}
+
+fn cancellation_spec() -> effects.RequestSpec {
+  effects.GenerationRequest(
+    operation: op_id(919),
+    step_id: "turn-1",
+    attempt: 1,
+    configuration: machine_strand.StrandConfiguration(
+      model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+      thinking_level: machine_strand.ThinkingOff,
+      active_tool_names: [],
+    ),
+    context: [],
+    stream_options: json.Object([]),
+  )
+}
+
+fn prepared_probe(started: Subject(Nil)) -> stream.PreparedStream {
+  let begin = process.new_subject()
+  let cancel = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let should_start =
+        process.new_selector()
+        |> process.select_map(begin, fn(_nil) { True })
+        |> process.select_map(cancel, fn(_nil) { False })
+        |> process.selector_receive_forever()
+      case should_start {
+        False -> Nil
+        True -> {
+          process.send(started, Nil)
+          let _cancel = process.receive_forever(cancel)
+          Nil
+        }
+      }
+    })
+  stream.PreparedStream(
+    handle: stream.owned(events: process.new_subject(), owner:, cancel: fn() {
+      process.send(cancel, Nil)
+    }),
+    begin: fn() { process.send(begin, Nil) },
+  )
+}
+
+fn prepared_provider(started: Subject(Nil)) -> effects.ProviderSurface {
+  effects.PreparedProviderSurface(
+    timeout_ms: 1000,
+    request: fn(_spec) { prepared_probe(started) |> stream.start_prepared },
+    prepare: fn(_spec) { prepared_probe(started) },
+  )
+}
+
+pub fn provider_tap_forwards_explicit_cancellation_once_test() {
+  let cancelled = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      cancellable_provider(cancelled),
+      to: process.new_name(prefix: "loom_cancel_tap_test"),
+    )
+  let handle = tapped.request(cancellation_spec())
+
+  stream.cancel(handle)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+  assert stream.next(handle, within: 10) == Error(Nil)
+}
+
+pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
+  let started = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      prepared_provider(started),
+      to: process.new_name(prefix: "loom_parked_tap_test"),
+    )
+  let stream.PreparedStream(handle:, begin:) =
+    effects.prepare_provider(tapped, cancellation_spec())
+  let drain_witness = stream.watch_drain(handle)
+
+  stream.cancel(handle)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+  begin()
+
+  assert process.receive(started, within: 50) == Error(Nil)
+}
+
+pub fn provider_tap_cancels_when_its_consumer_dies_test() {
+  let cancelled = process.new_subject()
+  let ready = process.new_subject()
+  let tapped =
+    gateway.tap_provider(
+      cancellable_provider(cancelled),
+      to: process.new_name(prefix: "loom_cancel_tap_death_test"),
+    )
+  let consumer =
+    process.spawn_unlinked(fn() {
+      let handle = tapped.request(cancellation_spec())
+      process.send(ready, Nil)
+      let _ = stream.next(handle, within: 5000)
+      Nil
+    })
+  let assert Ok(Nil) = process.receive(ready, within: 1000)
+
+  process.kill(consumer)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+}
+
+pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
+  let cancelled = process.new_subject()
+  let consumers = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      process.send(consumers, process.self())
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
+  let assert Ok(direct_consumer) = process.receive(consumers, within: 1000)
+  let direct_monitor = process.monitor(direct_consumer)
+
+  stream.cancel(handle)
+
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(direct_monitor, fn(_down) { True })
+    |> process.selector_receive(1000)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
+  let callers = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      process.send(callers, process.self())
+      let events = process.new_subject()
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      stream.immediate(events:, cancel: fn() { Nil })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
+  let assert stream.StreamHandle(owner: Some(owner), ..) = handle
+    as "the relay must publish a custodian-backed handle"
+  let assert Ok(inner_consumer) = process.receive(callers, within: 1000)
+
+  assert inner_consumer != owner
+    as "fallible stream consumption must not be the public drain witness"
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
+  let entered = process.new_subject()
+  let cancelled = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let start_gate = process.new_subject()
+      process.send(entered, start_gate)
+      let _start = process.receive_forever(start_gate)
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() {
+        process.send(cancelled, Nil)
+        process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
+  let assert stream.StreamHandle(owner: Some(owner), ..) = handle
+    as "the relay must publish its guard before inner startup"
+  let assert Ok(start_gate) = process.receive(entered, within: 1000)
+
+  stream.cancel(handle)
+
+  assert process.is_alive(owner)
+  assert process.receive(cancelled, within: 20) == Error(Nil)
+  process.send(start_gate, Nil)
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert stream.next(handle, within: 1000)
+    == Ok(stream.Failed(error: stream.ProviderCancelled))
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+pub fn provider_relay_startup_cancel_has_one_delta_proof_deadline_test() {
+  let entered = process.new_subject()
+  let flooders = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let start_gate = process.new_subject()
+      process.send(entered, start_gate)
+      let _start = process.receive_forever(start_gate)
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() {
+        let flooder =
+          process.spawn_unlinked(fn() { flood_relay_deltas(events, 700) })
+        process.send(flooders, flooder)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert Ok(start_gate) = process.receive(entered, within: 1000)
+
+  stream.cancel(handle)
+  process.send(start_gate, Nil)
+
+  // The flood runs longer than the 1.5-second cancellation grace. The relay
+  // must discard each delta without treating activity as renewed proof time.
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+    as "startup cancellation must keep one fixed proof deadline"
+  let assert Ok(flooder) = process.receive(flooders, within: 1000)
+  process.kill(flooder)
+}
+
+fn flood_relay_deltas(
+  events: Subject(stream.StreamEvent),
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "late")),
+      )
+      process.sleep(5)
+      flood_relay_deltas(events, remaining - 1)
+    }
+  }
+}
+
+pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
+  let cancelled = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+      )
+      stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
+      panic as "observer crash"
+    })
+  let drain_witness = stream.watch_drain(handle)
+
+  let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
+    stream.next(handle, within: 1000)
+  assert reason == "provider relay worker stopped before a terminal response"
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
+  let cancelled = process.new_subject()
+  let owners = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(owners, #(owner, release))
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+      )
+      stream.owned(events:, owner:, cancel: fn() {
+        process.send(cancelled, Nil)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
+      panic as "observer crash"
+    })
+  let drain_witness = stream.watch_drain(handle)
+  let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
+
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert process.is_alive(owner)
+  assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
+  process.send(release, Nil)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
+  let cancelled = process.new_subject()
+  let started = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let guard = process.self()
+      let events = process.new_subject()
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let _release = process.receive_forever(release)
+          Nil
+        })
+      let release = process.receive_forever(ready)
+      process.send(started, #(guard, owner, release))
+      stream.owned(events:, owner:, cancel: fn() {
+        process.send(cancelled, Nil)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let drain_witness = stream.watch_drain(handle)
+  let assert Ok(#(guard, inner_owner, release)) =
+    process.receive(started, within: 1000)
+  let assert stream.StreamHandle(owner: Some(witness), ..) = handle
+
+  process.kill(guard)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+  assert process.is_alive(inner_owner)
+  assert process.is_alive(witness)
+  assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
+  process.send(release, Nil)
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
 }

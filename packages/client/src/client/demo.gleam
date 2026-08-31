@@ -1057,7 +1057,7 @@ fn scripted_provider() -> effects.ProviderSurface {
       effects.GenerationRequest(context:, ..) ->
         generation_response(events, context)
     }
-    stream.StreamHandle(events:)
+    stream.immediate(events:, cancel: fn() { Nil })
   })
 }
 
@@ -1343,7 +1343,12 @@ fn demo_gateway() -> provider_gateway.Gateway {
       max_output_tokens: 1_000_000,
     )
   provider_gateway.new(
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: http.Transport(prepare_streaming: fn(_request, _subject) {
+      // The demo supplies generation through runtime hooks, so reaching this
+      // seam is a wiring error. Failing directly avoids inventing a parked
+      // process whose lifecycle the demo never intends to exercise.
+      Error("the demo provider transport is unreachable")
+    }),
     secrets: secret.from_list([]),
     clock: clock.fixed(at: 0),
   )

@@ -273,6 +273,7 @@ pub fn open(
         stream_options: options.stream_options,
         retry_policy: options.retry_policy,
         poll_interval_ms: options.poll_interval_ms,
+        claim_reaper: fn(_strand, _reaper) { [] },
         logger: options.logger,
       ),
       tolerance: options.tolerance,
@@ -636,7 +637,7 @@ fn enqueue(
 /// ```
 ///
 pub fn nudge(runtime: Runtime) -> Nil {
-  case live_strand_subject(runtime) {
+  case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.nudge(subject)
     // No driver registered (mid-restart): loss is harmless — the
     // checkpoint poll finds the durable work.
@@ -644,19 +645,13 @@ pub fn nudge(runtime: Runtime) -> Nil {
   }
 }
 
-// The addressed strand's driver subject, only while a live process is
-// registered under its name: sending into an unregistered name would
-// crash the sender, and every message the api rings is loss-tolerant.
-fn live_strand_subject(
+// The stable subject is useful even while its process is restarting. The
+// strand wrapper resolves it once at delivery and drops a missing name, so
+// this lookup does not make a racy liveness promise of its own.
+fn addressed_strand_subject(
   runtime: Runtime,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
-  use subject <- result.try(supervisor.strand_subject(
-    runtime.tree,
-    runtime.strand,
-  ))
-  use pid <- result.try(process.subject_owner(subject))
-  use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
-  Ok(subject)
+  supervisor.strand_subject(runtime.tree, runtime.strand)
 }
 
 /// Requests durable cancellation of the addressed strand's open
@@ -670,7 +665,7 @@ fn live_strand_subject(
 /// ```
 ///
 pub fn abort(runtime: Runtime) -> Nil {
-  case live_strand_subject(runtime) {
+  case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.request_abort(subject)
     // No live driver (mid-restart): nothing can serialize the marker
     // right now; as with a pre-commit crash, the caller re-requests
@@ -688,10 +683,13 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// is that no strand is still running when its writer goes, and that a
 /// close asked for logs no crash report.
 ///
-/// The lease release does not depend on the shutdown succeeding: a tree
-/// that will not stop inside `close_grace_ms` is killed and the handle
-/// is closed regardless, because a session locked out for a whole lease
-/// TTL is the worse failure. Callable from any process, and idempotent.
+/// Lease release depends on the shutdown barrier. Provider reapers may
+/// deliberately outlive strand drivers while a native request drains, so
+/// `close` monitors the live drain ledger before stopping the root and accepts
+/// only its clean termination after every reaper is gone. A missing or
+/// abnormally dead ledger returns `BackendFault` and deliberately leaves the
+/// lease held. Reopening beside an unconfirmed old request would be a worse
+/// failure than delayed recovery through the lease TTL.
 ///
 /// ## Examples
 ///
@@ -700,14 +698,20 @@ pub fn abort(runtime: Runtime) -> Nil {
 /// ```
 ///
 pub fn close(runtime: Runtime) -> Result(Nil, storage.StorageError) {
-  supervisor.shutdown(runtime.tree, grace_ms: close_grace_ms)
+  use _nil <- result.try(
+    supervisor.shutdown(runtime.tree, grace_ms: close_grace_ms)
+    |> result.map_error(fn(_nil) {
+      storage.BackendFault(
+        reason: "runtime drain ledger stopped without a clean acknowledgement",
+      )
+    }),
+  )
   session.close(runtime.session)
 }
 
-/// How long `close` lets the session tree stop before killing it. Five
-/// seconds is the OTP worker default, and every child in the tree is a
-/// plain actor that dies on the shutdown signal at once — the grace is
-/// headroom for a busy scheduler, not an expected wait.
+/// How long `close` lets the root acknowledge its `sys:terminate` request.
+/// Provider drain after that handshake is deliberately unbounded: the writer
+/// lease is not released until the teardown witness is conclusive.
 pub const close_grace_ms = 5000
 
 /// Polls (reading the session store directly, so it survives tree

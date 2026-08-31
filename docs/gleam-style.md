@@ -337,6 +337,21 @@ it under a `# Panics` heading. Module docs may be long-form tutorials —
 `gleam/otp/actor` and `gleam/dynamic/decode` both carry ~150+ line worked
 examples, and the otp repo compiles its module-doc example as a real test.
 
+Lead documentation with the contract a caller cannot recover from the type
+signature alone. For a process or effect boundary, answer three questions in
+this order:
+
+1. **Why does this boundary exist?** Name the race, failure domain, security
+   property, or ownership rule which requires it.
+2. **How does it preserve that property?** Describe the message order, state
+   transition, supervision relationship, or durable write that carries the
+   invariant.
+3. **What may the caller rely on?** State the acknowledgement, terminal state,
+   error meaning, and any work which can remain after return.
+
+The name and signature already say what values move. A comment which stops at
+"starts a worker" or "returns a result" has not documented the API.
+
 ### Plain comments: the literate register
 
 Comment liberally, in a literate register. The reader of a Loom module
@@ -347,6 +362,27 @@ prose stating the mechanism and why it is shaped that way; `case` arms in
 intricate logic carry the reasoning for the arm, not a restatement of it.
 The stdlib's merge-sort commentary and this repo's broker and hashline
 modules are the register to imitate.
+
+In particular, explain **why this operation occurs here** and **how its order
+preserves the invariant**. Do not translate syntax into prose:
+
+```gleam
+// Bad: restates the next line.
+// Send the permit to the worker.
+process.send(worker, Begin)
+
+// Good: records the ordering fact a maintainer must preserve.
+// Publication transfers restart custody. The worker may enter the provider
+// only after that acknowledgement, or a crash can orphan native work.
+process.send(worker, Begin)
+```
+
+For a multi-process protocol, narrate the handoffs at both ends. The sender's
+comment says what ownership or ordering it transfers; the receiver's comment
+says what is now safe to do. For a timeout, say separately whether the caller
+stops waiting, the queued job is withdrawn, the running work is cancelled, and
+which event proves the work is gone. "Timed out" alone answers none of those
+questions.
 
 Density has a direction, not a cap: every place where a reader would
 otherwise reconstruct intent from the code deserves prose, and invariants
@@ -806,7 +842,7 @@ tighten the ecosystem defaults:
    arguments and struct literals up to roughly 80–100 columns rather
    than one per line, and apply the same literate comment register as
    the Gleam sources.
-1. **Toolchain**: Gleam ≥ 1.11, Erlang/OTP ≥ 27. `gleam format` enforced; no
+1. **Toolchain**: Gleam ≥ 1.18, Erlang/OTP ≥ 29. `gleam format` enforced; no
    warnings.
 2. **Total decoders**: every durability or wire boundary decodes with a
    `Decoder(t)` returning `Result(t, CorruptionReport)`. Partial decoding is

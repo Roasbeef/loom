@@ -86,7 +86,7 @@ pub fn platform() -> #(String, String)
 @external(erlang, "client_ffi", "code_root_dir")
 pub fn code_root_dir() -> String
 
-/// The running emulator's ERTS version, e.g. `"16.4.0.5"`. OTP
+/// The running emulator's ERTS version, e.g. `"17.0.5"`. OTP
 /// `erlang:system_info(version)` — an ambient fact of the running
 /// system. It names the `erts-<version>` directory under
 /// `code_root_dir()`, which is how `client/install` reaches the very

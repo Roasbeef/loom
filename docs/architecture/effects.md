@@ -571,11 +571,59 @@ out, carry state threaded, so feeding the same bytes in any chunking
 yields the same events, and the whole parser is property-tested without a
 single process. Adapters compose it with their own pure
 accumulator into a response machine, a fold over HTTP events; only `run`
-is impure, spawning the transport on its own process and forwarding
-deltas as they appear. The consumption contract is narrow enough to
+is impure, starting a monitorable transport owner and forwarding deltas as
+they appear. Composition uses a prepare-publish-begin seam: a
+`PreparedStream` exposes its parked owner before route resolution, secret
+lookup, or transport work starts, and the runtime grants the begin permit only
+after its reaper has adopted that owner. The consumption contract is narrow enough to
 depend on: zero or more `Delta` events, then exactly one `Settled` or
 `Failed`, and nothing after. Deltas are ephemeral display data and prove
 nothing about settlement.
+
+The returned `StreamHandle` carries the event subject, an idempotent cancel
+capability, and an optional drain-witness pid. A minimal public custodian owns
+that capability but performs no provider work. It adopts the gateway guard,
+private fallback pump, and every transport owner before each begins. The guard
+tracks the pump's current transport; the pump owns the provider terminal race
+and will not start another fallback until that transport drains. Teardown
+first invokes the transport's cancellation capability, then observes bounded
+owner death. If it does not retire, the guard reports uncertainty while the
+custodian remains alive; killing the witness would erase the proof that native
+work stopped. The production transport uses one native owner rather than
+another Gleam custodian-and-worker pair. Its narrow Erlang FFI retains the
+exact opaque OTP `httpc` request id and dedicated request-handler pid. The
+owner receives the raw messages itself, disables handler migration, captures
+the handler through the manager's already-published request table in O(1),
+issues cancellation directly to that handler, and waits for it to exit. It
+holds the first response callback inside the handler until that monitor exists,
+closing the fast-terminal deletion race. Any indexed lookup miss uses a
+deadline-bounded recovery scan over `httpc_handler` processes; neither a
+complete scan with no match nor an inconclusive probe is allowed to invent
+drain. An unfamiliar private layout likewise cannot produce a normal owner
+exit: the callback may still supply its exact producer, while the request
+deadline bounds an otherwise unprovable recovery with abnormal exit.
+The request and terminal state machines remain Gleam. Raw OTP errors become
+constant diagnostics at the boundary so a request header cannot leak through
+a durable provider error.
+
+Each attempt has one absolute deadline from transport start through settlement
+and one 16 MiB cumulative response budget after transport delivery. Neither
+valid deltas nor a sequence of small completed SSE events renews or escapes
+that typed bound. Complete events accumulate in reverse and are restored once,
+so valid event floods remain linear. OTP `httpc` buffers non-200/206 bodies
+before delivery; bounding that native error-body memory requires transport
+replacement or isolation and is not claimed here (issue #147). Inside the pure
+parser, a line and one event are each capped at 4 MiB, while a separate 4096
+field limit covers empty `data:` lines whose list cells consume memory without
+adding payload bytes. Every overflow is an in-band malformed-stream terminal,
+followed by the same cancel-and-drain path as any other terminal race.
+
+An owner-authored `ProviderCancelled` proves cancellation won. A guard or
+wrapper whose inner owner stays silent for the fixed grace instead emits
+terminal `CancellationUnconfirmed`; uncertainty cannot authorize a fallback
+or retry. This distinction is what stops the external work rather than merely
+teaching the caller to ignore a late answer. Protocol change 010 fixes the
+contract and its race semantics.
 
 **Stop reasons map totally.** Each adapter maps the vocabulary it knows
 and answers `Error(Nil)` for anything else, which the caller surfaces as

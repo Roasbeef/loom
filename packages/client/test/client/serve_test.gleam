@@ -38,6 +38,7 @@ import runtime/api
 import session/session
 import simplifile
 import support/internal/ffi_ws
+import support/provider as provider_test
 
 const root = "build/serve-test"
 
@@ -67,7 +68,7 @@ fn scripted_catalog() -> catalog.Catalog {
 fn scripted_gateway() -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(send_streaming: fn(_request, _subject) { Nil }),
+    transport: provider_test.silent(),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -229,19 +230,17 @@ fn recording_gateway(
 ) -> provider_gateway.Gateway {
   catalog.gateway(
     catalogue,
-    transport: http.Transport(
-      send_streaming: fn(request: http.HttpRequest, out) {
-        process.send(bodies, request.body)
-        process.send(out, http.ResponseStatus(status: 400, headers: []))
-        process.send(
-          out,
-          http.ResponseChunk(chunk: <<
-            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
-          >>),
-        )
-        process.send(out, http.ResponseEnd)
-      },
-    ),
+    transport: provider_test.transport(fn(request: http.HttpRequest, out) {
+      process.send(bodies, request.body)
+      process.send(out, http.ResponseStatus(status: 400, headers: []))
+      process.send(
+        out,
+        http.ResponseChunk(chunk: <<
+          "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"scripted\"}}":utf8,
+        >>),
+      )
+      process.send(out, http.ResponseEnd)
+    }),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
     clock: clock.fixed(at: 0),
   )
@@ -437,7 +436,7 @@ pub fn the_pinned_prompt_reaches_the_provider_request_test() {
 fn capturing_gateway(sent: Subject(String)) -> provider_gateway.Gateway {
   catalog.gateway(
     scripted_catalog(),
-    transport: http.Transport(send_streaming: fn(request, _events) {
+    transport: provider_test.transport(fn(request, _events) {
       process.send(sent, request.body)
     }),
     secrets: secret.from_list([#("ACME_KEY", "smoke-test-key")]),
@@ -447,44 +446,46 @@ fn capturing_gateway(sent: Subject(String)) -> provider_gateway.Gateway {
 
 // --- the host: what a death costs -------------------------------------------
 
-/// The bar this exists for. Kill a fatal child and the server does not
-/// vanish with an unreleased lease: the host runs the whole orderly
-/// shutdown first, so the same session file opens again *at once*
-/// instead of after its sixty-second TTL — and only then reports what
-/// died, leaving the exit status to the entry point.
+/// A fatal tree death without its ledger cannot prove a clean provider drain.
+///
+/// The host still closes the listener and the rest of the stack, but it leaves
+/// the lease to its TTL rather than letting a replacement overlap work whose
+/// ownership record disappeared. Availability yields to the stream invariant.
 ///
 /// The children this reaches are the ones a boot links to whichever
 /// process ran it. Before the host existed that process was the one
 /// waiting for `SIGTERM`, it did not trap exits, and the generated
-/// runner above it turned the link into `init:stop(1)` — no shutdown, no
-/// lease release, a session locked out for a minute by a crash.
-pub fn a_fatal_childs_death_releases_the_lease_test() {
+/// runner above it turned the link into `init:stop(1)` with no cleanup at all.
+pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
   let fault_root = "build/serve-test-fault"
   let _stale = simplifile.delete(fault_root)
   let assert Ok(booted) = serve.boot(settings_under(fault_root))
     as "the server must boot"
 
-  // The session tree: fatal by policy, and one of the three the host
-  // must *monitor* rather than trap, because it unlinks from its
-  // starter by design.
-  process.kill(booted.runtime.tree.supervisor)
+  // The significant ledger is fatal by policy. Killing it directly makes the
+  // absent-witness condition deterministic instead of racing the ledger's
+  // orderly exit after a separately killed root.
+  let assert Ok(ledger) =
+    process.subject_owner(process.named_subject(booted.runtime.tree.drains))
+  process.kill(ledger)
 
   let assert Ok(host.Faulted(child:, ..)) =
     process.receive(booted.stops, within: 10_000)
     as "the host must report the fault rather than take the node with it"
   assert child == "the session tree"
 
-  // The proof: the lease is gone, so a second opener wins immediately.
-  // With the lease left to expire this refuses with LeaseHeld.
-  let assert Ok(reopened) =
+  // Once both the root and its drain ledger are gone, no later caller can
+  // prove whether detached provider work survived them. Failing closed keeps
+  // the lease rather than overlapping an unverified predecessor.
+  let assert Error(_) =
     session.open_sqlite(
       path: fault_root <> "/session.db",
       owner: "probe",
       lease_ttl_ms: 60_000,
       clock: clock.fixed(at: 0),
     )
-    as "the writer lease must have been released, not left to its TTL"
-  let _sealed = session.close(reopened)
+    as "a missing drain witness must leave the lease held"
+  let _sealed = session.close(booted.runtime.session)
 
   // And the front door is shut: the teardown ran in full, not just far
   // enough to reach the lease.

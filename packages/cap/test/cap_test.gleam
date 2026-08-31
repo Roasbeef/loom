@@ -289,21 +289,82 @@ pub fn parallel_map_worker_crash_is_reported_test() {
 }
 
 pub fn parallel_map_fail_fast_cancels_rest_test() {
-  let escaped = process.new_subject()
-  let result =
-    task.parallel_map_fail_fast([0, 1, 2], max_concurrency: 3, with: fn(i) {
-      case i {
-        0 -> Error("boom")
-        _ -> {
-          process.sleep(300)
-          process.send(escaped, i)
-          Ok(i)
-        }
-      }
-    })
+  let result = monitored_fail_fast([0, 1, 2], failing_at: 0)
   assert result == Error(task.Returned(0, "boom"))
-  // The slow tasks were killed before they could report.
-  assert process.receive(escaped, 120) == Error(Nil)
+}
+
+pub fn parallel_map_fail_fast_reports_the_triggering_failure_test() {
+  let result = monitored_fail_fast([0, 1], failing_at: 1)
+  assert result == Error(task.Returned(1, "boom"))
+}
+
+// The failing worker holds its error behind a test-owned gate until every
+// loser is running and monitored. A sleep can only prove that a side effect
+// happened late; the Down signals prove the combinator killed and joined each
+// loser before it returned the triggering failure.
+fn monitored_fail_fast(
+  items: List(Int),
+  failing_at failing_at: Int,
+) -> Result(List(Int), task.Failure(String)) {
+  let worker_pids = process.new_subject()
+  let failure_gates = process.new_subject()
+  let completed = process.new_subject()
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let result =
+        task.parallel_map_fail_fast(
+          items,
+          max_concurrency: list.length(items),
+          with: fn(i) {
+            case i == failing_at {
+              True -> {
+                let release = process.new_subject()
+                process.send(failure_gates, release)
+                let _release = process.receive_forever(release)
+                Error("boom")
+              }
+              False -> {
+                process.send(worker_pids, process.self())
+                process.sleep_forever()
+                Ok(i)
+              }
+            }
+          },
+        )
+      process.send(completed, result)
+    })
+  let release = process.receive_forever(failure_gates)
+  let workers = receive_workers(worker_pids, list.length(items) - 1, [])
+  let monitors = list.map(workers, process.monitor)
+  process.send(release, Nil)
+  let result = process.receive_forever(completed)
+  assert list.all(workers, fn(pid) { !process.is_alive(pid) })
+    as "fail-fast must stop every blocked loser before returning"
+  list.each(monitors, fn(monitor) {
+    let down =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(value) { value })
+      |> process.selector_receive(1000)
+    let assert Ok(_) = down
+      as "each blocked loser must publish its monitored Down"
+    Nil
+  })
+  result
+}
+
+fn receive_workers(
+  from: process.Subject(process.Pid),
+  remaining: Int,
+  workers: List(process.Pid),
+) -> List(process.Pid) {
+  case remaining <= 0 {
+    True -> list.reverse(workers)
+    False ->
+      receive_workers(from, remaining - 1, [
+        process.receive_forever(from),
+        ..workers
+      ])
+  }
 }
 
 pub fn race_returns_first_and_cancels_losers_test() {
@@ -329,7 +390,13 @@ pub fn both_success_test() {
 }
 
 pub fn both_failure_test() {
-  assert task.both(fn() { Ok(1) }, fn() { Error("x") })
+  assert task.both(
+      fn() {
+        process.sleep(100)
+        Ok(1)
+      },
+      fn() { Error("x") },
+    )
     == Error(task.Returned(1, "x"))
 }
 

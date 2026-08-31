@@ -33,13 +33,14 @@ import runtime/effects
 import session/session
 import simplifile
 import support/rig
+import support/script
 
 // --- fixtures -------------------------------------------------------------
 
 // A transport that never answers; mapping tests never dispatch through
 // it.
 fn dead_transport() -> http.Transport {
-  http.Transport(send_streaming: fn(_request, _subject) { Nil })
+  script.owned_transport(fn(_request, _subject) { Nil })
 }
 
 fn routed_gateway() -> gateway.Gateway {

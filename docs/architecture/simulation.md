@@ -125,6 +125,12 @@ session is waiting for a deadline or it is inside an effect, and
 advancing the clock releases the first and costs the second one wasted
 planning pass.
 
+The stall allowance measures consecutive silence, not the lifetime of an
+operation. Every committed event replenishes it. Charging commits against the
+same allowance would let a healthy multi-commit run exhaust the budget while
+making durable progress, turning Linux scheduler load into a moving
+`run/terminated` failure whose immediate replay passes.
+
 Finishing is observed the same way, and needs one more condition. A
 commit is durable — and its terminal result readable — *before* the
 writer runs the post-commit seam that a crash schedule fires from, so a
@@ -209,6 +215,14 @@ projection comparison accepts an error result there. And a script that
 aborts is a race by design — how far the run got before the marker
 landed is not a property of the fault schedule — so an aborting script
 is held to the per-run checks and to nothing about convergence.
+
+Several interventions may share one logical trigger. Queue admissions retain
+their script order, but all of them commit before an abort from that same
+moment is sent. Without that harness ordering, the abort cast and the following
+synchronous admission asked the host scheduler whether the fault-free script
+still had an active run: seed 584 answered differently on Linux and macOS. The
+runtime's abort race remains real after the admission boundary; this rule only
+gives the comparison oracle one baseline transcript.
 
 ## What the generator reaches
 

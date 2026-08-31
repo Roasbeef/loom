@@ -724,14 +724,14 @@ pub fn discover(seed_root: String) -> Result(Toolchain, String) {
     "gleam",
     beside: install.gleam_compiler(),
     remedy: "code mode compiles the model's program with it, so put `gleam` "
-      <> "(>= 1.11) on PATH, or run the `bin/loom` of a release built with "
+      <> "(>= 1.18) on PATH, or run the `bin/loom` of a release built with "
       <> "the code-mode bundle, which ships one",
   ))
   use erl_path <- result.try(locate(
     "erl",
     beside: install.erl(),
     remedy: "code mode runs the compiled program in a jailed BEAM, so put "
-      <> "`erl` (OTP >= 27) on PATH",
+      <> "`erl` (OTP >= 29) on PATH",
   ))
   use _verified <- result.try(
     seed.verify(seed_root, compile.default_dependencies())

@@ -93,14 +93,20 @@ socket_send(Socket, Bytes) ->
 %% reader and what the satellite observes as EOF, so it is the teardown
 %% primitive; idempotent from the caller's view.
 socket_close(Socket) ->
-    _ = (catch gen_tcp:close(Socket)),
-    nil.
+    try gen_tcp:close(Socket) of
+        _ -> nil
+    catch
+        _:_ -> nil
+    end.
 
 %% gen_tcp:close/1 on the listener. Unblocks an accept in flight; does not
 %% unlink the socket file, which the Gleam side removes explicitly.
 listener_close(Listener) ->
-    _ = (catch gen_tcp:close(Listener)),
-    nil.
+    try gen_tcp:close(Listener) of
+        _ -> nil
+    catch
+        _:_ -> nil
+    end.
 
 %% Renders any Erlang error term as a printable binary, so no Gleam
 %% signature has to admit a Dynamic.

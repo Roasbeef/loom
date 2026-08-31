@@ -217,14 +217,15 @@ rather than the VM's timer wheel directly, so a simulated session runs
 them on logical time; production passes `effects.real_timers()`. `Fault` stops the actor abnormally, as does exhausting
 the loop's fuel bound of ten thousand planning steps.
 
-Two failure paths deserve naming. A commit refused with
+Three failure paths deserve naming. A commit refused with
 `StaleExpectation` means someone else — usually an admission from the
 session API — won the seq race; the driver reloads and plans again,
-pushing any unconsumed observation back to the front of its queue. And an
-effect process that dies without reporting settles **in band**: the
-monitor fires and the driver feeds itself a transport-failure response or
-a synthetic tool error through the ordinary outcome path, so a dead
-worker never wedges a strand or faults one.
+pushing any unconsumed observation back to the front of its queue. A tool
+effect which dies without reporting settles **in band** as a synthetic tool
+error because its worker exit is also its complete drain. A provider effect
+death faults the driver instead: descendants may remain below the worker, so
+an in-band retry could overlap them. Its reaper cancels the already-published
+stream owner and retains the restart barrier until that transitive owner exits.
 
 ## One run, end to end
 
@@ -321,23 +322,33 @@ the run still completes with the steer in context.
 
 ```
   SessionSupervisor              rest-for-one
-    ├── 1. StrandRegistry        strand name ↔ process name
-    ├── 2. StorageWriter         every commit, and every driver read
-    ├── 3. strand factory        simple-one-for-one; ordinary strands
-    ├── 4. subagent factory      simple-one-for-one; own tolerance
-    └── 5. strand booter         lists strand.*, starts what is missing
+    ├── 1. DrainLedger           live reaper generations
+    ├── 2. StrandRegistry        logical names to process names
+    ├── 3. StorageWriter         every commit, and every driver read
+    ├── 4. strand factory        simple-one-for-one; ordinary strands
+    ├── 5. subagent factory      simple-one-for-one; own tolerance
+    └── 6. strand booter         lists strand.*, starts what is missing
 ```
 
-Rest-for-one over those five is the whole recovery policy, and the order
+Rest-for-one over those six is the whole recovery policy, and the order
 *is* the blast radius, as `runtime/supervisor.gleam` builds it. A writer
 crash restarts the writer and every child after it, because a strand
 holding a subject to a dead writer has nothing to say — and the booter,
 sitting last, repopulates the factories the restart just emptied. A crash
-in one
-strand restarts only that strand, because each factory supervises its own
+in one strand restarts only that strand, because each factory supervises its own
 children simple-one-for-one. Every child registers under a process name
-rather than a pid, so restarts keep them addressable; the registry sits
-first precisely so those names outlive everything that uses them.
+rather than a pid, so restarts keep them addressable. The separate drain
+ledger sits first because its ordering fact must also outlive a restart of the
+name registry itself. It stores every still-live effect reaper per logical
+strand. A replacement publishes its new reaper and waits for every predecessor
+to drain through the ledger's original monitor before recovery dispatches, so
+a late `noproc` observation cannot turn a clean drain into a restart loop. The
+initialized replacement remains responsive behind that barrier, retaining an
+abort request but dispatching no effect until it opens. A restart therefore
+cannot overlap a replay with an effect that has received cancellation but whose
+descendants have not yet exited. The ledger is a significant temporary child:
+its own death stops the session tree rather than silently restarting with an
+empty history.
 
 The two factories are one restart budget each, and the split is what buys
 the separation. `supervisor.start_strand` asks `Config.subagent` which

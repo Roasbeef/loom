@@ -84,7 +84,7 @@ and returns, never touching the query's grants; `tool_context`
 the static session config instead (`config.grants`,
 `packages/client/src/client/wiring.gleam:1010`), which `serve` sets to the
 empty list once at boot (`packages/client/src/client/serve.gleam:743`); and
-`ToolRun` (`packages/runtime/src/runtime/effects.gleam:104`) had no grants
+`ToolRun` (`packages/runtime/src/runtime/effects.gleam:163`) had no grants
 field at all, so the clearance-time grants *could not* reach the run-time
 context without changing the runtime-internal effects seam. The seam is not
 Part-1 frozen, so the fix needs no protocol-change proposal — but until it
@@ -120,7 +120,7 @@ questions the option list runs together:
      under the widened policy. Spendable without parking anything; needs
      grants read at dispatch rather than captured in a boot-time closure.
    - **Host re-executes.** The documented semantics of the unscoped path
-     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1609`):
+     (`raise_escalation`, `packages/runtime/src/runtime/api.gleam:1619`):
      an explicit `consume_escalation` by a host that re-runs the denied
      action itself. The demo does this today. It spends, but nothing in
      the session loop benefits.

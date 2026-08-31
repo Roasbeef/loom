@@ -110,9 +110,11 @@ close_port(Port) ->
 %% erlang:port_info/2 with os_pid — the server's OS pid, kept so `stop`
 %% can kill a server that ignores EOF on its stdin.
 port_os_pid(Port) ->
-    case catch erlang:port_info(Port, os_pid) of
+    try erlang:port_info(Port, os_pid) of
         {os_pid, Pid} when is_integer(Pid) -> {ok, Pid};
         _ -> {error, nil}
+    catch
+        _:_ -> {error, nil}
     end.
 
 %% os:cmd/1 running kill(1) — the BEAM has no direct kill(2) binding
