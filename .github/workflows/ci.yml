@@ -113,20 +113,23 @@ jobs:
           test -x build/release/loom/erts-17.0.5/bin/erl
           {
             echo "==> measured distribution with code mode"
-            du -sh build/erlang-shipment build/release/loom \
+            du -sh build/erlang-shipment \
               build/release/loom/erts-17.0.5 \
+              build/release/loom/lib/compiler-* \
               build/release/loom/lib \
               build/release/loom/bin/loom-exec \
               build/release/loom/bin/gleam \
               build/release/loom/share/codemode-seed \
+              build/release/loom \
               dist/loom-0.1.0-linux-x86_64.tar.gz \
               dist/loom-tui-0.1.0-linux-x86_64
           } | tee -a distribution-linux.log
           DIST_CODEMODE=0 make dist 2>&1 | tee -a distribution-linux.log
           {
             echo "==> measured distribution without code mode"
-            du -sh build/release/loom build/release/loom/erts-17.0.5 \
+            du -sh build/release/loom/erts-17.0.5 \
               build/release/loom/lib build/release/loom/bin/loom-exec \
+              build/release/loom \
               dist/loom-0.1.0-linux-x86_64.tar.gz
           } | tee -a distribution-linux.log
 
