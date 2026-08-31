@@ -284,6 +284,128 @@ pub fn cancellation_after_settlement_is_a_noop_test() {
   assert stream.next(handle, within: 100) == Error(Nil)
 }
 
+/// Cancellation which crosses a parsed settlement still preserves that one
+/// terminal, while the public owner remains live until the attempt drains.
+pub fn cancellation_racing_settlement_keeps_one_terminal_test() {
+  let #(transport, attempts, owner_ready, cancelled) =
+    terminal_race_transport(fixture.ok_response(happy_transcript("done")))
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let drain = stream.watch_drain(handle)
+  let assert Ok(owner) = process.receive(owner_ready, within: 1000)
+
+  stream.cancel(handle)
+  let assert Ok(Nil) = process.receive(cancelled, within: 2500)
+    as "the cancellation deadline must reach the terminal attempt"
+  let assert Ok(#(_deltas, stream.Settled(..))) =
+    stream.await_terminal(handle, within: 1000)
+
+  assert stream.await_drain_forever(drain) == stream.Drained
+  assert !process.is_alive(owner)
+  assert process.receive(attempts, within: 0)
+    == Ok("https://primary.test/v1/messages")
+  assert process.receive(attempts, within: 100) == Error(Nil)
+  assert stream.next(handle, within: 100) == Error(Nil)
+}
+
+/// Cancellation which crosses a retryable failure drains that attempt but
+/// consumes the queued stop before a fallback can begin.
+pub fn cancellation_racing_retryable_failure_stops_fallback_test() {
+  let #(transport, attempts, owner_ready, cancelled) =
+    terminal_race_transport([
+      http.RequestFailed(reason: "overloaded during cancellation"),
+    ])
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let drain = stream.watch_drain(handle)
+  let assert Ok(owner) = process.receive(owner_ready, within: 1000)
+
+  stream.cancel(handle)
+  let assert Ok(Nil) = process.receive(cancelled, within: 2500)
+    as "the cancellation deadline must reach the retryable attempt"
+  let assert Ok(#([], terminal)) = stream.await_terminal(handle, within: 1000)
+  assert case terminal {
+    stream.Failed(stream.ProviderCancelled)
+    | stream.Failed(stream.CancellationUnconfirmed) -> True
+    _ -> False
+  }
+    as "the retryable error must not escape the cancellation race"
+
+  assert stream.await_drain_forever(drain) == stream.Drained
+  assert !process.is_alive(owner)
+  assert process.receive(attempts, within: 0)
+    == Ok("https://primary.test/v1/messages")
+  assert process.receive(attempts, within: 100) == Error(Nil)
+  assert stream.next(handle, within: 100) == Error(Nil)
+}
+
+// The primary publishes its complete terminal script, then withholds the
+// owner's Down until cancellation reaches the transport capability. This
+// forces the guard to arbitrate a real terminal/cancel crossing instead of a
+// test-authored order where one side has already completed.
+fn terminal_race_transport(
+  primary_events: List(http.HttpEvent),
+) -> #(
+  http.Transport,
+  process.Subject(String),
+  process.Subject(process.Pid),
+  process.Subject(Nil),
+) {
+  let attempts = process.new_subject()
+  let owner_ready = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(request, events) {
+      let creator = process.self()
+      let controls_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process.new_subject()
+          let release = process.new_subject()
+          let creator_monitor = process.monitor(creator)
+          process.send(controls_ready, #(begin, release))
+          let admitted =
+            process.new_selector()
+            |> process.select_map(begin, fn(_nil) { True })
+            |> process.select_specific_monitor(creator_monitor, fn(_down) {
+              False
+            })
+            |> process.selector_receive_forever()
+          process.demonitor_process(creator_monitor)
+          case admitted {
+            False -> Nil
+            True -> {
+              process.send(attempts, request.url)
+              case string.contains(request.url, "primary.test") {
+                True -> {
+                  list.each(primary_events, fn(event) {
+                    process.send(events, event)
+                  })
+                  process.send(owner_ready, process.self())
+                  let _release = process.receive_forever(release)
+                  Nil
+                }
+                False ->
+                  list.each(
+                    fixture.ok_response(happy_transcript("unexpected fallback")),
+                    fn(event) { process.send(events, event) },
+                  )
+              }
+            }
+          }
+        })
+      let #(begin, release) = process.receive_forever(controls_ready)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+            process.send(release, Nil)
+          }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
+    })
+  #(transport, attempts, owner_ready, cancelled)
+}
+
 pub fn transport_prepare_crash_fails_closed_test() {
   let crashing =
     http.Transport(prepare_streaming: fn(_request, _events) {
