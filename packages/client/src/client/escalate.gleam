@@ -157,6 +157,7 @@ import gleam/result
 import gleam/string
 import runtime/api
 import runtime/escalation as durable
+import runtime/internal/ffi_sup
 import tools/blob
 import tools/tool
 
@@ -816,10 +817,13 @@ fn ask(
   waiting timeout: Int,
   sending make_request: fn(Subject(reply)) -> message,
 ) -> Result(reply, Nil) {
-  use owner <- result.try(process.subject_owner(subject))
+  use name <- result.try(process.subject_name(subject))
+  use owner <- result.try(process.named(name))
   let monitor = process.monitor(owner)
   let reply_to = process.new_subject()
-  process.send(subject, make_request(reply_to))
+  // The monitor and request must name the same incarnation. A named send would
+  // perform a second lookup and could either panic or reach a replacement.
+  ffi_sup.send_to_pid(owner, #(name, make_request(reply_to)))
   let answer =
     process.new_selector()
     |> process.select_map(reply_to, Ok)

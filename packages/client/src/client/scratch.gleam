@@ -65,6 +65,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
+import runtime/internal/ffi_sup
 
 /// The largest value one key may hold.
 pub const default_max_entry_bytes = 262_144
@@ -306,7 +307,9 @@ fn ask(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(process.named_subject(name), message(reply))
+      // Keep delivery on the same process the failure selector monitors. A
+      // second name lookup would turn an ordinary restart into a caller crash.
+      ffi_sup.send_to_pid(pid, #(name, message(reply)))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)

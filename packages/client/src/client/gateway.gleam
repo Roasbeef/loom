@@ -362,13 +362,15 @@ pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
 /// ```
 ///
 pub fn attached(gateway: Gateway) -> Int {
-  let subject = process.named_subject(gateway.name)
-  case process.subject_owner(subject) {
+  case process.named(gateway.name) {
     Error(Nil) -> 0
     Ok(owner) -> {
       let monitor = process.monitor(owner)
       let reply_to = process.new_subject()
-      process.send(subject, Attached(reply: reply_to))
+      // The monitored PID is the incarnation this question belongs to. Sending
+      // through the name would resolve it again and could crash or ask a
+      // replacement which the monitor does not describe.
+      ffi_sup.send_to_pid(owner, #(gateway.name, Attached(reply: reply_to)))
       let answer =
         process.new_selector()
         |> process.select(reply_to)
@@ -389,7 +391,7 @@ pub fn attached(gateway: Gateway) -> Int {
 /// ```
 ///
 pub fn detach(gateway: Gateway, connection: Int) -> Nil {
-  process.send(process.named_subject(gateway.name), Detach(connection))
+  send_if_alive(gateway.name, Detach(connection))
 }
 
 /// Feeds one inbound text frame from a connection into the hub.
@@ -401,10 +403,7 @@ pub fn detach(gateway: Gateway, connection: Int) -> Nil {
 /// ```
 ///
 pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
-  process.send(
-    process.named_subject(gateway.name),
-    FromClient(connection, text),
-  )
+  send_if_alive(gateway.name, FromClient(connection, text))
 }
 
 /// Starts a forwarder that turns the runtime writer's post-commit

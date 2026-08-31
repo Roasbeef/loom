@@ -57,6 +57,7 @@ import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
+import runtime/internal/ffi_sup
 import runtime/writer
 import storage/sqlite
 import storage/storage.{type Storage}
@@ -470,7 +471,10 @@ fn ask(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
-      process.send(process.named_subject(name), message(reply))
+      // Send to the PID the monitor describes. Re-resolving the name here could
+      // panic during a restart or ask a replacement while watching its
+      // predecessor.
+      ffi_sup.send_to_pid(pid, #(name, message(reply)))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)
