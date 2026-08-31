@@ -97,7 +97,9 @@ processful shell around that sans-io core. WP-F.
   `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
-  from the transport into that pump.
+  from the transport into that pump. Cancellation expiry closes the public
+  response window but not the pump's ownership frontier: the guard continues
+  adopting and rejecting late attempt registrations until the pump exits.
 - **Commits / registers**: none. This package persists nothing; the
   durable identity it resolves is stored by `machine` and committed by
   `runtime`.
@@ -137,7 +139,9 @@ processful shell around that sans-io core. WP-F.
   the dedicated request handler's Down before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
-  the acknowledgement chain. `ProviderCancelled`,
+  the acknowledgement chain. A transport which finishes preparation after
+  expiry is still published to that chain and receives a rejection permit, so
+  neither the pump nor its parked owner can escape drain. `ProviderCancelled`,
   `CancellationUnconfirmed`, and `DrainProofLost` are terminal and never walk
   to a fallback. Raw
   OTP errors are collapsed to constant diagnostics before crossing the FFI so

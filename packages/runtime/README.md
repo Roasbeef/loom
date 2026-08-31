@@ -93,7 +93,9 @@ at birth. The moment the driver dies, the reaper traps that exit, asks every
 effect to stop, and remains alive until every effect and published provider
 owner has exited. A session-local drain ledger remembers those reapers across
 registry and driver restarts. A replacement driver publishes its own reaper
-and waits for all predecessors before it recovers durable work. That is what
+and waits for the ledger's original monitors to acknowledge every predecessor
+before it recovers durable work. The initialized replacement can retain an
+abort request while it waits, but it cannot dispatch an effect. That is what
 makes the exclusivity gate and the "is this an orphan or a live replay"
 decision sound: both read the incarnation-local `live` list, and neither would
 mean anything if old work could overlap the next incarnation.
@@ -108,8 +110,9 @@ replacement waits for that owner to drain, and only then may recovery retry.
 Provider effects also own a cancellable stream handle. If the ordinary wait
 deadline expires, the effect first cancels that handle and allows a bounded
 acknowledgement grace before reporting the provider-authored terminal or
-`CancellationUnconfirmed`. An abort keeps that grace because a real terminal,
-including its billed usage, may already be queued. Driver death has no
+`CancellationUnconfirmed`. One scheduled timer bounds the whole grace, so a
+stream of late deltas cannot renew it. An abort keeps that grace because a real
+terminal, including its billed usage, may already be queued. Driver death has no
 surviving terminal consumer: the effect requests cancellation and exits, while
 the reaper's independent owner monitor holds the restart barrier until the
 provider wrappers, fallback pump, transport receiver, and socket request have

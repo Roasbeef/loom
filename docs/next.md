@@ -62,7 +62,8 @@ remain behind that permit. Immediate `ProviderSurface` values remain for
 in-memory fakes which own no external work; they may still use a self-reaping
 in-memory owner to model cancellation. Reaper generations live
 in a drain ledger before the restartable name registry, so a replacement waits
-for every older generation. `api.close` captures and monitors the live ledger
+for the ledger's original monitors to acknowledge every older generation.
+`api.close` captures and monitors the live ledger
 before terminating the root, then releases the lease only for its clean
 normal/OTP-shutdown exit. A missing or killed ledger fails closed and leaves
 the lease to its TTL. Tests pin cancellation
@@ -84,7 +85,18 @@ must not count as drain. The corrective pass made exact table capture the normal
 path and distinguishes leaf completion from transitive proof. A second review
 found the fast-terminal deletion race, late monitors in the gateway and
 distiller, and the fixture publication gap; the current callback handshake and
-retained typed witnesses close those paths.
+retained typed witnesses close those paths. The final adversarial pass found
+two more timing assumptions: each late post-cancel delta renewed a relative
+grace timeout, and a replacement installed a fresh monitor after the drain
+ledger returned predecessor PIDs. Cancellation now schedules one deadline per
+layer, while the ledger retains each claim until its original monitors prove
+that exact predecessor snapshot drained. Deterministic delta-flood and
+ledger-barrier tests pin both failures. The replacement initializes before that
+potentially long barrier and waits through a linked helper, so it remains able
+to retain an abort request without admitting recovery work. The same pass found
+that a gateway guard stopped consuming attempt registrations after cancellation
+expired; it now rejects late prepared attempts until the pump exits, preserving
+both transitive ownership publication and bounded drain.
 
 Issue #141 is folded into this branch by explicit operator direction. Every
 package now requires Gleam 1.18, the supported runtime floor is OTP 29, and PR
@@ -94,7 +106,7 @@ The Linux gate builds and smokes both release profiles so its retained log can
 replace the distribution guide's old OTP 28 measurements with observed OTP 29
 values.
 
-The post-rebase focused gates are green: provider 136, runtime 85, client 573,
+The post-rebase focused gates are green: provider 138, runtime 87, client 574,
 and conformance 67. The first full run reached conformance with every preceding
 suite green, then Hex rate-limited dependency resolution. An immediate focused
 retry passed all 67 conformance tests, and the next complete `make check` exited

@@ -63,10 +63,9 @@ extended by the M3 runtime wave.
   detach flag, and the durable reap mark. `is_descendant` is the walk the
   addressing rule is decided by, and it fails closed.
 - `runtime/registry.Message` — the strand-incarnation registry actor: strand
-  name ↔ the process name its driver registers under. Its legacy
-  `ClaimReaper` call remains available, but the production supervisor routes
-  reaper claims through `runtime/internal/drain_registry` so a name-registry
-  restart cannot erase ownership barriers.
+  name ↔ the process name its driver registers under. Reaper claims live only
+  in `runtime/internal/drain_registry`; keeping them out of this restartable
+  actor prevents a name-registry restart from erasing ownership barriers.
 - `runtime/internal/drain_registry.Message` — the session-local actor owning
   each logical strand's complete unadjudicated reaper chain. It precedes the
   restartable registry and is a significant temporary child: only a normal
@@ -202,22 +201,24 @@ extended by the M3 runtime wave.
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
     conformance harnesses.
   - `strand_runtime.Message` (all casts): `Nudge` (the doorbell),
+    `PredecessorsResolved(result)` (the ledger barrier acknowledgement),
     `PollTick` (the checkpoint poll, which also grants one deferred poll
     permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
-    `ToolDone(token, outcome)`, `EffectExit(down)`.
+    `ToolDone(token, outcome)`, `EffectExit(down)`. Before the predecessor
+    acknowledgement, the actor retains abort intent but does not drive effects.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
-    `Lookup(strand, reply_with)`, `Known(reply_with)`, and
-    `ClaimReaper(strand, reaper, reply_with)`. The last operation is retained
-    for compatibility; production ownership uses the drain ledger below.
+    `Lookup(strand, reply_with)` and `Known(reply_with)`.
     Senders: `runtime/supervisor`'s strand factory and booter, and
     `runtime/api` when it rings a doorbell or addresses a sibling strand.
   - `runtime/internal/drain_registry.Message` (call):
     `Claim(strand, reaper, reply_with)` atomically publishes the new
-    incarnation and returns every predecessor whose original monitor has not
-    proved normal drain. Sender:
-    `runtime/strand_runtime` during initialization through the closure the
-    supervisor injects.
+    incarnation, snapshots its predecessors, and releases the caller only once
+    the ledger's original monitors have proved that entire snapshot drained
+    normally. A linked helper performs the potentially long call after actor
+    initialization and sends `PredecessorsResolved`; the driver remains able
+    to retain `RequestAbort` while the barrier is closed. Sender:
+    `runtime/strand_runtime` through the closure the supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -305,7 +306,8 @@ extended by the M3 runtime wave.
   work; they may still carry self-reaping owners to model cancellation. The
   custodian is unlinked and survives both long enough to drain their adopted
   descendants. The separate drain ledger remembers every unadjudicated reaper
-  for the strand, and a replacement waits for them before starting recovery.
+  for the strand, and releases a replacement only after its original monitors
+  prove that exact predecessor snapshot drained normally.
   The effect installs a `DrainWitness` before granting begin, so it can delay
   `ProviderDone` until the original monitor reports `Drained`; the reaper holds
   an independent monitor for recovery. A provider owner or reaper must exit
@@ -320,9 +322,10 @@ extended by the M3 runtime wave.
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
   locally reported `CancellationUnconfirmed` are both terminal under retry
   classification; the latter says teardown could not be proved and therefore
-  cannot authorize another attempt. The effect withholds `ProviderDone` until
-  its public stream owner exits, so the current driver cannot progress beside
-  the old subtree either. An abort keeps the driver alive and spends the
+  cannot authorize another attempt. The grace is one scheduled timer, not a
+  per-event idle timeout, so late deltas cannot extend it. The effect withholds
+  `ProviderDone` until its public stream owner exits, so the current driver
+  cannot progress beside the old subtree either. An abort keeps the driver alive and spends the
   acknowledgement grace because a real terminal may already be queued; its
   usage still belongs in the aborted result. Driver death has no remaining
   terminal consumer, so the effect requests cancellation and exits without

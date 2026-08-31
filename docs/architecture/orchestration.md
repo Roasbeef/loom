@@ -341,10 +341,14 @@ rather than a pid, so restarts keep them addressable. The separate drain
 ledger sits first because its ordering fact must also outlive a restart of the
 name registry itself. It stores every still-live effect reaper per logical
 strand. A replacement publishes its new reaper and waits for every predecessor
-to drain before recovery dispatches, so a restart cannot overlap a replay with
-an effect that has received cancellation but whose descendants have not yet
-exited. The ledger is a significant temporary child: its own death stops the
-session tree rather than silently restarting with an empty history.
+to drain through the ledger's original monitor before recovery dispatches, so
+a late `noproc` observation cannot turn a clean drain into a restart loop. The
+initialized replacement remains responsive behind that barrier, retaining an
+abort request but dispatching no effect until it opens. A restart therefore
+cannot overlap a replay with an effect that has received cancellation but whose
+descendants have not yet exited. The ledger is a significant temporary child:
+its own death stops the session tree rather than silently restarting with an
+empty history.
 
 The two factories are one restart budget each, and the split is what buys
 the separation. `supervisor.start_strand` asks `Config.subagent` which
