@@ -17,6 +17,11 @@
 import gleam/erlang/process.{type Pid, type Subject}
 import provider/internal/ffi_httpc
 
+/// The maximum raw response-body bytes accepted before the production
+/// transport cancels its handler. Enforcing this below the asynchronous event
+/// mailbox keeps a fast peer from queueing past the higher-level stream bound.
+pub const max_response_bytes = 16_777_216
+
 /// One outbound HTTP request, fully built.
 ///
 /// Constructor invariants: `method` is an uppercase HTTP method; `url` is
@@ -59,10 +64,11 @@ pub type HttpEvent {
 /// Constructor invariants: `owner` retains whatever transport-native request
 /// identity cancellation needs and remains alive until that work has stopped.
 /// `cancel` signals that owner and is safe during native startup. Callers must
-/// not kill the owner: its lifetime is the drain acknowledgement.
+/// not kill the owner: only its normal exit is a drain acknowledgement, while
+/// abnormal exit means the proof was lost.
 pub type RunningRequest {
   RunningRequest(
-    /// The process whose exit proves the native request and handler stopped.
+    /// The process whose normal exit proves the native request and handler stopped.
     owner: Pid,
     /// The idempotent capability which asks that owner to tear down the request.
     cancel: fn() -> Nil,
@@ -147,8 +153,9 @@ pub type Transport {
 /// monitors the dedicated OTP handler before forwarding any event, so a shared
 /// manager restart cannot erase the socket witness. The FFI is limited to the
 /// raw `httpc` mailbox and native teardown which Gleam cannot express;
-/// response folding, timeout policy, retries, and terminal arbitration remain
-/// in typed Gleam.
+/// it also enforces the raw response budget before acknowledging data into an
+/// asynchronous mailbox. Response folding, timeout policy, retries, and
+/// terminal arbitration remain in typed Gleam.
 ///
 /// ## Examples
 ///
@@ -169,6 +176,7 @@ fn start_httpc(
 ) -> Result(PreparedRequest, String) {
   let owner =
     ffi_httpc.prepare_stream_request(
+      max_response_bytes,
       fn(status, headers) {
         process.send(subject, ResponseStatus(status:, headers:))
       },

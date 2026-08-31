@@ -425,11 +425,17 @@ fn on_chunk(
     200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
       let acc = Accumulator(..acc, sse:)
-      list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
-        let #(acc, events) = folded
-        let #(acc, new_events) = handle_sse(acc, sse_event)
-        #(acc, list.append(events, new_events))
-      })
+      let #(acc, reversed_events) =
+        list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
+          let #(acc, reversed_events) = folded
+          let #(acc, new_events) = handle_sse(acc, sse_event)
+          let reversed_events =
+            list.fold(new_events, reversed_events, fn(accumulator, event) {
+              [event, ..accumulator]
+            })
+          #(acc, reversed_events)
+        })
+      #(acc, list.reverse(reversed_events))
     }
     _ ->
       case diagnostic.append_error_body(acc.error_body, chunk) {

@@ -2,9 +2,29 @@
 %% the socket rather than merely retiring Loom's local waiter.
 -module(provider_http_test_ffi).
 -export([start_hanging_server/2, start_fast_server/0, start_malformed_server/0,
+         start_body_server/1,
          start_redirect_pair/1, stop_servers/1,
          restart_httpc_manager/0, restart_httpc_handler_supervisor/0,
-         with_suspended_request_handlers/2]).
+         with_suspended_request_handlers/2, await_owner_drain_wait/1]).
+
+%% Waits until cancellation has moved the native owner into its handler-Down
+%% barrier. This is a test observation, not production coordination: it makes
+%% the Gleam assertion prove that an already-processed cancel cannot retire the
+%% owner before the suspended handler releases its socket.
+await_owner_drain_wait(Owner) ->
+    await_owner_drain_wait(Owner, 1000).
+
+await_owner_drain_wait(_Owner, 0) ->
+    erlang:error(owner_did_not_enter_drain_wait);
+await_owner_drain_wait(Owner, Remaining) ->
+    case process_info(Owner, current_function) of
+        {current_function, {provider_ffi, await_process, 2}} -> nil;
+        undefined -> erlang:error(owner_exited_before_drain_wait);
+        _ ->
+            receive after 1 ->
+                await_owner_drain_wait(Owner, Remaining - 1)
+            end
+    end.
 
 %% Replaces only the default manager generation. Request handlers live under
 %% their own supervisor, which is exactly why manager death cannot stand in for
@@ -115,6 +135,23 @@ start_fast_server() ->
                <<"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n",
                  "Connection: close\r\n\r\n">>),
         ok = gen_tcp:close(Socket)
+    end),
+    {Port, Server}.
+
+start_body_server(Size) ->
+    {ok, Listener} =
+        gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}]),
+    {ok, {_Address, Port}} = inet:sockname(Listener),
+    Server = spawn(fun() ->
+        {ok, Socket} = gen_tcp:accept(Listener),
+        ok = gen_tcp:close(Listener),
+        {ok, _Request} = gen_tcp:recv(Socket, 0, 2000),
+        Header = ["HTTP/1.1 200 OK\r\nContent-Length: ",
+                  integer_to_binary(Size),
+                  "\r\nConnection: close\r\n\r\n"],
+        ok = gen_tcp:send(Socket, Header),
+        _ = gen_tcp:send(Socket, binary:copy(<<"x">>, Size)),
+        gen_tcp:close(Socket)
     end),
     {Port, Server}.
 

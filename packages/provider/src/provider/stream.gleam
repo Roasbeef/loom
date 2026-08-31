@@ -249,7 +249,7 @@ pub const max_event_data_lines = 4096
 /// into its adapter. Sixteen MiB is far above Loom's configured model outputs,
 /// while still bounding completed SSE events, comments, and small deltas across
 /// the whole response rather than one frame at a time.
-pub const max_response_bytes = 16_777_216
+pub const max_response_bytes = http.max_response_bytes
 
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
@@ -332,12 +332,16 @@ fn feed_loop(
   parser: SseParser,
   buffer: BitArray,
   from: Int,
-  events: List(SseEvent),
+  reversed_events: List(SseEvent),
 ) -> #(SseParser, List(SseEvent)) {
   case take_line(buffer, from) {
     LineFound(line:, rest:) -> {
       let #(parser, new_events) = handle_line(parser, line)
-      feed_loop(parser, rest, 0, list.append(events, new_events))
+      let reversed_events =
+        list.fold(new_events, reversed_events, fn(accumulator, event) {
+          [event, ..accumulator]
+        })
+      feed_loop(parser, rest, 0, reversed_events)
     }
     NoTerminator(scanned:) ->
       case bit_array.byte_size(buffer) > max_line_bytes {
@@ -346,15 +350,19 @@ fn feed_loop(
         // bounded no matter what the wire sends next.
         True -> #(
           SseParser(..parser, carry: <<>>, scanned: 0),
-          list.append(events, [
+          list.reverse([
             SseMalformed(
               reason: "sse line exceeded "
               <> int.to_string(max_line_bytes)
               <> " bytes without a line terminator",
             ),
+            ..reversed_events
           ]),
         )
-        False -> #(SseParser(..parser, carry: buffer, scanned:), events)
+        False -> #(
+          SseParser(..parser, carry: buffer, scanned:),
+          list.reverse(reversed_events),
+        )
       }
   }
 }
@@ -522,7 +530,8 @@ pub type ResponseMachine(state) {
 
 /// A provider stream: the subject on which `StreamEvent`s arrive, its
 /// cancellation capability, and the process that remains alive until owned
-/// external work has drained.
+/// external work has drained normally. An abnormal owner exit loses proof and
+/// must be interpreted through `DrainOutcome` rather than as acknowledgement.
 ///
 /// Constructor invariants: `events` is owned by the process that called
 /// `gateway.request`, so only that process may receive from it. `owner` is
@@ -535,7 +544,7 @@ pub type StreamHandle {
     events: Subject(StreamEvent),
     /// The idempotent capability which begins cooperative teardown.
     cancel: fn() -> Nil,
-    /// The process whose exit acknowledges complete transitive teardown.
+    /// The process whose normal exit acknowledges complete transitive teardown.
     owner: Option(Pid),
   )
 }
@@ -891,8 +900,9 @@ type AttemptEvent {
 /// Every attempt gets a fresh HTTP subject, so late events from a cancelled
 /// attempt cannot enter the next.
 ///
-/// The gateway calls this from its pump process; tests can call it
-/// directly with a fixture transport.
+/// This is an internal fixture facade which does not publish the transport
+/// owner. Production code must use `run_tracked`, whose callback transfers the
+/// drain capability before work begins.
 ///
 /// ## Examples
 ///
@@ -905,6 +915,7 @@ type AttemptEvent {
 /// // )
 /// ```
 ///
+@internal
 pub fn run(
   transport: Transport,
   request: HttpRequest,
