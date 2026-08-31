@@ -1063,48 +1063,19 @@ fn run_loop(
         deliver,
         response_bytes:,
       )
-    Http(http.ResponseChunk(chunk:)) -> {
-      let response_bytes = response_bytes + bit_array.byte_size(chunk)
-      case response_bytes > max_response_bytes {
-        True ->
-          finish_outcome(
-            deadline_timer,
-            case stop_attempt(running, consumer_monitor, transport_monitor) {
-              Drained -> AttemptTerminal(response_too_large())
-              TimedOut -> AttemptCancellationUnconfirmed
-              ProofLost -> AttemptDrainProofLost
-            },
-          )
-        False -> {
-          let #(state, events) = machine.on_chunk(state, chunk)
-          case forward(events, deliver) {
-            Some(terminal) ->
-              finish_outcome(
-                deadline_timer,
-                case
-                  stop_attempt(running, consumer_monitor, transport_monitor)
-                {
-                  Drained -> AttemptTerminal(terminal)
-                  TimedOut -> AttemptCancellationUnconfirmed
-                  ProofLost -> AttemptDrainProofLost
-                },
-              )
-            None ->
-              run_loop(
-                selector,
-                running,
-                consumer_monitor,
-                transport_monitor,
-                deadline_timer,
-                machine,
-                state,
-                deliver,
-                response_bytes:,
-              )
-          }
-        }
-      }
-    }
+    Http(http.ResponseChunk(chunk:)) ->
+      run_chunk(
+        selector,
+        running,
+        consumer_monitor,
+        transport_monitor,
+        deadline_timer,
+        machine,
+        state,
+        deliver,
+        response_bytes:,
+        chunk:,
+      )
     Http(http.ResponseEnd) -> {
       // A well-behaved machine's on_end always yields a terminal once the
       // status is known; None here means the body ended before the
@@ -1139,6 +1110,62 @@ fn run_loop(
           ProofLost -> AttemptDrainProofLost
         },
       )
+    }
+  }
+}
+
+// Keep the chunk transition outside the selector dispatch so the three
+// decisions remain visible: enforce the whole-response budget, ask the pure
+// adapter to fold the chunk, then either drain on terminal or retain the same
+// deadline while waiting for more input.
+fn run_chunk(
+  selector: Selector(AttemptEvent),
+  running: http.RunningRequest,
+  consumer_monitor: Monitor,
+  transport_monitor: Monitor,
+  deadline_timer: Timer,
+  machine: ResponseMachine(state),
+  state: state,
+  deliver: fn(Delta) -> Nil,
+  response_bytes response_bytes: Int,
+  chunk chunk: BitArray,
+) -> AttemptOutcome {
+  let response_bytes = response_bytes + bit_array.byte_size(chunk)
+  case response_bytes > max_response_bytes {
+    True ->
+      finish_outcome(
+        deadline_timer,
+        case stop_attempt(running, consumer_monitor, transport_monitor) {
+          Drained -> AttemptTerminal(response_too_large())
+          TimedOut -> AttemptCancellationUnconfirmed
+          ProofLost -> AttemptDrainProofLost
+        },
+      )
+    False -> {
+      let #(state, events) = machine.on_chunk(state, chunk)
+      case forward(events, deliver) {
+        Some(terminal) ->
+          finish_outcome(
+            deadline_timer,
+            case stop_attempt(running, consumer_monitor, transport_monitor) {
+              Drained -> AttemptTerminal(terminal)
+              TimedOut -> AttemptCancellationUnconfirmed
+              ProofLost -> AttemptDrainProofLost
+            },
+          )
+        None ->
+          run_loop(
+            selector,
+            running,
+            consumer_monitor,
+            transport_monitor,
+            deadline_timer,
+            machine,
+            state,
+            deliver,
+            response_bytes:,
+          )
+      }
     }
   }
 }
