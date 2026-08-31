@@ -1,10 +1,13 @@
 import core/json
 import core/message
+import etui/buffer
+import etui/geometry.{Position}
 import etui/keys
 import etui/span
 import etui/style
 import etui/widgets/textarea as text_area
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
@@ -17,6 +20,7 @@ import tui_gleam/markdown
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
 import tui_gleam/theme
+import tui_gleam_test/ffi_term
 
 pub fn main() {
   gleeunit.main()
@@ -76,6 +80,109 @@ pub fn active_indicator_advances_at_a_readable_cadence_test() {
   assert tui_gleam.activity_glyph(6) == "◑"
   assert tui_gleam.activity_glyph(9) == "◒"
   assert tui_gleam.activity_glyph(12) == "◐"
+}
+
+pub fn cached_frame_reuses_the_exact_buffer_term_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let cached = #(cached_buffer, Ok(Position(2, 1)))
+  let #(reused, cursor) =
+    tui_gleam.cached_frame(cached, screen, 7, screen, 7, fn() {
+      panic as "a matching frame cache must not rebuild"
+    })
+
+  assert ffi_term.same_term(cached_buffer, reused)
+  assert cursor == Ok(Position(2, 1))
+}
+
+pub fn cached_frame_rebuilds_after_visible_revisions_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let cached = #(cached_buffer, Error(Nil))
+  let changes = [
+    "transcript",
+    "input and cursor",
+    "overlay",
+    "status",
+    "activity indicator",
+  ]
+
+  list.each(changes, fn(label) {
+    let replacement =
+      buffer.set_string(
+        buffer.buffer_new(screen),
+        Position(0, 0),
+        label,
+        style.new(style.Default, style.Default, style.none()),
+      )
+    let #(rebuilt, _) =
+      tui_gleam.cached_frame(cached, screen, 7, screen, 8, fn() {
+        #(replacement, Error(Nil))
+      })
+    assert ffi_term.same_term(replacement, rebuilt)
+    assert !ffi_term.same_term(cached_buffer, rebuilt)
+  })
+}
+
+pub fn cached_frame_rebuilds_for_resize_test() {
+  let before = geometry.rect_new(0, 0, 8, 2)
+  let after = geometry.rect_new(0, 0, 9, 2)
+  let cached_buffer = buffer.buffer_new(before)
+  let replacement = buffer.buffer_new(after)
+  let #(rebuilt, cursor) =
+    tui_gleam.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      before,
+      4,
+      after,
+      4,
+      fn() { #(replacement, Ok(Position(1, 1))) },
+    )
+
+  assert ffi_term.same_term(replacement, rebuilt)
+  assert cursor == Ok(Position(1, 1))
+}
+
+pub fn cached_frame_rebuilds_for_cursor_revision_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let replacement = buffer.buffer_new(screen)
+  let #(rebuilt, cursor) =
+    tui_gleam.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      screen,
+      4,
+      screen,
+      5,
+      fn() { #(replacement, Ok(Position(3, 1))) },
+    )
+
+  assert ffi_term.same_term(replacement, rebuilt)
+  assert !ffi_term.same_term(cached_buffer, rebuilt)
+  assert cursor == Ok(Position(3, 1))
+}
+
+pub fn adaptive_poll_enters_quiet_only_after_hysteresis_test() {
+  assert tui_gleam.poll_timeout_for(0) == 40
+  assert tui_gleam.poll_timeout_for(319) == 40
+  assert tui_gleam.poll_timeout_for(320) == 400
+
+  let after_seven_ticks =
+    [1, 2, 3, 4, 5, 6, 7]
+    |> list.fold(0, fn(quiet_for, _) {
+      tui_gleam.next_quiet_for(quiet_for, 40, False)
+    })
+  assert after_seven_ticks == 280
+  assert tui_gleam.poll_timeout_for(after_seven_ticks) == 40
+  let quiet = tui_gleam.next_quiet_for(after_seven_ticks, 40, False)
+  assert quiet == 320
+  assert tui_gleam.poll_timeout_for(quiet) == 400
+}
+
+pub fn adaptive_poll_activity_immediately_restores_fast_cadence_test() {
+  let reset = tui_gleam.next_quiet_for(320, 400, True)
+  assert reset == 0
+  assert tui_gleam.poll_timeout_for(reset) == 40
 }
 
 pub fn slash_command_palette_filters_and_completes_test() {
