@@ -315,10 +315,16 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let reaper = start_reaper(options, subject)
+    // The public subject may be a registered name which does not exist until
+    // this initializer returns. Give the reaper a direct, private endpoint so
+    // a fast first claim cannot race actor registration and lose the recovery
+    // acknowledgement as "Sending to unregistered name".
+    let recovery_gate = process.new_subject()
+    let reaper = start_reaper(options, recovery_gate)
     let selector =
       process.new_selector()
       |> process.select(subject)
+      |> process.select(recovery_gate)
       |> process.select_monitors(EffectExit)
     let logger = log.for_strand(options.logger, options.strand)
     // Every line this incarnation writes is correlated from here on;
@@ -1440,7 +1446,7 @@ fn with_projection(
 // barrier the old timing argument lacked: recovery cannot dispatch beside a
 // predecessor that is merely scheduled to die.
 
-fn start_reaper(options: Options, strand: Subject(Message)) -> Reaper {
+fn start_reaper(options: Options, recovery_gate: Subject(Message)) -> Reaper {
   let driver = process.self()
   let ready = process.new_subject()
   let pid =
@@ -1457,7 +1463,7 @@ fn start_reaper(options: Options, strand: Subject(Message)) -> Reaper {
       let resolved =
         options.claim_reaper(options.strand, process.self())
         |> await_previous_reapers(4000)
-      process.send(strand, PredecessorsResolved(resolved))
+      process.send(recovery_gate, PredecessorsResolved(resolved))
       reap(driver, commands, [])
     })
   let commands = process.receive_forever(ready)

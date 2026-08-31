@@ -204,8 +204,11 @@ extended by the M3 runtime wave.
     `PredecessorsResolved(result)` (the ledger barrier acknowledgement),
     `PollTick` (the checkpoint poll, which also grants one deferred poll
     permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
-    `ToolDone(token, outcome)`, `EffectExit(down)`. Before the predecessor
-    acknowledgement, the actor retains abort intent but does not drive effects.
+    `ToolDone(token, outcome)`, `EffectExit(down)`. The reaper sends the ledger
+    acknowledgement through a private direct subject because the driver's
+    public registered name does not exist until initialization returns. Before
+    that acknowledgement, the actor retains abort intent but does not drive
+    effects.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
     `Lookup(strand, reply_with)` and `Known(reply_with)`.
