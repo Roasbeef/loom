@@ -241,6 +241,46 @@ pub fn provider_timeout_cancels_before_settling_test() {
   process.kill(rt.tree.supervisor)
 }
 
+pub fn provider_deadline_is_not_refreshed_by_delta_flood_test() {
+  let rec = recorder.start()
+  let flooders = process.new_subject()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 30, request: fn(_spec) {
+        let events = process.new_subject()
+        let flooder = process.spawn_unlinked(fn() { flood_deltas(events, 200) })
+        process.send(flooders, flooder)
+        stream.immediate(events:, cancel: fn() {
+          process.send(events, stream.Failed(error: stream.ProviderCancelled))
+        })
+      }),
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+  let assert Ok(op) = api.prompt(rt, [fake.user("outwait the noisy provider")])
+
+  // Five-millisecond deltas continue well past the 30 ms attempt deadline. A
+  // timeout recreated for each receive would not cancel until the flood ended.
+  let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
+    api.await_result(rt, op, within_ms: 1000)
+    as "provider activity must not renew the attempt deadline"
+  assert error.message == "provider request was cancelled"
+  let assert Ok(flooder) = process.receive(flooders, within: 1000)
+  process.kill(flooder)
+  process.kill(rt.tree.supervisor)
+}
+
 /// A provider owner which dies before publication has not proved drain. The
 /// late monitor can observe only `noproc`, so the safe outcome is to poison the
 /// reaper and stop the session rather than admit recovery beside unknown work.

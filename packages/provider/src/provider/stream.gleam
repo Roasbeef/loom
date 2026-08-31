@@ -9,16 +9,18 @@
 ////   same events, which is what makes it property-testable without
 ////   processes. It is also *bounded*: the carry buffer never exceeds
 ////   `max_line_bytes`, a multi-line event never retains more than
-////   `max_event_bytes`, and every byte is scanned exactly once. A hostile or
-////   broken proxy therefore cannot exhaust memory with either one
-////   terminator-less line or an endless sequence of complete `data:` lines;
-////   the stream fails in-band as a framing defect instead.
+////   `max_event_bytes` or `max_event_data_lines`, a whole attempt feeds at
+////   most `max_response_bytes`, and every byte is scanned exactly once. A
+////   hostile or broken proxy therefore cannot exhaust memory with one
+////   terminator-less line, empty list cells, or an endless sequence of valid
+////   events; the stream fails in-band as a framing defect instead.
 //// - Adapters compose the parser with their own pure accumulator into a
 ////   `ResponseMachine` — a fold over `HttpEvent`s producing
 ////   `StreamEvent`s.
 //// - `run` is the only impure piece: it starts the injected transport,
 ////   folds the machine over the received chunks, forwards deltas as they
-////   appear, and returns the single terminal event.
+////   appear, and returns the single terminal event. One absolute deadline
+////   spans the attempt; receiving a delta never renews it.
 ////
 //// Consumption contract for `StreamHandle` (what WP-E relies on): the
 //// subject delivers zero or more `Delta` events followed by exactly one
@@ -28,7 +30,9 @@
 import core/corruption.{type CorruptionReport}
 import core/message.{type AgentMessage, type Usage, AssistantMessage, Pending}
 import gleam/bit_array
-import gleam/erlang/process.{type Monitor, type Pid, type Selector, type Subject}
+import gleam/erlang/process.{
+  type Monitor, type Pid, type Selector, type Subject, type Timer,
+}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -236,6 +240,17 @@ pub const max_line_bytes = 4_194_304
 /// but never sends that blank line.
 pub const max_event_bytes = 4_194_304
 
+/// The maximum number of `data:` fields retained for one SSE event. The byte
+/// budget alone cannot bound an attacker sending empty fields, since each one
+/// occupies a list cell but contributes almost nothing to the joined payload.
+pub const max_event_data_lines = 4096
+
+/// The maximum cumulative response-body bytes one successful attempt may feed
+/// into its adapter. Sixteen MiB is far above Loom's configured model outputs,
+/// while still bounding completed SSE events, comments, and small deltas across
+/// the whole response rather than one frame at a time.
+pub const max_response_bytes = 16_777_216
+
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
 /// and even UTF-8 codepoints); the field buffers hold the in-progress
@@ -244,16 +259,17 @@ pub opaque type SseParser {
   /// Invariants: `carry` contains no complete line except possibly a
   /// trailing lone `\r` awaiting a potential `\n`, and never exceeds
   /// `max_line_bytes`; `data_bytes` is the joined byte size of `data_lines`
-  /// and never exceeds `max_event_bytes`; the first `scanned` bytes of `carry` are known to
-  /// contain no line terminator, so re-feeding resumes past them and
-  /// every byte is examined once; `data_lines` is in reverse arrival
-  /// order.
+  /// and never exceeds `max_event_bytes`; `data_line_count` never exceeds
+  /// `max_event_data_lines`; the first `scanned` bytes of `carry` are known to
+  /// contain no line terminator, so re-feeding resumes past them and every byte
+  /// is examined once; `data_lines` is in reverse arrival order.
   SseParser(
     carry: BitArray,
     scanned: Int,
     event_name: Option(String),
     data_lines: List(String),
     data_bytes: Int,
+    data_line_count: Int,
   )
 }
 
@@ -274,6 +290,7 @@ pub fn new_parser() -> SseParser {
     event_name: None,
     data_lines: [],
     data_bytes: 0,
+    data_line_count: 0,
   )
 }
 
@@ -442,23 +459,40 @@ fn add_data(parser: SseParser, value: String) -> #(SseParser, List(SseEvent)) {
     [_, ..] -> 1
   }
   let data_bytes = parser.data_bytes + separator + string.byte_size(value)
-  case data_bytes > max_event_bytes {
+  let data_line_count = parser.data_line_count + 1
+  case data_bytes > max_event_bytes || data_line_count > max_event_data_lines {
     True -> #(reset_event(parser), [
-      SseMalformed(
-        reason: "sse event data exceeded "
-        <> int.to_string(max_event_bytes)
-        <> " bytes before a blank-line terminator",
-      ),
+      SseMalformed(reason: case data_line_count > max_event_data_lines {
+        True ->
+          "sse event exceeded "
+          <> int.to_string(max_event_data_lines)
+          <> " data fields before a blank-line terminator"
+        False ->
+          "sse event data exceeded "
+          <> int.to_string(max_event_bytes)
+          <> " bytes before a blank-line terminator"
+      }),
     ])
     False -> #(
-      SseParser(..parser, data_lines: [value, ..parser.data_lines], data_bytes:),
+      SseParser(
+        ..parser,
+        data_lines: [value, ..parser.data_lines],
+        data_bytes:,
+        data_line_count:,
+      ),
       [],
     )
   }
 }
 
 fn reset_event(parser: SseParser) -> SseParser {
-  SseParser(..parser, event_name: None, data_lines: [], data_bytes: 0)
+  SseParser(
+    ..parser,
+    event_name: None,
+    data_lines: [],
+    data_bytes: 0,
+    data_line_count: 0,
+  )
 }
 
 // --- the response machine and process pump ------------------------------
@@ -844,6 +878,7 @@ pub type AttemptOutcome {
 type AttemptEvent {
   Http(event: http.HttpEvent)
   Cancelled
+  DeadlineExpired
   ConsumerExited(down: process.Down)
   TransportExited(down: process.Down)
 }
@@ -851,8 +886,10 @@ type AttemptEvent {
 /// Runs one request attempt to completion on the calling request-owner
 /// process. It starts a monitorable transport, folds the response machine,
 /// selects cancellation and consumer/transport death alongside HTTP events,
-/// and returns one outcome to the fallback owner. Every attempt gets a fresh
-/// HTTP subject, so late events from a cancelled attempt cannot enter the next.
+/// and returns one outcome to the fallback owner. `within` is one absolute
+/// deadline for the whole attempt, not an idle timeout refreshed by chunks.
+/// Every attempt gets a fresh HTTP subject, so late events from a cancelled
+/// attempt cannot enter the next.
 ///
 /// The gateway calls this from its pump process; tests can call it
 /// directly with a fixture transport.
@@ -935,11 +972,15 @@ pub fn run_tracked(
       started(running)
       let consumer_monitor = process.monitor(consumer)
       let transport_monitor = process.monitor(http.owner(running))
+      let deadline = process.new_subject()
+      let deadline_timer =
+        process.send_after(deadline, int.max(timeout, 0), Nil)
       begin()
       let selector =
         process.new_selector()
         |> process.select_map(http_events, Http)
         |> process.select_map(control, fn(_cancel) { Cancelled })
+        |> process.select_map(deadline, fn(_nil) { DeadlineExpired })
         |> process.select_specific_monitor(consumer_monitor, ConsumerExited)
         |> process.select_specific_monitor(transport_monitor, TransportExited)
       run_loop(
@@ -947,10 +988,11 @@ pub fn run_tracked(
         running,
         consumer_monitor,
         transport_monitor,
+        deadline_timer,
         machine,
         machine.init,
         deliver,
-        timeout,
+        response_bytes: 0,
       )
     }
   }
@@ -961,36 +1003,44 @@ fn run_loop(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
+  deadline_timer: Timer,
   machine: ResponseMachine(state),
   state: state,
   deliver: fn(Delta) -> Nil,
-  timeout: Int,
+  response_bytes response_bytes: Int,
 ) -> AttemptOutcome {
-  case process.selector_receive(selector, timeout) {
-    Error(Nil) -> {
-      case stop_attempt(running, consumer_monitor, transport_monitor) {
-        Drained ->
-          AttemptTerminal(
-            Failed(TransportFailed(reason: "timed out waiting for the provider")),
-          )
-        TimedOut -> AttemptCancellationUnconfirmed
-        ProofLost -> AttemptDrainProofLost
-      }
-    }
-    Ok(Cancelled) ->
-      case stop_attempt(running, consumer_monitor, transport_monitor) {
-        Drained -> AttemptCancelled
-        TimedOut -> AttemptCancellationUnconfirmed
-        ProofLost -> AttemptDrainProofLost
-      }
-    Ok(ConsumerExited(down: _)) -> {
+  case process.selector_receive_forever(selector) {
+    DeadlineExpired ->
+      finish_outcome(
+        deadline_timer,
+        case stop_attempt(running, consumer_monitor, transport_monitor) {
+          Drained ->
+            AttemptTerminal(
+              Failed(TransportFailed(
+                reason: "timed out waiting for the provider",
+              )),
+            )
+          TimedOut -> AttemptCancellationUnconfirmed
+          ProofLost -> AttemptDrainProofLost
+        },
+      )
+    Cancelled ->
+      finish_outcome(
+        deadline_timer,
+        case stop_attempt(running, consumer_monitor, transport_monitor) {
+          Drained -> AttemptCancelled
+          TimedOut -> AttemptCancellationUnconfirmed
+          ProofLost -> AttemptDrainProofLost
+        },
+      )
+    ConsumerExited(down: _) -> {
       let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
-      ConsumerGone
+      finish_outcome(deadline_timer, ConsumerGone)
     }
-    Ok(TransportExited(down:)) -> {
+    TransportExited(down:) -> {
       process.demonitor_process(consumer_monitor)
       process.demonitor_process(transport_monitor)
-      case drain_outcome(down) {
+      finish_outcome(deadline_timer, case drain_outcome(down) {
         Drained ->
           AttemptTerminal(
             Failed(TransportFailed(
@@ -999,43 +1049,63 @@ fn run_loop(
           )
         TimedOut -> AttemptCancellationUnconfirmed
         ProofLost -> AttemptDrainProofLost
-      }
+      })
     }
-    Ok(Http(http.ResponseStatus(status:, headers:))) ->
+    Http(http.ResponseStatus(status:, headers:)) ->
       run_loop(
         selector,
         running,
         consumer_monitor,
         transport_monitor,
+        deadline_timer,
         machine,
         machine.on_status(state, status, headers),
         deliver,
-        timeout,
+        response_bytes:,
       )
-    Ok(Http(http.ResponseChunk(chunk:))) -> {
-      let #(state, events) = machine.on_chunk(state, chunk)
-      case forward(events, deliver) {
-        Some(terminal) -> {
-          case stop_attempt(running, consumer_monitor, transport_monitor) {
-            Drained -> AttemptTerminal(terminal)
-            TimedOut -> AttemptCancellationUnconfirmed
-            ProofLost -> AttemptDrainProofLost
+    Http(http.ResponseChunk(chunk:)) -> {
+      let response_bytes = response_bytes + bit_array.byte_size(chunk)
+      case response_bytes > max_response_bytes {
+        True ->
+          finish_outcome(
+            deadline_timer,
+            case stop_attempt(running, consumer_monitor, transport_monitor) {
+              Drained -> AttemptTerminal(response_too_large())
+              TimedOut -> AttemptCancellationUnconfirmed
+              ProofLost -> AttemptDrainProofLost
+            },
+          )
+        False -> {
+          let #(state, events) = machine.on_chunk(state, chunk)
+          case forward(events, deliver) {
+            Some(terminal) ->
+              finish_outcome(
+                deadline_timer,
+                case
+                  stop_attempt(running, consumer_monitor, transport_monitor)
+                {
+                  Drained -> AttemptTerminal(terminal)
+                  TimedOut -> AttemptCancellationUnconfirmed
+                  ProofLost -> AttemptDrainProofLost
+                },
+              )
+            None ->
+              run_loop(
+                selector,
+                running,
+                consumer_monitor,
+                transport_monitor,
+                deadline_timer,
+                machine,
+                state,
+                deliver,
+                response_bytes:,
+              )
           }
         }
-        None ->
-          run_loop(
-            selector,
-            running,
-            consumer_monitor,
-            transport_monitor,
-            machine,
-            state,
-            deliver,
-            timeout,
-          )
       }
     }
-    Ok(Http(http.ResponseEnd)) -> {
+    Http(http.ResponseEnd) -> {
       // A well-behaved machine's on_end always yields a terminal once the
       // status is known; None here means the body ended before the
       // adapter ever saw enough to settle (e.g. status never arrived),
@@ -1045,26 +1115,51 @@ fn run_loop(
         None ->
           Failed(StreamDisconnected(context: "response ended without settling"))
       }
-      case finish_attempt(consumer_monitor, transport_monitor) {
-        Drained -> AttemptTerminal(terminal)
-        TimedOut -> AttemptCancellationUnconfirmed
-        ProofLost -> AttemptDrainProofLost
-      }
+      finish_outcome(
+        deadline_timer,
+        case finish_attempt(consumer_monitor, transport_monitor) {
+          Drained -> AttemptTerminal(terminal)
+          TimedOut -> AttemptCancellationUnconfirmed
+          ProofLost -> AttemptDrainProofLost
+        },
+      )
     }
-    Ok(Http(http.RequestFailed(reason:))) -> {
+    Http(http.RequestFailed(reason:)) -> {
       // Mirrors on_end: a machine that has already settled (acc.done)
       // answers with no events, so this default only fires pre-settlement.
       let terminal = case forward(machine.on_failure(state, reason), deliver) {
         Some(terminal) -> terminal
         None -> Failed(TransportFailed(reason:))
       }
-      case finish_attempt(consumer_monitor, transport_monitor) {
-        Drained -> AttemptTerminal(terminal)
-        TimedOut -> AttemptCancellationUnconfirmed
-        ProofLost -> AttemptDrainProofLost
-      }
+      finish_outcome(
+        deadline_timer,
+        case finish_attempt(consumer_monitor, transport_monitor) {
+          Drained -> AttemptTerminal(terminal)
+          TimedOut -> AttemptCancellationUnconfirmed
+          ProofLost -> AttemptDrainProofLost
+        },
+      )
     }
   }
+}
+
+fn response_too_large() -> StreamEvent {
+  Failed(
+    MalformedStream(corruption.report(
+      at: "provider/stream.run",
+      on: "response body",
+      expected: "at most " <> int.to_string(max_response_bytes) <> " bytes",
+      context: "provider response exceeded its cumulative byte budget",
+    )),
+  )
+}
+
+// Retire the one-shot deadline whenever any other terminal wins. Without this
+// cancellation, a fallback walk would retain one stale timer message per
+// completed attempt in the pump mailbox until the whole request ended.
+fn finish_outcome(timer: Timer, outcome: AttemptOutcome) -> AttemptOutcome {
+  let _cancelled = process.cancel_timer(timer)
+  outcome
 }
 
 // Cancels live transport work before forgetting either monitor. Cancellation

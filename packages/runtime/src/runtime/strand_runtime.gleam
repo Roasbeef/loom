@@ -47,7 +47,7 @@ import core/register
 import core/tx
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Pid, type Subject, type Timer}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
@@ -190,15 +190,8 @@ type ProviderOwnership {
 type ProviderWaitEvent {
   ProviderStream(stream.StreamEvent)
   StopProvider
+  ProviderDeadline
   ProviderCancelExpired
-}
-
-// Timeout and cooperative stop have different ownership consequences. A
-// proper type keeps that distinction visible instead of assigning protocol
-// meaning to `True` and `False` at every cancellation branch.
-type ProviderWaitFailure {
-  ProviderStopped
-  ProviderWaitExpired
 }
 
 // Registration makes the named mailbox reachable before the drain claim can
@@ -1460,11 +1453,12 @@ fn with_projection(
 // The reaper invokes every adopted effect's stop capability and stays alive
 // until every linked exit has arrived. Tool effects use a hard stop; provider
 // effects cancel cooperatively and do not exit until the public stream owner
-// has drained. The long-lived strand registry remembers all still-live reapers
-// for a logical strand; a replacement driver claims its own reaper, then waits
-// for every older one to disappear before it nudges recovery. This is the
-// barrier the old timing argument lacked: recovery cannot dispatch beside a
-// predecessor that is merely scheduled to die.
+// has drained. The drain ledger remembers all still-live reapers for a logical
+// strand independently of the restartable name registry; a replacement driver
+// claims its own reaper, then waits for every older one to disappear before it
+// nudges recovery. This is the barrier the old timing argument lacked:
+// recovery cannot dispatch beside a predecessor that is merely scheduled to
+// die.
 
 fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
   let driver = process.self()
@@ -1857,11 +1851,36 @@ fn await_provider(
   driver: Pid,
   timeout_ms: Int,
 ) -> Option(stream.StreamEvent) {
-  case next_provider_event(handle, stop, timeout_ms) {
-    Ok(stream.Delta(..)) -> await_provider(handle, stop, driver, timeout_ms)
-    Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
+  let deadline = process.new_subject()
+  let deadline_timer = process.send_after(deadline, timeout_ms, Nil)
+  let selector =
+    process.new_selector()
+    |> process.select_map(handle.events, ProviderStream)
+    |> process.select_map(stop, fn(_nil) { StopProvider })
+    |> process.select_map(deadline, fn(_nil) { ProviderDeadline })
+  await_provider_selected(selector, handle, stop, driver, deadline_timer)
+}
+
+// Retain one selector carrying one scheduled deadline across every delta. A
+// per-receive timeout would turn ordinary stream activity into a lease which a
+// broken endpoint could renew forever without ever settling the operation.
+fn await_provider_selected(
+  selector: process.Selector(ProviderWaitEvent),
+  handle: stream.StreamHandle,
+  stop: Subject(Nil),
+  driver: Pid,
+  deadline_timer: Timer,
+) -> Option(stream.StreamEvent) {
+  case process.selector_receive_forever(selector) {
+    ProviderStream(stream.Delta(..)) ->
+      await_provider_selected(selector, handle, stop, driver, deadline_timer)
+    ProviderStream(stream.Settled(..) as terminal)
+    | ProviderStream(stream.Failed(..) as terminal) -> {
+      retire_provider_deadline(deadline_timer)
       Some(terminal)
-    Error(ProviderStopped) -> {
+    }
+    StopProvider -> {
+      retire_provider_deadline(deadline_timer)
       stream.cancel(handle)
       case process.is_alive(driver) {
         True -> await_provider_cancel(handle, stop, driver)
@@ -1872,11 +1891,24 @@ fn await_provider(
         False -> None
       }
     }
-    Error(ProviderWaitExpired) -> {
+    ProviderDeadline -> {
+      retire_provider_deadline(deadline_timer)
       stream.cancel(handle)
       await_provider_cancel(handle, stop, driver)
     }
+    ProviderCancelExpired -> {
+      retire_provider_deadline(deadline_timer)
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+    }
   }
+}
+
+// A provider may settle long before its deadline. Cancelling that timer here
+// prevents completed effects from leaving timer resources and stale messages
+// behind while the effect process publishes and drains its result.
+fn retire_provider_deadline(timer: Timer) -> Nil {
+  let _cancelled = process.cancel_timer(timer)
+  Nil
 }
 
 fn await_provider_cancel(
@@ -1915,25 +1947,8 @@ fn await_provider_cancel_selected(
       }
     ProviderCancelExpired ->
       Some(stream.Failed(error: stream.CancellationUnconfirmed))
-  }
-}
-
-// The private selector event keeps stream traffic and the reaper's cooperative
-// stop distinct. `ProviderWaitFailure` carries the distinction into the
-// timeout branch without assigning protocol meaning to a Boolean.
-fn next_provider_event(
-  handle: stream.StreamHandle,
-  stop: Subject(Nil),
-  within_ms: Int,
-) -> Result(stream.StreamEvent, ProviderWaitFailure) {
-  let selector =
-    process.new_selector()
-    |> process.select_map(handle.events, ProviderStream)
-    |> process.select_map(stop, fn(_nil) { StopProvider })
-  case process.selector_receive(selector, within_ms) {
-    Ok(ProviderStream(event)) -> Ok(event)
-    Ok(StopProvider) -> Error(ProviderStopped)
-    Ok(ProviderCancelExpired) | Error(Nil) -> Error(ProviderWaitExpired)
+    ProviderDeadline ->
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
   }
 }
 

@@ -606,6 +606,14 @@ The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.
 
+Each attempt has one absolute deadline from transport start through settlement
+and one 16 MiB cumulative response budget. Neither valid deltas nor a sequence
+of small completed SSE events renews or escapes those bounds. Inside the pure
+parser, a line and one event are each capped at 4 MiB, while a separate 4096
+field limit covers empty `data:` lines whose list cells consume memory without
+adding payload bytes. Every overflow is an in-band malformed-stream terminal,
+followed by the same cancel-and-drain path as any other terminal race.
+
 An owner-authored `ProviderCancelled` proves cancellation won. A guard or
 wrapper whose inner owner stays silent for the fixed grace instead emits
 terminal `CancellationUnconfirmed`; uncertainty cannot authorize a fallback

@@ -39,7 +39,9 @@ processful shell around that sans-io core. WP-F.
   the handle first and grant the permit only after adoption succeeds.
 - `provider/stream.SseParser` — pure, bounded, incremental: bytes in,
   `SseEvent`s out, carry state threaded. Same bytes in any chunking yield
-  the same events.
+  the same events. A line and one event are each bounded to 4 MiB, one event
+  may retain at most 4096 `data:` fields, and one attempt may feed at most
+  16 MiB of response body.
 - `provider/stream.ResponseMachine(state)` — a fold over `HttpEvent`s
   producing `StreamEvent`s; each adapter supplies one.
 - `provider/http.{Transport, RunningRequest, HttpRequest, HttpEvent}` — the
@@ -96,7 +98,8 @@ processful shell around that sans-io core. WP-F.
   its pid, rather than a crashable worker, is the public drain witness. The
   guard monitors the direct consumer and retains each active transport
   capability the pump publishes. The pump selects active-transport Down,
-  attempt timeout, and private per-attempt HTTP events. Together they deliver
+  absolute attempt deadline, cumulative response budget, and private
+  per-attempt HTTP events. Together they deliver
   `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
@@ -137,7 +140,9 @@ processful shell around that sans-io core. WP-F.
   delivery. Diagnostic strings are bounded in the same pass.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
-  terminal. The gateway owner is the sole terminal sender.
+  terminal. The gateway owner is the sole terminal sender. Response activity
+  does not renew the attempt deadline, and the cumulative 16 MiB response cap
+  includes every chunk rather than only bytes retained by the SSE parser.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production native owner retains the exact OTP request id, receives the

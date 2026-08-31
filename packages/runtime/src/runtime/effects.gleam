@@ -88,8 +88,8 @@ pub type ProviderSurface {
   ProviderSurface(
     /// Starts one request and returns its live stream.
     request: fn(RequestSpec) -> StreamHandle,
-    /// How long the effect process waits for the terminal event, in
-    /// milliseconds, before settling the attempt as a transport failure.
+    /// The absolute milliseconds allowed for the effect to reach a terminal
+    /// event. Deltas do not renew this deadline.
     timeout_ms: Int,
   )
   /// A surface which can publish a parked owner before provider work starts.
@@ -98,7 +98,8 @@ pub type ProviderSurface {
     request: fn(RequestSpec) -> StreamHandle,
     /// Creates the owner while leaving provider work behind its begin gate.
     prepare: fn(RequestSpec) -> PreparedStream,
-    /// How long the effect process waits for the terminal event.
+    /// The absolute milliseconds allowed for the effect to reach a terminal
+    /// event. Deltas do not renew this deadline.
     timeout_ms: Int,
   )
 }

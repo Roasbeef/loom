@@ -334,12 +334,13 @@ extended by the M3 runtime wave.
   incarnation that created its `Live` entry. Sending those messages through
   the stable name would let a predecessor remove a replacement's live worker.
 - **Provider ownership continues below the effect process.** A provider
-  effect that reaches its receive deadline cancels its stream and waits a
+  effect has one absolute receive deadline which deltas cannot renew. Reaching
+  it cancels the stream and waits a
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a
   locally reported `CancellationUnconfirmed` are both terminal under retry
   classification; the latter says teardown could not be proved and therefore
-  cannot authorize another attempt. The grace is one scheduled timer, not a
-  per-event idle timeout, so late deltas cannot extend it. The effect withholds
+  cannot authorize another attempt. The acknowledgement grace is a second,
+  single scheduled timer, so late deltas cannot extend it. The effect withholds
   `ProviderDone` until its public stream owner exits, so the current driver
   cannot progress beside the old subtree either. An abort keeps the driver alive and spends the
   acknowledgement grace because a real terminal may already be queued; its

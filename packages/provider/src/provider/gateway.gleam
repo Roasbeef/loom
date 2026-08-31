@@ -130,8 +130,8 @@ pub opaque type Gateway {
   /// Invariants: `providers` hold unique names (later registrations of a
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
-  /// `attempt_timeout_ms` is positive and bounds each idle wait on one
-  /// attempt's response.
+  /// `attempt_timeout_ms` is positive and bounds one attempt from transport
+  /// start through settlement. Response activity does not renew the deadline.
   Gateway(
     providers: List(ProviderConfig),
     routes: List(#(Role, List(ResolvedModel))),
@@ -209,7 +209,8 @@ pub fn route(
   Gateway(..gateway, routes:)
 }
 
-/// Overrides the per-attempt idle timeout (milliseconds).
+/// Overrides the absolute per-attempt deadline in milliseconds. Response
+/// chunks do not renew this deadline.
 ///
 /// ## Examples
 ///

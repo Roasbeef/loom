@@ -84,6 +84,11 @@ global handler scan survives manager or handler-supervisor replacement and
 cannot pin the native owner's cancellation mailbox on one connecting handler.
 Both cancellation terminals stop the fallback walk.
 
+The attempt timeout is one absolute deadline from transport start through
+settlement, not an idle timeout refreshed by each chunk. A provider therefore
+cannot keep an attempt, its monitors, and its billing path alive forever by
+emitting deltas without a terminal event.
+
 `ResponseMachine` is the seam each adapter fills: `init`, `on_status`,
 `on_chunk`, `on_end`, `on_failure`, all pure. A body that ends without
 ever settling is itself a disconnection, not a silent success, so
@@ -107,14 +112,19 @@ stateDiagram-v2
   Fields --> Dispatched: a blank line
   Dispatched --> Empty: SseMessage(event, data) emitted
   Buffering --> Overflowed: carry would exceed max_line_bytes (4 MiB)
+  Fields --> Overflowed: event exceeds 4 MiB or 4096 data fields
   Overflowed --> Empty: SseMalformed emitted, buffered line discarded, parser stays usable
 ```
 
 Two properties are worth stating because they are defences, not
 optimizations. The carry buffer never exceeds `max_line_bytes`, so a
 hostile or broken proxy streaming a line that never terminates fails the
-stream in band as a framing defect rather than exhausting memory. And
-every byte is scanned exactly once — `feed` resumes past the prefix an
+stream in band as a framing defect rather than exhausting memory. One event
+is independently bounded to 4 MiB and 4096 `data:` fields, because empty fields
+consume list cells without consuming payload bytes. The whole successful HTTP
+response is capped at 16 MiB, so a peer cannot evade the per-event limits with
+an endless sequence of small valid events. And every byte is scanned exactly
+once — `feed` resumes past the prefix an
 earlier feed already ruled out as terminator-free — so the same proxy
 cannot drive quadratic re-scanning either.
 

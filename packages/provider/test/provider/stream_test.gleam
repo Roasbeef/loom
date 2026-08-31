@@ -176,6 +176,17 @@ pub fn terminated_data_lines_cannot_grow_one_event_without_bound_test() {
   assert after == [stream.SseMessage(event: None, data: "after")]
 }
 
+pub fn empty_data_lines_are_bounded_by_count_test() {
+  // Empty fields contribute no payload bytes but each still occupies one list
+  // cell. The independent count cap keeps that representation bounded.
+  let transcript =
+    string.repeat("data\n", stream.max_event_data_lines + 1)
+    |> bit_array.from_string()
+  let #(_parser, events) = stream.feed(stream.new_parser(), transcript)
+  let assert [stream.SseMalformed(reason:)] = events
+  assert string.contains(reason, "data fields")
+}
+
 // --- chunk-boundary invariance ------------------------------------------
 
 fn transcript_bytes() -> BitArray {
@@ -355,6 +366,50 @@ pub fn run_times_out_in_band_test() {
         reason: "timed out waiting for the provider",
       )),
     )
+  assert receive_from(cancelled, 100) == Ok(Nil)
+}
+
+pub fn run_deadline_is_not_refreshed_by_active_chunks_test() {
+  let cancelled = process_subject()
+  let active = repeating_transport(cancelled, <<"x":utf8>>, every_ms: 1)
+  let outcome =
+    stream.run(
+      active,
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 40,
+    )
+  assert outcome
+    == stream.AttemptTerminal(
+      stream.Failed(stream.TransportFailed(
+        reason: "timed out waiting for the provider",
+      )),
+    )
+  assert receive_from(cancelled, 100) == Ok(Nil)
+}
+
+pub fn run_rejects_a_response_over_the_cumulative_byte_budget_test() {
+  let cancelled = process_subject()
+  let oversized =
+    string.repeat("x", stream.max_response_bytes + 1)
+    |> bit_array.from_string()
+  let outcome =
+    stream.run(
+      repeating_transport(cancelled, oversized, every_ms: 1000),
+      http.HttpRequest(method: "POST", url: "http://x", headers: [], body: ""),
+      echo_machine(),
+      fn(_delta) { Nil },
+      control: process_subject(),
+      consumer: process.self(),
+      within: 1000,
+    )
+  let assert stream.AttemptTerminal(stream.Failed(stream.MalformedStream(
+    report: report,
+  ))) = outcome
+  assert string.contains(report.context, "cumulative byte budget")
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
@@ -704,6 +759,48 @@ fn silent_transport(cancelled: process.Subject(Nil)) -> http.Transport {
       ),
     )
   })
+}
+
+fn repeating_transport(
+  cancelled: process.Subject(Nil),
+  chunk: BitArray,
+  every_ms every_ms: Int,
+) -> http.Transport {
+  http.Transport(prepare_streaming: fn(_request, events) {
+    let ready = process.new_subject()
+    let owner =
+      process.spawn_unlinked(fn() {
+        let begin = process.new_subject()
+        let stop = process.new_subject()
+        process.send(ready, #(begin, stop))
+        let _begin = process.receive_forever(begin)
+        process.send(events, http.ResponseStatus(status: 200, headers: []))
+        repeat_chunks(events, stop, chunk, every_ms)
+      })
+    let #(begin, stop) = process.receive_forever(ready)
+    Ok(
+      http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() {
+          process.send(cancelled, Nil)
+          process.send(stop, Nil)
+        }),
+        begin: fn() { process.send(begin, Nil) },
+      ),
+    )
+  })
+}
+
+fn repeat_chunks(
+  events: process.Subject(http.HttpEvent),
+  stop: process.Subject(Nil),
+  chunk: BitArray,
+  every_ms: Int,
+) -> Nil {
+  process.send(events, http.ResponseChunk(chunk:))
+  case process.receive(stop, within: every_ms) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> repeat_chunks(events, stop, chunk, every_ms)
+  }
 }
 
 pub fn drain_witness_retains_normal_reason_across_owner_exit_test() {
