@@ -48,10 +48,10 @@ request-local unlimited handler allowance also prevents this dedicated request
 from entering the manager's queue. The response callback pauses inside the
 handler until the owner acknowledges that its exact monitor is installed, so a
 fast terminal cannot delete that row first. The normal capture path remains one
-O(1) lookup. If the manager generation changes in the admission-to-capture
-interval, a recovery-only scan asks `httpc_handler` processes for their current
-request with a bounded call. A busy handler keeps recovery inconclusive and the
-owner alive rather than authorizing drain. Provider ownership above that raw
+O(1) lookup. Any miss enters a deadline-bounded scan which asks `httpc_handler`
+processes for their current request. A busy handler, no match, or an unfamiliar
+private layout keeps recovery inconclusive and the owner alive rather than
+authorizing drain; expiry destroys the witness abnormally. Provider ownership above that raw
 mailbox, fallback, deadlines, and terminal arbitration remain typed Gleam.
 
 The runtime closes both ends of its former publication gap. Production exposes
@@ -94,14 +94,19 @@ The Linux gate builds and smokes both release profiles so its retained log can
 replace the distribution guide's old OTP 28 measurements with observed OTP 29
 values.
 
-The post-rebase focused gates are green: provider 134, runtime 85, client 573,
+The post-rebase focused gates are green: provider 136, runtime 85, client 573,
 and conformance 67. The first full run reached conformance with every preceding
 suite green, then Hex rate-limited dependency resolution. An immediate focused
 retry passed all 67 conformance tests, and the next complete `make check` exited
 zero. `make e2e` also exits zero and `make e2e-codemode` passes 210 tests. The
 OTP 29 release and distribution build pass locally, including the no-host-
-Erlang smoke and bundled SQLite NIF; Linux artifact measurements, refreshed
-cold review, and exact-head CI remain required before merge.
+Erlang smoke and bundled SQLite NIF. The first 200-seed soak exposed two
+one-second ownership-handshake timeouts: under scheduler pressure a live reaper
+could answer late and make a provider effect disappear without a terminal.
+Those handshakes now wait for either their typed acknowledgement or the
+reaper's monitored death, and the complete four-chunk 200-seed rerun passes.
+Linux artifact measurements, refreshed cold review, and exact-head CI remain
+required before merge.
 
 ## Platform-strict enforcement is the production default
 

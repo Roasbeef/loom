@@ -1664,12 +1664,14 @@ fn adopt_and_run(
     True -> {
       let reply = process.new_subject()
       process.send(commands, Adopt(process.self(), stop, reply))
+      // Admission is bounded by the reaper's monitor, not a scheduling guess.
+      // Timing out a live but delayed reaper would make this effect disappear
+      // without either running its body or reporting a terminal result.
       let accepted =
         process.new_selector()
         |> process.select_map(reply, fn(value) { value })
         |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
-        |> process.selector_receive(1000)
-        |> result.unwrap(False)
+        |> process.selector_receive_forever()
       process.demonitor_process(reaper_monitor)
       case accepted {
         True -> {
@@ -1693,12 +1695,14 @@ fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
   let reaper_monitor = process.monitor(reaper_pid)
   let reply = process.new_subject()
   process.send(commands, TrackProvider(process.self(), handle, reply))
+  // The reply commits an ownership transfer. Only that reply or the reaper's
+  // Down can resolve it; a wall-clock timeout cannot tell whether the reaper
+  // recorded the owner and would create an ambiguous double custodian.
   let accepted =
     process.new_selector()
     |> process.select_map(reply, fn(value) { value })
     |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
-    |> process.selector_receive(1000)
-    |> result.unwrap(False)
+    |> process.selector_receive_forever()
   process.demonitor_process(reaper_monitor)
   accepted
 }
