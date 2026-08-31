@@ -34,6 +34,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tui/agents
+import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
@@ -76,6 +77,7 @@ type Overlay {
 
 type Launch {
   Demo
+  Local(bootstrap.Options)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 }
@@ -240,37 +242,17 @@ pub fn main() {
     )
   let initial = case parse_launch(argv.load().arguments) {
     Demo -> base
+    Local(options) ->
+      case bootstrap.resolve(options) {
+        Error(reason) ->
+          append_error(Model(..base, notice: "local startup failed"), reason)
+        Ok(bootstrap.Target(address:, session:, token:)) ->
+          connect_remote(base, inbox, address, session, token)
+      }
     Invalid(reason) ->
       append_error(Model(..base, notice: "invalid launch"), reason)
     Remote(address, session, token) ->
-      case connection.connect(address, token, inbox) {
-        Error(reason) ->
-          append_error(
-            Model(
-              ..base,
-              session:,
-              strands: [],
-              agent_summary: agents.summary([]),
-            ),
-            "connect: " <> reason,
-          )
-        Ok(socket) -> {
-          connection.send(socket, protocol.subscribe(1, session))
-          connection.send(socket, protocol.models(2))
-          connection.send(socket, protocol.config(3, base.active_strand))
-          Model(
-            ..base,
-            session:,
-            socket: Some(socket),
-            next_id: 4,
-            models: [],
-            strands: [],
-            agent_summary: agents.summary([]),
-            transcript: [Line(System, "connecting to session " <> session)],
-            notice: "connecting",
-          )
-        }
-      }
+      connect_remote(base, inbox, address, session, token)
   }
   let _ =
     app.run_buffered_cursor_adaptive(
@@ -286,7 +268,8 @@ pub fn main() {
 
 fn parse_launch(arguments: List(String)) -> Launch {
   case arguments {
-    [] | ["--demo"] -> Demo
+    [] -> Local(default_bootstrap_options())
+    ["--demo"] -> Demo
     _ ->
       case flag_value(arguments, "--addr"), flag_value(arguments, "--session") {
         Ok(address), Ok(session) ->
@@ -294,8 +277,47 @@ fn parse_launch(arguments: List(String)) -> Launch {
             Ok(token) -> Remote(address:, session:, token:)
             Error(reason) -> Invalid(reason)
           }
-        Error(_), _ -> Invalid(launch_usage())
-        _, Error(_) -> Invalid(launch_usage())
+        Error(_), Ok(_) | Ok(_), Error(_) -> Invalid(launch_usage())
+        Error(_), Error(_) ->
+          case parse_local_options(arguments, default_bootstrap_options()) {
+            Ok(options) -> Local(options)
+            Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+          }
+      }
+  }
+}
+
+fn default_bootstrap_options() -> bootstrap.Options {
+  bootstrap.Options("", "", "", "")
+}
+
+fn parse_local_options(
+  arguments: List(String),
+  options: bootstrap.Options,
+) -> Result(bootstrap.Options, String) {
+  case arguments {
+    [] -> Ok(options)
+    [flag] -> Error("missing value for " <> flag)
+    [flag, value, ..rest] ->
+      case flag {
+        "--workspace" ->
+          parse_local_options(
+            rest,
+            bootstrap.Options(..options, workspace: value),
+          )
+        "--session-file" ->
+          parse_local_options(
+            rest,
+            bootstrap.Options(..options, session_file: value),
+          )
+        "--server" ->
+          parse_local_options(rest, bootstrap.Options(..options, server: value))
+        "--state-dir" ->
+          parse_local_options(
+            rest,
+            bootstrap.Options(..options, state_directory: value),
+          )
+        _ -> Error("unknown local launch option " <> flag)
       }
   }
 }
@@ -313,8 +335,42 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 }
 
 fn launch_usage() -> String {
-  "usage: tui --addr <websocket-url> --session <id> "
+  "usage: tui [--workspace <path>] [--session-file <path>] "
+  <> "[--server <path>] [--state-dir <path>]\n"
+  <> "       tui --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
+}
+
+fn connect_remote(
+  base: Model,
+  inbox: Subject(connection.Message),
+  address: String,
+  session: String,
+  token: String,
+) -> Model {
+  case connection.connect(address, token, inbox) {
+    Error(reason) ->
+      append_error(
+        Model(..base, session:, strands: [], agent_summary: agents.summary([])),
+        "connect: " <> reason,
+      )
+    Ok(socket) -> {
+      connection.send(socket, protocol.subscribe(1, session))
+      connection.send(socket, protocol.models(2))
+      connection.send(socket, protocol.config(3, base.active_strand))
+      Model(
+        ..base,
+        session:,
+        socket: Some(socket),
+        next_id: 4,
+        models: [],
+        strands: [],
+        agent_summary: agents.summary([]),
+        transcript: [Line(System, "connecting to session " <> session)],
+        notice: "connecting",
+      )
+    }
+  }
 }
 
 fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
