@@ -259,6 +259,16 @@ second ERTS: the client host needs compatible Erlang/OTP 29 on `PATH`. This is
 not the server's installation contract. The server tarball remains
 self-contained and still needs no host Erlang installation.
 
+When both downloads are installed on one machine, `loom-tui` can start a local
+server as a convenience. It finds a sibling `loom-server` or release
+launcher, an explicit `--server` or `LOOM_SERVER`, or `loom-server` on `PATH`,
+then attaches over the same loopback websocket an explicit client would use. It neither
+loads a workspace `loom.toml` nor uses the workspace as the server's working
+directory, because both surfaces can select host-side processes. Nothing is
+linked or bundled together: a remote
+client still carries no server runtime, a headless server still carries no
+terminal, and `--addr` remains the attachment path between machines.
+
 ## Cross-compilation: there is none
 
 A release targets one platform, and `make dist` does not produce

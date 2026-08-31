@@ -9,6 +9,21 @@ renders Mork's CommonMark tree directly into etui spans.
 `make dist` packages it separately from the server. The shipment does not
 include ERTS, so the client host needs compatible Erlang/OTP 29 on `PATH`.
 
+With `loom-server` beside the launcher or on `PATH`, local use is simply:
+
+```sh
+cd ~/src/my-project
+loom-tui
+```
+
+The no-argument launcher remains a client of the frozen websocket protocol. It
+maps the canonical workspace to private state under `~/.loom`, validates any
+cached endpoint through an authenticated `subscribe`, and starts a detached
+server only when no compatible endpoint exists. Concurrent launchers share an
+operating-system lock, and the server survives terminal exit so later clients
+reuse the same session. Workspace content is data, not launch authority: this
+path neither loads `loom.toml` nor runs the server from the repository.
+
 ## One model owns the terminal
 
 The etui loop carries one immutable `Model`. Keyboard events, websocket
@@ -175,9 +190,18 @@ this package, the self-contained interaction preview is:
 gleam run -- --demo
 ```
 
-A live client needs the websocket address, session id, and bearer token. A
-token file is preferred because it avoids placing the credential in shell
-history or the process arguments:
+The normal local path needs `loom-server` beside the shipped launcher, named by
+`--server` or `LOOM_SERVER`, or available on `PATH`:
+
+```sh
+gleam run
+```
+
+`--workspace`, `--session-file`, and `--state-dir` override the local defaults.
+Automatic startup is supported on macOS and Linux. A remote or manually
+managed server still uses its websocket address, session id, and bearer token.
+A token file is preferred because it avoids placing the credential in shell
+history or process arguments:
 
 ```sh
 gleam run -- \

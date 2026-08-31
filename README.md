@@ -538,6 +538,17 @@ a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
 over their own transport.
 
+With `loom-server` installed beside `loom-tui` or on `PATH`, the native client
+can perform that setup itself. Running `loom-tui` with no arguments maps the
+canonical current workspace to private session state under `~/.loom`, reuses a
+compatible authenticated loopback server, or starts one and waits for a real
+session snapshot. `--workspace`, `--session-file`, `--server`, and
+`--state-dir` override those local defaults; `LOOM_SERVER` is the environment
+form of `--server`. The convenience path never loads a workspace `loom.toml`
+or runs the server from the workspace, because neither repository content nor
+its configuration is trusted launch authority. Explicit `--addr` attachment
+continues to handle remote or manually configured servers.
+
 `loom-tui --demo` renders a self-contained preview from a canned local model —
 no server, no network, a fine first thing to try.
 

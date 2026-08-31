@@ -486,11 +486,12 @@ The harness is now startable: `client/serve` boots the whole stack from
 flags/env and prints one line with the address and token file; `make
 binaries` + `make server-shipment` produce bin/loom-exec, bin/loom-tui,
 and a bin/loom-server launcher (needs OTP ≥27 on PATH — shipments
-bundle beam files, not ERTS). The TUI never starts a server (thin
-client; `--demo` needs none). Two-terminal flow and `make dev` are in
-the README. The production wiring moved from conformance into client —
-the triage's "when a host package exists" deferral, resolved by the
-host existing. Found live: `gleam run` does not forward signals to the
+bundle beam files, not ERTS). At this point the TUI never started a server
+(thin client; `--demo` needs none); the later local bootstrap kept that process
+boundary while automating the start+attach sequence. The two-terminal flow and
+`make dev` are in the README. The production wiring moved from conformance
+into client, resolving the triage's "when a host package exists" deferral once
+the host existed. Found live: `gleam run` does not forward signals to the
 BEAM, so dev.sh manages its own process group.
 
 ### Errata
