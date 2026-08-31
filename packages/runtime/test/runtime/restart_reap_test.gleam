@@ -12,13 +12,21 @@
 //// The replay asserts the first execution's process is already dead —
 //// before the reaper existed, it was still alive and blocked, and the
 //// two executions of one exclusive tool overlapped.
+////
+//// Incarnation ownership also applies to callbacks, not only processes.
+//// A retry timer records its wake closure outside the supervision tree. The
+//// test fires a predecessor's closure after replacement and proves that its
+//// direct subject died with the predecessor instead of resolving the stable
+//// strand name to newly replayed work.
 
 import core/clock
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
 import gleam/result
-import machine/operation.{ReplaySafe, RunFailed, RunLastResult}
+import machine/operation.{
+  NormalizedRetryPolicy, ReplaySafe, RunFailed, RunLastResult,
+}
 import provider/stream
 import runtime/api
 import runtime/effects
@@ -104,6 +112,90 @@ pub fn strand_restart_reaps_the_live_tool_effect_test() {
   // And the reaped first execution stays dead: nothing re-adopted it.
   let assert [first, ..] = logged_pids(pids)
   assert !process.is_alive(first)
+  process.kill(rt.tree.supervisor)
+}
+
+/// A timer armed by a predecessor cannot wake its replacement.
+///
+/// The stale wake and the abort originate in this test process, which makes
+/// their order deterministic if both resolve to the replacement. Only the
+/// abort reaches the replacement when callbacks retain its direct subject.
+pub fn predecessor_retry_timer_cannot_wake_replacement_test() {
+  let rec = recorder.start()
+  let callbacks = callback_log()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let base_effects =
+    fake.effects(
+      rec,
+      clock.from_function(fn() {
+        case recorder.read(rec, "clock-advanced") {
+          0 -> 2_000_000
+          _ -> 3_000_000
+        }
+      }),
+      [],
+      fn(_spec) { fake.Refuse(fake.retryable_error()) },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let eff =
+    effects.Effects(
+      ..base_effects,
+      timers: effects.Timers(after: fn(delay_ms, wake) {
+        case delay_ms == 10_000 {
+          True -> record_callback(callbacks, wake)
+          False -> Nil
+        }
+      }),
+    )
+  let options =
+    api.Options(
+      ..api.default_options(harness.configuration()),
+      retry_policy: NormalizedRetryPolicy(
+        max_attempts: 3,
+        base_delay_ms: 10_000,
+      ),
+      poll_interval_ms: 600_000,
+      tolerance: supervisor.Tolerance(intensity: 100, period: 10),
+    )
+  let assert Ok(rt) = api.open(sess, eff, options)
+    as "the session tree must boot"
+  let assert Ok(op) = api.prompt(rt, [fake.user("retry once")])
+    as "the prompt must be accepted"
+  wait_for_named(
+    fn() { list.length(recorded_callbacks(callbacks)) >= 1 },
+    5000,
+    "the predecessor retry timer",
+  )
+  let predecessor = kill_strand(rt, "main")
+  wait_for_named(
+    fn() {
+      case live_strand_pid(rt, "main") {
+        Ok(replacement) -> replacement != predecessor
+        Error(Nil) -> False
+      }
+    },
+    5000,
+    "the replacement strand driver",
+  )
+  wait_for_named(
+    fn() { list.length(recorded_callbacks(callbacks)) >= 2 },
+    5000,
+    "the replacement retry timer",
+  )
+  let _advanced = recorder.bump(rec, "clock-advanced")
+  let assert [predecessor_wake, ..] = recorded_callbacks(callbacks)
+    as "both driver incarnations must have armed the retry"
+  predecessor_wake()
+  api.abort(rt)
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 5000)
+    as "the abort must settle after the stale callback is fired"
+  harness.assert_aborted(last)
+  assert recorder.read(rec, "provider") == 1
+    as "the predecessor callback must not admit a replacement attempt"
   process.kill(rt.tree.supervisor)
 }
 
@@ -756,6 +848,45 @@ fn wait_for_named(
         }
       }
   }
+}
+
+// --- a retry-callback log -------------------------------------------------
+//
+// The retry deadline must remain in the future while both driver
+// incarnations arm their callbacks. The test advances time only after it owns
+// both closures, removing scheduler timing from the ordering assertion.
+
+type CallbackLogMessage {
+  RecordCallback(wake: fn() -> Nil)
+  RecordedCallbacks(reply_with: Subject(List(fn() -> Nil)))
+}
+
+type CallbackLog =
+  Subject(CallbackLogMessage)
+
+fn callback_log() -> CallbackLog {
+  let assert Ok(started) =
+    actor.new([])
+    |> actor.on_message(fn(state, message) {
+      case message {
+        RecordCallback(wake:) -> actor.continue(list.append(state, [wake]))
+        RecordedCallbacks(reply_with:) -> {
+          process.send(reply_with, state)
+          actor.continue(state)
+        }
+      }
+    })
+    |> actor.start
+    as "the callback log must start"
+  started.data
+}
+
+fn record_callback(log: CallbackLog, wake: fn() -> Nil) -> Nil {
+  process.send(log, RecordCallback(wake:))
+}
+
+fn recorded_callbacks(log: CallbackLog) -> List(fn() -> Nil) {
+  process.call_forever(log, RecordedCallbacks)
 }
 
 // --- a pid log -------------------------------------------------------------
