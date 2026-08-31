@@ -224,7 +224,14 @@ type Live {
 
 type State {
   State(
+    // The registered subject is durable addressing for callers. Internal
+    // callbacks must never capture it: after a restart the name resolves to a
+    // different incarnation, where an old result could match replayed work.
     self: Subject(Message),
+    // This direct subject is bound to this incarnation's PID. Effects and
+    // timers report here so their messages disappear with the process that
+    // dispatched them instead of crossing a restart boundary.
+    internal: Subject(Message),
     writer: Subject(writer.Message),
     strand: String,
     effects: Effects,
@@ -316,15 +323,15 @@ pub fn start(
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
     // The public subject may be a registered name which does not exist until
-    // this initializer returns. Give the reaper a direct, private endpoint so
-    // a fast first claim cannot race actor registration and lose the recovery
-    // acknowledgement as "Sending to unregistered name".
-    let recovery_gate = process.new_subject()
-    let reaper = start_reaper(options, recovery_gate)
+    // this initializer returns. Keep one direct, private endpoint for the
+    // reaper, effects, and timers so a fast first claim cannot race actor
+    // registration and predecessor callbacks cannot cross incarnations.
+    let internal = process.new_subject()
+    let reaper = start_reaper(options, internal)
     let selector =
       process.new_selector()
       |> process.select(subject)
-      |> process.select(recovery_gate)
+      |> process.select(internal)
       |> process.select_monitors(EffectExit)
     let logger = log.for_strand(options.logger, options.strand)
     // Every line this incarnation writes is correlated from here on;
@@ -336,6 +343,7 @@ pub fn start(
     // therefore enter its receive loop without weakening the claim handshake.
     actor.initialised(State(
       self: subject,
+      internal:,
       writer: process.named_subject(options.writer),
       strand: options.strand,
       effects: options.effects,
@@ -415,7 +423,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           // acknowledgement. Before this point, queued doorbells are harmless
           // because no durable work has crossed the effect boundary.
           state.effects.timers.after(state.poll_interval_ms, fn() {
-            wake(state.self, PollTick)
+            wake(state.internal, PollTick)
           })
           log.info(logger, "strand.started", [])
           let state = State(..state, recovery_gate: RecoveryReady)
@@ -441,9 +449,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     RecoveryReady, PredecessorsResolved(_) -> actor.continue(state)
     RecoveryReady, Nudge -> finish(logger, drive(state))
     RecoveryReady, PollTick -> {
-      let self = state.self
+      let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(self, PollTick)
+        wake(internal, PollTick)
       })
       let out = drive(State(..state, poll_permit: True))
       case out {
@@ -746,9 +754,9 @@ fn abort(state: State) -> Outcome {
     // idempotent, every retry re-reads the durable state, and the loop
     // converges as soon as the concurrent committers quiet down.
     AbortRaceLost -> {
-      let self = state.self
+      let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(self, RequestAbort)
+        wake(internal, RequestAbort)
       })
       Continue(state)
     }
@@ -981,11 +989,11 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
     Some(wake) if wake == at -> Continue(state)
     _ -> {
       let delay = int_max(1, at - now)
-      let self = state.self
+      let internal = state.internal
       log.warn(state.logger, "retry.armed", [
         field.count(key: "delay_ms", value: delay),
       ])
-      state.effects.timers.after(delay, fn() { wake(self, RetryDue) })
+      state.effects.timers.after(delay, fn() { wake(internal, RetryDue) })
       Continue(State(..state, retry_wake: Some(at)))
     }
   }
@@ -1446,7 +1454,7 @@ fn with_projection(
 // barrier the old timing argument lacked: recovery cannot dispatch beside a
 // predecessor that is merely scheduled to die.
 
-fn start_reaper(options: Options, recovery_gate: Subject(Message)) -> Reaper {
+fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
   let driver = process.self()
   let ready = process.new_subject()
   let pid =
@@ -1463,7 +1471,7 @@ fn start_reaper(options: Options, recovery_gate: Subject(Message)) -> Reaper {
       let resolved =
         options.claim_reaper(options.strand, process.self())
         |> await_previous_reapers(4000)
-      process.send(recovery_gate, PredecessorsResolved(resolved))
+      process.send(internal, PredecessorsResolved(resolved))
       reap(driver, commands, [])
     })
   let commands = process.receive_forever(ready)
@@ -1774,7 +1782,7 @@ fn spawn_provider(
   configuration: StrandConfiguration,
   spec: effects.RequestSpec,
 ) -> State {
-  let parent = state.self
+  let parent = state.internal
   let driver = process.self()
   let surface = state.effects.provider
   let logger = step_logger(state, token)
@@ -1934,7 +1942,7 @@ fn spawn_tool(
   configuration: StrandConfiguration,
   run: effects.ToolRun,
 ) -> State {
-  let parent = state.self
+  let parent = state.internal
   let runner = state.effects.tools.run
   let call = run.call
   let logger = step_logger(state, token)

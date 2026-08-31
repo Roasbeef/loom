@@ -204,10 +204,12 @@ extended by the M3 runtime wave.
     `PredecessorsResolved(result)` (the ledger barrier acknowledgement),
     `PollTick` (the checkpoint poll, which also grants one deferred poll
     permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
-    `ToolDone(token, outcome)`, `EffectExit(down)`. The reaper sends the ledger
-    acknowledgement through a private direct subject because the driver's
-    public registered name does not exist until initialization returns. Before
-    that acknowledgement, the actor retains abort intent but does not drive
+    `ToolDone(token, outcome)`, `EffectExit(down)`. Callers use the stable
+    registered subject, while the reaper, effect workers, and timers use a
+    private direct subject bound to this driver incarnation. The split prevents
+    a predecessor's late result from resolving the stable name to a replacement
+    and settling newly replayed work with the same durable token. Before the
+    ledger acknowledgement, the actor retains abort intent but does not drive
     effects.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
@@ -322,6 +324,15 @@ extended by the M3 runtime wave.
   `shutdown` waits it independently even when the root supervisor was killed
   abnormally. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
+- **Internal events are addressed to one incarnation, not one logical
+  strand.** The public registered subject remains the address for `Nudge` and
+  external abort requests across a restart. Provider completions, tool
+  completions, recovery acknowledgements, poll ticks, retry wakes, and internal
+  abort retries instead capture the driver's direct subject. A durable effect
+  token is intentionally reused when recovery replays an effect, so token-only
+  correlation is safe only after a message has first been confined to the
+  incarnation that created its `Live` entry. Sending those messages through
+  the stable name would let a predecessor remove a replacement's live worker.
 - **Provider ownership continues below the effect process.** A provider
   effect that reaches its receive deadline cancels its stream and waits a
   bounded acknowledgement grace. An owner-authored `ProviderCancelled` and a

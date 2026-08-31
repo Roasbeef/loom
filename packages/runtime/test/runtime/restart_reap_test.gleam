@@ -427,9 +427,9 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
     5000,
     "the replacement strand driver",
   )
-  // The replacement is addressable while its linked helper waits on the
-  // ledger barrier. Abort must remain responsive in this phase and must win
-  // before recovery gets a chance to dispatch another provider request.
+  // The replacement is addressable while its reaper waits on the ledger
+  // barrier. Abort must remain responsive in this phase and must win before
+  // recovery gets a chance to dispatch another provider request.
   api.abort(rt)
   wait_for_named(
     fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
