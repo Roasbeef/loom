@@ -430,7 +430,7 @@ fi
 SHA256=sha256sum
 command -v sha256sum >/dev/null 2>&1 || SHA256="shasum -a 256"
 ( cd "$REL" && { find . -type f -perm -u+x; \
-                 [ -d share ] && find ./share -type f; } \
+                 if [ -d share ]; then find ./share -type f; fi; } \
     | LC_ALL=C sort -u | tr '\n' '\0' | xargs -0 $SHA256 > SHA256SUMS )
 
 echo
