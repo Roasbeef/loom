@@ -313,11 +313,11 @@ and smoke-tested by that CI runner.
 | | with code mode | `DIST_CODEMODE=0` |
 |---|---|---|
 | ERTS stripped | 11 MB | 11 MB |
-| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 16 MB | 15 MB |
-| — of which the `compiler` application | 617 KB | — |
+| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 16 MB | 16 MB |
+| — of which the `compiler` application | 764 KB | — |
 | `bin/loom-exec` | 3.2 MB | 3.2 MB |
 | `bin/gleam`, stripped | 22 MB | — |
-| `share/codemode-seed` | 5.8 MB | — |
+| `share/codemode-seed` | 5.9 MB | — |
 | **the release tree** | **59 MB** | **30 MB** |
 | **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **22 MB** | **11 MB** |
 | `dist/loom-tui-0.1.0-linux-x86_64` | 16 MB | 16 MB |
