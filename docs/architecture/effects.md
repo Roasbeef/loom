@@ -594,12 +594,14 @@ another Gleam custodian-and-worker pair. Its narrow Erlang FFI retains the
 exact opaque OTP `httpc` request id and dedicated request-handler pid. The
 owner receives the raw messages itself, disables handler migration, captures
 the handler through the manager's already-published request table in O(1),
-issues OTP's asynchronous cancel cast, and waits for that handler to exit. It
+issues cancellation directly to that handler, and waits for it to exit. It
 holds the first response callback inside the handler until that monitor exists,
-closing the fast-terminal deletion race. Only a manager replacement in the
-narrow admission-to-capture interval uses a bounded recovery scan over
-`httpc_handler` processes; an inconclusive probe keeps the owner alive instead
-of inventing drain.
+closing the fast-terminal deletion race. Any indexed lookup miss uses a
+deadline-bounded recovery scan over `httpc_handler` processes; neither a
+complete scan with no match nor an inconclusive probe is allowed to invent
+drain. An unfamiliar private layout likewise cannot produce a normal owner
+exit: the callback may still supply its exact producer, while the request
+deadline bounds an otherwise unprovable recovery with abnormal exit.
 The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.

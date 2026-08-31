@@ -64,9 +64,9 @@ start_native_request(Method, Url, Headers, Body, ParentMonitor,
         {ok, Manager, HandlerSupervisor, Request, Options} ->
             case admit_native_request(Method, Request, Options) of
                 {ok, RequestId} ->
-                    enter_native_loop(RequestId, Manager, ParentMonitor,
-                                      OnStatus, OnChunk, OnEnd, OnFailure,
-                                      none, false, Deadline);
+                    enter_native_loop(RequestId, ParentMonitor, OnStatus,
+                                      OnChunk, OnEnd, OnFailure, none, false,
+                                      Deadline);
                 {error, _Reason} ->
                     start_failed(Manager, HandlerSupervisor, ParentMonitor,
                                  OnStatus, OnChunk, OnEnd, OnFailure,
@@ -133,8 +133,8 @@ start_failed(Manager, HandlerSupervisor, ParentMonitor,
         true ->
             safe_callback(OnFailure, [<<"http request startup failed">>]);
         false ->
-            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure, false, Deadline)
+            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
+                                  OnFailure, false, Deadline)
     end.
 
 same_generation(Name, Pid) when is_pid(Pid) ->
@@ -142,27 +142,27 @@ same_generation(Name, Pid) when is_pid(Pid) ->
 same_generation(_Name, _Pid) ->
     false.
 
-ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                      OnFailure, Stopping, Deadline) ->
+ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                      Stopping, Deadline) ->
     receive
         {http, Producer, Ack, {RequestId, _} = Message} ->
-            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
-                              OnChunk, OnEnd, OnFailure,
+            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                              OnEnd, OnFailure,
                               {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _} = Message} ->
-            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
-                              OnChunk, OnEnd, OnFailure,
+            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                              OnEnd, OnFailure,
                               {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
-            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
-                              OnChunk, OnEnd, OnFailure,
+            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                              OnEnd, OnFailure,
                               {Producer, Ack, Message}, Stopping, Deadline);
         cancel ->
-            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure, true, Deadline);
+            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
+                                  OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
-            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure, true, Deadline)
+            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
+                                  OnFailure, true, Deadline)
     after remaining_ms(Deadline) ->
         case Stopping of
             true -> ok;
@@ -180,7 +180,7 @@ ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
 %% this owner has installed its monitor. That closes the fast-terminal race:
 %% request_done cannot delete the manager row before capture acknowledges the
 %% first response. The protected table remains the constant-time normal path.
-enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
                   OnFailure, FirstDelivery, Stopping, Deadline) ->
     case indexed_request_handler(RequestId) of
         {ok, Handler} ->
@@ -188,9 +188,9 @@ enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
                                OnChunk, OnEnd, OnFailure, FirstDelivery,
                                Stopping, Deadline);
         lost ->
-            recover_handler(RequestId, Manager, ParentMonitor, OnStatus,
-                            OnChunk, OnEnd, OnFailure, FirstDelivery,
-                            Stopping, Deadline)
+            recover_handler(RequestId, ParentMonitor, OnStatus, OnChunk,
+                            OnEnd, OnFailure, FirstDelivery, Stopping,
+                            Deadline)
     end.
 
 enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
@@ -214,11 +214,11 @@ enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
             end
     end.
 
-%% A missing row has two meanings. If the original manager still owns its
-%% table, the handler has already gone and any terminal callback is merely
-%% queued. If the manager generation changed, the old handler can still own a
-%% socket after its table vanished, so the rare path below recovers it exactly.
-recover_handler(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+%% A missing row cannot prove that the admitted request drained. The manager
+%% may have restarted or a later OTP may use a different private layout. The
+%% callback still supplies its exact producer identity, while the recovery
+%% scan and original deadline keep this uncertainty both safe and bounded.
+recover_handler(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
                 OnFailure, FirstDelivery, Stopping, Deadline) ->
     case FirstDelivery of
         {Producer, Ack, Message} ->
@@ -244,49 +244,41 @@ recover_handler(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
                                        Deadline);
                 cancel ->
                     conservative_cancel(RequestId),
-                    recover_handler(RequestId, Manager, ParentMonitor,
-                                    OnStatus, OnChunk, OnEnd, OnFailure, none,
-                                    true, Deadline);
+                    recover_handler(RequestId, ParentMonitor, OnStatus,
+                                    OnChunk, OnEnd, OnFailure, none, true,
+                                    Deadline);
                 {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
                     conservative_cancel(RequestId),
-                    recover_handler(RequestId, Manager, ParentMonitor,
-                                    OnStatus, OnChunk, OnEnd, OnFailure, none,
-                                    true, Deadline)
+                    recover_handler(RequestId, ParentMonitor, OnStatus,
+                                    OnChunk, OnEnd, OnFailure, none, true,
+                                    Deadline)
             after 0 ->
                 recover_after_empty_mailbox(
-                  RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                  OnFailure, Stopping, Deadline)
+                  RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                  Stopping, Deadline)
             end
     end.
 
-recover_after_empty_mailbox(RequestId, Manager, ParentMonitor, OnStatus,
+recover_after_empty_mailbox(RequestId, ParentMonitor, OnStatus,
                             OnChunk, OnEnd, OnFailure, Stopping, Deadline) ->
-    case same_generation(httpc_manager, Manager) of
-        true -> finish_gone(Stopping, OnFailure);
-        false ->
-            case discover_request_handler(RequestId) of
-                {ok, Handler} ->
-                    enter_with_handler(RequestId, Handler, ParentMonitor,
-                                       OnStatus, OnChunk, OnEnd, OnFailure,
-                                       none, Stopping, Deadline);
-                gone -> finish_gone(Stopping, OnFailure);
-                inconclusive ->
-                    recovering_loop(RequestId, Manager, ParentMonitor,
-                                    OnStatus, OnChunk, OnEnd, OnFailure,
-                                    Stopping, Deadline)
-            end
+    case discover_request_handler(RequestId, Deadline) of
+        {ok, Handler} ->
+            enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure, none, Stopping,
+                               Deadline);
+        %% A missing or unfamiliar private layout is not evidence that an
+        %% admitted request drained. Keep waiting for the callback's exact
+        %% producer identity, bounded by the request deadline.
+        gone ->
+            recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                            OnEnd, OnFailure, Stopping, Deadline);
+        inconclusive ->
+            recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                            OnEnd, OnFailure, Stopping, Deadline);
+        expired -> recovery_expired(Stopping, OnFailure)
     end.
 
-finish_gone(true, _OnFailure) ->
-    ok;
-finish_gone(false, OnFailure) ->
-    %% The callback handshake prevents a live response producer from deleting
-    %% its row before capture. No row under the original manager, or a complete
-    %% recovery scan with no owner, therefore means there is nothing left to
-    %% drain and the missing terminal can be reported in band.
-    safe_callback(OnFailure, [<<"http transport failed">>]).
-
-recovering_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
                 OnFailure, Stopping, Deadline) ->
     receive
         {http, Producer, Ack, {RequestId, _} = Message} ->
@@ -303,16 +295,16 @@ recovering_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
                                {Producer, Ack, Message}, Stopping, Deadline);
         cancel ->
             conservative_cancel(RequestId),
-            recovering_loop(RequestId, Manager, ParentMonitor, OnStatus,
-                            OnChunk, OnEnd, OnFailure, true, Deadline);
+            recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                            OnEnd, OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
             conservative_cancel(RequestId),
-            recovering_loop(RequestId, Manager, ParentMonitor, OnStatus,
-                            OnChunk, OnEnd, OnFailure, true, Deadline)
-    after ?RECOVERY_RETRY ->
-        recover_after_empty_mailbox(RequestId, Manager, ParentMonitor,
-                                    OnStatus, OnChunk, OnEnd, OnFailure,
-                                    Stopping, Deadline)
+            recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
+                            OnEnd, OnFailure, true, Deadline)
+    after min(?RECOVERY_RETRY, remaining_ms(Deadline)) ->
+        recover_after_empty_mailbox(RequestId, ParentMonitor, OnStatus,
+                                    OnChunk, OnEnd, OnFailure, Stopping,
+                                    Deadline)
     end.
 
 native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
@@ -400,26 +392,39 @@ indexed_request_handler(RequestId) ->
         error:badarg -> lost
     end.
 
-discover_request_handler(RequestId) ->
-    find_request_handler(RequestId, erlang:processes(), false).
+discover_request_handler(RequestId, Deadline) ->
+    find_request_handler(RequestId, erlang:processes(), false, Deadline).
 
-find_request_handler(_RequestId, [], true) ->
+find_request_handler(RequestId, Processes, Inconclusive, Deadline) ->
+    case remaining_ms(Deadline) of
+        0 -> expired;
+        Remaining ->
+            find_request_handler_before_deadline(
+              RequestId, Processes, Inconclusive, Deadline, Remaining)
+    end.
+
+find_request_handler_before_deadline(_RequestId, [], true, _Deadline,
+                                     _Remaining) ->
     inconclusive;
-find_request_handler(_RequestId, [], false) ->
+find_request_handler_before_deadline(_RequestId, [], false, _Deadline,
+                                     _Remaining) ->
     gone;
-find_request_handler(RequestId, [Pid | Rest], Inconclusive) ->
+find_request_handler_before_deadline(RequestId, [Pid | Rest], Inconclusive,
+                                     Deadline, Remaining) ->
     case is_httpc_handler(Pid) of
-        false -> find_request_handler(RequestId, Rest, Inconclusive);
+        false -> find_request_handler(RequestId, Rest, Inconclusive, Deadline);
         true ->
-            case bounded_handler_info(Pid) of
+            case bounded_handler_info(Pid, Remaining) of
                 {ok, Info} ->
                     case handler_owns_request(RequestId, Info) of
                         true -> {ok, Pid};
                         false -> find_request_handler(RequestId, Rest,
-                                                      Inconclusive)
+                                                      Inconclusive, Deadline)
                     end;
-                gone -> find_request_handler(RequestId, Rest, Inconclusive);
-                inconclusive -> find_request_handler(RequestId, Rest, true)
+                gone -> find_request_handler(RequestId, Rest, Inconclusive,
+                                             Deadline);
+                inconclusive -> find_request_handler(RequestId, Rest, true,
+                                                     Deadline)
             end
     end.
 
@@ -434,8 +439,9 @@ is_httpc_handler(Pid) ->
 %% An orphaned handler may still be inside connect or response parsing instead
 %% of its gen_server receive loop. One timed-out probe therefore makes the scan
 %% inconclusive; it never licenses the owner to report drain.
-bounded_handler_info(Pid) ->
-    try gen_server:call(Pid, info, ?RECOVERY_PROBE_TIMEOUT) of
+bounded_handler_info(Pid, Remaining) ->
+    ProbeTimeout = min(?RECOVERY_PROBE_TIMEOUT, Remaining),
+    try gen_server:call(Pid, info, ProbeTimeout) of
         Info when is_list(Info) -> {ok, Info};
         _Other -> inconclusive
     catch
@@ -451,6 +457,17 @@ bounded_handler_info(Pid) ->
 handler_owns_request(RequestId, Info) ->
     Current = proplists:get_value(current_request, Info, []),
     lists:keyfind(id, 1, Current) =:= {id, RequestId}.
+
+recovery_expired(Stopping, OnFailure) ->
+    case Stopping of
+        true -> ok;
+        false -> safe_callback(OnFailure,
+                               [<<"timed out waiting for the http response">>])
+    end,
+    %% Expiry bounds liveness but cannot establish that an undiscovered old
+    %% handler released its socket. An abnormal exit preserves that lost proof
+    %% through the typed custodians instead of turning timeout into drain.
+    erlang:exit(self(), kill).
 
 finish_native(RequestId, Handler, HandlerMonitor) ->
     %% Direct cancellation does not depend on whichever manager generation is

@@ -164,15 +164,14 @@ option gives the request a dedicated, non-reused handler and disables manager
 queueing for this request. The owner reads the published request row directly,
 monitors its handler, acknowledges the callback, issues cancellation to that
 PID, and waits for Down. The handler closes its socket during termination before
-that signal is delivered. If the original manager generation is still alive, a
-missing row means the handler has already gone and any terminal callback is
-queued. If that manager was replaced in the capture interval, the old handler
-can outlive its table; the rare recovery path scans only `httpc_handler`
-processes and uses bounded `info` calls to recover the exact request id. A busy
-handler makes recovery inconclusive and keeps the owner alive rather than
-inventing drain. Redirects and automatic Retry-After retries are disabled
+that signal is delivered. Any missing indexed row enters a recovery path which
+scans only `httpc_handler` processes and uses bounded `info` calls to recover
+the exact request id. A busy handler, no match, or an unfamiliar private layout
+keeps recovery inconclusive rather than inventing drain; the callback can still
+supply its exact producer, and the original request deadline bounds the whole
+scan-and-retry loop with abnormal exit when proof never arrives. Redirects and automatic Retry-After retries are disabled
 because both can move work behind a stable request id. Raw tuple selection,
-request preparation, admission, exact lookup, rare generation recovery, and the
+request preparation, admission, exact lookup, bounded recovery, and the
 OTP-specific drain wait are the whole shim. Request, fallback, timeout,
 redaction, and terminal state stay in Gleam. The request deadline is computed
 once, so recursive receives and cancellation cannot restart its 300-second
@@ -238,8 +237,10 @@ cancel. A transport owner that does not retire is not killed from above,
 because doing so would erase the only acknowledgement that its native
 descendant stopped. The boundary emits `CancellationUnconfirmed`, while its
 custodian remains alive until the owner eventually exits. The production
-transport owner has already issued `httpc:cancel_request/1` for the exact
-request id and waits for the dedicated handler before it exits.
+transport owner has already issued `httpc_handler:cancel/2` for the exact
+request id and dedicated handler, and waits for that handler before it exits.
+The public `httpc:cancel_request/1` route is only a conservative fallback while
+handler identity is still being recovered.
 
 Any wrapper that constructs a new `StreamHandle` inherits the same obligation.
 Its prepared surface publishes a minimal custodian before releasing its guard.

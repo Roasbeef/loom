@@ -76,11 +76,13 @@ before the terminal-acknowledgement grace. Expiry reports
 `CancellationUnconfirmed`; it does not kill the owner or claim native work is
 gone. The public custodian remains alive until every adopted owner exits.
 Production retains the exact OTP request id and calls
-`httpc:cancel_request/1`, so teardown stops external work instead of only
-dropping its late answer. A bounded global handler scan survives manager or
-handler-supervisor replacement and cannot pin the native owner's cancellation
-mailbox on one connecting handler. Both cancellation terminals stop the
-fallback walk.
+`httpc_handler:cancel/2` on its dedicated handler, then waits for that handler's
+`Down`, so teardown stops external work instead of only dropping its late
+answer. The public `httpc:cancel_request/1` route is only a conservative
+fallback while handler identity is still being recovered. A deadline-bounded
+global handler scan survives manager or handler-supervisor replacement and
+cannot pin the native owner's cancellation mailbox on one connecting handler.
+Both cancellation terminals stop the fallback walk.
 
 `ResponseMachine` is the seam each adapter fills: `init`, `on_status`,
 `on_chunk`, `on_end`, `on_failure`, all pure. A body that ends without

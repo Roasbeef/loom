@@ -237,8 +237,10 @@ retry or fallback. Consumer death has the same teardown effect without a
 public terminal. `owner = Some(pid)` is a transitive drain witness and `None`
 means there is no asynchronous work. Every transport returns a monitorable
 owner plus a cancellation capability; production retains the exact OTP request
-id and calls `httpc:cancel_request/1` before its custodian retires the raw
-receiver and exits. A caller timeout alone is not cancellation. Protocol
+id, calls `httpc_handler:cancel/2` on that request's dedicated handler, and
+waits for the handler's `Down` before its custodian retires. The public
+`httpc:cancel_request/1` route is only a conservative fallback while handler
+identity is still being recovered. A caller timeout alone is not cancellation. Protocol
 change 010 records the full ownership and race law.
 
 **The request vocabulary is closed.** `ProviderRequest` carries what the block above names and nothing else, and no options bag crosses the gateway seam. Dialect-specific per-request options — streaming flags, cache breakpoints — are the adapter's, derived from the request's own contents: the OpenAI adapter sets the wire's `stream_options.include_usage` itself, and the Anthropic adapter places its own cache breakpoints, so nothing above the seam learns either dialect. A harness-side options value the request shape cannot express therefore stops at the seam by rule; dropping it is conformance, not loss. Widening the shape to carry one is a protocol change.

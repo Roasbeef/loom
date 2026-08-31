@@ -71,10 +71,13 @@ processful shell around that sans-io core. WP-F.
   29 publishes the exact request-ID-to-handler row before successful admission
   returns. The response callback remains inside the handler until the owner
   acknowledges that its monitor is installed, so a fast terminal cannot erase
-  that row first. One O(1) protected-table read is the normal capture path. If
-  the manager generation changes in that narrow interval, a bounded recovery
-  scan asks only `httpc_handler` processes for their current request and never
-  turns an inconclusive answer into drain. The internal OTP dependency is
+  that row first. One O(1) protected-table read is the normal capture path. Any
+  lookup miss enters a deadline-bounded recovery scan which asks only
+  `httpc_handler` processes for their current request and never turns a missing
+  or inconclusive answer into drain. A later OTP with unfamiliar private
+  shapes falls back to the callback's exact producer identity; if no callback
+  arrives, the request deadline ends the owner abnormally rather than claiming
+  drain. The internal OTP dependency is
   confined to callback receipt, exact capture, and direct cancel. All
   ownership, fallback, deadline, and terminal state machines stay in typed
   Gleam. `provider/internal/ffi_env` — `os:getenv` for
