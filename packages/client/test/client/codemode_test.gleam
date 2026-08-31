@@ -746,6 +746,22 @@ fn dead_filesystem() -> tool.FileSystem {
 
 // --- the orchestration seam ------------------------------------------------
 
+pub fn the_wait_ceiling_wins_the_race_test() {
+  // The Agency's bound must be the one that fires. A `ServedHere` call
+  // the satellite host gives up on is answered `unsettled` and its worker
+  // killed, so if the host's bound came first every `strand.wait` would
+  // answer `unsettled` — never `Ready`, however promptly the child
+  // finished, and the join would be cut short as well. The same shape as
+  // `the_mcp_call_timeout_wins_the_race_test`, for the other capability
+  // that answers on a bound of its own.
+  let config =
+    agency.default_config(
+      process.new_name(prefix: "loom_agency_ordering"),
+      clock.fixed(at: 0),
+    )
+  assert config.max_wait_ms < codemode.default_call_timeout_ms
+}
+
 pub fn orchestrating_moves_the_allowlist_and_the_router_together_test() {
   // One field decides both, because a host that could set them apart
   // would eventually set them apart — and "which capabilities travel

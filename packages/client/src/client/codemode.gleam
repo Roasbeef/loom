@@ -602,6 +602,17 @@ pub const default_build_timeout_ms = 180_000
 pub const default_accept_timeout_ms = 30_000
 
 /// How long one capability call may take to settle.
+///
+/// Must stay **above** every bound a serviced capability answers under,
+/// so the capability's own bound is the one that fires and the program
+/// reads that answer rather than silence. Two are pinned by tests in this
+/// package: `client/mcp.default_call_timeout_ms` (60 s), and
+/// `client/agency.default_config`'s `max_wait_ms` (30 s), the ceiling a
+/// `strand.wait` is clamped to. Invert either and the host gives up
+/// first — a `ServedHere` call it abandons is answered `unsettled` and
+/// its worker killed, so every `wait` would trade a real answer for that
+/// refusal, and the work behind it would be stopped half-done rather
+/// than finished for nobody.
 pub const default_call_timeout_ms = 120_000
 
 /// Where an execution's directories are created, relative to the

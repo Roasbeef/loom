@@ -223,6 +223,13 @@ pub type Config {
 /// model that emits many waits in one batch — is real, stated, and
 /// bounded only by `abort`, which stays the immediate exit.
 ///
+/// It is also the smaller half of a cross-package ordering: `max_wait_ms`
+/// must stay **below** `client/codemode.default_call_timeout_ms`, so that
+/// a `strand.wait` reaching this seam through the code-mode cap channel
+/// is answered by this ceiling rather than abandoned by the satellite
+/// host's. Raise it past 120 s and every such wait answers `unsettled`.
+/// `codemode_test` pins the relation.
+///
 /// ## Examples
 ///
 /// ```gleam

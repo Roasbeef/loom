@@ -28,7 +28,9 @@ thing to hand a model than one that cannot.
   frame, so a strand receives a structured value and never scrapes stdout.
   `Value` is a re-export of the wire's value type plus builders
   (`string`/`int`/`float`/`bool`/`list`/`object`/`null`) and readers
-  (`field`/`as_string`/`as_int`/`as_bool`/`as_list`). They live here
+  (`field`/`as_string`/`as_int`/`as_float`/`as_bool`/`as_list`), none of
+  which coerces: `as_int` refuses a float and `as_float` refuses an int,
+  so the pair still answers which tag arrived. They live here
   because a program cannot name `core/msgpack`: the allowlist omits it and
   the hermetic build's `--warnings-as-errors` turns importing a transitive
   dependency into a compile error, so without them `report.text` was the
@@ -59,7 +61,22 @@ thing to hand a model than one that cannot.
   carrying the harness's own sentence — except the two ceilings, which are
   the seam's own: `SpawnCeilingReached` and `AdmissionCeilingReached`, the
   second covering `send`, `note` and `notes` alike because a program at
-  any of them does the same thing and the message names which.
+  any of them does the same thing and the message names which. The named
+  set matches `codemode/orchestration.refusal_code`'s range as of today,
+  `map_error` being the other half of that contract: `NameAlreadyMinted`
+  and `PlaneFailed` are there for that reason and not because a program is
+  expected to recover from either. `StrandRefused` stays the arm for a
+  code this module has not learned, so a new name still reaches a program
+  as itself — which is also why the two sides can drift silently, and what
+  the pins are for. **Nothing gates the pairing across the wire**: `cap`
+  and `codemode` share no dependency, so no check in either package can
+  see the other's list. What *is* gated is each end against its own type —
+  `strand_test.named_code` and `orchestration_test.expected_code` are
+  total `case`s, so adding a variant to `StrandError` or to
+  `agent.Refusal` breaks that package's test compile and forces whoever
+  adds it to write the code down and look at the paired list. Adding a
+  variant on one side and not the other still compiles everywhere; the
+  alarm is that you were made to read the sentence saying so.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry

@@ -199,6 +199,16 @@ strand roots, and can reach neither the disk, the network, nor a process.
   for what an execution may spend. An orchestration `cap_call` reaches no
   clearance at all — it is a `ServedHere` plan answered by the Agency, on
   a process the host spawns and monitors, bounded by `call_timeout_ms`.
+  Reaching that bound answers `unsettled` **and kills the process**: it is
+  unlinked, so nothing else ever would, and a `serve` closure still
+  polling for an answer nobody will read is one orphan per timed-out call.
+  A `ClearedCall` that reaches the same bound is revoked the same way, by
+  `broker.cancel` on the handle `CapStarted` carried back — bounded by the
+  kernel and the broker's monitoring rather than unbounded like the served
+  orphan, but a call reported over while its effect ran on all the same.
+  The bound is deliberately the larger of the pair — `client/agency`'s
+  `max_wait_ms` is 30 s against this 120 s — so an ordinary `strand.wait`
+  is answered by the Agency's ceiling and never reaches this reap.
 - **Agency** (orchestration seam only) — the six `tools/agent.Agency`
   closures, judged against a `Caller` whose strand is the dispatching
   one and whose operation is the threaded identity's. Commits, register

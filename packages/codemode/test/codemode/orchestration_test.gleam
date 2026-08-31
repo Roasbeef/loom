@@ -558,22 +558,82 @@ pub fn a_roster_and_a_notes_read_answer_test() {
 
 pub fn every_agency_refusal_keeps_its_name_test() {
   // The exit criterion: a call outside the program's own lineage is
-  // refused under the name the tools already refuse under. The mapping is
-  // exhaustive over `agent.Refusal`, and it is half of a contract whose
-  // other half is `cap/strand.map_error`.
+  // refused under the name the tools already refuse under. It is half of
+  // a contract whose other half is `cap/strand.map_error`, which turns
+  // each of these codes back into the variant of the same name.
   let cases = [
-    #(agent.AgencyUnavailable, "strands_unavailable"),
-    #(agent.MalformedHandle(text: "x"), "malformed_handle"),
-    #(agent.NotAddressable(strand: "sub:other/one"), "not_addressable"),
-    #(agent.NotADescendant(strand: "sub:other/one"), "not_a_descendant"),
-    #(agent.DepthCapReached(depth: 1), "depth_cap"),
-    #(agent.FanOutCapReached(live: 8, cap: 8), "fan_out_cap"),
-    #(agent.UnknownTool(name: "bash"), "unknown_tool"),
-    #(agent.InvalidArgument(reason: "no"), "invalid_argument"),
-    #(agent.ParentRunEnded(strand: "main"), "parent_run_ended"),
-    #(agent.PlaneFailed(reason: "down"), "plane_failed"),
+    agent.AgencyUnavailable,
+    agent.MalformedHandle(text: "x"),
+    agent.NotAddressable(strand: "sub:other/one"),
+    agent.NotADescendant(strand: "sub:other/one"),
+    agent.DepthCapReached(depth: 1),
+    agent.FanOutCapReached(live: 8, cap: 8),
+    agent.UnknownTool(name: "bash"),
+    agent.InvalidArgument(reason: "no"),
+    agent.NameAlreadyMinted(strand: "sub:main/a"),
+    agent.ParentRunEnded(strand: "main"),
+    agent.ResultSchemaUnmet(
+      schema: a_boolean_schema(),
+      received: json.Object([]),
+      mismatch: agent.FieldMissing(name: "ok", expects: agent.BooleanField),
+    ),
+    agent.PlaneFailed(reason: "down"),
   ]
-  assert list.all(cases, fn(one) { orchestration.refusal_code(one.0) == one.1 })
+  assert list.all(cases, fn(refusal) {
+    orchestration.refusal_code(refusal) == expected_code(refusal)
+  })
+}
+
+// A second, independent statement of the same mapping, and the reason
+// this test is a gate rather than a snapshot.
+//
+// `list.all` over a hand-written list proves nothing about a variant
+// nobody added to the list: `refusal_code` is a total `case`, so the
+// compiler would demand its new arm, but the *test* would go on passing
+// over the old rows — and on the far side the new code would land in
+// `cap/strand`'s `StrandRefused` fallback, silently, by design. That is
+// exactly the drift issue #91 item 3 was filed for. Restating the
+// mapping here as a total `case` breaks this file's compile instead, so
+// a variant cannot be added without someone reading this list and the
+// sentence above it.
+//
+// It cannot reach further than that. `cap` and `codemode` share no
+// dependency — they are the two ends of one wire, not peers — so no
+// check in this package can see `cap/strand`; that end pins itself the
+// same way, against its own type.
+fn expected_code(refusal: agent.Refusal) -> String {
+  case refusal {
+    agent.AgencyUnavailable -> "strands_unavailable"
+    agent.MalformedHandle(..) -> "malformed_handle"
+    agent.NotAddressable(..) -> "not_addressable"
+    agent.NotADescendant(..) -> "not_a_descendant"
+    agent.DepthCapReached(..) -> "depth_cap"
+    agent.FanOutCapReached(..) -> "fan_out_cap"
+    agent.UnknownTool(..) -> "unknown_tool"
+    agent.InvalidArgument(..) -> "invalid_argument"
+    agent.NameAlreadyMinted(..) -> "name_already_minted"
+    agent.ParentRunEnded(..) -> "parent_run_ended"
+    agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
+    agent.PlaneFailed(..) -> "plane_failed"
+  }
+}
+
+// A `ResultSchema` is opaque, so the only way to hold one is to parse it.
+fn a_boolean_schema() -> agent.ResultSchema {
+  let assert Ok(schema) =
+    agent.parse_result_schema(
+      json.Object([
+        #("type", json.String("object")),
+        #(
+          "properties",
+          json.Object([
+            #("ok", json.Object([#("type", json.String("boolean"))])),
+          ]),
+        ),
+      ]),
+    )
+    as "a one-field schema parses"
+  schema
 }
 
 pub fn a_refusal_travels_with_the_harnesss_own_words_test() {

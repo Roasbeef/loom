@@ -273,12 +273,22 @@ pub type StrandError {
   /// blackboard key outside the allowed shape, a result shape the
   /// harness cannot enforce.
   InvalidArgument(message: String)
+  /// The name this spawn derives is already a child's, minted by a
+  /// different call. Reconciliation hands an existing child back on a
+  /// name match, but only to the caller that minted it; anything else
+  /// would be an ownership transfer. Nothing was started — spawn again
+  /// under a different purpose.
+  NameAlreadyMinted(message: String)
   /// A send upward would have *started* a run rather than steered one:
   /// the parent has finished and nobody is watching it.
   ParentRunEnded(message: String)
   /// A note did not match the result shape this strand's own spawn
   /// demanded of it.
   ResultSchemaUnmet(message: String)
+  /// The durable plane refused or failed underneath the call — a commit,
+  /// a read, a decode. Not the program's mistake and not a bound it hit:
+  /// the harness could not carry out a call it had no objection to.
+  PlaneFailed(message: String)
   /// This execution has admitted as many spawns as it may. The seam's own
   /// ceiling; see the module doc for why a loop needs one where a turn
   /// did not.
@@ -740,8 +750,10 @@ fn map_error(error: CallError) -> StrandError {
         "fan_out_cap" -> FanOutCapReached(message:)
         "unknown_tool" -> UnknownTool(message:)
         "invalid_argument" -> InvalidArgument(message:)
+        "name_already_minted" -> NameAlreadyMinted(message:)
         "parent_run_ended" -> ParentRunEnded(message:)
         "result_schema_unmet" -> ResultSchemaUnmet(message:)
+        "plane_failed" -> PlaneFailed(message:)
         "spawn_ceiling" -> SpawnCeilingReached(message:)
         "admission_ceiling" -> AdmissionCeilingReached(message:)
         _ -> StrandRefused(code:, message:)
@@ -768,8 +780,10 @@ pub fn error_text(error: StrandError) -> String {
     FanOutCapReached(message:) -> "fan_out_cap: " <> message
     UnknownTool(message:) -> "unknown_tool: " <> message
     InvalidArgument(message:) -> "invalid_argument: " <> message
+    NameAlreadyMinted(message:) -> "name_already_minted: " <> message
     ParentRunEnded(message:) -> "parent_run_ended: " <> message
     ResultSchemaUnmet(message:) -> "result_schema_unmet: " <> message
+    PlaneFailed(message:) -> "plane_failed: " <> message
     SpawnCeilingReached(message:) -> "spawn_ceiling: " <> message
     AdmissionCeilingReached(message:) -> "admission_ceiling: " <> message
     StrandRefused(code:, message:) -> code <> ": " <> message

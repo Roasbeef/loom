@@ -17,6 +17,7 @@ import core/ids.{type OpId}
 import core/json
 import core/message
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -700,6 +701,44 @@ pub fn a_schema_that_is_not_an_object_of_properties_is_refused_test() {
       ]),
     )
   assert string.contains(undeclared, "`b`")
+}
+
+pub fn the_field_bound_is_checked_before_the_properties_are_walked_test() {
+  // The bound sits above `parse_property`, and the ordering is the whole
+  // of its protection: an over-limit list is refused for its length
+  // without the excess ever being parsed. That is observable — the
+  // entries past the bound here are outright malformed, and the refusal
+  // still names the bound rather than them, which it could not do if the
+  // walk ran first.
+  let well_formed = fn(index: Int) {
+    #(
+      "field" <> int.to_string(index),
+      json.Object([#("type", json.String("string"))]),
+    )
+  }
+  let schema = fn(properties) {
+    json.Object([
+      #("type", json.String("object")),
+      #("properties", json.Object(properties)),
+    ])
+  }
+  let inside =
+    list.index_map(list.repeat(Nil, agent.max_result_fields), fn(_nil, index) {
+      well_formed(index)
+    })
+  let excess = [
+    #("!! not a usable name !!", json.String("not even a type object")),
+    #("also bad", json.Array([])),
+  ]
+  // Exactly at the bound, everything parses.
+  let assert Ok(_at_the_bound) = agent.parse_result_schema(schema(inside))
+  let assert Error(reason) =
+    agent.parse_result_schema(schema(list.append(inside, excess)))
+  assert string.contains(reason, "at most")
+  assert string.contains(reason, int.to_string(agent.max_result_fields))
+  // The excess was never handed to `parse_property`, so none of its own
+  // vocabulary can appear in the refusal.
+  assert !string.contains(reason, "unusable")
 }
 
 pub fn a_malformed_schema_is_refused_at_spawn_not_at_join_test() {

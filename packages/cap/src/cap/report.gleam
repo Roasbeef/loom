@@ -23,9 +23,18 @@
 ////
 //// So the constructors and the readers are here, in the one module every
 //// seam carries. `string`/`int`/`float`/`bool`/`list`/`object`/`null`
-//// build a `Value` and `field`/`as_string`/`as_int`/`as_bool`/`as_list`
-//// read one back, all total, so a program composes and inspects
-//// structured data without ever naming the module the type comes from.
+//// build a `Value` and
+//// `field`/`as_string`/`as_int`/`as_float`/`as_bool`/`as_list` read one
+//// back, all total, so a program composes and inspects structured data
+//// without ever naming the module the type comes from.
+////
+//// Every reader answers about the tag the value actually carries and
+//// coerces nothing. `as_int` refuses a float because rounding silently is
+//// how a count becomes wrong, and `as_float` refuses an int for the same
+//// reason read the other way: the two tags are distinguishable on the
+//// wire, `float(1.5) != int(1)` is the vocabulary's own claim, and a
+//// reader that widened one into the other would leave a program no way to
+//// ask which it was handed.
 
 import cap/internal/channel.{type CallError, Denied, Unreachable}
 import cap/internal/dispatch
@@ -139,6 +148,7 @@ pub fn int(number: Int) -> Value {
 /// ## Examples
 ///
 /// ```gleam
+/// assert report.as_float(report.float(1.5)) == Ok(1.5)
 /// assert report.float(1.5) != report.int(1)
 /// ```
 ///
@@ -263,6 +273,30 @@ pub fn as_int(value: Value) -> Result(Int, Nil) {
     msgpack.NilValue
     | msgpack.BoolValue(..)
     | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) -> Error(Nil)
+  }
+}
+
+/// A value's floating-point number, or `Error(Nil)` when it is not one.
+/// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
+/// the two tags are distinct on the wire, and a reader that widened one
+/// into the other would leave a program no way to ask which arrived.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.as_float(report.int(1)) == Error(Nil)
+/// ```
+///
+pub fn as_float(value: Value) -> Result(Float, Nil) {
+  case value {
+    msgpack.FloatValue(number) -> Ok(number)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
     | msgpack.StringValue(..)
     | msgpack.BinaryValue(..)
     | msgpack.ArrayValue(..)
