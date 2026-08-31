@@ -179,14 +179,35 @@ if [ "$SMOKE" = 1 ]; then
   # the witness that SIGTERM took the graceful route rather than killing a
   # server mid-lease.
   kill -TERM "$SERVER_PID" 2>/dev/null || true
+  CLOSED=0
+  STOPPED=0
   for _ in $(seq 1 50); do
-    if grep -q '"event":"server.stopped"' "$LOG"; then break; fi
+    if grep -q '"event":"server.stopped"' "$LOG"; then CLOSED=1; fi
+    SERVER_STATE="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
+    case "$SERVER_STATE" in
+      ""|Z*) STOPPED=1 ;;
+    esac
+    [ "$CLOSED" = 1 ] && [ "$STOPPED" = 1 ] && break
     sleep 0.2
   done
-  wait "$SERVER_PID" 2>/dev/null || true
+  if [ "$STOPPED" != 1 ]; then
+    # A broken SIGTERM path must fail this smoke promptly rather than leave the
+    # caller blocked until its outer CI timeout.
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    trap - EXIT
+    echo "release.sh: the release did not stop within 10 seconds of SIGTERM:" >&2
+    tail -40 "$LOG" >&2
+    exit 1
+  fi
+  SERVER_STATUS=0
+  wait "$SERVER_PID" 2>/dev/null || SERVER_STATUS=$?
   trap - EXIT
-  grep -q '"event":"server.stopped"' "$LOG" || {
-    echo "release.sh: the release did not close cleanly on SIGTERM:" >&2; tail -40 "$LOG" >&2; exit 1; }
+  if [ "$CLOSED" != 1 ] || [ "$SERVER_STATUS" != 0 ]; then
+    echo "release.sh: the release did not close cleanly (status $SERVER_STATUS):" >&2
+    tail -40 "$LOG" >&2
+    exit 1
+  fi
 
   # Registration says the release found a compiler, an emulator and a
   # seed it verified. It does not say they *work* together, and the two

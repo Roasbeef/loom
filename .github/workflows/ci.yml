@@ -108,7 +108,7 @@ jobs:
       - name: Build and smoke-test Linux deliverables
         run: |
           set -euo pipefail
-          make server-shipment
+          scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
           make dist 2>&1 | tee distribution-linux.log
           test -x build/release/loom/erts-17.0.5/bin/erl
           {
@@ -143,6 +143,7 @@ jobs:
           path: |
             check.log
             doc-check.log
+            server-shipment-smoke.log
             distribution-linux.log
           retention-days: 14
 
