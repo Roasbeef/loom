@@ -215,9 +215,11 @@ extended by the M3 runtime wave.
     `Claim(strand, reaper, reply_with)` atomically publishes the new
     incarnation, snapshots its predecessors, and releases the caller only once
     the ledger's original monitors have proved that entire snapshot drained
-    normally. A linked helper performs the potentially long call after actor
-    initialization and sends `PredecessorsResolved`; the driver remains able
-    to retain `RequestAbort` while the barrier is closed. Sender:
+    normally. The reaper performs that potentially long call after handing its
+    command subject to the driver initializer, then sends
+    `PredecessorsResolved`. Claiming from the reaper itself keeps its PID alive
+    until the ledger has installed the original monitor; meanwhile the driver
+    remains able to retain `RequestAbort` while the barrier is closed. Sender:
     `runtime/strand_runtime` through the closure the supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and

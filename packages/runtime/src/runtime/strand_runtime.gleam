@@ -315,7 +315,7 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let reaper = start_reaper()
+    let reaper = start_reaper(options, subject)
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -325,18 +325,9 @@ pub fn start(
     // the driver process itself also stamps the context so an OTP crash
     // report about *this* process is not orphaned.
     log.adopt(logger)
-    // Initialize before waiting on the predecessor barrier. A provider owner
-    // may legitimately drain for minutes; keeping that wait inside the
-    // five-second OTP initializer would turn clean teardown into a restart
-    // loop which spends the supervisor's tolerance.
-    let Reaper(pid: reaper_pid, ..) = reaper
-    let _barrier =
-      process.spawn(fn() {
-        let resolved =
-          options.claim_reaper(options.strand, reaper_pid)
-          |> await_previous_reapers(4000)
-        process.send(subject, PredecessorsResolved(resolved))
-      })
+    // The reaper performs the potentially long predecessor claim after it has
+    // handed its command subject back to this initializer. The actor can
+    // therefore enter its receive loop without weakening the claim handshake.
     actor.initialised(State(
       self: subject,
       writer: process.named_subject(options.writer),
@@ -1449,7 +1440,7 @@ fn with_projection(
 // barrier the old timing argument lacked: recovery cannot dispatch beside a
 // predecessor that is merely scheduled to die.
 
-fn start_reaper() -> Reaper {
+fn start_reaper(options: Options, strand: Subject(Message)) -> Reaper {
   let driver = process.self()
   let ready = process.new_subject()
   let pid =
@@ -1457,6 +1448,16 @@ fn start_reaper() -> Reaper {
       process.trap_exits(True)
       let commands = process.new_subject()
       process.send(ready, commands)
+      // The reaper itself makes the ledger claim. If the driver dies while the
+      // ledger is still draining an older generation, its trapped exit remains
+      // queued here and this PID stays alive until the ledger has installed its
+      // original monitor. A disposable helper could die with the driver first,
+      // leaving the ledger to observe only `noproc` and correctly poison the
+      // session because the reaper's exit reason had been lost.
+      let resolved =
+        options.claim_reaper(options.strand, process.self())
+        |> await_previous_reapers(4000)
+      process.send(strand, PredecessorsResolved(resolved))
       reap(driver, commands, [])
     })
   let commands = process.receive_forever(ready)

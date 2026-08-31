@@ -525,6 +525,7 @@ pub fn strand_exit_waits_for_its_published_provider_owner_test() {
   let rec = recorder.start()
   let consumers = pid_log()
   let owners = pid_log()
+  let drain_gates = drain_gate_log()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session must open"
@@ -539,7 +540,7 @@ pub fn strand_exit_waits_for_its_published_provider_owner_test() {
   let eff =
     effects.Effects(
       ..base_effects,
-      provider: delayed_drain_provider(rec, consumers, owners),
+      provider: delayed_drain_provider(rec, consumers, owners, drain_gates),
     )
   let options =
     api.Options(
@@ -565,10 +566,10 @@ pub fn strand_exit_waits_for_its_published_provider_owner_test() {
     5000,
     "the orphaned provider cancellation",
   )
-  process.sleep(25)
   assert recorder.read(rec, "provider-requested") == 1
   let assert [first_owner, ..] = logged_pids(owners)
   assert process.is_alive(first_owner)
+  release_first_drain(drain_gates)
   wait_for_named(
     fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
     5000,
@@ -589,6 +590,7 @@ pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
   let rec = recorder.start()
   let consumers = pid_log()
   let owners = pid_log()
+  let drain_gates = drain_gate_log()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
     as "the memory session must open"
@@ -603,7 +605,7 @@ pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
   let eff =
     effects.Effects(
       ..base_effects,
-      provider: delayed_drain_provider(rec, consumers, owners),
+      provider: delayed_drain_provider(rec, consumers, owners, drain_gates),
     )
   let options =
     api.Options(
@@ -627,10 +629,10 @@ pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
     5000,
     "the predecessor provider cancellation",
   )
-  process.sleep(25)
   assert recorder.read(rec, "provider-requested") == 1
   let assert [first_owner, ..] = logged_pids(owners)
   assert process.is_alive(first_owner)
+  release_first_drain(drain_gates)
   wait_for_named(
     fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
     5000,
@@ -646,18 +648,20 @@ pub fn registry_restart_preserves_the_provider_drain_barrier_test() {
 }
 
 // This provider keeps cancellation and drain observably separate. The owner
-// remains alive for 100 ms after cancellation, creating a deterministic window
-// in which an eager retry would overlap it. Each new request checks the owner
-// pid log before starting its own subtree.
+// leaves its first owner alive until the test releases an explicit gate. Later
+// owners use a bounded delay so supervisor cleanup does not leave them waiting
+// on a one-shot gate. Each request checks the owner pid log before starting its
+// own subtree, making overlap a deterministic failure.
 fn delayed_drain_provider(
   rec: Subject(recorder.Message),
   consumers: PidLog,
   owners: PidLog,
+  drain_gates: DrainGateLog,
 ) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 60_000, request: fn(_spec) {
     let consumer = process.self()
     let events = process.new_subject()
-    let _requested = recorder.bump(rec, "provider-requested")
+    let request_index = recorder.bump(rec, "provider-requested")
     record_pid(consumers, consumer)
     let overlap =
       logged_pids(owners)
@@ -673,9 +677,23 @@ fn delayed_drain_provider(
     let owner =
       process.spawn_unlinked(fn() {
         let cancel = process.new_subject()
+        let release_first_drain = process.new_subject()
+        case request_index {
+          1 -> record_drain_gate(drain_gates, release_first_drain)
+          _ -> Nil
+        }
         process.send(ready, cancel)
         let _cancel = process.receive_forever(cancel)
-        process.sleep(100)
+        case request_index {
+          1 -> {
+            // The test, rather than a scheduler-sized sleep, decides when the
+            // predecessor drains. This keeps the overlap window open on a
+            // loaded runner and makes an early replacement deterministic.
+            let _release = process.receive_forever(release_first_drain)
+            Nil
+          }
+          _ -> process.sleep(100)
+        }
         let _drained = recorder.bump(rec, "provider-owner-drained")
         Nil
       })
@@ -777,4 +795,51 @@ fn record_pid(log: PidLog, pid: Pid) -> Nil {
 
 fn logged_pids(log: PidLog) -> List(Pid) {
   process.call_forever(log, All)
+}
+
+// --- a drain-gate log ------------------------------------------------------
+//
+// A Subject targets the process that created it, so the owner creates its own
+// release capability and publishes that capability through this log. The test
+// can then hold the first owner alive without pretending a test-owned Subject
+// is a channel another process can receive from.
+
+type DrainGateLogMessage {
+  RecordDrainGate(gate: Subject(Nil))
+  DrainGates(reply_with: Subject(List(Subject(Nil))))
+}
+
+type DrainGateLog =
+  Subject(DrainGateLogMessage)
+
+fn drain_gate_log() -> DrainGateLog {
+  let assert Ok(started) =
+    actor.new([])
+    |> actor.on_message(fn(state, message) {
+      case message {
+        RecordDrainGate(gate:) -> actor.continue(list.append(state, [gate]))
+        DrainGates(reply_with:) -> {
+          process.send(reply_with, state)
+          actor.continue(state)
+        }
+      }
+    })
+    |> actor.start
+    as "the drain-gate log must start"
+  started.data
+}
+
+fn record_drain_gate(log: DrainGateLog, gate: Subject(Nil)) -> Nil {
+  process.send(log, RecordDrainGate(gate:))
+}
+
+fn release_first_drain(log: DrainGateLog) -> Nil {
+  wait_for_named(
+    fn() { !list.is_empty(process.call_forever(log, DrainGates)) },
+    5000,
+    "the first provider drain gate",
+  )
+  let assert [first, ..] = process.call_forever(log, DrainGates)
+    as "the first provider drain gate must remain recorded"
+  process.send(first, Nil)
 }
