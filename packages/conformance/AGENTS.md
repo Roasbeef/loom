@@ -210,7 +210,12 @@ them from their own test mains.
   write-once fact into the admission transaction. A retry after a lost reply
   can therefore ask whether the payload is already durable: a landed first
   attempt closes the debt, while an absent fact permits a new carrier without
-  admitting the turn twice.
+  admitting the turn twice. When queue admissions and an abort share one
+  logical trigger, `surface.fire_due` preserves the queue admissions' script
+  order but sends the abort after them. The abort API is an asynchronous cast;
+  sending it first made seed 584's fault-free transcript depend on whether the
+  Linux or macOS scheduler processed the cast before the next synchronous
+  admission.
 - **A live intervention's decision belongs to the runner, never to the
   effect that reached its trigger** (#57, diagnosed under #44). A
   `DuringTurn`/`DuringCall` trigger is reached from inside a real effect

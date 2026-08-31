@@ -112,7 +112,7 @@ replace the distribution guide's old OTP 28 measurements with observed OTP 29
 values.
 
 The completed focused gates are green: provider 149, runtime 90, client 576,
-and conformance 67. `make check` exits zero, `make e2e-codemode` passes 210
+and conformance 68. `make check` exits zero, `make e2e-codemode` passes 210
 tests, and the OTP 29 release and both distribution profiles pass their
 no-host-Erlang smoke with the bundled SQLite NIF. The first 200-seed soak
 exposed two one-second ownership-handshake timeouts: under scheduler pressure a
@@ -129,6 +129,14 @@ before buffering, and issue #148 owns stateful cross-fragment response
 redaction. Neither limitation weakens #131's cancellation and drain ownership
 contract; keeping them separate avoids claiming security properties the
 current transport does not provide.
+
+The final 2,000-seed Nightly found seed 584 before merge. A fault-free script
+put an abort and a steer at the same logical trigger; because abort is an
+asynchronous cast, Linux closed the run before the synchronous admission while
+macOS admitted the steer first. The simulation now preserves queue-admission
+order and sends same-moment aborts after those admissions, giving its comparison
+oracle one baseline without changing the runtime's abort race. Seed 584 is a
+pinned corpus test.
 
 ## Platform-strict enforcement is the production default
 
