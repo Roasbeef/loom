@@ -58,6 +58,13 @@ type WorkerEvent {
   ConsumerDown(process.Down)
 }
 
+type CancelEvent {
+  CancelInner(stream.StreamEvent)
+  CancelStop
+  CancelConsumerDown(process.Down)
+  CancelExpired
+}
+
 const cancel_grace_ms = 2000
 
 /// A provider handle whose request worker is parked until `begin` is invoked.
@@ -158,7 +165,15 @@ fn forward(
 ) -> Nil {
   let consumer_monitor = process.monitor(consumer)
   let selector = selector(inner, stop, consumer_monitor)
-  forward_selected(inner, witness, consumer, outer, consumer_monitor, selector)
+  forward_selected(
+    inner,
+    witness,
+    consumer,
+    outer,
+    stop,
+    consumer_monitor,
+    selector,
+  )
 }
 
 fn cancel(
@@ -169,16 +184,7 @@ fn cancel(
   stop: Subject(Nil),
 ) -> Nil {
   let consumer_monitor = process.monitor(consumer)
-  let selector = selector(inner, stop, consumer_monitor)
-  cancel_and_forward(
-    inner,
-    witness,
-    consumer,
-    outer,
-    consumer_monitor,
-    cancel_grace_ms,
-    selector,
-  )
+  cancel_and_forward(inner, witness, consumer, outer, stop, consumer_monitor)
 }
 
 fn forward_selected(
@@ -186,6 +192,7 @@ fn forward_selected(
   witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
+  stop: Subject(Nil),
   consumer_monitor: Monitor,
   selector: process.Selector(WorkerEvent),
 ) -> Nil {
@@ -202,6 +209,7 @@ fn forward_selected(
             witness,
             consumer,
             outer,
+            stop,
             consumer_monitor,
             selector,
           )
@@ -217,9 +225,8 @@ fn forward_selected(
             witness,
             consumer,
             outer,
+            stop,
             consumer_monitor,
-            cancel_grace_ms,
-            selector,
           )
         False -> drain(inner, witness, consumer_monitor)
       }
@@ -236,36 +243,56 @@ fn cancel_and_forward(
   witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
+  stop: Subject(Nil),
   consumer_monitor: Monitor,
-  within_ms: Int,
-  selector: process.Selector(WorkerEvent),
 ) -> Nil {
   // Cancellation is fallible work, so it runs on this worker rather than on
   // the public witness. If it crashes, the custodian observes that Down and
   // invokes its retained copy on a disposable helper while keeping the inner
   // owner in the drain set.
   stream.cancel(inner)
-  case process.selector_receive(selector, within: within_ms) {
-    Ok(Inner(stream.Delta(..))) | Ok(Stop) ->
-      cancel_and_forward(
+  let deadline = process.new_subject()
+  let _timer = process.send_after(deadline, cancel_grace_ms, Nil)
+  let selector =
+    process.new_selector()
+    |> process.select_map(inner.events, CancelInner)
+    |> process.select_map(stop, fn(_nil) { CancelStop })
+    |> process.select_specific_monitor(consumer_monitor, CancelConsumerDown)
+    |> process.select_map(deadline, fn(_nil) { CancelExpired })
+  await_cancelled(inner, witness, consumer, outer, consumer_monitor, selector)
+}
+
+// The deadline subject is installed once by `cancel_and_forward`. Recursing
+// with the same selector means deltas can consume CPU but cannot buy the inner
+// owner another grace interval or postpone the terminal fallback forever.
+fn await_cancelled(
+  inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
+  consumer: Pid,
+  outer: Subject(stream.StreamEvent),
+  consumer_monitor: Monitor,
+  selector: process.Selector(CancelEvent),
+) -> Nil {
+  case process.selector_receive_forever(selector) {
+    CancelInner(stream.Delta(..)) | CancelStop ->
+      await_cancelled(
         inner,
         witness,
         consumer,
         outer,
         consumer_monitor,
-        within_ms,
         selector,
       )
-    Ok(ConsumerDown(_down)) -> drain(inner, witness, consumer_monitor)
-    Ok(Inner(stream.Settled(..) as terminal))
-    | Ok(Inner(stream.Failed(..) as terminal)) -> {
+    CancelConsumerDown(_down) -> drain(inner, witness, consumer_monitor)
+    CancelInner(stream.Settled(..) as terminal)
+    | CancelInner(stream.Failed(..) as terminal) -> {
       case process.is_alive(consumer) {
         True -> process.send(outer, terminal)
         False -> Nil
       }
       finish(witness, consumer_monitor)
     }
-    Error(Nil) -> {
+    CancelExpired -> {
       send_unconfirmed(consumer, outer)
       require_inner_drain(witness)
       forget(consumer_monitor)

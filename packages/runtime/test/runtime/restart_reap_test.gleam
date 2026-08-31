@@ -284,6 +284,61 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
   process.kill(rt.tree.supervisor)
 }
 
+pub fn provider_cancellation_deadline_survives_delta_flood_test() {
+  let rec = recorder.start()
+  let flooders = process.new_subject()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+  let base =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let eff =
+    effects.Effects(
+      ..base,
+      provider: effects.ProviderSurface(timeout_ms: 10, request: fn(_spec) {
+        let events = process.new_subject()
+        stream.immediate(events:, cancel: fn() {
+          let flooder =
+            process.spawn_unlinked(fn() { flood_deltas(events, 900) })
+          process.send(flooders, flooder)
+        })
+      }),
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+  let assert Ok(op) = api.prompt(rt, [fake.user("cancel the noisy provider")])
+
+  // Nine hundred deltas at five milliseconds outlive the two-second grace.
+  // A relative per-receive timeout would be renewed by every delta and miss
+  // this bound; the one scheduled deadline must still settle the operation.
+  let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
+    api.await_result(rt, op, within_ms: 3500)
+    as "late deltas must not extend the cancellation grace"
+  assert error.message == "provider cancellation could not be confirmed"
+  let assert Ok(flooder) = process.receive(flooders, within: 1000)
+  process.kill(flooder)
+  process.kill(rt.tree.supervisor)
+}
+
+fn flood_deltas(events: Subject(stream.StreamEvent), remaining: Int) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "late")),
+      )
+      process.sleep(5)
+      flood_deltas(events, remaining - 1)
+    }
+  }
+}
+
 pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
   let rec = recorder.start()
   let pids = pid_log()

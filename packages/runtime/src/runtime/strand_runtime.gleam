@@ -187,6 +187,15 @@ type ProviderOwnership {
 type ProviderWaitEvent {
   ProviderStream(stream.StreamEvent)
   StopProvider
+  ProviderCancelExpired
+}
+
+// Timeout and cooperative stop have different ownership consequences. A
+// proper type keeps that distinction visible instead of assigning protocol
+// meaning to `True` and `False` at every cancellation branch.
+type ProviderWaitFailure {
+  ProviderStopped
+  ProviderWaitExpired
 }
 
 type Live {
@@ -1780,11 +1789,10 @@ fn await_provider(
     Ok(stream.Delta(..)) -> await_provider(handle, stop, driver, timeout_ms)
     Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
       Some(terminal)
-    Error(True) -> {
+    Error(ProviderStopped) -> {
       stream.cancel(handle)
       case process.is_alive(driver) {
-        True ->
-          await_provider_cancel(handle, stop, driver, provider_cancel_grace_ms)
+        True -> await_provider_cancel(handle, stop, driver)
         // The reaper sent this stop after observing the driver's Down. No
         // caller remains to consume a terminal, and the reaper independently
         // retains `handle.owner`, so exiting transfers teardown to that
@@ -1792,27 +1800,9 @@ fn await_provider(
         False -> None
       }
     }
-    Error(False) -> {
+    Error(ProviderWaitExpired) -> {
       stream.cancel(handle)
-      case next_provider_event(handle, stop, provider_cancel_grace_ms) {
-        Ok(stream.Delta(..)) ->
-          await_provider_cancel(handle, stop, driver, provider_cancel_grace_ms)
-        Ok(stream.Settled(..) as terminal)
-        | Ok(stream.Failed(..) as terminal) -> Some(terminal)
-        Error(True) -> {
-          case process.is_alive(driver) {
-            True -> {
-              Some(stream.Failed(error: stream.CancellationUnconfirmed))
-            }
-            False -> None
-          }
-        }
-        // The owner alone can prove cancellation won. Keep an unconfirmed
-        // outcome terminal: retrying could overlap new work with a request
-        // that failed to prove it stopped.
-        Error(False) ->
-          Some(stream.Failed(error: stream.CancellationUnconfirmed))
-      }
+      await_provider_cancel(handle, stop, driver)
     }
   }
 }
@@ -1821,40 +1811,57 @@ fn await_provider_cancel(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
   driver: Pid,
-  timeout_ms: Int,
 ) -> Option(stream.StreamEvent) {
-  case next_provider_event(handle, stop, timeout_ms) {
-    Ok(stream.Delta(..)) ->
-      await_provider_cancel(handle, stop, driver, timeout_ms)
-    Ok(stream.Settled(..) as terminal) | Ok(stream.Failed(..) as terminal) ->
-      Some(terminal)
-    Error(True) ->
+  let deadline = process.new_subject()
+  let _timer = process.send_after(deadline, provider_cancel_grace_ms, Nil)
+  let selector =
+    process.new_selector()
+    |> process.select_map(handle.events, ProviderStream)
+    |> process.select_map(stop, fn(_nil) { StopProvider })
+    |> process.select_map(deadline, fn(_nil) { ProviderCancelExpired })
+  await_provider_cancel_selected(selector, driver)
+}
+
+// This loop retains the selector carrying the one scheduled deadline. Late
+// deltas are discarded without refreshing the grace period, so a noisy or
+// broken transport cannot keep an effect live forever after cancellation.
+fn await_provider_cancel_selected(
+  selector: process.Selector(ProviderWaitEvent),
+  driver: Pid,
+) -> Option(stream.StreamEvent) {
+  case process.selector_receive_forever(selector) {
+    ProviderStream(stream.Delta(..)) ->
+      await_provider_cancel_selected(selector, driver)
+    ProviderStream(stream.Settled(..) as terminal)
+    | ProviderStream(stream.Failed(..) as terminal) -> Some(terminal)
+    StopProvider ->
       case process.is_alive(driver) {
         True -> {
           Some(stream.Failed(error: stream.CancellationUnconfirmed))
         }
         False -> None
       }
-    Error(False) -> Some(stream.Failed(error: stream.CancellationUnconfirmed))
+    ProviderCancelExpired ->
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
   }
 }
 
 // The private selector event keeps stream traffic and the reaper's cooperative
-// stop distinct. The Boolean error then carries that distinction through the
-// small recursive wait helpers: `True` is stop and `False` is local timeout.
+// stop distinct. `ProviderWaitFailure` carries the distinction into the
+// timeout branch without assigning protocol meaning to a Boolean.
 fn next_provider_event(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
   within_ms: Int,
-) -> Result(stream.StreamEvent, Bool) {
+) -> Result(stream.StreamEvent, ProviderWaitFailure) {
   let selector =
     process.new_selector()
     |> process.select_map(handle.events, ProviderStream)
     |> process.select_map(stop, fn(_nil) { StopProvider })
   case process.selector_receive(selector, within_ms) {
     Ok(ProviderStream(event)) -> Ok(event)
-    Ok(StopProvider) -> Error(True)
-    Error(Nil) -> Error(False)
+    Ok(StopProvider) -> Error(ProviderStopped)
+    Ok(ProviderCancelExpired) | Error(Nil) -> Error(ProviderWaitExpired)
   }
 }
 

@@ -19,7 +19,6 @@
 //// preserving the older promise that cancellation is usable when it returns.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
-import gleam/option.{None, Some}
 import provider/custodian
 import provider/stream
 import runtime/effects
@@ -177,7 +176,7 @@ fn guard(
                 observer,
                 observer_control,
                 outer,
-                consumer,
+                control,
                 consumer_monitor,
                 observer_monitor,
               )
@@ -566,46 +565,28 @@ fn forward_cancelling(
 fn cancel_during_start(
   inner: stream.StreamHandle,
   drain_witness: stream.DrainWitness,
-  _observer: Pid,
+  observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
-  consumer: Pid,
+  control: Subject(Control),
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
   stream.cancel(inner)
-  let terminal = stream.await_terminal(inner, within: cancel_grace_ms)
-  let deliver = case terminal, consumer_liveness(consumer) {
-    Ok(#(_deltas, event)), ConsumerAlive -> {
-      let acknowledged = process.new_subject()
-      process.send(observer_control, Observe(event, acknowledged:))
-      let observed =
-        process.new_selector()
-        |> process.select_map(acknowledged, fn(_acknowledged) { True })
-        |> process.select_specific_monitor(consumer_monitor, fn(_down) { False })
-        |> process.select_specific_monitor(observer_monitor, fn(_down) { False })
-        |> process.selector_receive(within: cancel_grace_ms)
-      case observed {
-        Ok(True) -> Some(event)
-        Ok(False) | Error(Nil) ->
-          case consumer_liveness(consumer) {
-            ConsumerAlive ->
-              Some(stream.Failed(error: stream.CancellationUnconfirmed))
-            ConsumerGone -> None
-          }
-      }
-    }
-    Error(Nil), ConsumerAlive ->
-      Some(stream.Failed(error: stream.CancellationUnconfirmed))
-    _, ConsumerGone -> None
-  }
-  require_drain(drain_witness)
-  case deliver, consumer_liveness(consumer) {
-    Some(event), ConsumerAlive -> process.send(outer, event)
-    _, _ -> Nil
-  }
-  release_observer(observer_monitor)
-  forget_relay(consumer_monitor, observer_monitor)
+  // Reuse the ordinary cancelling state machine so startup cancellation has
+  // the same single scheduled deadline. `await_terminal` uses an idle timeout
+  // and would let each late delta silently renew this grace period.
+  let _timer = process.send_after(control, cancel_grace_ms, CancelDeadline)
+  forward_cancelling(
+    inner,
+    drain_witness,
+    observer,
+    observer_control,
+    outer,
+    control,
+    consumer_monitor,
+    observer_monitor,
+  )
 }
 
 fn consumer_liveness(consumer: Pid) -> ConsumerLiveness {

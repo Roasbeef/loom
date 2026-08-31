@@ -1400,6 +1400,54 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
   assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
+pub fn provider_relay_startup_cancel_has_one_delta_proof_deadline_test() {
+  let entered = process.new_subject()
+  let flooders = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let start_gate = process.new_subject()
+      process.send(entered, start_gate)
+      let _start = process.receive_forever(start_gate)
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() {
+        let flooder =
+          process.spawn_unlinked(fn() { flood_relay_deltas(events, 700) })
+        process.send(flooders, flooder)
+      })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let assert Ok(start_gate) = process.receive(entered, within: 1000)
+
+  stream.cancel(handle)
+  process.send(start_gate, Nil)
+
+  // The flood runs longer than the 1.5-second cancellation grace. The relay
+  // must discard each delta without treating activity as renewed proof time.
+  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
+    stream.next(handle, within: 2500)
+    as "startup cancellation must keep one fixed proof deadline"
+  let assert Ok(flooder) = process.receive(flooders, within: 1000)
+  process.kill(flooder)
+}
+
+fn flood_relay_deltas(
+  events: Subject(stream.StreamEvent),
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      process.send(
+        events,
+        stream.Delta(stream.TextDelta(index: 0, text: "late")),
+      )
+      process.sleep(5)
+      flood_relay_deltas(events, remaining - 1)
+    }
+  }
+}
+
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
   let cancelled = process.new_subject()
   let surface =
