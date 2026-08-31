@@ -39,7 +39,6 @@
 //// both propagate a provider crash and remain alive to witness its cleanup.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
-import gleam/option.{type Option, None, Some}
 import provider/custodian
 import provider/stream
 import runtime/effects
@@ -119,14 +118,18 @@ pub fn prepare(
             effects.prepare_provider(surface, spec)
           case custodian.adopt(owner, inner.owner, inner.cancel) {
             True -> {
+              let drain = stream.watch_drain(inner)
               begin()
-              forward(inner, consumer, events, stop)
+              forward(inner, drain, consumer, events, stop)
             }
             // Prepared production work is still parked here, but legacy
             // in-memory surfaces may already carry a real terminal. The
             // cancellation loop preserves that terminal without granting a
             // begin permit to asynchronous work.
-            False -> cancel(inner, consumer, events, stop)
+            False -> {
+              let drain = stream.watch_drain(inner)
+              cancel(inner, drain, consumer, events, stop)
+            }
           }
         }
       }
@@ -148,36 +151,31 @@ pub fn prepare(
 // custodian remains a reliable witness if any of that work crashes.
 fn forward(
   inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
   stop: Subject(Nil),
 ) -> Nil {
   let consumer_monitor = process.monitor(consumer)
-  let #(selector, owner_monitor) = selector(inner, stop, consumer_monitor)
-  forward_selected(
-    inner,
-    consumer,
-    outer,
-    consumer_monitor,
-    owner_monitor,
-    selector,
-  )
+  let selector = selector(inner, stop, consumer_monitor)
+  forward_selected(inner, witness, consumer, outer, consumer_monitor, selector)
 }
 
 fn cancel(
   inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
   stop: Subject(Nil),
 ) -> Nil {
   let consumer_monitor = process.monitor(consumer)
-  let #(selector, owner_monitor) = selector(inner, stop, consumer_monitor)
+  let selector = selector(inner, stop, consumer_monitor)
   cancel_and_forward(
     inner,
+    witness,
     consumer,
     outer,
     consumer_monitor,
-    owner_monitor,
     cancel_grace_ms,
     selector,
   )
@@ -185,10 +183,10 @@ fn cancel(
 
 fn forward_selected(
   inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
-  owner_monitor: Option(Monitor),
   selector: process.Selector(WorkerEvent),
 ) -> Nil {
   case process.selector_receive_forever(selector) {
@@ -201,14 +199,14 @@ fn forward_selected(
         stream.Delta(..) ->
           forward_selected(
             inner,
+            witness,
             consumer,
             outer,
             consumer_monitor,
-            owner_monitor,
             selector,
           )
         stream.Settled(..) | stream.Failed(..) ->
-          finish(inner, consumer_monitor, owner_monitor)
+          finish(witness, consumer_monitor)
       }
     }
     Stop ->
@@ -216,16 +214,16 @@ fn forward_selected(
         True ->
           cancel_and_forward(
             inner,
+            witness,
             consumer,
             outer,
             consumer_monitor,
-            owner_monitor,
             cancel_grace_ms,
             selector,
           )
-        False -> drain(inner, consumer_monitor, owner_monitor)
+        False -> drain(inner, witness, consumer_monitor)
       }
-    ConsumerDown(_down) -> drain(inner, consumer_monitor, owner_monitor)
+    ConsumerDown(_down) -> drain(inner, witness, consumer_monitor)
   }
 }
 
@@ -235,10 +233,10 @@ fn forward_selected(
 // does not exit until the inner owner's Down proves the subtree is gone.
 fn cancel_and_forward(
   inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
   consumer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
-  owner_monitor: Option(Monitor),
   within_ms: Int,
   selector: process.Selector(WorkerEvent),
 ) -> Nil {
@@ -251,26 +249,26 @@ fn cancel_and_forward(
     Ok(Inner(stream.Delta(..))) | Ok(Stop) ->
       cancel_and_forward(
         inner,
+        witness,
         consumer,
         outer,
         consumer_monitor,
-        owner_monitor,
         within_ms,
         selector,
       )
-    Ok(ConsumerDown(_down)) -> drain(inner, consumer_monitor, owner_monitor)
+    Ok(ConsumerDown(_down)) -> drain(inner, witness, consumer_monitor)
     Ok(Inner(stream.Settled(..) as terminal))
     | Ok(Inner(stream.Failed(..) as terminal)) -> {
       case process.is_alive(consumer) {
         True -> process.send(outer, terminal)
         False -> Nil
       }
-      finish(inner, consumer_monitor, owner_monitor)
+      finish(witness, consumer_monitor)
     }
     Error(Nil) -> {
       send_unconfirmed(consumer, outer)
-      stream.await_stopped_forever(inner)
-      forget(consumer_monitor, owner_monitor)
+      require_inner_drain(witness)
+      forget(consumer_monitor)
     }
   }
 }
@@ -280,43 +278,28 @@ fn cancel_and_forward(
 // only the stronger obligation: cancel and prove the inner owner is gone.
 fn drain(
   inner: stream.StreamHandle,
+  witness: stream.DrainWitness,
   consumer_monitor: Monitor,
-  owner_monitor: Option(Monitor),
 ) -> Nil {
   stream.cancel(inner)
-  stream.await_stopped_forever(inner)
-  forget(consumer_monitor, owner_monitor)
+  require_inner_drain(witness)
+  forget(consumer_monitor)
 }
 
 fn selector(
   inner: stream.StreamHandle,
   stop: Subject(Nil),
   consumer_monitor: Monitor,
-) -> #(process.Selector(WorkerEvent), Option(Monitor)) {
-  let selector =
-    process.new_selector()
-    |> process.select_map(inner.events, Inner)
-    |> process.select_map(stop, fn(_nil) { Stop })
-    |> process.select_specific_monitor(consumer_monitor, ConsumerDown)
-  case inner.owner {
-    None -> #(selector, None)
-    Some(owner) -> {
-      let monitor = process.monitor(owner)
-      // Owner death is drain evidence, not a provider outcome. Selecting this
-      // monitor beside the event subject would race two independent senders
-      // and could fabricate CancellationUnconfirmed ahead of a queued terminal.
-      #(selector, Some(monitor))
-    }
-  }
+) -> process.Selector(WorkerEvent) {
+  process.new_selector()
+  |> process.select_map(inner.events, Inner)
+  |> process.select_map(stop, fn(_nil) { Stop })
+  |> process.select_specific_monitor(consumer_monitor, ConsumerDown)
 }
 
-fn finish(
-  inner: stream.StreamHandle,
-  consumer_monitor: Monitor,
-  owner_monitor: Option(Monitor),
-) -> Nil {
-  stream.await_stopped_forever(inner)
-  forget(consumer_monitor, owner_monitor)
+fn finish(witness: stream.DrainWitness, consumer_monitor: Monitor) -> Nil {
+  require_inner_drain(witness)
+  forget(consumer_monitor)
 }
 
 fn send_unconfirmed(consumer: Pid, outer: Subject(stream.StreamEvent)) -> Nil {
@@ -327,10 +310,16 @@ fn send_unconfirmed(consumer: Pid, outer: Subject(stream.StreamEvent)) -> Nil {
   }
 }
 
-fn forget(consumer_monitor: Monitor, owner_monitor: Option(Monitor)) -> Nil {
+fn forget(consumer_monitor: Monitor) -> Nil {
   process.demonitor_process(consumer_monitor)
-  case owner_monitor {
-    None -> Nil
-    Some(monitor) -> process.demonitor_process(monitor)
+}
+
+// This worker is itself a transitive child of the outer custodian. Preserving
+// an abnormal inner Down as an abnormal worker Down lets that custodian report
+// the lost proof instead of certifying a clean provider shutdown.
+fn require_inner_drain(witness: stream.DrainWitness) -> Nil {
+  case stream.await_drain_forever(witness) {
+    stream.Drained -> Nil
+    stream.TimedOut | stream.ProofLost -> process.kill(process.self())
   }
 }

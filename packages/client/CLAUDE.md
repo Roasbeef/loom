@@ -62,8 +62,10 @@ over one session file. WP-L.
   facade. The
   guard remains the inner surface's direct consumer, and a separately
   monitored observer runs the synchronous callback before each event is
-  forwarded. The custodian adopts the guard, observer, and inner stream owner
-  before each begins work. Cancel travels inward, an unacknowledged cancel
+  forwarded. The guard registers an original `DrainWitness`, and the custodian
+  adopts the guard, leaf observer, and transitive inner stream owner before
+  each begins work. A terminal is not forwarded until that original witness
+  reports `Drained`. Cancel travels inward, an unacknowledged cancel
   becomes terminal `CancellationUnconfirmed` after one fixed grace, and the
   custodian remains alive until the registered subtree drains. Guard or
   observer death becomes a prompt in-band transport failure only after that
@@ -1187,9 +1189,11 @@ over one session file. WP-L.
   stream, then grant its begin permit. The guard
   remains the inner stream's direct consumer; only each synchronous observer
   call moves to a monitored worker. The custodian adopts both and the inner
-  owner, forwards cancellation inward, and bounds missing acknowledgement with
+  owner, while the guard retains its own pre-begin drain monitor. It forwards
+  cancellation inward and bounds missing acknowledgement with
   `CancellationUnconfirmed`, then stays alive until the registered subtree
-  exits. This keeps the chain continuous from driver reaper to runtime
+  exits. An abnormal transitive Down becomes terminal `DrainProofLost`, never
+  retry permission. This keeps the chain continuous from driver reaper to runtime
   custodian, relay custodian and guard, gateway custodian, guard and pump, and
   the native HTTP owner plus its dedicated handler; no wrapper may turn
   consumer death into a detached request.

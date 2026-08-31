@@ -118,6 +118,7 @@ import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
 import gleam/bool
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
@@ -1276,8 +1277,13 @@ pub fn gateway_distiller(
         // `extract_all` may issue the next billable distillation request as
         // soon as this call returns. A timeout ends the receive, not the work;
         // keep this fold step private until the old provider subtree is gone.
-        stream.await_stopped_forever(handle)
-        Error("the model did not answer inside the timeout")
+        case stream.await_stopped_forever(handle) {
+          stream.Drained -> Error("the model did not answer inside the timeout")
+          stream.TimedOut | stream.ProofLost -> {
+            process.kill(process.self())
+            Error("the provider owner exited without proving drain")
+          }
+        }
       }
       Ok(#(_deltas, stream.Failed(error:))) -> Error(string.inspect(error))
       Ok(#(_deltas, stream.Delta(..))) ->

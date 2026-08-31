@@ -1721,10 +1721,11 @@ fn spawn_provider(
     spawn_provider_effect(state.reaper, logger, fn(stop) {
       let provider_custodian.Prepared(handle:, begin:) =
         provider_custodian.prepare(surface, spec)
+      let drain = stream.watch_drain(handle)
       case track_provider_owner(state.reaper, handle) {
         False -> {
           stream.cancel(handle)
-          stream.await_stopped_forever(handle)
+          require_provider_drain(drain)
         }
         True -> {
           begin()
@@ -1736,13 +1737,13 @@ fn spawn_provider(
               effects.provider_timeout_ms(surface),
             )
           {
-            None -> Nil
+            None -> stream.release_drain(drain)
             Some(terminal) -> {
               // The terminal and the owner drain are separate facts. Keeping
               // this effect private until the public owner exits prevents both
               // the current driver and a replacement from dispatching beside
               // the old subtree.
-              stream.await_stopped_forever(handle)
+              require_provider_drain(drain)
               wake(parent, ProviderDone(token:, terminal:))
             }
           }
@@ -1797,7 +1798,6 @@ fn await_provider(
         Error(True) -> {
           case process.is_alive(driver) {
             True -> {
-              stream.await_stopped_forever(handle)
               Some(stream.Failed(error: stream.CancellationUnconfirmed))
             }
             False -> None
@@ -1827,7 +1827,6 @@ fn await_provider_cancel(
     Error(True) ->
       case process.is_alive(driver) {
         True -> {
-          stream.await_stopped_forever(handle)
           Some(stream.Failed(error: stream.CancellationUnconfirmed))
         }
         False -> None
@@ -1852,6 +1851,17 @@ fn next_provider_event(
     Ok(ProviderStream(event)) -> Ok(event)
     Ok(StopProvider) -> Error(True)
     Error(Nil) -> Error(False)
+  }
+}
+
+// The reaper can safely retire this effect only after the provider owner's
+// normal Down proves its whole registered subtree drained. An abnormal Down
+// must remain abnormal at this boundary so the enclosing reaper cannot mistake
+// lost ownership for a completed effect.
+fn require_provider_drain(witness: stream.DrainWitness) -> Nil {
+  case stream.await_drain_forever(witness) {
+    stream.Drained -> Nil
+    stream.TimedOut | stream.ProofLost -> process.kill(process.self())
   }
 }
 

@@ -306,8 +306,11 @@ extended by the M3 runtime wave.
   custodian is unlinked and survives both long enough to drain their adopted
   descendants. The separate drain ledger remembers every unadjudicated reaper
   for the strand, and a replacement waits for them before starting recovery.
-  A provider owner or reaper must exit normally to discharge its obligation;
-  killed, abnormal, and late `noproc` observations fail closed. `SessionTree`
+  The effect installs a `DrainWitness` before granting begin, so it can delay
+  `ProviderDone` until the original monitor reports `Drained`; the reaper holds
+  an independent monitor for recovery. A provider owner or reaper must exit
+  normally to discharge its obligation; killed, abnormal, and late `noproc`
+  observations fail closed. `SessionTree`
   retains the ledger's stable name, so
   `shutdown` waits it independently even when the root supervisor was killed
   abnormally. This transitive drain barrier, rather than scheduler

@@ -1289,7 +1289,7 @@ pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
     effects.prepare_provider(tapped, cancellation_spec())
 
   stream.cancel(handle)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
   begin()
 
   assert process.receive(started, within: 50) == Error(Nil)
@@ -1361,7 +1361,7 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
     as "fallible stream consumption must not be the public drain witness"
   let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
     stream.next(handle, within: 1000)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }
 
 pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
@@ -1392,7 +1392,7 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
   assert stream.next(handle, within: 1000)
     == Ok(stream.Failed(error: stream.ProviderCancelled))
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }
 
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
@@ -1451,9 +1451,9 @@ pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
     stream.next(handle, within: 2500)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(owner)
-  assert !stream.await_stopped(handle, within: 20)
+  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }
 
 pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
@@ -1488,7 +1488,7 @@ pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(inner_owner)
   assert process.is_alive(witness)
-  assert !stream.await_stopped(handle, within: 20)
+  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }

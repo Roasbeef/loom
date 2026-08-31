@@ -19,6 +19,7 @@
 //// preserving the older promise that cancellation is usable when it returns.
 
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
+import gleam/option.{None, Some}
 import provider/custodian
 import provider/stream
 import runtime/effects
@@ -65,6 +66,13 @@ type ObservationEvent {
   ObservationObserverDown(process.Down)
   ObservationCancelRequested
   ObservationCancelExpired
+}
+
+// This private type gives each liveness check the meaning needed by the relay:
+// whether forwarding remains useful, rather than merely exposing a raw Boolean.
+type ConsumerLiveness {
+  ConsumerAlive
+  ConsumerGone
 }
 
 /// Wraps one provider request with a synchronous event observer.
@@ -147,7 +155,7 @@ fn guard(
       // observer before it reaches the caller.
       let #(observer, observer_control, observer_monitor) =
         start_observer(observe, process.self())
-      case custodian.adopt_owner(owner, observer, fn() { Nil }) {
+      case custodian.adopt_leaf(owner, observer, fn() { Nil }) {
         False -> {
           // Rejection leaves startup with the guard. Returning drops the
           // creator monitor normally, so the still-parked observer follows
@@ -159,11 +167,13 @@ fn guard(
         True -> {
           let stream.PreparedStream(handle: inner, begin: begin_inner) =
             effects.prepare_provider(surface, spec)
+          let drain_witness = stream.watch_drain(inner)
           case custodian.adopt(owner, inner.owner, inner.cancel) {
             False -> {
               process.send(acknowledged, Nil)
               cancel_during_start(
                 inner,
+                drain_witness,
                 observer,
                 observer_control,
                 outer,
@@ -177,6 +187,7 @@ fn guard(
               process.send(acknowledged, Nil)
               forward(
                 inner,
+                drain_witness,
                 observer,
                 observer_control,
                 outer,
@@ -302,6 +313,7 @@ fn failed_prepared(
 
 fn forward(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
@@ -315,11 +327,19 @@ fn forward(
     relay_selector(inner, control, consumer_monitor, observer_monitor)
   case process.selector_receive(selector, within: timeout_ms) {
     Error(Nil) ->
-      fail_and_drain(inner, observer, outer, consumer_monitor, observer_monitor)
+      fail_and_drain(
+        inner,
+        drain_witness,
+        observer,
+        outer,
+        consumer_monitor,
+        observer_monitor,
+      )
     Ok(Inner(event)) ->
       observe_forwarding(
         event,
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -332,17 +352,26 @@ fn forward(
     Ok(ConsumerDown(_down)) ->
       stop_for_dead_consumer(
         inner,
+        drain_witness,
         observer,
         consumer_monitor,
         observer_monitor,
       )
     Ok(ObserverDown(_down)) ->
-      fail_and_drain(inner, observer, outer, consumer_monitor, observer_monitor)
+      fail_and_drain(
+        inner,
+        drain_witness,
+        observer,
+        outer,
+        consumer_monitor,
+        observer_monitor,
+      )
     Ok(CancelRequested) -> {
       stream.cancel(inner)
       let _timer = process.send_after(control, cancel_grace_ms, CancelDeadline)
       forward_cancelling(
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -354,6 +383,7 @@ fn forward(
     Ok(CancelExpired) ->
       forward(
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -369,6 +399,7 @@ fn forward(
 fn observe_forwarding(
   event: stream.StreamEvent,
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
@@ -382,43 +413,63 @@ fn observe_forwarding(
   process.send(observer_control, Observe(event, acknowledged:))
   case observation(acknowledged, control, consumer_monitor, observer_monitor) {
     Observed ->
-      case process.is_alive(consumer) {
-        False ->
+      // Decide liveness and event shape together. Besides keeping the state
+      // transition visible in one place, this prevents another liveness check
+      // from enclosing the entire event protocol and hiding its terminal arm.
+      case consumer_liveness(consumer), event {
+        ConsumerGone, _event ->
           stop_for_dead_consumer(
             inner,
+            drain_witness,
             observer,
             consumer_monitor,
             observer_monitor,
           )
-        True -> {
+        ConsumerAlive, stream.Delta(..) -> {
           process.send(outer, event)
-          case event {
-            stream.Delta(..) ->
-              forward(
-                inner,
-                observer,
-                observer_control,
-                outer,
-                consumer,
-                control,
-                consumer_monitor,
-                observer_monitor,
-                timeout_ms,
-              )
-            stream.Settled(..) | stream.Failed(..) ->
-              finish_relay(inner, observer, consumer_monitor, observer_monitor)
+          forward(
+            inner,
+            drain_witness,
+            observer,
+            observer_control,
+            outer,
+            consumer,
+            control,
+            consumer_monitor,
+            observer_monitor,
+            timeout_ms,
+          )
+        }
+        ConsumerAlive, stream.Settled(..) | ConsumerAlive, stream.Failed(..) -> {
+          finish_relay(
+            drain_witness,
+            observer,
+            consumer_monitor,
+            observer_monitor,
+          )
+          case consumer_liveness(consumer) {
+            ConsumerAlive -> process.send(outer, event)
+            ConsumerGone -> Nil
           }
         }
       }
     ObservationConsumerDown(_down) ->
       stop_for_dead_consumer(
         inner,
+        drain_witness,
         observer,
         consumer_monitor,
         observer_monitor,
       )
     ObservationObserverDown(_down) ->
-      fail_and_drain(inner, observer, outer, consumer_monitor, observer_monitor)
+      fail_and_drain(
+        inner,
+        drain_witness,
+        observer,
+        outer,
+        consumer_monitor,
+        observer_monitor,
+      )
     ObservationCancelRequested -> {
       stream.cancel(inner)
       let _timer = process.send_after(control, cancel_grace_ms, CancelDeadline)
@@ -426,6 +477,7 @@ fn observe_forwarding(
         event,
         acknowledged,
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -438,6 +490,7 @@ fn observe_forwarding(
       observe_forwarding(
         event,
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -452,6 +505,7 @@ fn observe_forwarding(
 
 fn forward_cancelling(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
@@ -469,6 +523,7 @@ fn forward_cancelling(
         event,
         acknowledged,
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -480,6 +535,7 @@ fn forward_cancelling(
     ConsumerDown(_down) ->
       stop_for_dead_consumer(
         inner,
+        drain_witness,
         observer,
         consumer_monitor,
         observer_monitor,
@@ -487,6 +543,7 @@ fn forward_cancelling(
     ObserverDown(_down) | CancelExpired ->
       cancellation_unconfirmed(
         inner,
+        drain_witness,
         observer,
         outer,
         consumer_monitor,
@@ -495,6 +552,7 @@ fn forward_cancelling(
     CancelRequested ->
       forward_cancelling(
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -507,6 +565,7 @@ fn forward_cancelling(
 
 fn cancel_during_start(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   _observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
@@ -516,8 +575,8 @@ fn cancel_during_start(
 ) -> Nil {
   stream.cancel(inner)
   let terminal = stream.await_terminal(inner, within: cancel_grace_ms)
-  case terminal, process.is_alive(consumer) {
-    Ok(#(_deltas, event)), True -> {
+  let deliver = case terminal, consumer_liveness(consumer) {
+    Ok(#(_deltas, event)), ConsumerAlive -> {
       let acknowledged = process.new_subject()
       process.send(observer_control, Observe(event, acknowledged:))
       let observed =
@@ -527,31 +586,40 @@ fn cancel_during_start(
         |> process.select_specific_monitor(observer_monitor, fn(_down) { False })
         |> process.selector_receive(within: cancel_grace_ms)
       case observed {
-        Ok(True) -> process.send(outer, event)
+        Ok(True) -> Some(event)
         Ok(False) | Error(Nil) ->
-          case process.is_alive(consumer) {
-            True ->
-              process.send(
-                outer,
-                stream.Failed(error: stream.CancellationUnconfirmed),
-              )
-            False -> Nil
+          case consumer_liveness(consumer) {
+            ConsumerAlive ->
+              Some(stream.Failed(error: stream.CancellationUnconfirmed))
+            ConsumerGone -> None
           }
       }
     }
-    Error(Nil), True ->
-      process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
-    _, False -> Nil
+    Error(Nil), ConsumerAlive ->
+      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+    _, ConsumerGone -> None
   }
-  stream.await_stopped_forever(inner)
+  require_drain(drain_witness)
+  case deliver, consumer_liveness(consumer) {
+    Some(event), ConsumerAlive -> process.send(outer, event)
+    _, _ -> Nil
+  }
   release_observer(observer_monitor)
   forget_relay(consumer_monitor, observer_monitor)
+}
+
+fn consumer_liveness(consumer: Pid) -> ConsumerLiveness {
+  case process.is_alive(consumer) {
+    True -> ConsumerAlive
+    False -> ConsumerGone
+  }
 }
 
 fn observe_cancelling(
   event: stream.StreamEvent,
   acknowledged: Subject(Nil),
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   observer: Pid,
   observer_control: Subject(ObserverMessage),
   outer: Subject(stream.StreamEvent),
@@ -565,6 +633,7 @@ fn observe_cancelling(
         stream.Delta(..) ->
           forward_cancelling(
             inner,
+            drain_witness,
             observer,
             observer_control,
             outer,
@@ -573,13 +642,19 @@ fn observe_cancelling(
             observer_monitor,
           )
         stream.Settled(..) | stream.Failed(..) -> {
+          finish_relay(
+            drain_witness,
+            observer,
+            consumer_monitor,
+            observer_monitor,
+          )
           process.send(outer, event)
-          finish_relay(inner, observer, consumer_monitor, observer_monitor)
         }
       }
     ObservationConsumerDown(_down) ->
       stop_for_dead_consumer(
         inner,
+        drain_witness,
         observer,
         consumer_monitor,
         observer_monitor,
@@ -587,6 +662,7 @@ fn observe_cancelling(
     ObservationObserverDown(_down) | ObservationCancelExpired ->
       cancellation_unconfirmed(
         inner,
+        drain_witness,
         observer,
         outer,
         consumer_monitor,
@@ -597,6 +673,7 @@ fn observe_cancelling(
         event,
         acknowledged,
         inner,
+        drain_witness,
         observer,
         observer_control,
         outer,
@@ -646,6 +723,7 @@ fn relay_selector(
 
 fn fail_and_drain(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   _observer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
@@ -653,17 +731,23 @@ fn fail_and_drain(
 ) -> Nil {
   release_observer(observer_monitor)
   stream.cancel(inner)
-  case stream.await_stopped(inner, within: cancel_grace_ms) {
-    True ->
+  case stream.await_drain(drain_witness, within: cancel_grace_ms) {
+    stream.Drained ->
       process.send(
         outer,
         stream.Failed(error: stream.TransportFailed(
           reason: "provider relay worker stopped before a terminal response",
         )),
       )
-    False -> {
+    stream.TimedOut -> {
       process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
-      stream.await_stopped_forever(inner)
+      require_drain(drain_witness)
+    }
+    stream.ProofLost -> {
+      process.send(outer, stream.Failed(error: stream.DrainProofLost))
+      // Returning normally here would let the outer custodian certify a
+      // subtree whose transitive owner died abnormally.
+      process.kill(process.self())
     }
   }
   forget_relay(consumer_monitor, observer_monitor)
@@ -671,6 +755,7 @@ fn fail_and_drain(
 
 fn cancellation_unconfirmed(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   _observer: Pid,
   outer: Subject(stream.StreamEvent),
   consumer_monitor: Monitor,
@@ -679,12 +764,13 @@ fn cancellation_unconfirmed(
   release_observer(observer_monitor)
   process.send(outer, stream.Failed(error: stream.CancellationUnconfirmed))
   stream.cancel(inner)
-  stream.await_stopped_forever(inner)
+  require_drain(drain_witness)
   forget_relay(consumer_monitor, observer_monitor)
 }
 
 fn stop_for_dead_consumer(
   inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   _observer: Pid,
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
@@ -694,17 +780,17 @@ fn stop_for_dead_consumer(
   // summary recording, from outliving the consumer that requested them.
   release_observer(observer_monitor)
   stream.cancel(inner)
-  stream.await_stopped_forever(inner)
+  require_drain(drain_witness)
   forget_relay(consumer_monitor, observer_monitor)
 }
 
 fn finish_relay(
-  inner: stream.StreamHandle,
+  drain_witness: stream.DrainWitness,
   _observer: Pid,
   consumer_monitor: Monitor,
   observer_monitor: Monitor,
 ) -> Nil {
-  stream.await_stopped_forever(inner)
+  require_drain(drain_witness)
   release_observer(observer_monitor)
   forget_relay(consumer_monitor, observer_monitor)
 }
@@ -720,4 +806,14 @@ fn release_observer(monitor: Monitor) -> Nil {
 fn forget_relay(consumer_monitor: Monitor, observer_monitor: Monitor) -> Nil {
   process.demonitor_process(consumer_monitor)
   process.demonitor_process(observer_monitor)
+}
+
+// A transitive owner speaks for work beneath it. Only its normal Down permits
+// this relay to retire normally; otherwise the relay must preserve the lost
+// proof as an abnormal Down for its own custodian.
+fn require_drain(drain_witness: stream.DrainWitness) -> Nil {
+  case stream.await_drain_forever(drain_witness) {
+    stream.Drained -> Nil
+    stream.TimedOut | stream.ProofLost -> process.kill(process.self())
+  }
 }
