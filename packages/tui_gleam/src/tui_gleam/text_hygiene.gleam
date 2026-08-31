@@ -6,6 +6,7 @@
 //// keeps model output from becoming terminal control traffic.
 
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 /// Replaces invisible and direction-changing codepoints while preserving line
@@ -20,6 +21,7 @@ pub fn multiline(text: String) -> String {
   text
   |> string.replace("\r\n", "\n")
   |> string.replace("\r", "\n")
+  |> strip_terminal_sequences
   |> string.to_utf_codepoints
   |> list.map(fn(codepoint) {
     let code = string.utf_codepoint_to_int(codepoint)
@@ -30,6 +32,96 @@ pub fn multiline(text: String) -> String {
     }
   })
   |> string.concat
+}
+
+// Complete terminal escape sequences are formatting instructions rather than
+// transcript text. Removing them as units avoids leaving their visible CSI or
+// OSC payload behind after the leading control byte is replaced.
+fn strip_terminal_sequences(text: String) -> String {
+  text
+  |> string.to_utf_codepoints
+  |> strip_sequences([])
+  |> list.reverse
+  |> string.from_utf_codepoints
+}
+
+fn strip_sequences(
+  remaining: List(UtfCodepoint),
+  kept: List(UtfCodepoint),
+) -> List(UtfCodepoint) {
+  case remaining {
+    [] -> kept
+    [first, ..rest] ->
+      case terminal_sequence_tail(first, rest) {
+        Some(after) -> strip_sequences(after, kept)
+        None -> strip_sequences(rest, [first, ..kept])
+      }
+  }
+}
+
+fn terminal_sequence_tail(
+  first: UtfCodepoint,
+  rest: List(UtfCodepoint),
+) -> Option(List(UtfCodepoint)) {
+  case string.utf_codepoint_to_int(first) {
+    0x1B -> escape_sequence_tail(rest)
+    0x9B -> csi_tail(rest)
+    0x9D -> osc_tail(rest)
+    _ -> None
+  }
+}
+
+fn escape_sequence_tail(
+  remaining: List(UtfCodepoint),
+) -> Option(List(UtfCodepoint)) {
+  case remaining {
+    [kind, ..rest] ->
+      case string.utf_codepoint_to_int(kind) {
+        0x5B -> csi_tail(rest)
+        0x5D -> osc_tail(rest)
+        _ -> None
+      }
+    [] -> None
+  }
+}
+
+fn csi_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
+  case remaining {
+    [] -> None
+    [first, ..rest] -> {
+      let code = string.utf_codepoint_to_int(first)
+      case code >= 0x40 && code <= 0x7E {
+        True -> Some(rest)
+        False -> csi_tail(rest)
+      }
+    }
+  }
+}
+
+fn osc_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
+  case remaining {
+    [] -> None
+    [first, ..rest] ->
+      case string.utf_codepoint_to_int(first) {
+        0x07 -> Some(rest)
+        0x9C -> Some(rest)
+        0x1B -> osc_escape_tail(rest)
+        _ -> osc_tail(rest)
+      }
+  }
+}
+
+fn osc_escape_tail(
+  remaining: List(UtfCodepoint),
+) -> Option(List(UtfCodepoint)) {
+  case remaining {
+    [] -> None
+    [first, ..rest] ->
+      case string.utf_codepoint_to_int(first) == 0x5C {
+        True -> Some(rest)
+        False -> osc_tail(remaining)
+      }
+  }
 }
 
 /// Produces a terminal-safe value that cannot escape its current row.

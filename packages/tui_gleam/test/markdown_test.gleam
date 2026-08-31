@@ -112,6 +112,23 @@ pub fn single_line_replaces_row_breaks_and_controls_test() {
   |> should.equal("one two�")
 }
 
+pub fn terminal_formatting_sequences_leave_no_visible_residue_test() {
+  text_hygiene.multiline(
+    "\u{1b}[38;2;226;224;216mstyled\u{1b}[0m\n\u{1b}[?25lready\u{1b}[?25h\u{1b}]0;title\u{7}",
+  )
+  |> should.equal("styled\nready")
+}
+
+pub fn c1_terminal_formatting_sequences_leave_no_visible_residue_test() {
+  text_hygiene.multiline("\u{9b}31mred\u{9b}0m\u{9d}0;title\u{9c}ready")
+  |> should.equal("redready")
+}
+
+pub fn incomplete_terminal_sequences_remain_visibly_inert_test() {
+  text_hygiene.multiline("before\u{1b}[38;")
+  |> should.equal("before�[38;")
+}
+
 fn visible_text(lines: List(span.Line)) -> String {
   lines |> list.map(line_text) |> string.join("\n")
 }
