@@ -33,6 +33,7 @@ packages = [
 argv = { version = ">= 1.1.0 and < 2.0.0" }
 core = { path = "../core" }
 etui = { git = "https://github.com/Roasbeef/etui.git", ref = "fd1ff36cf167e3657a1727508aa602b8cf799422" }
+filepath = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.0.0 and < 5.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
