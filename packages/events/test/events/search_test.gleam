@@ -34,6 +34,67 @@ fn open_search() -> search.Search {
   service
 }
 
+// Scratch layout for the two tests below that need a real on-disk
+// index file (SQLite's locking discipline — WAL, busy timeout, two
+// independent connections — only shows up against a real file, never
+// `:memory:`). Each lane gets its own subdirectory, wiped and
+// re-created here rather than trusting a bare delete of the `.db` file
+// alone: a long-lived worktree can carry a leftover `build/test_db`
+// from an interrupted prior run, and a stray `-wal`/`-shm`/`-journal`
+// file left behind by a crash is exactly what makes a *fresh* open see
+// the database as locked. The delete is checked, not assumed —
+// `client/memory_recall_test`'s `fresh_root` learned that the hard way
+// (a stale index once let a removed sync path pass unnoticed).
+fn fresh_index_path(lane: String) -> String {
+  let dir = "build/test_db/events-search-" <> lane
+  let _stale = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+    as "the test scratch directory must be creatable"
+  // The whole directory, not just the main file: a partial delete that
+  // took `index.db` and left a stale `-wal` beside it would pass an
+  // is_file check on the path alone and hand the next open exactly the
+  // sibling that locks it.
+  let assert Ok([]) = simplifile.read_directory(dir)
+    as "no file may survive from the last run in this lane"
+  dir <> "/index.db"
+}
+
+// A bounded retry around a `sync` call that races another connection's
+// write lock. `search.open`'s busy timeout (5s, hard-coded in
+// `packages/events/src` and left untouched here) already covers
+// ordinary contention — the forced interleaving below never holds the
+// lock longer than its ~1.5s slow scan — but a heavily loaded machine
+// can stretch the whole exchange past that budget. `sync` re-running
+// after a lock timeout is exactly as idempotent as re-running after a
+// crash (its own doc comment), so retrying tolerates that without
+// touching the production timeout or weakening what the test proves:
+// still two syncs, still no duplicate rows.
+fn sync_tolerating_lock_contention(
+  service: search.Search,
+  store: storage.Storage(handle),
+  session: ids.SessionId,
+  generation: Int,
+  retries_left retries_left: Int,
+) -> Result(Nil, search.SearchError) {
+  case search.sync(service, store, session:, generation:) {
+    Error(search.IndexFault(message)) as failed ->
+      case retries_left > 0 && string.contains(message, "locked") {
+        True -> {
+          process.sleep(300)
+          sync_tolerating_lock_contention(
+            service,
+            store,
+            session,
+            generation,
+            retries_left: retries_left - 1,
+          )
+        }
+        False -> failed
+      }
+    result -> result
+  }
+}
+
 pub fn sync_then_query_returns_known_entries_test() {
   let store = fixtures.open_store()
   let ctx = fixtures.new_ctx()
@@ -84,11 +145,7 @@ pub fn repeated_sync_does_not_duplicate_test() {
 /// while holding it (post-fix — the fast sync then simply waits its
 /// turn and re-reads).
 pub fn concurrent_sync_does_not_duplicate_rows_test() {
-  let _ = simplifile.create_directory_all("build/test_db")
-  let path = "build/test_db/search_concurrent_sync.db"
-  let _ = simplifile.delete(path)
-  let _ = simplifile.delete(path <> "-wal")
-  let _ = simplifile.delete(path <> "-shm")
+  let path = fresh_index_path("concurrent-sync")
 
   let store = fixtures.open_store()
   let ctx = fixtures.new_ctx()
@@ -129,7 +186,13 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
       let assert Ok(service_slow) = search.open(path)
         as "search database must open"
       let result =
-        search.sync(service_slow, slow_store, session: sid(2), generation: 0)
+        sync_tolerating_lock_contention(
+          service_slow,
+          slow_store,
+          sid(2),
+          0,
+          retries_left: 4,
+        )
       process.send(done, result)
     })
   // Let the slow sync start (and, pre-fix, finish its unlocked cursor
@@ -137,8 +200,18 @@ pub fn concurrent_sync_does_not_duplicate_rows_test() {
   process.sleep(200)
   let assert Ok(fast_service) = search.open(path) as "search database must open"
   let assert Ok(Nil) =
-    search.sync(fast_service, store, session: sid(2), generation: 0)
-  let assert Ok(slow_result) = process.receive(done, 5000)
+    sync_tolerating_lock_contention(
+      fast_service,
+      store,
+      sid(2),
+      0,
+      retries_left: 4,
+    )
+  // A generous wait for the spawned slow sync: its own retries above
+  // can each add up to ~300ms, and this is a wall-clock budget for a
+  // background process on a shared machine, not a lock timeout — wide
+  // margin costs nothing here.
+  let assert Ok(slow_result) = process.receive(done, 20_000)
   let assert Ok(Nil) = slow_result
 
   let assert Ok(hits) = search.query(fast_service, text: "second", limit: 100)
@@ -334,11 +407,7 @@ pub fn summaries_are_indexed_and_customs_skipped_test() {
 /// file, `storage/sqlite.rewrite_into` erasing an entry, and
 /// `storage/sqlite.generation` supplying the counter the sync compares.
 pub fn sqlite_rewrite_invalidates_index_test() {
-  let _ = simplifile.create_directory_all("build/test_db")
-  let path = "build/test_db/search_rewrite.db"
-  let _ = simplifile.delete(path)
-  let _ = simplifile.delete(path <> "-wal")
-  let _ = simplifile.delete(path <> "-shm")
+  let path = fresh_index_path("rewrite")
   let clock = clock.stepping(from: 10_000, by: 1)
 
   // A session with one entry to erase and one to keep.
