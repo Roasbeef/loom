@@ -313,7 +313,7 @@ and smoke-tested by that CI runner.
 | | with code mode | `DIST_CODEMODE=0` |
 |---|---|---|
 | ERTS stripped | 11 MB | 11 MB |
-| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 16 MB | 16 MB |
+| `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 17 MB | 16 MB |
 | — of which the `compiler` application | 764 KB | — |
 | `bin/loom-exec` | 3.2 MB | 3.2 MB |
 | `bin/gleam`, stripped | 22 MB | — |
