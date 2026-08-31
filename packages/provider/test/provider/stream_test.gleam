@@ -154,6 +154,28 @@ pub fn long_data_line_just_under_the_bound_parses_test() {
   assert data == payload
 }
 
+pub fn terminated_data_lines_cannot_grow_one_event_without_bound_test() {
+  // Complete lines leave the carry buffer empty, so the event needs its own
+  // cumulative budget. Two half-bound values exceed that budget by the newline
+  // which dispatch would insert between them.
+  let value = string.repeat("a", stream.max_event_bytes / 2)
+  let #(parser, first) =
+    stream.feed(
+      stream.new_parser(),
+      bit_array.from_string("data: " <> value <> "\n"),
+    )
+  assert first == []
+  let #(parser, second) =
+    stream.feed(parser, bit_array.from_string("data: " <> value <> "\n"))
+  let assert [stream.SseMalformed(reason:)] = second
+  assert string.contains(reason, "before a blank-line terminator")
+
+  // The rejected event is discarded, so subsequent well-formed traffic does
+  // not inherit its bytes or event name.
+  let #(_parser, after) = stream.feed(parser, <<"\ndata: after\n\n":utf8>>)
+  assert after == [stream.SseMessage(event: None, data: "after")]
+}
+
 // --- chunk-boundary invariance ------------------------------------------
 
 fn transcript_bytes() -> BitArray {

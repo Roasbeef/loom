@@ -58,6 +58,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/http.{type HttpRequest, HttpRequest}
+import provider/internal/diagnostic
 import provider/internal/wire
 import provider/model.{
   type ProviderRequest, type ResolvedModel, type ToolSpec, ThinkingHigh,
@@ -430,10 +431,18 @@ fn on_chunk(
         #(acc, list.append(events, new_events))
       })
     }
-    _ -> #(
-      Accumulator(..acc, error_body: bit_array.append(acc.error_body, chunk)),
-      [],
-    )
+    _ ->
+      case diagnostic.append_error_body(acc.error_body, chunk) {
+        Ok(error_body) -> #(Accumulator(..acc, error_body:), [])
+        Error(Nil) ->
+          fail(
+            acc,
+            MalformedStream(corruption_report(
+              "an error response no larger than 65536 bytes",
+              "provider error response exceeded its byte budget",
+            )),
+          )
+      }
   }
 }
 

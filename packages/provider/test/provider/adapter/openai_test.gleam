@@ -314,6 +314,15 @@ pub fn server_error_with_json_body_test() {
     ]
 }
 
+pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
+  let events =
+    fixture.drive(machine(), status: 500, headers: [], chunks: [
+      bit_array.from_string(string.repeat("x", 65_537)),
+    ])
+  let assert [stream.Failed(stream.MalformedStream(report: report))] = events
+  assert string.contains(report.context, "exceeded its byte budget")
+}
+
 // --- finish-reason mapping table -----------------------------------------------
 
 pub fn finish_reason_mapping_table_test() {

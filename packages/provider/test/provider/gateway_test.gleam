@@ -215,6 +215,65 @@ pub fn terminal_failure_does_not_walk_the_chain_test() {
     stream.await_terminal(handle, within: 2000)
 }
 
+pub fn reflected_secret_is_scrubbed_from_http_error_test() {
+  let body =
+    "{\"type\":\"error\",\"error\":{\"type\":\""
+    <> secret_value
+    <> "\",\"message\":\"authorization: "
+    <> secret_value
+    <> "\"}}"
+  let handle =
+    gateway.request(
+      two_provider_gateway(
+        fixture.transport(fixture.error_response(400, [], body)),
+      ),
+      main_request(),
+    )
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert !string.contains(rendered, secret_value)
+  assert string.contains(rendered, "[REDACTED]")
+}
+
+pub fn reflected_secret_is_scrubbed_from_sse_error_test() {
+  let response =
+    fixture.ok_response(sse_event(
+      "error",
+      "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"x-api-key "
+        <> secret_value
+        <> "\"}}",
+    ))
+  let handle =
+    gateway.request(
+      two_provider_gateway(fixture.transport(response)),
+      model.ProviderRequest(
+        ..main_request(),
+        target: model.ForResolved(target("primary", "model-a")),
+      ),
+    )
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert !string.contains(rendered, secret_value)
+  assert string.contains(rendered, "[REDACTED]")
+}
+
+pub fn reflected_secret_is_scrubbed_from_malformed_response_test() {
+  let response =
+    fixture.error_response(400, [], "not-json credential=" <> secret_value)
+  let handle =
+    gateway.request(
+      two_provider_gateway(fixture.transport(response)),
+      main_request(),
+    )
+  let assert Ok(#([], stream.Failed(error))) =
+    stream.await_terminal(handle, within: 2000)
+  let rendered = stream.describe_error(error)
+  assert !string.contains(rendered, secret_value)
+  assert string.contains(rendered, "[REDACTED]")
+}
+
 pub fn cancellation_is_terminal_and_prevents_fallback_test() {
   let started = process.new_subject()
   let cancelled = process.new_subject()

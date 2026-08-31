@@ -37,6 +37,7 @@ import provider/adapter/anthropic
 import provider/adapter/openai
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
+import provider/internal/diagnostic
 import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
   type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
@@ -1223,7 +1224,7 @@ fn attempt_one(
       )
     },
   )
-  case config {
+  let outcome = case config {
     AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
       stream.run_tracked(
         gateway.transport,
@@ -1246,6 +1247,23 @@ fn attempt_one(
         consumer:,
         within: gateway.attempt_timeout_ms,
       )
+  }
+  scrub_attempt(outcome, api_key)
+}
+
+// The remote endpoint necessarily sees the request key and can reflect it in
+// any diagnostic field. Scrub the terminal before retry classification, not
+// only before final delivery, so a fallback never carries the credential into
+// another lifetime or a later diagnostic.
+fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
+  case outcome {
+    AttemptTerminal(Failed(error:)) ->
+      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, api_key)))
+    AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
+    AttemptCancelled -> AttemptCancelled
+    AttemptCancellationUnconfirmed -> AttemptCancellationUnconfirmed
+    AttemptDrainProofLost -> AttemptDrainProofLost
+    ConsumerGone -> ConsumerGone
   }
 }
 

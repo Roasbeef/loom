@@ -8,10 +8,11 @@
 ////   plus carry state. Feeding the same bytes in any chunking yields the
 ////   same events, which is what makes it property-testable without
 ////   processes. It is also *bounded*: the carry buffer never exceeds
-////   `max_line_bytes`, and every byte is scanned exactly once, so a
-////   hostile or broken proxy streaming a terminator-less line cannot
-////   exhaust memory or drive quadratic re-scans — the stream fails
-////   in-band as a framing defect instead.
+////   `max_line_bytes`, a multi-line event never retains more than
+////   `max_event_bytes`, and every byte is scanned exactly once. A hostile or
+////   broken proxy therefore cannot exhaust memory with either one
+////   terminator-less line or an endless sequence of complete `data:` lines;
+////   the stream fails in-band as a framing defect instead.
 //// - Adapters compose the parser with their own pure accumulator into a
 ////   `ResponseMachine` — a fold over `HttpEvent`s producing
 ////   `StreamEvent`s.
@@ -229,6 +230,12 @@ pub type SseEvent {
 /// bound.
 pub const max_line_bytes = 4_194_304
 
+/// The maximum cumulative byte size of the `data:` fields retained for one SSE
+/// event. A blank line normally dispatches those fields immediately; this
+/// separate bound covers a peer which keeps sending terminated `data:` lines
+/// but never sends that blank line.
+pub const max_event_bytes = 4_194_304
+
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
 /// and even UTF-8 codepoints); the field buffers hold the in-progress
@@ -236,7 +243,8 @@ pub const max_line_bytes = 4_194_304
 pub opaque type SseParser {
   /// Invariants: `carry` contains no complete line except possibly a
   /// trailing lone `\r` awaiting a potential `\n`, and never exceeds
-  /// `max_line_bytes`; the first `scanned` bytes of `carry` are known to
+  /// `max_line_bytes`; `data_bytes` is the joined byte size of `data_lines`
+  /// and never exceeds `max_event_bytes`; the first `scanned` bytes of `carry` are known to
   /// contain no line terminator, so re-feeding resumes past them and
   /// every byte is examined once; `data_lines` is in reverse arrival
   /// order.
@@ -245,6 +253,7 @@ pub opaque type SseParser {
     scanned: Int,
     event_name: Option(String),
     data_lines: List(String),
+    data_bytes: Int,
   )
 }
 
@@ -259,7 +268,13 @@ pub opaque type SseParser {
 /// ```
 ///
 pub fn new_parser() -> SseParser {
-  SseParser(carry: <<>>, scanned: 0, event_name: None, data_lines: [])
+  SseParser(
+    carry: <<>>,
+    scanned: 0,
+    event_name: None,
+    data_lines: [],
+    data_bytes: 0,
+  )
 }
 
 /// Feeds one chunk of bytes, returning the successor parser and the
@@ -386,19 +401,13 @@ fn handle_line(
   line: BitArray,
 ) -> #(SseParser, List(SseEvent)) {
   case bit_array.to_string(line) {
-    Error(Nil) -> #(parser, [
+    Error(Nil) -> #(reset_event(parser), [
       SseMalformed(reason: "sse line was not valid utf-8"),
     ])
     Ok("") -> dispatch(parser)
     Ok(":" <> _comment) -> #(parser, [])
-    Ok("data: " <> value) | Ok("data:" <> value) -> #(
-      SseParser(..parser, data_lines: [value, ..parser.data_lines]),
-      [],
-    )
-    Ok("data") -> #(
-      SseParser(..parser, data_lines: ["", ..parser.data_lines]),
-      [],
-    )
+    Ok("data: " <> value) | Ok("data:" <> value) -> add_data(parser, value)
+    Ok("data") -> add_data(parser, "")
     Ok("event: " <> value) | Ok("event:" <> value) -> #(
       SseParser(..parser, event_name: Some(value)),
       [],
@@ -411,7 +420,7 @@ fn handle_line(
 // Blank line: dispatch the buffered event. Per the SSE specification an
 // event with an empty data buffer is discarded (its event name resets).
 fn dispatch(parser: SseParser) -> #(SseParser, List(SseEvent)) {
-  let reset = SseParser(..parser, event_name: None, data_lines: [])
+  let reset = reset_event(parser)
   case parser.data_lines {
     [] -> #(reset, [])
     lines -> #(reset, [
@@ -421,6 +430,35 @@ fn dispatch(parser: SseParser) -> #(SseParser, List(SseEvent)) {
       ),
     ])
   }
+}
+
+// Retains one data field only while the cumulative event stays within its
+// budget. Each later line contributes one newline because dispatch joins the
+// fields with `\n`; counting the eventual value rather than list cells makes
+// the invariant independent of how the wire chunks those lines.
+fn add_data(parser: SseParser, value: String) -> #(SseParser, List(SseEvent)) {
+  let separator = case parser.data_lines {
+    [] -> 0
+    [_, ..] -> 1
+  }
+  let data_bytes = parser.data_bytes + separator + string.byte_size(value)
+  case data_bytes > max_event_bytes {
+    True -> #(reset_event(parser), [
+      SseMalformed(
+        reason: "sse event data exceeded "
+        <> int.to_string(max_event_bytes)
+        <> " bytes before a blank-line terminator",
+      ),
+    ])
+    False -> #(
+      SseParser(..parser, data_lines: [value, ..parser.data_lines], data_bytes:),
+      [],
+    )
+  }
+}
+
+fn reset_event(parser: SseParser) -> SseParser {
+  SseParser(..parser, event_name: None, data_lines: [], data_bytes: 0)
 }
 
 // --- the response machine and process pump ------------------------------
