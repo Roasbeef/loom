@@ -224,10 +224,6 @@ type Live {
 
 type State {
   State(
-    // The registered subject is durable addressing for callers. Internal
-    // callbacks must never capture it: after a restart the name resolves to a
-    // different incarnation, where an old result could match replayed work.
-    self: Subject(Message),
     // This direct subject is bound to this incarnation's PID. Effects and
     // timers report here so their messages disappear with the process that
     // dispatched them instead of crossing a restart boundary.
@@ -323,9 +319,10 @@ pub fn start(
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
     // The public subject may be a registered name which does not exist until
-    // this initializer returns. Keep one direct, private endpoint for the
-    // reaper, effects, and timers so a fast first claim cannot race actor
-    // registration and predecessor callbacks cannot cross incarnations.
+    // this initializer returns. It deliberately stays out of State: callers
+    // use that durable address, while callbacks must be unable to capture it
+    // and cross an incarnation boundary. The direct endpoint also lets a fast
+    // first claim acknowledge recovery before actor registration completes.
     let internal = process.new_subject()
     let reaper = start_reaper(options, internal)
     let selector =
@@ -342,7 +339,6 @@ pub fn start(
     // handed its command subject back to this initializer. The actor can
     // therefore enter its receive loop without weakening the claim handshake.
     actor.initialised(State(
-      self: subject,
       internal:,
       writer: process.named_subject(options.writer),
       strand: options.strand,
