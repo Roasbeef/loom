@@ -637,7 +637,7 @@ fn enqueue(
 /// ```
 ///
 pub fn nudge(runtime: Runtime) -> Nil {
-  case live_strand_subject(runtime) {
+  case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.nudge(subject)
     // No driver registered (mid-restart): loss is harmless — the
     // checkpoint poll finds the durable work.
@@ -645,19 +645,13 @@ pub fn nudge(runtime: Runtime) -> Nil {
   }
 }
 
-// The addressed strand's driver subject, only while a live process is
-// registered under its name: sending into an unregistered name would
-// crash the sender, and every message the api rings is loss-tolerant.
-fn live_strand_subject(
+// The stable subject is useful even while its process is restarting. The
+// strand wrapper resolves it once at delivery and drops a missing name, so
+// this lookup does not make a racy liveness promise of its own.
+fn addressed_strand_subject(
   runtime: Runtime,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
-  use subject <- result.try(supervisor.strand_subject(
-    runtime.tree,
-    runtime.strand,
-  ))
-  use pid <- result.try(process.subject_owner(subject))
-  use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
-  Ok(subject)
+  supervisor.strand_subject(runtime.tree, runtime.strand)
 }
 
 /// Requests durable cancellation of the addressed strand's open
@@ -671,7 +665,7 @@ fn live_strand_subject(
 /// ```
 ///
 pub fn abort(runtime: Runtime) -> Nil {
-  case live_strand_subject(runtime) {
+  case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.request_abort(subject)
     // No live driver (mid-restart): nothing can serialize the marker
     // right now; as with a pre-commit crash, the caller re-requests

@@ -115,6 +115,7 @@ import runtime/api
 import runtime/effects
 import runtime/escalation as runtime_escalation
 import runtime/hooks
+import runtime/internal/ffi_sup
 import runtime/writer
 import session/session
 import storage/storage
@@ -502,17 +503,12 @@ fn observe_provider(
   }
 }
 
-// Sends a hub message only while a live process is registered under the
-// name: sending into an unregistered name would crash the sender, and
-// every message routed this way is loss-tolerant.
+// Resolve the hub name once, then send the tagged envelope straight to that
+// PID. A second name lookup would leave an unregistration race which turns a
+// lost stream hint into an observer crash and provider cancellation.
 fn send_if_alive(name: Name(Message), message: Message) -> Nil {
-  let subject = process.named_subject(name)
-  case process.subject_owner(subject) {
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        True -> process.send(subject, message)
-        False -> Nil
-      }
+  case process.named(name) {
+    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, message))
     Error(Nil) -> Nil
   }
 }

@@ -526,14 +526,20 @@ extended by the M3 runtime wave.
   at all; `process.send` on it never re-resolves anything.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
-  an idle timer at a third of the TTL. A commit that races the renewal
-  loses too, and arrives as `tx.LeaseLost`: `runtime/api` turns it into
-  `SessionStolen`, and `runtime/strand_runtime` halts the strand on it
-  rather than reloading, because reloading reads the same file and meets
-  the same fence.
+  an idle timer at a third of the TTL. That timer targets a private subject
+  bound to the current writer PID; the public registered name remains only
+  the caller address. Otherwise each predecessor timer would resolve the name
+  to the replacement and add another permanent renewal cadence after every
+  restart. A commit that races the renewal loses too, and arrives as
+  `tx.LeaseLost`: `runtime/api` turns it into `SessionStolen`, and
+  `runtime/strand_runtime` halts the strand on it rather than reloading,
+  because reloading reads the same file and meets the same fence.
 - **The names, not the pids, are the addresses.** The writer and each
   strand register under fresh process names so restarts keep them
-  addressable.
+  addressable. Loss-tolerant public strand messages resolve that name once and
+  send the tagged envelope directly to the resolved PID; checking and then
+  sending through the name would leave an unregistration race between two
+  lookups.
 - **Log context reaches an effect process because the closure carries
   it, not because anything is inherited.** `spawn_effect` takes the
   step-scoped logger as an argument, and the body that runs on the new

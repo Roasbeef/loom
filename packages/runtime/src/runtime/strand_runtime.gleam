@@ -68,6 +68,7 @@ import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
 import runtime/effects.{type Effects}
 import runtime/escalation
+import runtime/internal/ffi_sup
 import runtime/internal/provider_custodian
 import runtime/writer
 import session/session
@@ -389,7 +390,7 @@ pub fn supervised(
 /// ```
 ///
 pub fn nudge(strand: Subject(Message)) -> Nil {
-  process.send(strand, Nudge)
+  send_if_registered(strand, Nudge)
 }
 
 /// Asks the strand to durably request cancellation of its open operation
@@ -404,7 +405,22 @@ pub fn nudge(strand: Subject(Message)) -> Nil {
 /// ```
 ///
 pub fn request_abort(strand: Subject(Message)) -> Nil {
-  process.send(strand, RequestAbort)
+  send_if_registered(strand, RequestAbort)
+}
+
+// Public strand addresses may be registered names which disappear between a
+// liveness check and `process.send`'s second lookup. Resolve the name exactly
+// once and send its tagged envelope to that PID. Delivery to a PID which exits
+// after resolution is a harmless no-op; a direct subject needs no lookup.
+fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
+  case process.subject_name(subject) {
+    Error(Nil) -> process.send(subject, message)
+    Ok(name) ->
+      case process.named(name) {
+        Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, message))
+        Error(Nil) -> Nil
+      }
+  }
 }
 
 // --- message handling -----------------------------------------------------

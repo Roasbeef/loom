@@ -19,7 +19,10 @@
 //// For SQLite sessions the writer renews the writer lease on an idle
 //// timer (`Session.lease_interval_ms`, a third of the TTL); a lost lease
 //// stops the writer abnormally so the supervisor reboots the tree, whose
-//// reopen path re-acquires or fails loudly.
+//// reopen path re-acquires or fails loudly. Renewal timers target a private
+//// subject bound to this writer PID. The public registered name is for
+//// callers; letting a predecessor timer resolve it to a replacement would
+//// add another permanent renewal cadence after every restart.
 
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type Seq}
@@ -98,7 +101,9 @@ type State {
     ordinal: Int,
     subscribers: List(Subject(Event)),
     after_commit: fn(Int) -> Nil,
-    self: Subject(Message),
+    // Renewal is incarnation-local bookkeeping, so this is the direct
+    // subject rather than the stable address callers retain.
+    renewal: Subject(Message),
   )
 }
 
@@ -116,14 +121,20 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    schedule_renew(options.session, subject)
+    let renewal = process.new_subject()
+    schedule_renew(options.session, renewal)
     actor.initialised(State(
       session: options.session,
       ordinal: 0,
       subscribers: options.subscribers,
       after_commit: options.after_commit,
-      self: subject,
+      renewal:,
     ))
+    |> actor.selecting(
+      process.new_selector()
+      |> process.select(subject)
+      |> process.select(renewal),
+    )
     |> actor.returning(subject)
     |> Ok
   })
@@ -244,7 +255,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     RenewTick ->
       case state.session.renew_lease() {
         Ok(Nil) -> {
-          schedule_renew(state.session, state.self)
+          schedule_renew(state.session, state.renewal)
           actor.continue(state)
         }
         // A lost lease means another writer owns the file: this tree

@@ -1197,6 +1197,13 @@ over one session file. WP-L.
   custodian, relay custodian and guard, gateway custodian, guard and pump, and
   the native HTTP owner plus its dedicated handler; no wrapper may turn
   consumer death into a detached request.
+- **Ephemeral hub hints never make the observer a failure source.** Commit
+  hints and provider deltas resolve the hub name once, then send the tagged
+  envelope directly to that PID. If the hub unregisters before resolution the
+  hint is dropped; if it exits afterward the PID send is a no-op. Re-resolving
+  the name inside `process.send` would leave a race that converts an ordinary
+  hub restart into observer failure and cancellation of a healthy provider
+  request.
 - **Wrapper comments narrate ownership handoffs.** The module story names why
   the guard, observer, and custodian are separate; comments at publication and
   adoption say what becomes safe after each acknowledgement. Do not reduce
