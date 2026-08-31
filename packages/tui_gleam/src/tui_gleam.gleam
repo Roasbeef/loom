@@ -644,17 +644,21 @@ fn render_footer(
 fn footer_sections(
   model: Model,
 ) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
+  let project_text =
+    model.workspace |> workspace.label |> text_hygiene.single_line
+  let model_text = text_hygiene.single_line(model.current_model)
+  let status_text = model |> model_footer_status |> text_hygiene.single_line
   let project =
     span.line_new([
       span.span_styled(
-        " " <> compact(workspace.label(model.workspace), 68) <> " ",
+        " " <> compact(project_text, 68) <> " ",
         theme.quiet_text(),
       ),
     ])
   let model_name =
     span.line_new([
       span.span_styled(
-        " " <> compact(model.current_model, 28) <> " ",
+        " " <> compact(model_text, 28) <> " ",
         theme.quiet_text(),
       ),
     ])
@@ -665,7 +669,6 @@ fn footer_sections(
         theme.quiet_text(),
       ),
     ])
-  let status_text = model_footer_status(model)
   let status =
     span.line_new([
       span.span_styled(" " <> status_text <> " ", theme.quiet_text()),
@@ -673,7 +676,7 @@ fn footer_sections(
   let combined =
     span.line_new([
       span.span_styled(
-        " " <> compact(model.current_model, 28) <> " · " <> status_text <> " ",
+        " " <> compact(model_text, 28) <> " · " <> status_text <> " ",
         theme.quiet_text(),
       ),
     ])
@@ -687,7 +690,11 @@ fn model_footer_status(model: Model) -> String {
 /// Preserves transient operator feedback beside the agent summary.
 @internal
 pub fn footer_status(agent_summary: String, notice: String) -> String {
-  compact(agent_summary <> " · " <> notice, 40)
+  agent_summary
+  <> " · "
+  <> notice
+  |> text_hygiene.single_line
+  |> compact(40)
 }
 
 fn footer_height(width: Int, model: Model) -> Int {

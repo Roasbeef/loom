@@ -6,16 +6,19 @@ import etui/keys
 import etui/span
 import etui/style
 import etui/widgets/textarea as text_area
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
+import simplifile
 import tui_gleam
 import tui_gleam/agents
 import tui_gleam/command
 import tui_gleam/composer
 import tui_gleam/connection
+import tui_gleam/internal/workspace_file
 import tui_gleam/markdown
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
@@ -125,9 +128,27 @@ pub fn workspace_branch_decodes_symbolic_and_detached_heads_test() {
   assert workspace.branch_from_head("\n") == None
 }
 
+pub fn workspace_metadata_read_is_descriptor_bounded_test() {
+  let path = "build/tui-workspace-metadata.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: path, bits: <<"thirteen bytes":utf8>>)
+  let oversized = workspace_file.read_small_regular(path, 12)
+  let exact = workspace_file.read_small_regular(path, 14)
+  let _ = simplifile.delete(path)
+
+  assert oversized == Error(Nil)
+  let assert Ok(contents) = exact
+  assert bit_array.to_string(contents) == Ok("thirteen bytes")
+}
+
 pub fn footer_status_preserves_transient_operator_feedback_test() {
   assert tui_gleam.footer_status("0 live / 3 agents", "queued after main")
     == "0 live / 3 agents · queued after main"
+}
+
+pub fn footer_status_sanitizes_untrusted_server_text_test() {
+  assert tui_gleam.footer_status("0 live", "\u{1b}[31mhostile\nnotice")
+    == "0 live · hostile notice"
 }
 
 pub fn active_indicator_advances_at_a_readable_cadence_test() {

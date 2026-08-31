@@ -4,10 +4,12 @@
 //// then safe to reuse across frames without polling Git or the filesystem.
 
 import filepath
+import gleam/bit_array
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import simplifile
+import tui_gleam/internal/workspace_file
 
 /// The repository root and branch visible to the terminal process.
 pub type Context {
@@ -67,24 +69,13 @@ fn git_directory(root: String, marker: String) -> Option(String) {
 }
 
 fn read_small_file(path: String) -> Option(String) {
-  case simplifile.link_info(path) {
-    Ok(info) -> read_small_regular_file(path, info)
-    Error(_) -> None
-  }
-}
-
-fn read_small_regular_file(
-  path: String,
-  info: simplifile.FileInfo,
-) -> Option(String) {
-  let simplifile.FileInfo(size:, ..) = info
-  case simplifile.file_info_type(info), size <= 4096 {
-    simplifile.File, True ->
-      case simplifile.read(path) {
-        Ok(contents) -> Some(contents)
-        Error(_) -> None
+  case workspace_file.read_small_regular(path, 4096) {
+    Ok(contents) ->
+      case bit_array.to_string(contents) {
+        Ok(text) -> Some(text)
+        Error(Nil) -> None
       }
-    _, _ -> None
+    Error(Nil) -> None
   }
 }
 
