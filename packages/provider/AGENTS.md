@@ -54,7 +54,8 @@ processful shell around that sans-io core. WP-F.
   `is_overflow_message`, `overflow_message`.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
   remote failures: a 64 KiB non-success body budget, bounded diagnostic fields,
-  and exact scrubbing of the request key before an error leaves the gateway.
+  and exact scrubbing of the request key from deltas, settlements, and failures
+  before any event leaves the gateway.
 
 ## Relationships
 
@@ -82,10 +83,11 @@ processful shell around that sans-io core. WP-F.
   or inconclusive answer into drain. A later OTP with unfamiliar private
   shapes falls back to the callback's exact producer identity; if no callback
   arrives, the request deadline ends the owner abnormally rather than claiming
-  drain. The internal OTP dependency is
-  confined to callback receipt, exact capture, and direct cancel. All
-  ownership, fallback, deadline, and terminal state machines stay in typed
-  Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  drain. The internal OTP dependency is confined to callback receipt, exact
+  capture, direct cancel, and raw response-byte accounting; enforcing that last
+  bound after an asynchronous send would not bound ingress. All ownership,
+  fallback, deadline, and terminal state machines stay in typed Gleam.
+  `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
@@ -136,13 +138,15 @@ processful shell around that sans-io core. WP-F.
   any `StreamEvent`, error, or persisted structure. `ProviderError` carries
   secret *names* only (spec §3.3 invariant 4). Because a remote endpoint can
   reflect the key it received, the gateway scrubs that exact value from every
-  string in an attempt's terminal error before retry classification or
-  delivery. Diagnostic strings are bounded in the same pass.
+  provider-originated string, including nested settlement JSON, before retry
+  classification, display, or durable delivery. Diagnostic strings are bounded
+  by bytes in the same pass.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender. Response activity
-  does not renew the attempt deadline, and the cumulative 16 MiB response cap
-  includes every chunk rather than only bytes retained by the SSE parser.
+  does not renew the attempt deadline. The native owner enforces the cumulative
+  16 MiB response cap before acknowledging a producer into the asynchronous
+  Gleam mailbox; the stream fold repeats the check for injected transports.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production native owner retains the exact OTP request id, receives the

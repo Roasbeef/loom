@@ -238,7 +238,7 @@ tree-write that moved the leaf refuses the acceptance rather than
 mis-parenting its entries.
 
 The commit itself is a call into one actor. `writer.commit` is
-`process.call_forever` into the StorageWriter (`runtime/writer.gleam:286`),
+`process.call_forever` into the StorageWriter (`runtime/writer.gleam:314`),
 whose mailbox *is* the serialization order for the session — "transactions
 on one session are serialized" is a property of the process topology, not
 a convention someone must remember. On success the writer publishes a
@@ -310,7 +310,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:852`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:862`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -479,7 +479,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1239`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1249`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -626,7 +626,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1768`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1761`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -721,7 +721,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1387`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1397`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1382`). That is the
@@ -1190,7 +1190,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:799`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:793`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1201,7 +1201,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1020`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1014`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3587`). Keying

@@ -61,7 +61,7 @@ sequenceDiagram
 
 The contract the rest of the harness leans on is narrow enough to depend
 on: **zero or more `Delta` events, then exactly one `Settled` or
-`Failed`, and nothing after.** `stream.run` enforces the at-most-once
+`Failed`, and nothing after.** The tracked request runner enforces the at-most-once
 delivery itself, dropping anything a machine emits past the first
 terminal, so an adapter bug cannot double-settle. Deltas are ephemeral
 display data and prove nothing about settlement — the settled message is
@@ -69,7 +69,7 @@ always the authority, and `stream.await_terminal` is the convenience that
 collects both.
 
 Cancellation uses the same single owner as settlement and fallback. The pump
-monitors its direct consumer; `stream.run` monitors the active transport
+monitors its direct consumer; the tracked runner monitors the active transport
 owner; every fallback attempt has a fresh private HTTP subject. When cancel,
 consumer death, or timeout wins, the transport cancellation capability runs
 before the terminal-acknowledgement grace. Expiry reports
@@ -122,9 +122,11 @@ hostile or broken proxy streaming a line that never terminates fails the
 stream in band as a framing defect rather than exhausting memory. One event
 is independently bounded to 4 MiB and 4096 `data:` fields, because empty fields
 consume list cells without consuming payload bytes. The whole successful HTTP
-response is capped at 16 MiB, so a peer cannot evade the per-event limits with
-an endless sequence of small valid events. And every byte is scanned exactly
-once — `feed` resumes past the prefix an
+response is capped at 16 MiB below the asynchronous event mailbox, so a peer
+cannot queue past the budget or evade the per-event limits with an endless
+sequence of small valid events. Complete events are accumulated in reverse and
+restored once, keeping the fold linear. And every byte is scanned exactly once
+— `feed` resumes past the prefix an
 earlier feed already ruled out as terminator-free — so the same proxy
 cannot drive quadratic re-scanning either.
 
@@ -214,10 +216,11 @@ flowchart LR
 
 **Secrets exist only in provider request memory.** The lookup has exactly
 one call site — gateway dispatch — and the value goes straight into the
-header of the request being built. `ProviderError` carries secret names
-and status codes and never headers, bodies, or values, so nothing the
-gateway returns or persists can embed a key. The check is a grep-based
-leak test over a full session fixture.
+header of the request being built. A remote endpoint necessarily sees that
+header and may reflect it, so the gateway removes the exact key from every
+delta, settled assistant field, nested JSON value, and error before it can be
+displayed, retried, or persisted. Diagnostic strings are byte-bounded in the
+same pass. The checks cover both error and successful-response reflection.
 
 Be honest about what ships: **`secret.env()` is the only real backend
 today**, reading process environment variables. `from_list` is for tests

@@ -603,12 +603,17 @@ drain. An unfamiliar private layout likewise cannot produce a normal owner
 exit: the callback may still supply its exact producer, while the request
 deadline bounds an otherwise unprovable recovery with abnormal exit.
 The request and terminal state machines remain Gleam. Raw OTP errors become
-constant diagnostics at the boundary so a request header cannot leak through
-a durable provider error.
+constant diagnostics at the boundary. The gateway also scrubs the exact
+request key from every delta, settled assistant field, nested JSON value, and
+error, because a remote endpoint can reflect a credential in an otherwise
+successful response.
 
 Each attempt has one absolute deadline from transport start through settlement
-and one 16 MiB cumulative response budget. Neither valid deltas nor a sequence
-of small completed SSE events renews or escapes those bounds. Inside the pure
+and one 16 MiB cumulative response budget. The native owner counts before it
+acknowledges each serialized `httpc` delivery into the asynchronous Gleam
+mailbox; the typed stream repeats the bound for injected transports. Neither
+valid deltas nor a sequence of small completed SSE events renews or escapes
+those bounds. Inside the pure
 parser, a line and one event are each capped at 4 MiB, while a separate 4096
 field limit covers empty `data:` lines whose list cells consume memory without
 adding payload bytes. Every overflow is an in-band malformed-stream terminal,
