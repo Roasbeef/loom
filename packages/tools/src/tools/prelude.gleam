@@ -35,7 +35,7 @@
 ////   12992a29cc389f3be764dbaa3f78c79a353b67dff3891f751fca2cc8ab8517a3  packages/cap/src/cap/report.gleam
 ////   3c6837128a8a17020070e7143ebbe27e38278c84e0d74b50c4fa91eeafa243ae  packages/cap/src/cap/runtime.gleam
 ////   f2c0250f8abc5f439532a886b27be22692f97fdf5ba4dfa0dae9efd62b310654  packages/cap/src/cap/strand.gleam
-////   7f7e22e1f4f3020f48b6591adeb024ee7cb3890eee680e880204ea302abac69d  packages/cap/src/cap/task.gleam
+////   315f655092d5bb2489def16d5de2fbe88ba320dca2ca15f3ada368372dc12173  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
 //// Body digest (every line after the marker): 7501966bef861a72aae7e85468136c241d55edf35ff2e51b6959365201e282c1
