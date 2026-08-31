@@ -250,7 +250,7 @@ change 010 records the full ownership and race law.
 Websocket, JSON (client-friendliness beats msgpack here), versioned:
 
 ```
-c→s: {v:1, id, cmd: "prompt"|"steer"|"follow_up"|"abort"|"approve"|"deny"
+c→s: {v:1, id, cmd: "prompt"|"prompt_content"|"steer"|"follow_up"|"abort"|"approve"|"deny"
               |"fork"|"navigate"|"compact"|"create_strand"|"set_config"
               |"subscribe"|"catch_up"|"models", body}
 s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
