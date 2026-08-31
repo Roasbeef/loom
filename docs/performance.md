@@ -10,10 +10,12 @@ The eTUI work for issue #114 exposed both sides of this rule. Rebuilding and
 comparing the complete transcript on every terminal tick made idle CPU scale
 with conversation length. A scalar render revision removed that history walk
 from idle cache refresh, and a per-record row cache removed settled-history
-parsing from live stream refresh. Etui still builds and diffs a complete buffer
-on a fixed 50 ms poll. The same client can also grow its transcript projection
-forever, so a quiet CPU sample says nothing about its long-session memory bound.
-Those are separate claims and need separate evidence.
+parsing from live stream refresh. The next layer pins etui's identical-Buffer
+diff fast path, reuses the exact completed frame when no visible input changed,
+and backs the terminal poll from 40 ms to 400 ms after 320 ms of inactivity.
+The same client can still grow its transcript projection forever, so a quiet CPU
+sample says nothing about its long-session memory bound. Those are separate
+claims and need separate evidence.
 
 ## Name the experiment
 
@@ -258,27 +260,63 @@ durable entry or stream fragment must advance the revision in the same branch.
 That local pairing is the invariant. If invalidation moves elsewhere, a new event
 path can update the source without updating the screen.
 
-Revision checks remove work from idle cache refresh; they do not stop etui from
-building and diffing its frame. If one stream fragment invalidates the history
-cache, active streaming still scales with total history. The eTUI therefore
-keeps durable rows newest-first and prepends only newly admitted records; live
-stream refresh wraps only the transient fragments. Profile both idle and
-streaming workloads around this cache. It still needs an eventual projection
-bound, and matched measurements remain the evidence for its effect.
+The completed-frame cache extends that mutation discipline through the etui
+boundary. A visible mutation advances `frame_revision` and eagerly builds the
+next Buffer and cursor tuple into the immutable model. An unchanged view returns
+that exact tuple rather than reconstructing an equal Buffer, which lets etui's
+physical-term check skip the structural cell walk. The cache key is only the
+revision and screen rectangle; it never compares `transcript`, `records`,
+`streams`, or the complete Model.
+
+A stream fragment still wraps the live fragment and builds one new frame, as it
+must. The eTUI keeps durable rows newest-first and prepends only newly admitted
+records, so that active work does not reparse settled history. Profile both idle
+and streaming workloads around the two cache layers. They still need an eventual
+projection bound, and matched measurements remain the evidence for their effect.
 
 ## Polling is a latency budget
 
-The current eTUI drains its websocket actor inbox on terminal ticks. A 50 ms tick
-caps the wait for a new frame at roughly 50 ms, but also performs twenty empty
-mailbox checks and terminal buffer diffs per second. Lowering the interval trades
-idle CPU and wakeups for latency. Raising it trades latency for quiet.
+The eTUI drains its websocket actor inbox on terminal ticks. Recent keyboard,
+paste, resize, scroll, or decoded websocket activity selects a 40 ms poll. After
+320 ms without one of those events, the loop selects 400 ms. The asymmetric
+transition is deliberate hysteresis: activity returns to the fast path
+immediately, while quiet requires a sustained window. A live operation does not
+hold the fast cadence by itself; its thinking glyph continues at the quiet
+cadence so it remains legible without restoring twenty wakeups per second.
 
-Measure before choosing a new number. The socket actor already sends a BEAM
-message as soon as a websocket frame arrives, but etui's current backend can
-notice it only after its terminal poll returns. A true event-driven path therefore
-needs a wakeable etui backend or a custom loop that waits on terminal input and
-the socket notification together. Merely lengthening the terminal timeout makes
-idle polling cheaper by adding the same delay to streamed output.
+The latency cost is explicit. The socket actor sends a BEAM message as soon as a
+websocket frame arrives, but it cannot wake etui's terminal poll. The first
+external event after quiet may therefore wait up to 400 ms before it is drained;
+that event resets the policy and subsequent fragments return to 40 ms. A true
+event-driven path still needs a wakeable etui backend or a custom loop that waits
+on terminal input and the socket notification together.
+
+An idle same-session comparison on the development Mac used a 120x60 terminal
+after both clients had synchronized. The prior fixed-50-ms client at etui
+`699d2c0` reported 5.1-5.4% CPU over the six settled samples of an eight-sample,
+two-second series. The candidate at `fd1ff36` with exact frame reuse and adaptive
+polling reported 0.0% at the same display precision; its accumulated CPU time
+advanced by about 0.01 seconds over 14 seconds, or roughly 0.07% of one core.
+Treat the result as a directional greater-than-50x idle reduction, not a general
+throughput benchmark: it covers one machine, one terminal size, and the idle
+workload only.
+
+The two clients used the same server session and this launch shape from their
+respective `packages/tui_gleam` directories:
+
+```sh
+stty rows 60 cols 120
+gleam run -- --addr ws://127.0.0.1:PORT/v1/ws \
+  --session SESSION --token-file SESSION.db.token
+top -l 8 -s 2 -stats pid,cpu,time,threads,mem | rg '^(OLD_PID|NEW_PID)'
+```
+
+The settled old-client CPU samples were `5.1, 5.1, 5.4, 5.3, 5.2, 5.3`;
+all eight candidate samples displayed `0.0`. Over the same settled 14-second
+window, the old process advanced from `5:01.74` to `5:02.32` of CPU time while
+the candidate advanced from `1.09` to `1.10` seconds. Preserve both the raw
+samples and the CPU-time cross-check when repeating the experiment because
+`top` rounds values below its display precision.
 
 That wakeup boundary must still leave visible state in the terminal model. A
 socket actor that renders directly creates a second presentation owner; a

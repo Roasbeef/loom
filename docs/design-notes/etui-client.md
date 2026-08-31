@@ -148,9 +148,21 @@ copied into configuration, terminal state, or logs.
 ## Compatibility cost
 
 The evaluated etui commit is pinned at
-`699d2c0a1e7f5d2ae109b00927bd5484a056517a`. The pin includes input and raw
-terminal fixes newer than etui 1.0.1 and avoids silently tracking a young API.
-It requires Gleam 1.16 or newer.
+`fd1ff36cf167e3657a1727508aa602b8cf799422` from upstream PR #8, temporarily
+through the contributor fork until that PR lands. The pin includes input and
+raw terminal fixes newer than etui 1.0.1, an exact-Buffer diff fast path, and
+state-dependent polling without silently tracking a young API. It requires
+Gleam 1.16 or newer.
+
+The client completes the app-side half of those two controls. A visible event
+advances a scalar revision and stores the completed Buffer and cursor tuple in
+the next immutable model. An unchanged view returns that exact term, so etui
+can skip its structural diff rather than compare an equal copy. Polling stays
+at 40 ms for 320 ms after terminal or websocket activity, then backs off to
+400 ms. The asymmetry prevents cadence flapping, and operation liveness alone
+does not hold the fast interval. Since the websocket actor cannot wake a poll
+already in progress, the first external event after quiet may wait up to the
+400 ms timeout; subsequent fragments return to the active cadence.
 
 Every Mork release checked from 1.2.2 through 1.12.1 states Gleam 1.13+ and OTP
 28+ for the Erlang target because of PCRE2. Loom currently promises Gleam 1.11+

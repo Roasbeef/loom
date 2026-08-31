@@ -40,7 +40,8 @@ reconnect portions of the existing client's contract.
 ## Relationships
 
 - **Depends on**: `core` for total entry decoding; `etui` at commit
-  `699d2c0a1e7f5d2ae109b00927bd5484a056517a`; Mork 1.12.x for CommonMark;
+  `fd1ff36cf167e3657a1727508aa602b8cf799422` from upstream PR #8; Mork
+  1.12.x for CommonMark;
   Stratus for websockets; and small Gleam utility packages. Etui is pinned
   because its public API is still moving quickly.
 - **Counterpart**: `packages/client` speaks the other side of ClientGateway.
@@ -93,7 +94,21 @@ reconnect portions of the existing client's contract.
 - **Live intent stays visible.** The composer title derives liveness from the
   active strand's operation phase and refines `assistant` with its latest
   stream kind. Before text arrives it says `thinking`; once text arrives it
-  says `responding`. The same title states whether Enter steers or queues.
+  says `responding`. The same title states whether Enter steers or queues. Its
+  low-motion glyph advances at the active or quiet poll cadence without holding
+  the whole terminal loop at the active cadence.
+- **Unchanged frames preserve identity.** Visible mutations advance one scalar
+  frame revision. The next immutable model caches the completed Buffer and
+  cursor tuple by that revision and screen rectangle, so an unchanged view
+  returns the exact prior Buffer term. Transcript, input, overlay, resize,
+  cursor, status, and activity-indicator changes invalidate that cache at their
+  event boundary; no complete Model comparison sits on the idle path.
+- **Polling follows recent activity, not liveness.** Keyboard, paste, resize,
+  scroll, and decoded websocket events reset the quiet timer. The loop polls at
+  40 ms until 320 ms have passed without one, then at 400 ms. A live operation
+  alone does not keep fast polling active. Because the websocket actor cannot
+  wake etui's terminal poll, the first external event after quiet may wait up to
+  the 400 ms quiet timeout before the client drains it and returns to 40 ms.
 - **Durable and transient output do not alias.** Stream fragments live
   newest-first in a strand-and-kind keyed list and disappear when that strand's
   settled entry arrives. The historical row cache contains durable records

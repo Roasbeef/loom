@@ -208,8 +208,8 @@ restriction that does not exist.
 ## Active evaluation: issue #114
 
 Branch `client/etui-tui` carries an opt-in pure-Gleam client in
-`packages/tui_gleam`; it is not on `main` and does not replace the shipped Go
-client. Draft PR #136 is the review surface. The client works in a real Herdr
+`packages/tui_gleam`; PR #136 is on `main`, but it does not replace the shipped
+Go client. The client works in a real Herdr
 PTY, attaches to the real gateway, opens searchable model and agent overlays,
 and renders assistant CommonMark through Mork into etui spans. Typing `/` now
 opens a prefix-filtered command palette. `/agents` has a real selection cursor;
@@ -233,10 +233,16 @@ already-wrapped Mork rows; only the live stream buffer is rewrapped for a new
 fragment. Background-strand deltas no longer invalidate the visible transcript,
 streams accumulate fragments without repeatedly copying their prefix, and
 records are stored newest-first. This closes the history-sized work that was
-visible during streaming, not etui's fixed polling cost. Upstream etui issues
-[#6](https://github.com/lupodevelop/etui/issues/6) and
-[#7](https://github.com/lupodevelop/etui/issues/7) ask for a same-Buffer diff
-short circuit and a state-dependent poll timeout respectively.
+visible during streaming. Upstream etui PR
+[#8](https://github.com/lupodevelop/etui/pull/8) adds the same-Buffer diff
+short circuit and state-dependent poll timeout requested in issues #6 and #7.
+The Loom adoption returns the exact cached Buffer term for an unchanged frame,
+polls at 40 ms for 320 ms after activity, and then backs off to 400 ms. A
+matched 120x60 idle sample moved from 5.1-5.4% of one core to below `top`'s
+0.1% display precision; CPU-time growth implies roughly 0.07%, so treat the
+result as a directional greater-than-50x idle reduction rather than a general
+throughput claim. Until upstream merges the PR, the package is temporarily
+pinned to the exact commit on the contributor fork.
 
 Websocket startup now runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error
