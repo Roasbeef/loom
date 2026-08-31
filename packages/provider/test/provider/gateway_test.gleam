@@ -497,6 +497,114 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
+/// A request which finishes preparation after cancellation expires must not
+/// wait for a guard permit which can no longer arrive. The guard keeps the
+/// ownership frontier open, adopts the late transport, and rejects its begin
+/// permit before waiting for the pump to drain.
+pub fn cancellation_expiry_rejects_late_attempt_registration_test() {
+  let prepare_entered = process.new_subject()
+  let cancelled = process.new_subject()
+  let started = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, _events) {
+      let release_prepare = process.new_subject()
+      process.send(prepare_entered, release_prepare)
+      let _release = process.receive_forever(release_prepare)
+      let owner_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process.new_subject()
+          let stop = process.new_subject()
+          process.send(owner_ready, #(begin, stop))
+          let admitted =
+            process.new_selector()
+            |> process.select_map(begin, fn(_nil) { True })
+            |> process.select_map(stop, fn(_nil) { False })
+            |> process.selector_receive_forever()
+          case admitted {
+            True -> process.send(started, Nil)
+            False -> process.send(cancelled, Nil)
+          }
+        })
+      let #(begin, stop) = process.receive_forever(owner_ready)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(stop, Nil)
+          }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let drain = stream.watch_drain(handle)
+  let assert Ok(release_prepare) =
+    process.receive(prepare_entered, within: 1000)
+
+  stream.cancel(handle)
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+    stream.await_terminal(handle, within: 2500)
+  process.send(release_prepare, Nil)
+
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert process.receive(started, within: 100) == Error(Nil)
+  assert stream.await_drain(drain, within: 1000) == stream.Drained
+}
+
+/// A rejected registration after expiry must retain cancellation semantics;
+/// otherwise its normal owner Down looks retryable and starts the fallback.
+pub fn cancellation_rejected_registration_stays_terminal_test() {
+  let prepare_entered = process.new_subject()
+  let prepared = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(request, _events) {
+      process.send(prepared, request.url)
+      let release_prepare = process.new_subject()
+      process.send(prepare_entered, release_prepare)
+      let _release = process.receive_forever(release_prepare)
+      let owner_ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let begin = process.new_subject()
+          let stop = process.new_subject()
+          process.send(owner_ready, #(begin, stop))
+          let admitted =
+            process.new_selector()
+            |> process.select_map(begin, fn(_nil) { True })
+            |> process.select_map(stop, fn(_nil) { False })
+            |> process.selector_receive_forever()
+          case admitted {
+            True -> Nil
+            False -> process.send(cancelled, Nil)
+          }
+        })
+      let #(begin, stop) = process.receive_forever(owner_ready)
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(stop, Nil)
+          }),
+          begin: fn() { process.send(begin, Nil) },
+        ),
+      )
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  let drain = stream.watch_drain(handle)
+  assert process.receive(prepared, within: 1000)
+    == Ok("https://primary.test/v1/messages")
+  let assert Ok(release_prepare) =
+    process.receive(prepare_entered, within: 1000)
+
+  stream.cancel(handle)
+  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+    stream.await_terminal(handle, within: 2500)
+  process.send(release_prepare, Nil)
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert stream.await_drain(drain, within: 1000) == stream.Drained
+  assert process.receive(prepared, within: 100) == Error(Nil)
+}
+
 pub fn retryable_terminal_does_not_fallback_before_transport_drains_test() {
   let attempts = process.new_subject()
   let ready = process.new_subject()

@@ -74,7 +74,15 @@ type ParkedPumpEvent {
 }
 
 type AttemptRegistration {
-  AttemptRegistration(running: RunningRequest, permit: process.Subject(Bool))
+  AttemptRegistration(
+    running: RunningRequest,
+    permit: process.Subject(AttemptPermit),
+  )
+}
+
+type AttemptPermit {
+  BeginAttempt
+  RejectAttempt
 }
 
 // The guard keeps the monitor created before it publishes an attempt permit.
@@ -509,7 +517,10 @@ fn guard_request(
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
         })
-      process.send(permit, accepted)
+      process.send(permit, case accepted {
+        True -> BeginAttempt
+        False -> RejectAttempt
+      })
       guard_request(
         custodian,
         events,
@@ -643,7 +654,7 @@ fn guard_cancelling(
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
         })
-      process.send(permit, False)
+      process.send(permit, RejectAttempt)
       guard_cancelling(
         custodian,
         events,
@@ -729,7 +740,12 @@ fn guard_cancelling(
         }
         stream.Drained | stream.ProofLost -> Nil
       }
-      await_pump_down_forever(pump_owner, pump_monitor)
+      await_pump_down_rejecting_attempts(
+        custodian,
+        pump_attempts,
+        pump_monitor,
+        None,
+      )
       forget_request(consumer_monitor, pump_monitor)
     }
     CancelRequested ->
@@ -816,7 +832,7 @@ fn abandon_request(
         custodian.adopt_owner(custodian, http.owner(running), fn() {
           http.cancel(running)
         })
-      process.send(permit, False)
+      process.send(permit, RejectAttempt)
       http.cancel(running)
       abandon_request(
         custodian,
@@ -922,6 +938,47 @@ fn await_pump_down_forever(
         |> process.selector_receive_forever()
       Nil
     }
+  }
+}
+
+// Expiry closes the public response window, not the pump's ownership frontier.
+// A transport preparation already in progress can still publish after that
+// terminal. Reject registrations until PumpDown so each parked owner receives
+// a permit decision and the pump cannot remain blocked behind a dead guard loop.
+fn await_pump_down_rejecting_attempts(
+  custodian: custodian.Custodian,
+  attempts: process.Subject(AttemptRegistration),
+  monitor: process.Monitor,
+  active: Option(ActiveAttempt),
+) -> Nil {
+  let event =
+    process.new_selector()
+    |> process.select_map(attempts, AttemptStarted)
+    |> process.select_specific_monitor(monitor, PumpDown)
+    |> process.selector_receive_forever()
+  case event {
+    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
+      release_active(active)
+      let active =
+        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
+      let _accepted =
+        custodian.adopt_owner(custodian, http.owner(running), fn() {
+          http.cancel(running)
+        })
+      process.send(permit, RejectAttempt)
+      await_pump_down_rejecting_attempts(
+        custodian,
+        attempts,
+        monitor,
+        Some(active),
+      )
+    }
+    PumpDown(_down) -> {
+      let _drained = await_active_forever(active)
+      Nil
+    }
+    PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
+      await_pump_down_rejecting_attempts(custodian, attempts, monitor, active)
   }
 }
 
@@ -1193,10 +1250,11 @@ fn attempt_one(
 }
 
 // Registration is a synchronous ownership handoff. The prepared transport
-// cannot begin until the guard has retained its outer custodian. If the guard
-// dies during the handoff, cancellation is sent by this pump before
-// `run_tracked` sends its begin message, so per-sender ordering prevents the
-// underlying transport from starting.
+// cannot begin until the guard has retained its outer custodian. The guard
+// continues rejecting registrations even after its public cancellation
+// deadline, so this wait always receives a decision while the guard is alive.
+// Rejection cancels the prepared owner before `run_tracked` sends its begin
+// message; per-sender ordering prevents the underlying transport from starting.
 fn register_attempt(
   attempts: process.Subject(AttemptRegistration),
   running: RunningRequest,
@@ -1205,15 +1263,17 @@ fn register_attempt(
   let permit = process.new_subject()
   let guard_monitor = process.monitor(guard)
   process.send(attempts, AttemptRegistration(running:, permit:))
-  let allowed =
+  let permit =
     process.new_selector()
-    |> process.select_map(permit, fn(allowed) { allowed })
-    |> process.select_specific_monitor(guard_monitor, fn(_down) { False })
+    |> process.select(permit)
+    |> process.select_specific_monitor(guard_monitor, fn(_down) {
+      RejectAttempt
+    })
     |> process.selector_receive_forever()
   process.demonitor_process(guard_monitor)
-  case allowed {
-    True -> Nil
-    False -> http.cancel(running)
+  case permit {
+    BeginAttempt -> Nil
+    RejectAttempt -> http.cancel(running)
   }
 }
 
