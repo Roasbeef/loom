@@ -151,6 +151,11 @@ pub fn footer_status_sanitizes_untrusted_server_text_test() {
     == "0 live · hostile notice"
 }
 
+pub fn footer_status_omits_the_dedicated_model_label_test() {
+  assert tui_gleam.footer_status("0 live / 3 agents", "model: baseten-kimi-k3")
+    == "0 live / 3 agents"
+}
+
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
   assert tui_gleam.activity_glyph(0) == "◐"
   assert tui_gleam.activity_glyph(3) == "◓"

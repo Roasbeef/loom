@@ -690,11 +690,12 @@ fn model_footer_status(model: Model) -> String {
 /// Preserves transient operator feedback beside the agent summary.
 @internal
 pub fn footer_status(agent_summary: String, notice: String) -> String {
-  agent_summary
-  <> " · "
-  <> notice
-  |> text_hygiene.single_line
-  |> compact(40)
+  let safe_summary = text_hygiene.single_line(agent_summary)
+  let safe_notice = text_hygiene.single_line(notice)
+  case string.starts_with(safe_notice, "model: ") {
+    True -> compact(safe_summary, 40)
+    False -> compact(safe_summary <> " · " <> safe_notice, 40)
+  }
 }
 
 fn footer_height(width: Int, model: Model) -> Int {
