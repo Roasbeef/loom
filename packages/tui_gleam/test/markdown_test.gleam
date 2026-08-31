@@ -129,6 +129,11 @@ pub fn incomplete_terminal_sequences_remain_visibly_inert_test() {
   |> should.equal("before�[38;")
 }
 
+pub fn malformed_csi_does_not_consume_following_text_test() {
+  text_hygiene.multiline("before\u{1b}[31🙂hello")
+  |> should.equal("before�[31🙂hello")
+}
+
 fn visible_text(lines: List(span.Line)) -> String {
   lines |> list.map(line_text) |> string.join("\n")
 }

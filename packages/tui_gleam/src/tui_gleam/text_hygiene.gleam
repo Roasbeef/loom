@@ -86,13 +86,26 @@ fn escape_sequence_tail(
 }
 
 fn csi_tail(remaining: List(UtfCodepoint)) -> Option(List(UtfCodepoint)) {
+  csi_tail_with(remaining, False)
+}
+
+fn csi_tail_with(
+  remaining: List(UtfCodepoint),
+  intermediates_started: Bool,
+) -> Option(List(UtfCodepoint)) {
   case remaining {
     [] -> None
     [first, ..rest] -> {
       let code = string.utf_codepoint_to_int(first)
-      case code >= 0x40 && code <= 0x7E {
-        True -> Some(rest)
-        False -> csi_tail(rest)
+      case
+        code >= 0x40 && code <= 0x7E,
+        code >= 0x30 && code <= 0x3F && !intermediates_started,
+        code >= 0x20 && code <= 0x2F
+      {
+        True, _, _ -> Some(rest)
+        False, True, _ -> csi_tail_with(rest, False)
+        False, False, True -> csi_tail_with(rest, True)
+        False, False, False -> None
       }
     }
   }
