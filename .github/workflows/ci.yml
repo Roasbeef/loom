@@ -111,9 +111,14 @@ jobs:
           scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
           make dist 2>&1 | tee distribution-linux.log
           test -x build/release/loom/erts-17.0.5/bin/erl
+          measure() {
+            for path in "$@"; do
+              du -sh "$path"
+            done
+          }
           {
             echo "==> measured distribution with code mode"
-            du -sh build/erlang-shipment \
+            measure build/erlang-shipment \
               build/release/loom/erts-17.0.5 \
               build/release/loom/lib/compiler-* \
               build/release/loom/lib \
@@ -127,7 +132,7 @@ jobs:
           DIST_CODEMODE=0 make dist 2>&1 | tee -a distribution-linux.log
           {
             echo "==> measured distribution without code mode"
-            du -sh build/release/loom/erts-17.0.5 \
+            measure build/release/loom/erts-17.0.5 \
               build/release/loom/lib build/release/loom/bin/loom-exec \
               build/release/loom \
               dist/loom-0.1.0-linux-x86_64.tar.gz
