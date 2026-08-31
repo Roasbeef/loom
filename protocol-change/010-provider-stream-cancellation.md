@@ -148,8 +148,10 @@ OTP dependency to the native owner: the default manager's protected handler
 table maps the exact request id to its handler PID. The manager inserts that
 row before replying to successful admission. Loom forces a dedicated handler
 and request-local `max_connections_open = infinity`, so the request cannot be
-queued without a handler row. One O(1) lookup captures and monitors that PID;
-no process scan or diagnostic call is involved. The owner then invokes
+queued without a handler row. The response callback blocks inside the handler
+until the owner acknowledges that its exact monitor is installed, so a fast
+terminal cannot delete the row between admission and capture. One O(1) lookup
+is the normal path. The owner then invokes
 `httpc_handler:cancel/2` and awaits that original monitor. Manager or handler-
 supervisor replacement cannot retarget a PID already captured. Late HTTP
 messages remain confined to the cancelled attempt's private subject.
@@ -160,21 +162,22 @@ the raw `httpc` receiver and the monitorable drain witness. Only after Gleam
 publishes that PID does `begin_stream_request` admit work. A non-empty socket
 option gives the request a dedicated, non-reused handler and disables manager
 queueing for this request. The owner reads the published request row directly,
-monitors its handler, issues cancellation to that PID, and waits for Down. The
-handler closes its socket during termination before that signal is delivered.
-Missing mapping after successful admission is loss of proof, so the owner
-requests conservative public cancellation and exits abnormally rather than
-inventing drain. If the public call loses its reply while the manager or handler-
-supervisor generation changes, the owner retains the ambiguous admission until
-a raw response reveals the request id. Redirects are disabled because they
-retain a request id while moving work to another handler. Automatic Retry-After
-retries are also disabled where the running OTP version supports that option;
-older supported releases predate it. Raw tuple selection, request preparation,
-admission, exact lookup, and the OTP-specific drain wait are the whole shim;
-request, fallback, timeout, redaction, and terminal state stay in Gleam. The
-request deadline is computed once, so recursive receives and cancellation
-cannot restart its 300-second budget. Exceptions are normalized only before
-admission; an unexpected post-admission fault remains an abnormal owner exit.
+monitors its handler, acknowledges the callback, issues cancellation to that
+PID, and waits for Down. The handler closes its socket during termination before
+that signal is delivered. If the original manager generation is still alive, a
+missing row means the handler has already gone and any terminal callback is
+queued. If that manager was replaced in the capture interval, the old handler
+can outlive its table; the rare recovery path scans only `httpc_handler`
+processes and uses bounded `info` calls to recover the exact request id. A busy
+handler makes recovery inconclusive and keeps the owner alive rather than
+inventing drain. Redirects and automatic Retry-After retries are disabled
+because both can move work behind a stable request id. Raw tuple selection,
+request preparation, admission, exact lookup, rare generation recovery, and the
+OTP-specific drain wait are the whole shim. Request, fallback, timeout,
+redaction, and terminal state stay in Gleam. The request deadline is computed
+once, so recursive receives and cancellation cannot restart its 300-second
+budget. Exceptions are normalized only before admission; an unexpected
+post-admission fault remains an abnormal owner exit.
 
 ## Ownership and race semantics
 

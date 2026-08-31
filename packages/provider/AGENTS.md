@@ -67,15 +67,17 @@ processful shell around that sans-io core. WP-F.
   Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
   cancellation as an asynchronous cast rather than a socket-drain
   acknowledgement. The shim therefore forces a non-reused, non-queued handler
-  and disables handler migration through redirects and supported automatic
-  retries. OTP publishes the exact request-ID-to-handler row before successful
-  admission returns, so one O(1) read of its protected default-profile table
-  captures the PID directly; no process scan or diagnostic RPC is involved.
-  If that row is absent, or admission loses its reply across a manager or
-  supervisor generation change, the owner fails closed rather than claiming
-  drain. The internal OTP dependency is confined to this lookup and direct
-  cancel. All ownership, fallback, deadline, and terminal state machines stay
-  in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  and disables handler migration through redirects and automatic retries. OTP
+  29 publishes the exact request-ID-to-handler row before successful admission
+  returns. The response callback remains inside the handler until the owner
+  acknowledges that its monitor is installed, so a fast terminal cannot erase
+  that row first. One O(1) protected-table read is the normal capture path. If
+  the manager generation changes in that narrow interval, a bounded recovery
+  scan asks only `httpc_handler` processes for their current request and never
+  turns an inconclusive answer into drain. The internal OTP dependency is
+  confined to callback receipt, exact capture, and direct cancel. All
+  ownership, fallback, deadline, and terminal state machines stay in typed
+  Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
@@ -128,8 +130,8 @@ processful shell around that sans-io core. WP-F.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production native owner retains the exact OTP request id, receives the
-  raw `httpc` messages itself, calls `httpc_handler:cancel/2`, and waits for the
-  dedicated request handler's Down before exiting. An
+  raw `httpc` callbacks itself, calls `httpc_handler:cancel/2`, and waits for
+  the dedicated request handler's Down before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
   the acknowledgement chain. `ProviderCancelled`,

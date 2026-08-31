@@ -595,7 +595,11 @@ exact opaque OTP `httpc` request id and dedicated request-handler pid. The
 owner receives the raw messages itself, disables handler migration, captures
 the handler through the manager's already-published request table in O(1),
 issues OTP's asynchronous cancel cast, and waits for that handler to exit. It
-does not scan processes or call handler diagnostics.
+holds the first response callback inside the handler until that monitor exists,
+closing the fast-terminal deletion race. Only a manager replacement in the
+narrow admission-to-capture interval uses a bounded recovery scan over
+`httpc_handler` processes; an inconclusive probe keeps the owner alive instead
+of inventing drain.
 The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.
