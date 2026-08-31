@@ -121,7 +121,7 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let renewal = process.new_subject()
+    let renewal = renewal_subject()
     schedule_renew(options.session, renewal)
     actor.initialised(State(
       session: options.session,
@@ -141,6 +141,23 @@ pub fn start(
   |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
+}
+
+/// Creates the direct subject used only for one writer incarnation's renewal
+/// timers. This is an internal structural test seam: callers must use the
+/// registered subject returned by `start`, while the writer retains this one
+/// so predecessor timers cannot resolve into a replacement process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let subject = writer.renewal_subject()
+/// assert process.subject_name(subject) == Error(Nil)
+/// ```
+///
+@internal
+pub fn renewal_subject() -> Subject(Message) {
+  process.new_subject()
 }
 
 /// The writer as a supervision child.
