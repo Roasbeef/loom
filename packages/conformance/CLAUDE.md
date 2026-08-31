@@ -183,7 +183,10 @@ them from their own test mains.
   its durable state on every pass, so an early wake costs one wasted
   planning pass. A deadline is removed when it fires, so a wake delivered
   to a dead process is simply lost, exactly as a real timer's message
-  would be.
+  would be. The drive budget counts consecutive silent passes, not the
+  operation's lifetime: every writer commit proves durable progress and
+  replenishes it. Charging progress against the stall allowance made loaded
+  Linux runs fail at moving seeds even though each immediate replay passed.
 - **One clock, one era.** The storage backend's timestamps, the strand
   driver, the effect scripts, and id minting all read the same `Clockwork`.
   Separate real clocks across runtime, tools, and broker drift, and that

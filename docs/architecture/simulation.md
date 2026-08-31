@@ -125,6 +125,12 @@ session is waiting for a deadline or it is inside an effect, and
 advancing the clock releases the first and costs the second one wasted
 planning pass.
 
+The stall allowance measures consecutive silence, not the lifetime of an
+operation. Every committed event replenishes it. Charging commits against the
+same allowance would let a healthy multi-commit run exhaust the budget while
+making durable progress, turning Linux scheduler load into a moving
+`run/terminated` failure whose immediate replay passes.
+
 Finishing is observed the same way, and needs one more condition. A
 commit is durable — and its terminal result readable — *before* the
 writer runs the post-commit seam that a crash schedule fires from, so a

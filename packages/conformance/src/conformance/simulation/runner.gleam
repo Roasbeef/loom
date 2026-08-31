@@ -126,9 +126,11 @@ pub type Verdict {
   )
 }
 
-// The drive budget: planning passes the runner will wait through for one
-// operation before calling it stalled. Generous, because a crashed tree
-// reboots and replays.
+// The idle budget: consecutive planning passes the runner will wait through
+// without a commit before calling one operation stalled. A commit replenishes
+// it because durable progress must not consume the allowance intended to
+// detect silence; otherwise a healthy multi-commit run can exhaust the budget
+// merely because a loaded scheduler spreads its work across more passes.
 const budget = 4000
 
 /// Runs one seed end to end and reports the verdict. Shrinking is not
@@ -1531,8 +1533,12 @@ fn ring(ctx: Context) -> Nil {
 // The drive loop: watch the session's event counter, and when it stops
 // moving advance logical time to the next deadline rather than sleeping
 // for it.
-fn pump(ctx: Context, op_id: OpId, remaining: Int) -> Result(LastResult, Nil) {
-  pump_strand(ctx, strand, op_id, remaining)
+fn pump(
+  ctx: Context,
+  op_id: OpId,
+  idle_remaining: Int,
+) -> Result(LastResult, Nil) {
+  pump_strand(ctx, strand, op_id, idle_remaining)
 }
 
 // A scripted intervention's decision belongs here, not to whichever
@@ -1560,9 +1566,9 @@ fn pump_strand(
   ctx: Context,
   strand_name: String,
   op_id: OpId,
-  remaining: Int,
+  idle_remaining: Int,
 ) -> Result(LastResult, Nil) {
-  use <- bool.guard(when: remaining <= 0, return: Error(Nil))
+  use <- bool.guard(when: idle_remaining <= 0, return: Error(Nil))
   service_interventions(ctx)
   case terminal_on(ctx.raw, strand_name, op_id) {
     // A terminal result is visible before the writer has run the
@@ -1584,21 +1590,24 @@ fn pump_strand(
         }
         False -> {
           process.sleep(1)
-          pump_strand(ctx, strand_name, op_id, remaining - 1)
+          pump_strand(ctx, strand_name, op_id, idle_remaining - 1)
         }
       }
     None ->
       case process.receive(ctx.events, 1) {
         // A commit landed: the session is working, so leave time
-        // alone and look again.
-        Ok(_committed) -> pump_strand(ctx, strand_name, op_id, remaining - 1)
+        // alone and replenish the allowance that measures only
+        // consecutive silence. Charging progress against that allowance
+        // made loaded Linux runs stall at different seeds even though an
+        // immediate replay of each identical schedule completed.
+        Ok(_committed) -> pump_strand(ctx, strand_name, op_id, budget)
         // Nothing committed: either the session is waiting for a
         // deadline, or it is inside an effect. Advancing logical
         // time releases the first and costs the second one wasted
         // planning pass.
         Error(Nil) -> {
           let _advanced = vclock.advance(ctx.vc)
-          pump_strand(ctx, strand_name, op_id, remaining - 1)
+          pump_strand(ctx, strand_name, op_id, idle_remaining - 1)
         }
       }
   }
