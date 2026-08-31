@@ -549,8 +549,10 @@ response_receiver(Owner) ->
                 ok;
             {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
                 %% The callback runs inside httpc_handler. If its sole owner is
-                %% gone, exiting here tears down the handler and its socket.
-                exit(provider_owner_down)
+                %% gone, an untrappable exit tears down the handler and socket.
+                %% httpc_response catches ordinary callback exits, so `kill` is
+                %% required for owner death to remain a real teardown signal.
+                erlang:exit(self(), kill)
         end
     end.
 

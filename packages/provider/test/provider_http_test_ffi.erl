@@ -1,11 +1,12 @@
 %% A loopback HTTP peer used to prove that production cancellation reaches
 %% the socket rather than merely retiring Loom's local waiter.
 -module(provider_http_test_ffi).
--export([start_hanging_server/2, start_fast_server/0, start_malformed_server/0,
-         start_body_server/1,
+-export([start_hanging_server/2, start_owner_death_server/2,
+         start_fast_server/0, start_malformed_server/0, start_body_server/1,
          start_redirect_pair/1, stop_servers/1,
          restart_httpc_manager/0, restart_httpc_handler_supervisor/0,
-         with_suspended_request_handlers/2, await_owner_drain_wait/1]).
+         with_suspended_request_handlers/2, await_owner_drain_wait/1,
+         kill_owner_during_delivery/2]).
 
 %% Waits until cancellation has moved the native owner into its handler-Down
 %% barrier. This is a test observation, not production coordination: it makes
@@ -107,6 +108,25 @@ resume_if_alive(Pid) ->
         false -> true
     end.
 
+%% Holds the native owner still until its exact httpc handler is blocked in the
+%% response callback. Killing it at that point proves the callback tears down
+%% the socket even though OTP catches ordinary callback exits.
+kill_owner_during_delivery(Owner, Server) ->
+    true = erlang:suspend_process(Owner),
+    Server ! respond,
+    await_owner_mail(Owner, 1000),
+    erlang:exit(Owner, kill),
+    nil.
+
+await_owner_mail(_Owner, 0) ->
+    erlang:error(handler_did_not_deliver_to_owner);
+await_owner_mail(Owner, Remaining) ->
+    case process_info(Owner, message_queue_len) of
+        {message_queue_len, Length} when Length > 0 -> ok;
+        undefined -> erlang:error(owner_exited_before_delivery);
+        _ -> receive after 1 -> await_owner_mail(Owner, Remaining - 1) end
+    end.
+
 start_hanging_server(OnAccepted, OnClosed) ->
     {ok, Listener} =
         gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}]),
@@ -115,6 +135,24 @@ start_hanging_server(OnAccepted, OnClosed) ->
         {ok, Socket} = gen_tcp:accept(Listener),
         ok = gen_tcp:close(Listener),
         OnAccepted(),
+        wait_for_close(Socket, OnClosed)
+    end),
+    {Port, Server}.
+
+start_owner_death_server(OnAccepted, OnClosed) ->
+    {ok, Listener} =
+        gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}]),
+    {ok, {_Address, Port}} = inet:sockname(Listener),
+    Server = spawn(fun() ->
+        {ok, Socket} = gen_tcp:accept(Listener),
+        ok = gen_tcp:close(Listener),
+        {ok, _Request} = gen_tcp:recv(Socket, 0, 2000),
+        OnAccepted(),
+        receive respond -> ok end,
+        ok = gen_tcp:send(
+               Socket,
+               <<"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n",
+                 "Connection: keep-alive\r\n\r\n1\r\nx\r\n">>),
         wait_for_close(Socket, OnClosed)
     end),
     {Port, Server}.

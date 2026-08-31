@@ -1,10 +1,12 @@
 //// Production HTTP transport ownership tests.
 ////
 //// Loopback peers make socket closure observable without using an external
-//// network. The cancellation test temporarily suspends only the handler linked
-//// to the request's native owner: while that handler cannot acknowledge exit,
-//// the public owner must remain alive. Releasing it must close the peer socket
-//// before the owner's `Down`, which is the drain contract higher layers trust.
+//// network. Cancellation temporarily suspends only the handler linked to the
+//// request's native owner: while that handler cannot acknowledge exit, the
+//// public owner must remain alive. A second test freezes the owner during a
+//// response callback and kills it, proving the callback tears down the handler
+//// even though OTP catches ordinary callback exits. Both paths require socket
+//// closure before the lifecycle is considered drained.
 
 import gleam/bit_array
 import gleam/erlang/process.{type Pid}
@@ -15,6 +17,12 @@ import provider/http
 
 @external(erlang, "provider_http_test_ffi", "start_hanging_server")
 fn start_hanging_server(
+  on_accepted: fn() -> Nil,
+  on_closed: fn() -> Nil,
+) -> #(Int, Pid)
+
+@external(erlang, "provider_http_test_ffi", "start_owner_death_server")
+fn start_owner_death_server(
   on_accepted: fn() -> Nil,
   on_closed: fn() -> Nil,
 ) -> #(Int, Pid)
@@ -42,6 +50,9 @@ fn with_suspended_request_handlers(
 
 @external(erlang, "provider_http_test_ffi", "await_owner_drain_wait")
 fn await_owner_drain_wait(owner: Pid) -> Nil
+
+@external(erlang, "provider_http_test_ffi", "kill_owner_during_delivery")
+fn kill_owner_during_delivery(owner: Pid, server: Pid) -> Nil
 
 @external(erlang, "provider_http_test_ffi", "restart_httpc_manager")
 fn restart_httpc_manager() -> Nil
@@ -125,6 +136,44 @@ pub fn production_fast_terminal_preserves_normal_drain_reason_test() {
     |> process.selector_receive(2000)
     as "a fast terminal must retain the exact handler drain proof"
   stop_servers([server])
+}
+
+pub fn production_owner_death_during_delivery_closes_socket_test() {
+  let accepted = process.new_subject()
+  let closed = process.new_subject()
+  let events = process.new_subject()
+  let #(port, server) =
+    start_owner_death_server(fn() { process.send(accepted, Nil) }, fn() {
+      process.send(closed, Nil)
+    })
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
+      http.HttpRequest(
+        method: "GET",
+        url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
+        headers: [],
+        body: "",
+      ),
+      events,
+    )
+  let owner_monitor = process.monitor(http.owner(running))
+  let server_monitor = process.monitor(server)
+  begin()
+  let assert Ok(Nil) = process.receive(accepted, within: 2000)
+
+  kill_owner_during_delivery(http.owner(running), server)
+
+  let assert Ok(process.ProcessDown(reason: process.Killed, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+    as "owner death inside the response callback must close the handler socket"
+  let assert Ok(True) =
+    process.new_selector()
+    |> process.select_specific_monitor(server_monitor, fn(_down) { True })
+    |> process.selector_receive(2000)
 }
 
 pub fn production_transport_bounds_ingress_before_the_event_mailbox_test() {
