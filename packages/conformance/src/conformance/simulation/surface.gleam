@@ -842,8 +842,9 @@ fn interventions_due(
 /// see `intervene`'s comment for why that distinction is the whole
 /// point.
 ///
-/// Everything due at one trigger fires on one disposable process, in script
-/// order. A steer and a follow-up scripted at the same turn are two halves of
+/// Everything due at one trigger fires on one disposable process. Queue
+/// admissions retain script order and precede aborts from that same logical
+/// moment. A steer and a follow-up scripted at the same turn are two halves of
 /// one scripted moment, and the trigger that names them is a *phase*. If the
 /// carrier dies between them, the atomic facts written with the completed
 /// prefix identify exactly which admissions landed; another carrier retries
@@ -989,7 +990,20 @@ fn admit_claimed(
   claimed: List(script.Intervention),
 ) -> Nil {
   let action = fn() {
-    list.map(claimed, fn(intervention) {
+    // An abort is an asynchronous cast, while steer and follow-up wait for
+    // their queue transactions. Sending an abort first made the BEAM scheduler
+    // decide whether another intervention from the same logical moment saw an
+    // active run. Queueing first gives the fault-free oracle one stable
+    // baseline without weakening the abort race exercised after this boundary.
+    let #(admissions, aborts) =
+      list.partition(claimed, fn(intervention) {
+        case intervention {
+          script.Abort(..) -> False
+          script.Steer(..) | script.FollowUp(..) -> True
+        }
+      })
+    list.append(admissions, aborts)
+    |> list.map(fn(intervention) {
       #(intervention, perform(runtime, intervention))
     })
   }
