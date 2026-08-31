@@ -42,6 +42,7 @@ import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
 import tui_gleam/text_hygiene
 import tui_gleam/theme
+import tui_gleam/workspace
 
 type Speaker {
   System
@@ -130,7 +131,9 @@ type Model {
     overlay: Overlay,
     models: List(protocol.ModelInfo),
     current_model: String,
+    workspace: workspace.Context,
     strands: List(protocol.Strand),
+    agent_summary: String,
     active_strand: String,
     session: String,
     inbox: Subject(connection.Message),
@@ -169,6 +172,8 @@ type Model {
 /// ```
 pub fn main() {
   let inbox = connection.new_inbox()
+  let project = workspace.discover()
+  let strands = demo_strands()
   let base =
     Model(
       quit: False,
@@ -202,7 +207,9 @@ pub fn main() {
       overlay: NoOverlay,
       models: demo_models(),
       current_model: "baseten-kimi-k3",
-      strands: demo_strands(),
+      workspace: project,
+      strands:,
+      agent_summary: agents.summary(strands),
       active_strand: "main",
       session: "demo",
       inbox:,
@@ -238,7 +245,12 @@ pub fn main() {
       case connection.connect(address, token, inbox) {
         Error(reason) ->
           append_error(
-            Model(..base, session:, strands: []),
+            Model(
+              ..base,
+              session:,
+              strands: [],
+              agent_summary: agents.summary([]),
+            ),
             "connect: " <> reason,
           )
         Ok(socket) -> {
@@ -252,6 +264,7 @@ pub fn main() {
             next_id: 4,
             models: [],
             strands: [],
+            agent_summary: agents.summary([]),
             transcript: [Line(System, "connecting to session " <> session)],
             notice: "connecting",
           )
@@ -620,52 +633,31 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let #(left, usage, right) = footer_sections(model)
-  case area.size.height >= 2 {
-    True -> render_stacked_footer(buf, area, left, usage, right)
-    False -> render_single_footer(buf, area, left, usage, right)
+  let #(project, model_name, usage, status, combined) = footer_sections(model)
+  case area.size.height {
+    1 -> render_single_footer(buf, area, project, usage, combined)
+    2 -> render_stacked_footer(buf, area, project, model_name, usage, status)
+    _ -> render_split_footer(buf, area, project, model_name, usage, status)
   }
 }
 
-fn footer_sections(model: Model) -> #(span.Line, span.Line, span.Line) {
-  let shortcuts = case active_strand_live(model) {
-    True ->
-      case active_interrupt(model), model.submission_mode {
-        Some(_), _ -> [
-          span.span_styled(" esc ", theme.signal_bold()),
-          span.span_styled("stop · ", theme.quiet_text()),
-          span.span_styled("enter ", theme.signal_bold()),
-          span.span_styled("steer after", theme.quiet_text()),
-        ]
-        None, SteerNow -> [
-          span.span_styled(" enter ", theme.signal_bold()),
-          span.span_styled("steer · ", theme.quiet_text()),
-          span.span_styled("tab ", theme.signal_bold()),
-          span.span_styled("queue", theme.quiet_text()),
-        ]
-        None, QueueAfter -> [
-          span.span_styled(" enter ", theme.signal_bold()),
-          span.span_styled("queue · ", theme.quiet_text()),
-          span.span_styled("tab ", theme.signal_bold()),
-          span.span_styled("steer", theme.quiet_text()),
-        ]
-      }
-    False -> [
-      span.span_styled(" /help ", theme.signal_bold()),
-      span.span_styled("commands · ", theme.quiet_text()),
-      span.span_styled("/agents ", theme.signal_bold()),
-      span.span_styled("agents", theme.quiet_text()),
-    ]
-  }
-  let left =
-    span.line_new(
-      list.append(shortcuts, [
-        span.span_styled(" · ⇧tab ", theme.signal_bold()),
-        span.span_styled("rail · ", theme.quiet_text()),
-        span.span_styled("^g ", theme.signal_bold()),
-        span.span_styled("detail", theme.quiet_text()),
-      ]),
-    )
+fn footer_sections(
+  model: Model,
+) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
+  let project =
+    span.line_new([
+      span.span_styled(
+        " " <> compact(workspace.label(model.workspace), 68) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  let model_name =
+    span.line_new([
+      span.span_styled(
+        " " <> compact(model.current_model, 28) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
   let usage =
     span.line_new([
       span.span_styled(
@@ -673,37 +665,61 @@ fn footer_sections(model: Model) -> #(span.Line, span.Line, span.Line) {
         theme.quiet_text(),
       ),
     ])
-  let right =
+  let status_text = model_footer_status(model)
+  let status =
+    span.line_new([
+      span.span_styled(" " <> status_text <> " ", theme.quiet_text()),
+    ])
+  let combined =
     span.line_new([
       span.span_styled(
-        " "
-          <> compact(agents.summary(model.strands) <> " · " <> model.notice, 36)
-          <> " ",
+        " " <> compact(model.current_model, 28) <> " · " <> status_text <> " ",
         theme.quiet_text(),
       ),
     ])
-  #(left, usage, right)
+  #(project, model_name, usage, status, combined)
+}
+
+fn model_footer_status(model: Model) -> String {
+  footer_status(model.agent_summary, model.notice)
+}
+
+/// Preserves transient operator feedback beside the agent summary.
+@internal
+pub fn footer_status(agent_summary: String, notice: String) -> String {
+  compact(agent_summary <> " · " <> notice, 40)
 }
 
 fn footer_height(width: Int, model: Model) -> Int {
-  let #(left, usage, right) = footer_sections(model)
-  footer_rows(width, left, usage, right)
+  let #(project, model_name, usage, status, _) = footer_sections(model)
+  footer_rows(width, project, model_name, usage, status)
 }
 
 /// Returns the rows needed to render all footer sections without collision.
 @internal
 pub fn footer_rows(
   width: Int,
-  left: span.Line,
+  project: span.Line,
+  model_name: span.Line,
   usage: span.Line,
-  right: span.Line,
+  status: span.Line,
 ) -> Int {
-  case
-    span.line_width(left) + span.line_width(usage) + span.line_width(right)
-    <= width
-  {
+  let single_width =
+    span.line_width(project)
+    + span.line_width(usage)
+    + span.line_width(model_name)
+    + span.line_width(status)
+    + 1
+  case single_width <= width {
     True -> 1
-    False -> 2
+    False ->
+      case
+        span.line_width(project) + span.line_width(model_name) <= width
+        && span.line_width(usage) + span.line_width(status) <= width
+      {
+        True -> 2
+        False -> 3
+      }
   }
 }
 
@@ -726,24 +742,57 @@ fn render_single_footer(
 fn render_stacked_footer(
   buf: buffer.Buffer,
   area: Rect,
-  left: span.Line,
+  project: span.Line,
+  model_name: span.Line,
   usage: span.Line,
-  right: span.Line,
+  status: span.Line,
 ) -> buffer.Buffer {
   let primary =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
-    |> statusbar.with_left([left])
-    |> statusbar.with_right([right])
+    |> statusbar.with_left([project])
+    |> statusbar.with_right([model_name])
   let usage_bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
     |> statusbar.with_left([usage])
+    |> statusbar.with_right([status])
   case geometry.split_v(area, [Length(1), Length(1)]) {
     [primary_area, usage_area] ->
       buf
       |> statusbar.render(primary_area, primary)
       |> statusbar.render(usage_area, usage_bar)
+    _ -> statusbar.render(buf, area, primary)
+  }
+}
+
+fn render_split_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  project: span.Line,
+  model_name: span.Line,
+  usage: span.Line,
+  status: span.Line,
+) -> buffer.Buffer {
+  let primary =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([project])
+    |> statusbar.with_right([model_name])
+  let usage_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([usage])
+  let status_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([status])
+  case geometry.split_v(area, [Length(1), Length(1), Length(1)]) {
+    [primary_area, usage_area, status_area] ->
+      buf
+      |> statusbar.render(primary_area, primary)
+      |> statusbar.render(usage_area, usage_bar)
+      |> statusbar.render(status_area, status_bar)
     _ -> statusbar.render(buf, area, primary)
   }
 }
@@ -1325,6 +1374,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         ..model,
         session:,
         strands:,
+        agent_summary: agents.summary(strands),
         usage:,
         records: list.reverse(entries),
         streams: [],
@@ -1337,8 +1387,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         transcript: [Line(System, "attached to session " <> session)],
       )
       |> invalidate_transcript
-    protocol.StrandsSnapshot(strands:) ->
-      Model(..model, strands:, notice: agents.summary(strands))
+    protocol.StrandsSnapshot(strands:) -> {
+      let summary = agents.summary(strands)
+      Model(..model, strands:, agent_summary: summary, notice: summary)
+    }
     protocol.ModelsSnapshot(models:) -> {
       let overlay = case model.overlay {
         ModelSelector(selector) ->
@@ -1397,11 +1449,13 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Some(target) if target == strand -> None
         other -> other
       }
+      let strands = set_strand_phase(model.strands, strand, phase)
       let updated =
         Model(
           ..model,
           submitting:,
-          strands: set_strand_phase(model.strands, strand, phase),
+          strands:,
+          agent_summary: agents.summary(strands),
           streams: case phase == "done" {
             True -> clear_streams(model.streams, strand)
             False -> model.streams

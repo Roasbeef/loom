@@ -20,6 +20,7 @@ import tui_gleam/markdown
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
 import tui_gleam/theme
+import tui_gleam/workspace
 import tui_gleam_test/ffi_term
 
 pub fn main() {
@@ -75,25 +76,58 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
 }
 
 pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
-  let shortcuts =
-    span.line_plain(" /help commands · /agents agents · ⇧tab rail · ^g detail")
+  let project =
+    span.line_plain(
+      " ~/.codex/worktrees/loom-etui-idle-perf (client/etui-idle-loop) ",
+    )
   let usage = span.line_plain(" in 875k · out 54k · cache 5m/0 · $0.0 ")
-  let status = span.line_plain(" 0 live / 3 agents · model: baseten-kimi-k3 ")
+  let model_name = span.line_plain(" baseten-kimi-k3 ")
+  let status = span.line_plain(" 0 live / 3 agents · connected ")
   let needed =
-    span.line_width(shortcuts)
+    span.line_width(project)
     + span.line_width(usage)
+    + span.line_width(model_name)
     + span.line_width(status)
+    + 1
 
-  assert tui_gleam.footer_rows(needed, shortcuts, usage, status) == 1
-  assert tui_gleam.footer_rows(needed - 1, shortcuts, usage, status) == 2
-  assert tui_gleam.footer_rows(133, shortcuts, usage, status) == 2
-  assert tui_gleam.footer_rows(180, shortcuts, usage, status) == 1
+  assert tui_gleam.footer_rows(needed, project, model_name, usage, status) == 1
+  assert tui_gleam.footer_rows(needed - 1, project, model_name, usage, status)
+    == 2
+  assert tui_gleam.footer_rows(133, project, model_name, usage, status) == 2
+  assert tui_gleam.footer_rows(40, project, model_name, usage, status) == 3
+  assert tui_gleam.footer_rows(180, project, model_name, usage, status) == 1
   assert tui_gleam.transcript_height(40, 3, 2) == 32
+  assert tui_gleam.transcript_height(40, 3, 3) == 31
   assert tui_gleam.transcript_height(40, 3, 1) == 33
   assert tui_gleam.viewport_height_changed(
     tui_gleam.transcript_height(40, 3, 2),
     tui_gleam.transcript_height(40, 3, 1),
   )
+}
+
+pub fn workspace_path_abbreviates_macos_and_linux_homes_test() {
+  assert workspace.path_label("/Users/alice/gocode/src/repo")
+    == "~/gocode/src/repo"
+  assert workspace.path_label("/home/alice/gocode/src/repo")
+    == "~/gocode/src/repo"
+  assert workspace.path_label("/srv/loom") == "/srv/loom"
+}
+
+pub fn workspace_branch_decodes_symbolic_and_detached_heads_test() {
+  assert workspace.branch_from_head("ref: refs/heads/client/footer\n")
+    == Some("client/footer")
+  assert workspace.branch_from_head(
+      "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    == Some("01234567")
+  assert workspace.branch_from_head("not-a-commit\n") == None
+  assert workspace.branch_from_head("ref: refs/heads/unsafe\nname\n") == None
+  assert workspace.branch_from_head("\n") == None
+}
+
+pub fn footer_status_preserves_transient_operator_feedback_test() {
+  assert tui_gleam.footer_status("0 live / 3 agents", "queued after main")
+    == "0 live / 3 agents · queued after main"
 }
 
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
