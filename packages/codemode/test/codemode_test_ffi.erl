@@ -42,8 +42,11 @@ peer_recv(Socket, TimeoutMs) ->
     end.
 
 peer_close(Socket) ->
-    _ = (catch gen_tcp:close(Socket)),
-    nil.
+    try gen_tcp:close(Socket) of
+        _ -> nil
+    catch
+        _:_ -> nil
+    end.
 
 %% os:find_executable/1 — feature detection for the Go toolchain.
 find_executable(Name) ->
