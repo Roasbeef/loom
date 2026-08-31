@@ -11,7 +11,7 @@ worth more than any status comment.
 
 ## Current work: provider stream ownership (#131)
 
-PR #133 (`provider/cancellable-streams`) is rebased on `main` at `0354314`.
+PR #133 (`provider/cancellable-streams`) is rebased on `main` at `317b45a`.
 It implements #131 across the provider, runtime, and client wrapper boundaries.
 A `StreamHandle` carries an idempotent cancellation capability and an optional
 owner pid; when present, owner exit acknowledges that every asynchronous
@@ -41,18 +41,18 @@ Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
 acknowledgement. Three small externals prepare, begin, and cancel one native
 owner. The typed transport returns `PreparedRequest(running, begin)`, so its
 raw owner is publishable before `begin` can touch the network. That owner
-disables redirects and supported automatic retries that could migrate the
+disables redirects and automatic retries that could migrate the
 handler behind a stable request id. The manager publishes the request's exact
 handler PID in its protected table before successful admission returns; a
 request-local unlimited handler allowance also prevents this dedicated request
-from entering the manager's queue. The owner captures that row in one O(1)
-lookup, cancels the retained PID without consulting a replacement manager, and
-waits for handler Down. There is no global process scan or diagnostic RPC. A
-missing row fails the owner abnormally rather than claiming drain. A manager or
-handler-supervisor generation change during a failed public admission keeps the
-owner as an ambiguous witness until a raw response supplies the request id.
-Provider ownership above that raw mailbox, fallback, deadlines, and terminal
-arbitration remain typed Gleam.
+from entering the manager's queue. The response callback pauses inside the
+handler until the owner acknowledges that its exact monitor is installed, so a
+fast terminal cannot delete that row first. The normal capture path remains one
+O(1) lookup. If the manager generation changes in the admission-to-capture
+interval, a recovery-only scan asks `httpc_handler` processes for their current
+request with a bounded call. A busy handler keeps recovery inconclusive and the
+owner alive rather than authorizing drain. Provider ownership above that raw
+mailbox, fallback, deadlines, and terminal arbitration remain typed Gleam.
 
 The runtime closes both ends of its former publication gap. Production exposes
 a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
@@ -68,7 +68,10 @@ normal/OTP-shutdown exit. A missing or killed ledger fails closed and leaves
 the lease to its TTL. Tests pin cancellation
 before begin, startup death, wrapper and gateway worker crashes,
 handler-delayed socket closure, manager replacement, redirect cancellation,
-timeout drain, restart ordering, and close/reopen exclusion.
+fast terminal capture, timeout drain, restart ordering, and close/reopen
+exclusion. Shared fixture transports also monitor their preparing process until
+begin transfers custody; failure inside `prepare_streaming` therefore retires
+the parked owner instead of leaving it unpublished.
 
 The first cold review and exact-head CI rejected `fd0c9e3`. CI seed 33 proved
 that even a 500 ms wall-clock retry budget could expire while a rest-for-one
@@ -77,14 +80,28 @@ supervisor remains alive; a dead root, rather than scheduler timing, is the
 failure boundary. Review also found that a handler-supervisor restart can
 orphan a live `httpc_handler`, that handler discovery itself introduced
 latency and orphan risks, and that abnormal reaper or transitive-owner exits
-must not count as drain. The corrective pass replaced discovery with exact
-table capture and distinguishes leaf completion from transitive proof.
+must not count as drain. The corrective pass made exact table capture the normal
+path and distinguishes leaf completion from transitive proof. A second review
+found the fast-terminal deletion race, late monitors in the gateway and
+distiller, and the fixture publication gap; the current callback handshake and
+retained typed witnesses close those paths.
 
-The corrective focused gates are green: provider 127, runtime 85, client 556,
-and conformance 67. Seed 33 passes five consecutive package runs and the
-200-seed range from 1 is clean. The full `make check` exits zero and
-`make doc-check` reports zero errors. Refreshed cold review and exact-head CI
-remain required before merge.
+Issue #141 is folded into this branch by explicit operator direction. Every
+package now requires Gleam 1.18, the supported runtime floor is OTP 29, and PR
+and nightly CI pin the exact local pair Gleam 1.18.1 plus OTP 29.0.5 (ERTS
+17.0.5). OTP-only compatibility branches and old-style Erlang catches are gone.
+The Linux gate builds and smokes both release profiles so its retained log can
+replace the distribution guide's old OTP 28 measurements with observed OTP 29
+values.
+
+The post-rebase focused gates are green: provider 134, runtime 85, client 573,
+and conformance 67. The first full run reached conformance with every preceding
+suite green, then Hex rate-limited dependency resolution. An immediate focused
+retry passed all 67 conformance tests, and the next complete `make check` exited
+zero. `make e2e` also exits zero and `make e2e-codemode` passes 210 tests. The
+OTP 29 release and distribution build pass locally, including the no-host-
+Erlang smoke and bundled SQLite NIF; Linux artifact measurements, refreshed
+cold review, and exact-head CI remain required before merge.
 
 ## Platform-strict enforcement is the production default
 
