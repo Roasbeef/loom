@@ -11,6 +11,7 @@ import client/protocol
 import client/provider_relay
 import client/serve
 import core/clock
+import core/entry as core_entry
 import core/ids
 import core/json
 import core/message
@@ -26,6 +27,7 @@ import runtime/api
 import runtime/effects
 import runtime/escalation as durable
 import session/session
+import storage/storage
 import tools/tool
 
 // --- wiring ----------------------------------------------------------------
@@ -201,6 +203,19 @@ fn next(harness: Harness) -> protocol.EventEnvelope {
   envelope
 }
 
+fn next_reply(
+  harness: Harness,
+  id: Int,
+  remaining: Int,
+) -> protocol.EventEnvelope {
+  let envelope = next(harness)
+  case envelope.reply_to == Some(id), remaining > 0 {
+    True, _ -> envelope
+    False, True -> next_reply(harness, id, remaining - 1)
+    False, False -> panic as "the expected command reply must arrive"
+  }
+}
+
 fn expect_error(harness: Harness, id: Int, code: String) -> Nil {
   let envelope = next(harness)
   assert envelope.reply_to == Some(id)
@@ -349,6 +364,43 @@ pub fn unknown_strand_refused_test() {
   subscribe(harness)
   send(harness, 6, protocol.Prompt(strand: "ghost", text: "hi"))
   expect_error(harness, 6, "unknown_strand")
+}
+
+pub fn prompt_content_admits_one_ordered_user_message_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let content = [
+    message.UserText("inspect this", None),
+    message.UserImage("iVBORw0KGgo=", "image/png"),
+  ]
+  send(harness, 60, protocol.PromptContent(strand: "main", content:))
+  let envelope = next_reply(harness, 60, 8)
+  assert envelope.reply_to == Some(60)
+  let assert protocol.EntryEvent(record: protocol.EntryRecord(entry:, ..)) =
+    envelope.event
+  let assert core_entry.MessageEntry(
+    id: user_entry_id,
+    message: message.UserMessage(content: admitted, ..),
+    ..,
+  ) = entry
+  assert admitted == content
+  let assert Ok(entries) =
+    storage.scan_branch(
+      harness.runtime.session.store,
+      storage.branch_scan(from: user_entry_id),
+    )
+  let admitted_user_turns =
+    list.filter_map(entries, fn(entry) {
+      case entry {
+        core_entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
+          Ok(content)
+        core_entry.MessageEntry(..)
+        | core_entry.CompactionEntry(..)
+        | core_entry.BranchSummaryEntry(..)
+        | core_entry.CustomEntry(..) -> Error(Nil)
+      }
+    })
+  assert admitted_user_turns == [content]
 }
 
 pub fn unknown_escalation_refused_test() {

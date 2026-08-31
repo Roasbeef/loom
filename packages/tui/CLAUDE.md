@@ -18,8 +18,9 @@ of the tree's two Go modules, alongside `sandbox`.
 - `internal/proto` — the hand-written protocol types: `Command` and
   `Event` envelopes, `DecodeCommand`/`DecodeEvent`, the frozen `Cmd*` and
   `Event*` name constants, one body struct per command and event
-  (`SubscribeBody`, `PromptBody`, `ForkBody`, `ModelsBody`, ...,
-  `SnapshotBody`, `EntryBody`, `OpTransitionBody`, `StreamDeltaBody`,
+  (`SubscribeBody`, `PromptBody`, `PromptContentBody`, `ForkBody`,
+  `ModelsBody`, ..., `SnapshotBody`, `EntryBody`, `OpTransitionBody`,
+  `StreamDeltaBody`,
   `UsageBody`, `EscalationBody`, `StrandResultBody`, `ErrorBody`), the
   entry/message parse tree, `ModelInfo` for the model-catalogue
   snapshot, `Denial`/`Grant`/`Network`/`Scratch` for the escalation
@@ -72,6 +73,9 @@ of the tree's two Go modules, alongside `sandbox`.
   `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`,
   `escalation`, `strand_result`, `error`. Auth is
   `Authorization: Bearer <token>` on the upgrade.
+- **Protocol vocabulary** — `internal/proto` also knows the additive
+  `prompt_content` body and round-trips its golden fixture. The Go UI does not
+  send image prompts in this change; eTUI is the first producer.
 - **Channels** — `Client.Messages()` is the single typed stream the
   bubbletea program consumes; an outbound queue carries commands to the
   writer side of the pump.

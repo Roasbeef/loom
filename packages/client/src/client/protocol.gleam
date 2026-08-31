@@ -45,7 +45,8 @@ import core/codec
 import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry}
 import core/json.{type JsonValue}
-import core/message.{type Usage}
+import core/message.{type Usage, type UserBlock, UserImage, UserText}
+import gleam/bit_array
 import gleam/float
 import gleam/int
 import gleam/list
@@ -101,6 +102,8 @@ pub type Command {
   CatchUp(from_seq: Int)
   /// Start a run on an idle strand.
   Prompt(strand: String, text: String)
+  /// Start a run on an idle strand from ordered user content blocks.
+  PromptContent(strand: String, content: List(UserBlock))
   /// Inject into the live run at the next checkpoint.
   Steer(strand: String, text: String)
   /// Queue a turn to run after the live operation settles.
@@ -397,6 +400,13 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       json.Object([#("from_seq", json.Int(from_seq))]),
     )
     Prompt(strand:, text:) -> #("prompt", strand_text(strand, text))
+    PromptContent(strand:, content:) -> #(
+      "prompt_content",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("content", json.Array(list.map(content, codec.encode_user_block))),
+      ]),
+    )
     Steer(strand:, text:) -> #("steer", strand_text(strand, text))
     FollowUp(strand:, text:) -> #("follow_up", strand_text(strand, text))
     Abort(strand:) -> #(
@@ -531,6 +541,19 @@ fn decode_command_body(
       Ok(CatchUp(from_seq:))
     }
     "prompt" -> decode_strand_text(body, Prompt)
+    "prompt_content" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use content <- result.try(case list.key_find(fields, "content") {
+        Ok(json.Array([])) -> Error("content must be a non-empty array")
+        Ok(json.Array(items)) ->
+          items
+          |> list.try_map(decode_prompt_block)
+        Ok(_) -> Error("content must be a non-empty array")
+        Error(Nil) -> Error("content is required")
+      })
+      Ok(PromptContent(strand:, content:))
+    }
     "steer" -> decode_strand_text(body, Steer)
     "follow_up" -> decode_strand_text(body, FollowUp)
     "abort" -> {
@@ -600,6 +623,22 @@ fn decode_command_body(
       Ok(SetConfig(strand:, config:))
     }
     other -> Ok(UnknownCommand(cmd: other, body:))
+  }
+}
+
+fn decode_prompt_block(value: JsonValue) -> Result(UserBlock, String) {
+  use block <- result.try(
+    codec.decode_user_block(value)
+    |> result.map_error(fn(report) { report.expected }),
+  )
+  case block {
+    UserText(..) -> Ok(block)
+    UserImage(data:, mime_type:) ->
+      case string.trim(mime_type), bit_array.base64_decode(data) {
+        "", _ -> Error("a non-empty media type")
+        _, Error(_) -> Error("valid base64 image bytes")
+        _, Ok(_) -> Ok(block)
+      }
   }
 }
 

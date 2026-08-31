@@ -28,6 +28,13 @@ type PromptBody struct {
 	Text   string `json:"text"`
 }
 
+// PromptContentBody starts a run on an idle strand from one ordered,
+// non-empty list of user text and image blocks.
+type PromptContentBody struct {
+	Strand  string  `json:"strand"`
+	Content []Block `json:"content"`
+}
+
 // SteerBody injects a user turn into a strand's live run (delivered at
 // the next checkpoint).
 type SteerBody struct {

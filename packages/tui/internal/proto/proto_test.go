@@ -18,6 +18,8 @@ func commandBody(cmd string) any {
 		return &CatchUpBody{}
 	case CmdPrompt:
 		return &PromptBody{}
+	case CmdPromptContent:
+		return &PromptContentBody{}
 	case CmdSteer:
 		return &SteerBody{}
 	case CmdFollowUp:

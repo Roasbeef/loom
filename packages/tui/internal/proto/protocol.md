@@ -47,6 +47,7 @@ peer credentials; remote connections send `Authorization: Bearer
 | `subscribe`    | `snapshot` (mode `full` or `resume`)       |
 | `catch_up`     | `snapshot` (mode `resume` or `full`)       |
 | `prompt`       | `entry` (the appended user entry)          |
+| `prompt_content` | `entry` (the appended user entry)        |
 | `steer`        | `entry` (queued — see below)               |
 | `follow_up`    | `entry` (queued — see below)               |
 | `abort`        | `op_transition` (phase `cancel_requested`) |
@@ -103,6 +104,13 @@ once, in seq order**.
 - `catch_up` `{from_seq: uint}`
 - `prompt` `{strand: string, text: string}` — start a run on an idle
   strand. Refused with `conflict` while the strand has a live op.
+- `prompt_content` `{strand: string, content: [UserBlock]}` — start a run on
+  an idle strand from one non-empty ordered list of the core codec's user
+  blocks. Every block uses the core codec verbatim. An unknown block type,
+  invalid base64 image, empty image MIME type, wrong field type, or empty list
+  refuses the whole command as `bad_request`; no partial message is admitted.
+  The gateway appends exactly one `UserMessage`, preserving block order.
+  Older gateways see an unknown command and refuse it as `unsupported`.
 - `steer` `{strand, text}` — inject into the live run (picked up at the
   next checkpoint). Refused with `conflict` when idle.
 - `follow_up` `{strand, text}` — queue a turn to run after the live op
@@ -327,28 +335,25 @@ document does not yet decide.
 1. **Local auth transport** — unix-socket peer credentials imply a
    `ws+unix` dial path; the TUI currently dials TCP only. Decide the
    local endpoint shape.
-2. **Rich user turns** — `prompt`/`steer`/`follow_up` carry `text`
-   only. Images (core codec `UserImage`) need an additive optional
-   `blocks` field.
-3. **`set_config` keys** — answered above (the "Command bodies" entry
+2. **`set_config` keys** — answered above (the "Command bodies" entry
    is normative): `queue_mode`, `tool_execution`, `model_name`,
    `model`, `thinking_level`, `active_tools`. The set stays
    gateway-extensible; the TUI still passes an opaque object. Still
    open within this item: per-role switching (`model_name` moves a
    strand's — or every strand's — model, not one role's chain).
-4. **Event seq durability** — catch_up across gateway restarts
+3. **Event seq durability** — catch_up across gateway restarts
    requires the seq assignment to be rebuildable from `scan_*`; confirm
    whether entry/usage events reuse storage seqs or a materialized
    gateway stream (this doc assumes the latter, one unified stream).
-5. **Transcript paging** — snapshots carry a recent-entry window only;
+4. **Transcript paging** — snapshots carry a recent-entry window only;
    a transcript-browser client needs a way to pull older entries
    (candidate: `catch_up` semantics over entry storage seqs, or a new
    command in v2).
-6. **`strand_result` scope** — emitted for run operations; whether
+5. **`strand_result` scope** — emitted for run operations; whether
    navigation/compaction also emit one (or only `op_transition`
    `done`) is open. The fake emits it for runs only.
-7. **`follow_up` on an idle strand** — queue-or-refuse is open; the
+6. **`follow_up` on an idle strand** — queue-or-refuse is open; the
    fake appends it like a prompt.
-8. **`escalation` `consumed`** — assumed broadcast after the single
+7. **`escalation` `consumed`** — assumed broadcast after the single
    re-execution begins; confirm timing against the broker's durable
    event order.
