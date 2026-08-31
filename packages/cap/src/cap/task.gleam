@@ -27,12 +27,14 @@
 ////
 //// ## Cancellation is real
 ////
-//// When `race` picks a winner, or `parallel_map` (fail-fast) hits its
-//// first error, the losing workers are *killed*. A worker blocked in a
-//// capability call is the caller the channel actor monitors, so its death
-//// makes the channel emit a `cancel` frame for the in-flight `cap_call`
-//// and the broker revokes the effect and kills its executor pgroup
-//// (`cap/internal/channel`). Cancellation is not advisory.
+//// When `race` picks a winner, or `parallel_map` (fail-fast) hits its first
+//// error, the losing workers are *killed and joined*. The combinator retains
+//// each original monitor, sends every kill first, and waits for every Down
+//// before returning. A worker blocked in a capability call is the caller the
+//// channel actor monitors, so its death makes the channel emit a `cancel`
+//// frame for the in-flight `cap_call` and the broker revokes the effect and
+//// kills its executor pgroup (`cap/internal/channel`). Cancellation is not
+//// advisory, and its acknowledgement is not deferred past the call boundary.
 ////
 //// ## Budget
 ////
@@ -383,11 +385,25 @@ fn down_index(
 }
 
 fn cancel_running(running: Dict(Int, #(Pid, Monitor))) -> Nil {
-  list.each(dict.to_list(running), fn(entry) {
-    let #(_index, #(pid, monitor)) = entry
-    process.demonitor_process(monitor)
-    process.kill(pid)
-  })
+  let children = dict.values(running)
+  // Signal the whole sibling set before waiting for any one child. Serial
+  // kill-and-wait would let an uncooperative first child postpone cancellation
+  // of every later capability call.
+  list.each(children, fn(child) { process.kill(child.0) })
+  list.each(children, await_cancelled)
+}
+
+// The monitor was installed at spawn time, so even a worker which exited just
+// before the kill has a Down waiting for this exact reference. Consuming that
+// signal is the join barrier: only after it may the combinator claim no child
+// process or process-owned capability call survived the returned result.
+fn await_cancelled(child: #(Pid, Monitor)) -> Nil {
+  let #(_pid, monitor) = child
+  let _down =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive_forever()
+  Nil
 }
 
 fn assemble(

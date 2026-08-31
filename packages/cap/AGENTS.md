@@ -172,7 +172,10 @@ thing to hand a model than one that cannot.
   of every in-flight call. Killing a `race` loser therefore produces a
   `DOWN`, which emits a `cancel` frame for that call id, which makes the
   broker revoke the effect and kill its executor process group. No
-  cooperation from the dying process is needed.
+  cooperation from the dying process is needed. The combinator signals every
+  losing worker before it waits on the original monitors, then returns only
+  after every Down has joined. This ordering prevents one slow exit from
+  postponing cancellation of its siblings.
 - **Fail-fast reports the failure which triggered cancellation.** Indices
   absent from the runner's completed-outcome map are tasks it killed after
   observing that failure. They do not become synthetic lower-indexed crashes,
