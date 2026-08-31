@@ -275,30 +275,6 @@ pub fn reflected_secret_is_scrubbed_from_malformed_response_test() {
   assert string.contains(rendered, "[REDACTED]")
 }
 
-pub fn reflected_secret_is_scrubbed_from_successful_content_test() {
-  let handle =
-    gateway.request(
-      two_provider_gateway(
-        fixture.transport(
-          fixture.ok_response(happy_transcript("reflected " <> secret_value)),
-        ),
-      ),
-      main_request(),
-    )
-  let assert Ok(#(
-    [stream.TextDelta(text: delta, ..)],
-    stream.Settled(message: settled, ..),
-  )) = stream.await_terminal(handle, within: 2000)
-  let assert message.AssistantMessage(
-    content: [message.AssistantText(text:, ..)],
-    ..,
-  ) = stream.message(settled)
-  assert !string.contains(delta, secret_value)
-  assert !string.contains(text, secret_value)
-  assert string.contains(delta, "[REDACTED]")
-  assert string.contains(text, "[REDACTED]")
-}
-
 pub fn remote_diagnostics_are_bounded_by_bytes_not_graphemes_test() {
   let one_large_grapheme = "a" <> string.repeat("́", 2000)
   let body =

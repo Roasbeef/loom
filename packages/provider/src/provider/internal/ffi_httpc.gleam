@@ -6,14 +6,11 @@
 //// and forwards each response event to an injected callback. Everything
 //// above this raw chunk stream is pure Gleam.
 ////
-//// There is intentionally no provider semantics here. Selection, retries,
-//// terminal arbitration, and transitive ownership remain in Gleam. The raw
-//// response-byte budget is enforced here because acknowledging OTP's producer
-//// before an asynchronous Gleam mailbox counts the chunk would leave ingress
-//// unbounded. These three externals expose only what OTP does not provide as
-//// typed Gleam values: allocate a parked raw-message owner, grant that owner
-//// permission to start, then cancel it while waiting for its private handler
-//// to exit.
+//// There is intentionally no provider policy here. Selection, retries,
+//// timeouts, terminal arbitration, and transitive ownership remain in Gleam.
+//// These three externals expose only what OTP does not provide as typed Gleam
+//// values: allocate a parked raw-message owner, grant that owner permission to
+//// start, then cancel it while waiting for its private handler to exit.
 
 import gleam/erlang/process.{type Pid}
 
@@ -28,14 +25,12 @@ pub type RequestOwner =
 ///
 /// Allocation starts no application and opens no socket. The caller publishes
 /// this PID before granting `begin_stream_request`; that ordering is the reason
-/// preparation cannot be folded into the begin external. The byte budget is
-/// checked by this owner before a response chunk crosses into Gleam.
+/// preparation cannot be folded into the begin external.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let owner = ffi_httpc.prepare_stream_request(
-///   max_response_bytes,
 ///   on_status,
 ///   on_chunk,
 ///   on_end,
@@ -46,7 +41,6 @@ pub type RequestOwner =
 ///
 @external(erlang, "provider_ffi", "prepare_stream_request")
 pub fn prepare_stream_request(
-  max_response_bytes: Int,
   on_status: fn(Int, List(#(String, String))) -> Nil,
   on_chunk: fn(BitArray) -> Nil,
   on_end: fn() -> Nil,

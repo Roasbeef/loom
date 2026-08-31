@@ -1210,6 +1210,7 @@ fn attempt_one(
   control: process.Subject(Control),
   consumer: process.Pid,
 ) -> AttemptOutcome {
+  let deliver = fn(delta) { process.send(events, Delta(delta:)) }
   use config <- or_failure(find_provider(gateway, target.provider), fn() {
     AttemptTerminal(Failed(UnknownProvider(provider: target.provider)))
   })
@@ -1224,9 +1225,6 @@ fn attempt_one(
       )
     },
   )
-  let deliver = fn(delta) {
-    process.send(events, diagnostic.scrub_event(Delta(delta:), api_key))
-  }
   let outcome = case config {
     AnthropicProvider(name: _, base_url:, api_key_secret: _) ->
       stream.run_tracked(
@@ -1260,8 +1258,9 @@ fn attempt_one(
 // another lifetime or a later diagnostic.
 fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
   case outcome {
-    AttemptTerminal(terminal:) ->
-      AttemptTerminal(terminal: diagnostic.scrub_event(terminal, api_key))
+    AttemptTerminal(Failed(error:)) ->
+      AttemptTerminal(Failed(error: diagnostic.scrub_error(error, api_key)))
+    AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
     AttemptCancelled -> AttemptCancelled
     AttemptCancellationUnconfirmed -> AttemptCancellationUnconfirmed
     AttemptDrainProofLost -> AttemptDrainProofLost

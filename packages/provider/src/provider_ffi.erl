@@ -3,7 +3,7 @@
 %% between Erlang conventions (charlists, raw httpc messages) and the
 %% Gleam callback signatures at the boundary, per the house FFI rules.
 -module(provider_ffi).
--export([prepare_stream_request/5, begin_stream_request/5,
+-export([prepare_stream_request/4, begin_stream_request/5,
          cancel_stream_request/1, get_env/1]).
 
 %% Total receive-loop timeout for one streamed response, in milliseconds.
@@ -23,11 +23,10 @@ get_env(Name) ->
 %% work begins. Gleam publishes this pid to its custodian and only then sends
 %% the begin permit. The owner is both the raw httpc receiver and the drain
 %% acknowledgement, so there is no unowned receiver between those two facts.
-prepare_stream_request(MaxResponseBytes, OnStatus, OnChunk, OnEnd, OnFailure) ->
+prepare_stream_request(OnStatus, OnChunk, OnEnd, OnFailure) ->
     Parent = self(),
     spawn(fun() ->
-        native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure,
-                      {0, MaxResponseBytes})
+        native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure)
     end).
 
 %% Grants the parked native owner permission to capture the current manager and
@@ -46,12 +45,12 @@ cancel_stream_request(Owner) ->
     Owner ! cancel,
     nil.
 
-native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure, Budget) ->
+native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure) ->
     ParentMonitor = erlang:monitor(process, Parent),
     receive
         {begin_request, Method, Url, Headers, Body} ->
             start_native_request(Method, Url, Headers, Body, ParentMonitor,
-                                 OnStatus, OnChunk, OnEnd, OnFailure, Budget);
+                                 OnStatus, OnChunk, OnEnd, OnFailure);
         cancel ->
             ok;
         {'DOWN', ParentMonitor, process, Parent, _Reason} ->
@@ -59,7 +58,7 @@ native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure, Budget) ->
     end.
 
 start_native_request(Method, Url, Headers, Body, ParentMonitor,
-                     OnStatus, OnChunk, OnEnd, OnFailure, Budget) ->
+                     OnStatus, OnChunk, OnEnd, OnFailure) ->
     Deadline = request_deadline(),
     case prepare_native_request(Method, Url, Headers, Body) of
         {ok, Manager, HandlerSupervisor, Request, Options} ->
@@ -67,15 +66,15 @@ start_native_request(Method, Url, Headers, Body, ParentMonitor,
                 {ok, RequestId} ->
                     enter_native_loop(RequestId, ParentMonitor, OnStatus,
                                       OnChunk, OnEnd, OnFailure, none, false,
-                                      Deadline, Budget);
+                                      Deadline);
                 {error, _Reason} ->
                     start_failed(Manager, HandlerSupervisor, ParentMonitor,
                                  OnStatus, OnChunk, OnEnd, OnFailure,
-                                 Deadline, Budget);
+                                 Deadline);
                 interrupted ->
                     start_failed(Manager, HandlerSupervisor, ParentMonitor,
                                  OnStatus, OnChunk, OnEnd, OnFailure,
-                                 Deadline, Budget)
+                                 Deadline)
             end;
         error ->
             safe_callback(OnFailure, [<<"http request startup failed">>])
@@ -128,14 +127,14 @@ admit_native_request(Method, Request, Options) ->
 %% raw response; exiting here would turn an ambiguous admission into false
 %% drain.
 start_failed(Manager, HandlerSupervisor, ParentMonitor,
-             OnStatus, OnChunk, OnEnd, OnFailure, Deadline, Budget) ->
+             OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     case same_generation(httpc_manager, Manager) andalso
          same_generation(httpc_handler_sup, HandlerSupervisor) of
         true ->
             safe_callback(OnFailure, [<<"http request startup failed">>]);
         false ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, false, Deadline, Budget)
+                                  OnFailure, false, Deadline)
     end.
 
 same_generation(Name, Pid) when is_pid(Pid) ->
@@ -144,29 +143,26 @@ same_generation(_Name, _Pid) ->
     false.
 
 ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-                      Stopping, Deadline, Budget) ->
+                      Stopping, Deadline) ->
     receive
         {http, Producer, Ack, {RequestId, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
                               OnEnd, OnFailure,
-                              {Producer, Ack, Message}, Stopping, Deadline,
-                              Budget);
+                              {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
                               OnEnd, OnFailure,
-                              {Producer, Ack, Message}, Stopping, Deadline,
-                              Budget);
+                              {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
                               OnEnd, OnFailure,
-                              {Producer, Ack, Message}, Stopping, Deadline,
-                              Budget);
+                              {Producer, Ack, Message}, Stopping, Deadline);
         cancel ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true, Deadline, Budget);
+                                  OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true, Deadline, Budget)
+                                  OnFailure, true, Deadline)
     after remaining_ms(Deadline) ->
         case Stopping of
             true -> ok;
@@ -185,21 +181,20 @@ ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
 %% request_done cannot delete the manager row before capture acknowledges the
 %% first response. The protected table remains the constant-time normal path.
 enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                  OnFailure, FirstDelivery, Stopping, Deadline, Budget) ->
+                  OnFailure, FirstDelivery, Stopping, Deadline) ->
     case indexed_request_handler(RequestId) of
         {ok, Handler} ->
             enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure, FirstDelivery,
-                               Stopping, Deadline, Budget);
+                               Stopping, Deadline);
         lost ->
             recover_handler(RequestId, ParentMonitor, OnStatus, OnChunk,
                             OnEnd, OnFailure, FirstDelivery, Stopping,
-                            Deadline, Budget)
+                            Deadline)
     end.
 
 enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
-                   OnEnd, OnFailure, FirstDelivery, Stopping, Deadline,
-                   Budget) ->
+                   OnEnd, OnFailure, FirstDelivery, Stopping, Deadline) ->
     HandlerMonitor = erlang:monitor(process, Handler),
     case FirstDelivery of
         none ->
@@ -207,18 +202,15 @@ enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
                 true -> finish_native(RequestId, Handler, HandlerMonitor);
                 false -> native_loop(RequestId, Handler, HandlerMonitor,
                                      ParentMonitor, OnStatus, OnChunk,
-                                     OnEnd, OnFailure, Deadline, Budget)
+                                     OnEnd, OnFailure, Deadline)
             end;
         {Producer, Ack, Message} ->
+            accept_response(Producer, Ack),
             case Stopping of
-                true ->
-                    accept_response(Producer, Ack),
-                    finish_native(RequestId, Handler, HandlerMonitor);
-                false ->
-                    native_delivery(Producer, Ack, Message, RequestId,
-                                    Handler, HandlerMonitor, ParentMonitor,
-                                    OnStatus, OnChunk, OnEnd, OnFailure,
-                                    Deadline, Budget)
+                true -> finish_native(RequestId, Handler, HandlerMonitor);
+                false -> native_http(Message, RequestId, Handler,
+                                     HandlerMonitor, ParentMonitor, OnStatus,
+                                     OnChunk, OnEnd, OnFailure, Deadline)
             end
     end.
 
@@ -227,114 +219,112 @@ enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
 %% callback still supplies its exact producer identity, while the recovery
 %% scan and original deadline keep this uncertainty both safe and bounded.
 recover_handler(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                OnFailure, FirstDelivery, Stopping, Deadline, Budget) ->
+                OnFailure, FirstDelivery, Stopping, Deadline) ->
     case FirstDelivery of
         {Producer, Ack, Message} ->
             enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure,
-                               {Producer, Ack, Message}, Stopping, Deadline,
-                               Budget);
+                               {Producer, Ack, Message}, Stopping, Deadline);
         none ->
             receive
                 {http, Producer, Ack, {RequestId, _} = Message} ->
                     enter_with_handler(RequestId, Producer, ParentMonitor,
                                        OnStatus, OnChunk, OnEnd, OnFailure,
                                        {Producer, Ack, Message}, Stopping,
-                                       Deadline, Budget);
+                                       Deadline);
                 {http, Producer, Ack, {RequestId, _, _} = Message} ->
                     enter_with_handler(RequestId, Producer, ParentMonitor,
                                        OnStatus, OnChunk, OnEnd, OnFailure,
                                        {Producer, Ack, Message}, Stopping,
-                                       Deadline, Budget);
+                                       Deadline);
                 {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
                     enter_with_handler(RequestId, Producer, ParentMonitor,
                                        OnStatus, OnChunk, OnEnd, OnFailure,
                                        {Producer, Ack, Message}, Stopping,
-                                       Deadline, Budget);
+                                       Deadline);
                 cancel ->
                     conservative_cancel(RequestId),
                     recover_handler(RequestId, ParentMonitor, OnStatus,
                                     OnChunk, OnEnd, OnFailure, none, true,
-                                    Deadline, Budget);
+                                    Deadline);
                 {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
                     conservative_cancel(RequestId),
                     recover_handler(RequestId, ParentMonitor, OnStatus,
                                     OnChunk, OnEnd, OnFailure, none, true,
-                                    Deadline, Budget)
+                                    Deadline)
             after 0 ->
                 recover_after_empty_mailbox(
                   RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-                  Stopping, Deadline, Budget)
+                  Stopping, Deadline)
             end
     end.
 
 recover_after_empty_mailbox(RequestId, ParentMonitor, OnStatus,
-                            OnChunk, OnEnd, OnFailure, Stopping, Deadline,
-                            Budget) ->
+                            OnChunk, OnEnd, OnFailure, Stopping, Deadline) ->
     case discover_request_handler(RequestId, Deadline) of
         {ok, Handler} ->
             enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure, none, Stopping,
-                               Deadline, Budget);
+                               Deadline);
         %% A missing or unfamiliar private layout is not evidence that an
         %% admitted request drained. Keep waiting for the callback's exact
         %% producer identity, bounded by the request deadline.
         gone ->
             recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, Stopping, Deadline, Budget);
+                            OnEnd, OnFailure, Stopping, Deadline);
         inconclusive ->
             recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, Stopping, Deadline, Budget);
+                            OnEnd, OnFailure, Stopping, Deadline);
         expired -> recovery_expired(Stopping, OnFailure)
     end.
 
 recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                OnFailure, Stopping, Deadline, Budget) ->
+                OnFailure, Stopping, Deadline) ->
     receive
         {http, Producer, Ack, {RequestId, _} = Message} ->
             enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure,
-                               {Producer, Ack, Message}, Stopping, Deadline,
-                               Budget);
+                               {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _} = Message} ->
             enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure,
-                               {Producer, Ack, Message}, Stopping, Deadline,
-                               Budget);
+                               {Producer, Ack, Message}, Stopping, Deadline);
         {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
             enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
                                OnChunk, OnEnd, OnFailure,
-                               {Producer, Ack, Message}, Stopping, Deadline,
-                               Budget);
+                               {Producer, Ack, Message}, Stopping, Deadline);
         cancel ->
             conservative_cancel(RequestId),
             recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, true, Deadline, Budget);
+                            OnEnd, OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
             conservative_cancel(RequestId),
             recovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, true, Deadline, Budget)
+                            OnEnd, OnFailure, true, Deadline)
     after min(?RECOVERY_RETRY, remaining_ms(Deadline)) ->
         recover_after_empty_mailbox(RequestId, ParentMonitor, OnStatus,
                                     OnChunk, OnEnd, OnFailure, Stopping,
-                                    Deadline, Budget)
+                                    Deadline)
     end.
 
 native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
-            OnStatus, OnChunk, OnEnd, OnFailure, Deadline, Budget) ->
+            OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     receive
         {http, Producer, Ack, {RequestId, _} = Message} ->
-            native_delivery(Producer, Ack, Message, RequestId, Handler,
-                            HandlerMonitor, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, Deadline, Budget);
+            accept_response(Producer, Ack),
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
         {http, Producer, Ack, {RequestId, _, _} = Message} ->
-            native_delivery(Producer, Ack, Message, RequestId, Handler,
-                            HandlerMonitor, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, Deadline, Budget);
+            accept_response(Producer, Ack),
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
         {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
-            native_delivery(Producer, Ack, Message, RequestId, Handler,
-                            HandlerMonitor, ParentMonitor, OnStatus, OnChunk,
-                            OnEnd, OnFailure, Deadline, Budget);
+            accept_response(Producer, Ack),
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
         cancel ->
             finish_native(RequestId, Handler, HandlerMonitor);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
@@ -346,71 +336,40 @@ native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
         finish_native(RequestId, Handler, HandlerMonitor)
     end.
 
-native_delivery(Producer, Ack, Message, RequestId, Handler, HandlerMonitor,
-                ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, Deadline,
-                Budget) ->
-    %% The httpc handler waits for this acknowledgement before it sends the
-    %% next delivery. Count while the producer is still serialized here, before
-    %% OnChunk can enqueue the body into Gleam, so the async mailbox cannot grow
-    %% beyond the admitted budget plus the one chunk currently being judged.
-    case budget_for_delivery(Message, Budget) of
-        {ok, NextBudget} ->
-            accept_response(Producer, Ack),
-            native_http(Message, RequestId, Handler, HandlerMonitor,
-                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-                        Deadline, NextBudget);
-        overflow ->
-            accept_response(Producer, Ack),
-            safe_callback(OnFailure,
-                          [<<"http response exceeded byte budget">>]),
-            finish_native(RequestId, Handler, HandlerMonitor)
-    end.
-
-budget_for_delivery({_RequestId, stream, Chunk}, Budget) ->
-    add_response_bytes(Chunk, Budget);
-budget_for_delivery({_RequestId, {{_Version, _Status, _Reason}, _Headers,
-                                  Body}}, Budget) ->
-    add_response_bytes(Body, Budget);
-budget_for_delivery(_Message, Budget) ->
-    {ok, Budget}.
-
 native_http({RequestId, stream_start, Headers}, RequestId, Handler,
             HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
-            OnFailure, Deadline, Budget) ->
+            OnFailure, Deadline) ->
     case safe_status_callback(OnStatus, 200, Headers) of
         ok -> native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
-                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline,
-                          Budget);
+                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline);
         error -> finish_native(RequestId, Handler, HandlerMonitor)
     end;
 native_http({RequestId, stream_start, Headers, _Handler}, RequestId, Handler,
             HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
-            OnFailure, Deadline, Budget) ->
+            OnFailure, Deadline) ->
     native_http({RequestId, stream_start, Headers}, RequestId, Handler,
                 HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                OnFailure, Deadline, Budget);
+                OnFailure, Deadline);
 native_http({RequestId, stream, Chunk}, RequestId, Handler, HandlerMonitor,
-            ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, Deadline,
-            Budget) ->
+            ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     case safe_callback(OnChunk, [Chunk]) of
         ok -> native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
-                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline,
-                          Budget);
+                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline);
         error -> finish_native(RequestId, Handler, HandlerMonitor)
     end;
 native_http({RequestId, stream_end, _Headers}, RequestId, Handler,
             HandlerMonitor, _ParentMonitor, _OnStatus, _OnChunk, OnEnd,
-            _OnFailure, _Deadline, _Budget) ->
+            _OnFailure, _Deadline) ->
     safe_callback(OnEnd, []),
     finish_native(RequestId, Handler, HandlerMonitor);
 native_http({RequestId, {error, _Reason}}, RequestId, Handler, HandlerMonitor,
             _ParentMonitor, _OnStatus, _OnChunk, _OnEnd, OnFailure,
-            _Deadline, _Budget) ->
+            _Deadline) ->
     safe_callback(OnFailure, [<<"http transport failed">>]),
     finish_native(RequestId, Handler, HandlerMonitor);
 native_http({RequestId, {{_Version, Status, _Reason}, Headers, Body}},
             RequestId, Handler, HandlerMonitor, _ParentMonitor, OnStatus,
-            OnChunk, OnEnd, _OnFailure, _Deadline, _Budget) ->
+            OnChunk, OnEnd, _OnFailure, _Deadline) ->
     case safe_status_callback(OnStatus, Status, Headers) of
         ok ->
             case safe_callback(OnChunk, [Body]) of
@@ -420,13 +379,6 @@ native_http({RequestId, {{_Version, Status, _Reason}, Headers, Body}},
         error -> error
     end,
     finish_native(RequestId, Handler, HandlerMonitor).
-
-add_response_bytes(Chunk, {Bytes, MaxBytes}) ->
-    NextBytes = Bytes + byte_size(Chunk),
-    case NextBytes =< MaxBytes of
-        true -> {ok, {NextBytes, MaxBytes}};
-        false -> overflow
-    end.
 
 indexed_request_handler(RequestId) ->
     %% The table name and row shape are an intentionally confined dependency

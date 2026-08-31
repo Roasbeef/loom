@@ -8,7 +8,6 @@
 //// even though OTP catches ordinary callback exits. Both paths require socket
 //// closure before the lifecycle is considered drained.
 
-import gleam/bit_array
 import gleam/erlang/process.{type Pid}
 import gleam/int
 import gleam/list
@@ -32,9 +31,6 @@ fn start_malformed_server() -> #(Int, Pid)
 
 @external(erlang, "provider_http_test_ffi", "start_fast_server")
 fn start_fast_server() -> #(Int, Pid)
-
-@external(erlang, "provider_http_test_ffi", "start_body_server")
-fn start_body_server(size: Int) -> #(Int, Pid)
 
 @external(erlang, "provider_http_test_ffi", "start_redirect_pair")
 fn start_redirect_pair(on_target_accepted: fn() -> Nil) -> #(Int, List(Pid))
@@ -174,51 +170,6 @@ pub fn production_owner_death_during_delivery_closes_socket_test() {
     process.new_selector()
     |> process.select_specific_monitor(server_monitor, fn(_down) { True })
     |> process.selector_receive(2000)
-}
-
-pub fn production_transport_bounds_ingress_before_the_event_mailbox_test() {
-  let #(port, server) = start_body_server(http.max_response_bytes + 1)
-  let events = process.new_subject()
-  let http.Transport(prepare_streaming:) = http.httpc_transport()
-  let assert Ok(http.PreparedRequest(running:, begin:)) =
-    prepare_streaming(
-      http.HttpRequest(
-        method: "GET",
-        url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
-        headers: [],
-        body: "",
-      ),
-      events,
-    )
-  let owner_monitor = process.monitor(http.owner(running))
-  begin()
-
-  let assert Ok(http.ResponseStatus(status: 200, ..)) =
-    process.receive(events, within: 2000)
-  let received = receive_until_failure(events, 0)
-  assert received >= 0
-  assert received <= http.max_response_bytes
-  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
-    process.new_selector()
-    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
-    |> process.selector_receive(2000)
-    as "the native cap must cancel and drain the exact handler"
-  stop_servers([server])
-}
-
-fn receive_until_failure(
-  events: process.Subject(http.HttpEvent),
-  received: Int,
-) -> Int {
-  case process.receive(events, within: 5000) {
-    Ok(http.ResponseChunk(chunk:)) ->
-      receive_until_failure(events, received + bit_array.byte_size(chunk))
-    Ok(http.RequestFailed(reason:)) -> {
-      assert reason == "http response exceeded byte budget"
-      received
-    }
-    Ok(http.ResponseStatus(..)) | Ok(http.ResponseEnd) | Error(Nil) -> -1
-  }
 }
 
 /// Replacing `httpc_manager` must not erase the handler which still owns this

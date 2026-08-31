@@ -249,7 +249,7 @@ pub const max_event_data_lines = 4096
 /// into its adapter. Sixteen MiB is far above Loom's configured model outputs,
 /// while still bounding completed SSE events, comments, and small deltas across
 /// the whole response rather than one frame at a time.
-pub const max_response_bytes = http.max_response_bytes
+pub const max_response_bytes = 16_777_216
 
 /// Incremental SSE parser state: pure data, so feeding is a fold. The
 /// carry buffer holds bytes of an incomplete line (chunks may split lines
@@ -901,8 +901,8 @@ type AttemptEvent {
 /// attempt cannot enter the next.
 ///
 /// This is an internal fixture facade which does not publish the transport
-/// owner. Production code must use `run_tracked`, whose callback transfers the
-/// drain capability before work begins.
+/// owner. Production calls `run_tracked` so cancellation always retains that
+/// ownership path.
 ///
 /// ## Examples
 ///

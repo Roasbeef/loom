@@ -46,16 +46,17 @@ processful shell around that sans-io core. WP-F.
   producing `StreamEvent`s; each adapter supplies one.
 - `provider/http.{Transport, RunningRequest, HttpRequest, HttpEvent}` — the
   injected transport seam. A running request exposes a monitorable owner and
-  cancel capability; owner exit acknowledges that native work has stopped.
+  cancel capability; normal owner exit acknowledges that native work has
+  stopped, while abnormal exit loses that proof.
   `httpc_transport()` is the production wiring.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
   `is_overflow_message`, `overflow_message`.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
-  remote failures: a 64 KiB non-success body budget, bounded diagnostic fields,
-  and exact scrubbing of the request key from deltas, settlements, and failures
-  before any event leaves the gateway.
+  remote failures after transport delivery: a 64 KiB retained body budget,
+  byte-bounded diagnostic fields, and exact scrubbing of the request key before
+  an error leaves the gateway.
 
 ## Relationships
 
@@ -83,11 +84,10 @@ processful shell around that sans-io core. WP-F.
   or inconclusive answer into drain. A later OTP with unfamiliar private
   shapes falls back to the callback's exact producer identity; if no callback
   arrives, the request deadline ends the owner abnormally rather than claiming
-  drain. The internal OTP dependency is confined to callback receipt, exact
-  capture, direct cancel, and raw response-byte accounting; enforcing that last
-  bound after an asynchronous send would not bound ingress. All ownership,
-  fallback, deadline, and terminal state machines stay in typed Gleam.
-  `provider/internal/ffi_env` — `os:getenv` for
+  drain. The internal OTP dependency is
+  confined to callback receipt, exact capture, and direct cancel. All
+  ownership, fallback, deadline, and terminal state machines stay in typed
+  Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
@@ -132,21 +132,22 @@ processful shell around that sans-io core. WP-F.
   cancellation reaches it, and what its Down acknowledges. A comment that
   only says a function "starts a process" is incomplete here: callers need to
   know whether that process does work or survives work as its drain witness.
+  Only normal exit proves drain; abnormal exit means the witness was lost.
 - **Secrets exist only in request memory.** A key is read from the
   `SecretStore` at dispatch, copied into one outbound header, and appears
-  nowhere else — not in the gateway value, not in an accumulator, not in
-  any `StreamEvent`, error, or persisted structure. `ProviderError` carries
-  secret *names* only (spec §3.3 invariant 4). Because a remote endpoint can
-  reflect the key it received, the gateway scrubs that exact value from every
-  provider-originated string, including nested settlement JSON, before retry
-  classification, display, or durable delivery. Diagnostic strings are bounded
-  by bytes in the same pass.
+  nowhere else locally — not in the gateway value, not in an accumulator, and
+  not in a locally constructed error or persisted structure. `ProviderError`
+  carries secret *names* only (spec §3.3 invariant 4). Because a remote endpoint
+  can reflect the key it received, the gateway scrubs that exact value from
+  terminal errors before retry classification or delivery. Successful streamed
+  content is provider-controlled and is not credential-redacted across fragment
+  boundaries; callers must not treat it as a secret-filtering boundary.
+  Diagnostic strings are byte-bounded in the same pass.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender. Response activity
-  does not renew the attempt deadline. The native owner enforces the cumulative
-  16 MiB response cap before acknowledging a producer into the asynchronous
-  Gleam mailbox; the stream fold repeats the check for injected transports.
+  does not renew the attempt deadline, and the cumulative 16 MiB response cap
+  includes every chunk rather than only bytes retained by the SSE parser.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production native owner retains the exact OTP request id, receives the
@@ -198,8 +199,10 @@ processful shell around that sans-io core. WP-F.
   blank-line dispatch never exceed `max_event_bytes` (4 MiB). Every byte is
   scanned exactly once, so both a terminator-less line and an endless sequence
   of terminated data lines fail in-band instead of growing parser state. A
-  non-success HTTP body has a separate 64 KiB budget and fails immediately if
-  the next chunk would cross it.
+  delivered non-success HTTP body has a separate 64 KiB retained budget and
+  fails immediately if the next chunk would cross it. OTP `httpc` buffers
+  non-200/206 bodies before delivery, so this does not bound native error-body
+  memory; transport replacement or isolation is separate hardening work.
 - **Wire leniency is deliberate and asymmetric.** SSE `data:` payloads must
   parse as JSON (malformed data fails the stream in-band as
   `MalformedStream`), but *fields* are read leniently — absent usage

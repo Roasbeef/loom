@@ -429,11 +429,12 @@ fn on_chunk(
         list.fold(sse_events, #(acc, []), fn(folded, sse_event) {
           let #(acc, reversed_events) = folded
           let #(acc, new_events) = handle_sse(acc, sse_event)
-          let reversed_events =
-            list.fold(new_events, reversed_events, fn(accumulator, event) {
-              [event, ..accumulator]
-            })
-          #(acc, reversed_events)
+          #(
+            acc,
+            list.fold(new_events, reversed_events, fn(events, event) {
+              [event, ..events]
+            }),
+          )
         })
       #(acc, list.reverse(reversed_events))
     }

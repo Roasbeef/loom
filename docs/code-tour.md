@@ -536,8 +536,9 @@ secrets are allowed to exist.
 The consumption contract is narrow enough to build on: zero or more
 `Delta` events, then exactly one `Settled` or `Failed`, and nothing after
 it. Deltas are ephemeral display data and prove nothing. The handle also
-carries an optional owner pid: when present, its exit acknowledges that the
-whole asynchronous subtree beneath the handle has drained.
+carries an optional owner pid: when present, its normal exit acknowledges that
+the whole asynchronous subtree beneath the handle has drained. An abnormal
+exit means that proof was lost.
 
 Which is exactly what the hub's tap exploits. `tap_provider`
 (`client/gateway.gleam`) wraps the injected surface so each request runs
