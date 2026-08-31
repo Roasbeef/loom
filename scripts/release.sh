@@ -44,9 +44,9 @@ SMOKE=0
 if [ "$SMOKE" = 0 ]; then
   missing=""
   need() { command -v "$1" >/dev/null 2>&1 || missing="$missing  $1 — $2\n"; }
-  need gleam  "exports the client package as an erlang shipment (>= 1.11)"
+  need gleam  "exports the client package as an erlang shipment (>= 1.18)"
   need rebar3 "assembles the OTP release and copies ERTS into it"
-  need erl    "the runtime system that gets copied in (OTP >= 27)"
+  need erl    "the runtime system that gets copied in (OTP >= 29)"
   need go     "builds the loom-exec sandbox helper (>= 1.24)"
   if [ "$STRIP_ERTS" = 1 ]; then
     need strip "strips the copied ERTS binaries (DIST_STRIP_ERTS=0 to skip)"

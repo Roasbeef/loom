@@ -17,7 +17,7 @@
 //// already begins with the release's own `erts-<vsn>/bin` and its own
 //// `bin/` — measured: booting the release with `env -i
 //// PATH=/usr/bin:/bin` gives an in-VM `PATH` of
-//// `<root>/erts-16.4.0.5/bin:<root>/bin:/usr/bin:/bin`.
+//// `<root>/erts-17.0.5/bin:<root>/bin:/usr/bin:/bin`.
 ////
 //// Three things follow, and all three are load-bearing here.
 ////
@@ -145,7 +145,7 @@ pub fn gleam_compiler() -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // install.erl() == "/usr/local/otp/erts-16.4.0.5/bin/erl"
+/// // install.erl() == "/usr/local/otp/erts-17.0.5/bin/erl"
 /// ```
 ///
 pub fn erl() -> String {

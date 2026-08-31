@@ -40,7 +40,7 @@ concurrency:
 
 env:
   GLEAM_VERSION: "1.18.1"
-  OTP_VERSION: "28.5.0.5"
+  OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.24.7"
   CACHE_EPOCH: "1"

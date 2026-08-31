@@ -59,7 +59,7 @@ literate register", gives the complete conventions and examples.
 
 - Design priorities, in order: security & isolation, correctness,
   robustness, performance, capability.
-- Gleam >= 1.11, Erlang/OTP >= 27. All code passes `gleam format --check`
+- Gleam >= 1.18, Erlang/OTP >= 29. All code passes `gleam format --check`
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
   `protocol-change/NNN.md` proposal, never silent drift. There are seven

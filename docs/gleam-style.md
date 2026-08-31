@@ -842,7 +842,7 @@ tighten the ecosystem defaults:
    arguments and struct literals up to roughly 80–100 columns rather
    than one per line, and apply the same literate comment register as
    the Gleam sources.
-1. **Toolchain**: Gleam ≥ 1.11, Erlang/OTP ≥ 27. `gleam format` enforced; no
+1. **Toolchain**: Gleam ≥ 1.18, Erlang/OTP ≥ 29. `gleam format` enforced; no
    warnings.
 2. **Total decoders**: every durability or wire boundary decodes with a
    `Decoder(t)` returning `Result(t, CorruptionReport)`. Partial decoding is

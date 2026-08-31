@@ -2,8 +2,8 @@
 #
 # Every version here is exact, never a range and never "latest". A
 # floating toolchain turns a green build into a coin flip: the tree's
-# `gleam.toml` files declare a *floor* (`gleam >= 1.11.0`, and the root
-# CLAUDE.md adds Erlang/OTP >= 27), and a floor is a compatibility claim,
+# `gleam.toml` files declare a *floor* (`gleam >= 1.18.0`, and the root
+# CLAUDE.md adds Erlang/OTP >= 29), and a floor is a compatibility claim,
 # not a build input. What CI must reproduce is the toolchain the tree is
 # actually developed against, so that a red run means "the code broke"
 # and never "the runner picked up a different compiler this morning".
@@ -11,10 +11,10 @@
 # Where the numbers come from:
 #
 #   gleam    1.18.1     the version in the development environment; above
-#                       the >= 1.11.0 floor every packages/*/gleam.toml
+#                       the >= 1.18.0 floor every packages/*/gleam.toml
 #                       declares.
-#   otp      28.5.0.5   the development environment's Erlang/OTP (`erl`
-#                       reports OTP 28, ERTS 16.4.0.5); above the >= 27
+#   otp      29.0.5     the development environment's Erlang/OTP (`erl`
+#                       reports OTP 29, ERTS 17.0.5); at the >= 29
 #                       floor. Published for both ubuntu-24.04 (amd64,
 #                       builds.hex.pm) and macOS (aarch64, erlef/otp_builds).
 #   rebar3   3.27.0     the development environment's rebar3; needed
