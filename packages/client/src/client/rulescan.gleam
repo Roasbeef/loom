@@ -63,6 +63,80 @@
 //// an open run to steer. Nothing extra is needed to remember the hold,
 //// which is why it is stored this way.
 ////
+//// ## A dead hold is abandoned, not retried forever
+////
+//// The section above is honest for a root strand, or for any subagent
+//// still capable of receiving a fresh run: retried every pass, forever,
+//// at the ordinary cost of one bounded re-scan. It is not honest for a
+//// subagent that will *never run again* — issue #113's case — because
+//// nothing else here ever un-freezes that cursor: every later pass
+//// re-fetches up to `scan_limit` entries and re-attempts the fire
+//// through the writer, permanently, for a rule the strand can no longer
+//// receive.
+////
+//// **What "provably dead" means.** A held strand is provably dead when
+//// its `runtime/lineage` cell exists, decodes, and its own `reaped`
+//// field is `True` — the durable mark `client/agency`'s lazy reap
+//// enforcement writes once it has decided, from an overdue deadline or
+//// the parent's run ending undetached, to end the child and re-issue
+//// the abort until it lands. That is the harness's own record that it
+//// will not intentionally hand the strand more work, and it is the only
+//// signal this module trusts.
+////
+//// **Why a terminal `last_result` alone is not this signal.**
+//// `runtime/api.send_to_strand` starts a fresh run (`Delivery.Started`)
+//// when its target is idle, and `client/agency`'s own module doc rules
+//// that a parent handing an idle child more work is a live agent's
+//// explicit decision made inside its own run — refused only *upward*,
+//// into a finished parent, never downward into a finished child. A
+//// strand with a terminal result can still be one a live ancestor sends
+//// fresh work to tomorrow, so treating "finished" alone as dead would
+//// silence a rule on a strand that might fire again — exactly what FAIL
+//// OPEN exists to prevent. Only the ledger's own decision to end a
+//// strand counts, never the machine layer's record of what it last did.
+////
+//// The `reaped` mark is not a mechanical guarantee either — nothing in
+//// `client/agency`'s downward `send` checks it, so a live ancestor that
+//// still remembers the child's name (from an earlier `agent_roster`,
+//// say) could in principle hand it fresh work after the reap. That
+//// residual is real and named rather than defended: it needs a model to
+//// deliberately address a strand its own tooling already reports as
+//// finished, and the alternative — trusting nothing short of provable
+//// impossibility — is the unbounded, permanent re-scan this module
+//// exists to end. What the residual costs is precise: the rule that
+//// was already matched and held stays silent on that fresh run, since
+//// the strand is abandoned and the match is never re-judged. It is not
+//// mitigated by `scannable_text`'s exclusion of `Aborted` entries —
+//// that bounds *new* matches, and the harm here needs no new history,
+//// only an open run.
+////
+//// **Fail open at every branch.** No lineage cell (a root strand, or a
+//// subagent whose cell has not landed yet) and a cell that fails to
+//// decode both keep the hold ordinary — retried, never abandoned. Only
+//// a cleanly decoded `reaped: True` moves a strand out of the pass.
+////
+//// **Abandoned, not finished.** Judging a strand dead does not empty
+//// its pending rule list — that would claim the rules fired, and they
+//// never did. `Progress` instead carries a third `Hold` state,
+//// `Abandoned`, beside `Holding` and `NotHeld`, so the scanner can
+//// short-circuit the strand exactly where a genuinely finished one
+//// already is (every rule fired) without lying about which case this
+//// is. The one transition into it is logged once, `rule.hold_abandoned`,
+//// naming the strand and the rules left forever pending: the
+//// operator-facing record that a rule's silence here is a verdict, not
+//// a bug.
+////
+//// **What this costs.** The lineage read happens only on the pass a
+//// hold *begins* — `NotHeld` to `Holding` — never on a pass that finds a
+//// hold already open, and never on a strand that is not currently held.
+//// So a strand pays it at most once per scanner incarnation: zero for a
+//// strand that never holds, one for a strand that holds and turns out
+//// still alive (after which the ordinary per-pass hold-retry cost
+//// resumes, unrelated to this check), and one — followed by nothing at
+//// all, ever again this incarnation — for a strand judged dead.
+//// Amortized over the life of a hold that never resolves, which is the
+//// shape #113 is about, that one read is the entire cost.
+////
 //// ## Isolation
 ////
 //// Every read here goes straight to the session store, never through
@@ -92,6 +166,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
+import runtime/lineage
 import runtime/writer
 import session/session
 import storage/storage
@@ -178,13 +253,35 @@ type Progress {
     // without a scan. `None` on a strand first seen this incarnation,
     // which is why a fresh `Progress` never skips.
     leaf: Option(EntryId),
-    // A rule matched and could not be admitted. The cursor is frozen
-    // and every pass tries again until it lands.
-    holding: Bool,
+    // Whether a rule currently sits matched-and-unfired here, and — see
+    // `Hold` — whether the scanner has already judged that hold dead.
+    hold: Hold,
     // The names of the rules that have not yet fired here. Empty means
-    // the strand is finished and costs nothing from now on.
+    // the strand is finished and costs nothing from now on. Non-empty
+    // under `Abandoned` on purpose: those rules never fired and this
+    // list says so honestly.
     pending: List(String),
   )
+}
+
+// A held rule's strand, and whether the scanner still owes it a retry.
+//
+// `Abandoned` is not "finished" — `Progress.pending` stays non-empty,
+// because the rules genuinely never fired. It exists purely to buy back
+// the short-circuit `finished` already gives a strand every rule has
+// fired on. See the module doc's "A dead hold is abandoned" section for
+// what makes a hold provably dead and why a terminal `last_result` alone
+// does not.
+type Hold {
+  // No rule is currently matched-and-unfired here.
+  NotHeld
+  // A rule matched and could not be admitted; the strand may yet open a
+  // run, so the next pass retries.
+  Holding
+  // The held strand was judged dead on the pass its hold began — the one
+  // lineage read this incarnation pays for it. No later pass looks at
+  // this strand again.
+  Abandoned
 }
 
 type State {
@@ -260,14 +357,18 @@ fn scan_strand(state: State, strand: String) -> State {
   }
 }
 
-// A strand every configured rule has already fired on. Nothing can
-// happen there again, so it is dropped from the pass entirely — which
-// is what keeps a long session's steady-state cost at one register read
-// per strand and then zero.
+// A strand every configured rule has already fired on, or a held strand
+// the scanner has judged provably dead (`Abandoned`). Nothing further
+// can happen at either — the first because nothing is left to fire, the
+// second because the strand it was waiting on will not run again — so
+// both are dropped from the pass entirely, without even a leaf read.
+// That is what keeps a long session's steady-state cost at one register
+// read per strand and then zero, and an abandoned hold's cost at the one
+// lineage read that abandoned it and then zero as well.
 fn finished(known: Result(Progress, Nil)) -> Bool {
   case known {
     Error(Nil) -> False
-    Ok(progress) -> progress.pending == []
+    Ok(progress) -> progress.pending == [] || progress.hold == Abandoned
   }
 }
 
@@ -283,7 +384,7 @@ fn progress_for(known: Result(Progress, Nil)) -> Progress {
         scanned: 0,
         checkpointed: 0,
         leaf: None,
-        holding: False,
+        hold: NotHeld,
         pending: [],
       )
   }
@@ -300,8 +401,10 @@ fn scan_from(
     None -> load_progress(state, strand, progress)
   }
   // Nothing new on this branch, and nothing waiting to be retried.
+  // `progress.hold` is `NotHeld` or `Holding` here — never `Abandoned`,
+  // which `finished` already keeps out of `scan_from` entirely.
   use <- bool.guard(
-    when: progress.leaf == Some(leaf) && !progress.holding,
+    when: progress.leaf == Some(leaf) && progress.hold == NotHeld,
     return: state,
   )
   case new_entries(state, leaf, progress.scanned) {
@@ -337,39 +440,94 @@ fn judge(
       && list.any(texts, rules.fires_on(rule, _))
     })
   let #(spent, held) = fire_all(state, strand, firing)
-  note_holding(state, strand, was: progress.holding, now: held)
   let pending =
     list.filter(progress.pending, fn(name) { !list.contains(spent, name) })
-  // A held fire freezes the cursor: the entry that matched must still be
-  // above it on the next pass, or the rule is lost.
-  let scanned = case held {
-    True -> progress.scanned
-    False -> newest(entries, progress.scanned)
+  let hold = next_hold(state, strand, progress.hold, held, pending)
+  // A held or abandoned fire freezes the cursor: the entry that matched
+  // must still be above it on the next pass, or the rule is lost — and
+  // an abandoned strand never gets a next pass to lose it on, but the
+  // cursor stays honest regardless of which case this is.
+  let scanned = case hold {
+    Holding | Abandoned -> progress.scanned
+    NotHeld -> newest(entries, progress.scanned)
   }
   let checkpointed =
     checkpoint(state, strand, scanned, progress.checkpointed, pending)
   let progress =
-    Progress(scanned:, checkpointed:, leaf: Some(leaf), holding: held, pending:)
+    Progress(scanned:, checkpointed:, leaf: Some(leaf), hold:, pending:)
   State(..state, progress: dict.insert(state.progress, strand, progress))
+}
+
+// The hold transition for one pass, and the one place a fresh hold pays
+// for a lineage read. `was` is `Holding` or `NotHeld` on every call that
+// can reach here — `finished` keeps `Abandoned` out of `judge` entirely —
+// so the only transition that can newly enter `Abandoned` is `NotHeld`
+// to `Holding`. A hold already open on the last pass this incarnation
+// saw is never rechecked, which is the whole of "once per incarnation
+// per strand" (see the module doc). `Abandoned` itself is handled only
+// so this `case` is exhaustive over `Hold`, not because it is reachable.
+fn next_hold(
+  state: State,
+  strand: String,
+  was: Hold,
+  held: Bool,
+  pending: List(String),
+) -> Hold {
+  case was {
+    Abandoned -> Abandoned
+    Holding ->
+      case held {
+        True -> Holding
+        False -> NotHeld
+      }
+    NotHeld ->
+      case held {
+        False -> NotHeld
+        True -> begin_hold(state, strand, pending)
+      }
+  }
 }
 
 // A hold that begins is the one state an operator cannot read off the
 // fired-marks: the rule is configured, matched, and waiting on a run
-// that may never open — a finished subagent strand holds forever. Logged
-// once per transition rather than once per pass, so a dead strand's hold
-// is neither silent forever nor noisy forever.
-fn note_holding(
-  state: State,
-  strand: String,
-  was was: Bool,
-  now now: Bool,
-) -> Nil {
-  case now && !was {
-    True ->
+// that may never open. Judged once, here, against the lineage ledger —
+// see `provably_dead` for what "dead" means and why FAIL OPEN keeps
+// every doubtful case merely held.
+fn begin_hold(state: State, strand: String, pending: List(String)) -> Hold {
+  case provably_dead(state, strand) {
+    True -> {
+      // The rule names travel with the verdict: this line is the only
+      // record an operator gets that these rules will never fire here,
+      // and a verdict that does not say what it silenced is not one.
+      log.info(state.options.logger, "rule.hold_abandoned", [
+        field.text(key: "strand", value: strand),
+        field.text(key: "rules", value: string.join(pending, with: ", ")),
+      ])
+      Abandoned
+    }
+    False -> {
       log.info(state.options.logger, "rule.holding", [
         field.text(key: "strand", value: strand),
       ])
-    False -> Nil
+      Holding
+    }
+  }
+}
+
+// Whether the ledger itself says this strand was reaped — the honest
+// signal a held strand will never run again (module doc). FAIL OPEN at
+// both branches: no cell (a root strand, or a subagent whose cell has
+// not landed yet) and a cell that will not decode both answer `False`,
+// because an operator's rule must never be silenced on a strand that
+// might still be given a run.
+fn provably_dead(state: State, strand: String) -> Bool {
+  case read_fact(state, lineage.register_key(strand)) {
+    None -> False
+    Some(payload) ->
+      case lineage.decode(payload) {
+        Ok(cell) -> cell.reaped
+        Error(_report) -> False
+      }
   }
 }
 

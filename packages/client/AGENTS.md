@@ -298,7 +298,16 @@ over one session file. WP-L.
   of the commit rather than of the actor's memory (at-most-once in
   full: the abort corner is `docs/spec-gaps.md`'s item 8). A rule that trips on an
   **idle** strand is *held*, not dropped and not started: the cursor
-  stays frozen so the next run finds it again.
+  stays frozen so the next run finds it again. A held strand the
+  `runtime/lineage` ledger says was reaped is judged provably dead
+  (issue #113) and **abandoned** rather than retried forever: the
+  in-memory `Progress` gets a third state beside held-and-not, the
+  pending rules stay unfired (nothing lies about what happened), and the
+  transition is logged once, `rule.hold_abandoned`. A terminal
+  `strand.last_result` alone is deliberately *not* this signal — see the
+  next invariant — so the ledger read happens once per strand per
+  incarnation, on the pass a hold begins, and costs nothing before or
+  after.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
@@ -772,6 +781,20 @@ over one session file. WP-L.
   enqueued child results were rejected over. The refusal is upward only:
   a parent giving an idle child more work is a live agent's explicit
   decision inside its own run.
+- **The rule scanner's "provably dead" is the ledger's `reaped` mark,
+  never a terminal `strand.last_result` alone** (issue #113). The
+  asymmetry above is exactly why: since a live ancestor may still hand
+  an idle *child* fresh work — never refused, unlike the upward case —
+  a finished strand is not a dead one, and `client/rulescan` would
+  silence an operator's rule on a strand that might fire again tomorrow
+  if it treated "finished" as "will never run again". Only
+  `client/agency`'s own decision to end a child (an overdue deadline, or
+  its parent's run ending undetached — `reap`, in `client/agency`) is
+  durable and deliberate enough to trust, and even that is a named
+  residual rather than a mechanical guarantee: nothing stops a live
+  ancestor that still remembers the child's name from addressing it
+  after the reap. `client/rulescan`'s module doc has the full argument
+  and the FAIL OPEN branches (no cell, a cell that will not decode).
 - **A code-mode submission is judged against the seam it named, and
   routed by the seam the host wired.** The two halves are read from
   different places on purpose. The allowlist follows the *submission*
