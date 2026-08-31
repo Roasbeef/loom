@@ -8,6 +8,8 @@
 
 %% Total receive-loop timeout for one streamed response, in milliseconds.
 -define(RESPONSE_TIMEOUT, 300000).
+-define(RECOVERY_PROBE_TIMEOUT, 25).
+-define(RECOVERY_RETRY, 10).
 
 %% os:getenv/1 returns false | string(); normalize to Gleam's
 %% {ok, Binary} | {error, nil}.
@@ -62,7 +64,7 @@ start_native_request(Method, Url, Headers, Body, ParentMonitor,
         {ok, Manager, HandlerSupervisor, Request, Options} ->
             case admit_native_request(Method, Request, Options) of
                 {ok, RequestId} ->
-                    enter_native_loop(RequestId, ParentMonitor,
+                    enter_native_loop(RequestId, Manager, ParentMonitor,
                                       OnStatus, OnChunk, OnEnd, OnFailure,
                                       none, false, Deadline);
                 {error, _Reason} ->
@@ -97,12 +99,13 @@ prepare_native_request(Method, Url, Headers, Body) ->
                 <<"GET">> -> {UrlList, HeaderList};
                 _ -> {UrlList, HeaderList, content_type(HeaderList), Body}
             end,
-        %% A non-empty socket_opts list already gives this request a dedicated,
-        %% non-reused handler. infinity is consumed by httpc_manager rather
-        %% than passed to the socket and prevents this request from entering
-        %% the manager's awaiting queue before the handler row is published.
+        %% OTP 29 consumes max_connections_open in httpc_manager before the
+        %% remaining options reach the socket. Unlimited admission prevents a
+        %% request from waiting without a published handler, while nodelay
+        %% keeps the non-empty list's dedicated, non-reused handler behavior.
+        Receiver = response_receiver(self()),
         Options = [{sync, false}, {stream, self}, {body_format, binary},
-                   {receiver, self()},
+                   {receiver, Receiver},
                    {socket_opts, [{max_connections_open, infinity},
                                   {nodelay, true}]}],
         {ok, Manager, HandlerSupervisor, Request, Options}
@@ -130,7 +133,7 @@ start_failed(Manager, HandlerSupervisor, ParentMonitor,
         true ->
             safe_callback(OnFailure, [<<"http request startup failed">>]);
         false ->
-            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk,
+            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
                                   OnEnd, OnFailure, false, Deadline)
     end.
 
@@ -139,24 +142,27 @@ same_generation(Name, Pid) when is_pid(Pid) ->
 same_generation(_Name, _Pid) ->
     false.
 
-ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-                      Stopping, Deadline) ->
+ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                      OnFailure, Stopping, Deadline) ->
     receive
-        {http, {RequestId, _} = Message} ->
-            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping, Deadline);
-        {http, {RequestId, _, _} = Message} ->
-            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping, Deadline);
-        {http, {RequestId, _, _, _} = Message} ->
-            enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping, Deadline);
+        {http, Producer, Ack, {RequestId, _} = Message} ->
+            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
+                              OnChunk, OnEnd, OnFailure,
+                              {Producer, Ack, Message}, Stopping, Deadline);
+        {http, Producer, Ack, {RequestId, _, _} = Message} ->
+            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
+                              OnChunk, OnEnd, OnFailure,
+                              {Producer, Ack, Message}, Stopping, Deadline);
+        {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
+            enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus,
+                              OnChunk, OnEnd, OnFailure,
+                              {Producer, Ack, Message}, Stopping, Deadline);
         cancel ->
-            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true, Deadline);
+            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
+                                  OnEnd, OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
-            ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true, Deadline)
+            ambiguous_native_loop(Manager, ParentMonitor, OnStatus, OnChunk,
+                                  OnEnd, OnFailure, true, Deadline)
     after remaining_ms(Deadline) ->
         case Stopping of
             true -> ok;
@@ -170,47 +176,160 @@ ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
         erlang:exit(self(), kill)
     end.
 
-enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                  OnFailure, FirstMessage, Stopping, Deadline) ->
-    case request_handler(RequestId) of
+%% The callback handshake keeps the handler inside httpc_response:send/2 until
+%% this owner has installed its monitor. That closes the fast-terminal race:
+%% request_done cannot delete the manager row before capture acknowledges the
+%% first response. The protected table remains the constant-time normal path.
+enter_native_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                  OnFailure, FirstDelivery, Stopping, Deadline) ->
+    case indexed_request_handler(RequestId) of
         {ok, Handler} ->
-            HandlerMonitor = erlang:monitor(process, Handler),
+            enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure, FirstDelivery,
+                               Stopping, Deadline);
+        lost ->
+            recover_handler(RequestId, Manager, ParentMonitor, OnStatus,
+                            OnChunk, OnEnd, OnFailure, FirstDelivery,
+                            Stopping, Deadline)
+    end.
+
+enter_with_handler(RequestId, Handler, ParentMonitor, OnStatus, OnChunk,
+                   OnEnd, OnFailure, FirstDelivery, Stopping, Deadline) ->
+    HandlerMonitor = erlang:monitor(process, Handler),
+    case FirstDelivery of
+        none ->
             case Stopping of
                 true -> finish_native(RequestId, Handler, HandlerMonitor);
-                false ->
-                    case FirstMessage of
-                        none ->
-                            native_loop(RequestId, Handler, HandlerMonitor,
-                                        ParentMonitor, OnStatus, OnChunk,
-                                        OnEnd, OnFailure, Deadline);
-                        Message ->
-                            native_http(Message, RequestId, Handler,
-                                        HandlerMonitor, ParentMonitor,
-                                        OnStatus, OnChunk, OnEnd, OnFailure,
-                                        Deadline)
-                    end
+                false -> native_loop(RequestId, Handler, HandlerMonitor,
+                                     ParentMonitor, OnStatus, OnChunk,
+                                     OnEnd, OnFailure, Deadline)
             end;
-        lost ->
-            %% A successful public admission is useful only if this owner can
-            %% retain the exact handler monitor. The default manager publishes
-            %% that protected ETS row before replying. Its absence therefore
-            %% means a manager-generation race destroyed the drain proof.
+        {Producer, Ack, Message} ->
+            accept_response(Producer, Ack),
+            case Stopping of
+                true -> finish_native(RequestId, Handler, HandlerMonitor);
+                false -> native_http(Message, RequestId, Handler,
+                                     HandlerMonitor, ParentMonitor, OnStatus,
+                                     OnChunk, OnEnd, OnFailure, Deadline)
+            end
+    end.
+
+%% A missing row has two meanings. If the original manager still owns its
+%% table, the handler has already gone and any terminal callback is merely
+%% queued. If the manager generation changed, the old handler can still own a
+%% socket after its table vanished, so the rare path below recovers it exactly.
+recover_handler(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                OnFailure, FirstDelivery, Stopping, Deadline) ->
+    case FirstDelivery of
+        {Producer, Ack, Message} ->
+            enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure,
+                               {Producer, Ack, Message}, Stopping, Deadline);
+        none ->
+            receive
+                {http, Producer, Ack, {RequestId, _} = Message} ->
+                    enter_with_handler(RequestId, Producer, ParentMonitor,
+                                       OnStatus, OnChunk, OnEnd, OnFailure,
+                                       {Producer, Ack, Message}, Stopping,
+                                       Deadline);
+                {http, Producer, Ack, {RequestId, _, _} = Message} ->
+                    enter_with_handler(RequestId, Producer, ParentMonitor,
+                                       OnStatus, OnChunk, OnEnd, OnFailure,
+                                       {Producer, Ack, Message}, Stopping,
+                                       Deadline);
+                {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
+                    enter_with_handler(RequestId, Producer, ParentMonitor,
+                                       OnStatus, OnChunk, OnEnd, OnFailure,
+                                       {Producer, Ack, Message}, Stopping,
+                                       Deadline);
+                cancel ->
+                    conservative_cancel(RequestId),
+                    recover_handler(RequestId, Manager, ParentMonitor,
+                                    OnStatus, OnChunk, OnEnd, OnFailure, none,
+                                    true, Deadline);
+                {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
+                    conservative_cancel(RequestId),
+                    recover_handler(RequestId, Manager, ParentMonitor,
+                                    OnStatus, OnChunk, OnEnd, OnFailure, none,
+                                    true, Deadline)
+            after 0 ->
+                recover_after_empty_mailbox(
+                  RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                  OnFailure, Stopping, Deadline)
+            end
+    end.
+
+recover_after_empty_mailbox(RequestId, Manager, ParentMonitor, OnStatus,
+                            OnChunk, OnEnd, OnFailure, Stopping, Deadline) ->
+    case same_generation(httpc_manager, Manager) of
+        true -> finish_gone(Stopping, OnFailure);
+        false ->
+            case discover_request_handler(RequestId) of
+                {ok, Handler} ->
+                    enter_with_handler(RequestId, Handler, ParentMonitor,
+                                       OnStatus, OnChunk, OnEnd, OnFailure,
+                                       none, Stopping, Deadline);
+                gone -> finish_gone(Stopping, OnFailure);
+                inconclusive ->
+                    recovering_loop(RequestId, Manager, ParentMonitor,
+                                    OnStatus, OnChunk, OnEnd, OnFailure,
+                                    Stopping, Deadline)
+            end
+    end.
+
+finish_gone(true, _OnFailure) ->
+    ok;
+finish_gone(false, OnFailure) ->
+    %% The callback handshake prevents a live response producer from deleting
+    %% its row before capture. No row under the original manager, or a complete
+    %% recovery scan with no owner, therefore means there is nothing left to
+    %% drain and the missing terminal can be reported in band.
+    safe_callback(OnFailure, [<<"http transport failed">>]).
+
+recovering_loop(RequestId, Manager, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                OnFailure, Stopping, Deadline) ->
+    receive
+        {http, Producer, Ack, {RequestId, _} = Message} ->
+            enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure,
+                               {Producer, Ack, Message}, Stopping, Deadline);
+        {http, Producer, Ack, {RequestId, _, _} = Message} ->
+            enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure,
+                               {Producer, Ack, Message}, Stopping, Deadline);
+        {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
+            enter_with_handler(RequestId, Producer, ParentMonitor, OnStatus,
+                               OnChunk, OnEnd, OnFailure,
+                               {Producer, Ack, Message}, Stopping, Deadline);
+        cancel ->
             conservative_cancel(RequestId),
-            erlang:exit(self(), kill)
+            recovering_loop(RequestId, Manager, ParentMonitor, OnStatus,
+                            OnChunk, OnEnd, OnFailure, true, Deadline);
+        {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
+            conservative_cancel(RequestId),
+            recovering_loop(RequestId, Manager, ParentMonitor, OnStatus,
+                            OnChunk, OnEnd, OnFailure, true, Deadline)
+    after ?RECOVERY_RETRY ->
+        recover_after_empty_mailbox(RequestId, Manager, ParentMonitor,
+                                    OnStatus, OnChunk, OnEnd, OnFailure,
+                                    Stopping, Deadline)
     end.
 
 native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
             OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     receive
-        {http, {RequestId, _} = Message} ->
+        {http, Producer, Ack, {RequestId, _} = Message} ->
+            accept_response(Producer, Ack),
             native_http(Message, RequestId, Handler, HandlerMonitor,
                         ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
                         Deadline);
-        {http, {RequestId, _, _} = Message} ->
+        {http, Producer, Ack, {RequestId, _, _} = Message} ->
+            accept_response(Producer, Ack),
             native_http(Message, RequestId, Handler, HandlerMonitor,
                         ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
                         Deadline);
-        {http, {RequestId, _, _, _} = Message} ->
+        {http, Producer, Ack, {RequestId, _, _, _} = Message} ->
+            accept_response(Producer, Ack),
             native_http(Message, RequestId, Handler, HandlerMonitor,
                         ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
                         Deadline);
@@ -218,8 +337,7 @@ native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
             finish_native(RequestId, Handler, HandlerMonitor);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
             finish_native(RequestId, Handler, HandlerMonitor);
-        {'DOWN', HandlerMonitor, process, Handler, _Reason}
-          when HandlerMonitor =/= undefined ->
+        {'DOWN', HandlerMonitor, process, Handler, _Reason} ->
             safe_callback(OnFailure, [<<"http transport failed">>])
     after remaining_ms(Deadline) ->
         safe_callback(OnFailure, [<<"timed out waiting for the http response">>]),
@@ -270,17 +388,69 @@ native_http({RequestId, {{_Version, Status, _Reason}, Headers, Body}},
     end,
     finish_native(RequestId, Handler, HandlerMonitor).
 
-request_handler(RequestId) ->
+indexed_request_handler(RequestId) ->
     %% The table name and row shape are an intentionally confined dependency
-    %% on httpc_manager internals. Both OTP 27 and OTP 29 create this protected
-    %% default-profile table and insert {RequestId, HandlerPid, Receiver}
-    %% before returning successful admission to the caller.
+    %% on httpc_manager internals. OTP 29 creates this protected default-profile
+    %% table and inserts {RequestId, HandlerPid, Receiver} before returning
+    %% successful admission to the caller.
     try ets:lookup(httpc_manager__handler_db, RequestId) of
         [{RequestId, Handler, _Receiver}] when is_pid(Handler) -> {ok, Handler};
         _ -> lost
     catch
         error:badarg -> lost
     end.
+
+discover_request_handler(RequestId) ->
+    find_request_handler(RequestId, erlang:processes(), false).
+
+find_request_handler(_RequestId, [], true) ->
+    inconclusive;
+find_request_handler(_RequestId, [], false) ->
+    gone;
+find_request_handler(RequestId, [Pid | Rest], Inconclusive) ->
+    case is_httpc_handler(Pid) of
+        false -> find_request_handler(RequestId, Rest, Inconclusive);
+        true ->
+            case bounded_handler_info(Pid) of
+                {ok, Info} ->
+                    case handler_owns_request(RequestId, Info) of
+                        true -> {ok, Pid};
+                        false -> find_request_handler(RequestId, Rest,
+                                                      Inconclusive)
+                    end;
+                gone -> find_request_handler(RequestId, Rest, Inconclusive);
+                inconclusive -> find_request_handler(RequestId, Rest, true)
+            end
+    end.
+
+is_httpc_handler(Pid) ->
+    case process_info(Pid, dictionary) of
+        {dictionary, Dictionary} ->
+            lists:keyfind('$initial_call', 1, Dictionary) =:=
+                {'$initial_call', {httpc_handler, init, 1}};
+        undefined -> false
+    end.
+
+%% An orphaned handler may still be inside connect or response parsing instead
+%% of its gen_server receive loop. One timed-out probe therefore makes the scan
+%% inconclusive; it never licenses the owner to report drain.
+bounded_handler_info(Pid) ->
+    try gen_server:call(Pid, info, ?RECOVERY_PROBE_TIMEOUT) of
+        Info when is_list(Info) -> {ok, Info};
+        _Other -> inconclusive
+    catch
+        exit:{noproc, _} -> gone;
+        exit:{normal, _} -> gone;
+        exit:{shutdown, _} -> gone;
+        _:_ -> inconclusive
+    end.
+
+%% OTP 29 nests the request identity under current_request. This decoder stays
+%% deliberately exact so an unfamiliar handler layout cannot be mistaken for
+%% ownership of the socket we need to drain.
+handler_owns_request(RequestId, Info) ->
+    Current = proplists:get_value(current_request, Info, []),
+    lists:keyfind(id, 1, Current) =:= {id, RequestId}.
 
 finish_native(RequestId, Handler, HandlerMonitor) ->
     %% Direct cancellation does not depend on whichever manager generation is
@@ -294,8 +464,34 @@ finish_native(RequestId, Handler, HandlerMonitor) ->
 
 await_process(Monitor, Pid) ->
     receive
-        {'DOWN', Monitor, process, Pid, _Reason} -> ok
+        {'DOWN', Monitor, process, Pid, _Reason} -> ok;
+        {http, Pid, Ack, _Message} ->
+            %% Cancellation can win while the handler is blocked delivering a
+            %% response. Acknowledging and discarding it lets the queued cancel
+            %% run, avoiding a callback/cancellation deadlock.
+            accept_response(Pid, Ack),
+            await_process(Monitor, Pid)
     end.
+
+response_receiver(Owner) ->
+    fun(Message) ->
+        OwnerMonitor = erlang:monitor(process, Owner),
+        Ack = make_ref(),
+        Owner ! {http, self(), Ack, Message},
+        receive
+            {response_accepted, Ack} ->
+                erlang:demonitor(OwnerMonitor, [flush]),
+                ok;
+            {'DOWN', OwnerMonitor, process, Owner, _Reason} ->
+                %% The callback runs inside httpc_handler. If its sole owner is
+                %% gone, exiting here tears down the handler and its socket.
+                exit(provider_owner_down)
+        end
+    end.
+
+accept_response(Producer, Ack) ->
+    Producer ! {response_accepted, Ack},
+    ok.
 
 conservative_cancel(RequestId) ->
     try httpc:cancel_request(RequestId)
@@ -327,29 +523,13 @@ remaining_ms(Deadline) ->
 
 %% Redirects and Retry-After retries retain the public request id while moving
 %% work to a different handler. Disable both migrations so the captured handler
-%% remains authoritative. `autoretry` arrived in inets 9.6 (OTP 28.4); older
-%% supported OTP releases reject the option and did not implement that retry.
+%% remains authoritative. OTP 29's inets accepts autoretry directly; keeping
+%% the fixed option list makes the lifecycle policy visible at the call site.
 migration_safe_http_options() ->
-    Base = [{timeout, ?RESPONSE_TIMEOUT},
-            {connect_timeout, 30000},
-            {autoredirect, false}],
-    case supports_autoretry_option() of
-        true -> [{autoretry, 0} | Base];
-        false -> Base
-    end.
-
-supports_autoretry_option() ->
-    try application:get_key(inets, vsn) of
-        {ok, Vsn} ->
-            case [list_to_integer(N) || N <- string:tokens(Vsn, ".")] of
-                [Major, Minor | _] -> Major > 9 orelse
-                                      (Major =:= 9 andalso Minor >= 6);
-                _ -> false
-            end;
-        _ -> false
-    catch
-        _:_ -> false
-    end.
+    [{autoretry, 0},
+     {timeout, ?RESPONSE_TIMEOUT},
+     {connect_timeout, 30000},
+     {autoredirect, false}].
 
 content_type(HeaderList) ->
     case lists:keyfind("content-type", 1, [{string:lowercase(K), V} || {K, V} <- HeaderList]) of

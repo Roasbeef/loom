@@ -1,7 +1,7 @@
 %% A loopback HTTP peer used to prove that production cancellation reaches
 %% the socket rather than merely retiring Loom's local waiter.
 -module(provider_http_test_ffi).
--export([start_hanging_server/2, start_malformed_server/0,
+-export([start_hanging_server/2, start_fast_server/0, start_malformed_server/0,
          start_redirect_pair/1, stop_servers/1,
          restart_httpc_manager/0, restart_httpc_handler_supervisor/0,
          with_suspended_request_handlers/2]).
@@ -96,6 +96,25 @@ start_hanging_server(OnAccepted, OnClosed) ->
         ok = gen_tcp:close(Listener),
         OnAccepted(),
         wait_for_close(Socket, OnClosed)
+    end),
+    {Port, Server}.
+
+%% Answers and closes in the same scheduler slice when possible. This makes the
+%% response race the native owner's post-admission handler capture instead of
+%% relying on a sleep to approximate the vulnerable ordering.
+start_fast_server() ->
+    {ok, Listener} =
+        gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}]),
+    {ok, {_Address, Port}} = inet:sockname(Listener),
+    Server = spawn(fun() ->
+        {ok, Socket} = gen_tcp:accept(Listener),
+        ok = gen_tcp:close(Listener),
+        {ok, _Request} = gen_tcp:recv(Socket, 0, 2000),
+        ok = gen_tcp:send(
+               Socket,
+               <<"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n",
+                 "Connection: close\r\n\r\n">>),
+        ok = gen_tcp:close(Socket)
     end),
     {Port, Server}.
 

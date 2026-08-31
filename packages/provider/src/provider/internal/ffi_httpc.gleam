@@ -49,10 +49,12 @@ pub fn prepare_stream_request(
 
 /// Grants a prepared owner permission to start its request.
 ///
-/// The native owner captures the exact handler registered for the request
-/// before forwarding callbacks. Handler lookup uses the independent handler
-/// supervisor, so replacing `httpc_manager` cannot erase the socket witness.
-/// `httpc` startup failure is reported through `on_failure`.
+/// The first response callback waits until the native owner has installed the
+/// exact handler monitor, preventing a fast terminal from deleting the
+/// manager's request row first. The normal capture path is one protected-table
+/// lookup. A manager-generation race uses a bounded recovery scan rather than
+/// claiming drain without a handler witness. `httpc` startup failure is
+/// reported through `on_failure`.
 ///
 /// ## Examples
 ///

@@ -21,6 +21,9 @@ fn start_hanging_server(
 @external(erlang, "provider_http_test_ffi", "start_malformed_server")
 fn start_malformed_server() -> #(Int, Pid)
 
+@external(erlang, "provider_http_test_ffi", "start_fast_server")
+fn start_fast_server() -> #(Int, Pid)
+
 @external(erlang, "provider_http_test_ffi", "start_redirect_pair")
 fn start_redirect_pair(on_target_accepted: fn() -> Nil) -> #(Int, List(Pid))
 
@@ -86,6 +89,35 @@ pub fn production_cancel_retires_owner_and_closes_socket_test() {
     |> process.selector_receive(2000)
     as "the loopback peer must retire after observing socket closure"
   assert process.receive(events, within: 20) == Error(Nil)
+}
+
+pub fn production_fast_terminal_preserves_normal_drain_reason_test() {
+  let #(port, server) = start_fast_server()
+  let events = process.new_subject()
+  let http.Transport(prepare_streaming:) = http.httpc_transport()
+  let assert Ok(http.PreparedRequest(running:, begin:)) =
+    prepare_streaming(
+      http.HttpRequest(
+        method: "GET",
+        url: "http://127.0.0.1:" <> int.to_string(port) <> "/",
+        headers: [],
+        body: "",
+      ),
+      events,
+    )
+  let owner_monitor = process.monitor(http.owner(running))
+  begin()
+
+  let assert Ok(http.ResponseStatus(status: 200, ..)) =
+    process.receive(events, within: 2000)
+  assert process.receive(events, within: 2000) == Ok(http.ResponseChunk(<<>>))
+  assert process.receive(events, within: 2000) == Ok(http.ResponseEnd)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "a fast terminal must retain the exact handler drain proof"
+  stop_servers([server])
 }
 
 /// Replacing `httpc_manager` must not erase the handler which still owns this
