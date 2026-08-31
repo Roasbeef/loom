@@ -30,6 +30,10 @@ processful shell around that sans-io core. WP-F.
   `Failed`, and nothing after it. Its cancel capability signals the one
   gateway owner that decides the cancellation/terminal race; its optional
   owner pid is a drain witness for every asynchronous descendant.
+- `provider/stream.{DrainWitness, DrainOutcome}` — the original monitor and
+  its reason-bearing result. Critical callers install the witness before
+  `begin`; only `Drained` permits replacement work, while `TimedOut` leaves
+  the monitor live and `ProofLost` preserves an abnormal owner exit.
 - `provider/stream.PreparedStream` — a `StreamHandle` whose owner exists while
   work is parked, plus the idempotent begin permit. Composition layers publish
   the handle first and grant the permit only after adoption succeeds.
@@ -62,17 +66,16 @@ processful shell around that sans-io core. WP-F.
   cancellation.
   Gleam cannot selectively receive raw `httpc` tuples, and OTP exposes
   cancellation as an asynchronous cast rather than a socket-drain
-  acknowledgement. The shim therefore forces a non-reused handler, disables
-  handler migration through redirects and supported automatic retries. A
-  disposable discovery worker probes every live `httpc_handler` with a bounded
-  call, including a handler orphaned by supervisor replacement, and the owner
-  cancels the exact matching PID directly. If admission loses its reply across
-  a manager or supervisor generation change, the owner remains an ambiguous
-  witness until a raw response supplies the request id; exhausting the request
-  deadline fails that witness abnormally rather than claiming drain. The
-  internal OTP dependency is confined to this shim and covered across the OTP
-  27 and OTP 29 diagnostic layouts. All ownership, fallback, deadline, and
-  terminal state machines stay in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
+  acknowledgement. The shim therefore forces a non-reused, non-queued handler
+  and disables handler migration through redirects and supported automatic
+  retries. OTP publishes the exact request-ID-to-handler row before successful
+  admission returns, so one O(1) read of its protected default-profile table
+  captures the PID directly; no process scan or diagnostic RPC is involved.
+  If that row is absent, or admission loses its reply across a manager or
+  supervisor generation change, the owner fails closed rather than claiming
+  drain. The internal OTP dependency is confined to this lookup and direct
+  cancel. All ownership, fallback, deadline, and terminal state machines stay
+  in typed Gleam. `provider/internal/ffi_env` — `os:getenv` for
   the environment secret store. These two are the package's complete inventory
   of impurity.
 
@@ -125,19 +128,22 @@ processful shell around that sans-io core. WP-F.
 - **Cancellation reaches native work.** Explicit cancel and direct-consumer
   death cancel and drain the active transport before ending the route walk.
   The production native owner retains the exact OTP request id, receives the
-  raw `httpc` messages itself, calls `httpc:cancel_request/1`, and waits for the
+  raw `httpc` messages itself, calls `httpc_handler:cancel/2`, and waits for the
   dedicated request handler's Down before exiting. An
   owner that misses the fixed grace is not killed from above: the guard emits
   `CancellationUnconfirmed` but stays alive until the owner drains, preserving
-  the acknowledgement chain. `ProviderCancelled` and
-  `CancellationUnconfirmed` are terminal and never walk to a fallback. Raw
+  the acknowledgement chain. `ProviderCancelled`,
+  `CancellationUnconfirmed`, and `DrainProofLost` are terminal and never walk
+  to a fallback. Raw
   OTP errors are collapsed to constant diagnostics before crossing the FFI so
   request headers and credentials cannot appear in a durable provider error.
 - **Only the original monitor adjudicates drain.** The custodian records every
-  child before begin. A normal child `Down` retires that obligation; an
-  unexpected killed or abnormal `Down` poisons the custodian and propagates
-  failure after the remaining known frontier is cancelled. A waiter which
-  attaches after exit cannot recover this fact because Erlang reports `noproc`.
+  child before begin. A leaf owns no descendants, so its own Down completes its
+  lifetime; a transitive child requires `Normal`. An unexpected killed or
+  abnormal transitive `Down` poisons the custodian even after cancellation has
+  begun and propagates failure after the remaining known frontier is cancelled.
+  A waiter which attaches after exit cannot recover this fact because Erlang
+  reports `noproc`; critical callers retain a `DrainWitness` across `begin`.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash.

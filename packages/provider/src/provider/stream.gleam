@@ -132,6 +132,8 @@ pub type ProviderError {
   ProviderCancelled
   /// The caller requested cancellation but no owner-authored terminal arrived.
   CancellationUnconfirmed
+  /// The owner exited abnormally, so its descendants may still be live.
+  DrainProofLost
   /// The transport failed before or during the response.
   TransportFailed(reason: String)
   /// The provider returned a non-success HTTP status.
@@ -173,6 +175,7 @@ pub fn describe_error(error: ProviderError) -> String {
   case error {
     ProviderCancelled -> "provider request was cancelled"
     CancellationUnconfirmed -> "provider cancellation could not be confirmed"
+    DrainProofLost -> "provider ownership ended without proof of drain"
     TransportFailed(reason:) -> "transport failed: " <> reason
     HttpError(status:, api_error_type:, message:, retry_after_ms: _) ->
       "provider returned http "
@@ -465,6 +468,29 @@ pub type StreamHandle {
   )
 }
 
+/// What observing a stream owner established about its ownership tree.
+///
+/// Only `Drained` authorizes replacement work. `TimedOut` means the witness is
+/// still alive; `ProofLost` means it died abnormally and can no longer certify
+/// whether descendants remain.
+pub type DrainOutcome {
+  /// The owner exited normally and certified complete transitive teardown.
+  Drained
+  /// The observation deadline elapsed while the owner remained live.
+  TimedOut
+  /// The owner exited without the normal reason required to prove teardown.
+  ProofLost
+}
+
+/// A one-shot observation of a stream owner's eventual exit.
+///
+/// Register this witness before starting asynchronous work when the exit
+/// reason matters. A monitor installed after an owner has already exited can
+/// report only `noproc`, which proves death but cannot prove clean drain.
+pub opaque type DrainWitness {
+  DrainWitness(owner: Option(Pid), monitor: Option(Monitor))
+}
+
 /// A provider stream whose owner exists while its work remains parked.
 ///
 /// Callers publish `handle.owner` to their own custodian before invoking
@@ -529,7 +555,7 @@ pub fn owned(
 /// let events = process.new_subject()
 /// process.send(events, stream.Failed(error: stream.ProviderCancelled))
 /// let handle = stream.immediate(events:, cancel: fn() { Nil })
-/// assert stream.await_stopped(handle, within: 0)
+/// assert stream.await_stopped(handle, within: 0) == stream.Drained
 /// ```
 ///
 pub fn immediate(
@@ -558,60 +584,153 @@ pub fn cancel(handle: StreamHandle) -> Nil {
   handle.cancel()
 }
 
+/// Registers the monitor which will later adjudicate the owner's exit reason.
+///
+/// Call this before invoking a prepared stream's `begin` closure. Immediate
+/// streams return an already-drained witness without allocating a monitor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let stream.PreparedStream(handle:, begin:) = prepared
+/// let witness = stream.watch_drain(handle)
+/// begin()
+/// // stream.await_drain_forever(witness)
+/// ```
+///
+pub fn watch_drain(handle: StreamHandle) -> DrainWitness {
+  case handle.owner {
+    None -> DrainWitness(owner: None, monitor: None)
+    Some(owner) ->
+      DrainWitness(owner: Some(owner), monitor: Some(process.monitor(owner)))
+  }
+}
+
+/// Waits up to `within` milliseconds on a previously registered witness.
+///
+/// A timeout leaves the monitor active so the same witness can be passed to
+/// `await_drain_forever`. Call `release_drain` when abandoning it instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// case stream.await_drain(witness, within: 2_000) {
+///   stream.TimedOut -> stream.release_drain(witness)
+///   stream.Drained | stream.ProofLost -> Nil
+/// }
+/// ```
+///
+pub fn await_drain(witness: DrainWitness, within timeout: Int) -> DrainOutcome {
+  let DrainWitness(owner:, monitor:) = witness
+  case owner, monitor {
+    None, None -> Drained
+    Some(_owner), Some(monitor) ->
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, drain_outcome)
+      |> process.selector_receive(timeout)
+      |> result.unwrap(TimedOut)
+    _, _ -> ProofLost
+  }
+}
+
+/// Waits without a deadline on a previously registered drain witness.
+///
+/// The monitor is released after its original `Down` has been adjudicated.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let outcome = stream.await_drain_forever(witness)
+/// // Only `stream.Drained` authorizes replacement work.
+/// ```
+///
+pub fn await_drain_forever(witness: DrainWitness) -> DrainOutcome {
+  let outcome = case witness {
+    DrainWitness(owner: None, monitor: None) -> Drained
+    DrainWitness(owner: Some(_owner), monitor: Some(monitor)) ->
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, drain_outcome)
+      |> process.selector_receive_forever()
+    _ -> ProofLost
+  }
+  release_drain(witness)
+  outcome
+}
+
+/// Releases a drain witness which will no longer be awaited.
+///
+/// ## Examples
+///
+/// ```gleam
+/// stream.release_drain(witness)
+/// ```
+///
+pub fn release_drain(witness: DrainWitness) -> Nil {
+  case witness {
+    DrainWitness(monitor: Some(monitor), ..) ->
+      process.demonitor_process(monitor)
+    DrainWitness(monitor: None, ..) -> Nil
+  }
+}
+
 /// Waits up to `within` milliseconds for the stream's complete ownership tree
 /// to drain. An immediate handle is already stopped.
 ///
-/// A `False` result means only that the deadline elapsed. It does not kill the
-/// owner and must not be treated as proof that replacement work is safe.
+/// `TimedOut` does not kill the owner. `ProofLost` is distinct because a dead
+/// witness cannot be waited into certainty; neither outcome authorizes
+/// replacement work. Use `watch_drain` before `begin` when the original exit
+/// reason matters: a convenience helper called after exit can observe only
+/// `noproc`, not recover whether that exit was normal.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// stream.cancel(handle)
-/// let drained = stream.await_stopped(handle, within: 2_000)
-/// // drained is `True` only after `handle.owner` exits.
+/// let outcome = stream.await_stopped(handle, within: 2_000)
+/// // Only `stream.Drained` authorizes replacement work.
 /// ```
 ///
-pub fn await_stopped(handle: StreamHandle, within timeout: Int) -> Bool {
-  case handle.owner {
-    None -> True
-    Some(owner) -> {
-      let monitor = process.monitor(owner)
-      let stopped =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { True })
-        |> process.selector_receive(timeout)
-        |> result.unwrap(False)
-      process.demonitor_process(monitor)
-      stopped
-    }
+pub fn await_stopped(
+  handle: StreamHandle,
+  within timeout: Int,
+) -> DrainOutcome {
+  let witness = watch_drain(handle)
+  let outcome = await_drain(witness, within: timeout)
+  case outcome {
+    TimedOut -> release_drain(witness)
+    Drained | ProofLost -> Nil
   }
+  outcome
 }
 
 /// Waits until the stream's complete ownership tree has drained.
 ///
 /// This is deliberately unbounded. Callers use it only at an ordering barrier
 /// where proceeding beside unconfirmed old work would violate exclusivity.
+/// Use `watch_drain` before `begin` when the original exit reason matters: a
+/// convenience helper called after exit can observe only `noproc`.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// stream.cancel(handle)
-/// stream.await_stopped_forever(handle)
-/// // Replacement work may now begin.
+/// let outcome = stream.await_stopped_forever(handle)
+/// // Replacement work may begin only when outcome is `stream.Drained`.
 /// ```
 ///
-pub fn await_stopped_forever(handle: StreamHandle) -> Nil {
-  case handle.owner {
-    None -> Nil
-    Some(owner) -> {
-      let monitor = process.monitor(owner)
-      let _down =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
-    }
+pub fn await_stopped_forever(handle: StreamHandle) -> DrainOutcome {
+  watch_drain(handle)
+  |> await_drain_forever
+}
+
+fn drain_outcome(down: process.Down) -> DrainOutcome {
+  case down {
+    process.ProcessDown(reason:, ..) ->
+      case reason {
+        process.Normal -> Drained
+        process.Killed | process.Abnormal(_) -> ProofLost
+      }
+    process.PortDown(..) -> ProofLost
   }
 }
 
@@ -678,6 +797,8 @@ pub type AttemptOutcome {
   AttemptCancelled
   /// Cancellation began, but no terminal acknowledged it within the grace.
   AttemptCancellationUnconfirmed
+  /// The transport owner died without proving its descendants drained.
+  AttemptDrainProofLost
   /// The process which could consume deltas exited, so the attempt was drained.
   ConsumerGone
 }
@@ -810,29 +931,37 @@ fn run_loop(
   case process.selector_receive(selector, timeout) {
     Error(Nil) -> {
       case stop_attempt(running, consumer_monitor, transport_monitor) {
-        True ->
+        Drained ->
           AttemptTerminal(
             Failed(TransportFailed(reason: "timed out waiting for the provider")),
           )
-        False -> AttemptCancellationUnconfirmed
+        TimedOut -> AttemptCancellationUnconfirmed
+        ProofLost -> AttemptDrainProofLost
       }
     }
     Ok(Cancelled) ->
       case stop_attempt(running, consumer_monitor, transport_monitor) {
-        True -> AttemptCancelled
-        False -> AttemptCancellationUnconfirmed
+        Drained -> AttemptCancelled
+        TimedOut -> AttemptCancellationUnconfirmed
+        ProofLost -> AttemptDrainProofLost
       }
     Ok(ConsumerExited(down: _)) -> {
       let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
       ConsumerGone
     }
-    Ok(TransportExited(down: _)) -> {
-      let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
-      AttemptTerminal(
-        Failed(TransportFailed(
-          reason: "provider transport stopped before a terminal response",
-        )),
-      )
+    Ok(TransportExited(down:)) -> {
+      process.demonitor_process(consumer_monitor)
+      process.demonitor_process(transport_monitor)
+      case drain_outcome(down) {
+        Drained ->
+          AttemptTerminal(
+            Failed(TransportFailed(
+              reason: "provider transport stopped before a terminal response",
+            )),
+          )
+        TimedOut -> AttemptCancellationUnconfirmed
+        ProofLost -> AttemptDrainProofLost
+      }
     }
     Ok(Http(http.ResponseStatus(status:, headers:))) ->
       run_loop(
@@ -850,8 +979,9 @@ fn run_loop(
       case forward(events, deliver) {
         Some(terminal) -> {
           case stop_attempt(running, consumer_monitor, transport_monitor) {
-            True -> AttemptTerminal(terminal)
-            False -> AttemptCancellationUnconfirmed
+            Drained -> AttemptTerminal(terminal)
+            TimedOut -> AttemptCancellationUnconfirmed
+            ProofLost -> AttemptDrainProofLost
           }
         }
         None ->
@@ -877,9 +1007,10 @@ fn run_loop(
         None ->
           Failed(StreamDisconnected(context: "response ended without settling"))
       }
-      case finish_attempt(running, consumer_monitor, transport_monitor) {
-        True -> AttemptTerminal(terminal)
-        False -> AttemptCancellationUnconfirmed
+      case finish_attempt(consumer_monitor, transport_monitor) {
+        Drained -> AttemptTerminal(terminal)
+        TimedOut -> AttemptCancellationUnconfirmed
+        ProofLost -> AttemptDrainProofLost
       }
     }
     Ok(Http(http.RequestFailed(reason:))) -> {
@@ -889,9 +1020,10 @@ fn run_loop(
         Some(terminal) -> terminal
         None -> Failed(TransportFailed(reason:))
       }
-      case finish_attempt(running, consumer_monitor, transport_monitor) {
-        True -> AttemptTerminal(terminal)
-        False -> AttemptCancellationUnconfirmed
+      case finish_attempt(consumer_monitor, transport_monitor) {
+        Drained -> AttemptTerminal(terminal)
+        TimedOut -> AttemptCancellationUnconfirmed
+        ProofLost -> AttemptDrainProofLost
       }
     }
   }
@@ -903,31 +1035,26 @@ fn stop_attempt(
   running: http.RunningRequest,
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
-) -> Bool {
+) -> DrainOutcome {
   http.cancel(running)
-  finish_attempt(running, consumer_monitor, transport_monitor)
+  finish_attempt(consumer_monitor, transport_monitor)
 }
 
 // A transport terminal is a message, not proof its owner stopped. This bounded
 // observation decides whether a retry is safe; the gateway retains the live
 // capability and remains the transitive drain witness when it is not.
 fn finish_attempt(
-  running: http.RunningRequest,
   consumer_monitor: Monitor,
   transport_monitor: Monitor,
-) -> Bool {
-  let stopped = case process.is_alive(http.owner(running)) {
-    False -> True
-    True -> {
-      process.new_selector()
-      |> process.select_specific_monitor(transport_monitor, fn(_down) { True })
-      |> process.selector_receive(100)
-      |> result.unwrap(False)
-    }
-  }
+) -> DrainOutcome {
+  let outcome =
+    process.new_selector()
+    |> process.select_specific_monitor(transport_monitor, drain_outcome)
+    |> process.selector_receive(100)
+    |> result.unwrap(TimedOut)
   process.demonitor_process(consumer_monitor)
   process.demonitor_process(transport_monitor)
-  stopped
+  outcome
 }
 
 // Delivers deltas in order and returns the first terminal event, dropping

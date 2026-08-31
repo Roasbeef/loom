@@ -45,9 +45,9 @@ import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
   type AttemptOutcome, type Control, type StreamEvent, type StreamHandle,
-  AttemptCancellationUnconfirmed, AttemptCancelled, AttemptTerminal, Cancel,
-  ConsumerGone, Delta, Failed, NoIdentity, NoSecret, ProviderCancelled, Settled,
-  UnknownProvider,
+  AttemptCancellationUnconfirmed, AttemptCancelled, AttemptDrainProofLost,
+  AttemptTerminal, Cancel, ConsumerGone, Delta, Failed, NoIdentity, NoSecret,
+  ProviderCancelled, Settled, UnknownProvider,
 }
 
 const request_start_timeout_ms = 5000
@@ -434,7 +434,7 @@ fn start_request(
   case pump_started {
     Ok(Ok(#(pump_control, pump_begin))) -> {
       let adopted =
-        custodian.adopt_owner(custodian, pump_owner, fn() {
+        custodian.adopt_leaf(custodian, pump_owner, fn() {
           process.send(pump_control, Cancel)
         })
       case adopted {
@@ -1013,6 +1013,7 @@ fn continue_or_deliver(
     AttemptCancelled -> process.send(events, Failed(ProviderCancelled))
     AttemptCancellationUnconfirmed ->
       process.send(events, Failed(stream.CancellationUnconfirmed))
+    AttemptDrainProofLost -> process.send(events, Failed(stream.DrainProofLost))
     ConsumerGone -> Nil
     AttemptTerminal(terminal:) ->
       continue_terminal(

@@ -77,6 +77,7 @@ pub fn abnormal_child_exit_poisoned_witness_test() {
   let owner_monitor = process.monitor(custodian.owner(witness))
 
   process.kill(child)
+  custodian.cancel(witness)
 
   let assert Ok(process.ProcessDown(reason:, ..)) =
     process.new_selector()
@@ -84,4 +85,71 @@ pub fn abnormal_child_exit_poisoned_witness_test() {
     |> process.selector_receive(1000)
   assert reason == process.Killed
     as "lost child ownership must never look like a clean drain"
+}
+
+/// Beginning cancellation must not launder an abnormal transitive exit.
+/// The callback is only a request; the child still owes a normal drain proof.
+pub fn cancel_then_abnormal_transitive_exit_poisoned_witness_test() {
+  let worker_ready = process.new_subject()
+  let child_ready = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(worker_ready, stop)
+      let _stop = process.receive_forever(stop)
+      Nil
+    })
+  let child =
+    process.spawn_unlinked(fn() {
+      process.send(child_ready, Nil)
+      process.receive_forever(process.new_subject())
+    })
+  let stop = process.receive_forever(worker_ready)
+  let assert Ok(Nil) = process.receive(child_ready, within: 1000)
+  let witness = custodian.start(worker, stop, Nil, process.self())
+  assert custodian.adopt_owner(witness, child, fn() { process.kill(child) })
+  let owner_monitor = process.monitor(custodian.owner(witness))
+
+  custodian.cancel(witness)
+
+  let assert Ok(process.ProcessDown(reason:, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+  assert reason == process.Killed
+    as "cancellation cannot replace a transitive child's normal proof"
+}
+
+/// An abnormal leaf exit is complete because a leaf owns no descendants.
+/// Its supervising worker remains responsible for translating the crash.
+pub fn abnormal_leaf_exit_preserves_clean_witness_test() {
+  let worker_ready = process.new_subject()
+  let child_ready = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(worker_ready, stop)
+      let _stop = process.receive_forever(stop)
+      Nil
+    })
+  let child =
+    process.spawn_unlinked(fn() {
+      process.send(child_ready, Nil)
+      process.receive_forever(process.new_subject())
+    })
+  let stop = process.receive_forever(worker_ready)
+  let assert Ok(Nil) = process.receive(child_ready, within: 1000)
+  let witness = custodian.start(worker, stop, Nil, process.self())
+  assert custodian.adopt_leaf(witness, child, fn() { process.kill(child) })
+  let owner_monitor = process.monitor(custodian.owner(witness))
+
+  process.kill(child)
+  custodian.cancel(witness)
+
+  let assert Ok(process.ProcessDown(reason:, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+  assert reason == process.Normal
+    as "leaf death closes its entire ownership boundary"
 }

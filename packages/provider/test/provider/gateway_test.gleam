@@ -220,15 +220,20 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
   let cancelled = process.new_subject()
   let transport =
     http.Transport(prepare_streaming: fn(request, _events) {
+      let stop_ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
-          process.receive_forever(process.new_subject())
+          let stop = process.new_subject()
+          process.send(stop_ready, stop)
+          let _stop = process.receive_forever(stop)
+          Nil
         })
+      let stop = process.receive_forever(stop_ready)
       Ok(
         http.PreparedRequest(
           running: http.RunningRequest(owner:, cancel: fn() {
             process.send(cancelled, request.url)
-            process.kill(owner)
+            process.send(stop, Nil)
           }),
           begin: fn() { process.send(started, request.url) },
         ),
@@ -258,7 +263,7 @@ pub fn cancellation_before_begin_starts_no_provider_work_test() {
     gateway.prepare(two_provider_gateway(transport), main_request())
 
   stream.cancel(handle)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
   begin()
 
   assert process.receive(started, within: 50) == Error(Nil)
@@ -322,7 +327,7 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   let handle = gateway.request(two_provider_gateway(transport), main_request())
   let assert Ok(start_gate) = process.receive(entered, within: 1000)
   stream.cancel(handle)
-  assert !stream.await_stopped(handle, within: 20)
+  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
   let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
     stream.await_terminal(handle, within: 2500)
   process.send(start_gate, Nil)
@@ -330,9 +335,9 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
 
   assert process.is_alive(owner)
-  assert !stream.await_stopped(handle, within: 20)
+  assert stream.await_stopped(handle, within: 20) == stream.TimedOut
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }
 
 pub fn retryable_terminal_does_not_fallback_before_transport_drains_test() {
@@ -373,7 +378,7 @@ pub fn retryable_terminal_does_not_fallback_before_transport_drains_test() {
     == Ok("https://primary.test/v1/messages")
   assert process.receive(attempts, within: 100) == Error(Nil)
   process.send(release, Nil)
-  assert stream.await_stopped(handle, within: 1000)
+  assert stream.await_stopped(handle, within: 1000) == stream.Drained
 }
 
 pub fn consumer_death_cancels_and_reaps_transport_test() {

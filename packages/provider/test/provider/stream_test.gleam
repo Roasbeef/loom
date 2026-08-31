@@ -383,16 +383,21 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
   let transport =
     http.Transport(prepare_streaming: fn(_request, events) {
       let begin_ready = process.new_subject()
+      let stop_ready = process.new_subject()
       let owner =
         process.spawn_unlinked(fn() {
           let begin = process.new_subject()
           process.send(begin_ready, begin)
+          let stop = process.new_subject()
+          process.send(stop_ready, stop)
           let _permit = process.receive_forever(begin)
           process.send(events, http.ResponseStatus(status: 200, headers: []))
           process.send(events, http.ResponseChunk(<<"first":utf8>>))
-          process.receive_forever(process.new_subject())
+          let _stop = process.receive_forever(stop)
+          Nil
         })
       let begin = process.receive_forever(begin_ready)
+      let stop = process.receive_forever(stop_ready)
       process.send(owners, owner)
       Ok(http.PreparedRequest(
         running: http.RunningRequest(owner:, cancel: fn() {
@@ -401,7 +406,7 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
           // wins. The attempt's private subject may receive it, but no second
           // public outcome can escape the completed run loop.
           process.send(events, http.ResponseEnd)
-          process.kill(owner)
+          process.send(stop, Nil)
         }),
         begin: fn() { process.send(begin, Nil) },
       ))
@@ -591,14 +596,7 @@ pub fn run_tracked_publishes_owner_before_transport_start_test() {
   assert receive_from(transport_started, 20) == Error(Nil)
   process.send(permit, Nil)
   assert receive_from(transport_started, 1000) == Ok(Nil)
-  assert receive_from(outcomes, 1000)
-    == Ok(
-      stream.AttemptTerminal(
-        stream.Failed(stream.TransportFailed(
-          reason: "provider transport stopped before a terminal response",
-        )),
-      ),
-    )
+  assert receive_from(outcomes, 1000) == Ok(stream.AttemptDrainProofLost)
 }
 
 pub fn run_tracked_publishes_cancel_capability_before_runner_death_test() {
@@ -665,20 +663,62 @@ pub fn run_tracked_publishes_cancel_capability_before_runner_death_test() {
 
 fn silent_transport(cancelled: process.Subject(Nil)) -> http.Transport {
   http.Transport(prepare_streaming: fn(_request, _events) {
+    let stop_ready = process.new_subject()
     let owner =
       process.spawn_unlinked(fn() {
-        process.receive_forever(process.new_subject())
+        let stop = process.new_subject()
+        process.send(stop_ready, stop)
+        let _stop = process.receive_forever(stop)
+        Nil
       })
+    let stop = process.receive_forever(stop_ready)
     Ok(
       http.PreparedRequest(
         running: http.RunningRequest(owner:, cancel: fn() {
           process.send(cancelled, Nil)
-          process.kill(owner)
+          process.send(stop, Nil)
         }),
         begin: fn() { Nil },
       ),
     )
   })
+}
+
+pub fn drain_witness_retains_normal_reason_across_owner_exit_test() {
+  let ready = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let stop = process.new_subject()
+      process.send(ready, stop)
+      let _stop = process.receive_forever(stop)
+      Nil
+    })
+  let stop = process.receive_forever(ready)
+  let handle =
+    stream.owned(events: process.new_subject(), owner:, cancel: fn() {
+      process.send(stop, Nil)
+    })
+  let witness = stream.watch_drain(handle)
+
+  stream.cancel(handle)
+
+  assert stream.await_drain_forever(witness) == stream.Drained
+}
+
+pub fn drain_witness_retains_abnormal_reason_across_owner_exit_test() {
+  let owner =
+    process.spawn_unlinked(fn() {
+      process.receive_forever(process.new_subject())
+    })
+  let handle =
+    stream.owned(events: process.new_subject(), owner:, cancel: fn() {
+      process.kill(owner)
+    })
+  let witness = stream.watch_drain(handle)
+
+  stream.cancel(handle)
+
+  assert stream.await_drain_forever(witness) == stream.ProofLost
 }
 
 fn process_subject() -> process.Subject(a) {

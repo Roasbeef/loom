@@ -8,8 +8,6 @@
 
 %% Total receive-loop timeout for one streamed response, in milliseconds.
 -define(RESPONSE_TIMEOUT, 300000).
--define(DISCOVERY_TIMEOUT, 25).
--define(DISCOVERY_RETRY, 10).
 
 %% os:getenv/1 returns false | string(); normalize to Gleam's
 %% {ok, Binary} | {error, nil}.
@@ -59,6 +57,32 @@ native_parked(Parent, OnStatus, OnChunk, OnEnd, OnFailure) ->
 
 start_native_request(Method, Url, Headers, Body, ParentMonitor,
                      OnStatus, OnChunk, OnEnd, OnFailure) ->
+    Deadline = request_deadline(),
+    case prepare_native_request(Method, Url, Headers, Body) of
+        {ok, Manager, HandlerSupervisor, Request, Options} ->
+            case admit_native_request(Method, Request, Options) of
+                {ok, RequestId} ->
+                    enter_native_loop(RequestId, ParentMonitor,
+                                      OnStatus, OnChunk, OnEnd, OnFailure,
+                                      none, false, Deadline);
+                {error, _Reason} ->
+                    start_failed(Manager, HandlerSupervisor, ParentMonitor,
+                                 OnStatus, OnChunk, OnEnd, OnFailure,
+                                 Deadline);
+                interrupted ->
+                    start_failed(Manager, HandlerSupervisor, ParentMonitor,
+                                 OnStatus, OnChunk, OnEnd, OnFailure,
+                                 Deadline)
+            end;
+        error ->
+            safe_callback(OnFailure, [<<"http request startup failed">>])
+    end.
+
+%% Only startup and public admission are exception-normalized. Once httpc has
+%% admitted a request, an unexpected fault must terminate this owner
+%% abnormally; translating it into an ordinary provider error would falsely
+%% certify that the native request had drained.
+prepare_native_request(Method, Url, Headers, Body) ->
     try
         {ok, _} = application:ensure_all_started(inets),
         {ok, _} = application:ensure_all_started(ssl),
@@ -73,28 +97,24 @@ start_native_request(Method, Url, Headers, Body, ParentMonitor,
                 <<"GET">> -> {UrlList, HeaderList};
                 _ -> {UrlList, HeaderList, content_type(HeaderList), Body}
             end,
+        %% A non-empty socket_opts list already gives this request a dedicated,
+        %% non-reused handler. infinity is consumed by httpc_manager rather
+        %% than passed to the socket and prevents this request from entering
+        %% the manager's awaiting queue before the handler row is published.
         Options = [{sync, false}, {stream, self}, {body_format, binary},
-                   {receiver, self()}, {socket_opts, [{nodelay, true}]}],
-        Admission =
-            try httpc:request(method_atom(Method), Request,
-                              migration_safe_http_options(), Options)
-            catch
-                _:_ -> interrupted
-            end,
-        case Admission of
-            {ok, RequestId} ->
-                enter_native_loop(RequestId, ParentMonitor,
-                                  OnStatus, OnChunk, OnEnd, OnFailure);
-            {error, _Reason} ->
-                start_failed(Manager, HandlerSupervisor, ParentMonitor,
-                             OnStatus, OnChunk, OnEnd, OnFailure);
-            interrupted ->
-                start_failed(Manager, HandlerSupervisor, ParentMonitor,
-                             OnStatus, OnChunk, OnEnd, OnFailure)
-        end
+                   {receiver, self()},
+                   {socket_opts, [{max_connections_open, infinity},
+                                  {nodelay, true}]}],
+        {ok, Manager, HandlerSupervisor, Request, Options}
     catch
-        _Class:_CaughtReason ->
-            safe_callback(OnFailure, [<<"http request startup failed">>])
+        _:_ -> error
+    end.
+
+admit_native_request(Method, Request, Options) ->
+    try httpc:request(method_atom(Method), Request,
+                      migration_safe_http_options(), Options)
+    catch
+        _:_ -> interrupted
     end.
 
 %% A failed public call is conclusive only while the manager and handler
@@ -104,14 +124,14 @@ start_native_request(Method, Url, Headers, Body, ParentMonitor,
 %% raw response; exiting here would turn an ambiguous admission into false
 %% drain.
 start_failed(Manager, HandlerSupervisor, ParentMonitor,
-             OnStatus, OnChunk, OnEnd, OnFailure) ->
+             OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     case same_generation(httpc_manager, Manager) andalso
          same_generation(httpc_handler_sup, HandlerSupervisor) of
         true ->
             safe_callback(OnFailure, [<<"http request startup failed">>]);
         false ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure, false)
+                                  OnEnd, OnFailure, false, Deadline)
     end.
 
 same_generation(Name, Pid) when is_pid(Pid) ->
@@ -120,24 +140,24 @@ same_generation(_Name, _Pid) ->
     false.
 
 ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-                      Stopping) ->
+                      Stopping, Deadline) ->
     receive
         {http, {RequestId, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping);
+                              OnEnd, OnFailure, Message, Stopping, Deadline);
         {http, {RequestId, _, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping);
+                              OnEnd, OnFailure, Message, Stopping, Deadline);
         {http, {RequestId, _, _, _} = Message} ->
             enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                              OnEnd, OnFailure, Message, Stopping);
+                              OnEnd, OnFailure, Message, Stopping, Deadline);
         cancel ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true);
+                                  OnFailure, true, Deadline);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
             ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd,
-                                  OnFailure, true)
-    after ?RESPONSE_TIMEOUT ->
+                                  OnFailure, true, Deadline)
+    after remaining_ms(Deadline) ->
         case Stopping of
             true -> ok;
             false -> safe_callback(OnFailure,
@@ -150,169 +170,50 @@ ambiguous_native_loop(ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
         erlang:exit(self(), kill)
     end.
 
-enter_native_loop(RequestId, ParentMonitor,
-                  OnStatus, OnChunk, OnEnd, OnFailure) ->
-    enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                      OnFailure, none, false).
-
 enter_native_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                  OnFailure, FirstMessage, Stopping) ->
-    start_handler_discovery(RequestId),
-    case FirstMessage of
-        none ->
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, false, Stopping);
-        Message ->
-            discovery_http(Message, RequestId, ParentMonitor, OnStatus,
-                           OnChunk, OnEnd, OnFailure, false, Stopping)
-    end.
-
-start_handler_discovery(RequestId) ->
-    Owner = self(),
-    spawn(fun() ->
-        Owner ! {handler_discovery, RequestId, request_handler(RequestId)}
-    end),
-    ok.
-
-discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                 OnFailure, Terminal, Stopping) ->
-    receive
-        {handler_discovery, RequestId, {ok, Handler}} ->
+                  OnFailure, FirstMessage, Stopping, Deadline) ->
+    case request_handler(RequestId) of
+        {ok, Handler} ->
             HandlerMonitor = erlang:monitor(process, Handler),
-            case Terminal orelse Stopping of
+            case Stopping of
                 true -> finish_native(RequestId, Handler, HandlerMonitor);
-                false -> native_loop(RequestId, Handler, HandlerMonitor,
-                                     ParentMonitor, OnStatus, OnChunk,
-                                     OnEnd, OnFailure)
-            end;
-        {handler_discovery, RequestId, gone} ->
-            case Terminal orelse Stopping of
-                true -> ok;
                 false ->
-                    %% A fast handler can queue its terminal and disappear
-                    %% before discovery observes it. With no native work left,
-                    %% keep receiving until that already-owned result or the
-                    %% request deadline arrives; absence is drain proof, not a
-                    %% reason to replace a valid response with failure.
-                    native_loop(RequestId, undefined, undefined,
-                                ParentMonitor, OnStatus, OnChunk,
-                                OnEnd, OnFailure)
+                    case FirstMessage of
+                        none ->
+                            native_loop(RequestId, Handler, HandlerMonitor,
+                                        ParentMonitor, OnStatus, OnChunk,
+                                        OnEnd, OnFailure, Deadline);
+                        Message ->
+                            native_http(Message, RequestId, Handler,
+                                        HandlerMonitor, ParentMonitor,
+                                        OnStatus, OnChunk, OnEnd, OnFailure,
+                                        Deadline)
+                    end
             end;
-        {handler_discovery, RequestId, discovery_failed} ->
-            erlang:send_after(?DISCOVERY_RETRY, self(),
-                              {retry_handler_discovery, RequestId}),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, Terminal, Stopping);
-        {retry_handler_discovery, RequestId} ->
-            start_handler_discovery(RequestId),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, Terminal, Stopping);
-        {http, {RequestId, _} = Message} ->
-            discovery_http(Message, RequestId, ParentMonitor, OnStatus,
-                           OnChunk, OnEnd, OnFailure, Terminal, Stopping);
-        {http, {RequestId, _, _} = Message} ->
-            discovery_http(Message, RequestId, ParentMonitor, OnStatus,
-                           OnChunk, OnEnd, OnFailure, Terminal, Stopping);
-        {http, {RequestId, _, _, _} = Message} ->
-            discovery_http(Message, RequestId, ParentMonitor, OnStatus,
-                           OnChunk, OnEnd, OnFailure, Terminal, Stopping);
-        cancel ->
+        lost ->
+            %% A successful public admission is useful only if this owner can
+            %% retain the exact handler monitor. The default manager publishes
+            %% that protected ETS row before replying. Its absence therefore
+            %% means a manager-generation race destroyed the drain proof.
             conservative_cancel(RequestId),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, Terminal, true);
-        {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
-            conservative_cancel(RequestId),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, Terminal, true)
-    after ?RESPONSE_TIMEOUT ->
-        case Terminal of
-            true -> ok;
-            false -> safe_callback(OnFailure,
-                                   [<<"timed out waiting for the http response">>])
-        end,
-        conservative_cancel(RequestId),
-        discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                         OnFailure, true, true)
+            erlang:exit(self(), kill)
     end.
-
-discovery_http(_Message, RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-               OnFailure, true, Stopping) ->
-    discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                     OnFailure, true, Stopping);
-discovery_http({RequestId, stream_start, Headers}, RequestId, ParentMonitor,
-               OnStatus, OnChunk, OnEnd, OnFailure, false, Stopping) ->
-    case safe_callback(OnStatus, [200, normalize_headers(Headers)]) of
-        ok -> discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                               OnEnd, OnFailure, false, Stopping);
-        error ->
-            conservative_cancel(RequestId),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, false, true)
-    end;
-discovery_http({RequestId, stream_start, Headers, _Handler}, RequestId,
-               ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, false,
-               Stopping) ->
-    discovery_http({RequestId, stream_start, Headers}, RequestId,
-                   ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, false,
-                   Stopping);
-discovery_http({RequestId, stream, Chunk}, RequestId, ParentMonitor, OnStatus,
-               OnChunk, OnEnd, OnFailure, false, Stopping) ->
-    case safe_callback(OnChunk, [Chunk]) of
-        ok -> discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                               OnEnd, OnFailure, false, Stopping);
-        error ->
-            conservative_cancel(RequestId),
-            discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk,
-                             OnEnd, OnFailure, false, true)
-    end;
-discovery_http({RequestId, stream_end, _Headers}, RequestId, ParentMonitor,
-               OnStatus, OnChunk, OnEnd, OnFailure, false, Stopping) ->
-    safe_callback(OnEnd, []),
-    discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                     OnFailure, true, Stopping);
-discovery_http({RequestId, {error, _Reason}}, RequestId, ParentMonitor,
-               OnStatus, OnChunk, OnEnd, OnFailure, false, Stopping) ->
-    safe_callback(OnFailure, [<<"http transport failed">>]),
-    discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                     OnFailure, true, Stopping);
-discovery_http({RequestId, {{_Version, Status, _Reason}, Headers, Body}},
-               RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
-               false, Stopping) ->
-    safe_callback(OnStatus, [Status, normalize_headers(Headers)]),
-    safe_callback(OnChunk, [Body]),
-    safe_callback(OnEnd, []),
-    discovering_loop(RequestId, ParentMonitor, OnStatus, OnChunk, OnEnd,
-                     OnFailure, true, Stopping).
 
 native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
-            OnStatus, OnChunk, OnEnd, OnFailure) ->
+            OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
     receive
-        {http, {RequestId, stream_start, Headers}} ->
-            case safe_callback(OnStatus, [200, normalize_headers(Headers)]) of
-                ok -> native_loop(RequestId, Handler, HandlerMonitor,
-                                  ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure);
-                error -> finish_native(RequestId, Handler, HandlerMonitor)
-            end;
-        {http, {RequestId, stream, Chunk}} ->
-            case safe_callback(OnChunk, [Chunk]) of
-                ok -> native_loop(RequestId, Handler, HandlerMonitor,
-                                  ParentMonitor, OnStatus, OnChunk,
-                                  OnEnd, OnFailure);
-                error -> finish_native(RequestId, Handler, HandlerMonitor)
-            end;
-        {http, {RequestId, stream_end, _Headers}} ->
-            safe_callback(OnEnd, []),
-            finish_native(RequestId, Handler, HandlerMonitor);
-        {http, {RequestId, {{_Version, Status, _Reason}, Headers,
-                           ResponseBody}}} ->
-            safe_callback(OnStatus, [Status, normalize_headers(Headers)]),
-            safe_callback(OnChunk, [ResponseBody]),
-            safe_callback(OnEnd, []),
-            finish_native(RequestId, Handler, HandlerMonitor);
-        {http, {RequestId, {error, _Reason}}} ->
-            safe_callback(OnFailure, [<<"http transport failed">>]),
-            finish_native(RequestId, Handler, HandlerMonitor);
+        {http, {RequestId, _} = Message} ->
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
+        {http, {RequestId, _, _} = Message} ->
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
+        {http, {RequestId, _, _, _} = Message} ->
+            native_http(Message, RequestId, Handler, HandlerMonitor,
+                        ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure,
+                        Deadline);
         cancel ->
             finish_native(RequestId, Handler, HandlerMonitor);
         {'DOWN', ParentMonitor, process, _Parent, _Reason} ->
@@ -320,70 +221,67 @@ native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
         {'DOWN', HandlerMonitor, process, Handler, _Reason}
           when HandlerMonitor =/= undefined ->
             safe_callback(OnFailure, [<<"http transport failed">>])
-    after ?RESPONSE_TIMEOUT ->
-        finish_native(RequestId, Handler, HandlerMonitor),
-        safe_callback(OnFailure, [<<"timed out waiting for the http response">>])
+    after remaining_ms(Deadline) ->
+        safe_callback(OnFailure, [<<"timed out waiting for the http response">>]),
+        finish_native(RequestId, Handler, HandlerMonitor)
     end.
+
+native_http({RequestId, stream_start, Headers}, RequestId, Handler,
+            HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
+            OnFailure, Deadline) ->
+    case safe_status_callback(OnStatus, 200, Headers) of
+        ok -> native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
+                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline);
+        error -> finish_native(RequestId, Handler, HandlerMonitor)
+    end;
+native_http({RequestId, stream_start, Headers, _Handler}, RequestId, Handler,
+            HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
+            OnFailure, Deadline) ->
+    native_http({RequestId, stream_start, Headers}, RequestId, Handler,
+                HandlerMonitor, ParentMonitor, OnStatus, OnChunk, OnEnd,
+                OnFailure, Deadline);
+native_http({RequestId, stream, Chunk}, RequestId, Handler, HandlerMonitor,
+            ParentMonitor, OnStatus, OnChunk, OnEnd, OnFailure, Deadline) ->
+    case safe_callback(OnChunk, [Chunk]) of
+        ok -> native_loop(RequestId, Handler, HandlerMonitor, ParentMonitor,
+                          OnStatus, OnChunk, OnEnd, OnFailure, Deadline);
+        error -> finish_native(RequestId, Handler, HandlerMonitor)
+    end;
+native_http({RequestId, stream_end, _Headers}, RequestId, Handler,
+            HandlerMonitor, _ParentMonitor, _OnStatus, _OnChunk, OnEnd,
+            _OnFailure, _Deadline) ->
+    safe_callback(OnEnd, []),
+    finish_native(RequestId, Handler, HandlerMonitor);
+native_http({RequestId, {error, _Reason}}, RequestId, Handler, HandlerMonitor,
+            _ParentMonitor, _OnStatus, _OnChunk, _OnEnd, OnFailure,
+            _Deadline) ->
+    safe_callback(OnFailure, [<<"http transport failed">>]),
+    finish_native(RequestId, Handler, HandlerMonitor);
+native_http({RequestId, {{_Version, Status, _Reason}, Headers, Body}},
+            RequestId, Handler, HandlerMonitor, _ParentMonitor, OnStatus,
+            OnChunk, OnEnd, _OnFailure, _Deadline) ->
+    case safe_status_callback(OnStatus, Status, Headers) of
+        ok ->
+            case safe_callback(OnChunk, [Body]) of
+                ok -> safe_callback(OnEnd, []);
+                error -> error
+            end;
+        error -> error
+    end,
+    finish_native(RequestId, Handler, HandlerMonitor).
 
 request_handler(RequestId) ->
-    find_request_handler(RequestId, erlang:processes(), false).
-
-find_request_handler(_RequestId, [], true) ->
-    discovery_failed;
-find_request_handler(_RequestId, [], false) ->
-    gone;
-find_request_handler(RequestId, [Pid | Rest], Unknown) ->
-    case is_httpc_handler(Pid) of
-        false -> find_request_handler(RequestId, Rest, Unknown);
-        true ->
-            case bounded_handler_info(Pid) of
-                {ok, Info} ->
-                    case handler_owns_request(RequestId, Info) of
-                        true -> {ok, Pid};
-                        false -> find_request_handler(RequestId, Rest, Unknown)
-                    end;
-                gone -> find_request_handler(RequestId, Rest, Unknown);
-                unknown -> find_request_handler(RequestId, Rest, true)
-            end
-    end.
-
-is_httpc_handler(Pid) ->
-    case process_info(Pid, dictionary) of
-        {dictionary, Dictionary} ->
-            lists:keyfind('$initial_call', 1, Dictionary) =:=
-                {'$initial_call', {httpc_handler, init, 1}};
-        undefined -> false
-    end.
-
-%% Handler init acknowledges its supervisor before connect enters the gen_server
-%% loop, so the public debug helper's infinite call can pin cancellation. A
-%% bounded direct call makes a busy candidate `unknown`; only a complete scan
-%% of responsive live handlers may return `gone`.
-bounded_handler_info(Pid) ->
-    try gen_server:call(Pid, info, ?DISCOVERY_TIMEOUT) of
-        Info when is_list(Info) -> {ok, Info};
-        _Other -> unknown
+    %% The table name and row shape are an intentionally confined dependency
+    %% on httpc_manager internals. Both OTP 27 and OTP 29 create this protected
+    %% default-profile table and insert {RequestId, HandlerPid, Receiver}
+    %% before returning successful admission to the caller.
+    try ets:lookup(httpc_manager__handler_db, RequestId) of
+        [{RequestId, Handler, _Receiver}] when is_pid(Handler) -> {ok, Handler};
+        _ -> lost
     catch
-        exit:{noproc, _} -> gone;
-        exit:{normal, _} -> gone;
-        exit:{shutdown, _} -> gone;
-        exit:{timeout, _} -> unknown;
-        _:_ -> unknown
+        error:badarg -> lost
     end.
 
-%% OTP 27 exposed the id at the top level; OTP 29 nests it under
-%% current_request. Accepting both layouts keeps this narrowly confined use of
-%% the internal diagnostic API compatible across Loom's supported floor.
-handler_owns_request(RequestId, Info) ->
-    case lists:keyfind(id, 1, Info) of
-        {id, RequestId} -> true;
-        _ ->
-            Current = proplists:get_value(current_request, Info, []),
-            lists:keyfind(id, 1, Current) =:= {id, RequestId}
-    end.
-
-finish_native(_RequestId, undefined, undefined) ->
-    ok;
 finish_native(RequestId, Handler, HandlerMonitor) ->
     %% Direct cancellation does not depend on whichever manager generation is
     %% registered now. Handler termination closes its socket before Down can
@@ -412,6 +310,20 @@ safe_callback(Function, Arguments) ->
     catch
         _:_ -> error
     end.
+
+safe_status_callback(Function, Status, Headers) ->
+    try
+        apply(Function, [Status, normalize_headers(Headers)]),
+        ok
+    catch
+        _:_ -> error
+    end.
+
+request_deadline() ->
+    erlang:monotonic_time(millisecond) + ?RESPONSE_TIMEOUT.
+
+remaining_ms(Deadline) ->
+    max(Deadline - erlang:monotonic_time(millisecond), 0).
 
 %% Redirects and Retry-After retries retain the public request id while moving
 %% work to a different handler. Disable both migrations so the captured handler

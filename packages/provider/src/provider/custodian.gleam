@@ -12,9 +12,10 @@
 //// must register a child before permitting that child to start. If teardown
 //// already began, the custodian rejects the permit, invokes cancellation, and
 //// still waits for both the child and the worker. The public owner therefore
-//// retires normally only after the complete registered subtree is gone. An
-//// unexpected abnormal child exit destroys that proof and is propagated as
-//// an abnormal custodian exit after every still-known child is cancelled.
+//// retires normally only after the complete registered subtree is gone. A
+//// leaf's `Down` completes that leaf, while an unexpected abnormal transitive
+//// owner exit destroys its descendant proof and becomes an abnormal custodian
+//// exit after every still-known child is cancelled.
 ////
 //// ## The process shape
 ////
@@ -51,7 +52,12 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 
 type Message {
-  Adopt(owner: Option(Pid), cancel: fn() -> Nil, reply_with: Subject(Bool))
+  Adopt(
+    owner: Option(Pid),
+    kind: ChildKind,
+    cancel: fn() -> Nil,
+    reply_with: Subject(Bool),
+  )
   Cancel
 }
 
@@ -64,9 +70,17 @@ type Child {
   Child(
     owner: Option(Pid),
     monitor: Option(Monitor),
+    kind: ChildKind,
     cancel: fn() -> Nil,
-    cancelling: Bool,
+    cancel_started: Bool,
   )
+}
+
+// A leaf's own Down completes its lifetime regardless of reason. A transitive
+// witness speaks for work beneath itself, so only Normal can carry its proof.
+type ChildKind {
+  Leaf
+  Transitive
 }
 
 type State(stop) {
@@ -198,23 +212,13 @@ pub fn adopt(
   owner: Option(Pid),
   cancel: fn() -> Nil,
 ) -> Bool {
-  let reply = process.new_subject()
-  let witness_monitor = process.monitor(custodian.owner)
-  process.send(custodian.commands, Adopt(owner:, cancel:, reply_with: reply))
-  let accepted =
-    process.new_selector()
-    |> process.select_map(reply, Ok)
-    |> process.select_specific_monitor(witness_monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive_forever()
-    |> result.unwrap(False)
-  process.demonitor_process(witness_monitor)
-  accepted
+  adopt_as(custodian, owner, Transitive, cancel)
 }
 
-/// Publishes a required owner/cancel pair that is not a `StreamHandle`.
+/// Publishes a required transitive owner/cancel pair.
 ///
-/// This is the convenient form for observers, pumps, and transport receivers,
-/// all of which necessarily have a process owner.
+/// Only a normal owner exit proves that every descendant beneath this boundary
+/// drained. Cancellation merely requests that exit; it never weakens the proof.
 ///
 /// ## Examples
 ///
@@ -233,6 +237,49 @@ pub fn adopt_owner(
   adopt(custodian, Some(owner), cancel)
 }
 
+/// Publishes a required leaf process and its cancellation capability.
+///
+/// A leaf owns no process, port, or socket beneath itself, so any `Down` ends
+/// its complete lifetime. Use `adopt_owner` instead when the process speaks for
+/// descendants whose drain must survive its own failure.
+///
+/// ## Examples
+///
+/// ```gleam
+/// custodian.adopt_leaf(witness, observer, fn() { process.kill(observer) })
+/// // -> True
+/// ```
+///
+pub fn adopt_leaf(
+  custodian: Custodian,
+  owner: Pid,
+  cancel: fn() -> Nil,
+) -> Bool {
+  adopt_as(custodian, Some(owner), Leaf, cancel)
+}
+
+fn adopt_as(
+  custodian: Custodian,
+  owner: Option(Pid),
+  kind: ChildKind,
+  cancel: fn() -> Nil,
+) -> Bool {
+  let reply = process.new_subject()
+  let witness_monitor = process.monitor(custodian.owner)
+  process.send(
+    custodian.commands,
+    Adopt(owner:, kind:, cancel:, reply_with: reply),
+  )
+  let accepted =
+    process.new_selector()
+    |> process.select_map(reply, Ok)
+    |> process.select_specific_monitor(witness_monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive_forever()
+    |> result.unwrap(False)
+  process.demonitor_process(witness_monitor)
+  accepted
+}
+
 // --- Ownership loop -------------------------------------------------------
 
 // One mailbox serializes the two facts which would otherwise race: whether
@@ -245,14 +292,14 @@ fn loop(state: State(stop)) -> Nil {
     |> process.select_monitors(Down)
     |> process.selector_receive_forever()
   case event {
-    Command(Adopt(owner:, cancel:, reply_with:)) -> {
+    Command(Adopt(owner:, kind:, cancel:, reply_with:)) -> {
       case owner {
         None -> {
           process.send(reply_with, !state.closing)
           continue_or_stop(state)
         }
         Some(_) -> {
-          let child = monitor_child(owner, cancel)
+          let child = monitor_child(owner, kind, cancel)
           let state = State(..state, children: [child, ..state.children])
           process.send(reply_with, !state.closing)
           let state = case state.closing && !state.worker_alive {
@@ -268,15 +315,25 @@ fn loop(state: State(stop)) -> Nil {
   }
 }
 
-fn monitor_child(owner: Option(Pid), cancel: fn() -> Nil) -> Child {
+fn monitor_child(
+  owner: Option(Pid),
+  kind: ChildKind,
+  cancel: fn() -> Nil,
+) -> Child {
   case owner {
-    None -> Child(owner:, monitor: None, cancel:, cancelling: False)
+    None -> Child(owner:, monitor: None, kind:, cancel:, cancel_started: False)
     Some(pid) -> {
       let monitor = process.monitor(pid)
       // Keep even an already-dead owner until its Down is adjudicated. An
       // is_alive pre-filter would erase the only distinction between a normal
       // drain and an owner which crashed after abandoning descendants.
-      Child(owner:, monitor: Some(monitor), cancel:, cancelling: False)
+      Child(
+        owner:,
+        monitor: Some(monitor),
+        kind:,
+        cancel:,
+        cancel_started: False,
+      )
     }
   }
 }
@@ -297,7 +354,7 @@ fn begin_close(state: State(stop)) -> State(stop) {
 // helper contains that failure while its monitor keeps the witness alive until
 // the callback itself has returned or died.
 fn cancel_child(state: State(stop), child: Child) -> State(stop) {
-  case child.cancelling {
+  case child.cancel_started {
     True -> state
     False -> {
       let canceller = process.spawn_unlinked(child.cancel)
@@ -311,17 +368,17 @@ fn cancel_child(state: State(stop), child: Child) -> State(stop) {
       }
       State(
         ..state,
-        children: mark_cancelling(state.children, child),
+        children: mark_cancel_started(state.children, child),
         cancellers:,
       )
     }
   }
 }
 
-fn mark_cancelling(children: List(Child), target: Child) -> List(Child) {
+fn mark_cancel_started(children: List(Child), target: Child) -> List(Child) {
   list.map(children, fn(child) {
     case child.monitor == target.monitor && child.owner == target.owner {
-      True -> Child(..child, cancelling: True)
+      True -> Child(..child, cancel_started: True)
       False -> child
     }
   })
@@ -342,12 +399,12 @@ fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
     process.ProcessDown(monitor:, reason:, ..) -> {
       let lost_proof = case reason {
         process.Normal -> False
-        // A child may stop via its cancellation capability after custody has
-        // already marked it as cancelling. Before that transfer, an abnormal
-        // exit is unexpected and cannot certify any descendants it owned.
+        // Starting cancellation is not an acknowledgement. An abnormal leaf
+        // is fully gone, but an abnormal transitive owner may have abandoned
+        // descendants which the custodian cannot discover or cancel.
         process.Killed | process.Abnormal(_) ->
           list.any(state.children, fn(child) {
-            child.monitor == Some(monitor) && !child.cancelling
+            child.monitor == Some(monitor) && child.kind == Transitive
           })
       }
       let state =

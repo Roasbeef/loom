@@ -103,15 +103,19 @@ fn scripted_request(run: fn() -> Nil) -> http.PreparedRequest {
   let ready = process.new_subject()
   let owner =
     process.spawn_unlinked(fn() {
-      let begin = process.new_subject()
-      process.send(ready, begin)
-      let _permit = process.receive_forever(begin)
-      run()
+      let control = process.new_subject()
+      process.send(ready, control)
+      case process.receive_forever(control) {
+        True -> run()
+        False -> Nil
+      }
     })
-  let begin = process.receive_forever(ready)
+  let control = process.receive_forever(ready)
   http.PreparedRequest(
-    running: http.RunningRequest(owner:, cancel: fn() { process.kill(owner) }),
-    begin: fn() { process.send(begin, Nil) },
+    running: http.RunningRequest(owner:, cancel: fn() {
+      process.send(control, False)
+    }),
+    begin: fn() { process.send(control, True) },
   )
 }
 

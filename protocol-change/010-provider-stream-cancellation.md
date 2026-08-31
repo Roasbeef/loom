@@ -26,13 +26,20 @@ that decides its race with settlement.
 
 ## Proposal
 
-Add two terminal provider errors and one cancellation capability:
+Add three terminal provider errors and one cancellation capability:
 
 ```gleam
 pub type ProviderError {
   ProviderCancelled
   CancellationUnconfirmed
+  DrainProofLost
   // Existing variants remain unchanged.
+}
+
+pub type DrainOutcome {
+  Drained
+  TimedOut
+  ProofLost
 }
 
 pub type StreamHandle {
@@ -44,8 +51,11 @@ pub type StreamHandle {
 }
 
 pub fn cancel(handle: StreamHandle) -> Nil
-pub fn await_stopped(handle: StreamHandle, within: Int) -> Bool
-pub fn await_stopped_forever(handle: StreamHandle) -> Nil
+pub fn watch_drain(handle: StreamHandle) -> DrainWitness
+pub fn await_drain(witness: DrainWitness, within: Int) -> DrainOutcome
+pub fn await_drain_forever(witness: DrainWitness) -> DrainOutcome
+pub fn await_stopped(handle: StreamHandle, within: Int) -> DrainOutcome
+pub fn await_stopped_forever(handle: StreamHandle) -> DrainOutcome
 ```
 
 `ProviderCancelled` means the provider request owner selected explicit
@@ -59,6 +69,12 @@ the bounded grace period. It is also terminal: uncertainty about whether old
 work stopped must never authorize new provider work. The distinct error keeps
 the public result honest; only the request owner may claim that cancellation
 won its race with settlement.
+
+`DrainProofLost` means an owner exited abnormally. Death alone is not enough:
+the owner may have abandoned a process or socket beneath it. It is terminal
+and never authorizes retry. Callers which need this distinction register a
+`DrainWitness` before `begin`; a monitor installed after exit sees only
+`noproc` and cannot reconstruct the original reason.
 
 The closure is a capability to signal the owner, not permission for each layer
 to invent an acknowledgement. `StreamHandle.owner = Some(pid)` is the drain
@@ -127,34 +143,38 @@ string.
 
 OTP's public cancellation contract is asynchronous and routes through the
 currently registered manager. It explicitly does not guarantee that a response
-already in flight will not be delivered. Loom instead confines the required
-OTP-specific work to the native owner: a disposable worker scans all live
-`httpc_handler` processes because supervisor replacement can leave a request
-handler outside the new supervisor's child set. Each diagnostic call is
-bounded, the exact request id selects the handler, and the owner invokes
-`httpc_handler:cancel/2` before awaiting that handler's monitor. This is an
-intentional internal-OTP dependency; the benefit is that manager or handler-
-supervisor restart cannot retarget cancellation or erase drain evidence. Late
-HTTP messages remain confined to the cancelled attempt's private subject.
+already in flight will not be delivered. Loom therefore confines one internal
+OTP dependency to the native owner: the default manager's protected handler
+table maps the exact request id to its handler PID. The manager inserts that
+row before replying to successful admission. Loom forces a dedicated handler
+and request-local `max_connections_open = infinity`, so the request cannot be
+queued without a handler row. One O(1) lookup captures and monitors that PID;
+no process scan or diagnostic call is involved. The owner then invokes
+`httpc_handler:cancel/2` and awaits that original monitor. Manager or handler-
+supervisor replacement cannot retarget a PID already captured. Late HTTP
+messages remain confined to the cancelled attempt's private subject.
 
 The production shim closes that acknowledgement gap without moving provider
 policy into Erlang. It first allocates one parked native owner, which is both
 the raw `httpc` receiver and the monitorable drain witness. Only after Gleam
 publishes that PID does `begin_stream_request` admit work. A non-empty socket
-option gives the request a dedicated, non-reused handler; the discovery worker
-supports the OTP 27 and OTP 29 diagnostic layouts while matching the exact
-request id. It treats an unresponsive candidate as unknown rather than absent,
-so only a complete scan can prove the handler is already gone. The owner
-monitors a match, issues cancellation to the handler itself, and waits for
-Down. The handler closes its socket during termination before that signal is
-delivered. If the public call loses its reply while the manager or handler-
+option gives the request a dedicated, non-reused handler and disables manager
+queueing for this request. The owner reads the published request row directly,
+monitors its handler, issues cancellation to that PID, and waits for Down. The
+handler closes its socket during termination before that signal is delivered.
+Missing mapping after successful admission is loss of proof, so the owner
+requests conservative public cancellation and exits abnormally rather than
+inventing drain. If the public call loses its reply while the manager or handler-
 supervisor generation changes, the owner retains the ambiguous admission until
 a raw response reveals the request id. Redirects are disabled because they
-retain a request id while moving work to another handler. Automatic Retry-After retries are also
-disabled where the running OTP version supports that option; older supported
-releases predate it. Raw tuple selection, prepare/begin, and the OTP-specific
-drain wait are the whole shim; request, fallback, timeout, redaction, and
-terminal state stay in Gleam.
+retain a request id while moving work to another handler. Automatic Retry-After
+retries are also disabled where the running OTP version supports that option;
+older supported releases predate it. Raw tuple selection, request preparation,
+admission, exact lookup, and the OTP-specific drain wait are the whole shim;
+request, fallback, timeout, redaction, and terminal state stay in Gleam. The
+request deadline is computed once, so recursive receives and cancellation
+cannot restart its 300-second budget. Exceptions are normalized only before
+admission; an unexpected post-admission fault remains an abnormal owner exit.
 
 ## Ownership and race semantics
 
@@ -170,6 +190,14 @@ without turning that worker's Down into a false drain acknowledgement.
 Together the workers select HTTP events, explicit cancellation, consumer
 death, transport death, and the attempt timeout; only the custodian's Down
 acknowledges that the complete registered subtree is gone.
+
+The custodian distinguishes leaf processes from transitive owners. A leaf owns
+nothing beneath itself, so its own Down completes that obligation regardless
+of reason; the supervising worker still translates any crash. A transitive
+owner speaks for descendants, so only `Normal` proves drain. Beginning
+cancellation never weakens that rule: an abnormal transitive Down poisons the
+custodian even after its cancel callback has run. Cancellation helpers are
+monitored separately and cannot launder the child's exit reason.
 
 The first selected terminal-class event decides the result:
 
@@ -187,7 +215,8 @@ The first selected terminal-class event decides the result:
   retryable timeout failure only after the transport owner exits; otherwise it
   returns terminal `CancellationUnconfirmed`.
 - Transport death without its preceding terminal HTTP event becomes one
-  in-band `TransportFailed` rather than a wait until timeout.
+  in-band `TransportFailed` only when its original monitor reports `Normal`.
+  An abnormal Down becomes terminal `DrainProofLost` and cannot fall back.
 - Unexpected death of the runtime's provider effect is not translated into a
   retryable provider failure. Its reaper cancels the already-published stream
   owner, the driver restarts, and replacement recovery waits for that owner's
@@ -254,8 +283,8 @@ before the runtime can ask for summary progress.
   headers and secrets remain below the provider seam.
 
 No durable or network wire format changes. `ProviderCancelled`,
-`CancellationUnconfirmed`, and the cancel capability are in-VM orchestration
-vocabulary.
+`CancellationUnconfirmed`, `DrainProofLost`, the drain witness, and the cancel
+capability are in-VM orchestration vocabulary.
 
 ## Decision
 

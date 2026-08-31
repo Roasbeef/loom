@@ -130,9 +130,9 @@ pub fn production_cancel_survives_httpc_manager_restart_test() {
   stop_servers([server])
 }
 
-/// Replacing `httpc_handler_sup` must not hide a handler which survived its
-/// former supervisor. Cancellation scans the live handler generation rather
-/// than treating the replacement supervisor's empty child set as drain proof.
+/// Replacing `httpc_handler_sup` must not hide an already-captured handler.
+/// Cancellation addresses the retained PID rather than consulting the
+/// replacement supervisor's empty child set.
 pub fn production_cancel_survives_handler_supervisor_restart_test() {
   let accepted = process.new_subject()
   let closed = process.new_subject()
@@ -172,15 +172,16 @@ pub fn production_cancel_survives_handler_supervisor_restart_test() {
   stop_servers([server])
 }
 
-/// A handler which is still connecting cannot pin discovery or cancellation.
-/// The older suspended request forces the global scan through an unresponsive
-/// candidate while the handler supervisor is replaced around the newer one.
-pub fn production_discovery_bounds_busy_orphaned_handlers_test() {
+/// A busy handler for another request cannot delay ownership capture.
+///
+/// The first handler is suspended while the second request starts and stops.
+/// Direct request-ID lookup must therefore avoid touching the unrelated
+/// process entirely.
+pub fn production_handler_capture_ignores_busy_unrelated_handler_test() {
   let first_accepted = process.new_subject()
   let first_closed = process.new_subject()
   let second_accepted = process.new_subject()
   let second_closed = process.new_subject()
-  let second_owner_monitor = process.new_subject()
   let #(first_port, first_server) =
     start_hanging_server(fn() { process.send(first_accepted, Nil) }, fn() {
       process.send(first_closed, Nil)
@@ -219,23 +220,18 @@ pub fn production_discovery_bounds_busy_orphaned_handlers_test() {
     let assert Ok(Nil) = process.receive(second_accepted, within: 2000)
     let second_monitor = process.monitor(http.owner(second))
 
-    restart_httpc_handler_supervisor()
     http.cancel(second)
 
     let assert Ok(Nil) = process.receive(second_closed, within: 2000)
       as "a busy unrelated handler must not block exact request cancellation"
-    // The global scan cannot prove absence while the older candidate is
-    // deliberately unresponsive. Return first so the fixture resumes it;
-    // only then may the newer owner turn a complete scan into drain proof.
-    process.send(second_owner_monitor, second_monitor)
+    let assert Ok(True) =
+      process.new_selector()
+      |> process.select_specific_monitor(second_monitor, fn(_down) { True })
+      |> process.selector_receive(2000)
+      as "exact handler cancellation must finish while another handler is busy"
     Nil
   })
 
-  let monitor = process.receive_forever(second_owner_monitor)
-  let assert Ok(True) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(_down) { True })
-    |> process.selector_receive(2000)
   http.cancel(first)
   let assert Ok(Nil) = process.receive(first_closed, within: 2000)
   stop_servers([first_server, second_server])
