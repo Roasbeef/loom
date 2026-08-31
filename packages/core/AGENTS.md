@@ -82,8 +82,10 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - **Wire**: `core/codec` is the JSON durability codec for every durable
   core type, using pi's exact field vocabulary (`parentId`, `cacheRead`,
   `stopReason`, `retainedTail`) per ADR-001 so a format-4 import is a
-  mechanical decode-and-re-mint. `core/msgpack` is the effect-plane
-  framing codec, golden-pinned under `protocol/msgpack-fixtures/`.
+  mechanical decode-and-re-mint. Its public `encode_user_block` and
+  `decode_user_block` functions let ClientGateway carry that same block shape
+  without reimplementing it. `core/msgpack` is the effect-plane framing codec,
+  golden-pinned under `protocol/msgpack-fixtures/`.
 
 ## Invariants
 

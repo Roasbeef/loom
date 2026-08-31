@@ -24,6 +24,16 @@ pub fn message_roundtrip_property_test() {
   })
 }
 
+pub fn user_block_roundtrip_test() {
+  let blocks = [
+    message.UserText("hello", None),
+    message.UserImage("iVBORw0KGgo=", "image/png"),
+  ]
+  list.each(blocks, fn(block) {
+    assert codec.decode_user_block(codec.encode_user_block(block)) == Ok(block)
+  })
+}
+
 pub fn entry_roundtrip_property_test() {
   property(generate.seed(43), 200, generate.entry, fn(entry) {
     assert codec.decode_entry(codec.encode_entry(entry)) == Ok(entry)
