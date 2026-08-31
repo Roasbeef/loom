@@ -417,7 +417,7 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(1),
+      Length(footer_height(screen.size.width, model)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -620,6 +620,14 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  let #(left, usage, right) = footer_sections(model)
+  case area.size.height >= 2 {
+    True -> render_stacked_footer(buf, area, left, usage, right)
+    False -> render_single_footer(buf, area, left, usage, right)
+  }
+}
+
+fn footer_sections(model: Model) -> #(span.Line, span.Line, span.Line) {
   let shortcuts = case active_strand_live(model) {
     True ->
       case active_interrupt(model), model.submission_mode {
@@ -649,41 +657,95 @@ fn render_footer(
       span.span_styled("agents", theme.quiet_text()),
     ]
   }
+  let left =
+    span.line_new(
+      list.append(shortcuts, [
+        span.span_styled(" · ⇧tab ", theme.signal_bold()),
+        span.span_styled("rail · ", theme.quiet_text()),
+        span.span_styled("^g ", theme.signal_bold()),
+        span.span_styled("detail", theme.quiet_text()),
+      ]),
+    )
+  let usage =
+    span.line_new([
+      span.span_styled(
+        " " <> usage_summary(model.usage) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  let right =
+    span.line_new([
+      span.span_styled(
+        " "
+          <> compact(agents.summary(model.strands) <> " · " <> model.notice, 36)
+          <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  #(left, usage, right)
+}
+
+fn footer_height(width: Int, model: Model) -> Int {
+  let #(left, usage, right) = footer_sections(model)
+  footer_rows(width, left, usage, right)
+}
+
+/// Returns the rows needed to render all footer sections without collision.
+@internal
+pub fn footer_rows(
+  width: Int,
+  left: span.Line,
+  usage: span.Line,
+  right: span.Line,
+) -> Int {
+  case
+    span.line_width(left) + span.line_width(usage) + span.line_width(right)
+    <= width
+  {
+    True -> 1
+    False -> 2
+  }
+}
+
+fn render_single_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  left: span.Line,
+  usage: span.Line,
+  right: span.Line,
+) -> buffer.Buffer {
   let bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
-    |> statusbar.with_left([
-      span.line_new(
-        list.append(shortcuts, [
-          span.span_styled(" · ⇧tab ", theme.signal_bold()),
-          span.span_styled("rail · ", theme.quiet_text()),
-          span.span_styled("^g ", theme.signal_bold()),
-          span.span_styled("detail", theme.quiet_text()),
-        ]),
-      ),
-    ])
-    |> statusbar.with_center([
-      span.line_new([
-        span.span_styled(
-          " " <> usage_summary(model.usage) <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
-    ])
-    |> statusbar.with_right([
-      span.line_new([
-        span.span_styled(
-          " "
-            <> compact(
-            agents.summary(model.strands) <> " · " <> model.notice,
-            36,
-          )
-            <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
-    ])
+    |> statusbar.with_left([left])
+    |> statusbar.with_center([usage])
+    |> statusbar.with_right([right])
   statusbar.render(buf, area, bar)
+}
+
+fn render_stacked_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  left: span.Line,
+  usage: span.Line,
+  right: span.Line,
+) -> buffer.Buffer {
+  let primary =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([left])
+    |> statusbar.with_right([right])
+  let usage_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([usage])
+  case geometry.split_v(area, [Length(1), Length(1)]) {
+    [primary_area, usage_area] ->
+      buf
+      |> statusbar.render(primary_area, primary)
+      |> statusbar.render(usage_area, usage_bar)
+    _ -> statusbar.render(buf, area, primary)
+  }
 }
 
 // Etui's incremental diff can retain cells when one action replaces most of
@@ -2227,7 +2289,22 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
-  int.max(1, model.height - input_height(model) - 4)
+  transcript_height(
+    model.height,
+    input_height(model),
+    footer_height(model.width, model),
+  )
+}
+
+/// Returns the transcript rows left after fixed terminal surfaces are reserved.
+@internal
+pub fn transcript_height(
+  height: Int,
+  input_rows: Int,
+  footer_rows: Int,
+) -> Int {
+  // The header consumes one row and the transcript border consumes two.
+  int.max(1, height - input_rows - footer_rows - 3)
 }
 
 fn transcript_width(model: Model) -> Int {

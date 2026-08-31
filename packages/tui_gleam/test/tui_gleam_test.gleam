@@ -74,6 +74,28 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
     == "in 12k · out 678 · cache 90k/123 · $0.037"
 }
 
+pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
+  let shortcuts =
+    span.line_plain(" /help commands · /agents agents · ⇧tab rail · ^g detail")
+  let usage = span.line_plain(" in 875k · out 54k · cache 5m/0 · $0.0 ")
+  let status = span.line_plain(" 0 live / 3 agents · model: baseten-kimi-k3 ")
+  let needed =
+    span.line_width(shortcuts)
+    + span.line_width(usage)
+    + span.line_width(status)
+
+  assert tui_gleam.footer_rows(needed, shortcuts, usage, status) == 1
+  assert tui_gleam.footer_rows(needed - 1, shortcuts, usage, status) == 2
+  assert tui_gleam.footer_rows(133, shortcuts, usage, status) == 2
+  assert tui_gleam.footer_rows(180, shortcuts, usage, status) == 1
+  assert tui_gleam.transcript_height(40, 3, 2) == 32
+  assert tui_gleam.transcript_height(40, 3, 1) == 33
+  assert tui_gleam.viewport_height_changed(
+    tui_gleam.transcript_height(40, 3, 2),
+    tui_gleam.transcript_height(40, 3, 1),
+  )
+}
+
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
   assert tui_gleam.activity_glyph(0) == "◐"
   assert tui_gleam.activity_glyph(3) == "◓"

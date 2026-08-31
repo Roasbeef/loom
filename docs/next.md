@@ -244,6 +244,10 @@ result as a directional greater-than-50x idle reduction rather than a general
 throughput claim. Until upstream merges the PR, the package is temporarily
 pinned to the exact commit on the contributor fork.
 
+The footer keeps shortcuts, usage, and session status on one row while they
+fit. At narrower widths it reserves a second row for the usage ledger instead
+of letting etui's collision policy remove the center section entirely.
+
 Websocket startup now runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error
 instead of killing or hanging the terminal; success restores the socket actor's

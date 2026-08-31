@@ -84,7 +84,9 @@ reconnect portions of the existing client's contract.
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
 - **Usage**: full snapshots establish the authoritative ledger and deltas add
   input, output, cache-read, cache-write, and cost fields independently. The
-  footer never infers a price from a model name.
+  footer never infers a price from a model name. When shortcuts, usage, and
+  status cannot share one row, usage moves to a second row instead of
+  disappearing between the other sections.
 
 ## Invariants
 
