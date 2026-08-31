@@ -1,4 +1,4 @@
-//// Compact prompt attachments for the terminal composer.
+//// Text and image attachments for the terminal composer.
 ////
 //// A terminal paste can contain far more text than the one-row editor can
 //// usefully show. The composer keeps those bytes out of presentation state,
@@ -8,20 +8,24 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import tui_gleam/image_drop
 import tui_gleam/text_hygiene
 
 const compact_token_threshold = 400
 
 const compact_line_threshold = 8
 
-/// One pasted text attachment and its deliberately approximate token count.
+/// One attachment retained outside the editable prompt text.
 pub type Attachment {
+  /// A compact pasted-text attachment.
   Attachment(
     /// The exact pasted bytes retained until submission.
     text: String,
     /// A display-only estimate that must never replace the exact bytes.
     estimated_tokens: Int,
   )
+  /// A validated local image ready for a typed prompt-content block.
+  ImageAttachment(image: image_drop.Image)
 }
 
 /// Whether pasted text belongs inline in the editor or behind an attachment.
@@ -85,19 +89,55 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
     [] -> None
     [Attachment(estimated_tokens:, ..)] ->
       Some("pasted ~" <> token_count(estimated_tokens) <> " tokens")
-    _ -> {
-      let total =
-        list.fold(attachments, 0, fn(total, attachment) {
-          let Attachment(estimated_tokens:, ..) = attachment
-          total + estimated_tokens
-        })
+    [
+      ImageAttachment(image: image_drop.Image(
+        filename:,
+        mime_type:,
+        byte_size:,
+        ..,
+      )),
+    ] ->
       Some(
-        int.to_string(list.length(attachments))
-        <> " pastes · ~"
-        <> token_count(total)
-        <> " tokens",
+        filename
+        <> " · "
+        <> mime_type
+        <> " · "
+        <> int.to_string(byte_size)
+        <> " B",
       )
+    attachments ->
+      case has_images(attachments) {
+        False ->
+          Some(
+            int.to_string(list.length(attachments))
+            <> " pastes · ~"
+            <> token_count(text_token_total(attachments))
+            <> " tokens",
+          )
+        True ->
+          attachments
+          |> list.map(attachment_summary)
+          |> string.join(" · ")
+          |> Some
+      }
+  }
+}
+
+fn text_token_total(attachments: List(Attachment)) -> Int {
+  list.fold(attachments, 0, fn(total, attachment) {
+    case attachment {
+      Attachment(estimated_tokens:, ..) -> total + estimated_tokens
+      ImageAttachment(..) -> total
     }
+  })
+}
+
+fn attachment_summary(attachment: Attachment) -> String {
+  case attachment {
+    Attachment(estimated_tokens:, ..) ->
+      "paste ~" <> token_count(estimated_tokens) <> " tokens"
+    ImageAttachment(image_drop.Image(filename:, mime_type:, byte_size:, ..)) ->
+      filename <> " " <> mime_type <> " " <> int.to_string(byte_size) <> " B"
   }
 }
 
@@ -112,9 +152,11 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
 pub fn expand(input: String, attachments: List(Attachment)) -> String {
   let pasted =
     attachments
-    |> list.map(fn(attachment) {
-      let Attachment(text:, ..) = attachment
-      text
+    |> list.filter_map(fn(attachment) {
+      case attachment {
+        Attachment(text:, ..) -> Ok(text)
+        ImageAttachment(..) -> Error(Nil)
+      }
     })
     |> string.join("\n\n")
   case input, pasted {
@@ -138,6 +180,35 @@ pub fn drop_last(attachments: List(Attachment)) -> List(Attachment) {
     [] -> []
     [_, ..rest] -> list.reverse(rest)
   }
+}
+
+/// Returns validated images in the order the operator dropped them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.images([]) == []
+/// ```
+///
+pub fn images(attachments: List(Attachment)) -> List(image_drop.Image) {
+  list.filter_map(attachments, fn(attachment) {
+    case attachment {
+      Attachment(..) -> Error(Nil)
+      ImageAttachment(image:) -> Ok(image)
+    }
+  })
+}
+
+/// Reports whether the composer holds any image attachment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !composer.has_images([])
+/// ```
+///
+pub fn has_images(attachments: List(Attachment)) -> Bool {
+  images(attachments) != []
 }
 
 /// Bounds a large durable user turn until transcript detail is requested.

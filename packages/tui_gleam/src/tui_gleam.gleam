@@ -37,6 +37,7 @@ import tui_gleam/agents
 import tui_gleam/command
 import tui_gleam/composer
 import tui_gleam/connection
+import tui_gleam/image_drop
 import tui_gleam/markdown
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
@@ -1323,20 +1324,27 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
-  case composer.classify(text) {
-    composer.Inline(text) ->
-      Model(
-        ..model,
-        input: text_area.state_from_string(text),
-        history_index: 0,
-        history_draft: text,
-      )
-    composer.Compact(attachment) -> {
-      let attachments = list.append(model.attachments, [attachment])
-      let notice = composer.summary(attachments) |> option.unwrap("pasted text")
-      Model(..model, attachments:, notice:)
-    }
+  case image_drop.load_paste(text) {
+    Error(reason) -> append_error(model, reason)
+    Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
+    Ok(None) ->
+      case composer.classify(text) {
+        composer.Inline(text) ->
+          Model(
+            ..model,
+            input: text_area.state_from_string(text),
+            history_index: 0,
+            history_draft: text,
+          )
+        composer.Compact(attachment) -> add_attachment(model, attachment)
+      }
   }
+}
+
+fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
+  let attachments = list.append(model.attachments, [attachment])
+  let notice = composer.summary(attachments) |> option.unwrap("pasted content")
+  Model(..model, attachments:, notice:)
 }
 
 fn drain_connection(model: Model, remaining: Int) -> Model {
@@ -2426,6 +2434,13 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
 }
 
 fn submit(model: Model) -> Model {
+  case composer.has_images(model.attachments) {
+    True -> submit_with_images(model)
+    False -> submit_text(model)
+  }
+}
+
+fn submit_text(model: Model) -> Model {
   let input = text_area.value(model.input)
   let expanded = composer.expand(input, model.attachments)
   let remembered = remember_submission(model, input)
@@ -2548,6 +2563,134 @@ fn submit(model: Model) -> Model {
       append_error(cleared, "/" <> name <> " needs an argument")
     command.Prompt(_) -> send_user_text(prompt_cleared, expanded, model)
   }
+}
+
+// Images are new prompt content, never live-turn steering. Refusing before the
+// editor is cleared preserves both the instruction and every local attachment.
+fn submit_with_images(model: Model) -> Model {
+  let input = text_area.value(model.input)
+  case image_prompt_allowed(active_strand_live(model)) {
+    False -> append_error(model, "image prompts require an idle strand")
+    True ->
+      case command.parse(input) {
+        command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
+        command.Help
+        | command.Models
+        | command.Model(_)
+        | command.Strands
+        | command.Agents
+        | command.Notes
+        | command.Details
+        | command.Strand(_)
+        | command.Fork(_)
+        | command.Compact
+        | command.Abort
+        | command.Steer(_)
+        | command.Queue(_)
+        | command.Clear
+        | command.Quit
+        | command.Unknown(_)
+        | command.MissingArgument(_) ->
+          append_error(
+            model,
+            "image attachments can only accompany an ordinary prompt",
+          )
+      }
+  }
+}
+
+fn send_image_prompt(model: Model, input: String) -> Model {
+  let expanded = composer.expand(input, model.attachments)
+  let images = composer.images(model.attachments)
+  let content = image_prompt_content(expanded, images)
+  let remembered = remember_submission(model, input)
+  let cleared =
+    Model(
+      ..remembered,
+      input: text_area.state_new(),
+      attachments: [],
+      history_index: 0,
+      history_draft: "",
+      submission_mode: SteerNow,
+    )
+  send_prompt_content(cleared, content, expanded, images)
+}
+
+/// Builds one ordered user turn without exposing local image paths.
+@internal
+pub fn image_prompt_content(
+  text: String,
+  images: List(image_drop.Image),
+) -> List(message.UserBlock) {
+  let text_blocks = case text {
+    "" -> []
+    _ -> [message.UserText(text, None)]
+  }
+  let image_blocks =
+    list.map(images, fn(image) {
+      let image_drop.Image(data:, mime_type:, ..) = image
+      message.UserImage(data, mime_type)
+    })
+  list.append(text_blocks, image_blocks)
+}
+
+/// Reports whether image content may start a new turn on this strand.
+@internal
+pub fn image_prompt_allowed(strand_live: Bool) -> Bool {
+  !strand_live
+}
+
+fn send_prompt_content(
+  model: Model,
+  content: List(message.UserBlock),
+  text: String,
+  images: List(image_drop.Image),
+) -> Model {
+  case model.socket {
+    Some(_) ->
+      send_frame(
+        Model(
+          ..model,
+          submitting: Some(model.active_strand),
+          notice: "image prompt sent to " <> model.active_strand,
+        ),
+        protocol.prompt_content(model.next_id, model.active_strand, content),
+      )
+    None ->
+      Model(
+        ..model,
+        transcript: list.append(model.transcript, [
+          Line(User, image_prompt_preview(text, images, model.details_expanded)),
+          Line(Assistant, "Design-preview echo received."),
+        ]),
+        record_cache_valid: False,
+        notice: "image prompt accepted",
+      )
+      |> invalidate_transcript
+  }
+}
+
+fn image_prompt_preview(
+  text: String,
+  images: List(image_drop.Image),
+  details_expanded: Bool,
+) -> String {
+  let text = case text {
+    "" -> []
+    _ -> [composer.transcript_text(text, details_expanded)]
+  }
+  let image_labels =
+    list.map(images, fn(image) {
+      let image_drop.Image(filename:, mime_type:, byte_size:, ..) = image
+      "[image: "
+      <> filename
+      <> " · "
+      <> mime_type
+      <> " · "
+      <> int.to_string(byte_size)
+      <> " B]"
+    })
+  list.append(text, image_labels) |> string.join("\n")
 }
 
 // Submitted text is newest-first so Up is a constant-time move to the common

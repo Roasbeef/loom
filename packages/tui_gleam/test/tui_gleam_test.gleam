@@ -18,6 +18,8 @@ import tui_gleam/agents
 import tui_gleam/command
 import tui_gleam/composer
 import tui_gleam/connection
+import tui_gleam/image_drop
+import tui_gleam/internal/ffi_file
 import tui_gleam/internal/workspace_file
 import tui_gleam/markdown
 import tui_gleam/model_selector
@@ -418,7 +420,9 @@ pub fn large_paste_becomes_a_compact_attachment_test() {
 
   assert composer.classify(text)
     == composer.Compact(composer.Attachment(text:, estimated_tokens: 500))
-  assert composer.summary([composer.Attachment(text:, estimated_tokens: 500)])
+  assert composer.summary([
+      composer.Attachment(text:, estimated_tokens: 500),
+    ])
     == Some("pasted ~500 tokens")
 }
 
@@ -452,6 +456,126 @@ pub fn backspace_drops_only_the_newest_paste_test() {
 
   assert composer.drop_last([first, second]) == [first]
   assert composer.drop_last([]) == []
+}
+
+pub fn dropped_path_parsing_never_performs_shell_expansion_test() {
+  assert image_drop.pasted_path("/tmp/one\\ two.png")
+    == Some("/tmp/one two.png")
+  assert image_drop.pasted_path("'/tmp/one two.png'")
+    == Some("/tmp/one two.png")
+  assert image_drop.pasted_path("/tmp/one.png /tmp/two.png") == None
+  assert image_drop.pasted_path("$(touch /tmp/never)") == None
+}
+
+pub fn image_magic_and_size_admission_test() {
+  assert image_drop.media_type(<<
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    >>)
+    == Some("image/png")
+  assert image_drop.media_type(<<0xFF, 0xD8, 0xFF>>) == Some("image/jpeg")
+  assert image_drop.media_type(<<"GIF89a":utf8>>) == Some("image/gif")
+  assert image_drop.media_type(<<"RIFF":utf8, 0:32, "WEBP":utf8>>)
+    == Some("image/webp")
+  assert image_drop.media_type(<<"not an image":utf8>>) == None
+  assert image_drop.size_allowed(image_drop.max_image_bytes)
+  assert !image_drop.size_allowed(image_drop.max_image_bytes + 1)
+}
+
+pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
+  let path = "build/tui-golden-drop.png"
+  let bytes = <<
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+    0x01,
+  >>
+  let assert Ok(Nil) = simplifile.write_bits(to: path, bits: bytes)
+  let assert Ok(Some(image)) = image_drop.load_paste(path)
+  let _ = simplifile.delete(path)
+  let image_drop.Image(filename:, mime_type:, byte_size:, data:, ..) = image
+  assert filename == "tui-golden-drop.png"
+  assert mime_type == "image/png"
+  assert byte_size == bit_array.byte_size(bytes)
+  let content = tui_gleam.image_prompt_content("inspect this", [image])
+  assert content
+    == [
+      message.UserText("inspect this", None),
+      message.UserImage(data, mime_type),
+    ]
+  let frame = protocol.prompt_content(18, "main", content)
+  assert !string.contains(frame, path)
+  assert frame
+    == "{\"v\":1,\"id\":18,\"cmd\":\"prompt_content\",\"body\":{\"strand\":\"main\",\"content\":[{\"type\":\"text\",\"text\":\"inspect this\"},{\"type\":\"image\",\"data\":\"iVBORw0KGgoB\",\"mimeType\":\"image/png\"}]}}"
+}
+
+pub fn unsupported_regular_file_stays_ordinary_text_test() {
+  let path = "build/tui-golden-drop.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: path, bits: <<"ordinary text":utf8>>)
+  let result = image_drop.load_paste(path)
+  let _ = simplifile.delete(path)
+
+  assert result == Ok(None)
+}
+
+pub fn bounded_image_read_refuses_growth_past_the_limit_test() {
+  let path = "build/tui-bounded-drop.bin"
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: path, bits: <<"thirteen bytes":utf8>>)
+  let result = ffi_file.read_bounded(path, 12)
+  let _ = simplifile.delete(path)
+
+  assert result == Error("file exceeds the bounded read limit")
+}
+
+pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
+  let first =
+    image_drop.Image(
+      local_path: "/tmp/a.png",
+      filename: "a.png",
+      mime_type: "image/png",
+      byte_size: 1,
+      data: "YQ==",
+    )
+  let second =
+    image_drop.Image(
+      local_path: "/tmp/b.jpg",
+      filename: "b.jpg",
+      mime_type: "image/jpeg",
+      byte_size: 1,
+      data: "Yg==",
+    )
+  let attachments = [
+    composer.ImageAttachment(first),
+    composer.ImageAttachment(second),
+  ]
+
+  assert composer.images(attachments) == [first, second]
+  assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
+  assert composer.summary(attachments)
+    == Some("a.png image/png 1 B · b.jpg image/jpeg 1 B")
+  assert tui_gleam.image_prompt_content("", composer.images(attachments))
+    == [
+      message.UserImage("YQ==", "image/png"),
+      message.UserImage("Yg==", "image/jpeg"),
+    ]
+}
+
+pub fn image_submission_is_refused_while_the_strand_is_live_test() {
+  assert tui_gleam.image_prompt_allowed(False)
+  assert !tui_gleam.image_prompt_allowed(True)
 }
 
 pub fn code_mode_program_renders_as_gleam_test() {

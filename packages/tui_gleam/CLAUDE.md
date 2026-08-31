@@ -34,8 +34,13 @@ reconnect portions of the existing client's contract.
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
 - `tui_gleam/composer` separates editable prompt text from large pasted-text
-  attachments. It owns the approximate token indicator and expands the exact
-  pasted bytes only when a prompt crosses the gateway boundary.
+  and validated image attachments. It owns the approximate token indicator,
+  expands exact pasted text only at the gateway boundary, and keeps local
+  image paths out of typed prompt blocks.
+- `tui_gleam/image_drop` parses only terminal quote and backslash-space path
+  forms, sniffs PNG/JPEG/GIF/WebP magic, and enforces the 20 MiB limit before
+  reading a whole image. Its small Erlang helper reads only the classification
+  prefix; it performs no path expansion or shell evaluation.
 
 ## Relationships
 
@@ -52,8 +57,9 @@ reconnect portions of the existing client's contract.
 
 ## Traffic
 
-- **Commands out**: `subscribe`, `prompt`, `models`, `set_config`, `abort`,
-  `steer`, `follow_up`, branch-scope `fork`, and standalone `compact`.
+- **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
+  `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`, and
+  standalone `compact`.
 - **Events in**: full/strand/model/config snapshots, durable entries, stream
   deltas, operation transitions, usage, escalation notices, and server
   errors. Unknown event names are accepted and ignored for forward
@@ -76,9 +82,13 @@ reconnect portions of the existing client's contract.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
   at 400 tokens or spanning eight lines becomes a compact attachment in the
   input row; the full bytes are appended to the editable instruction only
-  when the prompt is sent. The backend enables bracketed-paste mode so a real
-  terminal paste arrives as one event. Backspace on an empty editor drops the
-  newest attachment.
+  when the prompt is sent. A single pasted local path becomes an image
+  attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
+  20 MiB; the chip shows filename, MIME, and size. Unsupported files and
+  multi-token paths stay text, while read errors preserve the editor and show
+  a local error. The backend enables bracketed-paste mode so a real terminal
+  paste arrives as one event. Backspace on an empty editor drops the newest
+  attachment.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
@@ -145,6 +155,11 @@ reconnect portions of the existing client's contract.
 - **Large context stays bounded without data loss.** Compact paste indicators
   are presentation state only. Submission expands the original bytes, and a
   durable large user turn stays previewed until detail mode asks for it.
+- **Image turns never become live-operation steering.** The client submits one
+  non-empty text block first, when present, then image blocks in drop order.
+  It refuses locally while the active strand is live and preserves the editor
+  and attachments. Only the file bytes and magic-derived MIME reach the wire;
+  local paths remain presentation state.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
   prompt editing is inert. Each modal explicitly paints the background of all
   its styled spans so transcript attributes cannot bleed into the overlay.

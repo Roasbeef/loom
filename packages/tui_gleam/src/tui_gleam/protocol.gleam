@@ -8,7 +8,7 @@
 import core/codec
 import core/entry.{type Entry}
 import core/json.{type JsonValue}
-import core/message.{type Usage}
+import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -150,6 +150,25 @@ pub fn prompt(id: Int, strand: String, text: String) -> String {
   command(id, "prompt", [
     #("strand", json.String(strand)),
     #("text", json.String(text)),
+  ])
+}
+
+/// Encodes one ordered rich-content prompt for an idle strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.prompt_content(3, "main", [message.UserText("inspect", None)])
+/// ```
+///
+pub fn prompt_content(
+  id: Int,
+  strand: String,
+  content: List(UserBlock),
+) -> String {
+  command(id, "prompt_content", [
+    #("strand", json.String(strand)),
+    #("content", json.Array(list.map(content, codec.encode_user_block))),
   ])
 }
 
