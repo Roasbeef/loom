@@ -698,5 +698,9 @@ development build of it.
 - `docs/gleam-style.md` — a language tour and the house style. Gleam is
   young enough that habits from other languages mislead; read this before
   contributing.
+- `docs/performance.md` — the measurement loop for Gleam and the BEAM:
+  identifying the right node, choosing an OS or OTP profiler, recognizing
+  immutable-data cost shapes, and separating idle, streaming, and memory
+  claims.
 - `docs/notebook.md` — the running lab log: what was decided, what broke,
   and what is in flight, newest entry first.
