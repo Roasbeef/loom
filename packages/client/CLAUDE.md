@@ -198,8 +198,10 @@ over one session file. WP-L.
   max_row_chars, lease_ttl_ms, run_lease_ttl_ms, head_key, cursor_key,
   notes_cursor_key,
   note_count_key, Cursor, cursor_from, cursor_value, MemoryFault, Opened,
-  open, close, probe, SourceRef, Provenance, Distillate, distillate_of,
-  append_distillates, head, head_rows, advance_head, advance_cursors,
+  open, close, probe, SourceRef, Provenance, no_provenance, Distillate,
+  distillate_of, provenance_of, provenance_by_id, names_source,
+  append_distillates, head, head_rows, advance_head, replace_head,
+  advance_cursors,
   cell, notes_after, safe_text, remember_seam, fence, render_digest,
   read_digest, write_digest, reconcile_digest, digest_hooks, wrapped}` —
   the memory plane: the
@@ -222,11 +224,23 @@ over one session file. WP-L.
   body only — scrubbed, byte-capped, truncation marked — and `wrapped`
   builds the fence and the attribution at injection time, so the file
   cannot forge its own provenance.
+  The **erasure cascade's** reading surface is here too (#115).
+  `provenance_of` is the total decoder of the `{text, sources, derived_from}`
+  payload — anything it cannot read is `no_provenance`, which names
+  nothing and is therefore *kept*, so one malformed row can never empty
+  memory. `provenance_by_id` pairs each head id with what its row
+  records, **one pair per id including ids the store cannot resolve**, so
+  an unresolvable head id survives the rewrite rather than vanishing from
+  it. `names_source` is the match, at session grain because provenance is
+  batch-level. `replace_head` is the write: the head CAS alone, no rows
+  and no cursors, sharing `advance_head`'s expectation so the head only
+  ever moves under a CAS.
 - `client/distill.{Answer, Distiller, Candidate, Extract, Harvest, Report,
-  Config, default_scan_limit, max_extract_chars, max_notes_per_run,
+  Cascade, Config, default_scan_limit, max_extract_chars, max_notes_per_run,
   default_timeout_ms, distill_owner, extractable, extraction_input,
   extraction_prompt, consolidation_prompt, parse_candidates, config_for,
-  with_logger, run, source_files, target, gateway_distiller, main}` — the
+  with_logger, run, cascade, no_distiller, source_files, target,
+  gateway_distiller, main}` — the
   distillation pipeline, runnable as `gleam run -m client/distill --
   --config loom.toml [--session-dir <dir> | --session <path.db>]`. It
   walks the session directory's `*.db` files, skips every one whose
@@ -251,6 +265,42 @@ over one session file. WP-L.
   and does not re-pay the same extraction turns on every run forever.
   Every run, that one included, ends by reconciling the sidecar against
   the head.
+  **`--cascade <source-session-id>` is the second command behind the same
+  entry point** (`cascade`, issue #115): the first-order erasure cascade,
+  run by the operator *after* `session/repo` has rewritten that source.
+  It drops from the head every distillate whose provenance names the
+  session and re-renders the sidecar without them. Four things about it
+  are load-bearing. It **needs no `--config`** and runs under
+  `no_distiller`, because it dispatches no model turn. It **writes no
+  rows** — every survivor is already durable — so the pipeline's write
+  order holds trivially, and it takes the *short* lease rather than
+  `run_lease_ttl_ms`, since nothing slow sits between its commits. It
+  **moves no cursor** — and that is a defect rather than a saving. The
+  erased source is re-extracted from zero by the rewrite generation the
+  erase bumped, but every *other* source keeps its high-water cursor and
+  the notes cursor sits past every note already consumed. Since a head is
+  uniform in provenance, an effective cascade empties it, so **the
+  surviving sources' contribution and every hand-written note become
+  permanently unrecoverable by the pipeline**: the next run consolidates
+  the erased source alone, over an empty head and no notes. Re-reading
+  the other sources is the only rebuild there could be, so not doing it
+  is the gap. Issue **#124** carries the mechanism (a cursor rewind on
+  drop, a `--rebuild` companion, or a `--dry-run` preview), and
+  `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
+  pins the loss until one lands. And a cascade that
+  drops nothing **does not CAS at all**, because writing the identical id
+  list back would still bump the cell's seq and lose a concurrent run's
+  expectation. First-order: a row whose `derived_from` names a dropped
+  row is not chased, and within one head that is vacuous rather than
+  deferred. The induction is written out at `memory.replace_head` and
+  needs **both** head writers: `advance_head` mints a fresh batch whose
+  ids are disjoint from what its `derived_from` names, and `replace_head`
+  writes a *subset* of an existing head, which preserves that
+  disjointness. A third head writer introducing new ids would void it
+  silently. The `Cascade` report carries an `unreadable` count — rows
+  kept because their provenance would not decode, which is the one place
+  the command under-deletes. `docs/spec-gaps.md`'s M2
+  item 9 carries the boundary and the over-deletion it implies.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -608,7 +658,9 @@ over one session file. WP-L.
   run start through `memory.digest_hooks`, which is why an updated digest
   lands at the next session boundary rather than mid-session. The two
   writers are `client/distill` (a command, holding the memory session's
-  writer lease for its whole run under `run_lease_ttl_ms`) and the
+  writer lease for its whole run under `run_lease_ttl_ms` — or under the
+  short one for a `--cascade` pass, which has no model turn between its
+  commits) and the
   `remember` seam (one open per call under the short `lease_ttl_ms`,
   refused in band while a run holds the lease). Usage rows for both model
   turns land in the memory session's own ledger.

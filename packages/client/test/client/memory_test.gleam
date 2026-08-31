@@ -13,6 +13,7 @@ import client/memory
 import client/notes
 import client/serve
 import core/clock
+import core/entry
 import core/ids
 import core/json
 import core/message
@@ -321,7 +322,224 @@ pub fn the_head_moves_only_from_the_seq_it_was_read_at_test() {
   memory.close(opened)
 }
 
+// --- provenance, and the cascade's match -------------------------------------
+
+/// Provenance round-trips through the payload the pipeline stores: what
+/// `distillate_data` writes, `provenance_of` reads back.
+///
+/// The mutation this is here to catch: drop the `sources` field from
+/// `distillate_data`, or read it under another name in `provenance_of`.
+/// Either makes an erasure cascade match nothing, silently.
+pub fn provenance_round_trips_through_the_stored_payload_test() {
+  let recorded =
+    memory.Provenance(
+      sources: [
+        memory.SourceRef(session: "alpha", entries: ["e1", "e2"]),
+        memory.SourceRef(session: "beta", entries: []),
+      ],
+      derived_from: ["older-row"],
+    )
+  let stored = memory.distillate_data("the gate is make check", recorded)
+  assert memory.provenance_of(a_row(stored)) == recorded
+
+  // A note carries the empty provenance, and it survives the trip too.
+  assert memory.provenance_of(
+      a_row(memory.distillate_data("a note", memory.no_provenance)),
+    )
+    == memory.no_provenance
+}
+
+/// Every shape that is not what this module writes decodes to
+/// `no_provenance` rather than failing — which is the safe direction,
+/// because a row a cascade cannot read is a row it keeps.
+pub fn an_unreadable_payload_has_no_provenance_test() {
+  // No payload at all, and a payload that is not an object.
+  assert memory.provenance_of(entry.CustomEntry(
+      id: an_id(1),
+      parent: None,
+      seq: 1,
+      ts: 0,
+      custom_type: memory.fact_type,
+      data: None,
+    ))
+    == memory.no_provenance
+  assert memory.provenance_of(a_row(json.String("?"))) == memory.no_provenance
+
+  // The right fields carrying the wrong shapes: sources that is not an
+  // array, a source that is not an object, a source with no session, and
+  // entries that are not strings. Each contributes nothing; none crash.
+  assert memory.provenance_of(
+      a_row(
+        json.Object([
+          #("sources", json.String("not an array")),
+          #("derived_from", json.Int(3)),
+        ]),
+      ),
+    )
+    == memory.no_provenance
+  assert memory.provenance_of(
+      a_row(
+        json.Object([
+          #(
+            "sources",
+            json.Array([
+              json.String("bare"),
+              json.Object([#("entries", json.Array([]))]),
+              json.Object([
+                #("session", json.String("alpha")),
+                #("entries", json.Array([json.String("e1"), json.Int(2)])),
+              ]),
+            ]),
+          ),
+        ]),
+      ),
+    )
+    == memory.Provenance(
+      sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
+      derived_from: [],
+    )
+}
+
+/// **The cascade's whole match, and its grain.** A row is selected by the
+/// *session* its provenance names, never by the entry ids under it:
+/// provenance is batch-level, so entry narrowing would claim a precision
+/// the pipeline never recorded.
+///
+/// The mutation this is here to catch: invert the comparison in
+/// `names_source`, or make it match on entries. The first makes a cascade
+/// drop every row but the ones it should; the second makes it drop
+/// nothing.
+pub fn the_cascade_matches_provenance_at_session_grain_test() {
+  let named =
+    memory.Provenance(
+      sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
+      derived_from: ["older-row"],
+    )
+  assert memory.names_source(named, "alpha")
+  assert memory.names_source(named, "beta") == False
+  // The entry ids are not the grain: naming one of them is not naming the
+  // session, and a session named with no entries at all still matches.
+  assert memory.names_source(named, "e1") == False
+  assert memory.names_source(
+    memory.Provenance(
+      sources: [memory.SourceRef(session: "beta", entries: [])],
+      derived_from: [],
+    ),
+    "beta",
+  )
+  // A row that records no provenance names nothing, so a cascade keeps
+  // it — including every `remember` note, which has no source session.
+  assert memory.names_source(memory.no_provenance, "alpha") == False
+  // And `derived_from` is not a source: the second order is not chased.
+  assert memory.names_source(
+      memory.Provenance(sources: [], derived_from: ["alpha"]),
+      "alpha",
+    )
+    == False
+}
+
+/// The head's ids, paired with the provenance their rows carry — one pair
+/// per id, including ids the store cannot resolve.
+///
+/// That last part is the finding: a head id whose row is missing pairs
+/// with `no_provenance` and therefore survives a cascade. Pairing per
+/// found row instead would silently drop it from the rewritten head.
+pub fn provenance_pairs_with_every_head_id_including_the_missing_test() {
+  let root = fresh_root("provenance")
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(written, _generator)) =
+    memory.append_distillates(
+      opened,
+      [#(memory.fact_type, "the gate is make check")],
+      memory.Provenance(
+        sources: [memory.SourceRef(session: "alpha", entries: ["e1"])],
+        derived_from: [],
+      ),
+      clock.fixed(at: 10),
+    )
+    as "the row must append"
+  let assert [only] = written as "exactly one row was written"
+  let stored = ids.entry_id_to_string(only)
+
+  let assert Ok(pairs) =
+    memory.provenance_by_id(opened, [stored, "not-an-id", "01924000000000000"])
+    as "provenance must read"
+  assert list.length(pairs) == 3
+  let assert [#(first, found), #(_second, absent), #(_third, unparsed)] = pairs
+    as "the pairs come back in the order asked for"
+  assert first == stored
+  assert memory.names_source(found, "alpha")
+  // Neither an unresolvable id nor an unparseable one names anything.
+  assert absent == memory.no_provenance
+  assert unparsed == memory.no_provenance
+  memory.close(opened)
+}
+
+/// `replace_head` moves the head and nothing else — no cursor, no row —
+/// and it moves only from the seq it was read at.
+pub fn replace_head_moves_the_pointer_and_nothing_else_test() {
+  let root = fresh_root("replace")
+  let assert Ok(opened) = open_memory(root) as "the memory session must open"
+  let assert Ok(#(written, _generator)) =
+    memory.append_distillates(
+      opened,
+      [
+        #(memory.fact_type, "the gate is make check"),
+        #(memory.lesson_type, "do not force push"),
+      ],
+      memory.no_provenance,
+      clock.fixed(at: 10),
+    )
+    as "the rows must append"
+  let assert Ok(Nil) =
+    memory.advance_head(opened, ids: written, expected: None, cursors: [])
+    as "the head must land"
+  let assert Ok(#([kept, dropped], Some(seq))) = memory.head(opened)
+    as "the head must read back"
+
+  // A stale expectation loses, exactly as `advance_head`'s does.
+  let assert Error(memory.MemoryFailed(..)) =
+    memory.replace_head(opened, named: [kept], expected: None)
+    as "a replacement against `absent` must fail once a head exists"
+  // The right one wins, and the surviving id is written back verbatim.
+  let assert Ok(Nil) =
+    memory.replace_head(opened, named: [kept], expected: Some(seq))
+    as "a replacement at the read seq must land"
+  let assert Ok(#(now, Some(moved))) = memory.head(opened)
+    as "the head must read back again"
+  assert now == [kept]
+  assert moved > seq
+
+  // The dropped row is still in the store: rows are write-once, and a
+  // cascade removes them from the head rather than deleting them.
+  let assert Ok(rows) = memory.head_rows(opened) as "the head's rows must read"
+  assert list.length(rows) == 1
+  let assert Ok(orphans) = memory.provenance_by_id(opened, [dropped])
+    as "the dropped row must still be readable by id"
+  assert list.length(orphans) == 1
+  memory.close(opened)
+}
+
 // --- the rig ----------------------------------------------------------------
+
+// One `memory/*` entry carrying `payload`, which is where provenance
+// lives.
+fn a_row(payload: json.JsonValue) -> entry.Entry {
+  entry.CustomEntry(
+    id: an_id(0),
+    parent: None,
+    seq: 0,
+    ts: 0,
+    custom_type: memory.fact_type,
+    data: Some(payload),
+  )
+}
+
+fn an_id(seed: Int) -> ids.EntryId {
+  let #(id, _generator) =
+    ids.mint_entry(ids.generator(clock.fixed(at: 1000 + seed), seed: seed + 1))
+  id
+}
 
 fn open_memory(root: String) -> Result(memory.Opened, memory.MemoryFault) {
   memory.open(

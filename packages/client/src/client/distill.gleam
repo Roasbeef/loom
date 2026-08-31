@@ -62,6 +62,34 @@
 //// `append_distillates` from `advance_head` for exactly this reason, and
 //// a test drives the two phases with the kill in between.
 ////
+//// # The erasure cascade is the same command, with a flag
+////
+//// ```sh
+//// gleam run -m client/distill -- --cascade <source-session-id>
+//// ```
+////
+//// Run after `session/repo` has rewritten a source session, `--cascade`
+//// drops from the memory head every distillate whose provenance names
+//// that session and re-renders the sidecar without them (`cascade`). It
+//// dispatches no model turn, so it needs no `--config`; it writes no
+//// rows, because every survivor is already durable; and it moves no
+//// cursor, because the rewrite generation the erase bumped already
+//// forces the source to be re-extracted from zero.
+////
+//// It is the pipeline's ordinary head replacement, and inherits the
+//// crash semantics above unchanged — a cascade killed after the CAS is
+//// reconciled by the next run like any other. **First-order only**: the
+//// boundary is issue #115's own, recorded in `docs/spec-gaps.md`.
+////
+//// **What it costs, which is more than it looks.** A head is one
+//// consolidation's batch and so is uniform in provenance, so a cascade
+//// that matches anything at all empties the head. Only the erased
+//// source is then re-read — every other source keeps its cursor, and
+//// the notes cursor sits past every note already consumed — so their
+//// contribution is permanently unrecoverable by this pipeline. That is
+//// a defect rather than a design: issue #124 carries the mechanism, and
+//// `cascade`'s own doc spells the sequence out.
+////
 //// # Where the model comes in
 ////
 //// Two provider calls per run — one extraction per source, one
@@ -89,6 +117,7 @@ import core/ids.{type Generator, type Seq}
 import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
+import gleam/bool
 import gleam/int
 import gleam/io
 import gleam/list
@@ -161,7 +190,7 @@ pub type Report {
     skipped: Int,
     candidates: Int,
     rows: Int,
-    digest_bytes: Int,
+    digest: Option(Int),
   )
 }
 
@@ -517,7 +546,7 @@ fn pass(config: Config, opened: Opened) -> Result(Report, String) {
       skipped: skipped + { list.length(harvests) - list.length(extracted.read) },
       candidates: list.length(extracted.candidates),
       rows: list.length(head_ids),
-      digest_bytes: 0,
+      digest: None,
     )
   case extracted.candidates, notes {
     [], [] -> quiet(config, opened, cursors, report)
@@ -624,16 +653,30 @@ fn reconciled(
   opened: Opened,
   report: Report,
 ) -> Result(Report, String) {
+  use written <- result.map(reconciled_digest(config, opened))
+  Report(..report, digest: written)
+}
+
+// The reconciliation itself, kept in the shape `memory.reconcile_digest`
+// answers in and deliberately not collapsed to a byte count: `Some(0)` is
+// a sidecar this run *emptied* and `None` is one it never touched, and an
+// operator's line has to tell those apart. Collapsing both to zero is
+// what made a cascade that had just erased a digest report it as
+// unchanged. Shared with the erasure cascade, which ends the same way and
+// for the same reason.
+fn reconciled_digest(
+  config: Config,
+  opened: Opened,
+) -> Result(Option(Int), String) {
   use written <- result.map(memory.reconcile_digest(opened, config.digest_path))
   case written {
-    None -> report
-    Some(bytes) -> {
+    None -> Nil
+    Some(bytes) ->
       log.info(config.logger, "distill.digest_written", [
         field.count(key: "digest_bytes", value: bytes),
       ])
-      Report(..report, digest_bytes: bytes)
-    }
   }
+  written
 }
 
 // Batch-level provenance: every row this consolidation writes names the
@@ -688,6 +731,188 @@ fn read_notes_cursor(opened: Opened) -> Result(Seq, String) {
     Some(#(json.Int(seq), _cell_seq)) -> seq
     Some(#(_other, _cell_seq)) | None -> 0
   }
+}
+
+// --- the erasure cascade ----------------------------------------------------
+
+/// What a cascade removed from the head.
+///
+/// Constructor invariants: `dropped` counts the head rows whose
+/// provenance named the erased session and `kept` the rest, so the two
+/// sum to the head the cascade read; `digest` is the sidecar rewrite,
+/// `None` when the file already matched its head.
+///
+/// `unreadable` counts the kept rows whose provenance could not be
+/// decoded at all, and is reported rather than folded into `kept`
+/// because those rows are kept by a *different* rule than the others.
+/// `provenance_of` fails safe — a row it cannot read names nothing and
+/// is therefore never dropped — which means such a row is also
+/// permanently invisible to every future cascade. That is the one place
+/// this command under-deletes, so an operator who is erasing something
+/// has to be told the count rather than left to infer it.
+pub type Cascade {
+  Cascade(
+    session: String,
+    dropped: Int,
+    kept: Int,
+    unreadable: Int,
+    digest: Option(Int),
+  )
+}
+
+/// The distiller a cascade runs under: one that refuses, because a
+/// cascade dispatches no model turn.
+///
+/// This is why `--cascade` does not require `--config`. A run needs a
+/// catalogue because it asks the model twice; a cascade only reads
+/// provenance the pipeline already wrote, so demanding a catalogue would
+/// be asking the operator for a credential to do arithmetic.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distill.config_for(dir, distill.no_distiller(), clock:, entropy:)
+/// ```
+///
+pub fn no_distiller() -> Distiller {
+  Distiller(ask: fn(_prompt) { Error("a cascade dispatches no model turn") })
+}
+
+/// **The first-order erasure cascade** (issue #115): drops from the head
+/// every distillate whose provenance names `session`, and re-renders the
+/// sidecar without them.
+///
+/// Run by the operator *after* `session/repo` has rewritten that source
+/// session — the two are deliberately separate commands, because a repo
+/// erase is admin tooling above the harness and this is a pass over the
+/// memory plane beside it.
+///
+/// Two properties are inherited rather than invented; the third is where
+/// this command's real cost sits, and it is a defect rather than a
+/// design:
+///
+/// - **Rows are write-once, so nothing is deleted.** A cascade removes
+///   ids from the head, which is a pointer over append-only rows. The
+///   dropped rows stay in the store and become orphans — inert, because
+///   every reader goes through the head — in exactly the class
+///   `docs/spec-gaps.md` already records for a crashed consolidation.
+/// - **The write order is the pipeline's own**: rows if any (there are
+///   none — every survivor is already durable), the head CAS, then the
+///   sidecar. A cascade killed before the sidecar leaves a head ahead of
+///   its digest, and the next run's reconciliation closes it, which is
+///   what that reconciliation is for.
+/// - **Cursors are not touched, and an emptying cascade therefore loses
+///   what it emptied.** The erased source's cursor is voided by the
+///   rewrite generation `repo.rewrite_sqlite` bumped, so the next run
+///   re-extracts *that* source from zero on its own
+///   (`memory.cursor_from`). Every other source keeps its cursor at the
+///   high-water seq the last run left it at, and the notes cursor sits
+///   past every note already consumed. Since a head is uniform in
+///   provenance, an effective cascade empties it — so the next run
+///   consolidates the erased source alone, over an empty head, no notes,
+///   and no other source offering anything. **The surviving sources'
+///   contribution and every hand-written note are then permanently
+///   unrecoverable by the pipeline.** Re-reading the other sources is in
+///   fact the only rebuild there could be; not doing it is the gap, not
+///   the saving. Issue #124 carries the mechanism — a cursor rewind on
+///   drop, a `--rebuild` companion, or a `--dry-run` preview — and
+///   `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
+///   pins the loss until one of them lands.
+///
+/// **First-order, and the second order is vacuous rather than skipped.**
+/// A row whose `derived_from` names a dropped row is not chased. Within
+/// one head it cannot exist: a consolidation replaces the head wholesale
+/// with the batch it just wrote, and that batch's `derived_from` names
+/// the *previous* head's rows and the notes it consumed — none of which
+/// are in the new head. So a transitive pass over `derived_from` inside
+/// the head can never select a row the first pass did not. What is
+/// genuinely out of reach is the weakening across derivations that
+/// #115 and spec-gaps M2 item 9 record: a later consolidation carries
+/// its predecessor's *id*, not its predecessor's sources.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distill.cascade(config, session: "01924f7e-…")
+/// ```
+///
+pub fn cascade(
+  config: Config,
+  session session: String,
+) -> Result(Cascade, String) {
+  let generator = ids.generator(config.clock, seed: config.entropy())
+  use opened <- result.try(
+    memory.open(
+      path: config.memory_path,
+      owner: distill_owner,
+      // The **short** TTL, unlike `run`'s. The rule `client/memory` fixes
+      // is that the caller sizes the lease to what sits between its
+      // commits, and a cascade has nothing slow between them at all: one
+      // register read, one batch entry read, one commit, one file write.
+      // Taking the run-scale lease would lock the file for ten minutes
+      // after a crash that cost milliseconds.
+      lease_ttl_ms: memory.lease_ttl_ms,
+      clock: config.clock,
+      generator:,
+    )
+    |> result.map_error(describe_fault),
+  )
+  let outcome = cascaded(config, opened, session)
+  memory.close(opened)
+  outcome
+}
+
+fn cascaded(
+  config: Config,
+  opened: Opened,
+  session: String,
+) -> Result(Cascade, String) {
+  use #(named, head_seq) <- result.try(
+    memory.head(opened) |> result.map_error(describe_fault),
+  )
+  use pairs <- result.try(
+    memory.provenance_by_id(opened, named) |> result.map_error(describe_fault),
+  )
+  let #(dropped, kept) =
+    list.partition(pairs, fn(pair) { memory.names_source(pair.1, session) })
+  use Nil <- result.try(dropped_from_head(
+    config,
+    opened,
+    survivors: list.map(kept, fn(pair) { pair.0 }),
+    expected: head_seq,
+    dropped: dropped,
+  ))
+  use written <- result.map(reconciled_digest(config, opened))
+  Cascade(
+    session:,
+    dropped: list.length(dropped),
+    kept: list.length(kept),
+    unreadable: list.count(kept, fn(pair) { pair.1 == memory.no_provenance }),
+    digest: written,
+  )
+}
+
+// The head CAS, made only when something was actually dropped.
+//
+// A cascade over a session nothing names must be a true no-op: writing
+// the identical id list back would still bump the cell's seq, which is a
+// visible write and would lose a concurrent run's CAS for no reason.
+fn dropped_from_head(
+  config: Config,
+  opened: Opened,
+  survivors survivors: List(String),
+  expected expected: Option(Seq),
+  dropped dropped: List(#(String, memory.Provenance)),
+) -> Result(Nil, String) {
+  use <- bool.guard(when: dropped == [], return: Ok(Nil))
+  use Nil <- result.map(
+    memory.replace_head(opened, named: survivors, expected:)
+    |> result.map_error(describe_fault),
+  )
+  log.info(config.logger, "distill.cascaded", [
+    field.count(key: "dropped", value: list.length(dropped)),
+    field.count(key: "kept", value: list.length(survivors)),
+  ])
 }
 
 // --- the walk --------------------------------------------------------------
@@ -1098,6 +1323,12 @@ pub fn main() -> Nil {
     )
   case parse(argv.load().arguments) {
     Error(reason) -> io.println_error("loom-distill: " <> reason)
+    // Two commands behind one entry point, chosen by the flag: a pass, or
+    // an erasure cascade over one already-erased source. A new binary
+    // would duplicate the directory resolution, the memory path and the
+    // lease for the sake of a subcommand that shares all three.
+    Ok(Flags(cascade: Some(session), ..) as flags) ->
+      announce_cascade(cascade_flags(flags, session, logger))
     Ok(flags) -> announce(run_flags(flags, logger))
   }
 }
@@ -1114,17 +1345,54 @@ fn announce(outcome: Result(Report, String)) -> Nil {
         <> " skipped; memory holds "
         <> int.to_string(report.rows)
         <> " distillates "
-        <> digest_line(report),
+        <> digest_line(report.digest),
       )
   }
 }
 
-// A run that consolidated nothing re-renders nothing, and saying "digest
-// 0 bytes" for that would read as a digest that had been emptied.
-fn digest_line(report: Report) -> String {
-  case report.digest_bytes {
-    0 -> "(digest unchanged)"
-    bytes -> "(digest " <> int.to_string(bytes) <> " bytes)"
+fn announce_cascade(outcome: Result(Cascade, String)) -> Nil {
+  case outcome {
+    Error(reason) -> io.println_error("loom-distill: " <> reason)
+    Ok(report) ->
+      io.println(
+        "loom-distill: cascade over "
+        <> report.session
+        <> ": "
+        <> int.to_string(report.dropped)
+        <> " distillates dropped, "
+        <> int.to_string(report.kept)
+        <> " kept"
+        <> escaped_line(report)
+        <> " "
+        <> digest_line(report.digest),
+      )
+  }
+}
+
+// The under-deletion, said out loud when there is any. A row whose
+// provenance would not decode is kept by `provenance_of`'s fail-safe and
+// is invisible to every future cascade too, so an operator erasing
+// something needs the count in the line rather than in a log.
+fn escaped_line(report: Cascade) -> String {
+  case report.unreadable {
+    0 -> ""
+    escaped ->
+      " ("
+      <> int.to_string(escaped)
+      <> " kept with unreadable provenance, which no cascade can reach)"
+  }
+}
+
+// Three outcomes, not two. `None` is a sidecar this run never touched;
+// `Some(0)` is one it rewrote to nothing, which is what an emptying
+// cascade — and the first run after a crashed one — produces. Reporting
+// that second case as "unchanged" is the one reading an operator must
+// not be given straight after erasing something.
+fn digest_line(written: Option(Int)) -> String {
+  case written {
+    None -> "(digest unchanged)"
+    Some(0) -> "(digest emptied)"
+    Some(bytes) -> "(digest " <> int.to_string(bytes) <> " bytes)"
   }
 }
 
@@ -1133,11 +1401,15 @@ type Flags {
     session_dir: Option(String),
     session: Option(String),
     config: Option(String),
+    cascade: Option(String),
   )
 }
 
 fn parse(arguments: List(String)) -> Result(Flags, String) {
-  parse_loop(arguments, Flags(session_dir: None, session: None, config: None))
+  parse_loop(
+    arguments,
+    Flags(session_dir: None, session: None, config: None, cascade: None),
+  )
 }
 
 fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
@@ -1149,6 +1421,8 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, session: Some(value)))
     ["--config", value, ..rest] ->
       parse_loop(rest, Flags(..flags, config: Some(value)))
+    ["--cascade", value, ..rest] ->
+      parse_loop(rest, Flags(..flags, cascade: Some(value)))
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
   }
 }
@@ -1157,9 +1431,19 @@ const usage = "usage: loom-distill --config <loom.toml>
   [--session-dir <dir>]    the session directory to distill (default: the current directory)
   [--session <path.db>]    a session file; its directory is the one distilled
 
-`--config` is required: a distillation run dispatches two model turns,
-and the catalogue is where the `summarize` route (or the main model it
-falls back to) is declared."
+   or: loom-distill --cascade <source-session-id>
+  [--session-dir <dir>]    the session directory whose memory is cascaded
+  [--session <path.db>]    a session file; its directory is the one cascaded
+
+`--config` is required for a distillation run, which dispatches two model
+turns, and the catalogue is where the `summarize` route (or the main model
+it falls back to) is declared.
+
+`--cascade` needs no catalogue and dispatches no model turn. Run it after
+erasing a source session with `session/repo`: it drops from the memory
+head every distillate whose provenance names that session and re-renders
+the digest without them. First-order only — a distillate derived from a
+dropped one keeps its predecessor's id and not its sources."
 
 fn run_flags(flags: Flags, logger: Logger) -> Result(Report, String) {
   use directory <- result.try(directory_of(flags))
@@ -1194,6 +1478,23 @@ fn run_flags(flags: Flags, logger: Logger) -> Result(Report, String) {
       entropy: mixed_entropy(),
     )
     |> with_logger(logger),
+  )
+}
+
+// The cascade's own flag handling: a directory, and nothing else. No
+// config file is read and no gateway is built, because `no_distiller`
+// says what a cascade asks the model — nothing.
+fn cascade_flags(
+  flags: Flags,
+  session: String,
+  logger: Logger,
+) -> Result(Cascade, String) {
+  use directory <- result.try(directory_of(flags))
+  let clock = clock.from_function(ffi_os.system_time_ms)
+  cascade(
+    config_for(directory, no_distiller(), clock:, entropy: mixed_entropy())
+      |> with_logger(logger),
+    session:,
   )
 }
 

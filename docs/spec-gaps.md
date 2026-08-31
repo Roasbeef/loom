@@ -13,14 +13,14 @@ work with a home** (real work a milestone or a Part 5 follow-up track
 already owns), or **deferred work with no home** (real work scheduled
 nowhere). The two tables below name the second and third classes. The
 rule for reading them: *an item named in neither table is settled* —
-which is 110 of the 135 items. A recorded option nobody must exercise (a
+which is 111 of the 135 items. A recorded option nobody must exercise (a
 "candidate for hoisting if the duplication grates") stays settled; only
 work someone must do to meet a stated criterion is listed here.
 
 Items are cited as section plus the number as written in the list
 (`WP-J 14`, `M3 runtime wave 11`).
 
-### Deferred work with a home (7)
+### Deferred work with a home (6)
 
 | Item | The work | Scheduled at |
 |---|---|---|
@@ -30,7 +30,6 @@ Items are cited as section plus the number as written in the list
 | M3 messaging 2 | cross-node broadcast fan-out | Part 5 track 4 |
 | WP-J 5 | whether a `cap/strand` should exist — answered by `design-notes/orchestration-comparison.md`: yes, on a second seam carrying `cap/strand` + `cap/report` and nothing else | M4.5 / WP-N |
 | M2 memory 8 | indexing `memory/*` rows so memory is reachable through `history_search`, with the by-type exclusion that would make it safe | memory stage M3, with the tokenizer upgrade |
-| M2 memory 9 | the first-order erasure cascade over provenance: erase X → find the distillates naming X's entries → re-consolidate without them | issue #115 |
 
 ### Deferred work with no home (15)
 
@@ -1174,27 +1173,90 @@ interpretation. Recorded here because the spec supplies none.
    WP-K item 9's `history_search`-echo loop stays open for the same
    reason — its closure belongs with M3's indexing decision, where the
    by-type machinery would pay for both.
-9. **Erasure stops at the first derivation, and the cascade is filed
-   rather than built.** Every distillate carries provenance — the source
+9. **Erasure stops at the first derivation; the cascade landed, and is
+   first-order.** Every distillate carries provenance — the source
    session ids and entry ids it was distilled from, and the memory entry
    ids it supersedes — which makes the design possible: erase X, find
-   the distillates naming X's entries, re-consolidate without them.
-   Issue #115 carries that implementation. What provenance cannot buy is
-   stated here, in three parts. A consolidation of a consolidation
+   the distillates naming X, drop them from the head. Issue #115 built
+   that as `client/distill --cascade <source-session-id>`
+   (`client/distill.cascade`): an operator pass, run after
+   `session/repo` has rewritten the source, that drops from the head
+   every distillate whose provenance names that session and re-renders
+   the sidecar without them. It is the pipeline's ordinary head
+   replacement — rows if any, the head CAS, then the sidecar — so it
+   inherits the crash semantics unchanged, and it needs no catalogue
+   because it dispatches no model turn. **It moves no cursor**: the
+   erased source's cursor is voided by the rewrite generation the erase
+   bumped, which is already what makes the next run re-extract it from
+   zero, and resetting cursors here would additionally re-read every
+   other source for nothing.
+   What provenance cannot buy is stated here, in four parts. A
+   consolidation of a consolidation
    carries its predecessor's id and not its predecessor's whole source
    list, so the guarantee ends at the first derivation unless every
-   derivation keeps full source lists. Provenance is **batch-level**:
+   derivation keeps full source lists. **Chasing `derived_from` inside
+   the head would not extend that**, and it is vacuous rather than
+   deferred: a consolidation replaces the head wholesale with the one
+   batch it just wrote, whose `derived_from` names the *previous* head's
+   rows and the notes it consumed — none of which are in the new head —
+   so a transitive pass within the head can never select a row the
+   first-order pass did not. Stated properly it is an induction over the
+   *two* head writers, and the second step is the one easy to omit:
+   `advance_head` preserves the invariant because a fresh batch's ids
+   are newly minted and disjoint from anything its `derived_from` can
+   name, and `replace_head` preserves it because a cascade writes a
+   **subset** of an existing head, and a subset of a set that intersects
+   nothing still intersects nothing. A third head writer able to
+   introduce ids not already in the head would void the argument
+   silently, so it would have to re-establish the invariant or the
+   cascade would need a real transitive pass; the induction is written
+   out at `client/memory.replace_head`. The boundary sits between heads,
+   where the ids that would carry it are already out of reach.
+   Provenance is
+   **batch-level**:
    every row a run writes names that run's whole source set, not the
    sources that fed that particular row, so a cascade over it
    over-deletes and never under-deletes — coarser than per-row
    provenance, and deliberately so, since the model's answer carries no
-   per-row attribution to record. And the memory session accumulates
+   per-row attribution to record. Its sharpest consequence is worth
+   naming, because an operator will meet it: since a live head is
+   exactly one batch, every row in it shares one provenance value, so a
+   cascade over a session that fed the current head empties the head
+   outright. That is over-deletion, in the direction an erasure
+   guarantee has to fail in — but **the emptied memory does not come
+   back**, and that part is a defect rather than a consequence. Only the
+   erased source's cursor is voided, by the rewrite generation; every
+   surviving source keeps its high-water cursor and the notes cursor
+   sits past every note already consumed, so the next run consolidates
+   the erased source alone over an empty head. The surviving sources'
+   contribution and every hand-written note are permanently
+   unrecoverable by the pipeline. Re-reading the other sources is the
+   only rebuild there could be, so declining to is the gap and not a
+   saving. **Issue #124** carries the mechanism — a cursor rewind on
+   drop, a `--rebuild` companion, or a `--dry-run` preview so an
+   operator sees the wipe coming — and `client/distill_test`'s
+   `an_emptying_cascade_loses_the_surviving_sources` pins the loss until
+   one of them lands.
+   **The two failure directions run opposite ways**, which is worth
+   stating together because no single call site shows both.
+   `names_source` matches at session grain, so a cascade *over*-deletes
+   rather than under-deletes; `provenance_of` decodes an unreadable
+   payload to `no_provenance`, which names nothing, so such a row is
+   *kept* — under-deletion, and permanent, since no later cascade can
+   reach it either. Both are right on their own terms: one malformed row
+   must not be able to empty memory, and a coarse match must not be able
+   to miss. What they cost together is visibility, since an escaped row
+   sits in `kept` indistinguishably — so the `Cascade` report counts the
+   kept-because-unreadable rows and the command's line says so whenever
+   there are any. And the memory session accumulates
    **orphaned `memory/*` rows** — those written by a consolidation whose
    head CAS never landed, from a crash or from the empty-answer refusal
    — which nothing reaps; they are inert to every reader, because a
    reader goes through the head, but a cascade walking rows rather than
-   the head must see through them. The compaction analogue is already
-   recorded (the
+   the head must see through them. **A cascade's own leavings are that
+   same class**: rows are write-once, so dropping one removes it from
+   the head and never from the store. The compaction analogue is
+   already recorded (the
    spec's erase-X audit includes retained-tail copies), and the
    summary-dilution twin is item 4.
 10. **The per-run digest re-injection is the accumulation item already
