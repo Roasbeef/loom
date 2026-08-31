@@ -130,6 +130,7 @@ earlier feed already ruled out as terminator-free — so the same proxy
 cannot drive quadratic re-scanning either. OTP `httpc` buffers non-200/206
 bodies before delivery, so this typed cap does not claim to bound native error-
 body memory; replacing or isolating that transport is separate hardening work.
+Issue #147 owns that transport boundary.
 
 Decoding posture here is deliberately asymmetric to the rest of Loom. A
 `data:` payload must parse as JSON, and malformed data fails the stream
@@ -222,7 +223,8 @@ and status codes and never headers or request values; terminal errors are
 also scrubbed against the exact key. Successful response content remains
 provider-controlled and can span streaming fragments, so this is not a
 general secret-redaction boundary. The local-flow check is a grep-based
-leak test over a full session fixture.
+leak test over a full session fixture. Issue #148 owns stateful cross-fragment
+redaction.
 
 Be honest about what ships: **`secret.env()` is the only real backend
 today**, reading process environment variables. `from_list` is for tests

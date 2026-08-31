@@ -612,8 +612,8 @@ valid deltas nor a sequence of small completed SSE events renews or escapes
 that typed bound. Complete events accumulate in reverse and are restored once,
 so valid event floods remain linear. OTP `httpc` buffers non-200/206 bodies
 before delivery; bounding that native error-body memory requires transport
-replacement or isolation and is not claimed here. Inside the pure parser, a
-line and one event are each capped at 4 MiB, while a separate 4096
+replacement or isolation and is not claimed here (issue #147). Inside the pure
+parser, a line and one event are each capped at 4 MiB, while a separate 4096
 field limit covers empty `data:` lines whose list cells consume memory without
 adding payload bytes. Every overflow is an in-band malformed-stream terminal,
 followed by the same cancel-and-drain path as any other terminal race.

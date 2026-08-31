@@ -4,9 +4,9 @@ How Loom is packaged for somebody who wants to *run* it rather than work
 on it, what that costs, and why the sandbox helper ships as a file beside
 the server rather than inside it.
 
-Everything below was measured on the development container — Linux
-x86_64, Gleam 1.18.1, Erlang/OTP 28 (ERTS 16.4.0.5), Go 1.24.7 — by
-running the targets it describes.
+Everything below was measured on the Linux x86_64 CI runner with Gleam 1.18.1,
+Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.24.7 by running the targets it
+describes.
 
 ## The problem
 
@@ -131,9 +131,10 @@ What the release does instead:
   program runs as, so a tampered seed is arbitrary code inside every
   jailed node. "Executables only" would have left the one part of the
   tarball that *becomes* code without being one outside the manifest.
-  615 files, checkable with `sha256sum -c` from the moment the tarball is
-  unpacked, by anyone, at any later time — which is the thing a blob
-  inside a binary is not.
+  Every listed file is checkable with `sha256sum -c` from the moment the
+  tarball is unpacked, by anyone, at any later time — which is the thing a
+  blob inside a binary is not. The count is deliberately not part of the
+  contract because the OTP and seed closures change across toolchain releases.
 - The helper is byte-identical across `make binaries`, `make sandbox`
   and `make release`, because all three go through `scripts/go-build.sh`
   with the same `-trimpath -ldflags="-s -w"`. That is what makes `make
@@ -154,7 +155,7 @@ to `PATH` before it execs the emulator. Booting the release with
 `env -i PATH=/usr/bin:/bin` and asking the VM gives:
 
 ```
-PATH=<root>/erts-16.4.0.5/bin:<root>/bin:/usr/bin:/bin
+PATH=<root>/erts-17.0.5/bin:<root>/bin:/usr/bin:/bin
 ```
 
 So a release was **not** failing to find `erl` — #102's "it is simply not
@@ -299,30 +300,29 @@ release is, so it is stripped on the way in — 29,168,608 to 22,826,152
 bytes, 21.7% off, and the stripped binary still builds the seed offline
 (the release smoke proves that, not just `--version`).
 
-The copied ERTS is stripped too, which is the single largest saving in
-the artifact: `beam.smp` arrives at 53 MB, of which about 42 MB is a
-symbol table and DWARF the emulator never reads. Erlang stack traces and
-crash dumps come from the BEAM's own tables, not from ELF, so this costs
-a C-level backtrace under `gdb` and nothing else. `DIST_STRIP_ERTS=0`
-turns off both strips.
+The copied ERTS is stripped too. Erlang stack traces and crash dumps come from
+the BEAM's own tables rather than ELF debug sections, so the tradeoff is native
+debugging detail, not Erlang crash diagnostics. `DIST_STRIP_ERTS=0` turns off
+both strips. The table records only the shipped, stripped ERTS: the size of the
+unstripped input depends on how that particular OTP package was built, and the
+old 53 MB observation was not an OTP 29 measurement.
 
-Every figure below is `du -sh` on the built tree, and both columns were
-built and smoke-tested on the development container.
+Every figure below is `du -sh` on the built tree, and both columns were built
+and smoke-tested by that CI runner.
 
 | | with code mode | `DIST_CODEMODE=0` |
 |---|---|---|
-| ERTS as copied | 57.3 MB | 57.3 MB |
 | ERTS stripped | 11 MB | 11 MB |
 | `lib/` (208 app beams with `Dbgi` stripped, plus the OTP applications, plus `esqlite3_nif.so` at 4.3 MB) | 16 MB | 15 MB |
 | — of which the `compiler` application | 617 KB | — |
 | `bin/loom-exec` | 3.2 MB | 3.2 MB |
 | `bin/gleam`, stripped | 22 MB | — |
 | `share/codemode-seed` | 5.8 MB | — |
-| **the release tree** | **58 MB** | **29 MB** |
-| **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **21 MB** | **11 MB** |
+| **the release tree** | **59 MB** | **30 MB** |
+| **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **22 MB** | **11 MB** |
 | `dist/loom-tui-0.1.0-linux-x86_64` | 16 MB | 16 MB |
 
-So code mode costs **+29 MB unpacked and +10 MB compressed**, a little
+So code mode costs **+29 MB unpacked and +11 MB compressed**, a little
 over a doubling either way. That is close to the estimate #102 worked
 from (≈64 MB unpacked) and lands lower, because stripping `gleam` was
 worth 6 MB and the issue's 5.8 MB seed figure is block-allocated —
@@ -350,15 +350,14 @@ installation on top.
 
 The server registers the `code_mode` tool only on a host that has a Gleam
 compiler, an emulator, *and* a build seed whose dependency table is
-byte-identical to the one the compile service generates. A release used
-to satisfy **one** of those and was not asked the right question about
-it: `erts-<vsn>/bin/erl` was in the tarball all along, simply not on
-`PATH`, and discovery only looked at `PATH`. So one third of the reason
-code mode was absent from a release was a lookup failure rather than a
-missing file — the same shape as the helper ladder above, and fixed by
-the same anchor.
+byte-identical to the one the compile service generates. A release already
+contained `erts-<vsn>/bin/erl`; as measured above, the OTP start script also
+prepended that directory to the running VM's `PATH`. The installation anchor
+therefore does not rescue a missing emulator. It makes the dependency explicit
+and independent of a shell-script side effect. Code mode was absent because
+the compiler and matching build seed were genuinely missing.
 
-The other two thirds were real files, and they now ship:
+Those real files now ship:
 
 | prerequisite | where it comes from |
 |---|---|
@@ -438,7 +437,7 @@ missing, where it was looked for, and how to supply it — the standard
 
 ```
 gleam is not beside this server at /opt/loom/bin/gleam and not on PATH;
-code mode compiles the model's program with it, so put `gleam` (>= 1.11)
+code mode compiles the model's program with it, so put `gleam` (>= 1.18)
 on PATH, or run the `bin/loom` of a release built with the code-mode
 bundle, which ships one. No code_mode tool is registered.
 ```

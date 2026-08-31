@@ -142,7 +142,8 @@ processful shell around that sans-io core. WP-F.
   terminal errors before retry classification or delivery. Successful streamed
   content is provider-controlled and is not credential-redacted across fragment
   boundaries; callers must not treat it as a secret-filtering boundary.
-  Diagnostic strings are byte-bounded in the same pass.
+  Diagnostic strings are byte-bounded in the same pass. Issue #148 owns the
+  stateful response-redaction work.
 - **Exactly one terminal event per stream.** Deltas are ephemeral display
   data and never prove anything about settlement; nothing follows the
   terminal. The gateway owner is the sole terminal sender. Response activity
@@ -202,7 +203,7 @@ processful shell around that sans-io core. WP-F.
   delivered non-success HTTP body has a separate 64 KiB retained budget and
   fails immediately if the next chunk would cross it. OTP `httpc` buffers
   non-200/206 bodies before delivery, so this does not bound native error-body
-  memory; transport replacement or isolation is separate hardening work.
+  memory; issue #147 owns transport replacement or isolation.
 - **Wire leniency is deliberate and asymmetric.** SSE `data:` payloads must
   parse as JSON (malformed data fails the stream in-band as
   `MalformedStream`), but *fields* are read leniently — absent usage

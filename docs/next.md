@@ -9,12 +9,12 @@ worth more than any status comment.
 
 ---
 
-## Current work: provider stream ownership (#131)
+## Provider stream ownership (#131)
 
-PR #133 (`provider/cancellable-streams`) is rebased on `main` at `317b45a`.
+PR #133 (`provider/cancellable-streams`) is rebased on `main` at `9849b3f`.
 It implements #131 across the provider, runtime, and client wrapper boundaries.
 A `StreamHandle` carries an idempotent cancellation capability and an optional
-owner pid; when present, owner exit acknowledges that every asynchronous
+owner pid; when present, normal owner exit acknowledges that every asynchronous
 descendant has stopped. That pid is a deliberately boring custodian rather
 than a worker that can crash while retaining live children. A custodian
 publishes first, adopts each worker and child owner synchronously, and only
@@ -51,8 +51,9 @@ fast terminal cannot delete that row first. The normal capture path remains one
 O(1) lookup. Any miss enters a deadline-bounded scan which asks `httpc_handler`
 processes for their current request. A busy handler, no match, or an unfamiliar
 private layout keeps recovery inconclusive and the owner alive rather than
-authorizing drain; expiry destroys the witness abnormally. Provider ownership above that raw
-mailbox, fallback, deadlines, and terminal arbitration remain typed Gleam.
+authorizing drain; expiry destroys the witness abnormally. Provider ownership
+above that raw mailbox, fallback, deadlines, and terminal arbitration remain
+typed Gleam.
 
 The runtime closes both ends of its former publication gap. Production exposes
 a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
@@ -92,9 +93,13 @@ ledger returned predecessor PIDs. Cancellation now schedules one deadline per
 layer, while the ledger retains each claim until its original monitors prove
 that exact predecessor snapshot drained. Deterministic delta-flood and
 ledger-barrier tests pin both failures. The replacement initializes before that
-potentially long barrier and waits through a linked helper, so it remains able
-to retain an abort request without admitting recovery work. The same pass found
-that a gateway guard stopped consuming attempt registrations after cancellation
+potentially long barrier, while its reaper claims the ledger directly. A
+private PID-bound subject returns the claim and every other incarnation-local
+callback, so the actor can retain an abort request without admitting recovery
+work and a predecessor cannot settle replayed work through the replacement's
+stable name. A negative control restores the old stable-name retry route and
+makes the regression admit a second provider attempt. The same pass found that
+a gateway guard stopped consuming attempt registrations after cancellation
 expired; it now rejects late prepared attempts until the pump exits, preserving
 both transitive ownership publication and bounded drain.
 
@@ -106,19 +111,24 @@ The Linux gate builds and smokes both release profiles so its retained log can
 replace the distribution guide's old OTP 28 measurements with observed OTP 29
 values.
 
-The post-rebase focused gates are green: provider 138, runtime 87, client 574,
-and conformance 67. The first full run reached conformance with every preceding
-suite green, then Hex rate-limited dependency resolution. An immediate focused
-retry passed all 67 conformance tests, and the next complete `make check` exited
-zero. `make e2e` also exits zero and `make e2e-codemode` passes 210 tests. The
-OTP 29 release and distribution build pass locally, including the no-host-
-Erlang smoke and bundled SQLite NIF. The first 200-seed soak exposed two
-one-second ownership-handshake timeouts: under scheduler pressure a live reaper
-could answer late and make a provider effect disappear without a terminal.
-Those handshakes now wait for either their typed acknowledgement or the
-reaper's monitored death, and the complete four-chunk 200-seed rerun passes.
-Linux artifact measurements, refreshed cold review, and exact-head CI remain
-required before merge.
+The completed focused gates are green: provider 149, runtime 90, client 576,
+and conformance 67. `make check` exits zero, `make e2e-codemode` passes 210
+tests, and the OTP 29 release and both distribution profiles pass their
+no-host-Erlang smoke with the bundled SQLite NIF. The first 200-seed soak
+exposed two one-second ownership-handshake timeouts: under scheduler pressure a
+live reaper could answer late and make a provider effect disappear without a
+terminal. Those handshakes now wait for either their typed acknowledgement or
+the reaper's monitored death, and the complete 200-seed rerun passes.
+
+Three independent cold reviews approved the simplified implementation head
+without a P0, P1, or P2 finding. That final simplification removed native
+accounting which could not truthfully bound `httpc` before delivery and removed
+fragment-local redaction which could not protect secrets split across streamed
+deltas. Issue #147 owns a transport boundary that can bound non-success bodies
+before buffering, and issue #148 owns stateful cross-fragment response
+redaction. Neither limitation weakens #131's cancellation and drain ownership
+contract; keeping them separate avoids claiming security properties the
+current transport does not provide.
 
 ## Platform-strict enforcement is the production default
 
