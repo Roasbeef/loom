@@ -195,7 +195,7 @@ fn run_collect(
       done: dict.new(),
     )
   let done = collect_loop(fill(runner), fail_fast)
-  assemble(count, done)
+  assemble(count, done, fail_fast)
 }
 
 fn collect_loop(
@@ -393,16 +393,36 @@ fn cancel_running(running: Dict(Int, #(Pid, Monitor))) -> Nil {
 fn assemble(
   count: Int,
   done: Dict(Int, Outcome(b, e)),
+  fail_fast: Bool,
 ) -> Result(List(b), List(Failure(e))) {
   let indices = indices_up_to(count)
   let results = list.map(indices, fn(index) { one(index, done) })
-  let failures =
+  let all_failures =
     list.filter_map(results, fn(entry) {
       case entry {
         Error(failure) -> Ok(failure)
         Ok(_) -> Error(Nil)
       }
     })
+  let observed_failures =
+    dict.to_list(done)
+    |> list.filter_map(fn(entry) {
+      let #(index, outcome) = entry
+      case outcome {
+        ValueOutcome(_) -> Error(Nil)
+        ErrorOutcome(error:) -> Ok(Returned(index:, error:))
+        CrashOutcome(reason:) -> Ok(Crashed(index:, reason:))
+      }
+    })
+  // Fail-fast cancellation deliberately leaves unfinished indices absent from
+  // `done`. Once a triggering failure is recorded, those gaps describe work
+  // this runner cancelled; they must not replace the real failure with a
+  // lower-indexed "no outcome recorded" crash. A genuine channel stall has no
+  // observed failure and retains the conservative missing-outcome diagnosis.
+  let failures = case fail_fast, observed_failures {
+    True, [_, ..] -> observed_failures
+    _, _ -> all_failures
+  }
   case failures {
     [] ->
       Ok(

@@ -306,6 +306,25 @@ pub fn parallel_map_fail_fast_cancels_rest_test() {
   assert process.receive(escaped, 120) == Error(Nil)
 }
 
+pub fn parallel_map_fail_fast_reports_the_triggering_failure_test() {
+  let escaped = process.new_subject()
+  let result =
+    task.parallel_map_fail_fast([0, 1], max_concurrency: 2, with: fn(i) {
+      case i {
+        0 -> {
+          process.sleep(300)
+          process.send(escaped, Nil)
+          Ok(i)
+        }
+        _ -> Error("boom")
+      }
+    })
+  assert result == Error(task.Returned(1, "boom"))
+  // The absent result at index zero records cancellation, not a second
+  // failure which may replace the error that triggered that cancellation.
+  assert process.receive(escaped, 120) == Error(Nil)
+}
+
 pub fn race_returns_first_and_cancels_losers_test() {
   let escaped = process.new_subject()
   let winner =
@@ -329,7 +348,13 @@ pub fn both_success_test() {
 }
 
 pub fn both_failure_test() {
-  assert task.both(fn() { Ok(1) }, fn() { Error("x") })
+  assert task.both(
+      fn() {
+        process.sleep(100)
+        Ok(1)
+      },
+      fn() { Error("x") },
+    )
     == Error(task.Returned(1, "x"))
 }
 
