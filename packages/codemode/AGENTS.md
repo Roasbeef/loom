@@ -163,8 +163,9 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `budget`, `exec`), `core` (msgpack, ids, clock), `tools` (`tool.Collected`
   and the `blob` content address; `codemode/workspace` additionally names
   `tools/fs`'s `PathError` and `ReadError` so a refusal keeps the
-  harness's own vocabulary), `glance` + `glexer` (vetting parses and
-  token-scans), `simplifile` + `filepath`, `gleam_erlang`, `gleam_otp`.
+  harness's own vocabulary), `glance` 6.1+ + `glexer` (vetting parses and
+  token-scans; the Glance floor admits the syntax accepted by the shipped
+  Gleam compiler), `simplifile` + `filepath`, `gleam_erlang`, `gleam_otp`.
 - **Deliberately does not depend on `cap`.** `cap` is the prelude compiled
   *into* the satellite; linking it into the harness would put
   model-facing code in the harness VM. Shared names (`LOOM_CAP_SOCK`,

@@ -445,13 +445,10 @@ can repair from.
   listed in one pass with its rule, its offending construct, its byte
   span where one exists, the **seam** it was judged against and that
   seam's allowlist; compiler diagnostics cross verbatim. One round trip
-  per rule is exactly what in-band repair exists to avoid. A parse
-  rejection adds `parser_note`, the one way a program can be legal Gleam
-  and still not parse: vetting reads the submission with `glance`, which
-  does not accept label shorthand in a call or a pattern though the
-  compiler does. It is stated in the rejection rather than in the
-  description because that is where someone hits it, and a description
-  is paid for on every request.
+  per rule is exactly what in-band repair exists to avoid. Parse failures
+  report the unexpected token and byte offset without teaching a dialect
+  workaround: the Glance floor and codemode corpus now pin the submitted
+  constructs that the shipped compiler accepts.
 - **A submission is judged against exactly one seam, and it is the one
   it named.** `CodeMode.seams` is what this host serves; the shell
   resolves the call's `seam` argument against it, defaults an unnamed

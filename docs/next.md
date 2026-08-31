@@ -63,6 +63,17 @@ corrected them. The full `make check` gate passes at the reviewed head after a
 transient Hex fetch failure on the first attempt, and `make doc-check` reports
 zero errors.
 
+## Code-mode vetting admits current Gleam syntax
+
+Issue #89's parser split is repaired by raising codemode's Glance floor from
+1.0 to 6.1. The vetter now accepts the labelled-argument shorthand used by
+Loom's own house style, together with the other compiler-valid constructs the
+issue identified. The corpus pins calls, patterns, `assert`,
+`let assert ... as`, `echo`, and string-prefix alias patterns, while a live
+client fixture sends shorthand through vetting and the hermetic compiler. The
+obsolete repair note has been removed so a parse failure no longer teaches a
+restriction that does not exist.
+
 ---
 
 ## State, as of `main` at the end of phase 3
@@ -266,9 +277,9 @@ them.)*
   sanitiser, or a 40 KB model-controlled blob pages straight into a terminal.
 - **#73's rule-A fix gates #74's census** — the fixes are independent, the
   measurement is not.
-- **#89 is a soft prerequisite for #30**: L1 re-vets from source on every
-  invocation, so a stored skill using a dialect the vetter misparses can
-  never be invoked.
+- **#89 no longer blocks #30**: L1 can re-vet stored source containing current
+  Gleam syntax without rejecting the repository's own labelled-argument
+  shorthand.
 
 Decide-together pairs: **#77 + #82** (same single-latched door, spend site
 and raise site). **#66 + #79** (bounding retries trades capability for

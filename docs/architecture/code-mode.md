@@ -144,18 +144,13 @@ however it is spaced, since whitespace and comments are discarded before
 the scan: `@ external`, and an `@` with a comment before the name, both
 lex to the same two tokens.
 
-The same fact — that vetting's parser is not the compiler's — costs
-something in the other direction, and a submitter should hear about it
-where it bites. `glance` 1.1 does not accept **label shorthand**: neither
-`f(value:)` in a call nor `Pending(handle:, waited_ms:)` in a pattern,
-both of which `gleam build` compiles happily. So a submitted program is
-held to a slightly narrower language than the one that would compile it,
-and the difference surfaces as an `Unparseable` rejection at a byte offset
-for syntax that is perfectly legal Gleam. The `code_mode` tool says so in
-the parse rejection itself (`tools/codemode.parser_note`) rather than in
-its description: the description is the byte prefix of the provider's
-cached region and is paid on every request of every strand, while the
-rejection is paid only by the submission that tripped it.
+The parser boundary still needs an explicit compatibility floor. `glance`
+6.1 understands every post-1.1 construct that issue #89 found the shipped
+Gleam compiler accepting: label shorthand in calls and patterns, `assert`,
+`let assert ... as`, `echo`, and string-prefix alias patterns. The vetting
+corpus pins those constructs as legitimate programs. That corpus matters
+more than the version number alone: a future dependency resolution cannot
+quietly narrow the submitted language without failing before release.
 
 Three adversaries motivate the rules, and each is a real entry in the
 vetting corpus:
