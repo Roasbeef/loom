@@ -28,9 +28,12 @@ request handler must all drain before replacement work begins. Runtime
 timeout, explicit abort, driver restart, worker crash, wrapper death, and
 direct consumer death now propagate along that chain. A bounded grace decides
 whether the public terminal is confirmed or `CancellationUnconfirmed`; it does
-not authorize killing the drain witness. Both cancellation results are
-terminal and cannot advance a fallback or retry. The frozen contract change
-and race table are in `protocol-change/010-provider-stream-cancellation.md`.
+not authorize killing the drain witness. `DrainProofLost` separately records
+an abnormal transitive owner exit; none of these terminal results can advance a
+fallback or retry. Critical callers install a `DrainWitness` before begin, so
+they retain the original exit reason rather than observing a late `noproc`.
+The frozen contract change and race table are in
+`protocol-change/010-provider-stream-cancellation.md`.
 
 The only provider-specific Erlang remains the existing `provider_ffi` shim.
 Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
@@ -39,14 +42,17 @@ acknowledgement. Three small externals prepare, begin, and cancel one native
 owner. The typed transport returns `PreparedRequest(running, begin)`, so its
 raw owner is publishable before `begin` can touch the network. That owner
 disables redirects and supported automatic retries that could migrate the
-handler behind a stable request id. A disposable discovery worker scans every
-live `httpc_handler` with bounded calls, including handlers orphaned by
-supervisor replacement; the owner cancels the exact match without consulting a
-replacement manager and waits for handler Down. A manager or handler-
-supervisor generation change during a failed public admission keeps the owner
-as an ambiguous witness until a raw response supplies the request id. Provider
-ownership above that raw mailbox, fallback, deadlines, and terminal arbitration
-remain typed Gleam.
+handler behind a stable request id. The manager publishes the request's exact
+handler PID in its protected table before successful admission returns; a
+request-local unlimited handler allowance also prevents this dedicated request
+from entering the manager's queue. The owner captures that row in one O(1)
+lookup, cancels the retained PID without consulting a replacement manager, and
+waits for handler Down. There is no global process scan or diagnostic RPC. A
+missing row fails the owner abnormally rather than claiming drain. A manager or
+handler-supervisor generation change during a failed public admission keeps the
+owner as an ambiguous witness until a raw response supplies the request id.
+Provider ownership above that raw mailbox, fallback, deadlines, and terminal
+arbitration remain typed Gleam.
 
 The runtime closes both ends of its former publication gap. Production exposes
 a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
@@ -69,8 +75,10 @@ that even a 500 ms wall-clock retry budget could expire while a rest-for-one
 tree was still rebuilding. Intervention admission now retries while the root
 supervisor remains alive; a dead root, rather than scheduler timing, is the
 failure boundary. Review also found that a handler-supervisor restart can
-orphan a live `httpc_handler`, an unbounded diagnostic call can pin
-cancellation, and abnormal reaper or owner exits must not count as drain.
+orphan a live `httpc_handler`, that handler discovery itself introduced
+latency and orphan risks, and that abnormal reaper or transitive-owner exits
+must not count as drain. The corrective pass replaced discovery with exact
+table capture and distinguishes leaf completion from transitive proof.
 
 The corrective focused gates are green: provider 127, runtime 85, client 556,
 and conformance 67. Seed 33 passes five consecutive package runs and the

@@ -592,8 +592,10 @@ custodian remains alive; killing the witness would erase the proof that native
 work stopped. The production transport uses one native owner rather than
 another Gleam custodian-and-worker pair. Its narrow Erlang FFI retains the
 exact opaque OTP `httpc` request id and dedicated request-handler pid. The
-owner receives the raw messages itself, disables handler migration, issues
-OTP's asynchronous cancel cast, and waits for that handler to exit.
+owner receives the raw messages itself, disables handler migration, captures
+the handler through the manager's already-published request table in O(1),
+issues OTP's asynchronous cancel cast, and waits for that handler to exit. It
+does not scan processes or call handler diagnostics.
 The request and terminal state machines remain Gleam. Raw OTP errors become
 constant diagnostics at the boundary so a request header cannot leak through
 a durable provider error.
