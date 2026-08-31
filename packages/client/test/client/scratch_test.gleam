@@ -13,6 +13,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 
+pub fn stopping_a_missing_store_is_a_no_op_test() {
+  scratch.stop(process.new_name(prefix: "missing-scratch-store"))
+}
+
 // --- a round trip -------------------------------------------------------------
 
 pub fn a_set_then_get_returns_the_bytes_test() {

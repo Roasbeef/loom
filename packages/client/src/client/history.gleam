@@ -279,7 +279,7 @@ pub fn supervised(config: Config) -> ChildSpecification(Subject(Message)) {
 pub fn stop(name: Name(Message)) -> Nil {
   case process.named(name) {
     Error(Nil) -> Nil
-    Ok(_pid) -> process.send(process.named_subject(name), Stop)
+    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Stop))
   }
 }
 
@@ -288,7 +288,7 @@ pub fn stop(name: Name(Message)) -> Nil {
 pub fn poke(name: Name(Message)) -> Nil {
   case process.named(name) {
     Error(Nil) -> Nil
-    Ok(_pid) -> process.send(process.named_subject(name), Pull)
+    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Pull))
   }
 }
 

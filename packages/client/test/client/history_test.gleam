@@ -24,6 +24,12 @@ import storage/storage.{type Storage}
 import tools/fs
 import tools/history as history_tool
 
+pub fn missing_holder_casts_are_no_ops_test() {
+  let name = process.new_name(prefix: "missing-history-holder")
+  history.poke(name)
+  history.stop(name)
+}
+
 // --- where the index lives -------------------------------------------------
 
 pub fn the_index_sits_beside_the_session_file_test() {

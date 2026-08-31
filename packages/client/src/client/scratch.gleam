@@ -225,7 +225,10 @@ pub fn supervised(
 
 /// Stops the store and everything in it.
 pub fn stop(name: Name(Message)) -> Nil {
-  process.send(process.named_subject(name), Stop)
+  case process.named(name) {
+    Error(Nil) -> Nil
+    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Stop))
+  }
 }
 
 /// The `kv.*` closures over the store registered under `name`.
