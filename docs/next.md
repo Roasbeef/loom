@@ -244,9 +244,15 @@ result as a directional greater-than-50x idle reduction rather than a general
 throughput claim. Until upstream merges the PR, the package is temporarily
 pinned to the exact commit on the contributor fork.
 
-The footer keeps shortcuts, usage, and session status on one row while they
-fit. At narrower widths it reserves a second row for the usage ledger instead
-of letting etui's collision policy remove the center section entirely.
+The footer follows the compact project/status layout used by modern coding
+clients. It discovers the surrounding repository once at startup, showing its
+abbreviated path and branch beside the selected model. At narrower widths it
+reserves a second row for the complete usage ledger and agent status. If those
+sections collide, agent status moves to a third row so etui cannot truncate the
+usage tail first. Repository marker and HEAD reads are limited to regular 4 KiB
+files with bounded ref display. Expanded tool output also strips complete ANSI
+CSI and OSC sequences before rendering, so a captured terminal session cannot
+leave formatting payloads visible in the transcript.
 
 Websocket startup now runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error

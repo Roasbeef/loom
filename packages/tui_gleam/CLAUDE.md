@@ -82,11 +82,17 @@ reconnect portions of the existing client's contract.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Usage**: full snapshots establish the authoritative ledger and deltas add
+- **Footer**: full snapshots establish the authoritative ledger and deltas add
   input, output, cache-read, cache-write, and cost fields independently. The
-  footer never infers a price from a model name. When shortcuts, usage, and
-  status cannot share one row, usage moves to a second row instead of
-  disappearing between the other sections.
+  footer never infers a price from a model name. It discovers the surrounding
+  repository once before the event loop, then shows workspace and branch beside
+  the model. Repository marker and HEAD reads accept only regular files up to 4
+  KiB, and displayed refs are shape- and length-bounded. When all sections
+  cannot share one row, usage and agent status move to a second row; if those
+  collide, status takes a third row so the usage tail remains visible.
+- **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
+  formatting sequences before markdown creates spans. Lone or incomplete
+  controls remain visibly inert rather than becoming terminal instructions.
 
 ## Invariants
 
