@@ -31,7 +31,7 @@ import gleam/result
 /// Messages understood by the drain ledger. Callers use `claim` rather than
 /// constructing messages directly.
 pub opaque type Message {
-  /// Atomically publishes a new reaper and returns its live predecessors.
+  /// Publishes a reaper and opens its reply after prior generations drain.
   Claim(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
   /// Adjudicates whether a reaper proved drain or destroyed its proof.
   ReaperDown(process.Down)
@@ -40,7 +40,18 @@ pub opaque type Message {
 }
 
 type State {
-  State(chains: Dict(String, List(Pid)), closing: Bool)
+  State(
+    chains: Dict(String, List(Pid)),
+    waiters: List(ClaimWaiter),
+    closing: Bool,
+  )
+}
+
+// A claim waits on the ledger's original monitors rather than re-monitoring
+// predecessor PIDs after the snapshot. Only this actor can distinguish a
+// clean Down from `noproc` after the process identity has disappeared.
+type ClaimWaiter {
+  ClaimWaiter(predecessors: List(Pid), reply_with: Subject(List(Pid)))
 }
 
 /// Starts the drain ledger under its stable, session-local name.
@@ -64,7 +75,7 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
       |> process.select(subject)
       |> process.select_monitors(ReaperDown)
       |> process.select_trapped_exits(ParentExit)
-    actor.initialised(State(chains: dict.new(), closing: False))
+    actor.initialised(State(chains: dict.new(), waiters: [], closing: False))
     |> actor.selecting(selector)
     |> actor.returning(subject)
     |> Ok
@@ -99,13 +110,35 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       // is_alive here would turn a dead-but-unadjudicated reaper into an empty
       // predecessor set and let recovery overtake its still-draining children.
       let previous = dict.get(state.chains, strand) |> result.unwrap([])
-      process.send(reply_with, previous)
       let _monitor = process.monitor(reaper)
       let chains = dict.insert(state.chains, strand, [reaper, ..previous])
-      continue_or_stop(State(..state, chains:))
+      case previous {
+        [] -> {
+          // Install the monitor before releasing the caller. A fast normal
+          // exit then queues a Down which this actor adjudicates against the
+          // state returned from this same turn.
+          process.send(reply_with, [])
+          continue_or_stop(State(..state, chains:))
+        }
+        [_, ..] ->
+          // Returning predecessor PIDs would ask the replacement to install
+          // late monitors. If a predecessor has already exited, that loses
+          // its reason as `noproc`; retain the reply until our original
+          // monitors have proved every member of this exact snapshot clean.
+          continue_or_stop(
+            State(..state, chains:, waiters: [
+              ClaimWaiter(previous, reply_with),
+              ..state.waiters
+            ]),
+          )
+      }
     }
-    ReaperDown(process.ProcessDown(pid:, reason: process.Normal, ..)) ->
-      continue_or_stop(State(..state, chains: forget(state.chains, pid)))
+    ReaperDown(process.ProcessDown(pid:, reason: process.Normal, ..)) -> {
+      let waiters = acknowledge_departure(state.waiters, pid)
+      continue_or_stop(
+        State(..state, chains: forget(state.chains, pid), waiters:),
+      )
+    }
     ReaperDown(process.ProcessDown(reason: process.Killed, ..))
     | ReaperDown(process.ProcessDown(reason: process.Abnormal(_), ..)) -> {
       // No replacement process can reconstruct the killed reaper's ownership
@@ -119,6 +152,27 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     ReaperDown(process.PortDown(..)) -> actor.continue(state)
     ParentExit(_exit) -> continue_or_stop(State(..state, closing: True))
   }
+}
+
+fn acknowledge_departure(
+  waiters: List(ClaimWaiter),
+  departed: Pid,
+) -> List(ClaimWaiter) {
+  list.filter_map(waiters, fn(waiter) {
+    let ClaimWaiter(predecessors:, reply_with:) = waiter
+    let predecessors =
+      list.filter(predecessors, fn(reaper) { reaper != departed })
+    case predecessors {
+      [] -> {
+        // An empty reply is the snapshot-specific acknowledgement: every PID
+        // the claim observed has supplied a Normal Down to its original
+        // ledger monitor.
+        process.send(reply_with, [])
+        Error(Nil)
+      }
+      [_, ..] -> Ok(ClaimWaiter(predecessors:, reply_with:))
+    }
+  })
 }
 
 fn forget(
@@ -143,19 +197,20 @@ fn continue_or_stop(state: State) -> actor.Next(State, Message) {
   }
 }
 
-/// Publishes one incarnation's reaper and returns every predecessor whose
-/// original monitor has not yet proved normal drain. The publish and read are
-/// one actor turn, so two replacements cannot both mistake themselves for the
-/// only generation.
+/// Publishes one incarnation's reaper and returns after every predecessor in
+/// that claim's snapshot has proved normal drain to the ledger's original
+/// monitors. The publish and snapshot are one actor turn, so two replacements
+/// cannot both mistake themselves for the only generation.
 ///
-/// The caller must monitor and await every returned PID before dispatching
-/// recovered effects. The new reaper is recorded before this function returns.
+/// A successful ledger call returns an empty list because no predecessor in
+/// its snapshot remains unadjudicated. The list-shaped result preserves the
+/// injected test seam; the new reaper is recorded before this function returns.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let previous = drain_registry.claim(ledger, "main", new_reaper)
-/// // Recovery waits for every PID in `previous`.
+/// // `previous` is empty once the ledger-authored barrier opens.
 /// ```
 ///
 pub fn claim(

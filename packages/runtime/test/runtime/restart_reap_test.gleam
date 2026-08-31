@@ -17,6 +17,7 @@ import core/clock
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
+import gleam/result
 import machine/operation.{ReplaySafe, RunFailed, RunLastResult}
 import provider/stream
 import runtime/api
@@ -381,6 +382,10 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
             let cancel = process.new_subject()
             process.send(ready, cancel)
             let _cancel = process.receive_forever(cancel)
+            // Stay alive beyond the driver's five-second OTP initializer.
+            // Recovery must wait in initialized actor state rather than turn
+            // this legitimate drain into repeated InitTimeout failures.
+            process.sleep(5200)
             let _drained = recorder.bump(rec, "provider-owner-drained")
             Nil
           })
@@ -399,33 +404,43 @@ pub fn strand_restart_waits_for_the_provider_owner_drain_test() {
     )
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"
-  let assert Ok(_op) = api.prompt(rt, [fake.user("wait for the provider")])
+  let assert Ok(op) = api.prompt(rt, [fake.user("wait for the provider")])
     as "the prompt must be accepted"
   wait_for_named(
     fn() { recorder.read(rec, "provider-requested") >= 1 },
     5000,
     "the first provider request",
   )
-  kill_strand(rt, "main")
+  let predecessor = kill_strand(rt, "main")
   wait_for_named(
     fn() { recorder.read(rec, "provider-cancel-called") >= 1 },
     5000,
     "the predecessor provider cancellation",
   )
   wait_for_named(
-    fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
+    fn() {
+      case live_strand_pid(rt, "main") {
+        Ok(replacement) -> replacement != predecessor
+        Error(Nil) -> False
+      }
+    },
     5000,
+    "the replacement strand driver",
+  )
+  // The replacement is addressable while its linked helper waits on the
+  // ledger barrier. Abort must remain responsive in this phase and must win
+  // before recovery gets a chance to dispatch another provider request.
+  api.abort(rt)
+  wait_for_named(
+    fn() { recorder.read(rec, "provider-owner-drained") >= 1 },
+    7000,
     "the predecessor provider owner drain",
   )
-  // The predecessor owner must acknowledge its drain before recovery can
-  // dispatch request two; checking in this order makes overlap impossible to
-  // hide behind an eventually delivered owner-drained message.
-  wait_for_named(
-    fn() { recorder.read(rec, "provider-requested") >= 2 },
-    5000,
-    "the replacement provider request",
-  )
+  let assert Ok(last) = api.await_result(rt, op, within_ms: 7000)
+    as "the pre-barrier abort must settle after predecessor drain"
+  harness.assert_aborted(last)
   assert recorder.read(rec, "provider-owner-drained") >= 1
+  assert recorder.read(rec, "provider-requested") == 1
   assert recorder.read(rec, "provider-overlap") == 0
   let assert [first, ..] = logged_pids(pids)
   assert !process.is_alive(first)
@@ -677,12 +692,18 @@ fn delayed_drain_provider(
 // Kills the named strand's driver process only: the factory restarts it
 // under the same registered name while the writer — and the rest of the
 // tree — keeps running.
-fn kill_strand(rt: api.Runtime, strand: String) -> Nil {
+fn kill_strand(rt: api.Runtime, strand: String) -> Pid {
   let assert Ok(subject) = supervisor.strand_subject(rt.tree, strand)
     as "the strand driver must be registered"
   let assert Ok(pid) = process.subject_owner(subject)
     as "the strand driver must be alive"
   process.kill(pid)
+  pid
+}
+
+fn live_strand_pid(rt: api.Runtime, strand: String) -> Result(Pid, Nil) {
+  use subject <- result.try(supervisor.strand_subject(rt.tree, strand))
+  process.subject_owner(subject)
 }
 
 // The name registry is deliberately restartable. Killing it exercises the

@@ -10,18 +10,16 @@
 //// and strand crashes; only a whole-tree reboot (open, close) starts it
 //// empty, and the strand booter then repopulates it from the store.
 ////
-//// The production session tree keeps effect-generation reapers in the
-//// earlier, non-restartable `runtime/internal/drain_registry`; they cannot
-//// safely share this actor's restart boundary. `ClaimReaper` remains here as
-//// a compatibility surface for direct users, but the supervisor deliberately
-//// does not route ownership barriers through it.
+//// Effect-generation reapers live in the earlier, non-restartable
+//// `runtime/internal/drain_registry`; they cannot safely share this actor's
+//// restart boundary. Keeping the concerns separate also prevents a process
+//// liveness check from being mistaken for proof that descendants drained.
 
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
-import gleam/result
 import gleam/string
 import runtime/strand_runtime
 
@@ -34,14 +32,10 @@ pub opaque type Message {
     reply_with: Subject(Result(Name(strand_runtime.Message), Nil)),
   )
   Known(reply_with: Subject(List(String)))
-  ClaimReaper(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
 }
 
 type State {
-  State(
-    names: Dict(String, Name(strand_runtime.Message)),
-    reapers: Dict(String, List(Pid)),
-  )
+  State(names: Dict(String, Name(strand_runtime.Message)))
 }
 
 /// Starts a registry registered under `name`.
@@ -53,7 +47,7 @@ type State {
 /// ```
 ///
 pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
-  actor.new(State(names: dict.new(), reapers: dict.new()))
+  actor.new(State(names: dict.new()))
   |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
@@ -82,9 +76,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Error(Nil) -> {
           let fresh = process.new_name(prefix: "loom_strand")
           process.send(reply_with, fresh)
-          actor.continue(
-            State(..state, names: dict.insert(state.names, strand, fresh)),
-          )
+          actor.continue(State(names: dict.insert(state.names, strand, fresh)))
         }
       }
     Lookup(strand:, reply_with:) -> {
@@ -97,19 +89,6 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         list.sort(dict.keys(state.names), string.compare),
       )
       actor.continue(state)
-    }
-    ClaimReaper(strand:, reaper:, reply_with:) -> {
-      let previous =
-        dict.get(state.reapers, strand)
-        |> result.unwrap([])
-        |> list.filter(process.is_alive)
-      process.send(reply_with, previous)
-      actor.continue(
-        State(
-          ..state,
-          reapers: dict.insert(state.reapers, strand, [reaper, ..previous]),
-        ),
-      )
     }
   }
 }
@@ -154,16 +133,4 @@ pub fn lookup(
 ///
 pub fn known(registry: Subject(Message)) -> List(String) {
   process.call_forever(registry, Known)
-}
-
-/// Registers a new incarnation's reaper and returns every earlier reaper that
-/// is still draining. The registry keeps the whole live chain rather than only
-/// the newest pid, so a replacement that itself fails during startup cannot
-/// hide an older generation from the next retry.
-pub fn claim_reaper(
-  registry: Subject(Message),
-  strand: String,
-  reaper: Pid,
-) -> List(Pid) {
-  process.call_forever(registry, ClaimReaper(strand, reaper, _))
 }

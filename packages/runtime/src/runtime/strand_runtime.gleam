@@ -83,8 +83,8 @@ import telemetry/log.{type Logger}
 /// is the runtime-owned opaque options bag snapshotted into generation
 /// steps; `retry_policy` is the normalized policy snapshotted likewise;
 /// `poll_interval_ms` is the checkpoint-poll period (positive);
-/// `claim_reaper` publishes this incarnation's effect reaper and returns any
-/// older generations that must drain before recovery can dispatch;
+/// `claim_reaper` publishes this incarnation's effect reaper and does not
+/// return until the ledger has acknowledged older generations as drained;
 /// `logger` is injected (§0.2) and need not carry a strand — `start`
 /// scopes it to the strand it is starting.
 pub type Options {
@@ -129,6 +129,8 @@ pub type EffectToken {
 /// the rest are internal wiring exposed only through the api module's
 /// functions.
 pub opaque type Message {
+  /// Reports the ledger-authored prior-generation drain acknowledgement.
+  PredecessorsResolved(Result(Nil, String))
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
   /// The periodic checkpoint poll; also grants one deferred poll permit.
@@ -198,6 +200,14 @@ type ProviderWaitFailure {
   ProviderWaitExpired
 }
 
+// Registration makes the named mailbox reachable before the drain claim can
+// finish. This phase prevents early or stale traffic from driving effects
+// until the prior generation's original monitors have opened the barrier.
+type RecoveryGate {
+  AwaitingPredecessors(abort_requested: Bool)
+  RecoveryReady
+}
+
 type Live {
   Live(
     token: EffectToken,
@@ -222,6 +232,7 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
+    recovery_gate: RecoveryGate,
     /// This driver's logger, already scoped to the strand. Every log
     /// call narrows *from* this value rather than reading ambient
     /// state, which is what carries `{session, strand, op, step}` into
@@ -288,10 +299,10 @@ type Outcome {
   Halt(String)
 }
 
-/// Starts a strand driver registered under `name`. The driver immediately
-/// nudges itself, so an open operation restored from storage resumes
-/// without external input — crash recovery and cold start are the same
-/// path.
+/// Starts a strand driver registered under `name`. The initialized actor first
+/// waits on the prior-generation drain barrier, then drives immediately, so an
+/// open operation restored from storage resumes without external input — crash
+/// recovery and cold start are the same path.
 ///
 /// ## Examples
 ///
@@ -305,26 +316,27 @@ pub fn start(
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
     let reaper = start_reaper()
-    let Reaper(pid: reaper_pid, ..) = reaper
-    use Nil <- result.try(
-      options.claim_reaper(options.strand, reaper_pid)
-      |> await_previous_reapers(4000),
-    )
     let selector =
       process.new_selector()
       |> process.select(subject)
       |> process.select_monitors(EffectExit)
-    // Recovery is just the first drive: kick ourselves.
-    process.send(subject, Nudge)
-    options.effects.timers.after(options.poll_interval_ms, fn() {
-      wake(subject, PollTick)
-    })
     let logger = log.for_strand(options.logger, options.strand)
     // Every line this incarnation writes is correlated from here on;
     // the driver process itself also stamps the context so an OTP crash
     // report about *this* process is not orphaned.
     log.adopt(logger)
-    log.info(logger, "strand.started", [])
+    // Initialize before waiting on the predecessor barrier. A provider owner
+    // may legitimately drain for minutes; keeping that wait inside the
+    // five-second OTP initializer would turn clean teardown into a restart
+    // loop which spends the supervisor's tolerance.
+    let Reaper(pid: reaper_pid, ..) = reaper
+    let _barrier =
+      process.spawn(fn() {
+        let resolved =
+          options.claim_reaper(options.strand, reaper_pid)
+          |> await_previous_reapers(4000)
+        process.send(subject, PredecessorsResolved(resolved))
+      })
     actor.initialised(State(
       self: subject,
       writer: process.named_subject(options.writer),
@@ -334,6 +346,7 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
+      recovery_gate: AwaitingPredecessors(abort_requested: False),
       logger:,
       reaper:,
       live: [],
@@ -397,9 +410,40 @@ pub fn request_abort(strand: Subject(Message)) -> Nil {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
-  case message {
-    Nudge -> finish(logger, drive(state))
-    PollTick -> {
+  case state.recovery_gate, message {
+    AwaitingPredecessors(abort_requested:), PredecessorsResolved(resolved) -> {
+      case resolved {
+        Ok(Nil) -> {
+          // Recovery and its poll clock both begin after the ledger-authored
+          // acknowledgement. Before this point, queued doorbells are harmless
+          // because no durable work has crossed the effect boundary.
+          state.effects.timers.after(state.poll_interval_ms, fn() {
+            wake(state.self, PollTick)
+          })
+          log.info(logger, "strand.started", [])
+          let state = State(..state, recovery_gate: RecoveryReady)
+          case abort_requested {
+            True -> finish(logger, abort(state))
+            False -> finish(logger, drive(state))
+          }
+        }
+        Error(reason) -> finish(logger, Halt(reason))
+      }
+    }
+    AwaitingPredecessors(_), RequestAbort ->
+      // Abort is the one pre-barrier message carrying unique intent. Retain it
+      // in state; doorbells and stale effect events need no queue because the
+      // first post-barrier drive reloads durable truth.
+      actor.continue(
+        State(
+          ..state,
+          recovery_gate: AwaitingPredecessors(abort_requested: True),
+        ),
+      )
+    AwaitingPredecessors(_), _ -> actor.continue(state)
+    RecoveryReady, PredecessorsResolved(_) -> actor.continue(state)
+    RecoveryReady, Nudge -> finish(logger, drive(state))
+    RecoveryReady, PollTick -> {
       let self = state.self
       state.effects.timers.after(state.poll_interval_ms, fn() {
         wake(self, PollTick)
@@ -411,13 +455,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Halt(reason) -> finish(logger, Halt(reason))
       }
     }
-    RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
-    RequestAbort -> finish(logger, abort(state))
-    ProviderDone(token:, terminal:) ->
+    RecoveryReady, RetryDue ->
+      finish(logger, drive(State(..state, retry_wake: None)))
+    RecoveryReady, RequestAbort -> finish(logger, abort(state))
+    RecoveryReady, ProviderDone(token:, terminal:) ->
       finish(logger, provider_done(state, token, terminal))
-    ToolDone(token:, outcome:) ->
+    RecoveryReady, ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
-    EffectExit(down:) -> finish(logger, effect_exit(state, down))
+    RecoveryReady, EffectExit(down:) -> finish(logger, effect_exit(state, down))
   }
 }
 
