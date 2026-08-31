@@ -69,38 +69,63 @@ zero errors.
 
 Branch `client/etui-tui` carries an opt-in pure-Gleam client in
 `packages/tui_gleam`; it is not on `main` and does not replace the shipped Go
-client. The client now works in a real Herdr PTY, attaches to the real gateway,
-uses slash commands, opens a searchable `/model` overlay, projects live strands
-as agents, renders assistant CommonMark through Mork into etui spans, and keeps
-reasoning/tool detail collapsed until `Ctrl+G` or `/details` asks for it. The
-agent rail is hidden by default and toggled with `Tab`. Compact speaker marks
-replace repeated role names, Page Up/Page Down and the mouse wheel share a
-tail-relative transcript viewport, and fenced Gleam blocks gain token contrast
-without rewriting model-authored text.
+client. Draft PR #136 is the review surface. The client works in a real Herdr
+PTY, attaches to the real gateway, opens searchable model and agent overlays,
+and renders assistant CommonMark through Mork into etui spans. Typing `/` now
+opens a prefix-filtered command palette. `/agents` has a real selection cursor;
+Up and Down move it and Enter opens the selected strand's transcript. `/notes`
+keeps the server-injected note digest out of operator speech while retaining an
+explicit inspection surface. Strand switches request that strand's effective
+configuration before replacing the model label, and long agent lists keep the
+selected row inside the inspector viewport.
 
-The package's warning-free build and 18 tests pass, its R0-R8 lint census is
-zero, and the doc graph recognizes its mirrored package docs. The measured
-compatibility cost remains: etui needs Gleam 1.16+, and Mork's Erlang path needs
-OTP 28+, above Loom's advertised OTP 27 floor. It is therefore absent from the
-root package and release lists. `docs/design-notes/etui-client.md` holds the
-measurements, source/screenshot influences, protocol coverage, and Baseten
-catalogue mapping.
+The transcript distinguishes tool calls, results, and failures. Bash calls show
+their command, `apply_patch` calls render a bounded unified diff, and structured
+`code_mode` programs use fenced Gleam rather than escaped JSON. Long prompts
+wrap into a one-to-four-row editor without changing submitted bytes. Page Up,
+Page Down, and the mouse wheel share one clamped tail-relative viewport. The
+footer reports the server's complete usage ledger: input, output, cache
+read/write tokens, and accumulated cost. Active work uses an animated title
+marker rather than relying on the word `thinking` alone.
 
-A fresh Baseten Kimi K3 session also proved that `code_mode` appears in the
-durable tool set and is invoked through the native client. Under strict
-`FullEnforcement`, the Darwin helper refused the hermetic build before
-compilation because address-space and process-count rlimits plus descendant
-lifecycle enforcement were incomplete. The client/provider route is therefore
-live, but that run is not a successful combined eTUI-to-jailed-tool terminal
-proof.
+The historical render cache is now per record. Stable entries keep their
+already-wrapped Mork rows; only the live stream buffer is rewrapped for a new
+fragment. Background-strand deltas no longer invalidate the visible transcript,
+streams accumulate fragments without repeatedly copying their prefix, and
+records are stored newest-first. This closes the history-sized work that was
+visible during streaming, not etui's fixed polling cost. Upstream etui issues
+[#6](https://github.com/lupodevelop/etui/issues/6) and
+[#7](https://github.com/lupodevelop/etui/issues/7) ask for a same-Buffer diff
+short circuit and a state-dependent poll timeout respectively.
 
-An explicit `--best-effort` control run did complete that combined path. K3
-emitted one `code_mode` call, the native client rendered its structured program
-as fenced Gleam, and the satellite returned `code mode live`. Both the
-hermetic-build and satellite reports enforced Seatbelt filesystem/network plus
-file-size and CPU rlimits; both reported only the documented Darwin
-address-space, process-count, and descendant-lifecycle gaps. This is evidence
-for the route and presentation, not permission to weaken the default policy.
+Websocket startup now runs in a monitored, unlinked helper with a five-second
+deadline. A dependency initialiser panic or silent dial becomes a client error
+instead of killing or hanging the terminal; success restores the socket actor's
+link to the caller. The focused package gate passes with 47 tests. Its expected
+panic regression prints an Erlang crash report while proving that the parent
+survives. The measured compatibility cost remains: etui needs Gleam 1.16+, and
+Mork's Erlang path needs OTP 28+, above Loom's advertised OTP 27 floor. The
+package therefore remains outside the root package and release lists.
+
+A fresh default-policy session completed the combined eTUI-to-code-mode path on
+Darwin. Both the hermetic build and satellite reported enforced Seatbelt
+filesystem and network confinement plus CPU and file-size limits, with exactly
+ADR-006's three named gaps. Do not replace this proof with `--best-effort`; the
+supported Darwin contract is `PlatformEnforcement`.
+
+Image drop is deliberately not smuggled through the text-only command.
+`protocol-change/010-prompt-content-blocks.md` proposes an additive
+`prompt_content` command carrying the existing total `UserBlock` codec. The new
+name makes an old gateway refuse rather than claim success after silently
+dropping an unknown image field. It remains **PROPOSED**; do not implement the
+wire or claim drag-and-drop support before approval.
+
+Escape still exposes a server-side cancellation boundary beyond this client
+wave. Admission can now send an abort during the prompt-to-live transition, but
+the provider relay, pump, and HTTP transport are not linked to the waiter that
+the runtime kills. Late deltas also lack operation identity at the TUI boundary.
+Treat "the request stopped billing and cannot contaminate its successor" as
+unproved until that runtime lifecycle is repaired and tested.
 
 Before adoption, implement protocol-change/007 approval with exact action and
 grant echo, then sparse-sequence reconnect/catch-up behavior. After those gates
