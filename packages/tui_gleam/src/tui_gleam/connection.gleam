@@ -4,7 +4,7 @@
 //// it on etui ticks, so network traffic never blocks keyboard polling and
 //// the view remains a pure function of the current model.
 
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Down, type Subject}
 import gleam/http/request
 import gleam/result
 import gleam/string
@@ -13,6 +13,11 @@ import stratus
 type Outbound {
   SendText(String)
   Stop
+}
+
+type StartReport(a) {
+  StartReturned(Result(a, String))
+  StartCrashed(Down)
 }
 
 /// A connected websocket actor.
@@ -108,11 +113,62 @@ pub fn connect(
       process.send(inbox, Closed(string.inspect(reason)))
     })
   use started <- result.try(
-    stratus.start(builder)
-    |> result.map_error(fn(error) { string.inspect(error) }),
+    start_safely(fn() {
+      stratus.start(builder)
+      |> result.map_error(fn(error) { string.inspect(error) })
+    }),
   )
+  use owner <- result.try(
+    process.subject_owner(started.data)
+    |> result.replace_error("the websocket actor exited during startup"),
+  )
+  use Nil <- result.try(case process.link(owner) {
+    True -> Ok(Nil)
+    False -> Error("the websocket actor exited during startup")
+  })
   process.send(inbox, Connected)
   Ok(Connection(started.data))
+}
+
+/// Runs connection startup outside the terminal process.
+///
+/// A websocket dependency is allowed to return an ordinary error, but a bug
+/// in its actor initialiser must not take the interactive terminal down. The
+/// child is unlinked and monitored so both outcomes become typed data.
+@internal
+pub fn start_safely(start: fn() -> Result(a, String)) -> Result(a, String) {
+  start_safely_within(start, 5000)
+}
+
+/// Runs guarded startup with an explicit deadline for deterministic tests.
+@internal
+pub fn start_safely_within(
+  start: fn() -> Result(a, String),
+  within_ms: Int,
+) -> Result(a, String) {
+  let replies = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      process.send(replies, StartReturned(start()))
+    })
+  let monitor = process.monitor(worker)
+  let selector =
+    process.new_selector()
+    |> process.select(replies)
+    |> process.select_specific_monitor(monitor, StartCrashed)
+  case process.selector_receive(from: selector, within: within_ms) {
+    Ok(StartReturned(result)) -> {
+      process.demonitor_process(monitor)
+      result
+    }
+    Ok(StartCrashed(down)) ->
+      Error("websocket startup crashed: " <> string.inspect(down))
+    Error(Nil) -> {
+      process.kill(worker)
+      process.demonitor_process(monitor)
+      Error("websocket startup timed out")
+    }
+  }
 }
 
 /// Sends one text frame without blocking the terminal process on socket I/O.

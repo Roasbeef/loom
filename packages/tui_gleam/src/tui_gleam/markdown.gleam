@@ -44,6 +44,9 @@ type CodeKind {
   CodeNumber
   CodeComment
   CodePunctuation
+  CodeAdded
+  CodeRemoved
+  CodeDiffMeta
 }
 
 type CodeCharacter {
@@ -176,10 +179,22 @@ fn code_spans(language: Option(String), line: String) -> List(span.Span) {
           |> string.to_graphemes
           |> gleam_parts([])
           |> list.map(code_span)
+        "diff" -> [diff_span(line)]
         _ -> [span.span_styled(line, code_style())]
       }
     None -> [span.span_styled(line, code_style())]
   }
+}
+
+fn diff_span(line: String) -> span.Span {
+  let kind = case line {
+    "+++" <> _ | "---" <> _ | "@@" <> _ | "diff " <> _ | "*** " <> _ ->
+      CodeDiffMeta
+    "+" <> _ -> CodeAdded
+    "-" <> _ -> CodeRemoved
+    _ -> CodePlain
+  }
+  code_span(CodePart(line, kind))
 }
 
 fn gleam_parts(
@@ -355,6 +370,9 @@ fn code_span(part: CodePart) -> span.Span {
       theme.quiet_text()
       |> style.add_modifier(style.italic())
     CodePunctuation -> theme.quiet_text()
+    CodeAdded -> theme.diff_added()
+    CodeRemoved -> theme.diff_removed()
+    CodeDiffMeta -> theme.current_bold()
   }
   span.span_styled(text, rendered)
 }

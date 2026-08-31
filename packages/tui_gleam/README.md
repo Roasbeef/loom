@@ -21,7 +21,7 @@ process owns presentation state.
 ```mermaid
 flowchart LR
     Keys["terminal events"]
-    Tick["16 ms Tick"]
+    Tick["50 ms Tick"]
     Sock["Stratus socket actor"]
     Update["update(Model, Message)"]
     Model["immutable Model"]
@@ -51,10 +51,13 @@ becomes the authority. Combining both into one transcript would show the
 answer twice when settlement arrives.
 
 The model therefore keeps two collections. `records` holds entries decoded by
-`core/codec`; `streams` holds text keyed by strand and stream kind. An incoming
-entry clears that strand's fragments before the next render. This is the same
-two-channel distinction the harness uses: live output is useful feedback, but
-only a committed entry is conversation history.
+`core/codec`; `streams` holds newest-first text fragments keyed by strand and
+stream kind. Durable record rows are wrapped once and cached by strand, width,
+and detail mode. A stream revision rewraps only its live fragments. An incoming
+entry clears that strand's fragments and adds only the new durable rows before
+the next render. This is the same two-channel distinction the harness uses:
+live output is useful feedback, but only a committed entry is conversation
+history.
 
 ```mermaid
 sequenceDiagram
@@ -81,13 +84,15 @@ and role names beside every message.
 
 Ordinary input is a prompt. An input beginning with `/` is a client command,
 so the operator never has to remember a second punctuation dialect inherited
-from another TUI.
+from another TUI. Typing `/` opens a filtered palette; Up and Down move the
+selection and Tab completes it without submitting.
 
 | Command | Effect |
 |---|---|
 | `/model` | Open the searchable model selector. |
 | `/model <name>` | Select one catalogue entry directly. |
 | `/agents` | Open the strand and sub-agent inspector. |
+| `/notes` | Show the latest durable agent-note digest outside the operator transcript. |
 | `/strand <name>` | Move the transcript to an existing strand. |
 | `/fork <name>` | Fork the active strand through ClientGateway. |
 | `/compact` | Request standalone compaction. |
@@ -105,9 +110,19 @@ survive a search.
 
 The agent display is also a projection, not a registry. ClientGateway strands
 provide identity and `live_op.phase` provides activity. A `sub:` strand is
-indented beneath its parent. The compact rail is hidden by default and `Tab`
-reveals it only on terminals wide enough to leave the conversation useful;
+indented beneath its parent. The compact rail is hidden by default and
+`Shift+Tab` reveals it only on terminals wide enough to leave the conversation useful;
 `/agents` is the deliberate full view.
+Up and Down move its selected row, and Enter closes the modal and opens that
+strand's ordinary transcript view. Every modal paints its own complete
+background so stale transcript attributes cannot leak through its text rows.
+
+The server's run-start note digest currently crosses the frozen entry schema as
+an ordinary user-role message with a server-owned fenced preamble. The client
+recognizes that exact envelope and withholds it from the normal transcript;
+`/notes` is the explicit inspection surface. This convention is a projection
+rule, not durable provenance. A future wire revision would need a distinct
+machine-context tag to remove the string discriminator.
 
 ## Markdown remains data
 
@@ -128,7 +143,24 @@ A structured `code_mode` call takes this same path: the `program` field is
 shown as fenced Gleam rather than escaped JSON. The normal view bounds long
 programs to twelve source rows, while `/details` reveals the full call. Code
 rows bypass etui's prose word wrapper so leading indentation survives the
-terminal projection.
+terminal projection. Its result is labelled separately from the sandbox
+enforcement summary, so report values such as file counts cannot be mistaken
+for client metadata.
+
+Tool activity uses a call-and-result hierarchy rather than a flat stream of
+JSON. Bash calls expose the command, structured patch calls render a bounded
+unified diff, and failures retain a distinct mark. Incremental tool-call JSON is
+not rendered as text while it is incomplete, which prevents repeated partial
+keys from bleeding together during streaming.
+
+The prompt keeps its original editor state and submission bytes, but its view
+wraps to terminal cells. It grows from one to four visible rows and then scrolls
+with the cursor, so long instructions remain inspectable without consuming the
+whole transcript.
+
+The footer renders the authoritative usage ledger from ClientGateway: input,
+output, cache-read, cache-write, and accumulated server-reported cost. The
+client does not maintain a pricing table or estimate cost from model names.
 
 There is no HTML render-and-reparse step and no ANSI intermediate. Raw HTML is
 shown as quiet text, not interpreted. Links retain an OSC 8 destination through
@@ -155,6 +187,12 @@ gleam run -- \
   --session session \
   --token-file /path/to/session.db.token
 ```
+
+Websocket setup is isolated in a monitored helper with a five-second deadline.
+A dependency initialiser panic or a silent dial failure becomes a local startup
+error instead of killing or hanging the terminal process. Once setup succeeds,
+the socket actor is linked to the client again so runtime failures keep their
+original supervision behavior.
 
 The package gate and Loom's own house-rule census run independently while this
 candidate remains outside the root release set:
@@ -184,6 +222,12 @@ semantics, overlap durable replay safely, and fail in-flight requests rather
 than leaving them suspended. Until both are exercised end to end, a screen that
 looks complete is not a replacement client.
 
+Image drag and drop is also not implemented yet. The durable core and provider
+adapters already understand `UserImage`, but frozen ClientGateway prompts carry
+text only. [`protocol-change/010`](../../protocol-change/010-prompt-content-blocks.md)
+proposes a version-skew-safe `prompt_content` command. It remains pending
+approval; local paths must not be converted into an undocumented wire shape.
+
 ## Where to look
 
 | Path | What it holds |
@@ -203,3 +247,5 @@ evaluation, including the visual references and adoption gates, lives in
 [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md).
 The authoritative wire bodies remain in
 [`packages/tui/internal/proto/protocol.md`](../tui/internal/proto/protocol.md).
+The profiling workflow and the limits of the current render cache live in
+[`docs/performance.md`](../../docs/performance.md).

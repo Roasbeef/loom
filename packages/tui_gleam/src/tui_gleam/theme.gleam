@@ -25,6 +25,15 @@ pub const quiet = style.Rgb(118, 124, 130)
 /// Failures and refused actions.
 pub const danger = style.Rgb(235, 102, 112)
 
+/// Added source in a structured edit preview.
+pub const added = style.Rgb(116, 201, 138)
+
+/// The subdued background behind added source.
+pub const added_bg = style.Rgb(24, 52, 35)
+
+/// The subdued background behind removed source.
+pub const removed_bg = style.Rgb(57, 27, 31)
+
 /// A bold signal style for the Loom mark and command names.
 ///
 /// ## Examples
@@ -58,6 +67,29 @@ pub fn quiet_text() -> style.Style {
   style.new(quiet, style.Default, style.dim())
 }
 
+/// A quiet modal label whose background keeps its full terminal intensity.
+///
+/// Dim is useful on the ordinary transcript, but several terminals apply it
+/// to the complete cell and visibly darken modal backgrounds.
+pub fn overlay_quiet() -> style.Style {
+  style.new(quiet, graphite, style.none())
+}
+
+/// A bold operator action on the shared modal background.
+pub fn overlay_signal() -> style.Style {
+  style.new(signal, graphite, style.bold())
+}
+
+/// A bold live value on the shared modal background.
+pub fn overlay_current() -> style.Style {
+  style.new(current, graphite, style.bold())
+}
+
+/// Ordinary modal text on the shared modal background.
+pub fn overlay_plain() -> style.Style {
+  style.new(paper, graphite, style.none())
+}
+
 /// A red failure style for refused commands and transport faults.
 ///
 /// ## Examples
@@ -67,4 +99,19 @@ pub fn quiet_text() -> style.Style {
 /// ```
 pub fn danger_text() -> style.Style {
   style.new(danger, style.Default, style.bold())
+}
+
+/// A green success mark for completed tool activity.
+pub fn success_text() -> style.Style {
+  style.new(added, style.Default, style.bold())
+}
+
+/// A readable added-line style for unified diffs.
+pub fn diff_added() -> style.Style {
+  style.new(added, added_bg, style.none())
+}
+
+/// A readable removed-line style for unified diffs.
+pub fn diff_removed() -> style.Style {
+  style.new(danger, removed_bg, style.none())
 }

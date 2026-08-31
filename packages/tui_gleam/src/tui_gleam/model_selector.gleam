@@ -135,8 +135,14 @@ pub fn update(key: keys.Key, state: State) -> Action {
 /// let next_buffer = model_selector.render(buffer, screen, state)
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
-  let width = int.max(1, int.min(76, screen.size.width - 4))
-  let height = int.max(1, int.min(22, screen.size.height - 4))
+  let visible = filter_models(state.models, state.query)
+  // The catalogue is normally short. Sizing to its rows keeps the selector a
+  // focused command surface instead of obscuring the transcript with an empty
+  // modal field; the cap still turns a large catalogue into a scrolling list.
+  let width = int.max(1, int.min(92, screen.size.width - 6))
+  let height =
+    int.max(7, int.min(16, list.length(visible) + 6))
+    |> int.min(int.max(1, screen.size.height - 4))
   let area = geometry.centered_rect(width, height, screen)
   let frame =
     block.block_new()
@@ -145,23 +151,23 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     |> block.with_bg_fill
     |> block.with_title_styled(
       [
-        span.span_styled(" MODEL ", theme.signal_bold()),
-        span.span_styled("selector ", theme.quiet_text()),
+        span.span_styled(" MODEL ", overlay_signal()),
+        span.span_styled("selector ", overlay_quiet()),
       ],
       block.Top,
     )
     |> block.with_padding(1, 0, 2, 2)
   let inside = block.inner(area, frame)
-  let visible = filter_models(state.models, state.query)
   case geometry.split_v(inside, [Length(1), Length(1), Fill, Length(1)]) {
     [summary_area, search_area, list_area, help_area] ->
       buf
+      |> buffer.clear(area)
       |> block.render(area, frame)
       |> render_summary(summary_area, visible)
       |> render_search(search_area, state.query)
       |> render_models(list_area, visible, state.selected)
       |> render_help(help_area)
-    _ -> block.render(buf, area, frame)
+    _ -> buf |> buffer.clear(area) |> block.render(area, frame)
   }
 }
 
@@ -175,11 +181,8 @@ fn render_summary(
     area,
     span.text_new([
       span.line_new([
-        span.span_styled(
-          int.to_string(list.length(models)),
-          theme.current_bold(),
-        ),
-        span.span_styled(" matching models", theme.quiet_text()),
+        span.span_styled(int.to_string(list.length(models)), overlay_current()),
+        span.span_styled(" matching models", overlay_quiet()),
       ]),
     ]),
   )
@@ -192,21 +195,14 @@ fn render_search(
 ) -> buffer.Buffer {
   let value = case query {
     "" ->
-      span.span_styled(
-        "Search by name, provider, or model id",
-        theme.quiet_text(),
-      )
-    text ->
-      span.span_styled(
-        text,
-        style.new(theme.paper, style.Default, style.none()),
-      )
+      span.span_styled("Search by name, provider, or model id", overlay_quiet())
+    text -> span.span_styled(text, overlay_plain())
   }
   paragraph.render_text(
     buf,
     area,
     span.text_new([
-      span.line_new([span.span_styled("/ ", theme.signal_bold()), value]),
+      span.line_new([span.span_styled("/ ", overlay_signal()), value]),
     ]),
   )
 }
@@ -229,7 +225,7 @@ fn render_models(
   let rows = case rows {
     [] -> [
       span.line_new([
-        span.span_styled("  no matching models", theme.quiet_text()),
+        span.span_styled("  no matching models", overlay_quiet()),
       ]),
     ]
     rows -> rows
@@ -240,12 +236,12 @@ fn render_models(
 fn model_line(model: ModelInfo, selected: Bool) -> span.Line {
   let ModelInfo(name:, dialect:, model_id:, active:, ..) = model
   let #(marker, name_style) = case selected {
-    True -> #("▸ ", theme.signal_bold())
-    False -> #("  ", style.new(theme.paper, style.Default, style.none()))
+    True -> #("▸ ", overlay_signal())
+    False -> #("  ", overlay_plain())
   }
   let active_badge = case active {
     [] -> ""
-    _ -> "  ● active"
+    roles -> "  ● " <> string.join(roles, ",")
   }
   span.line_new([
     span.span_styled(marker, name_style),
@@ -255,9 +251,9 @@ fn model_line(model: ModelInfo, selected: Bool) -> span.Line {
         <> text_hygiene.single_line(dialect)
         <> "/"
         <> text_hygiene.single_line(model_id),
-      theme.quiet_text(),
+      overlay_quiet(),
     ),
-    span.span_styled(active_badge, theme.current_bold()),
+    span.span_styled(active_badge, overlay_current()),
   ])
 }
 
@@ -267,15 +263,31 @@ fn render_help(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {
     area,
     span.text_new([
       span.line_new([
-        span.span_styled("↑↓", theme.signal_bold()),
-        span.span_styled(" navigate   ", theme.quiet_text()),
-        span.span_styled("enter", theme.signal_bold()),
-        span.span_styled(" select   ", theme.quiet_text()),
-        span.span_styled("esc", theme.signal_bold()),
-        span.span_styled(" close", theme.quiet_text()),
+        span.span_styled("↑↓", overlay_signal()),
+        span.span_styled(" navigate   ", overlay_quiet()),
+        span.span_styled("enter", overlay_signal()),
+        span.span_styled(" select   ", overlay_quiet()),
+        span.span_styled("esc", overlay_signal()),
+        span.span_styled(" close", overlay_quiet()),
       ]),
     ]),
   )
+}
+
+fn overlay_signal() -> style.Style {
+  theme.overlay_signal()
+}
+
+fn overlay_current() -> style.Style {
+  theme.overlay_current()
+}
+
+fn overlay_quiet() -> style.Style {
+  theme.overlay_quiet()
+}
+
+fn overlay_plain() -> style.Style {
+  theme.overlay_plain()
 }
 
 fn filter_models(models: List(ModelInfo), query: String) -> List(ModelInfo) {

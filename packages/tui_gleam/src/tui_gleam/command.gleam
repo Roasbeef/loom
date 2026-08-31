@@ -5,6 +5,7 @@
 //// ClientGateway envelope carries it.
 
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 
 /// One action entered at the prompt.
@@ -22,6 +23,8 @@ pub type Command {
   Strands
   /// Inspect the session's agents and sub-agents.
   Agents
+  /// Browse the active strand's injected agent-note digest.
+  Notes
   /// Toggle expanded reasoning and tool detail.
   Details
   /// Switch the active strand by name.
@@ -71,6 +74,92 @@ pub type Command {
   Empty
 }
 
+/// One slash-command row shown while the operator is composing.
+pub type Suggestion {
+  Suggestion(
+    /// The slash-prefixed command inserted into the editor.
+    command: String,
+    /// A short operator-facing description.
+    description: String,
+    /// Whether choosing the row should leave room for an argument.
+    takes_argument: Bool,
+  )
+}
+
+/// Returns prefix-matched slash commands for an incomplete command word.
+pub fn suggestions(input: String) -> List(Suggestion) {
+  let input = string.trim(input)
+  case string.starts_with(input, "/"), string.contains(input, " ") {
+    True, False ->
+      all_suggestions()
+      |> list.filter(fn(suggestion) {
+        string.starts_with(suggestion.command, input)
+      })
+    _, _ -> []
+  }
+}
+
+/// Moves a slash palette selection and wraps at either edge.
+pub fn move_selection(selected: Int, count: Int, down: Bool) -> Int {
+  case count <= 0, down, selected {
+    True, _, _ -> 0
+    False, True, selected if selected >= count - 1 -> 0
+    False, True, selected -> selected + 1
+    False, False, selected if selected <= 0 -> count - 1
+    False, False, selected -> selected - 1
+  }
+}
+
+/// Returns the command text selected in a filtered palette.
+pub fn selected(
+  suggestions: List(Suggestion),
+  selected: Int,
+) -> Option(String) {
+  suggestions
+  |> list.drop(selected)
+  |> list.first
+  |> option_from_result
+  |> option_map(fn(suggestion) {
+    case suggestion.takes_argument {
+      True -> suggestion.command <> " "
+      False -> suggestion.command
+    }
+  })
+}
+
+fn all_suggestions() -> List(Suggestion) {
+  [
+    Suggestion("/help", "show the command reference", False),
+    Suggestion("/model", "choose a model", False),
+    Suggestion("/agents", "inspect agents and sub-agents", False),
+    Suggestion("/notes", "browse agent notes", False),
+    Suggestion("/details", "toggle reasoning and tool detail", False),
+    Suggestion("/strands", "list session strands", False),
+    Suggestion("/strand", "switch the active strand", True),
+    Suggestion("/fork", "fork the active strand", True),
+    Suggestion("/compact", "compact the active strand", False),
+    Suggestion("/abort", "abort the live operation", False),
+    Suggestion("/steer", "inject into the live operation", True),
+    Suggestion("/queue", "run after the live operation", True),
+    Suggestion("/clear", "clear this local transcript", False),
+    Suggestion("/quit", "leave the client", False),
+  ]
+}
+
+fn option_from_result(value: Result(a, Nil)) -> Option(a) {
+  case value {
+    Ok(value) -> Some(value)
+    Error(Nil) -> None
+  }
+}
+
+fn option_map(value: Option(a), map: fn(a) -> b) -> Option(b) {
+  case value {
+    Some(value) -> Some(map(value))
+    None -> None
+  }
+}
+
 /// Parses prompt text into a slash command or ordinary prompt.
 ///
 /// The command name is case-sensitive and the first run of whitespace
@@ -95,6 +184,7 @@ pub fn parse(input: String) -> Command {
     "/model" -> Models
     "/strands" -> Strands
     "/agents" -> Agents
+    "/notes" -> Notes
     "/details" -> Details
     "/compact" -> Compact
     "/abort" -> Abort
@@ -151,6 +241,7 @@ pub fn help_text() -> String {
   <> "/model            open the model selector\n"
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
+  <> "/notes            browse the active strand's agent notes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/strands          list session strands\n"
   <> "/strand <name>    switch the active strand\n"

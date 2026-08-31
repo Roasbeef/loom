@@ -8,6 +8,7 @@
 import core/codec
 import core/entry.{type Entry}
 import core/json.{type JsonValue}
+import core/message.{type Usage}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -60,6 +61,8 @@ pub type Event {
     strands: List(Strand),
     /// Durable conversation entries in replay order.
     entries: List(EntryRecord),
+    /// Session usage accumulated before the live subscription began.
+    usage: Usage,
   )
   /// An authoritative replacement for the visible strand set.
   StrandsSnapshot(
@@ -97,10 +100,10 @@ pub type Event {
     /// The open-set display phase; `done` clears liveness.
     phase: String,
   )
-  /// A replacement for the session's cumulative token usage.
+  /// One usage-ledger append to add to the snapshot baseline.
   UsageChanged(
-    /// The server-authoritative total token count.
-    total_tokens: Int,
+    /// The server-authoritative provider usage row.
+    usage: Usage,
   )
   /// A tool action awaiting an explicit operator decision.
   EscalationPending(
@@ -187,6 +190,24 @@ pub fn follow_up(id: Int, strand: String, text: String) -> String {
 /// ```
 pub fn models(id: Int) -> String {
   command(id, "models", [])
+}
+
+/// Requests one strand's effective configuration without changing it.
+///
+/// `set_config` with an empty object is the frozen protocol's readback form:
+/// the server applies no fields and replies with an authoritative config
+/// snapshot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.config(6, "main")
+/// ```
+pub fn config(id: Int, strand: String) -> String {
+  command(id, "set_config", [
+    #("strand", json.String(strand)),
+    #("config", json.Object([])),
+  ])
 }
 
 /// Encodes a by-name model switch for one strand.
@@ -296,7 +317,12 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       use session <- result.try(required_string(fields, "session"))
       use strands <- result.try(decode_strands(fields))
       use entries <- result.try(decode_entries(fields))
-      Ok(FullSnapshot(session:, strands:, entries:))
+      use usage_value <- result.try(required_value(fields, "usage"))
+      use usage <- result.try(
+        codec.decode_usage(usage_value)
+        |> result.map_error(fn(report) { report.expected }),
+      )
+      Ok(FullSnapshot(session:, strands:, entries:, usage:))
     }
     "strands" -> result.map(decode_strands(fields), StrandsSnapshot)
     "models" -> result.map(decode_models(fields), ModelsSnapshot)
@@ -382,10 +408,11 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
   use kind <- result.try(required_string(fields, "kind"))
   use text <- result.try(optional_string(fields, "text"))
   use tool <- result.try(optional_string(fields, "tool_name"))
-  use arguments <- result.try(optional_string(fields, "arguments_fragment"))
+  use _arguments <- result.try(optional_string(fields, "arguments_fragment"))
   let content = case kind {
-    "tool_call" ->
-      option.unwrap(tool, "tool") <> " " <> option.unwrap(arguments, "")
+    // Arguments are incremental JSON fragments and are not safe or useful to
+    // render until the durable tool-call entry supplies a complete value.
+    "tool_call" -> option.unwrap(tool, "tool")
     _ -> option.unwrap(text, "")
   }
   Ok(StreamDelta(strand:, kind:, text: content))
@@ -405,7 +432,7 @@ fn decode_usage(body: JsonValue) -> Result(Event, String) {
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(UsageChanged(total_tokens: usage.total_tokens))
+  Ok(UsageChanged(usage:))
 }
 
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {

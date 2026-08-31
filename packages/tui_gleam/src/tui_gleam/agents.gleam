@@ -12,7 +12,8 @@ import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tui_gleam/protocol.{type Strand, Strand}
 import tui_gleam/text_hygiene
@@ -43,10 +44,11 @@ pub fn render_rail(
       block.Top,
     )
   buf
+  |> buffer.clear(area)
   |> block.render(area, frame)
   |> paragraph.render_text(
     block.inner(area, frame),
-    span.text_new(strand_lines(strands, active)),
+    span.text_new(strand_lines(strands, active, None, 0)),
   )
 }
 
@@ -62,7 +64,11 @@ pub fn render_overlay(
   screen: Rect,
   strands: List(Strand),
   active: String,
+  selected: Int,
 ) -> buffer.Buffer {
+  let current = theme.overlay_current()
+  let quiet = theme.overlay_quiet()
+  let signal = theme.overlay_signal()
   let width = int.max(1, int.min(78, screen.size.width - 4))
   let height = int.max(1, int.min(22, screen.size.height - 4))
   let area = geometry.centered_rect(width, height, screen)
@@ -73,8 +79,8 @@ pub fn render_overlay(
     |> block.with_bg_fill
     |> block.with_title_styled(
       [
-        span.span_styled(" AGENTS ", theme.current_bold()),
-        span.span_styled("live session topology ", theme.quiet_text()),
+        span.span_styled(" AGENTS ", current),
+        span.span_styled("live session topology ", quiet),
       ],
       block.Top,
     )
@@ -82,18 +88,18 @@ pub fn render_overlay(
   let inside = block.inner(area, frame)
   let footer =
     span.line_new([
-      span.span_styled("esc", theme.signal_bold()),
-      span.span_styled(
-        " close   /strand <name> switches focus",
-        theme.quiet_text(),
-      ),
+      span.span_styled("esc", signal),
+      span.span_styled(" close   ↑/↓ select   enter open transcript", quiet),
     ])
+  let visible_count = int.max(1, { inside.size.height - 2 } / 3)
+  let visible = selection_window(strands, selected, visible_count)
   let lines =
-    list.append(strand_lines(strands, active), [
+    list.append(strand_lines(visible.0, active, Some(selected), visible.1), [
       span.line_plain(""),
       footer,
     ])
   buf
+  |> buffer.clear(area)
   |> block.render(area, frame)
   |> paragraph.render_text(inside, span.text_new(lines))
 }
@@ -117,33 +123,55 @@ pub fn summary(strands: List(Strand)) -> String {
   <> " agents"
 }
 
-fn strand_lines(strands: List(Strand), active: String) -> List(span.Line) {
-  list.flat_map(strands, fn(strand) {
+fn strand_lines(
+  strands: List(Strand),
+  active: String,
+  selected: Option(Int),
+  index_offset: Int,
+) -> List(span.Line) {
+  strands
+  |> list.index_map(fn(strand, index) {
     let Strand(id:, name:, live_phase:) = strand
     let label = case name {
       Some(value) -> text_hygiene.single_line(value)
       None -> text_hygiene.single_line(id)
     }
     let is_active = id == active
-    let #(state_mark, state_style, phase) = case live_phase {
-      Some(value) -> #(
-        "●",
-        theme.current_bold(),
-        text_hygiene.single_line(value),
-      )
-      None -> #("○", theme.quiet_text(), "idle")
+    let is_selected = selected == Some(index + index_offset)
+    let background = case selected {
+      Some(_) -> theme.graphite
+      None -> style.Default
     }
-    let focus = case is_active {
-      True -> span.span_styled("▸ ", theme.signal_bold())
-      False -> span.span_plain("  ")
+    let signal = case selected {
+      Some(_) -> theme.overlay_signal()
+      None -> theme.signal_bold()
+    }
+    let current = case selected {
+      Some(_) -> theme.overlay_current()
+      None -> theme.current_bold()
+    }
+    let quiet = case selected {
+      Some(_) -> theme.overlay_quiet()
+      None -> theme.quiet_text()
+    }
+    let plain = style.new(theme.paper, background, style.none())
+    let #(state_mark, state_style, phase) = case live_phase {
+      Some(value) -> #("●", current, text_hygiene.single_line(value))
+      None -> #("○", quiet, "idle")
+    }
+    let focus = case is_selected, is_active {
+      True, _ -> span.span_styled("▸ ", signal)
+      False, True -> span.span_styled("• ", current)
+      False, False -> span.span_styled("  ", plain)
     }
     let indent = case string.starts_with(id, "sub:") {
       True -> "  └ "
       False -> ""
     }
-    let label_style = case is_active {
-      True -> theme.signal_bold()
-      False -> style.new(theme.paper, style.Default, style.none())
+    let label_style = case is_selected, is_active {
+      True, _ -> signal
+      False, True -> current
+      False, False -> plain
     }
     [
       span.line_new([
@@ -152,12 +180,59 @@ fn strand_lines(strands: List(Strand), active: String) -> List(span.Line) {
         span.span_styled(indent <> label, label_style),
       ]),
       span.line_new([
-        span.span_plain("    "),
+        span.span_styled("    ", plain),
         span.span_styled(phase, state_style),
       ]),
       span.line_plain(""),
     ]
   })
+  |> list.flatten
+}
+
+/// Slices the inspector rows so its absolute selection remains visible.
+@internal
+pub fn selection_window(
+  strands: List(Strand),
+  selected: Int,
+  visible_count: Int,
+) -> #(List(Strand), Int) {
+  let count = list.length(strands)
+  let max_offset = int.max(0, count - visible_count)
+  let centered = int.max(0, selected - { visible_count / 2 })
+  let offset = int.min(centered, max_offset)
+  #(strands |> list.drop(offset) |> list.take(visible_count), offset)
+}
+
+/// Moves the inspector selection and wraps at either edge.
+@internal
+pub fn move_selection(selected: Int, count: Int, down: Bool) -> Int {
+  case count <= 0, down, selected {
+    True, _, _ -> 0
+    False, True, selected if selected >= count - 1 -> 0
+    False, True, selected -> selected + 1
+    False, False, selected if selected <= 0 -> count - 1
+    False, False, selected -> selected - 1
+  }
+}
+
+/// Returns the stable strand id at one inspector row.
+@internal
+pub fn selected_strand(strands: List(Strand), selected: Int) -> Option(String) {
+  strands
+  |> list.drop(selected)
+  |> list.first
+  |> result.map(fn(strand) {
+    let Strand(id:, ..) = strand
+    id
+  })
+  |> option_from_result
+}
+
+fn option_from_result(value: Result(a, Nil)) -> Option(a) {
+  case value {
+    Ok(value) -> Some(value)
+    Error(Nil) -> None
+  }
 }
 
 fn agent_counts(strands: List(Strand)) -> String {

@@ -14,12 +14,15 @@ reconnect portions of the existing client's contract.
 - `tui_gleam.Model` is the immutable presentation state. Durable entries,
   transient stream fragments, local notices, overlays, and scroll position
   remain distinct so a settled entry cannot duplicate its streamed answer.
+  Wrapped durable rows are cached by strand, width, and detail mode; pending
+  records extend that cache without reparsing older markdown.
 - `tui_gleam/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
 - `tui_gleam/connection.Connection` is a websocket-owning Stratus actor. The
   etui loop drains its mailbox on ticks, keeping networking out of `view` and
-  out of keyboard handling.
+  out of keyboard handling. Startup occurs in a monitored, unlinked helper
+  with a bounded deadline; a successful connection restores the runtime link.
 - `tui_gleam/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
@@ -56,9 +59,16 @@ reconnect portions of the existing client's contract.
   compatibility.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
   actions. `/model` opens the selector, `/agents` opens the inspector,
-  `Shift+Tab` toggles the compact rail, `Ctrl+G` toggles reasoning/tool detail,
-  and Page Up/Page Down traverse transcript scrollback. Mouse-wheel events
-  share that same tail-relative scroll law.
+  `/notes` opens the latest durable agent-note digest, `Shift+Tab` toggles the
+  compact rail, `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down
+  traverse transcript scrollback. Escape closes an open surface before it
+  requests an active-operation interrupt. Mouse-wheel events share that same
+  tail-relative scroll law.
+- **Command and agent selection**: typing `/` opens the prefix-filtered command
+  palette. Up and Down move palette or inspector selection, Tab completes a
+  command, and Enter on an agent opens its strand transcript. A strand switch
+  requests its effective config so the header never attributes the previous
+  strand's model to it.
 - **Live submission**: Enter steers the current live operation by default.
   Tab changes one draft to a `follow_up` queued after that operation, then
   resets to steer mode. `/steer` and `/queue` expose both paths explicitly.
@@ -68,6 +78,12 @@ reconnect portions of the existing client's contract.
   when the prompt is sent. The backend enables bracketed-paste mode so a real
   terminal paste arrives as one event. Backspace on an empty editor drops the
   newest attachment.
+- **Prompt view**: the editor retains the exact source and cursor state used by
+  history and submission. Rendering wraps that state by terminal cells into a
+  bounded one-to-four-row viewport; it never inserts newlines into the prompt.
+- **Usage**: full snapshots establish the authoritative ledger and deltas add
+  input, output, cache-read, cache-write, and cost fields independently. The
+  footer never infers a price from a model name.
 
 ## Invariants
 
@@ -78,9 +94,11 @@ reconnect portions of the existing client's contract.
   active strand's operation phase and refines `assistant` with its latest
   stream kind. Before text arrives it says `thinking`; once text arrives it
   says `responding`. The same title states whether Enter steers or queues.
-- **Durable and transient output do not alias.** Stream fragments live in a
-  strand-and-kind keyed list and disappear when that strand's settled entry
-  arrives. This prevents the final assistant message from rendering twice.
+- **Durable and transient output do not alias.** Stream fragments live
+  newest-first in a strand-and-kind keyed list and disappear when that strand's
+  settled entry arrives. The historical row cache contains durable records
+  only; a stream fragment cannot make it reparse the settled transcript. This
+  prevents both duplicate output and history-sized work per fragment.
 - **Model text never becomes terminal control traffic.** The text-hygiene
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
   codepoints before data reaches etui spans. Newlines survive only where the
@@ -93,13 +111,21 @@ reconnect portions of the existing client's contract.
 - **Executed programs stay inspectable.** A structured `code_mode.program`
   renders through the fenced Gleam path instead of appearing as escaped JSON.
   The normal view bounds long programs to twelve rows; detail mode reveals the
-  whole source.
+  whole source. Results label the returned report separately from the sandbox
+  enforcement summary.
+- **Injected notes are not operator speech.** The frozen entry schema records
+  the server's run-start digest as a user message without a provenance bit. The
+  client recognizes only the exact server-owned preamble and `agent-notes`
+  fence, hides that envelope from conversation, and exposes it through
+  `/notes`. Do not broaden this into heuristic filtering.
 - **Large context stays bounded without data loss.** Compact paste indicators
   are presentation state only. Submission expands the original bytes, and a
   durable large user turn stays previewed until detail mode asks for it.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
-  prompt editing is inert. `Ctrl+C` remains global so every overlay can be
-  escaped by terminating the client.
+  prompt editing is inert. Each modal explicitly paints the background of all
+  its styled spans so transcript attributes cannot bleed into the overlay.
+  `Ctrl+C` remains global so every overlay can be escaped by terminating the
+  client.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
   this client cannot approve or deny an action and is not a production
@@ -124,3 +150,5 @@ floor.
   the other side of the websocket.
 - [`docs/architecture/models.md`](../../docs/architecture/models.md) explains
   the catalogue and role-routing state shown by `/model`.
+- [`docs/performance.md`](../../docs/performance.md) defines the measurement
+  workloads, BEAM tools, and optimization evidence standard.
