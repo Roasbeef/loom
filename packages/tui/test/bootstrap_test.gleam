@@ -370,6 +370,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     wait_for_switch(cancelled, 40_000)
     as "a second switch should connect"
   let assert Ok(abandoned_pid) = connection.owner(abandoned)
+  assert process.is_alive(abandoned_pid)
   sessions.cancel(cancelled)
   assert_process_exits(abandoned_pid, 100)
   let assert Ok(pid) = endpoint_pid(state)
