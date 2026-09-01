@@ -176,7 +176,9 @@ extended by the M3 runtime wave.
   over `core`, so this edge adds nothing transitively), `provider`
   (`stream.StreamHandle` and `retry.classify` — the spec DAG §0.1 writes
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
-  about), `gleam_erlang`, `gleam_otp`.
+  about), `gleam_erlang`, `gleam_otp`, `weft` (the strand driver is a
+  `weft/actor`, adopted for `continuing` — the recovery barrier as a
+  guaranteed-first message; see loom#159 for the adoption plan).
 - **Depended on by**: `client` (the gateway dispatches protocol commands
   onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
@@ -200,17 +202,21 @@ extended by the M3 runtime wave.
     `ScanBranch`, `ScanUsage`, `Stats`, `Subscribe(subscriber)`,
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
     conformance harnesses.
-  - `strand_runtime.Message` (all casts): `Nudge` (the doorbell),
-    `PredecessorsResolved(result)` (the ledger barrier acknowledgement),
-    `PollTick` (the checkpoint poll, which also grants one deferred poll
-    permit), `RetryDue`, `RequestAbort`, `ProviderDone(token, terminal)`,
-    `ToolDone(token, outcome)`, `EffectExit(down)`. Callers use the stable
+  - `strand_runtime.Message` (all casts): `AwaitPredecessors(resolution)`
+    (the guaranteed-first barrier message weft's `continuing` injects at
+    init — opaque, so nothing else can construct it), `Nudge` (the
+    doorbell), `PollTick` (the checkpoint poll, which also grants one
+    deferred poll permit), `RetryDue`, `RequestAbort`,
+    `ProviderDone(token, terminal)`, `ToolDone(token, outcome)`,
+    `EffectExit(down)`. Callers use the stable
     registered subject, while the reaper, effect workers, and timers use a
     private direct subject bound to this driver incarnation. The split prevents
     a predecessor's late result from resolving the stable name to a replacement
-    and settling newly replayed work with the same durable token. Before the
-    ledger acknowledgement, the actor retains abort intent but does not drive
-    effects.
+    and settling newly replayed work with the same durable token. The ledger
+    acknowledgement arrives on a dedicated subject the `AwaitPredecessors`
+    handler blocks on; every message that lands meanwhile — aborts included —
+    queues in the mailbox and is handled once the barrier opens, so no effect
+    is driven before it and no intent needs hand-carrying through a gate.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
     return the process name a strand's driver registers under — plus
     `Lookup(strand, reply_with)` and `Known(reply_with)`.
