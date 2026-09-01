@@ -2,12 +2,11 @@
 
 ## Purpose
 
-The pure-Gleam terminal client built on `etui` for issue #114. It attaches to
-the frozen ClientGateway websocket, renders the durable conversation and live
-strands, and turns keyboard input into slash commands. Root format, build,
-test, and house-rule gates cover the package, but it does not replace
-`packages/tui` or enter the release artifact until the replacement-client work
-lands.
+The shipped native terminal client. It attaches to the frozen ClientGateway
+websocket, renders the durable conversation and live strands, and turns
+keyboard input into slash commands. `make tui-shipment` exports its compiled
+BEAM closure beside a thin `bin/loom-tui` launcher, and `make dist` packages
+that tree separately from the self-contained server.
 
 ## Key Types
 
@@ -51,10 +50,11 @@ lands.
   Stratus for websockets; and small Gleam utility packages. Etui is pinned
   because its public API is still moving quickly.
 - **Counterpart**: `packages/client` speaks the other side of ClientGateway.
-  `packages/tui/internal/proto/protocol.md` remains the body-schema authority;
+  `packages/client/protocol.md` remains the body-schema authority;
   this package does not change that wire.
-- **Sibling, not replacement**: `packages/tui` remains the shipped Go client
-  and the complete behavioral reference while this package is evaluated.
+- **Distribution boundary**: this shipment includes BEAM files but no ERTS.
+  The client host needs compatible Erlang/OTP 29; the server release still
+  bundles its own runtime and has no host OTP dependency.
 
 ## Traffic
 
@@ -169,23 +169,26 @@ lands.
   client.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
-  this client cannot approve or deny an action and is not a production
-  replacement for the Go client.
+  this client cannot approve or deny an action. The server still enforces the
+  same frozen approval contract, and the client must not synthesize a weaker
+  approval from the visible policy diff.
+- **Reconnect is not catch-up.** A dropped websocket ends the current native
+  connection. Automatic reconnect and sequence-based catch-up remain follow-up
+  work; the client never pretends a disconnected view is current.
 
 ## Toolchain Boundary
 
-This package requires Gleam 1.16+ through etui. The Mork Erlang path requires
-OTP 28+ because it uses PCRE2. Loom still advertises OTP 27+, so the package is
-intentionally absent from the root `PACKAGES` and release targets. Run its
-gate explicitly with `make check-tui_gleam` and its house-rule census with
-`make lint-tui_gleam` until an adoption decision changes the repository-wide
-floor.
+This package requires Gleam 1.18+ and Erlang/OTP 29, the repository-wide
+toolchain floor. It is part of root `PACKAGES`, so `make check` includes its
+format, warning-free build, tests, and house-rule census. The separate client
+archive does not bundle ERTS; a compatible `erl` must be on the client host's
+`PATH`.
 
 ## Deep Docs
 
 - [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md)
-  records the measured evaluation and remaining adoption gates.
-- [`packages/tui/internal/proto/protocol.md`](../tui/internal/proto/protocol.md)
+  records the measured evaluation and the later adoption decision.
+- [`packages/client/protocol.md`](../client/protocol.md)
   is the normative ClientGateway body document.
 - [`packages/client/CLAUDE.md`](../client/CLAUDE.md) describes the gateway on
   the other side of the websocket.

@@ -8,8 +8,8 @@ effect-plane framing protocol on stdio, builds the jail from a strict
 `SandboxPolicyV1` decode, and reports honestly what the running kernel
 actually enforced. WP-H's Linux phase 1 and macOS phase 2 are implemented;
 the Windows phase 3 sandbox remains unbuilt and the binary refuses to serve
-there rather than run with nothing enforcing the policy. One of the tree's
-two Go modules, alongside `tui`.
+there rather than run with nothing enforcing the policy. This is the tree's
+only Go module.
 
 ## Key Types
 

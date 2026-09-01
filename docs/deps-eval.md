@@ -11,6 +11,13 @@ Design priorities apply here as everywhere: security & isolation first.
 A dependency in the harness VM is TCB surface; the bar for runtime deps
 is much higher than for dev-time tools.
 
+**2026-08-31 addendum.** The etch verdict below remains the historical verdict
+on etch itself, but it no longer describes Loom's TUI. Issue #114 evaluated
+etui instead, and Loom adopted the native `packages/tui_gleam` client after
+raising the repository floor to Gleam 1.18 and OTP 29. The legacy Go client has
+been retired. See `docs/design-notes/etui-client.md` for the measured decision
+and its remaining approval and reconnect debts.
+
 ## Verdict table
 
 | Library | Does | Maturity | Verdict | Milestone |

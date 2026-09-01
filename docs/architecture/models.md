@@ -10,7 +10,7 @@ session protocol and from the terminal UI.
 
 What follows is that catalogue as built, in `client/catalog`,
 `client/serve`, `client/wiring`, the `models` and `set_config` commands
-of the websocket protocol, and the `:models` picker in the Go TUI. The
+of the websocket protocol, and the `/model` picker in the native TUI. The
 dispatch machinery underneath — the streaming contract, total
 stop-reason mapping, overflow arithmetic, the secret seam, and the
 gateway's own fallback semantics — is described in
@@ -283,7 +283,7 @@ copy the source strand's configuration but re-seed its thinking level from
 the catalogue entry the copied identity names, because a fresh strand has
 had no conversation to inherit a per-turn decision from.
 
-The terminal UI drives exactly that. Typing `:models` sends the
+The terminal UI drives exactly that. Typing `/model` sends the
 protocol's `models` command. The reply is a snapshot carrying one row
 per entry — name, dialect, provider model id, the roles whose chain
 lists it, and the subset it currently heads — and it opens a modal
@@ -376,12 +376,12 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam` | The two dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
-| `internal/ui/model.go` | The `:models` picker: the modal, the cursor, the role tags, and the `set_config` it sends. |
+| `packages/tui_gleam/src/tui_gleam/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |
 | `docs/examples/loom.toml` | The worked example, and a parse fixture in `client/test/client/catalog_test.gleam`. |
 
 Each Gleam path is relative to its package's source root —
 `client/catalog.gleam` is `packages/client/src/client/catalog.gleam` —
-and the Go path is relative to `packages/tui`. For the dispatch
+and the TUI path is rooted at `packages/tui_gleam`. For the dispatch
 machinery this plane configures, see `docs/architecture/effects.md`
 under "Providers"; for how a strand captures and re-dispatches an
 identity across a crash, `docs/architecture/orchestration.md` covers

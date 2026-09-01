@@ -205,12 +205,13 @@ restriction that does not exist.
 
 ---
 
-## Active evaluation: issue #114
+## Native TUI adoption: issue #114
 
-Branch `client/etui-tui` carries an opt-in pure-Gleam client in
-`packages/tui_gleam`; PR #136 is on `main`, but it does not replace the shipped
-Go client. The client works in a real Herdr
-PTY, attaches to the real gateway, opens searchable model and agent overlays,
+The issue #114 evaluation landed in `packages/tui_gleam`, and the native client
+is now the shipped `loom-tui`. The legacy Go package has been retired while the
+frozen ClientGateway wire and its thirty-five fixtures moved under
+`packages/client`. The client works in a real PTY, attaches to the real gateway,
+opens searchable model and agent overlays,
 and renders assistant CommonMark through Mork into etui spans. Typing `/` now
 opens a prefix-filtered command palette. `/agents` has a real selection cursor;
 Up and Down move it and Enter opens the selected strand's transcript. `/notes`
@@ -255,15 +256,15 @@ Expanded tool output also strips complete ANSI CSI and OSC sequences before
 rendering. Malformed sequences stay visibly inert instead of consuming the
 ordinary transcript text after them.
 
-Websocket startup now runs in a monitored, unlinked helper with a five-second
+Websocket startup runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error
 instead of killing or hanging the terminal; success restores the socket actor's
 link to the caller. The focused package gate passes with 75 tests. Its expected
 panic regression prints an Erlang crash report while proving that the parent
-survives. Etui needs Gleam 1.16+ and Mork's Erlang path needs OTP 28+, both
-below Loom's current Gleam 1.18 and OTP 29 floors. Root format, build, test, and
-house-rule gates now cover the native client; release replacement remains a
-separate change.
+survives. The repository floor is now Gleam 1.18 and OTP 29, and the package is
+part of root `PACKAGES`. The client release is a separate Erlang shipment. It
+does not bundle a second ERTS, so the terminal host needs compatible OTP 29 on
+`PATH`; the server release remains self-contained.
 
 A fresh default-policy session completed the combined eTUI-to-code-mode path on
 Darwin. Both the hermetic build and satellite reported enforced Seatbelt
@@ -292,10 +293,11 @@ the runtime kills. Late deltas also lack operation identity at the TUI boundary.
 Treat "the request stopped billing and cannot contaminate its successor" as
 unproved until that runtime lifecycle is repaired and tested.
 
-Before release replacement, implement protocol-change/007 approval with exact
-action and grant echo, then sparse-sequence reconnect/catch-up behavior. The
-toolchain floor no longer blocks adoption; replacing `bin/loom-tui` remains an
-explicit, separately reviewed change.
+Two adoption debts remain explicit. Implement protocol-change/007 approval with
+exact action and grant echo, then sparse-sequence reconnect/catch-up behavior.
+The native terminal end-to-end proves prompt, durable answer, fork, and clean
+detach, but it does not claim approval until the first debt lands. Neither gap
+changes the server's frozen enforcement or replay contracts.
 
 ---
 

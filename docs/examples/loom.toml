@@ -6,7 +6,7 @@
 # [models.<name>] entry registers one provider endpoint in the gateway;
 # the [roles] table gives each role an ordered fallback chain of those
 # names. The entry *name* is the handle everything else uses: the TUI's
-# :models picker switches a strand by it (`set_config` with
+# /model picker switches a strand by it (`set_config` with
 # `model_name`), and it becomes the `provider` half of the durable
 # {provider, model_id} identity strands store.
 #

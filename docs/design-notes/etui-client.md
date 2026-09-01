@@ -1,6 +1,23 @@
 # An etui client for Loom
 
-Status: working evaluation for issue #114, not an adoption decision.
+Status: adopted after the issue #114 evaluation; the measurements below retain
+the decision's history.
+
+## Adoption addendum (2026-08-31)
+
+Loom now ships `packages/tui_gleam` and has retired the legacy Go client. The
+repository floor is Gleam 1.18 and OTP 29, the package participates in root
+`make check`, and `make dist` publishes it as a separate Erlang shipment. The
+client archive does not carry a second ERTS, so its host needs compatible OTP
+29. The self-contained server release and `loom-exec` jail helper are
+unchanged.
+
+The adoption does not erase two measured gaps. Pending escalations are visible
+but not actionable until the exact action-and-grant echo lands, and automatic
+reconnect with sparse-sequence catch-up remains unimplemented. The native
+terminal end-to-end therefore proves a prompt round trip, durable rendering,
+fork, and clean detach, but not approval. The sections below are the evaluation
+record as it stood before this explicit adoption decision.
 
 ## The question
 

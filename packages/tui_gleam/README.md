@@ -1,15 +1,13 @@
 # tui_gleam
 
-`tui_gleam` is the native Gleam client being used to answer issue #114's
-practical question: can etui carry Loom's real terminal surface, not just draw
-a static screen? It can. This package receives keyboard input in a Herdr PTY,
+`tui_gleam` is Loom's shipped native terminal client. It receives keyboard
+input in a real PTY,
 attaches to the frozen ClientGateway websocket, follows a live session, and
 renders Mork's CommonMark tree directly into etui spans.
 
-It is an evaluation, not the shipped client. `packages/tui` remains the
-release binary and the behavioral reference until this client implements the
-same approval and reconnect guarantees and Loom makes an explicit decision
-about the higher Gleam and OTP floors this dependency set requires.
+`make tui-shipment` exports the compiled BEAM closure behind `bin/loom-tui`;
+`make dist` packages it separately from the server. The shipment does not
+include ERTS, so the client host needs compatible Erlang/OTP 29 on `PATH`.
 
 ## One model owns the terminal
 
@@ -168,9 +166,9 @@ etui's own span field, while model-authored escape bytes cannot become terminal
 instructions. Leading `---` remains visible chat content rather than being
 silently consumed as document frontmatter.
 
-## Running the candidate
+## Running the client
 
-The dependency floor is Gleam 1.16 or newer and Erlang/OTP 28 or newer. From
+The dependency floor is Gleam 1.18 or newer and Erlang/OTP 29 or newer. From
 this package, the self-contained interaction preview is:
 
 ```sh
@@ -194,8 +192,8 @@ error instead of killing or hanging the terminal process. Once setup succeeds,
 the socket actor is linked to the client again so runtime failures keep their
 original supervision behavior.
 
-The root format, build, test, and house-rule gates include the native client,
-while focused work can still use the package-specific forms:
+The package has focused gates, and root `make check` runs both as part of the
+repository-wide gate:
 
 ```sh
 make check-tui_gleam
@@ -207,20 +205,20 @@ about 0.3 seconds. A clean build, including resolution and download of nineteen
 packages, took 10.72 seconds; the compiler portion took 1.22 seconds. These are
 measurements of the candidate package, not the full repository gate.
 
-## What keeps it out of the release
+## Deliberate limitations
 
 The current etui revision is pinned because the keyboard and raw-terminal
-fixes exercised here are newer than its latest tagged release. Loom now
-requires Gleam 1.18 and OTP 29, so the client no longer raises the repository's
-advertised toolchain floor. The package remains outside the release artifact
-until the replacement-client work removes the legacy Go frontend.
+fixes exercised here are newer than its latest tagged release. The repository
+now has a Gleam 1.18 and OTP 29 floor, but the client archive still does not
+carry its own ERTS.
 
 Two behavioral gaps matter more than polish. Approval must show a bounded,
 sanitized action and echo the exact action plus grants required by
 protocol-change/007. Reconnect must honor ClientGateway's sparse sequence
 semantics, overlap durable replay safely, and fail in-flight requests rather
-than leaving them suspended. Until both are exercised end to end, a screen that
-looks complete is not a replacement client.
+than leaving them suspended. The shipped client renders pending escalations but
+does not approve them, and a dropped websocket ends the current connection.
+Neither gap weakens the server's frozen protocol or approval enforcement.
 
 Image drag and drop uses the accepted
 [`protocol-change/011`](../../protocol-change/011-prompt-content-blocks.md)
@@ -248,6 +246,6 @@ dependency edges, traffic, and invariants that code must preserve. The broader
 evaluation, including the visual references and adoption gates, lives in
 [`docs/design-notes/etui-client.md`](../../docs/design-notes/etui-client.md).
 The authoritative wire bodies remain in
-[`packages/tui/internal/proto/protocol.md`](../tui/internal/proto/protocol.md).
+[`packages/client/protocol.md`](../client/protocol.md).
 The profiling workflow and the limits of the current render cache live in
 [`docs/performance.md`](../../docs/performance.md).
