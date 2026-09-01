@@ -28,7 +28,12 @@ import tui/protocol
 import tui/text_hygiene
 import tui/theme
 
-const switch_timeout_ms = 70_000
+// The outer deadline must outlast the phases resolve can run in sequence: a
+// 30 s launch lock, a 30 s daemon start, and two 10 s probes. A shorter bound
+// would kill a worker mid-launch on a contended cold start and leave nothing
+// worse than an abandoned starting record, but it would also fail a switch
+// that was about to succeed.
+const switch_timeout_ms = 90_000
 
 const discard_limit = 4096
 
@@ -404,7 +409,10 @@ fn await_adoption(outcome: Outcome) -> Nil {
 // The socket actor links to this worker inside `connection.connect`, so a
 // killed or crashed worker takes an unadopted socket down with it. The
 // terminal re-links on adoption, and the worker's later normal exit does not
-// disturb an actor that traps nothing.
+// disturb an actor that traps nothing. One window is accepted: between the
+// actor's starter exiting and `connect` linking it to this worker, a kill
+// leaves an authenticated but unread socket alive. It is microseconds wide
+// and no link order inside `connect` can close it, so do not reorder that.
 fn connect_target(
   choice: SessionChoice,
   options: Options,
