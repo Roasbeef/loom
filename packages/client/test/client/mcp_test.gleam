@@ -18,6 +18,7 @@ import broker/budget
 import broker/exec
 import broker/framing
 import broker/policy
+import client/catalog
 import client/codemode
 import client/mcp
 import codemode/identity
@@ -475,6 +476,63 @@ pub fn a_dead_server_is_unavailable_test() {
     served(layer, request("mcp.alpha", invocation("search", [])))
     as "a stopped client refuses in band"
   assert code == mcp.unavailable_code
+}
+
+// --- boot: concurrent bring-up preserves catalogue order --------------------
+//
+// `mcp.start` has no seam for a fake transport — `start_one` always spawns
+// a real OS process through `mcp/transport.PortTransport` — so proving its
+// *success* path through `mcp.start` itself needs a real spoken-protocol
+// server, which only `codemode_live_test.gleam`'s escript fixture provides,
+// entangled with that suite's codemode helper and seed prerequisites that
+// `mcp.start` does not need at all. Building a second, decoupled success
+// fixture just for this property would be new fixture weight for an
+// assertion that does not require a success leg: two refusals, taking two
+// different paths through `start_one` at two different speeds, already pin
+// the property under real concurrency. If a change to `mcp.start` reported
+// outcomes in *completion* order rather than restoring catalogue order,
+// `unkeyed_first` below would win the race — it refuses in `server_env`
+// before anything spawns — and surface *before* `unspawnable_first` in the
+// returned list, which is exactly what this test would catch.
+
+// A command no host has, so the client fails to spawn — refused only
+// after `start_client` actually asks the kernel to open the port. Both
+// fixture servers share it, so nothing here depends on a real MCP peer
+// existing.
+const unspawnable_command = "/nonexistent/loom-test-mcp-server"
+
+// An env var name this test never sets, so `server_env` refuses before
+// `start_client` runs at all — the faster of the two paths.
+const unset_key_env = "LOOM_TEST_MCP_MISSING_KEY"
+
+fn unspawnable_server(name: String) -> catalog.McpServer {
+  catalog.McpServer(
+    name:,
+    command: [unspawnable_command],
+    api_key_env: option.None,
+  )
+}
+
+fn unkeyed_server(name: String) -> catalog.McpServer {
+  catalog.McpServer(
+    name:,
+    command: [unspawnable_command],
+    api_key_env: option.Some(unset_key_env),
+  )
+}
+
+pub fn concurrent_refusals_come_back_in_catalogue_order_test() {
+  let servers = [
+    unspawnable_server("unspawnable_first"),
+    unkeyed_server("unkeyed_second"),
+  ]
+  let #(layer, refusals) = mcp.start(servers, mcp.default_options())
+  assert !mcp.serving(layer)
+  assert list.map(refusals, fn(refusal) { refusal.server })
+    == ["unspawnable_first", "unkeyed_second"]
+  let assert [_first, second] = refusals as "both configured servers refused"
+  assert string.contains(second.reason, unset_key_env)
+  mcp.stop(layer)
 }
 
 // --- what the layer publishes ----------------------------------------------

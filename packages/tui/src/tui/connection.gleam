@@ -4,20 +4,16 @@
 //// it on etui ticks, so network traffic never blocks keyboard polling and
 //// the view remains a pure function of the current model.
 
-import gleam/erlang/process.{type Down, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/http/request
 import gleam/result
 import gleam/string
 import stratus
+import weft
 
 type Outbound {
   SendText(String)
   Stop
-}
-
-type StartReport(a) {
-  StartReturned(Result(a, String))
-  StartCrashed(Down)
 }
 
 /// A connected websocket actor.
@@ -144,33 +140,35 @@ pub fn start_safely(start: fn() -> Result(a, String)) -> Result(a, String) {
 }
 
 /// Runs guarded startup with an explicit deadline for deterministic tests.
+///
+/// The spawn/monitor/kill scaffolding this once hand-rolled is weft's whole
+/// job: the worker links to weft's scope rather than to this process, so an
+/// initialiser crash still cannot reach the terminal, and the deadline both
+/// answers the caller and reaps the worker. The websocket actor the closure
+/// starts survives its worker's normal exit exactly as before — a normal
+/// exit signal does not propagate over its link — and a timed-out worker's
+/// kill still takes the half-started actor down with it.
 @internal
 pub fn start_safely_within(
   start: fn() -> Result(a, String),
   within_ms: Int,
 ) -> Result(a, String) {
-  let replies = process.new_subject()
-  let worker =
-    process.spawn_unlinked(fn() {
-      process.send(replies, StartReturned(start()))
-    })
-  let monitor = process.monitor(worker)
-  let selector =
-    process.new_selector()
-    |> process.select(replies)
-    |> process.select_specific_monitor(monitor, StartCrashed)
-  case process.selector_receive(from: selector, within: within_ms) {
-    Ok(StartReturned(result)) -> {
-      process.demonitor_process(monitor)
-      result
-    }
-    Ok(StartCrashed(down)) ->
-      Error("websocket startup crashed: " <> string.inspect(down))
-    Error(Nil) -> {
-      process.kill(worker)
-      process.demonitor_process(monitor)
-      Error("websocket startup timed out")
-    }
+  let outcomes =
+    weft.new([start])
+    |> weft.deadline(within_ms)
+    |> weft.start
+
+  // A one-task run yields exactly one outcome; the impossible shapes are
+  // still answered rather than asserted away, because a wrong account from
+  // the engine should refuse the connection, not take the terminal down.
+  case outcomes {
+    [weft.Completed(value:, ..)] -> Ok(value)
+    [weft.Failed(error:, ..)] -> Error(error)
+    [weft.Crashed(reason:, ..)] ->
+      Error("websocket startup crashed: " <> string.inspect(reason))
+    [weft.Abandoned(..)] -> Error("websocket startup timed out")
+    [weft.NeverStarted(..)] -> Error("websocket startup timed out")
+    [] | [_, _, ..] -> Error("websocket startup produced no account")
   }
 }
 

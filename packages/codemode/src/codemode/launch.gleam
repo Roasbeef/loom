@@ -81,6 +81,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/tool.{type Collected}
+import weft/state_machine as sm
 
 /// The environment variable naming the cap socket. Mirrors
 /// `cap/runtime.sock_env`; the host does not depend on the `cap` package
@@ -311,8 +312,10 @@ fn destroy(
 //
 // A plain subject would not do: the collector, the host actor, and the
 // janitor are three different processes, and a subject is received on only
-// by its owner. This is a tiny holder process instead. It does two things
-// no shared mailbox could:
+// by its owner. This is a tiny holder machine instead — a
+// `weft/state_machine`, so the states below are an ADT every event is
+// dispatched against exhaustively rather than a tuple of loop arguments.
+// It does two things no shared mailbox could:
 //
 // - It **remembers** the one settlement the collector produced, so a
 //   second `destroy` — the janitor's, after the host's — is answered from
@@ -336,6 +339,11 @@ type Settlement {
 }
 
 // Where the node has got to, from the holder's point of view.
+//
+// This is the machine's *state*, and only this: what cancels the holder's
+// lingering deadline is a change of state, and what replays a postponed
+// `Ask` is a change of state, so anything that must not do either — the
+// broker to cancel through, the teardown fact — lives in `Holder` instead.
 type NodeState {
   /// The clearance has not come back yet.
   Pending
@@ -347,14 +355,59 @@ type NodeState {
   Done(report: Report)
 }
 
+// Whether teardown has reached the holder yet.
+//
+// An `Ask` is the teardown: nobody asks for the report except a `destroy`
+// on its way out. Two named variants rather than a bare flag, because the
+// two arms that read it read it for opposite reasons — the clearance
+// cancels a node nobody wants any more, and the settlement arms the
+// deadline that ends a holder nobody will ask again.
+type Teardown {
+  /// No `destroy` has been through; the execution still owns the node.
+  Intact
+
+  /// A `destroy` has been through, so the node is on its way out.
+  TornDown
+}
+
+// What the holder carries across its states, unchanged by any of them.
+type Holder {
+  Holder(
+    /// The broker to cancel the node's clearance through.
+    broker_actor: Broker,
+    /// Whether a `destroy` has already asked for the report.
+    teardown: Teardown,
+  )
+}
+
+// Every event the holder handles.
+//
+// The machine's message type is wider than the settlement protocol, so
+// that `Linger` exists at all: the holder's own deadline is not something
+// a sender could produce, and wrapping keeps it that way. The subject
+// handed out is a `Subject(Settlement)` mapped into this, so no process
+// outside the holder can forge a deadline it never armed.
+type Held {
+  /// One settlement, from the collector or from a `destroy`.
+  Incoming(settlement: Settlement)
+
+  /// The lingering deadline on `Done` expired; nobody else is coming.
+  Linger
+}
+
+// The holder is deliberately **unlinked** from whoever launched the
+// satellite: it has to outlive the host so the janitor's second `destroy`
+// is answered from memory rather than left waiting on a settlement that
+// already happened. `state_machine.start` links the machine to its caller
+// — it spawns with `process.spawn`, which links — so the start runs on a
+// throwaway process instead, which hands the subject back and then exits
+// normally. A normal exit signal is ignored by a machine that does not
+// trap exits, so the link dies with the trampoline and the holder is left
+// with nothing holding it up but its own mailbox.
 fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
   let handoff = process.new_subject()
   let _pid =
-    process.spawn_unlinked(fn() {
-      let inbox = process.new_subject()
-      process.send(handoff, inbox)
-      reporter_loop(broker_actor, inbox, Pending, False, [])
-    })
+    process.spawn_unlinked(fn() { hand_off_reporter(broker_actor, handoff) })
   case process.receive(handoff, handoff_timeout_ms) {
     Ok(inbox) -> inbox
 
@@ -364,73 +417,142 @@ fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
   }
 }
 
-fn reporter_loop(
+// Start the holder machine and hand its inbox back over `handoff`.
+//
+// The subject the machine returns is the one it built for itself, not the
+// default weft would have given it: the default carries the machine's own
+// `Held`, and what every sender in this module holds is a
+// `Subject(Settlement)`.
+fn hand_off_reporter(
   broker_actor: Broker,
-  inbox: Subject(Settlement),
-  node: NodeState,
-  torn_down: Bool,
-  waiting: List(Subject(Report)),
+  handoff: Subject(Subject(Settlement)),
 ) -> Nil {
-  // Once the node has settled, the report has been handed over, and
-  // nobody is still waiting, this execution is over — so the holder
-  // lingers only long enough to answer a second `destroy` (the janitor's,
-  // right behind the host's) and then ends, rather than outliving every
-  // execution the session ever ran.
-  case node, torn_down, waiting {
-    Done(report: _), True, [] ->
-      case process.receive(inbox, node_report_wait_ms) {
-        Error(Nil) -> Nil
-        Ok(message) ->
-          reporter_step(broker_actor, inbox, node, torn_down, waiting, message)
-      }
-    _, _, _ ->
-      reporter_step(
-        broker_actor,
-        inbox,
-        node,
-        torn_down,
-        waiting,
-        process.receive_forever(inbox),
-      )
+  let started =
+    sm.new_with_initialiser(handoff_timeout_ms, fn(_default) {
+      let inbox = process.new_subject()
+      let selector =
+        process.new_selector()
+        |> process.select_map(inbox, Incoming)
+      sm.initialised(Pending, Holder(broker_actor:, teardown: Intact))
+      |> sm.selecting(selector)
+      |> sm.returning(inbox)
+      |> Ok
+    })
+    |> sm.on_event(reporter_step)
+    |> sm.start
+  case started {
+    Ok(machine) -> process.send(handoff, machine.data)
+
+    // Nothing is handed back, so `start_reporter`'s own receive times out
+    // and yields a subject nobody serves — the same answer a holder that
+    // never spawned would have given.
+    Error(_error) -> Nil
   }
 }
 
+// One event, in one state.
+//
+// The pairs are exhaustive by construction: a fourth `Settlement` or a
+// fourth node state is a compile error here rather than a message the
+// holder silently drops.
 fn reporter_step(
-  broker_actor: Broker,
-  inbox: Subject(Settlement),
   node: NodeState,
-  torn_down: Bool,
-  waiting: List(Subject(Report)),
-  message: Settlement,
-) -> Nil {
-  case message {
-    Cleared(handle:) -> {
-      // Teardown got here first, so its cancel had nothing to name. Now it
-      // does.
-      case torn_down {
-        True -> broker.cancel(broker_actor, handle)
-        False -> Nil
-      }
-      reporter_loop(broker_actor, inbox, Running(handle:), torn_down, waiting)
+  holder: Holder,
+  event: Held,
+) -> sm.Next(NodeState, Holder, Held) {
+  case node, event {
+    // An ask before the clearance has come back needs no pending list:
+    // weft holds the event and replays it on the transition to `Done`, in
+    // arrival order, where the arm below answers it. The teardown fact is
+    // recorded first because the `Cleared` arm reads it to decide whether
+    // the node it just learned about is already unwanted.
+    Pending, Incoming(Ask(..)) -> mark_torn_down(holder) |> sm.postpone
+
+    // Teardown while the node runs. The cancel goes out *before* the ask
+    // is postponed because it is what makes the settlement the ask waits
+    // for ever arrive: the helper answers a cancel with an `exec_exit`
+    // carrying the same enforcement report.
+    Running(handle:), Incoming(Ask(..)) -> {
+      broker.cancel(holder.broker_actor, handle)
+      mark_torn_down(holder) |> sm.postpone
     }
-    Settled(report:) -> {
-      list.each(waiting, fn(reply) { process.send(reply, report) })
-      reporter_loop(broker_actor, inbox, Done(report:), torn_down, [])
+
+    // The report is in hand, so the ask is answered from memory. Arming
+    // the deadline again here is what re-starts it for the next asker:
+    // `keep` is not a state change, so the timeout survives, and arming
+    // replaces the pending one rather than adding a second.
+    Done(report:), Incoming(Ask(reply:)) -> {
+      process.send(reply, report)
+      linger(mark_torn_down(holder))
     }
-    Ask(reply:) ->
-      case node {
-        Done(report:) -> {
-          process.send(reply, report)
-          reporter_loop(broker_actor, inbox, node, True, waiting)
-        }
-        Running(handle:) -> {
-          broker.cancel(broker_actor, handle)
-          reporter_loop(broker_actor, inbox, node, True, [reply, ..waiting])
-        }
-        Pending ->
-          reporter_loop(broker_actor, inbox, node, True, [reply, ..waiting])
+
+    // Teardown got here first, so its cancel had nothing to name. Now it
+    // does.
+    Pending, Incoming(Cleared(handle:)) -> {
+      case holder.teardown {
+        Intact -> Nil
+        TornDown -> broker.cancel(holder.broker_actor, handle)
       }
+      sm.transition(to: Running(handle:), data: holder)
+    }
+
+    // A clearance is sent exactly once, by the one process that made the
+    // call, and can only find the holder `Pending`: `Running` is the state
+    // it produces itself and `Done` is downstream of it. Unreachable by
+    // construction.
+    Running(..), Incoming(Cleared(..)) | Done(..), Incoming(Cleared(..)) ->
+      sm.keep(holder)
+
+    // The node settled. Every ask postponed while it ran is replayed by
+    // this transition, ahead of the mailbox and in arrival order, and each
+    // is answered by the `Done` arm above — which is exactly what the
+    // holder's old hand-kept `waiting` list did. The deadline is armed
+    // only when teardown has already been through; a holder nobody has
+    // asked yet still has an execution to serve and must not time out.
+    Pending, Incoming(Settled(report:))
+    | Running(..), Incoming(Settled(report:))
+    -> {
+      let settled = sm.transition(to: Done(report:), data: holder)
+      case holder.teardown {
+        Intact -> settled
+        TornDown -> linger(settled)
+      }
+    }
+
+    // Likewise settled twice: the collector sends one settlement and then
+    // stops collecting. Unreachable by construction.
+    Done(..), Incoming(Settled(..)) -> sm.keep(holder)
+
+    // The second `destroy` never came. The report has been handed over and
+    // the execution is over, so the holder ends here rather than outliving
+    // every execution the session ever ran.
+    Done(..), Linger -> sm.stop()
+
+    // The deadline is armed only on `Done`, which the holder never leaves,
+    // so no fire can reach these two states — weft's timer book drops a
+    // fire that raced its own cancellation rather than delivering it.
+    Pending, Linger | Running(..), Linger -> sm.keep(holder)
   }
+}
+
+// Record that a `destroy` has been through, without moving the node on: an
+// ask says the execution is over whatever state the node itself reached.
+fn mark_torn_down(holder: Holder) -> sm.Next(NodeState, Holder, Held) {
+  sm.keep(Holder(..holder, teardown: TornDown))
+}
+
+// Arm the holder's last deadline.
+//
+// Once the node has settled, the report has been handed over, and teardown
+// has been through, the only event still worth waiting for is a second
+// `destroy` — the janitor's, right behind the host's. A *state* timeout is
+// what bounds that wait honestly: it belongs to `Done`, which the holder
+// never leaves, so the holder ends when the deadline expires instead of
+// lingering for the life of the session.
+fn linger(
+  step: sm.Next(NodeState, Holder, Held),
+) -> sm.Next(NodeState, Holder, Held) {
+  sm.with_state_timeout(step, after: node_report_wait_ms, sending: Linger)
 }
 
 fn await_report(settlement: Subject(Settlement)) -> Report {

@@ -44,15 +44,15 @@ them from their own test mains.
 - `conformance/simulation/control.Control` — the counters, one-shot claims,
   and runtime handle that outlive the session tree. Also
   `control.Attempted`, the three-way outcome of running an action on a
-  disposable process: `Answered`, `Raised` (the carrier died — observed
-  through a monitor, so it costs no wall-clock time), and `Expired` (a
-  real millisecond budget ran out). `Raised` and `Expired` are equally
-  uninformative about whether the action happened, and callers must
-  treat them alike. It is also the rendezvous a live-triggered
-  intervention uses to hand its decision to the runner:
-  `await_intervention` registers a trigger and blocks, and
-  `take_pending_interventions` is what the drive loop drains on every
-  pass to find something to fire (#57).
+  disposable process: `Answered`, `Raised` (the carrier died — surfaced
+  immediately as a one-task `weft` run's `Crashed` outcome, so it costs
+  no wall-clock time), and `Expired` (a real millisecond budget ran out,
+  via `weft.deadline`). `Raised` and `Expired` are equally uninformative
+  about whether the action happened, and callers must treat them alike.
+  It is also the rendezvous a live-triggered intervention uses to hand
+  its decision to the runner: `await_intervention` registers a trigger
+  and blocks, and `take_pending_interventions` is what the drive loop
+  drains on every pass to find something to fire (#57).
 - `conformance/simulation/{store, surface, invariant, wire}` — the
   instrumented session, the scripted effect surface, the named per-run
   checks, and the framing properties.
@@ -62,8 +62,8 @@ them from their own test mains.
 - **Depends on**: every Gleam package it tests — `core`, `storage`,
   `session`, `machine`, `runtime`, `provider`, `broker`, `tools`, and
   `client` (whose promoted `client/wiring` the wiring and e2e suites
-  prove) — plus `gleam_erlang` and `gleam_otp`. This is deliberate and
-  unique.
+  prove) — plus `gleam_erlang`, `gleam_otp`, and `weft` (the one-task
+  bounded run behind `control.attempt`). This is deliberate and unique.
 - **Depended on by**: nothing. It is the leaf, and stays one: `client/demo`
   copies the simulation's effect-surface shape rather than importing it,
   because this package's surface is test support, not a library.
@@ -153,11 +153,13 @@ them from their own test mains.
   request rather than to a summary the ledger never paid for.
 - **The wall clock is a deadlock backstop, and says so when it fires.**
   `control.attempt` is how anything reaches into a tree that may be
-  mid-restart, and its `within_ms` is real milliseconds — it cannot be
-  logical, because the action blocks on a real OTP call and the runner
-  is the process waiting on it. What used to reach that budget routinely
-  was the carrier *dying*; that is now a monitored `Raised` and costs no
-  clock, which leaves the budget bounding only a wedge nothing is
+  mid-restart. It runs the action inside a one-task `weft` run bounded
+  by `weft.deadline(within_ms)`; that budget is real milliseconds — it
+  cannot be logical, because the action blocks on a real OTP call and
+  the runner is the process waiting on it. What used to reach that
+  budget routinely was the carrier *dying*; that is now surfaced
+  immediately as weft's `Crashed` outcome (mapped to `Raised`) and costs
+  no clock, which leaves the budget bounding only a wedge nothing is
   expected to reach. Every `Expired`, every `Raised`, and every scripted
   intervention claimed but never seen to land is recorded through
   `control.note_wait` into `Report.waits` and named in the failure the

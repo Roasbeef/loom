@@ -118,6 +118,19 @@ pub fn run(scenario: Scenario, kill_at: Int) -> Report {
     )
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"
+
+  // Armed before the admissions, not after. The driver's first drive runs
+  // as soon as the recovery barrier clears, and "quietly" only withholds
+  // the doorbell — a drive that lands between acceptance and a later arm
+  // would commit the run's opening boundaries unnumbered, and the
+  // scenario's `C` would come up short. Skipping the admissions keeps the
+  // numbering where the scenarios pin it: `k = 1` is the run-start
+  // checkpoint, whatever the driver does meanwhile.
+  let admissions = case scenario.steer {
+    Some(_) -> 2
+    None -> 1
+  }
+  recorder.arm(rec, kill_at, skipping: admissions)
   let assert Ok(op) = api.accept_quietly(rt, scenario.prompt)
     as "acceptance must succeed on an idle strand"
   case scenario.steer {
@@ -128,7 +141,6 @@ pub fn run(scenario: Scenario, kill_at: Int) -> Report {
     }
     None -> Nil
   }
-  recorder.arm(rec, kill_at)
   api.nudge(rt)
   let outcome = wait_terminal(rt, sess, op, scenario, rec, 20_000)
   // A run armed to crash must actually have crashed: a bomb that never

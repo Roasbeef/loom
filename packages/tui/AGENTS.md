@@ -20,8 +20,10 @@ that tree separately from the self-contained server.
   `core/codec` decoder rather than growing a second durability codec.
 - `tui/connection.Connection` is a websocket-owning Stratus actor. The
   etui loop drains its mailbox on ticks, keeping networking out of `view` and
-  out of keyboard handling. Startup occurs in a monitored, unlinked helper
-  with a bounded deadline; a successful connection restores the runtime link.
+  out of keyboard handling. Startup runs as a one-task `weft` run with a
+  deadline — the worker belongs to weft's scope, so an initialiser crash
+  cannot reach the terminal and a timeout reaps the half-started actor; a
+  successful connection restores the runtime link.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
   connection path. Bootstrap policy, record validation, retry timing,
@@ -52,7 +54,8 @@ that tree separately from the self-contained server.
 
 ## Relationships
 
-- **Depends on**: `core` for total entry decoding; `etui` at commit
+- **Depends on**: `core` for total entry decoding; `weft` for guarded,
+  deadline-bounded connection startup; `etui` at commit
   `fd1ff36cf167e3657a1727508aa602b8cf799422` from upstream PR #8; Mork
   1.12.x for CommonMark;
   Stratus for websockets; and small Gleam utility packages. Etui is pinned

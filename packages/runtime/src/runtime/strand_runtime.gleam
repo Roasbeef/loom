@@ -50,7 +50,6 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject, type Timer}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import machine/classification
@@ -76,6 +75,7 @@ import storage/storage
 import telemetry/context
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft/actor
 
 /// Driver configuration.
 ///
@@ -133,8 +133,12 @@ pub type EffectToken {
 /// the rest are internal wiring exposed only through the api module's
 /// functions.
 pub opaque type Message {
-  /// Reports the ledger-authored prior-generation drain acknowledgement.
-  PredecessorsResolved(Result(Nil, String))
+  /// The guaranteed-first message: block on the reaper's ledger claim
+  /// before anything the mailbox holds. Injected by the initialiser via
+  /// weft's `continuing`, and constructible nowhere else — the type is
+  /// opaque and the resolution subject rides inside the message, so no
+  /// later sender can re-open the barrier.
+  AwaitPredecessors(resolution: Subject(Result(Nil, String)))
 
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
@@ -204,14 +208,6 @@ type ProviderWaitEvent {
   ProviderCancelExpired
 }
 
-// Registration makes the named mailbox reachable before the drain claim can
-// finish. This phase prevents early or stale traffic from driving effects
-// until the prior generation's original monitors have opened the barrier.
-type RecoveryGate {
-  AwaitingPredecessors(abort_requested: Bool)
-  RecoveryReady
-}
-
 type Live {
   Live(
     token: EffectToken,
@@ -239,7 +235,6 @@ type State {
     stream_options: JsonValue,
     retry_policy: NormalizedRetryPolicy,
     poll_interval_ms: Int,
-    recovery_gate: RecoveryGate,
     /// This driver's logger, already scoped to the strand. Every log
     /// call narrows *from* this value rather than reading ambient
     /// state, which is what carries `{session, strand, op, step}` into
@@ -328,7 +323,13 @@ pub fn start(
     // and cross an incarnation boundary. The direct endpoint also lets a fast
     // first claim acknowledge recovery before actor registration completes.
     let internal = process.new_subject()
-    let reaper = start_reaper(options, internal)
+
+    // The barrier acknowledgement gets a subject of its own rather than a
+    // Message variant: the one consumer is the guaranteed-first handler
+    // below, and a dedicated channel keeps the claim result out of the
+    // mailbox the barrier exists to hold back.
+    let resolution = process.new_subject()
+    let reaper = start_reaper(options, resolution)
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -353,7 +354,6 @@ pub fn start(
       stream_options: options.stream_options,
       retry_policy: options.retry_policy,
       poll_interval_ms: options.poll_interval_ms,
-      recovery_gate: AwaitingPredecessors(abort_requested: False),
       logger:,
       reaper:,
       live: [],
@@ -364,6 +364,7 @@ pub fn start(
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
+    |> actor.continuing(AwaitPredecessors(resolution:))
     |> Ok
   })
   |> actor.named(name)
@@ -432,40 +433,10 @@ fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
-  case state.recovery_gate, message {
-    AwaitingPredecessors(abort_requested:), PredecessorsResolved(resolved) -> {
-      case resolved {
-        Ok(Nil) -> {
-          // Recovery and its poll clock both begin after the ledger-authored
-          // acknowledgement. Before this point, queued doorbells are harmless
-          // because no durable work has crossed the effect boundary.
-          state.effects.timers.after(state.poll_interval_ms, fn() {
-            wake(state.internal, PollTick)
-          })
-          log.info(logger, "strand.started", [])
-          let state = State(..state, recovery_gate: RecoveryReady)
-          case abort_requested {
-            True -> finish(logger, abort(state))
-            False -> finish(logger, drive(state))
-          }
-        }
-        Error(reason) -> finish(logger, Halt(reason))
-      }
-    }
-    AwaitingPredecessors(_), RequestAbort ->
-      // Abort is the one pre-barrier message carrying unique intent. Retain it
-      // in state; doorbells and stale effect events need no queue because the
-      // first post-barrier drive reloads durable truth.
-      actor.continue(
-        State(
-          ..state,
-          recovery_gate: AwaitingPredecessors(abort_requested: True),
-        ),
-      )
-    AwaitingPredecessors(_), _ -> actor.continue(state)
-    RecoveryReady, PredecessorsResolved(_) -> actor.continue(state)
-    RecoveryReady, Nudge -> finish(logger, drive(state))
-    RecoveryReady, PollTick -> {
+  case message {
+    AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
+    Nudge -> finish(logger, drive(state))
+    PollTick -> {
       let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
         wake(internal, PollTick)
@@ -477,14 +448,40 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Halt(reason) -> finish(logger, Halt(reason))
       }
     }
-    RecoveryReady, RetryDue ->
-      finish(logger, drive(State(..state, retry_wake: None)))
-    RecoveryReady, RequestAbort -> finish(logger, abort(state))
-    RecoveryReady, ProviderDone(token:, terminal:) ->
+    RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
+    RequestAbort -> finish(logger, abort(state))
+    ProviderDone(token:, terminal:) ->
       finish(logger, provider_done(state, token, terminal))
-    RecoveryReady, ToolDone(token:, outcome:) ->
+    ToolDone(token:, outcome:) ->
       finish(logger, tool_done(state, token, outcome))
-    RecoveryReady, EffectExit(down:) -> finish(logger, effect_exit(state, down))
+    EffectExit(down:) -> finish(logger, effect_exit(state, down))
+  }
+}
+
+// The recovery gate, collapsed onto weft's `continuing` contract: this
+// handler runs before anything the mailbox holds, so blocking here IS the
+// barrier. A doorbell or an abort that arrives meanwhile simply queues and
+// is handled by the ordinary dispatch once the ledger has answered — the
+// abort no longer needs hand-carrying through a gate flag, because the
+// mailbox itself preserves the intent. No effect can be driven before this
+// returns, which is the invariant the old two-state gate existed to hold.
+fn await_predecessors(
+  state: State,
+  resolution: Subject(Result(Nil, String)),
+) -> actor.Next(State, Message) {
+  let logger = state.logger
+  case process.receive_forever(resolution) {
+    Ok(Nil) -> {
+      // Recovery and its poll clock both begin after the ledger-authored
+      // acknowledgement. Before this point, queued doorbells are harmless
+      // because no durable work has crossed the effect boundary.
+      state.effects.timers.after(state.poll_interval_ms, fn() {
+        wake(state.internal, PollTick)
+      })
+      log.info(logger, "strand.started", [])
+      finish(logger, drive(state))
+    }
+    Error(reason) -> finish(logger, Halt(reason))
   }
 }
 
@@ -1485,7 +1482,10 @@ fn with_projection(
 // recovery cannot dispatch beside a predecessor that is merely scheduled to
 // die.
 
-fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
+fn start_reaper(
+  options: Options,
+  resolution: Subject(Result(Nil, String)),
+) -> Reaper {
   let driver = process.self()
   let ready = process.new_subject()
   let pid =
@@ -1503,7 +1503,7 @@ fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
       let resolved =
         options.claim_reaper(options.strand, process.self())
         |> await_previous_reapers(4000)
-      process.send(internal, PredecessorsResolved(resolved))
+      process.send(resolution, resolved)
       reap(driver, commands, [])
     })
   let commands = process.receive_forever(ready)

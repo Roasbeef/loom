@@ -63,6 +63,30 @@
 //// with no handle anywhere, alive for the life of the VM — so the
 //// watcher holds the reply subject, answers the boot inside the window,
 //// and stops a late arrival itself.
+////
+//// ## Bring-up runs on a weft scope, and that changes nothing above
+////
+//// `start` fans every configured server's `start_one` out over a
+//// `weft` run rather than folding them with `list.map`, so N servers
+//// pay one shared clock for their handshake timeouts rather than N
+//// consecutive ones. That moves `start_one` onto a worker linked to
+//// weft's scope instead of onto `start`'s own caller — a real change to
+//// *which process* dials `start_client` — but it reaches no further
+//// than that, because the isolation two paragraphs up already happens
+//// **inside** `start_client`, two `process.spawn_unlinked` calls below
+//// whoever called it. The client actor is linked to `_starter`, which
+//// is unlinked from `watch_start`, which is unlinked from `start_client`
+//// itself — so the actor is already severed from its caller before
+//// `start_client` ever returns, whether that caller is the process that
+//// called `mcp.start` directly or a weft worker running `start_one` on
+//// its behalf. A weft worker killed mid-handshake — this run sets no
+//// deadline and no cancel signal, so nothing kills one, but the
+//// argument does not depend on that — takes down only the worker
+//// itself, blocked inside `start_client`'s `process.receive`; the
+//// watcher, the starter and any client they have already handed off
+//// keep running underneath it, exactly as a boot-window timeout already
+//// leaves them running today. Nothing here needed a `pid` accessor on
+//// `mcp/client.Client`, because nothing here needed to link anything.
 
 import broker/framing.{type CapOutcome}
 import client/catalog
@@ -86,6 +110,7 @@ import mcp/protocol
 import mcp/transport
 import provider/secret.{type SecretStore}
 import tools/blob
+import weft
 
 /// The capability-name prefix every MCP call arrives under. The suffix
 /// is the configured server's name, which is also its module's last
@@ -290,6 +315,15 @@ pub fn serving(layer: Layer) -> Bool {
 /// Every failing step tears its own client down before returning, so a
 /// server whose `tools/list` was refused leaves no process behind.
 ///
+/// Bring-up itself is concurrent: every `start_one` runs as its own
+/// `weft` task, bounded by the catalogue's own length so an N-server
+/// boot never queues one server's handshake behind another's. Ordering
+/// survives that fan-out because `weft.start` hands back one `Outcome`
+/// per task sorted by *input* position rather than completion order, so
+/// zipping those outcomes against `servers` — itself unchanged — is what
+/// restores catalogue order; a server that answers late reaches its own
+/// slot in the returned lists rather than the end of them.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -300,7 +334,13 @@ pub fn start(
   servers: List(catalog.McpServer),
   options: Options,
 ) -> #(Layer, List(Refusal)) {
-  let started = list.map(servers, fn(server) { start_one(server, options) })
+  let outcomes =
+    weft.new(
+      list.map(servers, fn(server) { fn() { start_one(server, options) } }),
+    )
+    |> weft.limit(list.length(servers))
+    |> weft.start
+  let started = list.map2(servers, outcomes, resolve_outcome)
   #(
     Layer(
       servers: list.filter_map(started, fn(one) { one }),
@@ -313,6 +353,39 @@ pub fn start(
       }
     }),
   )
+}
+
+// One server's weft outcome, folded back into `start_one`'s own
+// `Result(Server, Refusal)` shape so the rest of `start` never has to
+// know a weft run happened at all. `Completed` and `Failed` are exactly
+// what `start_one` returned, in band; a `Crashed` worker returned
+// nothing, so its refusal is built here, worded the way every other
+// refusal in this module is: what the server was and what went wrong.
+// `Abandoned` and `NeverStarted` are the two outcomes a run only
+// produces under `weft.deadline` or `weft.cancel_with`, and `start` sets
+// neither — kept rather than folded into a catch-all so a future change
+// to this run's shape fails the exhaustiveness check instead of silently
+// taking the wrong arm.
+fn resolve_outcome(
+  configured: catalog.McpServer,
+  outcome: weft.Outcome(Server, Refusal),
+) -> Result(Server, Refusal) {
+  case outcome {
+    weft.Completed(value:, ..) -> Ok(value)
+    weft.Failed(error:, ..) -> Error(error)
+    weft.Crashed(reason:, ..) ->
+      Error(Refusal(
+        server: configured.name,
+        reason: "its bring-up crashed: " <> string.inspect(reason),
+      ))
+
+    // Unreachable: this run carries no `weft.deadline` and no
+    // `weft.cancel_with`, so nothing can cut a task short of `Completed`,
+    // `Failed` or `Crashed`. Named rather than folded under `_ ->` so a
+    // run that someday grows one of those stays exhaustively checked.
+    weft.Abandoned(..) | weft.NeverStarted(..) ->
+      Error(Refusal(server: configured.name, reason: "its bring-up never ran"))
+  }
 }
 
 /// Stops every server in the layer: each client closes its child's
