@@ -596,3 +596,31 @@ pub fn the_committed_example_shows_both_timings_test() {
     })
   assert timings == ["interval", "one-shot"]
 }
+
+// --- the collapsed-line contract ------------------------------------------
+
+// `tui_gleam` renders any `[loom] ` message as its first line until the
+// reader expands it, on the standing agreement that a harness injection's
+// first line names it completely. That agreement spans two packages that
+// cannot import each other, so it is pinned from both ends: this is the
+// producing end.
+pub fn the_first_line_names_the_schedule_completely_test() {
+  let assert Ok(#(first, _body)) =
+    string.split_once(schedule.injection(sched(), False), "\n")
+    as "an injection must have a body below its attribution line"
+
+  assert first == "[loom] scheduled heartbeat \"heartbeat\""
+}
+
+// Lateness rides on that line rather than four paragraphs into the body,
+// because a collapsed reader sees only the line and lateness is the one
+// fact about a fire that changes what they should do about it.
+pub fn the_first_line_carries_the_late_marker_test() {
+  let assert Ok(#(first, _body)) =
+    string.split_once(schedule.injection(sched(), True), "\n")
+    as "a late injection must have a body below its attribution line"
+
+  assert first == "[loom] scheduled heartbeat \"heartbeat\" (late)"
+  // The prose reason stays in the body, where an expanded reader finds it.
+  assert string.contains(schedule.injection(sched(), True), "This fire is late")
+}

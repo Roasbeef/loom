@@ -913,9 +913,23 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
       <> "missed.\n\n"
     False -> ""
   }
+  // The attribution line carries the late marker as well as the name,
+  // because that line is the whole of what a reader sees when a client
+  // collapses this injection: `tui_gleam` renders any `[loom] ` message
+  // as its first line until the reader expands it, on the standing
+  // agreement that a harness injection's first line names it completely.
+  // Lateness is the one fact about a fire that changes what a reader
+  // should do about it, so it belongs above that fold rather than four
+  // paragraphs into a body nobody has opened.
+  let late_marker = case late {
+    True -> " (late)"
+    False -> ""
+  }
   "[loom] scheduled heartbeat \""
   <> schedule.name
-  <> "\"\n\n"
+  <> "\""
+  <> late_marker
+  <> "\n\n"
   <> "This is standing operator configuration, firing automatically on a "
   <> "timer. It is not a turn from the user — nobody necessarily prompted "
   <> "it — and no reply is expected; treat it as scheduled instruction "
