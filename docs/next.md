@@ -489,11 +489,23 @@ to the already-large `tui.gleam` module.
 
 `make e2e-client-bootstrap` builds the real Erlang shipment, resolves a
 `multi.part.db` session twice through the native Gleam bootstrap, discovers its
-launcher record, and opens plus adopts a replacement websocket. This proves
-authenticated readiness, same-pid reuse, manual replacement attachment, and
-process-group cleanup. The focused `make check-tui` gate passes 93 tests; the
-expected panic regression prints an Erlang crash report while proving the
-terminal process survives.
+launcher record, opens plus adopts a replacement websocket, and drains the
+replacement's full snapshot from the adopted inbox in the adopting process.
+This proves authenticated readiness, same-pid reuse, manual replacement
+attachment, and process-group cleanup. The focused `make check-tui` gate
+passes 96 tests; the expected panic regression prints an Erlang crash report
+while proving the terminal process survives.
+
+Review of the first draft found that the worker created the replacement frame
+inbox itself. A `Subject` delivers to its creator, so the new session's frames
+went to the worker and the terminal panicked on its first receive after
+adoption; every gate was green because nothing drained the adopted inbox. The
+fix creates both attempt mailboxes in the terminal and has the worker return a
+private outcome that names no inbox, so the module has one `new_inbox` call
+site. The same pass found that a literal `0` monotonic deadline is decades in
+the future on BEAM, so the deadline tests now derive an expired deadline from
+the clock, and that an undecodable endpoint filename would have crashed
+`/sessions`; the Erlang listing now omits such entries.
 
 The bounded limits are deliberate: automatic startup is macOS/Linux only;
 trusted `loom.toml` configuration and manually managed servers use explicit
