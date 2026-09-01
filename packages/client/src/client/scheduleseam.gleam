@@ -206,6 +206,7 @@ fn create(
 ) -> Result(schedule_tool.Created, schedule_tool.Refusal) {
   let Wiring(policy:, operator_schedules:, scanner:, ..) = wiring
   use timing <- result.try(requested_timing(request.timing))
+
   // The policy caps `wake`; it does not veto the call. A model under a
   // `steer` policy that asked to wake gets a schedule that steers, and
   // the tool says so — refusing instead would teach it to retry against
@@ -237,6 +238,7 @@ fn create(
     )
     |> result.map_error(unavailable),
   )
+
   // The cell is durable now; the scanner has no reason to look at it
   // until its next armed deadline, which may be a long way off or absent
   // entirely. Ringing it here is what makes a schedule the model just
@@ -365,6 +367,7 @@ fn cancel(
 ) -> Result(Nil, schedule_tool.Refusal) {
   let key = schedule.config_key(strand:, name:)
   use live <- result.try(live_schedules(runtime))
+
   // Cancelling something that is not there is an error rather than a
   // no-op, because a model that misremembers a name should hear about it
   // instead of believing it has tidied up. A schedule the *operator*
@@ -378,6 +381,7 @@ fn cancel(
     api.put_reserved_fact(runtime, key, schedule.cancelled_value)
     |> result.map_error(unavailable),
   )
+
   // Nothing breaks without this — the next tick would find the tombstone
   // on its own — but a cancelled schedule that fires once more before the
   // scanner notices reads as the cancel having failed.

@@ -126,15 +126,19 @@ pub type Refusal {
   /// The arguments describe no schedule this build would accept. Carries
   /// the seam's own worded reason, which names the bound that was missed.
   Invalid(reason: String)
+
   /// This session already holds `limit` model-created schedules.
   CeilingReached(limit: Int)
+
   /// A schedule of this name already exists on this strand. Creation
   /// never silently replaces: the model cancels and creates again, so
   /// that replacing one is a thing it decided rather than a thing it did
   /// by reusing a name.
   NameTaken(name: String)
+
   /// No schedule of this name exists on this strand to cancel.
   NotFound(name: String)
+
   /// The durable store could not be read or written.
   Unavailable(reason: String)
 }
@@ -174,6 +178,7 @@ pub type Request {
 pub type RequestedTiming {
   /// Fire every `seconds`, until `max_fires` or the default expiry.
   Every(seconds: Int)
+
   /// Fire once, at this RFC3339 UTC instant, as the model wrote it. The
   /// seam parses it, because the seam owns the one RFC3339 parser.
   At(instant: String)

@@ -310,6 +310,7 @@ fn parse_schedule(
     place,
   ))
   use name <- result.try(schedule_name(fields, place))
+
   // Once the schedule has a name, say the name: an operator reading a
   // refusal about `schedule 7` has to count tables to find it.
   let place = place <> " (" <> name <> ")"
@@ -942,6 +943,7 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
       <> "missed.\n\n"
     False -> ""
   }
+
   // The attribution line carries the late marker as well as the name,
   // because that line is the whole of what a reader sees when a client
   // collapses this injection: `tui_gleam` renders any `[loom] ` message
@@ -1017,9 +1019,11 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
 pub type Policy {
   /// No schedule tool is registered. The model cannot see the door.
   ModelSchedulesOff
+
   /// The model may create schedules, but `wake` is forced false: they
   /// steer an open run and hold when the strand is idle.
   ModelSchedulesSteer
+
   /// The model may additionally create schedules that start a fresh run
   /// on an idle strand.
   ModelSchedulesWake

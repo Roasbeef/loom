@@ -1430,6 +1430,7 @@ fn assemble(
   // supervisor further down — though the knot here is only ordering,
   // since the store closes over no runtime at all.
   let scratch_name = process.new_name(prefix: "loom_scratch")
+
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
   // One `Wiring` behind both is what stops a program and a tool call
@@ -1851,6 +1852,7 @@ fn with_schedule_scanner(
       log.info(logger, "schedules.none", [])
       builder
     }
+
     // An open door with no operator schedules still needs the scanner,
     // because the model may create one at any moment and a scanner that
     // was never started could not fire it.

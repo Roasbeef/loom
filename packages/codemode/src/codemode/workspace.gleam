@@ -389,12 +389,16 @@ pub type ScheduleRow {
 pub type ScheduleRefusal {
   /// The request describes no schedule the host would accept.
   ScheduleInvalid(reason: String)
+
   /// This session already holds all the schedules it will.
   ScheduleLimitReached(reason: String)
+
   /// A schedule of this name already exists on this strand.
   ScheduleNameTaken(reason: String)
+
   /// No schedule of this name exists on this strand.
   ScheduleNotFound(reason: String)
+
   /// The schedule store could not be reached.
   ScheduleUnavailable(reason: String)
 }
@@ -918,6 +922,7 @@ fn schedule_create_plan(
   use wake <- result.try(optional_bool(request.args, "wake"))
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
+
   // Exactly one timing, decided here rather than at the host, so a
   // contradictory request costs one denial instead of a round trip into
   // a store that would have had to invent an answer.

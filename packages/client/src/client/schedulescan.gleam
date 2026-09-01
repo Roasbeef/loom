@@ -546,13 +546,16 @@ type Fire {
   // The injection (or the fresh-run admission) and the mark landed
   // together.
   Fired
+
   // The mark was already there: another incarnation, or a concurrent
   // tick, already did this. The occurrence is spent either way.
   AlreadyFired
+
   // No open run to steer, and this schedule may not start one. The mark
   // stays absent and the next tick that finds this occurrence still
   // current tries again.
   Held
+
   // Anything else — a stolen lease, an unreadable register. Treated
   // like a hold: the next tick tries again rather than losing the fire.
   Failed(reason: String)
@@ -640,6 +643,7 @@ fn report(state: State, sched: Schedule, verdict: Fire) -> Nil {
   ]
   case verdict {
     Fired -> log.info(state.options.logger, "schedule.fired", where)
+
     // Neither of these is a fault: one is another incarnation (or tick)
     // having won, the other is a schedule waiting on a run to exist.
     AlreadyFired | Held -> Nil

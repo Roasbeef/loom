@@ -59,6 +59,7 @@ pub type ScheduleError {
   /// `schedule_limit_reached`, `schedule_name_taken`,
   /// `schedule_not_found`, `schedules_unavailable`.
   ScheduleDenied(code: String, message: String)
+
   /// The capability channel could not carry the call.
   ScheduleUnavailable(reason: String)
 }

@@ -1185,6 +1185,7 @@ fn send_attempts_marking(
           nudge(target)
           Ok(Started(operation:))
         }
+
         // A run opened between the steer refusal and the accept: try
         // the steer again.
         Error(AcceptRejected(reason: StrandBusy)) ->
