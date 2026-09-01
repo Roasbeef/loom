@@ -179,6 +179,17 @@ pub type Options {
 /// the actor has moved on from dies at its next delivery. `Rescan` is the
 /// out-of-band "look now" that `poke` sends: it scans and adopts a fresh
 /// generation, which is what retires whichever chain was already pending.
+///
+/// This is `weft/internal/timer`'s discipline restated by hand, and the
+/// house rule says process machinery goes through weft rather than being
+/// hand-rolled. The exception is the seam: weft's timer arms on
+/// `process.send_after` against the wall clock, while this actor's whole
+/// liveness deliberately rides the injected `runtime/effects.Timers` so a
+/// simulated session runs on logical time and `schedulescan_test` can
+/// drive a fake wheel. Porting today would either bypass that seam —
+/// losing the fake-clock tests and the simulation story — or need weft to
+/// grow an injectable timer source, which is the real fix and is filed as
+/// such. Nothing here makes that port harder.
 pub type Message {
   /// A wake armed by this actor, tagged with the generation current when
   /// it was armed. A stale one is a chain being retired.

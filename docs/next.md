@@ -741,14 +741,27 @@ landed (the original PR's review predates every model-facing change).
 Three findings are fixed in `edb005b`: a timer chain leaked per `poke`,
 an unbounded timer delay that killed the scanner silently, and an
 `injection` that attributed model-written bodies to the operator. Four
-are filed — **#161** (a model can chain wake-schedules indefinitely;
+are filed — **#165** (weft's timer arms on the wall clock, so an actor
+riding the injected `Timers` seam cannot use it — which is why the
+scanner's generation tag is hand-rolled against the house rule, said so in
+its module doc), **#161** (a model can chain wake-schedules indefinitely;
 expiry is per-schedule, not per-session, and the design note's original
 claim to the contrary is corrected in place), **#162** (concurrent
 `schedule.create` through code mode), **#163** (settled-subagent
-schedules), **#164** (tombstone growth). #161 is the one that matters
-before merge: it does not break any property the code tests, but it does
-mean the open default rests on a narrower argument than the note first
-made.
+schedules), **#164** (tombstone growth). A re-verify pass through the same reviewer confirmed all four fixes and
+raised one more, which is also fixed: **a subagent could schedule a waking
+heartbeat and then settle**, leaving a schedule nobody can cancel that
+keeps re-opening runs on a finished strand. Subagents inherit
+`schedule_create` by default (`agency.child_tools` passes on every tool
+but `agent_spawn`), so that was the ordinary path. `scheduleseam.create`
+now refuses a subagent outright — blunter than the problem, and it stays
+until the ownership model in #154/#163 exists.
+
+#161 is the one that matters before merge, and it is a decision rather
+than a defect: it breaks no property the code tests, but it does mean the
+open default rests on a narrower argument than the design note first
+made. Read #161 before deciding whether `default_policy` stays
+`ModelSchedulesWake`.
 
 One CI note for whoever picks this up: `soak (200 seeds)` is **red on
 `main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
