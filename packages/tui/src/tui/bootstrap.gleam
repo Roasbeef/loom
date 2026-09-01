@@ -356,15 +356,30 @@ fn start_server(
           stop_started(StartedProcess(process:, pid:))
           Error("publish server process: " <> reason)
         }
-        Ok(Nil) ->
-          await_new_server(
-            endpoint,
-            started,
-            started_at_ms + startup_timeout_ms,
-            paths.endpoint,
-          )
+        Ok(Nil) -> release_and_await(endpoint, started, paths.endpoint)
       }
     }
+  }
+}
+
+fn release_and_await(
+  endpoint: Endpoint,
+  started: StartedProcess,
+  endpoint_path: String,
+) -> Result(Target, String) {
+  let StartedProcess(process:, pid:) = started
+  case ffi_bootstrap.release_server_process(process) {
+    Error(reason) -> {
+      stop_started(StartedProcess(process:, pid:))
+      Error("release loomd process: " <> reason)
+    }
+    Ok(Nil) ->
+      await_new_server(
+        endpoint,
+        started,
+        endpoint.started_at_ms + startup_timeout_ms,
+        endpoint_path,
+      )
   }
 }
 
@@ -850,11 +865,7 @@ fn spawn(endpoint: Endpoint, server: String) -> Result(StartedProcess, String) {
 }
 
 fn stop_started(started: StartedProcess) -> Nil {
-  let StartedProcess(process:, pid:) = started
-  case ffi_bootstrap.server_process_owns(process, pid) {
-    True -> ffi_bootstrap.terminate_process_group(pid)
-    False -> Nil
-  }
+  let StartedProcess(process:, pid: _) = started
   ffi_bootstrap.close_server_process(process)
 }
 

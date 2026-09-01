@@ -130,11 +130,11 @@ pub fn is_executable_file(path: String) -> Bool
 @external(erlang, "tui_ffi", "reserve_loopback_port")
 pub fn reserve_loopback_port() -> Result(Int, String)
 
-/// Starts a detached server with output appended to a private log.
+/// Starts a paused server wrapper with output directed to a private log.
 ///
-/// Uses OTP `open_port/2` with `spawn_executable`. The port child is a process
-/// group leader and is re-parented when the client exits, so the server stays
-/// independent of the terminal while bootstrap may still inspect or stop it.
+/// Uses OTP `open_port/2` with `spawn_executable`. The wrapper waits for one
+/// release byte before it replaces itself with the daemon, preserving its pid
+/// and birth identity. If the launcher dies first, port EOF makes it exit.
 @external(erlang, "tui_ffi", "spawn_server")
 pub fn spawn_server(
   executable: String,
@@ -143,13 +143,12 @@ pub fn spawn_server(
   log_path: String,
 ) -> Result(#(ServerProcess, Int), String)
 
-/// Reports whether a retained port still owns the expected operating-system pid.
+/// Releases a paused wrapper to replace itself with the daemon.
 ///
-/// The port is the launcher's unforgeable identity capability for a process it
-/// started. Cleanup checks it before signaling a process group so pid reuse can
-/// never redirect that signal.
-@external(erlang, "tui_ffi", "server_process_owns")
-pub fn server_process_owns(process: ServerProcess, pid: Int) -> Bool
+/// Uses OTP `erlang:port_command/2` after the endpoint has durably recorded the
+/// wrapper's pid and birth identity. An error leaves the wrapper unreleased.
+@external(erlang, "tui_ffi", "release_server_process")
+pub fn release_server_process(process: ServerProcess) -> Result(Nil, String)
 
 /// Closes the retained server port without terminating the detached process.
 ///
@@ -158,10 +157,11 @@ pub fn server_process_owns(process: ServerProcess, pid: Int) -> Bool
 @external(erlang, "tui_ffi", "close_server_process")
 pub fn close_server_process(process: ServerProcess) -> Nil
 
-/// Sends SIGTERM to one detached process group.
+/// Sends SIGTERM to one detached process group for test cleanup.
 ///
 /// Uses the platform `kill` executable with a negative process-group id. The
-/// Gleam state machine decides when a server is still private and safe to stop.
+/// production bootstrap never signals a numeric pid because reuse cannot be
+/// excluded atomically on every supported platform.
 @external(erlang, "tui_ffi", "terminate_process_group")
 pub fn terminate_process_group(pid: Int) -> Nil
 

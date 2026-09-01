@@ -11,7 +11,7 @@
          read_regular_bounded/2, read_private_bounded/2,
          atomic_write_private/2, find_executable/1,
          is_executable_file/1, reserve_loopback_port/0,
-         spawn_server/4, server_process_owns/2, close_server_process/1,
+         spawn_server/4, release_server_process/1, close_server_process/1,
          terminate_process_group/1, process_identity/1,
          current_log_tail/3]).
 
@@ -296,7 +296,8 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
     Arguments = lists:map(fun binary_to_list/1, ArgumentBinaries),
     Working = filename:absname(binary_to_list(WorkingBinary)),
     Log = filename:absname(binary_to_list(LogBinary)),
-    Script = "exec \"$@\" >> \"$LOOM_LOG\" 2>&1",
+    Script = "IFS= read -r LOOM_RELEASE || exit 0; "
+             "exec \"$@\" >> \"$LOOM_LOG\" 2>&1",
     try
         Port = open_port(
             {spawn_executable, "/bin/sh"},
@@ -319,10 +320,14 @@ close_server_process(Port) ->
     _ = safe_port_close(Port),
     nil.
 
-server_process_owns(Port, Pid) ->
-    case erlang:port_info(Port, os_pid) of
-        {os_pid, Pid} -> true;
-        _ -> false
+release_server_process(Port) ->
+    try
+        case erlang:port_command(Port, <<"\n">>) of
+            true -> {ok, nil};
+            false -> {error, <<"server process rejected its release">>}
+        end
+    catch
+        Class:Reason -> {error, describe({Class, Reason})}
     end.
 
 terminate_process_group(Pid) ->

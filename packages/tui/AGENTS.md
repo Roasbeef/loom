@@ -128,6 +128,12 @@ that tree separately from the self-contained server.
   re-check state after taking it. A live birth-qualified process is preserved
   through transient probe failure; stale identities and abandoned starting
   records can be replaced without treating a reused pid as the old server.
+- **Publication precedes execution.** A new daemon begins as a wrapper blocked
+  on its launcher port. Gleam records that wrapper's stable pid and birth
+  identity before releasing it to `exec` `loomd`; launcher death before release
+  closes the port and makes the wrapper exit. Once released, bootstrap never
+  signals a numeric pid because reuse cannot be excluded atomically on every
+  supported platform.
 - **Repositories do not choose host processes.** Automatic startup neither
   loads a workspace `loom.toml` nor uses the workspace as its working
   directory. Implicit daemon lookup accepts only a sibling install or absolute

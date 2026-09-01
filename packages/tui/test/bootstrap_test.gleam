@@ -131,13 +131,44 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
     ffi_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
   let process_port = started.0
   let pid = started.1
-  assert ffi_bootstrap.server_process_owns(process_port, pid)
-  assert !ffi_bootstrap.server_process_owns(process_port, pid + 1)
   let assert Ok(first) = ffi_bootstrap.process_identity(pid)
+  let assert Ok(Nil) = ffi_bootstrap.release_server_process(process_port)
   assert ffi_bootstrap.process_identity(pid) == Ok(first)
   ffi_bootstrap.terminate_process_group(pid)
   ffi_bootstrap.close_server_process(process_port)
   assert_process_stops(pid, 20)
+  let _ = simplifile.delete(root)
+}
+
+pub fn paused_server_dies_with_launcher_before_release_test() {
+  let root = test_root("paused-server-owner-death")
+  let marker = filepath.join(root, "started")
+  let log = filepath.join(root, "server.log")
+  let ready = process.new_subject()
+  let parked = process.new_subject()
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+
+  let launcher =
+    process.spawn_unlinked(fn() {
+      let assert Ok(started) =
+        ffi_bootstrap.spawn_server(
+          "/bin/sh",
+          ["-c", "touch \"$1\"", "loomd-test", marker],
+          root,
+          log,
+        )
+      process.send(ready, started.1)
+      let _ = process.receive(parked, 5000)
+      ffi_bootstrap.close_server_process(started.0)
+    })
+
+  let assert Ok(pid) = process.receive(ready, 1000)
+  assert !ffi_bootstrap.path_exists(marker)
+  process.kill(launcher)
+  assert_process_stops(pid, 20)
+  process.sleep(50)
+  assert !ffi_bootstrap.path_exists(marker)
   let _ = simplifile.delete(root)
 }
 
