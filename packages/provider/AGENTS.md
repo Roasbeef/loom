@@ -16,6 +16,8 @@ processful shell around that sans-io core. WP-F.
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
+  That owner is the request guard, a `weft/state_machine` over `Phase` and
+  `Guard`; see **Traffic** for its states and its three state timeouts.
 - `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
   ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
   static model facts an adapter needs: context window, output ceiling,
@@ -104,15 +106,34 @@ processful shell around that sans-io core. WP-F.
   guard's exit and the consumer's exit are both `weft.cancel_when_exits`
   causes, so either fans cancellation out to every adopted child. The
   guard monitors the direct consumer and retains each active transport
-  capability the pump publishes. The pump selects active-transport Down,
+  capability the pump publishes.
+
+  The guard itself is a `weft/state_machine`. Its state ADT is
+  `gateway.Phase` — `Parked`, `Starting`, `Requesting`, `Cancelling`,
+  `Settling(terminal)`, `Reaping(cause)`, `ClosingPump`, `Abandoning`,
+  `ClosingActive` — and everything per-request (the custodian, the pump,
+  the active attempt and its monitor, the consumer monitor) is the `Guard`
+  data record beside it. All three of its deadlines are **state timeouts**:
+  the pump's ready handshake on `Starting`, the fixed cancellation grace on
+  `Cancelling`, and the same grace again on `Reaping` when the pump died
+  without authoring a terminal. Each therefore dies with the state that
+  armed it, so no handler re-establishes its own relevance and the
+  stale-fire arms the hand-rolled loop needed are gone. The machine is
+  started unlinked through a `spawn_unlinked` trampoline: a crashing guard
+  is observed by the custodian's worker adoption, never by a link into the
+  consumer. A cancel or a consumer death that arrives while the pump is
+  still parked is **postponed**, and weft replays it the instant
+  `Requesting` is entered — where the hand-rolled guard used to find it
+  still queued in its mailbox. The pump selects active-transport Down,
   absolute attempt deadline, cumulative response budget, and private
   per-attempt HTTP events. Together they deliver
   `StreamEvent`s to the caller's subject:
   `Delta(...)` zero or more times, then exactly one `Settled(settled,
   usage, ...)` or `Failed(error)`. `provider/http.HttpEvent` messages flow
   from the transport into that pump. Cancellation expiry closes the public
-  response window but not the pump's ownership frontier: the guard continues
-  adopting and rejecting late attempt registrations until the pump exits.
+  response window but not the pump's ownership frontier: `ClosingPump`
+  continues adopting and rejecting late attempt registrations until the pump
+  exits, and `ClosingActive` waits for the last transport owner after it.
 - **Commits / registers**: none. This package persists nothing; the
   durable identity it resolves is stored by `machine` and committed by
   `runtime`.
