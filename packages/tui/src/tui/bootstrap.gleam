@@ -18,6 +18,7 @@ import gleam/string
 import tui/connection
 import tui/internal/ffi_bootstrap
 import tui/protocol
+import weft/poll
 
 const endpoint_version = 2
 
@@ -206,66 +207,64 @@ fn reuse_endpoint(
   }
 }
 
+// Every wait in this module is the same shape — probe, ask whether the
+// server process is still the one the endpoint names, sleep, again — and
+// `poll.until` is that shape decided once: an immediate first attempt, a
+// last attempt at the deadline, and `Fail` kept apart from `Retry`. What
+// each wait decides for itself is only what a probe failure means given
+// the process identity, and what expiry means for the caller.
 fn await_starting(
   endpoint: Endpoint,
   endpoint_path: String,
 ) -> Result(Reuse, String) {
+  // The recorded start time bounds the wait even when this launcher
+  // arrived late, and this launcher's own clock bounds it even when the
+  // recorded time is in the future; the budget is what remains of the
+  // earlier of the two.
   let now = ffi_bootstrap.system_time_ms()
   let deadline =
     int.min(
       endpoint.started_at_ms + startup_timeout_ms,
       now + startup_timeout_ms,
     )
-  await_starting_until(endpoint, endpoint_path, deadline)
-}
-
-fn await_starting_until(
-  endpoint: Endpoint,
-  endpoint_path: String,
-  deadline: Int,
-) -> Result(Reuse, String) {
-  case ffi_bootstrap.system_time_ms() < deadline {
-    False -> abandoned_start(endpoint)
-    True ->
+  let outcome =
+    poll.until(within: deadline - now, every: startup_poll_ms, attempt: fn() {
       case probe(endpoint) {
-        Ok(target) -> {
-          let endpoint = Endpoint(..endpoint, status: "ready")
-          use Nil <- result.try(
-            write_endpoint(endpoint_path, endpoint)
-            |> result.map_error(fn(reason) {
-              "publish adopted endpoint: " <> reason
-            }),
-          )
-          Ok(Reused(target))
-        }
-        Error(_) -> retry_starting(endpoint, endpoint_path, deadline)
+        Ok(target) -> poll.Done(Reused(target))
+        Error(_) -> retry_starting(endpoint)
       }
+    })
+  case outcome {
+    poll.Answered(Reused(target)) -> {
+      let endpoint = Endpoint(..endpoint, status: "ready")
+      use Nil <- result.try(
+        write_endpoint(endpoint_path, endpoint)
+        |> result.map_error(fn(reason) {
+          "publish adopted endpoint: " <> reason
+        }),
+      )
+      Ok(Reused(target))
+    }
+    poll.Answered(Replace) -> Ok(Replace)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> abandoned_start(endpoint)
   }
 }
 
-fn retry_starting(
-  endpoint: Endpoint,
-  endpoint_path: String,
-  deadline: Int,
-) -> Result(Reuse, String) {
+// A probe that failed while a *different* process holds the recorded pid
+// means the server is gone and the endpoint is a replacement candidate;
+// the same process, or one whose identity cannot be read, is still worth
+// waiting for. An endpoint with no pid at all is a start that has not
+// published one yet.
+fn retry_starting(endpoint: Endpoint) -> poll.Attempt(Reuse, String) {
   case endpoint.server_pid > 0 {
-    False -> sleep_before_starting_retry(endpoint, endpoint_path, deadline)
+    False -> poll.Retry
     True ->
       case match_process(endpoint.server_pid, endpoint.server_birth) {
-        DifferentProcess -> Ok(Replace)
-        SameProcess | ProcessUnknown(_) ->
-          sleep_before_starting_retry(endpoint, endpoint_path, deadline)
+        DifferentProcess -> poll.Done(Replace)
+        SameProcess | ProcessUnknown(_) -> poll.Retry
       }
   }
-}
-
-fn sleep_before_starting_retry(
-  endpoint: Endpoint,
-  endpoint_path: String,
-  deadline: Int,
-) -> Result(Reuse, String) {
-  process.sleep(startup_poll_ms)
-  await_starting_until(endpoint, endpoint_path, deadline)
 }
 
 fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
@@ -285,18 +284,25 @@ fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
 }
 
 fn await_live(endpoint: Endpoint) -> Result(Reuse, String) {
-  await_live_until(
-    endpoint,
-    ffi_bootstrap.system_time_ms() + live_probe_timeout_ms,
-  )
-}
-
-fn await_live_until(
-  endpoint: Endpoint,
-  deadline: Int,
-) -> Result(Reuse, String) {
-  case ffi_bootstrap.system_time_ms() < deadline {
-    False ->
+  let outcome =
+    poll.until(
+      within: live_probe_timeout_ms,
+      every: startup_poll_ms,
+      attempt: fn() {
+        case probe(endpoint) {
+          Ok(target) -> poll.Done(Reused(target))
+          Error(_) ->
+            case match_process(endpoint.server_pid, endpoint.server_birth) {
+              DifferentProcess -> poll.Done(Replace)
+              SameProcess | ProcessUnknown(_) -> poll.Retry
+            }
+        }
+      },
+    )
+  case outcome {
+    poll.Answered(reuse) -> Ok(reuse)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired ->
       Error(
         "loomd process "
         <> int.to_string(endpoint.server_pid)
@@ -305,18 +311,6 @@ fn await_live_until(
         <> "; the endpoint was preserved to avoid starting a competing session writer"
         <> log_tail(endpoint),
       )
-    True ->
-      case probe(endpoint) {
-        Ok(target) -> Ok(Reused(target))
-        Error(_) ->
-          case match_process(endpoint.server_pid, endpoint.server_birth) {
-            DifferentProcess -> Ok(Replace)
-            SameProcess | ProcessUnknown(_) -> {
-              process.sleep(startup_poll_ms)
-              await_live_until(endpoint, deadline)
-            }
-          }
-      }
   }
 }
 
@@ -402,8 +396,37 @@ fn await_new_server(
   deadline: Int,
   endpoint_path: String,
 ) -> Result(Target, String) {
-  case ffi_bootstrap.system_time_ms() < deadline {
-    False -> {
+  let outcome =
+    poll.until(
+      within: deadline - ffi_bootstrap.system_time_ms(),
+      every: startup_poll_ms,
+      attempt: fn() {
+        case probe(endpoint) {
+          Ok(target) -> poll.Done(target)
+          Error(_) ->
+            // A server this launcher just started and which is already a
+            // different process did not merely fail a probe: it exited.
+            case match_process(endpoint.server_pid, endpoint.server_birth) {
+              DifferentProcess ->
+                poll.Fail("loomd exited before readiness" <> log_tail(endpoint))
+              SameProcess | ProcessUnknown(_) -> poll.Retry
+            }
+        }
+      },
+    )
+  case outcome {
+    poll.Answered(target) -> {
+      let ready = Endpoint(..endpoint, status: "ready")
+      case write_endpoint(endpoint_path, ready) {
+        Ok(Nil) -> Ok(target)
+        Error(reason) -> {
+          stop_started(started)
+          Error("publish ready endpoint: " <> reason)
+        }
+      }
+    }
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> {
       stop_started(started)
       Error(
         "timed out waiting for loomd at "
@@ -411,51 +434,25 @@ fn await_new_server(
         <> log_tail(endpoint),
       )
     }
-    True ->
-      case probe(endpoint) {
-        Ok(target) -> {
-          let ready = Endpoint(..endpoint, status: "ready")
-          case write_endpoint(endpoint_path, ready) {
-            Ok(Nil) -> Ok(target)
-            Error(reason) -> {
-              let StartedProcess(process:, pid:) = started
-              stop_started(StartedProcess(process:, pid:))
-              Error("publish ready endpoint: " <> reason)
-            }
-          }
-        }
-        Error(_) ->
-          case match_process(endpoint.server_pid, endpoint.server_birth) {
-            DifferentProcess ->
-              Error("loomd exited before readiness" <> log_tail(endpoint))
-            SameProcess | ProcessUnknown(_) -> {
-              process.sleep(startup_poll_ms)
-              await_new_server(endpoint, started, deadline, endpoint_path)
-            }
-          }
-      }
   }
 }
 
 fn acquire_lock(path: String) -> Result(ffi_bootstrap.LaunchLock, String) {
-  acquire_lock_until(path, ffi_bootstrap.system_time_ms() + lock_timeout_ms)
-}
+  let outcome =
+    poll.until(within: lock_timeout_ms, every: 25, attempt: fn() {
+      case ffi_bootstrap.try_launch_lock(path) {
+        Ok(lock) -> poll.Done(lock)
 
-fn acquire_lock_until(
-  path: String,
-  deadline: Int,
-) -> Result(ffi_bootstrap.LaunchLock, String) {
-  case ffi_bootstrap.try_launch_lock(path) {
-    Ok(lock) -> Ok(lock)
-    Error("busy") ->
-      case ffi_bootstrap.system_time_ms() < deadline {
-        True -> {
-          process.sleep(25)
-          acquire_lock_until(path, deadline)
-        }
-        False -> Error("timed out waiting for the local server launch lock")
+        // Busy is the one failure more time can fix; anything else is the
+        // lock file itself refusing, which no retry will change.
+        Error("busy") -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
       }
-    Error(reason) -> Error("acquire launch lock: " <> reason)
+    })
+  case outcome {
+    poll.Answered(lock) -> Ok(lock)
+    poll.Failed(reason) -> Error("acquire launch lock: " <> reason)
+    poll.Expired -> Error("timed out waiting for the local server launch lock")
   }
 }
 
