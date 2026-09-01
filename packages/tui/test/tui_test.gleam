@@ -8,6 +8,7 @@ import etui/style
 import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -26,6 +27,7 @@ import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/sessions
+import tui/text_hygiene
 import tui/theme
 import tui/workspace
 import tui_test/ffi_term
@@ -308,11 +310,11 @@ pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
 }
 
 pub fn session_selector_paths_keep_their_tails_test() {
-  assert sessions.fit_tail("/home/me/work/project", 10) == "…k/project"
-  assert sessions.fit_tail("/short", 10) == "/short"
-  assert sessions.fit_tail("/short", 6) == "/short"
-  assert sessions.fit_tail("/short", 0) == ""
-  assert sessions.fit_tail("/short", 1) == "…"
+  assert text_hygiene.fit_tail("/home/me/work/project", 10) == "…k/project"
+  assert text_hygiene.fit_tail("/short", 10) == "/short"
+  assert text_hygiene.fit_tail("/short", 6) == "/short"
+  assert text_hygiene.fit_tail("/short", 0) == ""
+  assert text_hygiene.fit_tail("/short", 1) == "…"
 }
 
 pub fn session_selector_uses_database_identity_test() {
@@ -549,6 +551,92 @@ pub fn model_selector_accepts_initials_test() {
     model_selector.update(keys.Down, state)
   assert model_selector.update(keys.Enter, next)
     == model_selector.Choose("baseten-glm-5-3-flash")
+}
+
+pub fn model_selector_keeps_its_selected_row_inside_the_overlay_test() {
+  let models =
+    indices(12)
+    |> list.map(fn(index) {
+      let active = case index == 11 {
+        True -> ["main"]
+        False -> []
+      }
+      ModelInfo(
+        "provider-catalogue-entry-" <> int.to_string(index),
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+        [],
+        active,
+      )
+    })
+  let screen = geometry.rect_new(0, 0, 44, 16)
+  let state = model_selector.State(models:, query: "", selected: 11)
+  let painted = model_selector.render(buffer.buffer_new(screen), screen, state)
+
+  // Every catalogue row is wider than the overlay. A wrapping render spends
+  // the window on the rows above the cursor, so both the cursor and the role
+  // badge that belongs to it disappear from the frame entirely.
+  let assert Ok(marker_row) = symbol_row(painted, screen, "▸")
+    as "the selected catalogue row must survive the overlay clip"
+  let assert Ok(badge_row) = symbol_row(painted, screen, "●")
+    as "the selected row's role badge must survive the overlay clip"
+  assert marker_row == badge_row
+}
+
+pub fn agent_inspector_rows_stay_inside_the_overlay_test() {
+  let strands =
+    indices(8)
+    |> list.map(fn(index) {
+      Strand(
+        "sub:worker-" <> int.to_string(index),
+        Some(
+          "a strand name long enough to wrap this narrow inspector several"
+          <> " times over and steal the rows below it "
+          <> int.to_string(index),
+        ),
+        Some("assistant"),
+      )
+    })
+  let screen = geometry.rect_new(0, 0, 40, 20)
+  let painted =
+    agents.render_overlay(
+      buffer.buffer_new(screen),
+      screen,
+      strands,
+      "sub:worker-0",
+      7,
+    )
+
+  // The inspector reserves three rows per strand and two more for its
+  // footer. Wrapped names break that arithmetic, and the selection and the
+  // key legend are the two things pushed off the bottom when it breaks.
+  let assert Ok(_) = symbol_row(painted, screen, "▸")
+    as "the selected strand must survive the inspector clip"
+  let assert Ok(_) = symbol_row(painted, screen, "↑")
+    as "the inspector footer must survive the inspector clip"
+}
+
+fn indices(count: Int) -> List(Int) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, index) { index })
+}
+
+// Reports the first row holding one glyph. A row that the widget clipped
+// leaves no cell behind at all, so an absent answer is the regression these
+// overlay tests are written to catch.
+fn symbol_row(
+  painted: buffer.Buffer,
+  screen: geometry.Rect,
+  symbol: String,
+) -> Result(Int, Nil) {
+  indices(screen.size.height)
+  |> list.find(fn(row) {
+    indices(screen.size.width)
+    |> list.any(fn(column) {
+      buffer.cell_symbol(buffer.get_cell(painted, Position(column, row)))
+      == symbol
+    })
+  })
 }
 
 pub fn transcript_scroll_clamps_at_the_live_tail_test() {

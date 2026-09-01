@@ -43,12 +43,13 @@ pub fn render_rail(
       ],
       block.Top,
     )
+  let inside = block.inner(area, frame)
   buf
   |> buffer.clear(area)
   |> block.render(area, frame)
-  |> paragraph.render_text(
-    block.inner(area, frame),
-    span.text_new(strand_lines(strands, active, None, 0)),
+  |> paragraph.render_styled(
+    inside,
+    strand_lines(strands, active, None, 0, inside.size.width),
   )
 }
 
@@ -91,17 +92,29 @@ pub fn render_overlay(
       span.span_styled("esc", signal),
       span.span_styled(" close   ↑/↓ select   enter open transcript", quiet),
     ])
+
+  // Three rows per strand, plus a blank row and the footer, is row
+  // arithmetic, so the rows have to reach the buffer as rows. Wrapping a
+  // strand whose name overflows the overlay would spend the next strand's
+  // budget on it and push the footer, and eventually the selection, past the
+  // clip; `strand_lines` cuts each row to the width instead.
   let visible_count = int.max(1, { inside.size.height - 2 } / 3)
   let visible = selection_window(strands, selected, visible_count)
   let lines =
-    list.append(strand_lines(visible.0, active, Some(selected), visible.1), [
-      span.line_plain(""),
-      footer,
-    ])
+    list.append(
+      strand_lines(
+        visible.0,
+        active,
+        Some(selected),
+        visible.1,
+        inside.size.width,
+      ),
+      [span.line_plain(""), footer],
+    )
   buf
   |> buffer.clear(area)
   |> block.render(area, frame)
-  |> paragraph.render_text(inside, span.text_new(lines))
+  |> paragraph.render_styled(inside, lines)
 }
 
 /// Returns a compact summary for narrow-terminal status bars.
@@ -128,6 +141,7 @@ fn strand_lines(
   active: String,
   selected: Option(Int),
   index_offset: Int,
+  width: Int,
 ) -> List(span.Line) {
   strands
   |> list.index_map(fn(strand, index) {
@@ -173,15 +187,29 @@ fn strand_lines(
       False, True -> current
       False, False -> plain
     }
+
+    // Both rows open with four cells of focus, state, and indent, so what
+    // remains is what the name and the phase have to fit inside. A strand
+    // name is routinely a task description, and its tail is the part that
+    // distinguishes two sub-agents working the same file.
+    let remaining = int.max(1, width - 4)
+
     [
       span.line_new([
         focus,
         span.span_styled(state_mark <> " ", state_style),
-        span.span_styled(indent <> label, label_style),
+        span.span_styled(
+          indent
+            <> text_hygiene.fit_tail(
+            label,
+            int.max(1, remaining - string.length(indent)),
+          ),
+          label_style,
+        ),
       ]),
       span.line_new([
         span.span_styled("    ", plain),
-        span.span_styled(phase, state_style),
+        span.span_styled(text_hygiene.fit_tail(phase, remaining), state_style),
       ]),
       span.line_plain(""),
     ]
