@@ -177,6 +177,22 @@ pub fn local_session_discovery_validates_launcher_records_test() {
       filepath.join(endpoint_directory, "malformed.json"),
       "not json",
     )
+
+  // A record a failed spawn abandoned in `starting` is otherwise well formed
+  // and must still stay out of the picker.
+  let pending = filepath.join(session_directory, "pending.db")
+  let assert Ok(Nil) = simplifile.write(pending, "")
+  let assert Ok(canonical_pending) = ffi_bootstrap.canonical_path(pending)
+  let pending_key = digest_prefix(canonical_pending, 24)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(
+      filepath.join(endpoint_directory, pending_key <> ".json"),
+      record
+        |> string.replace("\"ready\"", "\"starting\"")
+        |> string.replace(canonical_session, canonical_pending)
+        |> string.replace("\"review\"", "\"pending\"")
+        |> string.replace(key, pending_key),
+    )
   let options = bootstrap.Options(workspace, session, "/bin/loomd", state)
   let assert Ok([choice]) = bootstrap.discover_sessions(options)
   assert choice

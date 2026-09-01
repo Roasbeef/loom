@@ -163,8 +163,10 @@ pub fn resolve(options: Options) -> Result(Target, String) {
 /// Discovers locally managed sessions from validated launcher records.
 ///
 /// Endpoint files remain hints: malformed, misplaced, incompatible, and
-/// non-loopback records are omitted. Selecting a result still calls `resolve`,
-/// which verifies process identity and authenticates a real gateway snapshot.
+/// non-loopback records are omitted, and so is a record still marked
+/// `starting`, whether a launcher is mid-flight behind it or a failed spawn
+/// abandoned it. Selecting a result still calls `resolve`, which verifies
+/// process identity and authenticates a real gateway snapshot.
 ///
 /// ## Examples
 ///
@@ -275,7 +277,9 @@ fn discover_session(
       )
       use paths <- result.try(discard_reason(resolve_paths(options, workspace)))
       case
-        paths.endpoint == path && endpoint_matches(endpoint, workspace, paths)
+        paths.endpoint == path
+        && endpoint.status == "ready"
+        && endpoint_matches(endpoint, workspace, paths)
       {
         False -> Error(Nil)
         True ->
