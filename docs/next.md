@@ -447,15 +447,15 @@ changes the server's frozen enforcement or replay contracts.
 
 ---
 
-## Draft local client bootstrap: PR #150
+## Local client bootstrap and session switching
 
-Branch `client/auto-bootstrap` makes the shipped `loom` client the one-command
-local entry point without merging the client and server. A canonical workspace
-maps to a private session under `~/.loom`; an authenticated protocol-v1
-snapshot reuses the recorded loopback endpoint, while an OS file lock selects
-one detached server for a cold start. A second invocation reconnects to the
-same server after the first terminal exits. Explicit `--addr` attachment and
-`--demo` are unchanged, and no frozen interface moved.
+PR #150 is on `main` at merge commit `dd84063`. The shipped `loom` client is
+the one-command local entry point without merging the client and server. A
+canonical workspace maps to a private session under `~/.loom`; an authenticated
+protocol-v1 snapshot reuses the recorded loopback endpoint, while an OS file
+lock selects one detached server for a cold start. A second invocation
+reconnects to the same server after the first terminal exits. Explicit
+`--addr` attachment and `--demo` are unchanged, and no frozen interface moved.
 
 The launcher treats workspace content as data, not launch authority. It does
 not load a repository `loom.toml`, runs the server from private state rather
@@ -466,13 +466,30 @@ the original server is retried and preserved. The session-name derivation is
 byte-for-byte aligned with the server's first-dot rule, including `.db` and
 multi-dot paths.
 
+Branch `client/session-switcher` adds the interactive half. `/sessions` lists
+statically validated endpoint records from the active private state root, then
+resolves the selected workspace and database through the complete bootstrap
+path. Resolution, optional daemon startup, and replacement websocket startup
+run in a monitored worker with a 70-second outer deadline. The terminal
+keeps the old session usable until it adopts the new socket, swaps to a fresh
+mailbox, and closes the prior connection. Thus, late frames from the old socket
+cannot mutate the new session projection. A fresh full snapshot remains the
+authority after every switch.
+
+The selector is deliberately local. Explicit remote attachments have no
+authority to enumerate sibling sessions, and gaining that ability would need a
+separate authenticated server API. No ClientGateway command or event changed
+for this branch. The new `tui/sessions` module owns the overlay, worker monitor,
+and replacement-attachment state instead of adding another presentation domain
+to the already-large `tui.gleam` module.
+
 `make e2e-client-bootstrap` builds the real Erlang shipment, resolves a
-`multi.part.db` session twice through the native Gleam bootstrap, and proves
-authenticated readiness, same-pid reuse, and process-group cleanup. Focused
-unit tests cover stable workspace naming, the server's first-dot session rule,
-strict loopback addresses, private bounded files, single-winner launch locks,
-and birth-qualified process identity. The final gate and review status belong
-in PR #150 rather than this handoff snapshot.
+`multi.part.db` session twice through the native Gleam bootstrap, discovers its
+launcher record, and opens plus adopts a replacement websocket. This proves
+authenticated readiness, same-pid reuse, manual replacement attachment, and
+process-group cleanup. The focused `make check-tui` gate passes 90 tests; the
+expected panic regression prints an Erlang crash report while proving the
+terminal process survives.
 
 The bounded limits are deliberate: automatic startup is macOS/Linux only;
 trusted `loom.toml` configuration and manually managed servers use explicit

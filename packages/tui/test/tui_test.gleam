@@ -15,6 +15,7 @@ import gleeunit
 import simplifile
 import tui
 import tui/agents
+import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
@@ -24,6 +25,7 @@ import tui/internal/workspace_file
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
+import tui/sessions
 import tui/theme
 import tui/workspace
 import tui_test/ffi_term
@@ -288,6 +290,21 @@ pub fn models_test() {
 
 pub fn agents_test() {
   assert command.parse("/agents") == command.Agents
+}
+
+pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
+  assert command.parse("/sessions") == command.Sessions
+  assert command.suggestions("/sess")
+    == [command.Suggestion("/sessions", "switch local sessions", False)]
+
+  let first = bootstrap.SessionChoice("alpha", "/work/alpha", "/state/a.db")
+  let second = bootstrap.SessionChoice("beta", "/work/beta", "/state/b.db")
+  let state = sessions.new([first, second], "beta")
+  assert state.selected == 1
+  let assert sessions.Continue(wrapped) = sessions.update(keys.Down, state)
+    as "Down keeps the selector open"
+  assert wrapped.selected == 0
+  assert sessions.update(keys.Enter, wrapped) == sessions.Choose(first)
 }
 
 pub fn agent_inspector_selection_wraps_and_resolves_a_strand_test() {

@@ -42,6 +42,7 @@ import tui/image_drop
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
+import tui/sessions
 import tui/text_hygiene
 import tui/theme
 import tui/workspace
@@ -73,6 +74,7 @@ type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
   AgentInspector(selected: Int)
+  SessionSelector(sessions.State)
 }
 
 type Launch {
@@ -139,8 +141,11 @@ type Model {
     agent_summary: String,
     active_strand: String,
     session: String,
+    local_options: Option(bootstrap.Options),
     inbox: Subject(connection.Message),
     socket: Option(connection.Connection),
+    session_inbox: Subject(sessions.Message),
+    session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
     agent_rail_visible: Bool,
@@ -175,6 +180,7 @@ type Model {
 /// ```
 pub fn main() {
   let inbox = connection.new_inbox()
+  let session_inbox = sessions.new_inbox()
   let project = workspace.discover()
   let strands = demo_strands()
   let base =
@@ -215,8 +221,11 @@ pub fn main() {
       agent_summary: agents.summary(strands),
       active_strand: "main",
       session: "demo",
+      local_options: None,
       inbox:,
       socket: None,
+      session_inbox:,
+      session_switch: sessions.Idle,
       next_id: 1,
       usage: zero_usage(),
       agent_rail_visible: False,
@@ -245,9 +254,22 @@ pub fn main() {
     Local(options) ->
       case bootstrap.resolve(options) {
         Error(reason) ->
-          append_error(Model(..base, notice: "local startup failed"), reason)
+          append_error(
+            Model(
+              ..base,
+              local_options: Some(options),
+              notice: "local startup failed",
+            ),
+            reason,
+          )
         Ok(bootstrap.Target(address:, session:, token:)) ->
-          connect_remote(base, inbox, address, session, token)
+          connect_remote(
+            Model(..base, local_options: Some(options)),
+            inbox,
+            address,
+            session,
+            token,
+          )
       }
     Invalid(reason) ->
       append_error(Model(..base, notice: "invalid launch"), reason)
@@ -475,10 +497,11 @@ fn render_frame(
         model.active_strand,
         selected,
       )
+    SessionSelector(selector) -> sessions.render(base, screen, selector)
   }
   let cursor = case model.overlay {
     NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
-    ModelSelector(_) | AgentInspector(_) -> Error(Nil)
+    ModelSelector(_) | AgentInspector(_) | SessionSelector(_) -> Error(Nil)
   }
   #(rendered, cursor)
 }
@@ -1092,7 +1115,11 @@ fn render_command_palette(
 ) -> buffer.Buffer {
   let suggestions = command.suggestions(text_area.value(model.input))
   case suggestions, model.overlay {
-    [], _ | _, ModelSelector(_) | _, AgentInspector(_) -> buf
+    [], _
+    | _, ModelSelector(_)
+    | _, AgentInspector(_)
+    | _, SessionSelector(_)
+    -> buf
     _, NoOverlay -> {
       let width = int.max(1, int.min(72, body.size.width - 4))
       let height = int.max(1, int.min(10, list.length(suggestions) + 2))
@@ -1187,7 +1214,8 @@ fn update(event: backend.InputEvent, model: Model) -> Model {
 // cadence but does not by itself force the fast polling regime forever.
 fn update_tick(model: Model) -> Model {
   let animated = advance_activity_indicator(model)
-  let drained = drain_connection(animated, 64)
+  let switched = drain_session_switch(animated)
+  let drained = drain_connection(switched, 64)
   let quiet_for_ms =
     next_quiet_for(
       model.quiet_for_ms,
@@ -1421,6 +1449,98 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
   }
 }
 
+fn drain_session_switch(model: Model) -> Model {
+  case sessions.receive(model.session_inbox, model.session_switch) {
+    Error(Nil) -> model
+    Ok(message) -> handle_session_switch_message(model, message)
+  }
+}
+
+fn handle_session_switch_message(
+  model: Model,
+  message: sessions.Message,
+) -> Model {
+  case message {
+    sessions.Failed(session, reason) ->
+      append_error(
+        Model(..model, session_switch: sessions.Idle),
+        "open session " <> session <> ": " <> reason,
+      )
+      |> mark_activity
+    sessions.WorkerCrashed(session, reason) ->
+      append_error(
+        Model(..model, session_switch: sessions.Idle),
+        "open session " <> session <> " crashed: " <> reason,
+      )
+      |> mark_activity
+    sessions.Ready(choice, options, target, inbox, socket) ->
+      case connection.adopt(socket) {
+        Error(reason) -> {
+          connection.close(socket)
+          append_error(
+            Model(..model, session_switch: sessions.Idle),
+            "open session " <> target.session <> ": " <> reason,
+          )
+          |> mark_activity
+        }
+        Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
+      }
+  }
+}
+
+fn adopt_session(
+  model: Model,
+  choice: bootstrap.SessionChoice,
+  options: bootstrap.Options,
+  target: bootstrap.Target,
+  inbox: Subject(connection.Message),
+  socket: connection.Connection,
+) -> Model {
+  case model.socket {
+    Some(previous) -> connection.close(previous)
+    None -> Nil
+  }
+  Model(
+    ..model,
+    help_open: False,
+    notes_open: False,
+    overlay: NoOverlay,
+    session: target.session,
+    local_options: Some(options),
+    inbox:,
+    socket: Some(socket),
+    session_switch: sessions.Idle,
+    next_id: 4,
+    transcript: [Line(System, "connecting to session " <> target.session)],
+    records: [],
+    models: [],
+    current_model: "loading…",
+    workspace: workspace.discover_from(choice.workspace),
+    strands: [],
+    agent_summary: agents.summary([]),
+    active_strand: "main",
+    usage: zero_usage(),
+    interrupt: None,
+    submitting: None,
+    streams: [],
+    scroll_offset: 0,
+    rendered_revision: -1,
+    rendered_row_count: 0,
+    rendered_rows: [],
+    record_rows: [],
+    pending_records: [],
+    record_cache_valid: False,
+    record_cache_width: 0,
+    record_cache_strand: "",
+    frame_cache: None,
+    notice: "connecting to session " <> target.session,
+    repaint_phase: !model.repaint_phase,
+  )
+  |> invalidate_transcript
+  |> mark_activity
+  |> invalidate_frame
+}
+
 fn drain_connection(model: Model, remaining: Int) -> Model {
   case remaining <= 0, connection.receive(model.inbox) {
     True, _ | _, Error(Nil) -> model
@@ -1491,6 +1611,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ))
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
+        SessionSelector(selector) -> SessionSelector(selector)
       }
       Model(
         ..model,
@@ -2207,8 +2328,28 @@ fn update_key(key: keys.Key, model: Model) -> Model {
       case model.overlay {
         ModelSelector(selector) -> update_model_selector(key, model, selector)
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
+        SessionSelector(selector) ->
+          update_session_selector(key, model, selector)
         NoOverlay -> update_main_key(key, model)
       }
+  }
+}
+
+fn update_session_selector(
+  key: keys.Key,
+  model: Model,
+  selector: sessions.State,
+) -> Model {
+  case sessions.update(key, selector) {
+    sessions.Continue(next) -> Model(..model, overlay: SessionSelector(next))
+    sessions.Close ->
+      Model(
+        ..model,
+        overlay: NoOverlay,
+        repaint_phase: !model.repaint_phase,
+        notice: "session selection cancelled",
+      )
+    sessions.Choose(choice) -> begin_session_switch(model, choice)
   }
 }
 
@@ -2514,6 +2655,56 @@ fn submit(model: Model) -> Model {
   }
 }
 
+fn open_session_selector(model: Model) -> Model {
+  case model.local_options {
+    None ->
+      append_error(model, "/sessions is available only for local attachments")
+    Some(options) -> open_local_session_selector(model, options)
+  }
+}
+
+fn open_local_session_selector(
+  model: Model,
+  options: bootstrap.Options,
+) -> Model {
+  case sessions.busy(model.session_switch) {
+    True -> append_error(model, "a session switch is already in progress")
+    False ->
+      case bootstrap.discover_sessions(options) {
+        Error(reason) -> append_error(model, reason)
+        Ok([]) -> append_error(model, "no locally managed sessions found")
+        Ok(choices) ->
+          Model(
+            ..model,
+            overlay: SessionSelector(sessions.new(choices, model.session)),
+            repaint_phase: !model.repaint_phase,
+            notice: "session selector",
+          )
+      }
+  }
+}
+
+fn begin_session_switch(
+  model: Model,
+  choice: bootstrap.SessionChoice,
+) -> Model {
+  case model.local_options {
+    None ->
+      append_error(
+        Model(..model, overlay: NoOverlay),
+        "/sessions is available only for local attachments",
+      )
+    Some(options) ->
+      Model(
+        ..model,
+        overlay: NoOverlay,
+        session_switch: sessions.start(choice, options, model.session_inbox),
+        repaint_phase: !model.repaint_phase,
+        notice: "opening session " <> choice.session,
+      )
+  }
+}
+
 fn submit_text(model: Model) -> Model {
   let input = text_area.value(model.input)
   let expanded = composer.expand(input, model.attachments)
@@ -2587,6 +2778,7 @@ fn submit_text(model: Model) -> Model {
         repaint_phase: !cleared.repaint_phase,
         notice: "agent inspector",
       )
+    command.Sessions -> open_session_selector(cleared)
     command.Notes ->
       Model(
         ..cleared,
@@ -2653,6 +2845,7 @@ fn submit_with_images(model: Model) -> Model {
         | command.Model(_)
         | command.Strands
         | command.Agents
+        | command.Sessions
         | command.Notes
         | command.Details
         | command.Strand(_)
@@ -3069,6 +3262,7 @@ fn send_frame(model: Model, frame: String) -> Model {
 }
 
 fn quit(model: Model) -> Model {
+  sessions.cancel(model.session_switch)
   case model.socket {
     Some(socket) -> connection.close(socket)
     None -> Nil

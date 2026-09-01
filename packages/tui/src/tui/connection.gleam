@@ -201,6 +201,23 @@ pub fn close(connection: Connection) -> Nil {
   process.send(subject, stratus.to_user_message(Stop))
 }
 
+/// Links an established websocket actor to the calling process.
+///
+/// Session resolution opens replacement sockets in an unlinked worker. The
+/// terminal adopts the successful actor before it replaces the active socket,
+/// restoring the same lifecycle ownership as an ordinary startup connection.
+pub fn adopt(connection: Connection) -> Result(Nil, String) {
+  let Connection(subject) = connection
+  use owner <- result.try(
+    process.subject_owner(subject)
+    |> result.replace_error("the websocket actor exited before adoption"),
+  )
+  case process.link(owner) {
+    True -> Ok(Nil)
+    False -> Error("the websocket actor exited before adoption")
+  }
+}
+
 /// Receives one queued connection message, if one is ready.
 ///
 /// ## Examples

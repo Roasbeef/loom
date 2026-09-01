@@ -7,7 +7,9 @@ import gleam/result
 import gleam/string
 import simplifile
 import tui/bootstrap
+import tui/connection
 import tui/internal/ffi_bootstrap
+import tui/sessions
 
 pub fn workspace_names_are_stable_and_distinct_test() {
   let first = bootstrap.workspace_name("/work/alpha")
@@ -310,6 +312,16 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert first.session == "multi"
   assert first.session == second.session
   assert first.token == second.token
+  let assert Ok([choice]) = bootstrap.discover_sessions(options)
+  assert choice.session == first.session
+  let switch_inbox = sessions.new_inbox()
+  let _ = sessions.start(choice, options, switch_inbox)
+  let assert Ok(sessions.Ready(target: switched, socket: switched_socket, ..)) =
+    process.receive(switch_inbox, 40_000)
+    as "session switch should connect"
+  assert switched.session == first.session
+  assert connection.adopt(switched_socket) == Ok(Nil)
+  connection.close(switched_socket)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
   let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
