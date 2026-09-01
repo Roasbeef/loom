@@ -60,6 +60,25 @@ pub type Rule {
   /// locals re-declared as a signature, which reads shallower and is not
   /// simpler.
   LoneCallerArity
+  /// R9. A `Bool` in a function parameter or a record field. `True` at a
+  /// call site names nothing, and a field typed `Bool` makes the reader
+  /// carry the polarity of its name in their head; a two-variant type
+  /// says which state it is at both ends (gleam-style Part III, "Type
+  /// design"). Return position is deliberately not this rule's business:
+  /// `is_empty(xs) -> Bool` is the predicate the whole language is built
+  /// to consume.
+  NakedBool
+  /// R10. A `//` comment between two siblings — statements of a block, or
+  /// arms of a `case` — with code on the line directly above it. A comment
+  /// welded to the line above reads as that line's trailing note; the
+  /// blank line is what makes it the heading of the stanza below.
+  CommentStanza
+  /// R11. A function whose longest unbroken run of statements — no blank
+  /// line, no comment, anywhere between them — exceeds the policy's
+  /// threshold. The unit is statements rather than lines, so a wide
+  /// literal the formatter broke one argument per line is not density,
+  /// for the reason R2 measures depth on the AST.
+  DenseStanza
 }
 
 /// Every rule, in report order.
@@ -74,6 +93,9 @@ pub fn rules() -> List(Rule) {
     PortablePurity,
     AssertWithoutMessage,
     LoneCallerArity,
+    NakedBool,
+    CommentStanza,
+    DenseStanza,
   ]
 }
 
@@ -129,6 +151,42 @@ pub fn rules() -> List(Rule) {
 /// R3 does: "more than seven parameters and one caller" is a shape worth
 /// looking at, never a verdict, and a linter that fails a build over a
 /// shape is a linter somebody turns off.
+///
+/// **R9, R10 and R11 are the literate-style rules, and all three warn on
+/// arrival** — the ordinary staging, and worth saying why each is here
+/// rather than there, because two of the three are decidable enough that a
+/// reader will ask.
+///
+/// **R9** is 223 and every finding is decidable: an annotation says `Bool`
+/// or it does not. What it is not is *fixable* in one change. Two hundred
+/// declarations is a sweep in its own right, and some of them are not this
+/// repository's to make — `terminate: Bool` and `from_hook: Bool` are
+/// fields of frozen Part-1 contracts, so replacing them costs a
+/// `protocol-change/NNN.md` rather than an edit. Four more are irreducible
+/// and always will be: `core/json`'s `Bool(value: Bool)`, `core/msgpack`'s
+/// `BoolValue`, `cap/wire`'s `bool` encoder and `core/codec`'s
+/// `encode_default_false` are code *about* booleans, where the type is the
+/// subject rather than a flag nobody named. A rule with four permanent
+/// exceptions can still gate — R4 gates with a whole package exempted —
+/// but only once the exceptions are the census rather than 2% of it.
+///
+/// **R10** is 404 and is the promotion this set is actually aiming at. It
+/// is decidable without types (a line is blank or it is not), the fix is
+/// one blank line per finding and never a change to what the code does, and
+/// the property it protects is lost the way R2's is: one comment at a time,
+/// each reasonable on the day it lands. It warns today for the reason R1
+/// does — a rule promoted in the season its predicate was written is how a
+/// linter starts failing correct code — and `packages/lint` has already
+/// been swept to zero, which is what a promotion has to look like
+/// everywhere before it can be one.
+///
+/// **R11** is 17, and it is the one of the three whose *threshold* is a
+/// judgement rather than a fact. Eight statements is where this tree's own
+/// bodies stop having paragraphs, measured, but "eight" is not decidable
+/// the way "blank or not" is, and a rule whose census moves when someone
+/// argues about a number should not be able to fail a build. It is R8's
+/// kind of measurement with R2's kind of arithmetic; treat the number as a
+/// reading rather than a verdict.
 pub fn error_by_default() -> List(Rule) {
   [Unparseable, NestingDepth, PanicInSource, PortablePurity]
 }
@@ -169,6 +227,9 @@ pub fn id(rule: Rule) -> String {
     PortablePurity -> "R6"
     AssertWithoutMessage -> "R7"
     LoneCallerArity -> "R8"
+    NakedBool -> "R9"
+    CommentStanza -> "R10"
+    DenseStanza -> "R11"
   }
 }
 
@@ -184,6 +245,9 @@ pub fn name(rule: Rule) -> String {
     PortablePurity -> "portable-purity"
     AssertWithoutMessage -> "assert-without-message"
     LoneCallerArity -> "lone-caller-arity"
+    NakedBool -> "naked-bool"
+    CommentStanza -> "comment-stanza"
+    DenseStanza -> "dense-stanza"
   }
 }
 

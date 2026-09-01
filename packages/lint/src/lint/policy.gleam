@@ -137,6 +137,11 @@ pub type Policy {
     /// R8 fires on a private function with strictly more parameters than
     /// this and exactly one caller.
     lone_caller_arity: Int,
+    /// R11 fires on a function whose longest unbroken run of statements —
+    /// nothing but code between them, no blank line and no comment —
+    /// strictly exceeds this. Counted in statements, never in lines: a
+    /// constructor the formatter broke over nine lines is one statement.
+    dense_stanza_run: Int,
   )
 }
 
@@ -148,6 +153,7 @@ pub fn default() -> Policy {
     catch_all_multi_subject: False,
     assert_message: True,
     lone_caller_arity: 7,
+    dense_stanza_run: 8,
   )
 }
 

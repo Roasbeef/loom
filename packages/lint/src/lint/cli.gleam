@@ -141,6 +141,7 @@ fn run(options: Options) -> Nil {
     |> list.flat_map(sources)
     |> list.filter(fn(path) { options.include_tests || !is_test(path) })
     |> list.sort(string.compare)
+
   // Read once, lint twice. R1's structural half needs a table of every
   // `use`-compatible combinator the run can see before it can judge any one
   // call site: a combinator defined in `tools/tool` is called from sixteen
