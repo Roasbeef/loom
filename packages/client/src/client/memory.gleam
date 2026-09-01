@@ -346,6 +346,7 @@ fn decoded_cursor(
 ) -> Cursor {
   let stored = int_field(fields, "generation")
   let seq = int_field(fields, "seq")
+
   // A generation that moved voids the seq: a precise rewrite renumbers
   // every entry, so a cursor from before it names rows that no longer
   // exist at those seqs.
@@ -370,6 +371,7 @@ pub type MemoryFault {
   /// `remember` call. Nothing is wrong; the caller should say so and
   /// move on.
   MemoryHeld(owner: String)
+
   /// The file could not be opened, read or committed to.
   MemoryFailed(reason: String)
 }
@@ -1224,6 +1226,7 @@ fn write_note(
 fn note_within_caps(scrubbed: String) -> Result(Nil, remember.Refusal) {
   case remember.says_something(scrubbed) {
     False -> Error(remember.NothingToRemember)
+
     // Whether the note is over the bound is a question about the first
     // `max_note_chars` graphemes, so it is asked that way rather than by
     // measuring the whole string (lint R5). The full measurement happens
@@ -1252,6 +1255,7 @@ fn note_count(opened: Opened) -> Result(#(Int, Option(Seq)), MemoryFault) {
   use found <- result.map(cell(opened, note_count_key))
   case found {
     Some(#(json.Int(count), seq)) -> #(count, Some(seq))
+
     // A cell that is present and unreadable counts as full rather than
     // as zero: a corrupt counter must not reopen an exhausted ceiling.
     Some(#(_other, seq)) -> #(remember.max_notes, Some(seq))

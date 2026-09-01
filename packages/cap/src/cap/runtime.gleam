@@ -125,10 +125,13 @@ pub type Transport {
 pub type BootError {
   /// The capability channel actor failed to start.
   ChannelStartFailed(reason: String)
+
   /// The socket path is unset, or the socket could not be connected.
   TransportUnavailable(reason: String)
+
   /// The token-file path is unset, or the file could not be read.
   TokenUnavailable(reason: String)
+
   /// A prior execution's capability channel still occupies the VM-global
   /// slot. Only reachable in the kept-alive satellite mode, and only when
   /// the executor has not reaped the prior execution first.
@@ -293,6 +296,7 @@ fn reader_loop(
 fn apply_inbound(handle: Handle, frame: inbound.Inbound) -> Nil {
   case frame {
     inbound.CapResult(id:, outcome:) -> channel.deliver(handle, id, outcome)
+
     // A well-formed frame of a kind a satellite does not act on: drop it,
     // keep the channel open.
     inbound.IgnoredKind(..) -> Nil
@@ -314,6 +318,7 @@ fn run_program(program: fn() -> Outcome) -> Outcome {
     process.new_selector()
     |> process.select_map(done, ProgramDone)
     |> process.select_monitors(ProgramDown)
+
   // The satellite's wall-clock deadline is the real bound on how long a
   // program may run; wait for it here rather than imposing a second limit.
   case process.selector_receive_forever(selector) {
@@ -353,6 +358,7 @@ fn frame_outcome(outcome: Outcome) -> BitArray {
     Error(_) ->
       case encode_outcome(report.failure("outcome did not encode")) {
         Ok(bytes) -> bytes
+
         // Unreachable: a {ok, message, details} map of small scalars always
         // encodes. An empty frame is a last resort that cannot panic.
         Error(_) -> <<>>

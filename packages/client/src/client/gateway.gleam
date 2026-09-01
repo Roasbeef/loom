@@ -304,6 +304,7 @@ pub fn start(
         catalog: options.catalog,
         registry: options.registry,
       )
+
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
     let #(state, _emits) = pull(state)
@@ -367,6 +368,7 @@ pub fn attached(gateway: Gateway) -> Int {
     Ok(owner) -> {
       let monitor = process.monitor(owner)
       let reply_to = process.new_subject()
+
       // The monitored PID is the incarnation this question belongs to. Sending
       // through the name would resolve it again and could crash or ask a
       // replacement which the monitor does not describe.
@@ -564,16 +566,20 @@ fn pull_and_broadcast(state: State) -> State {
 fn pull(state: State) -> #(State, List(Emit)) {
   let hw = state.high_water
   let strands = strand_names(state)
+
   // 1. New entries reachable from each strand's leaf, plus a
   //    completeness pass for entries no leaf covers (e.g. a branch
   //    summary left behind by a navigation).
   let #(entry_strand, entry_emits) =
     new_entries(state, strands, hw, state.entry_strand)
+
   // 2. New usage-ledger rows.
   let usage_emits = new_usage(state, entry_strand, hw)
+
   // 3. Operation transitions and terminal results from the strand
   //    registers.
   let #(live, register_emits) = register_events(state, strands, hw)
+
   // 4. Escalation records.
   let escalation_emits = escalation_events(state, hw)
   let emits =
@@ -582,6 +588,7 @@ fn pull(state: State) -> #(State, List(Emit)) {
     |> list.filter(fn(emit) { emit.seq > hw })
     |> list.sort(fn(a, b) { int.compare(a.seq, b.seq) })
     |> dedupe_by_seq
+
   // The high-water advances only to the greatest seq actually emitted.
   // Register writes that produce no event (leaf moves, queue
   // bookkeeping) may sit above it — harmless, because every event
@@ -629,12 +636,14 @@ fn new_entries(
   cache: Dict(String, String),
 ) -> #(Dict(String, String), List(Emit)) {
   let store = state.runtime.session
+
   // Per-strand branch scans above the high-water attribute entries to
   // the strand whose branch they extend.
   let #(cache, claimed) =
     list.fold(strands, #(cache, []), fn(accumulator, strand) {
       claim_branch(store, strand, hw, accumulator)
     })
+
   // Completeness pass: whatever the leaves missed, attributed through
   // the parent chain (fallback: the first strand).
   let fallback = case strands {
@@ -828,6 +837,7 @@ fn terminal_result_emits(
   case session.last_result(store, strand) {
     Ok(Some(session.Cell(value:, seq:))) if seq > hw -> {
       let #(op, status, error) = result_view(value)
+
       // The state register clearing the operation is the `done` display
       // transition (only while no successor operation has already
       // claimed the register).
@@ -1980,6 +1990,7 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       ..,
     ))) -> {
       api.abort(api.on_strand(state.runtime, strand))
+
       // The durable cancel_requested transition broadcasts when its
       // commit lands; the ack is connection-scoped.
       reply(
@@ -2173,6 +2184,7 @@ fn commit_approval(
     writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
   {
     Ok(_) -> Ok(Nil)
+
     // The record moved under the answer that named it. Not a retry:
     // committing against a re-read would approve a record nobody read.
     Error(tx.StaleExpectation(..)) ->
@@ -2436,6 +2448,7 @@ fn seed_and_reply(
       )
       state
     }
+
     // The registers are durable; the booter starts the driver on the
     // next tree boot even if `start_driver` could not right now. Report
     // nothing in-band — the strand exists (mirrors `create_strand`'s own
@@ -2527,6 +2540,7 @@ fn navigate(
     connection,
     id,
   )
+
   // Unsummarized navigation involves no provider round-trip; wait
   // briefly so the reply's strand list shows the moved leaf.
   let _result =
@@ -2752,6 +2766,7 @@ fn validate_config_key(
           model_change(strand, model_fields)
         Some(_), _ -> Error("model must be an object")
       }
+
     // The by-name variant of `model`: the catalogue resolves the name
     // into the durable identity, so clients never handle raw provider
     // facts. Scoped to one strand when named, to every strand (the
@@ -2768,6 +2783,7 @@ fn validate_config_key(
           thinking_level_change(strand, level_text)
         Some(_), _ -> Error("thinking_level must be a string")
       }
+
     // Every name is checked against the live registry and the list is
     // stored canonically; see `canonical_tool_names`.
     "active_tools" ->
@@ -3128,6 +3144,7 @@ fn describe_api_error(
       protocol.code_internal,
       "the admission commit failed",
     )
+
     // A conflict, not an internal error: the session is gone from this
     // process's hands and the caller's remedy is to reopen it, which is
     // exactly what a conflict code tells a client to consider.

@@ -76,6 +76,7 @@ pub type EnforcementDemand {
   /// policy called for was not applied, and the result is refused even
   /// when the bool stayed false.
   FullEnforcement
+
   /// Require every kernel boundary the selected platform promises, and
   /// refuse degraded helpers, missing mandatory layers, silent reports,
   /// and unexpected skips. On Darwin only, the three gaps ADR-006 proves
@@ -85,6 +86,7 @@ pub type EnforcementDemand {
   /// default: usable on macOS without turning a missing Seatbelt layer
   /// into an accepted best-effort execution.
   PlatformEnforcement
+
   /// Accept whatever the helper could enforce (development containers,
   /// self-tests). The enforcement report still reaches the caller.
   BestEffort
@@ -156,8 +158,10 @@ pub type ExecEvent {
     total_bytes: Int,
     truncated: Bool,
   )
+
   /// The execution completed and passed the enforcement check.
   Exited(result: ExecResult)
+
   /// The execution settled as an in-band failure.
   Failed(failure: ExecFailure)
 }
@@ -167,37 +171,49 @@ pub type ExecEvent {
 pub type ExecFailure {
   /// The helper has not completed its handshake (or is dead).
   NotReady
+
   /// The handshake did not complete within the configured timeout.
   HandshakeTimeout
+
   /// This helper is already running an execution.
   HelperBusy
+
   /// The helper's hello reports degraded enforcement and the request
   /// demanded `FullEnforcement`.
   DegradedHelper(features: List(String))
+
   /// The execution ran but its `exec_exit` reports degraded enforcement
   /// against a `FullEnforcement` demand — the `degraded` bool was set,
   /// or the `enforcement` list carries a `skip:` entry for a layer that
   /// was not applied. The result is attached but must not be trusted as
   /// jailed.
   DegradedExecution(result: ExecResult)
+
   /// The helper answered the dispatch with a protocol error frame
   /// (busy, bad_policy, spawn_failed, malformed...).
   RefusedByHelper(code: String, message: String)
+
   /// The inbound byte stream broke the framing protocol; the channel
   /// was closed (spec §3.3 invariant 6).
   ChannelFault(fault: Fault)
+
   /// The helper process exited with this OS status.
   ChannelClosed(status: Int)
+
   /// The helper sent a frame kind that never flows helper-to-broker;
   /// the channel was closed.
   ProtocolViolation(kind: String)
+
   /// Writing to the helper's stdin failed (helper died mid-frame).
   SendFailed
+
   /// A cancel was not answered by `exec_exit` within the grace period;
   /// the helper was killed outright.
   CancelEscalated
+
   /// The idle heartbeat went unanswered; the helper was declared dead.
   HeartbeatMissed
+
   /// The helper *actor* did not answer within the caller's window, or
   /// was not alive to be asked. Distinct from every failure above,
   /// which are things the actor told us: this is the actor itself out
@@ -210,11 +226,14 @@ pub type ExecFailure {
 pub type HelperStatus {
   /// Handshake still in flight.
   StatusStarting
+
   /// Handshake done; these are the helper's hello features.
   StatusReady(features: List(String))
+
   /// The channel is gone; the actor answers every request with this
   /// failure until shut down.
   StatusDead(failure: ExecFailure)
+
   /// The actor did not answer the question, or was not alive to be
   /// asked. Not a position the helper reported — the absence of one.
   StatusUnresponsive
@@ -233,6 +252,7 @@ pub type Transport {
   /// handshake proves the fd-3 policy file was read (and again on
   /// death — it must be idempotent).
   PortTransport(executable: String, args: List(String), cleanup: fn() -> Nil)
+
   /// An in-process peer: outbound bytes go to `send`; inbound bytes
   /// arrive on the helper's wire subject (see `wire`).
   ChannelTransport(send: fn(BitArray) -> Nil, close: fn() -> Nil)
@@ -281,6 +301,7 @@ pub fn default_config(transport: Transport) -> HelperConfig {
 pub type WireEvent {
   /// Raw protocol bytes from the helper's stdout.
   WireBytes(data: BitArray)
+
   /// The helper process is gone, with this exit status.
   WireClosed(status: Int)
 }
@@ -364,6 +385,7 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(wire, FromWire)
+
     // The port must be opened by this process: port messages are
     // delivered to the opener, and the opener is where the selector
     // lives.
@@ -371,6 +393,7 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
       config.transport,
       base,
     ))
+
     // The handshake must complete within its deadline or the helper is
     // declared dead — this bounds every `await_ready` call.
     let _ =
@@ -441,6 +464,7 @@ fn port_wire_event(message: Dynamic) -> WireEvent {
   case ffi_port.port_event(message) {
     ffi_port.PortBytes(data:) -> WireBytes(data:)
     ffi_port.PortClosed(status:) -> WireClosed(status:)
+
     // Not a port message shape; treat as an empty chunk (harmless).
     ffi_port.PortJunk -> WireBytes(data: <<>>)
   }
@@ -1158,6 +1182,7 @@ fn handle_frame(state: State, frame: Frame) -> State {
     framing.Heartbeat -> handle_heartbeat_frame(state, frame.id)
     framing.ErrorBody(code:, message:) ->
       handle_error_frame(state, frame.id, code, message)
+
     // These kinds never flow helper-to-broker; a peer sending them is
     // broken or hostile, and the channel dies (spec §3.3 invariant 6).
     framing.ExecStart(..) ->
@@ -1226,6 +1251,7 @@ fn handle_exec_out(
       )
       state
     }
+
     // Stale output from a settled or unknown execution: dropped.
     None -> state
   }
@@ -1235,6 +1261,7 @@ fn handle_exec_exit(state: State, id: Int, result: ExecResult) -> State {
   case running_with_id(state, id) {
     Some(exec) -> {
       cancel_pending_timer(exec)
+
       // The enforcement report is ground truth: a degraded run against a
       // FullEnforcement demand settles as a failure even though the
       // helper looked healthy at hello. `skip:` entries count as
@@ -1271,6 +1298,7 @@ fn handle_heartbeat_frame(state: State, id: Int) -> State {
       process.send(reply, Ok(Nil))
       State(..state, pending_heartbeats:)
     }
+
     // Not a caller probe: it answers the idle tick.
     Error(Nil) -> State(..state, tick_outstanding: False)
   }
@@ -1291,6 +1319,7 @@ fn handle_error_frame(
       )
       State(..state, exec: None)
     }
+
     // An error we cannot correlate (id 0 usually precedes a close; the
     // close itself settles things). Dropped.
     None -> state
@@ -1450,6 +1479,7 @@ pub type HostPlatform {
   /// Loom has a jail here. The helper serves with no extra argument,
   /// and a missing kernel layer is reported as a skip, not a refusal.
   JailedHost
+
   /// Loom has no jail here (the Windows sandbox is WP-H phase 3 and remains
   /// unbuilt). `loom-exec` refuses to serve without `--allow-unenforced`, and
   /// with it confines nothing at all.
@@ -1559,12 +1589,16 @@ pub type SpawnConfig {
 pub type SpawnError {
   /// The base policy could not be encoded.
   PolicyUnencodable(error: msgpack.EncodeError)
+
   /// The transient policy file could not be written.
   PolicyFileFailed
+
   /// The OS process could not be started.
   PortOpenFailed
+
   /// The broker-side actor failed to start.
   ActorFailed(error: actor.StartError)
+
   /// The helper started but its handshake failed.
   HandshakeFailed(failure: ExecFailure)
 }
@@ -1587,6 +1621,7 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
     |> result.replace_error(PolicyFileFailed),
   )
   let cleanup = fn() { ffi_port.delete_file(policy_path) }
+
   // $0 is a display name; $1 the helper binary; $2 the policy file;
   // everything after that is the helper's own arguments. Positional
   // parameters avoid every quoting pitfall in the paths, and `shift 2`
@@ -1676,8 +1711,10 @@ pub opaque type PoolMsg {
 pub type CheckoutError {
   /// Every helper slot is lent out.
   AllBusy(size: Int)
+
   /// A fresh helper could not be spawned.
   SpawnFailed(error: SpawnError)
+
   /// The pool itself did not answer, or was not alive to be asked. It
   /// is deliberately not `AllBusy`: a full pool is congestion that
   /// clears as running executions end, and waiting is the right

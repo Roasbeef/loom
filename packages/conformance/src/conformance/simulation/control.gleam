@@ -257,6 +257,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, list.reverse(state.notes))
       actor.continue(state)
     }
+
     // Deliberately not counted in `events`: the runner reads that
     // counter to tell a working session from a quiescent one, and an
     // observation about the harness is not the session doing work.
@@ -266,6 +267,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, list.reverse(state.waits))
       actor.continue(state)
     }
+
     // Claiming a scripted intervention and registering it as in flight
     // are one actor step, so there is no instant at which the one-shot
     // is spent and the run does not yet know an admission is owed.
@@ -289,6 +291,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(
         State(..state, waits: ["intervened@" <> path, ..state.waits]),
       )
+
     // Registering the wait and handing out the reply subject are the
     // same actor step as everything else here, which is what lets the
     // runner discover "an effect is waiting on this trigger" with
@@ -300,6 +303,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           ..state.pending_interventions
         ]),
       )
+
     // Taking the queue clears it in the same step, so a trigger the
     // runner has just serviced cannot be handed out to it (or to a
     // corroboration re-run's own control actor, which starts fresh
@@ -523,6 +527,7 @@ pub fn crashed(ctl: Control) -> Bool {
 pub type Attempted(value) {
   /// The action returned, and this is what it returned.
   Answered(value: value)
+
   /// The carrier process died before answering: the action raised.
   /// Addressing a named process the tree has not re-registered raises,
   /// and so does `process.call_forever` when the callee it monitors
@@ -532,6 +537,7 @@ pub type Attempted(value) {
   /// wall-clock time: an idle box and a loaded one see the same event
   /// at the same point in the run.
   Raised
+
   /// The wall clock ran out with the carrier still alive, and the
   /// carrier was killed. This is the one outcome in the simulation that
   /// a busy host can manufacture, and the only reason `attempt` still
@@ -596,6 +602,7 @@ pub fn attempt(
 ) -> Attempted(value) {
   let reply: Subject(value) = process.new_subject()
   let pid: Pid = process.spawn_unlinked(fn() { process.send(reply, action()) })
+
   // Monitoring after the spawn is safe even when the carrier is already
   // gone: `erlang:monitor/2` answers a dead pid with an immediate
   // `noproc` down rather than with silence. And a carrier that replied

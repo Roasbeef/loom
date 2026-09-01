@@ -108,24 +108,31 @@ pub type Classification {
   /// Control is `cancel_requested`: normalize the stop reason to
   /// `aborted` and settle under cancelled control.
   CancelledClassification
+
   /// The request did not fit the context window: normalize to `error`,
   /// then compact (first time) or drain as failure (second).
   OverflowClassification
+
   /// A deferred stop with a structurally valid handle: suspend.
   DeferredValidClassification(handle: DeferredHandle)
+
   /// A deferred stop without a valid handle: normalize to `error` and
   /// drain as failure.
   DeferredInvalidClassification
+
   /// An error settlement; `retryable` carries the adapter's judgment and
   /// the attempt policy decides between retry wait and failure drain.
   ErrorClassification(retryable: Bool, error_message: String)
+
   /// The response carries tool calls; `truncated` marks a genuine
   /// output-limit `length` whose calls must be answered with synthetic
   /// truncation errors instead of executing.
   ToolUseClassification(truncated: Bool)
+
   /// A normal stop or a genuine output-limit length without calls: the
   /// run may finish.
   FinishedClassification
+
   /// An `aborted` stop reason under running control — unreachable by
   /// construction, therefore corruption (pi invariant 19).
   CorruptClassification(report: CorruptionReport)
@@ -186,6 +193,7 @@ pub fn classify(
               )
           }
       }
+
     // Unreachable by the `settle` invariant; reported totally anyway.
     UserMessage(..) | ToolResultMessage(..) | CustomMessage(..) ->
       CorruptClassification(report: corruption.report(
@@ -230,6 +238,7 @@ fn classify_running(
         True -> ToolUseClassification(truncated: True)
         False -> FinishedClassification
       }
+
     // Pending and Aborted are excluded before this function is reached.
     Pending | Aborted -> FinishedClassification
   }
@@ -259,6 +268,7 @@ fn is_overflow(
       let text = string.lowercase(option.unwrap(error_message, ""))
       list.any(overflow_patterns, string.contains(text, _))
     }
+
     // Harness-side heuristic: a length stop whose output is below the
     // intended limit means the input, not the output, hit the window. An
     // intended limit of 0 disables the rule (deferred polls).

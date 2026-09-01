@@ -29,33 +29,43 @@ pub type Fault {
   /// published, before its committer learns of it — the crash-between-
   /// two-commits state, at that exact boundary.
   CrashAtCommit(ordinal: Int)
+
   /// Kill the whole session tree while dispatched effect `index` is
   /// running, which is the one interruption a commit-boundary crash can
   /// never produce.
   CrashDuringEffect(index: Int)
+
   /// Kill only the strand driver serving dispatched effect `index`,
   /// while the effect is running: the partial crash. The writer, the
   /// registry, and every other strand keep going; the factory restarts
   /// just this driver, whose reaper must take the orphaned effect down
   /// with the old incarnation before recovery re-dispatches.
   RestartStrand(index: Int)
+
   /// Refuse the `ordinal`-th commit as a stale expectation without
   /// applying it, as a concurrent admission would.
   RefuseCommitStale(ordinal: Int)
+
   /// Fault the next store read after commit `ordinal`.
   ReadFault(ordinal: Int)
+
   /// Steal the writer lease after commit `ordinal`: the next renewal
   /// fails, the writer stops, and the tree reboots through the open
   /// path.
   StealLease(ordinal: Int)
+
   /// Drop doorbell `index`, which must cost latency and nothing else.
   DropDoorbell(index: Int)
+
   /// Deliver doorbell `index` late, after `delay_ms` of logical time.
   DelayDoorbell(index: Int, delay_ms: Int)
+
   /// Effect `index` settles only after `delay_ms` of logical time.
   SlowEffect(index: Int, delay_ms: Int)
+
   /// Provider effect `index` never settles; its process dies instead.
   ProviderEffectDies(index: Int)
+
   /// Provider effect `index` never settles and never dies; the surface's
   /// own timeout must settle it in band.
   ProviderEffectTimesOut(index: Int)

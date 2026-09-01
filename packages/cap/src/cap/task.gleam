@@ -50,6 +50,7 @@ import gleam/list
 pub type Failure(e) {
   /// The task returned `Error(e)`.
   Returned(index: Int, error: e)
+
   /// The task's process died before returning (a panic in program code,
   /// or a cancellation). `reason` is a coarse label.
   Crashed(index: Int, reason: String)
@@ -104,6 +105,7 @@ pub fn parallel_map_fail_fast(
   case run_collect(index_tasks(items, f), max_concurrency, fail_fast: True) {
     Ok(values) -> Ok(values)
     Error([first, ..]) -> Error(first)
+
     // fail_fast always yields at least one failure on the error path.
     Error([]) -> Error(Crashed(index: 0, reason: "empty failure set"))
   }
@@ -283,6 +285,7 @@ fn run_race(
     process.new_selector()
     |> process.select_map(collector, fn(report) { report })
     |> process.select_monitors(WorkerDown)
+
   // Race runs all at once; concurrency is the field count.
   let runner =
     Runner(
@@ -386,6 +389,7 @@ fn down_index(
 
 fn cancel_running(running: Dict(Int, #(Pid, Monitor))) -> Nil {
   let children = dict.values(running)
+
   // Signal the whole sibling set before waiting for any one child. Serial
   // kill-and-wait would let an uncooperative first child postpone cancellation
   // of every later capability call.
@@ -430,6 +434,7 @@ fn assemble(
         CrashOutcome(reason:) -> Ok(Crashed(index:, reason:))
       }
     })
+
   // Fail-fast cancellation deliberately leaves unfinished indices absent from
   // `done`. Once a triggering failure is recorded, those gaps describe work
   // this runner cancelled; they must not replace the real failure with a
@@ -458,6 +463,7 @@ fn one(index: Int, done: Dict(Int, Outcome(b, e))) -> Result(b, Failure(e)) {
     Ok(ValueOutcome(value:)) -> Ok(value)
     Ok(ErrorOutcome(error:)) -> Error(Returned(index:, error:))
     Ok(CrashOutcome(reason:)) -> Error(Crashed(index:, reason:))
+
     // Unreachable: every dispatched index is recorded before assemble.
     Error(Nil) -> Error(Crashed(index:, reason: "no outcome recorded"))
   }

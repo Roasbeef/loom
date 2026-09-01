@@ -61,6 +61,7 @@ pub fn module(
   imported: List(Eager),
 ) -> List(Raw) {
   let names = names_of(module, own_path)
+
   // This file's own rows, plus the ones other files exported. A row keyed
   // under `own_path` can only have come from this file, so dropping those
   // from `imported` is what keeps a public combinator from being counted
@@ -76,7 +77,9 @@ pub fn module(
       let ctx = Ctx(names:, policy:, function: function.name, locals:)
       list.reverse(statements(function.body, ctx, nesting(function, ctx)))
     })
-  list.append(found, lone_callers(module, policy))
+  found
+  |> list.append(lone_callers(module, policy))
+  |> list.append(naked_bools(module))
 }
 
 /// R2, which is about the function rather than about anything inside it.
@@ -165,6 +168,160 @@ fn lone_caller_finding(function: glance.Function, callers: Int) -> List(Raw) {
       ),
     ]
     _ -> []
+  }
+}
+
+// --- R9: a Bool with nothing on it ------------------------------------------
+//
+// `Bool` is the one type in the language that carries no domain meaning at
+// all. `render(document, True)` tells a reader nothing, and finding out what
+// the `True` was costs a jump to the signature; a field declared `retry:
+// Bool` makes every reader carry the polarity of the name in their head, and
+// makes `Retry | GiveUp` — which cannot be got backwards — impossible to
+// write later without touching every construction site. The style guide has
+// said "replace booleans with two-variant custom types" and "small private
+// enums beat boolean parameters" since it was written (Part III, "Type
+// design"); nothing enforced it, and the tree now holds two hundred of them.
+//
+// The rule looks at the two positions where a `Bool` is a *value someone
+// hands over*: a function parameter and a record field. Both are read at a
+// distance from their declaration, which is the whole hazard.
+//
+// **Return position is deliberately not this rule's business.** `is_empty(xs)
+// -> Bool` is the predicate `case`, `&&` and `bool.guard` are built to
+// consume, the stdlib's own `is_*` vocabulary is in the guide's naming table,
+// and a rule that flagged those would flag the language. A function that
+// answers a domain question with a domain type is better, but "better" is
+// not what a linter can decide here, and 179 returns of undecidable
+// disposition would bury the 200 parameters and fields that are decidable.
+//
+// The search descends through type parameters and tuples — `Option(Bool)` in
+// a field is the same hazard with a third state bolted on, and `Dict(String,
+// Bool)` is a set that forgot to say what membership means — but never into
+// a `fn(…)`, because a predicate *passed* to a function is that same
+// legitimate `is_*` arriving as an argument (`list.filter(xs, is_ready)`).
+// That boundary is the one narrowing the rule makes, and it is decidable
+// without types: the annotation says `fn` or it does not.
+//
+// Type aliases and constants are not searched. An alias is a name someone
+// already gave the shape, and its expansion is checked wherever it is
+// declared as a parameter or a field.
+
+fn naked_bools(module: glance.Module) -> List(Raw) {
+  list.append(parameter_bools(module), field_bools(module))
+}
+
+fn parameter_bools(module: glance.Module) -> List(Raw) {
+  list.flat_map(module.functions, fn(definition) {
+    let function = definition.definition
+    list.flat_map(function.parameters, fn(parameter) {
+      naked_bool_finding(
+        parameter.type_,
+        function.name,
+        "parameter `" <> parameter_label(parameter) <> "`",
+        "the call site reads `True`, which names nothing",
+      )
+    })
+  })
+}
+
+fn field_bools(module: glance.Module) -> List(Raw) {
+  list.flat_map(module.custom_types, fn(definition) {
+    let custom_type = definition.definition
+    list.flat_map(custom_type.variants, fn(variant) {
+      list.flat_map(variant.fields, fn(field) {
+        naked_bool_finding(
+          Some(field_type(field)),
+          custom_type.name,
+          in_variant(custom_type.name, variant.name) <> field_name(field),
+          "every reader has to carry the polarity of the name",
+        )
+      })
+    })
+  })
+}
+
+/// One finding per declaration, at the `Bool` itself rather than at the
+/// declaration that contains it: `Dict(String, Bool)` should underline the
+/// value type, which is the half that has to change.
+fn naked_bool_finding(
+  type_: Option(glance.Type),
+  enclosing: String,
+  subject: String,
+  because: String,
+) -> List(Raw) {
+  case option.then(type_, bool_within) {
+    None -> []
+    Some(span) -> [
+      Raw(
+        rule: finding.NakedBool,
+        offset: span.start,
+        function: enclosing,
+        detail: subject
+          <> " is a `Bool`, so "
+          <> because
+          <> "; a two-variant type — `Retry | GiveUp`, `Leading | Trailing` "
+          <> "— says which state it is at both ends and cannot be got "
+          <> "backwards (gleam-style Part III, \"No naked `Bool`\", which "
+          <> "has the three escapes)",
+      ),
+    ]
+  }
+}
+
+/// Where a `Bool` appears inside this annotation, if one does.
+///
+/// Descends through the parameters of a named type and the elements of a
+/// tuple, so `Option(Bool)` and `#(Bool, Seq)` are found. Stops at a
+/// `fn(…)`: a predicate handed to a function is the `is_*` shape the rule
+/// deliberately leaves alone, arriving as an argument rather than as a
+/// return.
+fn bool_within(type_: glance.Type) -> Option(glance.Span) {
+  case type_ {
+    glance.NamedType(name: "Bool", module: None, parameters: [], location:) ->
+      Some(location)
+    glance.NamedType(parameters:, ..) -> first_bool(parameters)
+    glance.TupleType(elements:, ..) -> first_bool(elements)
+    glance.FunctionType(..) -> None
+    glance.VariableType(..) | glance.HoleType(..) -> None
+  }
+}
+
+fn first_bool(types: List(glance.Type)) -> Option(glance.Span) {
+  case types {
+    [] -> None
+    [first, ..rest] ->
+      case bool_within(first) {
+        Some(span) -> Some(span)
+        None -> first_bool(rest)
+      }
+  }
+}
+
+fn field_type(field: glance.VariantField) -> glance.Type {
+  case field {
+    glance.LabelledVariantField(item:, ..)
+    | glance.UnlabelledVariantField(item:) -> item
+  }
+}
+
+/// Which variant a field belongs to, said only when it adds something.
+/// Gleam's struct is a single variant sharing the type's name, and
+/// "`Entry`: Entry's `revoked` field" spends a clause saying `Entry` twice.
+fn in_variant(type_name: String, variant: String) -> String {
+  case type_name == variant {
+    True -> "the "
+    False -> variant <> "'s "
+  }
+}
+
+/// How the finding names a field. An unlabelled one has only its position
+/// to be known by, and saying so is more use than inventing an index the
+/// reader would have to count out.
+fn field_name(field: glance.VariantField) -> String {
+  case field {
+    glance.LabelledVariantField(label:, ..) -> "`" <> label <> "` field"
+    glance.UnlabelledVariantField(..) -> "unlabelled field"
   }
 }
 
@@ -407,6 +564,7 @@ fn branch_of(body: List(glance.Statement)) -> Option(glance.Expression) {
       case first {
         glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
           Some(item)
+
         // `guard(when:)` given as shorthand names a variable this walk
         // would have to synthesize a node for; drop the rows instead.
         glance.ShorthandField(..) -> None
@@ -497,6 +655,7 @@ fn mentions_fields(
     case field {
       glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
         mentions(item, name)
+
       // `f(key:)` is a use of the variable `key`.
       glance.ShorthandField(label:, ..) -> label == name
     }
@@ -784,6 +943,7 @@ fn fields(
     case field {
       glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
         expression(item, ctx, acc)
+
       // `f(value:)` — the argument is the variable of that name, nothing to
       // descend into.
       glance.ShorthandField(..) -> acc
@@ -893,6 +1053,7 @@ fn labelled(
         True -> Some(item)
         False -> labelled(rest, wanted)
       }
+
     // `return:` given as shorthand is a bare variable: already cheap.
     [_, ..rest] -> labelled(rest, wanted)
   }
@@ -927,6 +1088,7 @@ pub fn cheap(value: glance.Expression) -> Bool {
       && list.all(fields, fn(field) { cheap_optional(field.item) })
     glance.Call(function:, arguments:, ..) ->
       constructor_reference(function) && list.all(arguments, cheap_field)
+
     // Arithmetic, comparison and boolean operators over cheap operands are
     // single-word work. `<>` allocates a binary proportional to its operands
     // and `|>` is a call, so neither is cheap.
@@ -1044,7 +1206,13 @@ fn callee_text(function: glance.Expression) -> String {
   }
 }
 
-fn span_of(value: glance.Expression) -> glance.Span {
+/// Where an expression was written. `glance` puts a `Span` on every
+/// expression node but gives no accessor for it, because the field is not
+/// shared across the variants in a way field access can reach.
+///
+/// Public for `lint/layout`, which needs the start of a bare-expression
+/// statement in order to know which line a sibling begins on.
+pub fn span_of(value: glance.Expression) -> glance.Span {
   case value {
     glance.Int(location:, ..)
     | glance.Float(location:, ..)
@@ -1175,6 +1343,7 @@ fn counted_call(
     glance.BinaryOperator(name: glance.Pipe, right:, location:, ..) ->
       counted(resolve(ctx.names, right))
       |> option.map(fn(call) { #(location, call) })
+
     // `{ xs |> list.length } > cap` — a block around one expression is
     // punctuation, not work.
     glance.Block(statements: [glance.Expression(inner)], ..) ->
@@ -1255,6 +1424,7 @@ fn is_guarded(clause: glance.Clause) -> Bool {
 type CatchAll {
   /// `_ ->`.
   Discarded(span: glance.Span)
+
   /// `other ->`. A bare variable is a catch-all whatever it is called
   /// (gleam-style Part III), and it is the spelling R3 could not see at
   /// all until issue #73 — seventy-three arms as measured, including

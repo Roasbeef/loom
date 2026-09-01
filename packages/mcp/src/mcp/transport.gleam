@@ -95,6 +95,7 @@ pub type TransportEvent {
   /// A chunk of the server's stdout: raw bytes at whatever boundary the
   /// pipe (or a test peer) delivered — not yet lines, not yet UTF-8.
   TransportData(bytes: BitArray)
+
   /// The wire is gone: the server exited, or a test peer closed it. No
   /// event follows this one.
   TransportClosed(reason: String)
@@ -117,6 +118,7 @@ pub type Transport {
   /// (ports deliver their messages to the process that opened them,
   /// which is why this is a spawn spec rather than an open port).
   PortTransport(spawn: Spawn)
+
   /// An in-process peer. `connect` runs in the actor's process during
   /// startup: it receives the subject on which the actor takes inbound
   /// `TransportEvent`s and returns the connection the actor will write

@@ -76,6 +76,7 @@ pub type Scope {
   /// Every session the repository's index holds — the default, and the
   /// whole point of the tool.
   Repository
+
   /// Only the calling session's own entries.
   ThisSession
 }
@@ -94,6 +95,7 @@ pub type Refusal {
   /// No index is reachable: the host wired none, or the holder is gone
   /// or did not answer inside its window.
   IndexUnavailable(reason: String)
+
   /// The index answered, and its answer was a refusal — a malformed
   /// FTS5 query is the common one.
   IndexRefused(reason: String)

@@ -44,12 +44,14 @@ import machine/strand.{type StrandState, StrandState}
 pub type AcceptRequest {
   /// A conversational run.
   AcceptRun(prompts: List(AgentMessage))
+
   /// A standalone compaction; `preparation` is `None` when there is
   /// nothing to compact.
   AcceptCompaction(
     custom_instructions: Option(String),
     preparation: Option(StructuralPreparation),
   )
+
   /// A navigation, optionally summarized.
   AcceptNavigation(
     target: Option(EntryId),
@@ -99,16 +101,21 @@ pub type AcceptancePlan {
 pub type RejectReason {
   /// The strand already has an open operation.
   StrandBusy
+
   /// Run acceptance would append zero entries.
   InvalidMessage(reason: String)
+
   /// Compaction was requested with an empty preparation.
   NothingToCompact
+
   /// The navigation request is structurally invalid (target is the
   /// current leaf, label on the root target, summarize without a target
   /// or from the root, or an empty summary preparation).
   InvalidNavigation(reason: String)
+
   /// A non-null navigation target does not exist.
   UnknownTarget
+
   /// A captured next-run id has no pending payload — storage corruption.
   QueueCorruption(report: CorruptionReport)
 }
@@ -165,6 +172,7 @@ fn accept_run(
     when: prompts == [] && captured == [],
     return: Error(InvalidMessage(reason: "acceptance would append zero entries")),
   )
+
   // Captured next-run items place first, from their pending payloads;
   // request prompt entries follow, minted fresh.
   use #(captured_writes, after_captured) <- result.try(place_captured(

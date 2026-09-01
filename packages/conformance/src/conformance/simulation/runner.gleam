@@ -112,6 +112,7 @@ pub type Failure {
 pub type Verdict {
   /// Every check held.
   Passed
+
   /// A check failed; `reproduce` is the line to paste to re-run this
   /// case alone, and `corroboration` says whether re-running it changes
   /// the answer — which is the difference between a behaviour
@@ -199,6 +200,7 @@ pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
   let #(script, schedule, base) = plan(seed)
   case verify(script, schedule, base) {
     Ok(Nil) -> Passed
+
     // Corroborate before shrinking, not after. Shrinking asks "does this
     // smaller schedule still fail?", and a seed whose verdict is not
     // stable answers that question by coin toss — it would wander to
@@ -261,6 +263,7 @@ fn plan(seed: Int) -> #(Script, Schedule, Report) {
   let #(script_rng, rng) = random.split(rng)
   let #(fault_rng, _rng) = random.split(rng)
   let #(script, _) = script.generate(script_rng)
+
   // The fault-free run fixes the commit count that commit-indexed faults
   // are drawn against, so a schedule always lands inside its run.
   let base = execute(script, fault.none())
@@ -481,6 +484,7 @@ fn timing_line(
       <> "because the harness violated its own payload contract, not because "
       <> "the code under test diverged. See docs/architecture/simulation.md, "
       <> "\"What this does not cover\"."
+
     // A real millisecond budget ran out. Whatever the check says, this
     // run had a bound in it that is not part of the seed.
     [], [_, ..], _ ->
@@ -490,6 +494,7 @@ fn timing_line(
       <> "simulation controls it (control.attempt, \"Not simulation-safe\"), "
       <> "so this failure may be an artefact of a loaded host rather than "
       <> "of the code under test."
+
     // Replies that went unobserved because the process carrying them
     // died. Deterministic — a monitor saw it, not a clock — but worth
     // naming, because an unobserved admission is the ambiguity every
@@ -521,6 +526,7 @@ const corroboration_runs = 3
 pub type Corroboration {
   /// Every run of this seed failed. Timing does not excuse it.
   Reproducible(runs: Int)
+
   /// A re-run of this seed passed. This particular failure is not
   /// evidence that behaviour changed — though a seed that only *became*
   /// unstable is still a finding, since instability is behaviour too.
@@ -659,6 +665,7 @@ fn check_terminal_writes_once(
   report: Report,
 ) -> Result(Nil, Failure) {
   let total = report.terminal_writes_main + report.terminal_writes_sub
+
   // Whether the run wrote once per operation is settled by the operations
   // up to `total`: one outcome past that is already a mismatch, and the
   // whole list is walked only to *report* the shortfall, on the path that
@@ -838,6 +845,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let surfaces = surface.build(ctl, vc, script, schedule, raw, strand:)
   let events: process.Subject(writer.Event) = process.new_subject()
   let base = api.default_options(configuration())
+
   // The script's flag *chooses* the mode rather than opting into one:
   // a parallel script runs its tool batches under `Parallel`, so
   // multi-call batches genuinely overlap their effects and the per-call
@@ -872,12 +880,14 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       after_commit: fn(_ordinal) { post_commit(ctl, raw, script, schedule) },
       subscribers: [events],
     )
+
   // Seed the strand first, then arm: seeding commits happen before the
   // writer exists and have no post-commit seam, so a schedule must not
   // be able to name one. `api.open` seeds again and finds nothing to do.
   let assert Ok(Nil) =
     session.ensure_strand(instrumented, strand, configuration())
     as "the strand must seed"
+
   // The session's canonical id is boot bookkeeping of the same kind and
   // is minted here for the same reason: `api.open` would otherwise commit
   // it as the run's first commit, shifting every scheduled fault ordinal
@@ -892,12 +902,14 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
   let assert Ok(runtime) = api.open(instrumented, surfaces, options)
     as "the session tree must boot"
   control.set_runtime(ctl, runtime)
+
   // Every commit from here is the writer's, and the writer closes its
   // own seam. Anything the open path committed before the writer existed
   // has no seam to close, so start from closed.
   control.seam_done(ctl)
   let ctx = Context(ctl:, vc:, raw:, runtime:, script:, schedule:, events:)
   let #(outcomes, stalled) = drive_ops(ctx, script.ops, [], False)
+
   // The multi-strand coda: spawn the scripted subagent (fork-in-place at
   // the main leaf, task brief as its first run), drive it to a terminal
   // result, then deliver a durable cross-strand message back to main and
@@ -906,6 +918,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
     Some(brief), False -> drive_subagent(ctx, brief, outcomes)
     _, _ -> #(outcomes, stalled)
   }
+
   // Never read the run's story while the writer is still telling it: a
   // seam still running is a scheduled fault that has not had its turn.
   settle_seam(ctl, 200)
@@ -992,6 +1005,7 @@ fn post_commit(
     False -> Nil
     True -> fire_post_commit(ctl, raw, script, schedule)
   }
+
   // Closed on every path: the runner treats an open seam as a commit
   // whose schedule has not had its turn yet, so a seam that never
   // closed would park the run rather than end it. The one path that
@@ -1076,6 +1090,7 @@ fn drive_ops(
         // Refused is a legitimate answer (a navigation with nowhere to
         // go): nothing opened, so nothing is awaited.
         Refused -> drive_ops(ctx, rest, outcomes, False)
+
         // It opened, ran, and finished while the runner was still
         // asking whether its acceptance had landed.
         Completed(last) -> drive_ops(ctx, rest, [tag(last), ..outcomes], False)
@@ -1190,6 +1205,7 @@ fn attempt_create_child(
     )
   {
     control.Answered(Ok(op_id)) -> Opened(op_id)
+
     // A refusal, a raise, and an expiry are one case here on purpose:
     // only the first says the create failed, and the other two say
     // nothing at all — so all three go back to `spawn_child`, which asks
@@ -1284,6 +1300,7 @@ fn deliver_cross(
     )
   case sent {
     control.Answered(Ok(api.Started(operation:))) -> Opened(operation)
+
     // The main strand is idle after its ops, so a steer means a
     // racing run this runner did not open; treat like a lost reply.
     control.Answered(Ok(api.Steered(..)))
@@ -1325,6 +1342,7 @@ fn admit(
     )
   {
     control.Answered(Ok(op_id)) -> Opened(op_id)
+
     // An unobserved reply is not a failed admission: the commit may be
     // durable already, with only the answer lost. So every non-answer
     // goes the same way — read the strand's durable state, and only
@@ -1601,6 +1619,7 @@ fn pump_strand(
         // made loaded Linux runs stall at different seeds even though an
         // immediate replay of each identical schedule completed.
         Ok(_committed) -> pump_strand(ctx, strand_name, op_id, budget)
+
         // Nothing committed: either the session is waiting for a
         // deadline, or it is inside an effect. Advancing logical
         // time releases the first and costs the second one wasted

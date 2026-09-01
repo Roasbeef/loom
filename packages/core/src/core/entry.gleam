@@ -49,6 +49,7 @@ pub type Entry {
     message: AgentMessage,
     terminate: Bool,
   )
+
   /// A self-contained context checkpoint summarizing everything before it.
   CompactionEntry(
     id: EntryId,
@@ -61,6 +62,7 @@ pub type Entry {
     from_hook: Bool,
     usage: Option(Usage),
   )
+
   /// A summary of an abandoned branch, written on navigation.
   BranchSummaryEntry(
     id: EntryId,
@@ -72,6 +74,7 @@ pub type Entry {
     from_hook: Bool,
     usage: Option(Usage),
   )
+
   /// An application-defined row under a registered custom type name.
   CustomEntry(
     id: EntryId,

@@ -228,6 +228,7 @@ fn exited(
   }
   case result.code {
     0 | 1 -> matched_outcome(ctx, collected, max_results)
+
     // 127: the shell-less exec could not run rg (defensive; the helper
     // usually reports spawn_failed instead).
     127 -> rg_unavailable()
@@ -254,6 +255,7 @@ fn matched_outcome(
   )
   let all_matches = parse_matches(stdout)
   let matches = list.take(all_matches, max_results)
+
   // `list.take` above already stopped at `max_results`; asking whether
   // there is anything left needs only `max_results` steps of `drop`, not
   // a walk of the whole (unbounded) match list `list.length` would do.

@@ -359,6 +359,7 @@ fn send_settlement(
             events,
             stream.Settled(message: settled, usage: usage_of(message)),
           )
+
         // A settlement the provider package refuses to settle would be a
         // bug in this script, not in the harness under test; report it
         // as a transport failure so the run still terminates.
@@ -426,6 +427,7 @@ fn response(settle: Settle) -> AgentMessage {
           data: None,
         )),
       )
+
     // A length stop whose output is below the intended output limit is
     // the harness-side overflow signal.
     script.Overflow ->
@@ -560,6 +562,7 @@ fn escalation_dance(
           action: fn() { raise_and_approve(ctl, strand, query) },
           within_ms: 3000,
         )
+
       // Restart the driver (not the tree): recovery replans from the
       // durable Tools phase and resolves this clearance again.
       process.kill(process.self())
@@ -655,8 +658,10 @@ fn execute(
 type EffectFate {
   /// Run the script.
   Ran
+
   /// The tree was killed; nothing this effect produces will be heard.
   Killed
+
   /// This effect never settles.
   Starved
 }
@@ -708,6 +713,7 @@ fn effect_fault(
       Ran, fault.RestartStrand(index: at) if at == index ->
         claimed_effect(ctl, "strandkill@e" <> int.to_string(index), fn() {
           control.mark(ctl, "strand-restart-during-effect")
+
           // Kill only this effect's own driver: the partial crash.
           // The dying incarnation's reaper takes this very effect
           // process down with it, so nothing is settled from here —
@@ -1090,6 +1096,7 @@ fn perform(
         "follow-up",
         api.follow_up(runtime, intervention_user(intervention, text)),
       )
+
     // Abort is fire-and-forget by design (api §4.6): it returns nothing
     // to honor, and the runner already treats an aborted run's
     // transcript as a race rather than a convergence claim.
@@ -1135,6 +1142,7 @@ fn record_landing(
   case verdict, landing(intervention) {
     Ok(Nil), _ -> Nil
     Error(dropped), MustLand -> control.note(ctl, dropped)
+
     // A refusal this trigger is entitled to. Marked so the run still
     // reports that it happened, since a mark costs a coverage line and
     // a note costs the seed.
@@ -1146,6 +1154,7 @@ fn record_landing(
 type Landing {
   /// The queue must accept it; a refusal is a harness fault.
   MustLand
+
   /// A refusal is the documented outcome, not a drop.
   MayBeRefused
 }

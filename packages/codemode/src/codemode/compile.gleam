@@ -137,13 +137,16 @@ pub type CompileError {
   /// Preparing the hermetic workspace failed — a temp directory or a
   /// source/manifest file could not be created.
   WorkspaceSetupFailed(reason: String)
+
   /// The build ran and the compiler rejected the program: a type error or
   /// any other build diagnostic. This doubles as tool-argument
   /// validation, caught before a satellite spins up.
   BuildRejected(diagnostics: String)
+
   /// The build could not be run at all — the jail refused it, the helper
   /// died, or the injected builder reported the environment unavailable.
   BuildUnavailable(reason: String)
+
   /// The build claimed success but produced no usable `.beam` set.
   ArtifactIncomplete(reason: String)
 }
@@ -199,6 +202,7 @@ pub type Compiled {
 pub type Dependency {
   /// A hex dependency pinned by version requirement (e.g. `gleam_stdlib`).
   HexDependency(name: String, requirement: String)
+
   /// A path dependency (the vendored prelude, `cap`).
   PathDependency(name: String, path: String)
 }
@@ -313,6 +317,7 @@ fn prepare(
   let src_dir = root <> "/src"
   use _ <- result.try(make_directory(src_dir))
   use _ <- result.try(make_directory(root <> "/tmp"))
+
   // Defence 1: the program is written under the pinned name, not one the
   // source chose. A Gleam module is named by its path, so this is the only
   // place the submitted module's name is decided.
@@ -324,6 +329,7 @@ fn prepare(
     src_dir <> "/" <> entry_module <> ".gleam",
     entry_source(),
   ))
+
   // Defence 2: the manifest pins exactly the prelude and stdlib.
   use _ <- result.try(write_source(
     root <> "/gleam.toml",

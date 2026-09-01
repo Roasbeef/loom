@@ -19,6 +19,7 @@ import gleam/result
 pub type KvError {
   /// The broker refused the call in-band.
   KvDenied(code: String, message: String)
+
   /// The capability channel could not carry the call.
   KvUnavailable(reason: String)
 }

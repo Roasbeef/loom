@@ -98,6 +98,7 @@ fn chunking_is_irrelevant(
 fn damage_is_total(bytes: BitArray) -> Result(Nil, WireFailure) {
   let pushed = framing.push(framing.deframer(), bytes)
   use <- bool.guard(when: option.is_none(pushed.fault), return: Ok(Nil))
+
   // Once faulted, the deframer stays faulted and produces nothing more,
   // whatever it is fed.
   let again = framing.push(pushed.deframer, <<0, 1, 2, 3>>)

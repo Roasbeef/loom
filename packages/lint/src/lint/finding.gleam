@@ -17,6 +17,7 @@ pub type Rule {
   /// linter could say nothing about this file, so a parse failure is never
   /// silence.
   Unparseable
+
   /// R1. An eager combinator whose eagerly-evaluated argument is not a
   /// trivially cheap value. Gleam evaluates call arguments unconditionally,
   /// so that argument is built on every call whether the fallback is taken
@@ -29,37 +30,66 @@ pub type Rule {
   /// parameter not — which is what finds the `or_fault` lineage by shape
   /// rather than by name.
   EagerFallback
+
   /// R2. A function whose `case` expressions nest deeper than the policy
   /// threshold. Measured on the AST, so a wide literal that the formatter
   /// wrapped one argument per line does not count as depth.
   NestingDepth
+
   /// R3. A `_ ->` arm in a `case` whose other arms match constructors — a
   /// place the compiler could have checked exhaustiveness had the arm not
   /// swallowed everything.
   CatchAll
+
   /// R4. `panic` or `let assert` outside tests. Loom policy forbids both in
   /// `src/` (CLAUDE.md, gleam-style Part IV).
   PanicInSource
+
   /// R5. A count — `list.length(xs)`, `string.length(text)` — compared
   /// against a bound: an O(n) answer to a question settled by the first
   /// `k+1` elements or graphemes. The bound need not be a literal.
   BoundedLength
+
   /// R6. `@external`, a BEAM-only import, or a BEAM-only dependency in one
   /// of the three packages held to the portable subset. What that subset is
   /// and what rests on it is argued in `lint/portable`.
   PortablePurity
+
   /// R7. A `let assert` in `src/` with no `as "message"`. R4 asks whether
   /// the construct is admitted here at all; this asks whether the one that
   /// is admitted says what invariant it rests on, which is the other half
   /// of the same house rule (gleam-style Part IV, rule 3) and the half
   /// nothing checked.
   AssertWithoutMessage
+
   /// R8. A private function with more than the policy's parameters and
   /// exactly one caller. Not a hazard — a census. It measures what a
   /// depth metric rewards: a block lifted out of its caller with its
   /// locals re-declared as a signature, which reads shallower and is not
   /// simpler.
   LoneCallerArity
+
+  /// R9. A `Bool` in a function parameter or a record field. `True` at a
+  /// call site names nothing, and a field typed `Bool` makes the reader
+  /// carry the polarity of its name in their head; a two-variant type
+  /// says which state it is at both ends (gleam-style Part III, "Type
+  /// design"). Return position is deliberately not this rule's business:
+  /// `is_empty(xs) -> Bool` is the predicate the whole language is built
+  /// to consume.
+  NakedBool
+
+  /// R10. A `//` comment between two siblings — statements of a block, or
+  /// arms of a `case` — with code on the line directly above it. A comment
+  /// welded to the line above reads as that line's trailing note; the
+  /// blank line is what makes it the heading of the stanza below.
+  CommentStanza
+
+  /// R11. A function whose longest unbroken run of statements — no blank
+  /// line, no comment, anywhere between them — exceeds the policy's
+  /// threshold. The unit is statements rather than lines, so a wide
+  /// literal the formatter broke one argument per line is not density,
+  /// for the reason R2 measures depth on the AST.
+  DenseStanza
 }
 
 /// Every rule, in report order.
@@ -74,6 +104,9 @@ pub fn rules() -> List(Rule) {
     PortablePurity,
     AssertWithoutMessage,
     LoneCallerArity,
+    NakedBool,
+    CommentStanza,
+    DenseStanza,
   ]
 }
 
@@ -129,8 +162,54 @@ pub fn rules() -> List(Rule) {
 /// R3 does: "more than seven parameters and one caller" is a shape worth
 /// looking at, never a verdict, and a linter that fails a build over a
 /// shape is a linter somebody turns off.
+///
+/// **R10 gates; R9 and R11 warn.** The three arrived together and they did
+/// not arrive at the same place, which is worth saying because two of them
+/// are decidable enough that a reader will ask why not.
+///
+/// **R10** met the bar the way R6 did rather than the way R2 did: by being
+/// driven to zero in the change that wrote it. Its census was 1137 across
+/// the eighteen packages and it is **zero** now, in `src/` and in `test/`
+/// alike. It is decidable without types — a line is blank or it is not —
+/// and the fix is one blank line, never a change to what the code does.
+///
+/// What makes the promotion safe rather than brave is that the sweep was
+/// *verified against the formatter*, which is the only authority that could
+/// contradict this rule. `gleam format --check` passes on all eighteen
+/// packages after 1137 insertions, so no finding ever asked for a blank
+/// line the formatter would take away — the failure mode that would have
+/// made the rule unsatisfiable. The two exemptions exist for exactly that
+/// reason: a comment opening a block, and a comment between two fields of a
+/// constructor, are both places `gleam format` deletes a blank line, and a
+/// rule must never demand what the formatter removes.
+///
+/// And the property is worth a gate. It is lost the way R2's is, one
+/// comment at a time, each reasonable on the day it lands, and it is
+/// invisible in review because a welded comment reads fine in a diff hunk
+/// that begins above it. That is what promotion protects.
+///
+/// **R9** is 223 and every finding is decidable: an annotation says `Bool`
+/// or it does not. What it is not is *fixable* in one change. Two hundred
+/// declarations is a sweep in its own right, and some of them are not this
+/// repository's to make — `terminate: Bool` and `from_hook: Bool` are
+/// fields of frozen Part-1 contracts, so replacing them costs a
+/// `protocol-change/NNN.md` rather than an edit. Four more are irreducible
+/// and always will be: `core/json`'s `Bool(value: Bool)`, `core/msgpack`'s
+/// `BoolValue`, `cap/wire`'s `bool` encoder and `core/codec`'s
+/// `encode_default_false` are code *about* booleans, where the type is the
+/// subject rather than a flag nobody named. A rule with four permanent
+/// exceptions can still gate — R4 gates with a whole package exempted —
+/// but only once the exceptions are the census rather than 2% of it.
+///
+/// **R11** is 17, and it is the one of the three whose *threshold* is a
+/// judgement rather than a fact. Eight statements is where this tree's own
+/// bodies stop having paragraphs, measured, but "eight" is not decidable
+/// the way "blank or not" is, and a rule whose census moves when someone
+/// argues about a number should not be able to fail a build. It is R8's
+/// kind of measurement with R2's kind of arithmetic; treat the number as a
+/// reading rather than a verdict.
 pub fn error_by_default() -> List(Rule) {
-  [Unparseable, NestingDepth, PanicInSource, PortablePurity]
+  [Unparseable, NestingDepth, PanicInSource, PortablePurity, CommentStanza]
 }
 
 /// How a run's findings divide into the ones that fail a build and the ones
@@ -169,6 +248,9 @@ pub fn id(rule: Rule) -> String {
     PortablePurity -> "R6"
     AssertWithoutMessage -> "R7"
     LoneCallerArity -> "R8"
+    NakedBool -> "R9"
+    CommentStanza -> "R10"
+    DenseStanza -> "R11"
   }
 }
 
@@ -184,6 +266,9 @@ pub fn name(rule: Rule) -> String {
     PortablePurity -> "portable-purity"
     AssertWithoutMessage -> "assert-without-message"
     LoneCallerArity -> "lone-caller-arity"
+    NakedBool -> "naked-bool"
+    CommentStanza -> "comment-stanza"
+    DenseStanza -> "dense-stanza"
   }
 }
 

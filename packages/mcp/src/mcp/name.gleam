@@ -137,6 +137,7 @@ fn mangle_against(
     True -> fronted <> "_"
     False -> fronted
   }
+
   // The bound test stops at the bound instead of walking a 200-char
   // name's whole length (lint R5).
   let oversize = string.drop_start(guarded, max_length) != ""

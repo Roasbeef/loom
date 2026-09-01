@@ -50,8 +50,10 @@ pub type Response {
 pub type NetError {
   /// Network is off, or the host is not in the approved allowlist.
   NetDenied(message: String)
+
   /// The request was allowed but failed (DNS, connection, timeout).
   NetFailed(code: String, message: String)
+
   /// The capability channel could not carry the call.
   NetUnavailable(reason: String)
 }

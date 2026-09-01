@@ -16,8 +16,10 @@ pub type PortEvent {
   /// A chunk of the server's stdout reached us. Invariant: raw bytes at
   /// whatever boundary the pipe delivered; not yet lines, not yet UTF-8.
   PortBytes(data: BitArray)
+
   /// The server process exited with this OS status.
   PortClosed(status: Int)
+
   /// A message matched the port selector but was not a recognised port
   /// message shape; ignored by the client.
   PortJunk

@@ -65,11 +65,14 @@ pub type ExecOutcome {
   /// Vetting rejected the program; every violation is listed so the model
   /// can fix them in one pass.
   VetRejected(rejections: List(Rejection))
+
   /// The program vetted but did not compile — a build or type error.
   CompileFailed(error: CompileError)
+
   /// The program compiled but the satellite could not run it to an
   /// outcome.
   RunFailed(error: RunError)
+
   /// The program ran and returned a structured outcome. `source` and
   /// `artifact` are handed back for the runtime to persist as a durable
   /// entry (the durable-entry seam; see the module doc).

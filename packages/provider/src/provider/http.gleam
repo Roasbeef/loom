@@ -44,10 +44,13 @@ pub type HttpRequest {
 pub type HttpEvent {
   /// The response status line and headers arrived.
   ResponseStatus(status: Int, headers: List(#(String, String)))
+
   /// A fragment of the response body arrived.
   ResponseChunk(chunk: BitArray)
+
   /// The response body ended normally.
   ResponseEnd
+
   /// The transport failed before the response completed.
   RequestFailed(reason: String)
 }

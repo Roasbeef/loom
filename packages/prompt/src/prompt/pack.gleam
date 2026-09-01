@@ -156,17 +156,20 @@ pub type Enforcement {
   /// a command that could not be confined as specified is refused rather
   /// than run unconfined, so a command that runs, ran jailed.
   FullyEnforced
+
   /// The platform's mandatory confinement boundary is demanded and the
   /// helper advertises no degradation. Known platform gaps may be accepted
   /// only when the execution report names them explicitly; a missing jail,
   /// an unexpected skip, or a silent required layer is still refused.
   PlatformEnforced
+
   /// Full enforcement demanded but the helper advertises degradation.
   /// Every jailed execution fails — refused before dispatch, and refused
   /// again after the run if its enforcement report carries a `skip:`.
   /// This is a **host failure, not a policy denial**: escalation cannot
   /// clear it and retrying cannot either.
   DegradedRefusing
+
   /// Best effort was explicitly demanded — development containers and
   /// self-tests. Commands run with whatever the kernel here provides,
   /// which may be less than the policy asked for.
@@ -181,9 +184,11 @@ pub type NetworkPosture {
   /// No egress. The net namespace is unshared and non-unix sockets are
   /// denied below the model.
   NetworkBlocked
+
   /// Egress only through the harness proxy, and only to `allow`, a list
   /// of host globs. Sorted and de-duplicated by `environment`.
   NetworkProxied(allow: List(String))
+
   /// No network restriction on this host.
   NetworkOpen
 }
@@ -344,6 +349,7 @@ pub const binding_names = [
 pub type Problem {
   /// A canonical section or a selectable fragment is absent.
   MissingSection(name: String)
+
   /// A section uses a placeholder no binding provides. It renders as
   /// empty, which is usually a typo rather than an intention.
   UnknownPlaceholder(section: String, name: String)
@@ -364,6 +370,7 @@ pub type Severity {
   /// the rendered bytes. Read it as a mistake; a caller may reasonably
   /// refuse a pack carrying one.
   Corrupting
+
   /// The pack is smaller than the canonical shape: a section is absent.
   /// That may be exactly what a mutation intended — a pack that drops a
   /// section is still a valid pack — so it is a difference to report,
@@ -579,6 +586,7 @@ fn read_line(
     True, _ -> read_directive(reading, line, number)
     False, Some(#(name, body)) ->
       Ok(Reading(..reading, open: Some(#(name, [line, ..body]))))
+
     // Outside any section only blank lines are allowed: stray prose
     // before the first `%% section` would otherwise vanish silently,
     // and a vanished instruction is the worst kind of pack bug.
@@ -686,6 +694,7 @@ fn read_section(
               <> " characters from [a-z0-9_]",
             argument,
           ))
+
         // Two sections of one name have no single meaning — the same
         // rule `core`'s codecs apply to duplicate keys.
         True, True ->
@@ -991,6 +1000,7 @@ fn substitute_loop(
             result.unwrap(dict.get(bindings, name), ""),
             ..acc
           ])
+
         // Not a placeholder: emit the brace and rescan from the next
         // grapheme, so `{ "a": 1 }` and a lone `{` survive untouched.
         _ -> substitute_loop(rest, bindings, ["{", ..acc])

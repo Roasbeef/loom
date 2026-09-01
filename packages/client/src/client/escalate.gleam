@@ -316,6 +316,7 @@ pub type Decision {
   /// has. The durable record (if one was written) stands as the audit
   /// line and the passive queue entry.
   Settle
+
   /// An approval was consumed for exactly this call. Re-clear it once
   /// under these additional grants.
   Resume(grants: List(Grant))
@@ -386,6 +387,7 @@ pub fn record_id(strand: String, tool: String, wanted: List(Grant)) -> String {
     blob.ref_for(bit_array.from_string(
       strand <> "\u{1e}" <> tool <> "\u{1e}" <> diff,
     ))
+
   // `ref_for` renders `sha256-<64 hex>`; half of it is 128 bits, which
   // is more than a session's escalation set can collide in and short
   // enough to read in a client.
@@ -463,6 +465,7 @@ fn limit_field(field: policy.LimitField) -> String {
 pub fn action_digest(arguments: JsonValue) -> String {
   let rendered = json.to_string(canonical(arguments))
   let digest = blob.ref_for(bit_array.from_string(rendered))
+
   // Truncated exactly as `record_id` is, and for the same reason: 128
   // bits is far past what a session's escalation set can collide in.
   string.slice(digest, at_index: 7, length: 32)
@@ -581,6 +584,7 @@ fn decide(config: Config, refused: Refused) -> Decision {
           source_index: refused.source_index,
           call_id: refused.call_id,
         )
+
       // Digested once per refusal and carried down: the park loop and
       // the spend both compare against it, and hashing the arguments
       // again per poll would be a cost the model chooses.
@@ -821,6 +825,7 @@ fn ask(
   use owner <- result.try(process.named(name))
   let monitor = process.monitor(owner)
   let reply_to = process.new_subject()
+
   // The monitor and request must name the same incarnation. A named send would
   // perform a second lookup and could either panic or reach a replacement.
   ffi_sup.send_to_pid(owner, #(name, make_request(reply_to)))

@@ -314,6 +314,7 @@ fn settle_exit(
         "the hermetic build hit its wall limit and was killed",
       ))
     False, 0 -> Ok(Nil)
+
     // A build that reached for Hex is a broken *seed*, not a broken
     // program, and saying so is the difference between "fix your code"
     // and "rebuild the package cache".

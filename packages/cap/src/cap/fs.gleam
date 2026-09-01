@@ -32,17 +32,23 @@ import gleam/result
 pub type FsError {
   /// No such path.
   NotFound(path: String)
+
   /// The policy does not grant this path (read or write).
   PermissionDenied(path: String)
+
   /// A `read` target is a directory, or a `write` target's parent is a
   /// file — an operation/kind mismatch.
   WrongKind(path: String, message: String)
+
   /// An `edit` referenced content that no longer matches; replan.
   StaleContent(path: String, message: String)
+
   /// A structurally invalid argument (empty path, bad edit).
   InvalidArgument(message: String)
+
   /// Any other in-band broker refusal, code preserved.
   FsFailed(code: String, message: String)
+
   /// The capability channel could not carry the call.
   FsUnavailable(reason: String)
 }

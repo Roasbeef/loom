@@ -258,10 +258,13 @@ pub fn posture(network: policy.NetworkPolicy) -> pack.NetworkPosture {
 pub type Origin {
   /// The pack compiled into this build (`prompt/default.source`).
   Shipped
+
   /// A pack file named by `LOOM_PROMPT_PACK`.
   PackFile(path: String)
+
   /// `LOOM_SYSTEM_PROMPT`: no pack was consulted at all.
   Override
+
   /// The pinned cell from an earlier boot of this session.
   Pinned
 }

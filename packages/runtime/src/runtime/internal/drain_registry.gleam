@@ -33,8 +33,10 @@ import gleam/result
 pub opaque type Message {
   /// Publishes a reaper and opens its reply after prior generations drain.
   Claim(strand: String, reaper: Pid, reply_with: Subject(List(Pid)))
+
   /// Adjudicates whether a reaper proved drain or destroyed its proof.
   ReaperDown(process.Down)
+
   /// Begins root shutdown without discarding any still-live generation.
   ParentExit(process.ExitMessage)
 }

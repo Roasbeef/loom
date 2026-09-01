@@ -57,6 +57,7 @@ pub type Body {
   /// The handshake: the helper sends its hello first; the broker must
   /// answer with its own before any other frame.
   Hello(proto: Int, peer: String, features: List(String))
+
   /// Starts an execution. `policy` overrides the helper's fd-3 base
   /// policy for this execution when present; `limits` is reserved for
   /// per-exec overrides (the helper accepts and ignores it today).
@@ -69,14 +70,17 @@ pub type Body {
     token: BitArray,
     limits: Option(Limits),
   )
+
   /// A chunk of stdin for the running execution; `eof: True` closes the
   /// child's stdin after `data` is written. Writes after eof are
   /// refused by the helper.
   ExecStdin(data: BitArray, eof: Bool)
+
   /// One chunk of child output. `bytes` is the cumulative per-stream
   /// count including this chunk; `truncated` marks the single final
   /// chunk emitted when the per-stream `output_bytes` cap is hit.
   ExecOut(stream: OutputStream, data: BitArray, bytes: Int, truncated: Bool)
+
   /// The completed execution. `enforcement` lists what was actually
   /// applied (e.g. "bwrap", "mounts:ro=2,...", "landlock:abi=5",
   /// "skip:landlock: ...") — ground truth, checked over hello features.
@@ -96,17 +100,22 @@ pub type Body {
     timed_out: Bool,
     cancelled: Bool,
   )
+
   /// A capability RPC from a satellite: `{token, cap, args,
   /// deadline_ms}`. The broker checks the token on every call.
   CapCall(token: BitArray, cap: String, args: MsgPackValue, deadline_ms: Int)
+
   /// The answer to a `cap_call`.
   CapResult(outcome: CapOutcome, usage: Option(MsgPackValue))
+
   /// Cancels the running execution. Idempotent; the receiver must kill
   /// its pgroup within 2s or the broker escalates to SIGKILL of the
   /// whole helper.
   Cancel
+
   /// A liveness probe; the receiver echoes it with the same id.
   Heartbeat
+
   /// An in-band protocol-level error correlated to the offending
   /// frame's id (0 when there is none).
   ErrorBody(code: String, message: String)
@@ -116,6 +125,7 @@ pub type Body {
 pub type CapOutcome {
   /// The capability call succeeded with this value.
   CapOk(value: MsgPackValue)
+
   /// The capability call failed in-band.
   CapErr(code: String, message: String)
 }
@@ -126,8 +136,10 @@ pub type CapOutcome {
 pub type FrameError {
   /// The bytes were not a well-formed frame of this protocol.
   Malformed(report: CorruptionReport)
+
   /// The envelope carried a version other than `protocol_version`.
   UnsupportedVersion(version: Int)
+
   /// A well-formed frame of a kind this broker does not know.
   UnknownKind(id: Int, kind: String)
 }
@@ -531,6 +543,7 @@ fn decode_exec_exit(entries: Entries) -> Result(Body, FrameError) {
   use degraded <- result.try(body_bool(entries, "exec_exit", "degraded"))
   use wall_ms <- result.try(body_int(entries, "exec_exit", "wall_ms"))
   use timed_out <- result.try(body_bool(entries, "exec_exit", "timed_out"))
+
   // Required, not optional. A helper that omits it would otherwise read
   // as "not cancelled", which is the same allow-by-absence #54 is about;
   // both ends of this wire ship from one tree.
@@ -631,6 +644,7 @@ pub opaque type Deframer {
 pub type Inbound {
   /// A fully decoded frame.
   Known(frame: Frame)
+
   /// A structurally valid frame of a kind this broker does not speak.
   UnknownInbound(id: Int, kind: String)
 }
@@ -640,8 +654,10 @@ pub type Inbound {
 pub type Fault {
   /// A frame payload failed to parse.
   CorruptFrame(report: CorruptionReport)
+
   /// The peer speaks a different protocol version.
   VersionMismatch(version: Int)
+
   /// A length prefix exceeded `max_frame_bytes`.
   OversizedFrame(declared_bytes: Int)
 }
@@ -703,6 +719,7 @@ fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
               push_decoded(buffer, remainder, seen, decode_payload(payload))
           }
       }
+
     // Fewer than four bytes buffered: carry.
     _ -> carry(buffer, seen)
   }

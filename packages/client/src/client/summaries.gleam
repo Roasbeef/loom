@@ -56,6 +56,7 @@ pub const timeout_ms = 5000
 pub type Settlement {
   /// The provider produced summary text.
   Produced(summary: String, usage: Option(Usage))
+
   /// The request failed. `retryable` is the adapter's own judgment,
   /// carried through so the machine's retry ladder decides rather than
   /// this module.

@@ -20,11 +20,22 @@
 //// disabled, so the false-positive rate on this corpus is a thing to
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4 and R6 have made
-//// that argument and gate; R1 and R5 have a census to clear first; R3
-//// over-reports by construction and warns forever. The decision is data,
-//// in `finding.error_by_default`, which is where each argument is written
-//// down; `lint/cli`'s `--error` promotes one for a single run.
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6 and R10 have made
+//// that argument and gate; R1, R5, R9 and R11 have a census to clear
+//// first; R3 and R8 over-report by construction and warn forever. The
+//// decision is data, in `finding.error_by_default`, which is where each
+//// argument is written down; `lint/cli`'s `--error` promotes one for a
+//// single run.
+////
+//// # Layout is not in the tree
+////
+//// Three of the twelve rules are not questions about the AST. R9 reads
+//// annotations, which `glance` does carry; R10 and R11 ask where the blank
+//// lines and comments *are*, which it throws away entirely. `lint/layout`
+//// is that half: it reads the tree for where each sibling begins and the
+//// file's own line table (`source.classify`) for what was written between
+//// them. Both halves resolve in one merged pass per file, so a rule about
+//// blank lines costs a walk of the file rather than a walk per statement.
 ////
 //// # Totality
 ////
@@ -47,6 +58,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
+import lint/layout
 import lint/policy.{type Eager, type Policy}
 import lint/portable
 import lint/scan.{type Raw, Raw}
@@ -95,12 +107,14 @@ pub fn check_with(
   combinators: List(Eager),
 ) -> List(Finding) {
   let package = package_of(path)
+
   // R4 asks whether a file is a test by asking where it sits, and one
   // package's `src/` is a test harness that has to compile as a library.
   // `policy.for_package` is where that exemption is named, and applying it
   // here rather than in `lint/cli` is what makes it the library's answer
   // about a path rather than the command line's.
   let policy = policy.for_package(policy, package)
+
   // R6's `@external` half is lexed rather than parsed, so it survives a file
   // `glance` cannot read: a policy rule that goes quiet on a parse failure is
   // a hole in the policy, not a missed suggestion (`lint/portable`).
@@ -108,16 +122,26 @@ pub fn check_with(
   case glance.module(code) {
     Error(error) -> [
       parse_finding(path, code, error),
-      ..locate(path, code, foreign)
+      ..locate(path, source.line_starts(code), foreign)
     ]
     Ok(module) -> {
       let found = scan.module(module, policy, module_path(path), combinators)
+
+      // R10 and R11 ask about layout, which the AST does not carry: the
+      // walk reports where each sibling *begins*, and the file's own line
+      // table says what was written between them. Resolving every one of
+      // those offsets in a single merged pass is what keeps a rule about
+      // blank lines from costing a walk of the file per statement.
+      let lines = source.classify(code)
+      let blocks = layout.blocks(module, code)
+      let at = source.line_map(lines.starts, layout.offsets(blocks))
       let all =
         found
         |> list.append(backstop(found, code, policy))
         |> list.append(foreign)
         |> list.append(portable.imports(package, module))
-      locate(path, code, all)
+        |> list.append(layout.findings(blocks, lines, at, policy))
+      locate(path, lines.starts, all)
     }
   }
 }
@@ -146,20 +170,23 @@ pub fn exported_combinators(path: String, code: String) -> List(Eager) {
 /// ```
 ///
 pub fn check_manifest(path: String, code: String) -> List(Finding) {
-  locate(path, code, portable.manifest(package_of(path), code))
+  locate(
+    path,
+    source.line_starts(code),
+    portable.manifest(package_of(path), code),
+  )
 }
 
 /// Turn offset-carrying violations into findings, in offset order.
 ///
 /// One merged pass over the file's line index: the cost is the file, not the
 /// file once per finding, which is why the walk never learns what a line is.
-fn locate(path: String, code: String, raw: List(Raw)) -> List(Finding) {
+/// `starts` is passed in rather than derived because a source that reached
+/// the layout rules has already had its lines indexed, and indexing them
+/// twice would undo the point of doing it once.
+fn locate(path: String, starts: List(Int), raw: List(Raw)) -> List(Finding) {
   let ordered = list.sort(raw, fn(a, b) { int.compare(a.offset, b.offset) })
-  let lines =
-    source.lines_of(
-      source.line_starts(code),
-      list.map(ordered, fn(raw) { raw.offset }),
-    )
+  let lines = source.lines_of(starts, list.map(ordered, fn(raw) { raw.offset }))
   list.map2(ordered, lines, fn(raw, line) {
     Finding(
       rule: raw.rule,

@@ -107,6 +107,7 @@ pub fn prepare(
       let start = process.new_subject()
       let stop = process.new_subject()
       process.send(ready, #(start, stop))
+
       // The stop capability exists before publication. Selecting it here lets
       // a rejected reaper adoption retire the parked worker without ever
       // crossing the provider seam.
@@ -129,6 +130,7 @@ pub fn prepare(
               begin()
               forward(inner, drain, consumer, events, stop)
             }
+
             // Prepared production work is still parked here, but legacy
             // in-memory surfaces may already carry a real terminal. The
             // cancellation loop preserves that terminal without granting a

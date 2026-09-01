@@ -88,10 +88,13 @@ import gleam/string
 pub type Status {
   /// Raised, awaiting a decision.
   Pending
+
   /// Approved with grants; the single re-execution has not run yet.
   Approved
+
   /// Rejected; no re-execution will ever run.
   Rejected
+
   /// The single approved re-execution has been taken.
   Consumed
 }
@@ -550,6 +553,7 @@ pub fn raised(
 pub type Claim {
   /// The claim moved: this is the record to commit.
   Claimed(record: Escalation)
+
   /// The claim would have re-opened a question this row has already
   /// asked `max_asks` times. Nothing is written, the record stays
   /// terminal, and the claimant settles in band without prompting

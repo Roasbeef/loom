@@ -263,7 +263,7 @@ docs: ## Build HexDocs-style API documentation for every Gleam package
 	done
 
 .PHONY: lint
-lint: ## Run Loom's own lint (house rules; R0/R2/R4/R6 gate, see scripts/lint.sh)
+lint: ## Run Loom's own lint (house rules; R0/R2/R4/R6/R10 gate, see scripts/lint.sh)
 	@scripts/lint.sh
 
 .PHONY: lint-%

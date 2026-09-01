@@ -53,6 +53,7 @@ pub type Inbound {
   /// the channel's `CapOutcome` so the reader can `channel.deliver` it
   /// directly.
   CapResult(id: Int, outcome: CapOutcome)
+
   /// A structurally valid frame of a kind a satellite does not act on
   /// (anything but `cap_result`). Dropped; the channel stays open.
   IgnoredKind(id: Int, kind: String)
@@ -64,9 +65,11 @@ pub type Inbound {
 pub type Fault {
   /// A length prefix exceeded `max_frame_bytes`.
   Oversized(declared_bytes: Int)
+
   /// A frame payload did not parse, or a known kind's body was the wrong
   /// shape.
   Malformed(report: CorruptionReport)
+
   /// The envelope carried a protocol version other than `protocol_version`.
   BadVersion(version: Int)
 }
@@ -106,6 +109,7 @@ pub fn push(deframer: Deframer, bytes: BitArray) -> Pushed {
 fn push_loop(buffer: BitArray, seen: List(Inbound)) -> Pushed {
   case buffer {
     <<size:size(32), rest:bits>> -> push_sized(buffer, size, rest, seen)
+
     // Fewer than four bytes buffered: carry.
     _ -> carry(buffer, seen, None)
   }
@@ -140,6 +144,7 @@ fn push_frame(
     Ok(#(payload, remainder)) ->
       case decode_frame(payload) {
         Ok(frame) -> push_loop(remainder, [frame, ..seen])
+
         // A fault ends the scan: the reader closes the channel, so
         // there is no need to poison the deframer for later pushes.
         Error(fault) -> carry(remainder, seen, Some(fault))

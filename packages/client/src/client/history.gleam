@@ -206,6 +206,7 @@ pub fn sqlite_generation(session_path: String) -> fn() -> Result(Int, String) {
 pub opaque type Message {
   /// A commit landed: pull whatever is new into the index.
   Pull
+
   /// Pull, and say whether it worked — the deterministic form a test
   /// (or an operator's line) needs, since `Pull` is a cast.
   Synchronize(reply_with: Subject(Result(Nil, String)))
@@ -251,6 +252,7 @@ pub fn start(
     // the boot's `probe` is what gates tool registration, and a holder
     // that opens nothing serves refusals until the file is repaired.
     let index = option.from_result(search.open(config.path))
+
     // The session's existing entries are indexed by the first pull, not
     // by the initialiser: a large session file's scan must not sit
     // inside the supervisor's start timeout.
@@ -333,6 +335,7 @@ pub fn seam(
   history_tool.History(search: fn(text, limit, scope) {
     case ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _)) {
       Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
+
       // A holder that is alive but holds nothing is unavailability,
       // not a refusal: the tool's refusal rendering suggests rephrasing
       // the query, and no rephrasing opens an index.
@@ -430,6 +433,7 @@ fn query(
 ) -> Result(List(history_tool.Hit), String) {
   let found = case scope {
     history_tool.Repository -> search.query(index, text:, limit:)
+
     // Scoping is in the SQL, not over the results: `rank` and `LIMIT`
     // are applied inside the query, so a post-filter would let a
     // ten-hit request narrowed to one session come back empty while
@@ -471,6 +475,7 @@ fn ask(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
+
       // Send to the PID the monitor describes. Re-resolving the name here could
       // panic during a restart or ask a replacement while watching its
       // predecessor.

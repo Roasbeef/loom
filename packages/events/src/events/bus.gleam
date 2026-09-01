@@ -49,14 +49,19 @@ pub opaque type Bus {
 pub type Topic {
   /// Entry appends (`EntryAdded`).
   Entries
+
   /// Operation state transitions (`OpTransition`).
   Operations
+
   /// Usage-ledger appends (`UsageAdded`).
   Usage
+
   /// Strand terminal results (`StrandResult`).
   Strands
+
   /// Escalations awaiting approval (`Escalation`).
   Escalations
+
   /// Whole-commit notifications (`Committed`).
   Commits
 }
@@ -68,17 +73,22 @@ pub type Topic {
 pub type Event {
   /// An entry was appended. Hint: re-scan entries from your high-water.
   EntryAdded(id: EntryId, seq: Seq)
+
   /// An operation's durable state advanced. `phase` is a display label,
   /// not a machine input — the `op.state` register is the truth.
   OpTransition(op: OpId, phase: String)
+
   /// A usage-ledger row was appended.
   UsageAdded(id: UsageId, seq: Seq)
+
   /// A strand settled a terminal result. The `strand.last_result`
   /// register is the truth.
   StrandResult(strand: String)
+
   /// An effect escalated for approval. `description` is display text;
   /// the durable escalation entry is the truth.
   Escalation(op: OpId, description: String)
+
   /// A transaction committed, carrying its storage-assigned seqs. The
   /// coarsest hint — what the runtime writer's post-commit publication
   /// maps onto (see `bridge`).

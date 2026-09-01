@@ -50,9 +50,11 @@ pub type NetworkPolicy {
   /// No network. bwrap unshares the net namespace and seccomp denies
   /// non-AF_UNIX socket creation.
   NetworkOff
+
   /// Egress only through a harness-owned proxy. Invariants: `allow`
   /// holds host globs; `proxy` is the proxy address.
   NetworkProxy(allow: List(String), proxy: String)
+
   /// No network restriction.
   NetworkFull
 }
@@ -114,6 +116,7 @@ pub fn limit_field_name(field: LimitField) -> String {
 pub type Scratch {
   /// A fresh tmpfs, the most restrictive choice.
   ScratchTmpfs
+
   /// A bind-mounted host path. Invariant: absolute.
   ScratchPath(path: String)
 }
@@ -145,8 +148,10 @@ pub type SandboxPolicy {
 pub type PolicyError {
   /// A root, protected, or scratch path is not absolute.
   RelativePath(path: String)
+
   /// A limit field is negative.
   NegativeLimit(field: LimitField, value: Int)
+
   /// Scratch names the literal host root. Landlock has no deny rules
   /// (its grants union, and never subtract), so a host-path scratch of
   /// "/" grants read-write over the entire filesystem at that layer
@@ -162,14 +167,19 @@ pub type PolicyError {
 pub type Grant {
   /// Adds a writable root.
   GrantWritableRoot(path: String)
+
   /// Adds a readable root.
   GrantReadableRoot(path: String)
+
   /// Widens the network policy up the lattice (never narrows).
   GrantNetwork(network: NetworkPolicy)
+
   /// Adds an environment variable to the allowlist.
   GrantEnv(name: String)
+
   /// Raises one limit (`0` grants "unlimited").
   GrantLimit(field: LimitField, value: Int)
+
   /// Replaces the scratch choice, e.g. granting a host path.
   GrantScratch(scratch: Scratch)
 }
@@ -181,14 +191,19 @@ pub type Grant {
 pub type Narrowing {
   /// A requested writable root is not covered by the composed policy.
   NarrowedWritableRoot(path: String)
+
   /// A requested readable root is not covered by the composed policy.
   NarrowedReadableRoot(path: String)
+
   /// The requested network policy exceeds the composed one.
   NarrowedNetwork(wanted: NetworkPolicy, granted: NetworkPolicy)
+
   /// A requested environment variable was not allowed.
   NarrowedEnv(name: String)
+
   /// A requested limit exceeds the composed ceiling.
   NarrowedLimit(field: LimitField, wanted: Int, granted: Int)
+
   /// The requested scratch choice was replaced by tmpfs.
   NarrowedScratch(wanted: Scratch)
 }
@@ -976,6 +991,7 @@ fn as_string_array(
             Error(fail(subject, "string elements", describe_value(other)))
         }
       })
+
     // The Go encoder writes a nil slice as msgpack nil; accept it as
     // the empty list when decoding (we never emit it ourselves).
     msgpack.NilValue -> Ok([])

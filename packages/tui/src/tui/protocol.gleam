@@ -64,26 +64,31 @@ pub type Event {
     /// Session usage accumulated before the live subscription began.
     usage: Usage,
   )
+
   /// An authoritative replacement for the visible strand set.
   StrandsSnapshot(
     /// Every strand visible to this connection.
     strands: List(Strand),
   )
+
   /// An authoritative replacement for the model catalogue.
   ModelsSnapshot(
     /// Every model the server exposes to this session.
     models: List(ModelInfo),
   )
+
   /// The active strand's effective model selection.
   ConfigSnapshot(
     /// The selected catalogue name, when one is configured.
     model_name: Option(String),
   )
+
   /// A newly durable entry that supersedes matching transient fragments.
   EntryAdded(
     /// The owning strand and decoded entry.
     record: EntryRecord,
   )
+
   /// One transient provider fragment that has not become durable yet.
   StreamDelta(
     /// The strand receiving the fragment.
@@ -93,6 +98,7 @@ pub type Event {
     /// The sanitized-later fragment bytes.
     text: String,
   )
+
   /// A liveness transition for one strand operation.
   OperationChanged(
     /// The strand whose operation moved.
@@ -100,11 +106,13 @@ pub type Event {
     /// The open-set display phase; `done` clears liveness.
     phase: String,
   )
+
   /// One usage-ledger append to add to the snapshot baseline.
   UsageChanged(
     /// The server-authoritative provider usage row.
     usage: Usage,
   )
+
   /// A tool action awaiting an explicit operator decision.
   EscalationPending(
     /// The escalation identifier used by a later decision command.
@@ -114,6 +122,7 @@ pub type Event {
     /// A bounded, untrusted description of the requested action.
     preview: String,
   )
+
   /// A structured server refusal or request failure.
   ServerError(
     /// The stable machine-readable error code.
@@ -121,6 +130,7 @@ pub type Event {
     /// The untrusted operator-facing explanation.
     message: String,
   )
+
   /// A forward-compatible event the current client does not render.
   Ignored(
     /// The unknown event name retained for diagnostics.

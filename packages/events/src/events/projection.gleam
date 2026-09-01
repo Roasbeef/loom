@@ -36,6 +36,7 @@ import telemetry/log.{type Logger}
 pub type Change {
   /// An entry append, carrying the stamped entry.
   EntryAppended(entry: Entry)
+
   /// A usage-ledger append, carrying the stamped row.
   UsageAppended(row: UsageRow)
 }
@@ -122,6 +123,7 @@ pub fn catch_up(
   after high_water: Seq,
 ) -> Result(#(state, Seq), StorageError) {
   use frontier_seq <- result.try(frontier(store))
+
   // Nothing owed: the frontier has not moved past the high-water.
   use <- bool.guard(
     when: frontier_seq <= high_water,
@@ -262,6 +264,7 @@ pub type Hints {
   /// Subscribe to every topic of `session` on `bus`; any received event
   /// prompts a catch-up pull. The events themselves are discarded.
   FromBus(bus: Bus, session: SessionKey)
+
   /// No subscription — the driver pulls only on `poke`/`sync` and at
   /// start. For tests and batch use.
   NoHints
@@ -350,6 +353,7 @@ pub fn start(
         process.new_selector()
         |> process.select(subject)
     }
+
     // A cold start has nothing checkpointed to compare a generation
     // against, so it simply records whatever generation the store is
     // at now — there is no rewrite to detect before the first fold.
@@ -368,6 +372,7 @@ pub fn start(
         high_water:,
         generation:,
       )
+
     // First convergence at start; a fault keeps the checkpointed state
     // and the next hint retries.
     let #(driver, result) = pull(driver)
@@ -469,6 +474,7 @@ fn pull(
         Ok(Nil),
       )
     }
+
     // A fault leaves the driver exactly as it was — including its
     // recorded generation — so a rewrite detected but not yet folded
     // (the scan that would prove it failed) is retried in full on the

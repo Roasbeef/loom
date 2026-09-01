@@ -89,6 +89,7 @@ pub type NarrowingResponse {
   /// Refuse the call with a structured denial carrying the wanted
   /// grants — the escalation path (pre-declared needs).
   RefuseNarrowed
+
   /// Run anyway under the narrowed policy; the sandbox denial, if any,
   /// then surfaces from the execution itself.
   ProceedNarrowed
@@ -137,6 +138,7 @@ pub type CallEvent {
     total_bytes: Int,
     truncated: Bool,
   )
+
   /// The call is settled; the helper is back in the pool and the token
   /// revoked.
   CallSettled(outcome: CallOutcome)
@@ -146,6 +148,7 @@ pub type CallEvent {
 pub type CallOutcome {
   /// The execution completed under the demanded enforcement.
   CallExited(result: ExecResult)
+
   /// The execution settled as an in-band failure (helper refusal,
   /// channel death, degraded enforcement, cancel escalation...).
   CallFailed(failure: ExecFailure)
@@ -156,25 +159,31 @@ pub type Refusal {
   /// Composition narrowed the requirements and the spec said refuse;
   /// the denial carries the exact grants that would satisfy the tool.
   PolicyRefused(denial: Denial)
+
   /// The composed policy is structurally invalid (relative path,
   /// negative limit).
   InvalidPolicy(error: policy.PolicyError)
+
   /// The pooled budget refused the reservation.
   BudgetRefused(refusal: budget.Refusal)
+
   /// Token minting failed (entropy fault).
   MintRefused(error: token.MintError)
+
   /// No helper could be borrowed. For a full pool this arrives only
   /// after `clear_call` spent the caller's `waiting` budget down to the
   /// last window it can honour — the ordinary
   /// batch-wider-than-the-pool case waits and then runs rather than
   /// reaching here.
   NoHelper(error: exec.CheckoutError)
+
   /// The operation was aborted, so nothing more may be dispatched under
   /// it. Reachable because clearance is not instantaneous: a caller
   /// waiting out a congested pool can have `abort` land underneath it,
   /// and the retry that follows must not become the one execution the
   /// abort cannot reach.
   OperationAborted
+
   /// The broker could not be reached far enough to decide anything: its
   /// internal relay would not start, or the clearance exchange itself
   /// went unanswered — the broker did not reply inside the caller's
@@ -333,6 +342,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
         abort_epochs: dict.new(),
         self: subject,
       )
+
     // The broker monitors every relay it spawns; the selector routes
     // their DOWN messages so an unsettled relay death reclaims the
     // call's reservations.
@@ -419,6 +429,7 @@ fn clear_awaiting_helper(
   since: Option(Int),
 ) -> Result(CallHandle, Refusal) {
   let #(started, clock) = clock.read(clock)
+
   // Each attempt is capped at what is left, not at the original
   // budget, so the total cannot outrun `waiting` however slow an
   // individual exchange with the broker turns out to be.
@@ -430,12 +441,14 @@ fn clear_awaiting_helper(
     ),
   )
   use <- bool.guard(when: !congested(outcome), return: outcome)
+
   // Charge the attempt itself, not only the nap. Under the congestion
   // this loop exists for, the broker is at its busiest and an exchange
   // is not free; charging naps alone let a nominally 30 s budget run
   // for minutes.
   let #(answered, clock) = clock.read(clock)
   let remaining = remaining - int.max(0, answered - started)
+
   // The nap is always a whole interval: the guard has to clear a floor
   // that is itself far larger than one, so there is no tail here where
   // a caller sleeps for a fraction of an interval to reach a window it
@@ -475,6 +488,7 @@ fn or_unavailable(
 fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
   case outcome {
     Error(NoHelper(error: exec.AllBusy(size:))) -> size > 0
+
     // A pool that did not answer is not a pool that is full. Waiting
     // is the answer to contention, and this is the pool being unable
     // to say anything at all — a caller that napped on it would spend
@@ -625,6 +639,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
     ClearCall(spec:, events:, since:, reply:) -> {
       let epoch = dict.get(state.abort_epochs, spec.op_id) |> result.unwrap(0)
+
       // A clearance that began before an abort of this operation must
       // not dispatch after it: the abort revoked that operation's
       // tokens and cancelled its running calls, so admitting this one
@@ -665,11 +680,13 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
           False -> Nil
         }
       })
+
       // Abort frees the operation's pooled reservations wholesale; the
       // late settlements of its cancelled calls carry retired ledger
       // generations and release nothing further.
       let ledgers =
         dict.filter(state.ledgers, fn(key, _slot) { key.0 != op_id })
+
       // Bumping the epoch is what closes the window `clear_call`'s
       // congestion wait opens. A caller napping on a full pool wakes
       // and retries, and without this the retry would compose a fresh
@@ -744,6 +761,7 @@ fn handle_relay_down(
 // unsettled relay death means it might not have).
 fn reclaim(state: State, call_id: Int, active: Active) -> State {
   state.config.checkin(active.helper)
+
   // Tokens are single-use: settlement (or the fail-closed reclaim of an
   // unsettled death) revokes.
   let vault = token.revoke(state.vault, active.token_bytes)
@@ -919,6 +937,7 @@ fn release_slot(
   let key = #(op_id, step_id)
   case dict.get(state.ledgers, key) {
     Error(Nil) -> state
+
     // A stale release from before an abort: the key now names a later
     // ledger incarnation, or none at all, and must not be touched.
     Ok(slot) if slot.generation != generation -> state
@@ -944,6 +963,7 @@ fn dispatch(
 ) -> #(State, Result(CallHandle, Refusal)) {
   let call_id = state.next_call
   let broker_subject = state.self
+
   // 5. Relay: a per-call process owning the exec-event subject. It
   // forwards output to the caller, enforces the aggregate wall
   // deadline, and reports settlement back to the broker. The broker
@@ -965,6 +985,7 @@ fn dispatch(
       )
     })
   let monitor = process.monitor(relay_pid)
+
   // The relay must own the subject it receives exec events on (subjects
   // are tied to their owning process), so it creates `exec_events` itself
   // and hands it back over `ready` before this function dispatches
@@ -1006,6 +1027,7 @@ fn dispatch(
           next_call: call_id + 1,
           active: dict.insert(state.active, call_id, active),
         )
+
       // 6. Dispatch. A refusal here still settles through the relay so
       // the caller sees exactly one CallSettled either way.
       case exec.run(helper, request, events: exec_events, waiting: 5000) {

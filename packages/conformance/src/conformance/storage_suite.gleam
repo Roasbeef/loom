@@ -308,6 +308,7 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
         expected: [],
       ),
     )
+
   // Strictly increasing in write order, starting at first_seq; gaps are
   // legal, so only monotonicity is contractual.
   let assert [fs1, fs2, fs3] = first.seqs
@@ -324,6 +325,7 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
         expected: [],
       ),
     )
+
   // Strictly increasing across commits.
   let assert [s1, s2] = second.seqs
   let assert Ok(first_last) = list.last(first.seqs)
@@ -356,6 +358,7 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("write_order")
   let ctx = new_ctx()
   let #(a, ctx) = message(ctx, None, "a")
+
   // An entry may name a parent created earlier in the same transaction.
   let #(b, _ctx) = message(ctx, Some(a.id), "b")
   let model = storage.empty_stats()
@@ -390,6 +393,7 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
   let assert Ok(Some(twice)) =
     storage.get_register(store, register.OpState, "twice")
   assert twice.value == json_value(4)
+
   // The surviving "twice" cell was stamped by the later of its two sets.
   assert twice.seq > kept.seq
   let _ = model
@@ -417,9 +421,11 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
   // Entry under an existing entry id: corruption, not an update.
   let assert Error(Corruption(_)) =
     storage.commit(store, Tx(writes: [InsertEntry(a)], expected: []))
+
   // Usage under an existing usage id.
   let assert Error(Corruption(_)) =
     storage.commit(store, Tx(writes: [InsertUsage(row)], expected: []))
+
   // The id namespace is shared: a usage row under an entry id is
   // corruption too.
   let #(cross, _ctx) = usage(ctx, None, 5)
@@ -444,6 +450,7 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
 fn register_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("registers")
   let model = storage.empty_stats()
+
   // Set, replace, delete, delete-absent, recreate.
   let #(model, first) =
     commit_ok(
@@ -616,6 +623,7 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
         Expect(register.OpState, "missing", None),
       ]),
     )
+
   // A deleted cell satisfies expect-absent again.
   let #(_, _) =
     commit_ok(
@@ -665,6 +673,7 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
         expected: [Expect(register.PendingEntry, queued_key, None)],
       ),
     )
+
   // Until placement, exactly the pending value exists.
   let assert Ok(Some(pending)) =
     storage.get_register(store, register.PendingEntry, queued_key)
@@ -691,6 +700,7 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
         ],
       ),
     )
+
   // After placement, exactly the entry exists.
   let assert Ok(None) =
     storage.get_register(store, register.PendingEntry, queued_key)
@@ -722,6 +732,7 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let #(m6, ctx) = message(ctx, Some(m5.id), "m6")
   let chain = [m1, m2, c3, x4, m5, m6]
   let model = storage.empty_stats()
+
   // Commit one per transaction with register noise between, so entry
   // seqs carry gaps the scans must tolerate.
   let #(_, _) =
@@ -743,36 +754,46 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
     })
 
   let newest = storage.branch_scan(from: m6.id)
+
   // Full path, newest first.
   assert scan_ids(store, newest) == [m6.id, m5.id, x4.id, c3.id, m2.id, m1.id]
+
   // Oldest first.
   assert scan_ids(store, newest |> storage.branch_order(storage.OldestFirst))
     == [m1.id, m2.id, c3.id, x4.id, m5.id, m6.id]
+
   // Stop at the compaction, inclusive.
   assert scan_ids(
       store,
       newest |> storage.branch_stop_at_kind(storage.Compaction),
     )
     == [m6.id, m5.id, x4.id, c3.id]
+
   // Stop at an id.
   assert scan_ids(store, newest |> storage.branch_stop_at_id(x4.id))
     == [m6.id, m5.id, x4.id]
+
   // Kind filter.
   assert scan_ids(store, newest |> storage.branch_kind(storage.Message))
     == [m6.id, m5.id, m2.id, m1.id]
+
   // Custom-type filter.
   assert scan_ids(store, newest |> storage.branch_custom_type("note"))
     == [x4.id]
+
   // Kind filter combined with a limit: the limit counts surviving rows.
   assert scan_ids(
       store,
       newest |> storage.branch_kind(storage.Message) |> storage.branch_limit(3),
     )
     == [m6.id, m5.id, m2.id]
+
   // A scan from mid-path sees only its ancestors.
   assert scan_ids(store, storage.branch_scan(from: m2.id)) == [m2.id, m1.id]
+
   // Limit.
   assert scan_ids(store, newest |> storage.branch_limit(2)) == [m6.id, m5.id]
+
   // A zero or negative limit returns no rows — never "no limit". Callers
   // compute limits like `budget - consumed`, so a negative result must
   // mean "nothing left".
@@ -797,6 +818,7 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
       newest |> storage.branch_stop_at_kind(storage.BranchSummary),
     )
     == [m6.id, m5.id, x4.id, c3.id, m2.id, m1.id]
+
   // A stop id that is not on this path never fires: commit a divergent
   // sibling and stop at it from the main tip.
   let #(d3, _ctx) = message(ctx, Some(m2.id), "d3")
@@ -817,6 +839,7 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
         |> storage.branch_cursor(stored_m5.seq),
     )
     == [x4.id, c3.id]
+
   // ... and with the cursor below a higher stop, nothing emits at all —
   // the scan never continues past its stop to reach the cursor window.
   assert scan_ids(
@@ -897,23 +920,30 @@ fn branch_index_checks(backend: Backend(handle)) -> Nil {
   let #(e3, ctx) = compaction(ctx, Some(e2.id), "checkpoint")
   let #(e4, ctx) = message(ctx, Some(e3.id), "e4")
   let #(e5, ctx) = message(ctx, Some(e4.id), "e5")
+
   // Divergence with no compaction below: full-copy segment.
   let #(f3, ctx) = message(ctx, Some(e2.id), "f3")
   let #(f4, ctx) = message(ctx, Some(f3.id), "f4")
+
   // Main continues after the divergence.
   let #(e6, ctx) = message(ctx, Some(e5.id), "e6")
+
   // Divergence above the compaction: compaction-bounded segment.
   let #(g5, ctx) = message(ctx, Some(e4.id), "g5")
   let #(g6, ctx) = message(ctx, Some(g5.id), "g6")
+
   // Divergence from the compaction entry itself.
   let #(h4, ctx) = message(ctx, Some(e3.id), "h4")
+
   // Divergence from a segment whose own rows hold no compaction: the
   // newest-compaction search must walk the base chain (mandatory rule 2).
   let #(i7, ctx) = message(ctx, Some(g6.id), "i7")
+
   // Divergence from an entry physically inside an older segment (e5 sits
   // in main's segment while newer tips moved on): the resolved cover
   // must itself contain the anchor in its logical range (mandatory rule 1).
   let #(j6, ctx) = message(ctx, Some(e5.id), "j6")
+
   // A second compaction on a branch, then a divergence below it.
   let #(k7, ctx) = compaction(ctx, Some(g6.id), "branch checkpoint")
   let #(k8, ctx) = message(ctx, Some(k7.id), "k8")
@@ -955,6 +985,7 @@ fn branch_index_checks(backend: Backend(handle)) -> Nil {
             Tx(writes: list.map(batch, InsertEntry), expected: []),
           )
         let committed = list.append(committed, batch)
+
         // Every committed entry scans to its exact model root path, after
         // every commit.
         list.each(committed, fn(entry) {
@@ -1065,6 +1096,7 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   let assert Ok(limited) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(2))
   assert ids_of(limited) == [m1.id, c2.id]
+
   // A zero or negative limit returns no rows — never "no limit". SQLite's
   // own `LIMIT -1` means unlimited, so an unclamped backend would return
   // every row here while another returns none: a silent divergence.
@@ -1166,12 +1198,15 @@ fn close_checks(backend: Backend(handle)) -> Nil {
       Tx(writes: [InsertEntry(a)], expected: []),
     )
   let assert Ok(Nil) = storage.close(store)
+
   // Idempotent.
   assert storage.close(store) == Ok(Nil)
+
   // Reads on a closed handle are refused in-band.
   let assert Error(HandleClosed) =
     storage.get_register(store, register.StrandLeaf, "main")
   let assert Error(HandleClosed) = storage.stats(store)
+
   // Commits on a closed handle fault in-band.
   let assert Error(Faulted(_)) =
     storage.commit(store, Tx(writes: [], expected: []))

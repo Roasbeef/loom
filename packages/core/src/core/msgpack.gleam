@@ -62,18 +62,25 @@ pub const max_depth = 256
 pub type MsgPackValue {
   /// The msgpack nil.
   NilValue
+
   /// A msgpack boolean.
   BoolValue(value: Bool)
+
   /// A msgpack integer of any width.
   IntValue(value: Int)
+
   /// A msgpack float64.
   FloatValue(value: Float)
+
   /// A msgpack str: utf-8 text.
   StringValue(value: String)
+
   /// A msgpack bin: raw bytes.
   BinaryValue(bytes: BitArray)
+
   /// A msgpack array.
   ArrayValue(items: List(MsgPackValue))
+
   /// A msgpack map with arbitrary keys, in order.
   MapValue(entries: List(#(MsgPackValue, MsgPackValue)))
 }
@@ -84,6 +91,7 @@ pub type MsgPackValue {
 pub type EncodeError {
   /// The integer falls outside `[-2^63, 2^64 - 1]`.
   IntegerOutOfRange(value: Int)
+
   /// A str, bin, array, or map is longer than `2^32 - 1` bytes or
   /// elements, or a bin is not byte-aligned.
   UnencodableLength(length: Int)
@@ -316,6 +324,7 @@ fn tag_error(bytes: BitArray, tag: Int) -> CorruptionReport {
       fail(bytes, "no ext types: outside the supported msgpack subset")
     _ if tag >= 0xd4 && tag <= 0xd8 ->
       fail(bytes, "no fixext types: outside the supported msgpack subset")
+
     // Every remaining tag is in the supported subset, so the payload must
     // have been truncated — this also covers a float64 whose bit pattern
     // is NaN or an infinity, which the BEAM cannot match or represent.

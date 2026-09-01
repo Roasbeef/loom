@@ -21,6 +21,7 @@ pub type DenialSource {
   /// The broker's policy composition refused before dispatch (the tool
   /// required more than the session base allows, without a grant).
   PolicyDenial
+
   /// The helper's per-exec enforcement report showed the execution did
   /// not run under the demanded enforcement; entries are the helper's
   /// ground-truth list (e.g. "skip:landlock: ...").
@@ -37,10 +38,13 @@ pub type Denial {
 pub type Status {
   /// Raised, awaiting a decision.
   StatusPending
+
   /// Approved with grants; the one re-execution has not run yet.
   StatusApproved
+
   /// Rejected; no re-execution will ever run.
   StatusRejected
+
   /// The single approved re-execution has been taken.
   StatusConsumed
 }
@@ -66,10 +70,13 @@ type Phase {
 pub type Event {
   /// A denial became an escalation awaiting decision.
   EscalationRaised(id: String, denial: Denial)
+
   /// The escalation was approved with exactly these grants.
   EscalationApproved(id: String, grants: List(Grant))
+
   /// The escalation was rejected.
   EscalationRejected(id: String)
+
   /// The single approved re-execution was taken under these grants.
   EscalationConsumed(id: String, grants: List(Grant))
 }
@@ -78,9 +85,11 @@ pub type Event {
 pub type LifecycleError {
   /// `approve`/`reject` on an escalation that is not pending.
   NotPending(status: Status)
+
   /// `consume` on an escalation that is not approved — including one
   /// already consumed: the single re-execution is spent.
   NotApproved(status: Status)
+
   /// An approval tried to grant something the denial never asked for.
   /// Approvals answer the surfaced diff; a wider grant must be a new,
   /// explicit policy decision, not a rider on this one.

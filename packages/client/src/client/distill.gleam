@@ -241,6 +241,7 @@ pub fn extractable(item: Entry) -> Option(String) {
   case item {
     entry.CompactionEntry(summary:, ..) -> Some(summary)
     entry.BranchSummaryEntry(summary:, ..) -> Some(summary)
+
     // Assistant text and nothing else: `scannable_text` answers `None`
     // for every user and tool-result message, which is the exclusion.
     entry.MessageEntry(..) -> rules.scannable_text(item)
@@ -529,6 +530,7 @@ fn pass(config: Config, opened: Opened) -> Result(Report, String) {
     memory.notes_after(opened, notes_cursor, limit: max_notes_per_run)
     |> result.map_error(describe_fault),
   )
+
   // Extraction runs before the decision, and the decision is made on
   // what it *produced* rather than on what it was offered. A repository
   // whose sources all honestly answer "nothing" has been read — its
@@ -957,11 +959,14 @@ const excluded_files = [memory.memory_file, "loom-search.db"]
 type Harvested {
   /// Something new to distil.
   Ready(harvest: Harvest)
+
   /// The writer lease is held: a live session, and the whole of the
   /// live-session skip rule.
   Leased
+
   /// Opened cleanly and had nothing above its cursor.
   Quiet
+
   /// Could not be opened or read at all.
   Unreadable(reason: String)
 }
@@ -1038,6 +1043,7 @@ fn readable(
     session.id(source)
     |> result.map_error(fn(error) { string.inspect(error) }),
   )
+
   // A session that has never been through `ensure_id` has no stable name
   // to key a cursor by, and this pipeline will not mint one for it.
   // Skipped, and said out loud.
@@ -1193,6 +1199,7 @@ fn record_usage(
     )
   {
     Ok(_result) -> Nil
+
     // A ledger row that would not commit is not worth failing a run for:
     // the distillate is the product, the cost record is the report.
     Error(error) ->
@@ -1271,6 +1278,7 @@ pub fn gateway_distiller(
           max_output_tokens: None,
         ),
       )
+
     // The timeout path cannot reconstruct an exit reason after a fast owner
     // has gone. Retaining the monitor before begin makes the later drain wait
     // an observation of the real exit rather than a `noproc` guess.
@@ -1279,6 +1287,7 @@ pub fn gateway_distiller(
     case stream.await_terminal(handle, within: timeout_ms) {
       Error(Nil) -> {
         stream.cancel(handle)
+
         // `extract_all` may issue the next billable distillation request as
         // soon as this call returns. A timeout ends the receive, not the work;
         // keep this fold step private until the old provider subtree is gone.
@@ -1348,6 +1357,7 @@ pub fn main() -> Nil {
     )
   case parse(argv.load().arguments) {
     Error(reason) -> io.println_error("loom-distill: " <> reason)
+
     // Two commands behind one entry point, chosen by the flag: a pass, or
     // an erasure cascade over one already-erased source. A new binary
     // would duplicate the directory resolution, the memory path and the

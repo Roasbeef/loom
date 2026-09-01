@@ -59,6 +59,7 @@ pub type RequestSpec {
     context: List(AgentMessage),
     stream_options: JsonValue,
   )
+
   /// One deferred-response poll against the newest source handle.
   PollRequest(
     operation: OpId,
@@ -68,6 +69,7 @@ pub type RequestSpec {
     configuration: StrandConfiguration,
     stream_options: JsonValue,
   )
+
   /// One nested structural-summary request.
   SummaryRequest(
     operation: OpId,
@@ -92,6 +94,7 @@ pub type ProviderSurface {
     /// event. Deltas do not renew this deadline.
     timeout_ms: Int,
   )
+
   /// A surface which can publish a parked owner before provider work starts.
   PreparedProviderSurface(
     /// The compatibility facade which prepares and immediately begins.
@@ -181,6 +184,7 @@ pub type ToolOutcome {
   /// The tool produced a finalized result message (which may itself be an
   /// in-band error result) and its termination flag.
   ToolCompleted(result: AgentMessage, terminate: Bool)
+
   /// The execution failed outside the tool's own result channel (runner
   /// refusal, channel death). The driver stages a synthetic error result.
   ToolFailed(reason: String)
@@ -212,6 +216,7 @@ pub type ClearanceQuery {
 pub type Clearance {
   /// Execute with these effective arguments under this replay policy.
   Cleared(effective_arguments: JsonValue, replay: ReplayPolicy)
+
   /// Refuse the call (unknown tool, invalid arguments, policy block);
   /// the driver stages a synthetic error result carrying `reason`.
   ClearanceRefused(reason: String)
@@ -224,6 +229,7 @@ pub type ExecutionMode {
   /// this tool's clearance until no other tool effect is live, and no
   /// other tool starts while it runs.
   ExclusiveExecution
+
   /// May overlap other `ConcurrentExecution` calls.
   ConcurrentExecution
 }

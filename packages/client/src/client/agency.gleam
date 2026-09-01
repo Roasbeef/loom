@@ -387,6 +387,7 @@ fn read_ledger(runtime: api.Runtime) -> Result(Dict(String, Lineage), Refusal) {
       cells
       |> list.filter_map(fn(pair) {
         let #(key, payload) = pair
+
         // A cell that will not decode is dropped rather than faulting the
         // read: every question asked of the ledger fails closed on a
         // missing cell, so a corrupt one degrades into a refusal instead
@@ -589,6 +590,7 @@ fn reconcile(
         tools,
       )
     }
+
     // The registers are seeded but the brief run was never accepted, or
     // was accepted and has already finished. The last arm recovers by
     // adopting a brief.
@@ -607,6 +609,7 @@ fn reconcile(
       detached: request.detach,
       reaped: False,
     )
+
   // Before the lineage cell, not after: the replay path keys on the
   // lineage cell and returns early when it finds one, so a crash between
   // these two commits must be able to leave a schema with no child and
@@ -800,6 +803,7 @@ fn check_capacity(
   let live =
     list.filter(dict.values(ledger), fn(cell) { is_live(runtime, cell) })
   let mine = list.filter(live, fn(cell) { cell.parent == caller.strand })
+
   // Both guards are lazy, and that is not a flourish: the count in the
   // refusal is the one thing here that genuinely has to walk the list,
   // and an eager `return:` would walk it on every admitted spawn to
@@ -924,6 +928,7 @@ fn wait(
       }
     }),
   )
+
   // Overdue children are reaped before the wait, not during it: the
   // durable mark is one commit, and re-issuing the abort on every
   // observation is what keeps a reap that landed while no driver was
@@ -986,6 +991,7 @@ fn wait_loop(
       settle_handle(runtime, found, handle)
     })
   let #(now, _clock) = clock.read(config.clock)
+
   // "Everything has settled" asked at the bound rather than by counting.
   // Every key in `settled` is one of *these* handles' own — the fold
   // above inserts under `handle_to_string` and nothing else puts a key in
@@ -1146,6 +1152,7 @@ fn send(
         Ok(_) -> Error(agent.ParentRunEnded(strand: to))
       }
   })
+
   // The guard above is a read and the send below is a commit, so a parent
   // that finishes in between is still woken. The window is one storage
   // round trip and it is named rather than claimed shut; closing it would
@@ -1225,6 +1232,7 @@ fn note(
   use runtime <- result.try(borrow(config))
   use key <- result.try(validate_key(key))
   use Nil <- result.try(check_result_contract(runtime, caller, key, value))
+
   // The prefix is built here and the key is only ever appended to it, so
   // no argument can escape the namespace. `put_fact` refuses every
   // reserved prefix underneath, so forging a lineage cell or an approval
@@ -1263,6 +1271,7 @@ fn notes(
   prefix: Option(String),
 ) -> Result(List(#(String, JsonValue)), Refusal) {
   use runtime <- result.try(borrow(config))
+
   // An absent prefix is clamped to the agent namespace rather than passed
   // through as `None`: `api.facts(prefix: None)` lists every
   // non-reserved fact in the session, operator writes included, and the

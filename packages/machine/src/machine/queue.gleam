@@ -187,6 +187,7 @@ pub fn enqueue_next_run(
 pub type CancelOutcome {
   /// The id was pending: the plan removes it and deletes its payload.
   CancelledQueued(next: OperationState, tx: Tx)
+
   /// The id is in no queue list.
   NotPending
 }
@@ -241,6 +242,7 @@ pub fn cancel_queued(
 pub type CancelNextRunOutcome {
   /// The id was pending: the plan removes it and deletes its payload.
   CancelledNextRun(next: StrandState, tx: Tx)
+
   /// The id is not in `pending_next_run`.
   NextRunNotPending
 }
@@ -294,6 +296,7 @@ pub type AbortOutcome {
     drained_steer: List(EntryId),
     drained_follow_up: List(EntryId),
   )
+
   /// Cancellation was already durable; the same marker and drained
   /// payloads are reused.
   AbortAlreadyRequested(

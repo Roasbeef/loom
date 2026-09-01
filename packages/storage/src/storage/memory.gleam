@@ -162,9 +162,11 @@ fn insert_entry(
   ts: Int,
 ) -> Result(MemoryState, CommitError) {
   let id_text = ids.entry_id_to_string(entry.id)
+
   // Rule 2: entries and usage rows share one id namespace; an existing id
   // is corruption, not an update.
   use Nil <- result.try(check_fresh_id(state, id_text))
+
   // A missing parent is always corruption. Writes apply in order, so a
   // parent inserted earlier in this same transaction is already visible.
   use Nil <- result.try(case entry.parent {
@@ -184,6 +186,7 @@ fn insert_entry(
     None -> Ok(Nil)
   })
   let stamped = storage.stamp(entry, seq:, ts:)
+
   // Each child list is built by prepending, so insertion stays O(1); readers
   // (`children_of`) reverse it back into append order.
   let children = case entry.parent {
@@ -573,31 +576,39 @@ fn take_limit(rows: List(row), limit: Option(Int)) -> List(row) {
 pub opaque type Message {
   /// Commit a transaction and reply with the result.
   Commit(tx: Tx, reply: Subject(Result(CommitResult, CommitError)))
+
   /// Batch entry fetch.
   GetEntries(
     ids: List(EntryId),
     reply: Subject(Result(Dict(EntryId, Entry), StorageError)),
   )
+
   /// Read one register cell.
   GetRegister(
     ns: RegisterNs,
     key: String,
     reply: Subject(Result(Option(Register), StorageError)),
   )
+
   /// List a namespace's cells.
   ListRegisters(
     ns: RegisterNs,
     key_prefix: Option(String),
     reply: Subject(Result(List(#(String, Register)), StorageError)),
   )
+
   /// Branch query.
   ScanBranch(q: BranchScan, reply: Subject(Result(List(Entry), StorageError)))
+
   /// Entry inventory scan.
   ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
+
   /// Ledger read.
   ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
+
   /// Stats projection read.
   Stats(reply: Subject(Result(SessionStats, StorageError)))
+
   /// Seal the handle. Idempotent.
   Close(reply: Subject(Result(Nil, StorageError)))
 }

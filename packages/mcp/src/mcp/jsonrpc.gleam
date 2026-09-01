@@ -37,6 +37,7 @@ pub const version = "2.0"
 pub type Id {
   /// An integer id (what this client mints).
   IdInt(value: Int)
+
   /// A string id (accepted from the peer, echoed back verbatim).
   IdString(value: String)
 }
@@ -54,10 +55,12 @@ pub type Inbound {
   /// A response to a request we sent: the echoed id plus either the raw
   /// `result` value or the typed error object.
   Response(id: Id, outcome: Result(JsonValue, RpcError))
+
   /// A server-initiated request. This client answers method-not-found in
   /// a later slice, but the envelope decodes today so nothing hostile can
   /// hide inside one.
   ServerRequest(id: Id, method: String, params: Option(JsonValue))
+
   /// A server-initiated notification: fire and forget, no id to answer.
   Notification(method: String, params: Option(JsonValue))
 }
@@ -68,6 +71,7 @@ pub type Inbound {
 pub type MessageFault {
   /// The text is not a single well-formed JSON document.
   MalformedMessage(report: CorruptionReport)
+
   /// The document parsed but is not a JSON-RPC 2.0 message; `reason`
   /// names what a well-formed one would have carried.
   BadMessage(reason: String)

@@ -64,6 +64,7 @@ pub type Stop {
   /// `SIGTERM` arrived. Nothing has been torn down yet — the entry point
   /// runs the shutdown itself and exits zero.
   Signalled
+
   /// A fatal child died. The teardown has **already run**, so the writer
   /// lease is released and the listener is closed; `child` names the
   /// process as well as the host could and `reason` is its exit reason,
@@ -114,6 +115,7 @@ pub fn adopt(
         }
       }
     })
+
   // The host is the only thing that can answer, so its death before it
   // answers is the answer: a boot step crashed rather than returning.
   let monitor = process.monitor(host)

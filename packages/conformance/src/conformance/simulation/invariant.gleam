@@ -142,6 +142,7 @@ fn queued_ids_with_open_op(
             detail: "op state corrupt at " <> report.boundary,
           ))
       }
+
     // No op state yet (or already gone): the strand's own queue is all
     // there is to check.
     _ -> Ok(state.pending_next_run)

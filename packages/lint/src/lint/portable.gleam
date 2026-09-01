@@ -131,6 +131,7 @@ pub fn manifest(package: Option(String), code: String) -> List(Raw) {
   let #(_, found) =
     list.fold(string.split(code, "\n"), #(0, []), fn(state, line) {
       let #(offset, found) = state
+
       // Byte offsets, not codepoints: `lint/source`'s line index counts
       // bytes because `glance` reports bytes, and the two must agree.
       #(offset + string.byte_size(line) + 1, [

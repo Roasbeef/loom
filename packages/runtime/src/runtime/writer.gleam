@@ -228,6 +228,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           let ordinal = state.ordinal + 1
           let event = Committed(ordinal:, seqs: result.seqs, ts: result.ts)
           list.each(state.subscribers, publish(_, event))
+
           // The crash-scheduler seam: may not return (see module doc).
           state.after_commit(ordinal)
           process.send(reply, Ok(result))
@@ -275,6 +276,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           schedule_renew(state.session, state.renewal)
           actor.continue(state)
         }
+
         // A lost lease means another writer owns the file: this tree
         // must not keep committing. Stop abnormally; the supervisor's
         // restart re-runs the open path, which re-acquires or refuses.

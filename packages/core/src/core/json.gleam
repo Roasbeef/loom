@@ -61,16 +61,22 @@ pub const max_depth = 256
 pub type JsonValue {
   /// A JSON object as an ordered field list.
   Object(fields: List(#(String, JsonValue)))
+
   /// A JSON array.
   Array(items: List(JsonValue))
+
   /// A JSON string.
   String(value: String)
+
   /// A JSON number with no fraction or exponent part. Arbitrary precision.
   Int(value: Int)
+
   /// A JSON number with a fraction or exponent part. Always finite.
   Float(value: Float)
+
   /// A JSON boolean.
   Bool(value: Bool)
+
   /// The JSON null.
   Null
 }
@@ -215,6 +221,7 @@ fn excerpt(rest: List(Int)) -> String {
     |> list.take(24)
     |> list.filter_map(string.utf_codepoint)
     |> string.from_utf_codepoints
+
   // `list.drop` stops at 24; `list.length` would walk the whole tail,
   // which is what made a report on a hot path cost the rest of the input.
   case list.drop(rest, 24) != [] {
@@ -417,6 +424,7 @@ fn parse_string_body(
     [0x22, ..rest] ->
       Ok(#(string.concat(list.reverse(chunks)), advance(cursor, rest, by: 1)))
     [0x5C, ..rest] -> parse_escape(advance(cursor, rest, by: 1), chunks)
+
     // Both arms below stay a plain `case` on purpose. This runs once per
     // character of every string in every document the harness decodes,
     // and each `use` here costs a heap-allocated closure per character:

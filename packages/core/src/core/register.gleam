@@ -30,27 +30,38 @@ import gleam/option.{type Option, None, Some}
 pub type RegisterNs {
   /// Key: strand name → `Option(EntryId)`, the strand's current leaf.
   StrandLeaf
+
   /// Key: strand name → `StrandConfiguration`.
   StrandConfig
+
   /// Key: strand name → `StrandState`.
   StrandState
+
   /// Key: strand name → the strand's last terminal result. Never a
   /// recovery input.
   StrandLastResult
+
   /// Key: operation id → `Operation`. Write-once.
   OpMeta
+
   /// Key: operation id → `OperationState`, the durable program counter.
   OpState
+
   /// Key: `op:step:idx` → `Json` tool arguments. Write-once.
   OpToolArgs
+
   /// Key: `op:task` → `StructuralPreparation`. Write-once.
   OpPreparation
+
   /// Key: reserved entry id → `PendingEntry`.
   PendingEntry
+
   /// Shared blackboard: fact names.
   FactName
+
   /// Shared blackboard: fact labels.
   FactLabel
+
   /// Shared blackboard: application-defined facts.
   FactCustom
 }

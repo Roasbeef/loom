@@ -57,6 +57,7 @@ pub fn invoke(
   )
   case is_error {
     False -> Ok(tool_result)
+
     // The server ran the tool and the tool said no: an in-band failure
     // the program reads, with the joined text as its message.
     True ->
@@ -105,6 +106,7 @@ fn decode_block(value: MsgPackValue) -> Result(mcp.Content, String) {
   use kind <- result.try(wire.string_field(value, "type"))
   case kind {
     "text" -> wire.string_field(value, "text") |> result.map(Text)
+
     // Every other kind is carried by name only in v1; the block's other
     // fields are dropped rather than failing a result the program can
     // still mostly read.

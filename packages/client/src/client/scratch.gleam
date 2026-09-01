@@ -162,6 +162,7 @@ pub opaque type Message {
   Get(key: String, reply_with: Subject(Option(BitArray)))
   Set(key: String, value: BitArray, reply_with: Subject(Result(Nil, KvRefusal)))
   Delete(key: String, reply_with: Subject(Nil))
+
   /// How many entries and how many bytes the store holds. For a test and
   /// for an operator's line; nothing in the capability path reads it.
   Stat(reply_with: Subject(#(Int, Int)))
@@ -310,6 +311,7 @@ fn ask(
     Ok(pid) -> {
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
+
       // Keep delivery on the same process the failure selector monitors. A
       // second name lookup would turn an ordinary restart into a caller crash.
       ffi_sup.send_to_pid(pid, #(name, message(reply)))

@@ -87,6 +87,7 @@ import gleam/string
 pub type Seam {
   /// The workspace seam: a program that orchestrates effects.
   WorkspaceSeam
+
   /// The orchestration seam: a program that orchestrates agents.
   OrchestrationSeam
 }

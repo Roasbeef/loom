@@ -116,6 +116,7 @@ type RequestEvent {
 pub type ProviderConfig {
   /// An Anthropic Messages API endpoint.
   AnthropicProvider(name: String, base_url: String, api_key_secret: String)
+
   /// An OpenAI-compatible chat-completions endpoint.
   OpenAiCompatibleProvider(
     name: String,
@@ -411,6 +412,7 @@ fn start_request(
       let pump_begin = process.new_subject()
       let creator_monitor = process.monitor(self)
       process.send(pump_ready, #(pump_control, pump_begin))
+
       // Adoption and begin are separate messages from separate processes. If
       // the guard dies between them, its custodian cancels this parked pump.
       // Selecting both gates keeps that cancellation from becoming an

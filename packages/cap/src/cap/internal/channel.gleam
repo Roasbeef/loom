@@ -92,6 +92,7 @@ const reply_margin_ms = 5000
 pub type CapOutcome {
   /// The capability call succeeded with this value.
   CapOk(value: MsgPackValue)
+
   /// The capability call failed in-band with a broker error code.
   CapErr(code: String, message: String)
 }
@@ -104,6 +105,7 @@ pub type CapOutcome {
 pub type CallError {
   /// The broker answered `cap_result` with an error `{code, message}`.
   Denied(code: String, message: String)
+
   /// The call could not complete at the transport level.
   Unreachable(reason: String)
 }
@@ -138,6 +140,7 @@ pub opaque type Msg {
   )
   Deliver(id: Int, outcome: CapOutcome)
   CallerDown(down: process.Down)
+
   /// The inbound reader hit a channel-fatal condition (a malformed frame,
   /// an unsupported version, a closed transport). Every in-flight caller
   /// is answered `Unreachable(reason)` at once instead of being left to
@@ -185,6 +188,7 @@ pub fn start(
   actor.new_with_initialiser(init_timeout_ms, fn(subject) {
     let state =
       State(token:, send:, next_id: 0, inflight: dict.new(), failed: None)
+
     // Select the actor's own subject and, crucially, every monitor DOWN
     // this process sets up — the caller monitors that drive cancellation.
     let selector =

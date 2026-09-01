@@ -29,16 +29,19 @@ pub opaque type Connection {
 pub type Message {
   /// The socket actor completed its handshake and can accept commands.
   Connected
+
   /// A text frame arrived from the ClientGateway.
   Incoming(
     /// The undecoded wire payload.
     text: String,
   )
+
   /// The peer or local actor closed the websocket.
   Closed(
     /// The backend's diagnostic close reason.
     reason: String,
   )
+
   /// The socket remained alive long enough to report an I/O violation.
   NetworkFault(
     /// The backend's diagnostic failure reason.

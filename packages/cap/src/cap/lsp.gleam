@@ -38,8 +38,10 @@ pub type Diagnostic {
 pub type LspError {
   /// No language server is available for the file's language.
   NoServer(message: String)
+
   /// The broker refused the query in-band.
   LspDenied(code: String, message: String)
+
   /// The capability channel could not carry the call.
   LspUnavailable(reason: String)
 }

@@ -3,7 +3,7 @@
 ////
 //// This is the only module in the package that does I/O. It also applies
 //// the staging decision: **every rule warns except the ones
-//// `finding.error_by_default` names** — R0, R2, R4 and R6, each with its
+//// `finding.error_by_default` names** — R0, R2, R4, R6 and R10, each with its
 //// census and its argument in that function. `scripts/lint.sh` reads the
 //// trailing `# <errors> <warnings>` line to decide its exit code, exactly
 //// as `scripts/doc_check.sh` does. Promoting one of the remaining three is
@@ -49,13 +49,13 @@ const usage: String = "loom lint — the house rules gleam check does not know
 usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
-  --error=R1,R5   promote these rules to error level (R0, R2, R4, R6 are)
+  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10 already are)
   --tests         also lint test/ sources (R4 and R7 are off for them)
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
 
-R0, R2, R4 and R6 gate by default and their censuses must stay zero; every
+R0, R2, R4, R6 and R10 gate by default and their censuses must stay zero; every
 other rule warns unless named by --error. The last line of output is
 `# <errors> <warnings>`, which is what the wrapper script reads.
 "
@@ -141,6 +141,7 @@ fn run(options: Options) -> Nil {
     |> list.flat_map(sources)
     |> list.filter(fn(path) { options.include_tests || !is_test(path) })
     |> list.sort(string.compare)
+
   // Read once, lint twice. R1's structural half needs a table of every
   // `use`-compatible combinator the run can see before it can judge any one
   // call site: a combinator defined in `tools/tool` is called from sixteen

@@ -71,16 +71,20 @@ pub const max_read_bytes = 8_388_608
 pub type PathError {
   /// The path argument was empty.
   EmptyPath
+
   /// The path resolves outside the workspace root.
   EscapesWorkspace(path: String)
+
   /// The path could not be resolved against the real filesystem: an
   /// unreadable component, or a symlink chain longer than the
   /// resolution budget (a loop).
   Unresolvable(path: String, reason: String)
+
   /// The path resolves at or under an entry of the session base
   /// policy's `protected` list, which no write may touch. `protected`
   /// carries the entry that matched.
   ProtectedPath(path: String, protected: String)
+
   /// The session base policy's `protected` list holds a non-absolute
   /// entry, so this write is refused without being judged at all.
   /// `protected` carries the offending entry.
@@ -606,6 +610,7 @@ fn read_outcome(
     [] -> empty_window_text(window.total_lines, offset)
     _ -> hashline.render(window)
   }
+
   // An anchored read must stay inline — anchors in a blob would be
   // useless for planning edits — so an oversized window is refused
   // (spec §3.2 overflow applies to opaque outputs like bash/grep;
@@ -664,8 +669,10 @@ fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
 pub type ReadError {
   /// The `FileSystem` seam refused the read.
   ReadFailed(error: FsError)
+
   /// The file is larger than `max_read_bytes` (the large-file guard).
   TooLarge(size: Int, limit: Int)
+
   /// The file's bytes are not valid UTF-8, so there is no text to
   /// return.
   NotText

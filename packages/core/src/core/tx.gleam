@@ -26,10 +26,13 @@ import gleam/option.{type Option, None, Some}
 pub type Write {
   /// Insert one write-once conversation entry.
   InsertEntry(entry: Entry)
+
   /// Append one usage-ledger row.
   InsertUsage(row: UsageRow)
+
   /// Set a register cell, replacing any current value.
   SetRegister(ns: RegisterNs, key: String, value: RegisterValue)
+
   /// Delete a register cell.
   DeleteRegister(ns: RegisterNs, key: String)
 }
@@ -74,10 +77,13 @@ pub type CommitResult {
 pub type CommitError {
   /// An `expected` entry did not match the cell's current seq.
   StaleExpectation(failed: SeqExpectation)
+
   /// The transaction or stored state failed a total decode.
   Corruption(report: CorruptionReport)
+
   /// The backend faulted; the reason is a human-readable description.
   Faulted(reason: String)
+
   /// The single-writer lease this process committed under is no longer
   /// its own: another opener found it expired and stole it with a
   /// bumped fence, or the lease row was cleared out from under it.

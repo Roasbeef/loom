@@ -93,6 +93,7 @@ pub type Seam {
   /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`: a program
   /// that orchestrates *effects*.
   WorkspaceSeam
+
   /// `cap/strand` and `cap/report` and nothing else: a program that
   /// orchestrates *agents*.
   OrchestrationSeam
@@ -230,9 +231,11 @@ pub type Rule {
   /// An `@external` — or any attribute, the whole class failing closed —
   /// appeared in the submitted source.
   NoForeignInterface
+
   /// An import named a module that is not a byte-identical reference to an
   /// allowlisted one.
   ImportNotAllowed
+
   /// The source did not parse. A malformed program is a rejection, not a
   /// crash.
   Unparseable
@@ -245,8 +248,10 @@ pub type Rule {
 pub type Location {
   /// A byte span `[start, end)` in the submitted source.
   SourceSpan(start: Int, end: Int)
+
   /// A single byte offset (a parse error reports a point, not a span).
   SourcePoint(byte_offset: Int)
+
   /// No span is available; the detail names the construct.
   Unlocated
 }
@@ -262,12 +267,15 @@ pub type CompileFailure {
   /// The hermetic workspace could not be prepared. A harness-side fault,
   /// not the program's doing.
   WorkspaceSetupFailed(reason: String)
+
   /// The compiler rejected the program: a type error or any other build
   /// diagnostic. The one failure the model can always act on.
   BuildRejected(diagnostics: String)
+
   /// The build could not be run at all — the jail refused it or the helper
   /// died.
   BuildUnavailable(reason: String)
+
   /// The build claimed success but produced no usable `.beam` set.
   ArtifactIncomplete(reason: String)
 }
@@ -278,11 +286,14 @@ pub type CompileFailure {
 pub type RunFailure {
   /// The wall deadline passed; the satellite was killed as a unit.
   DeadlineExceeded
+
   /// The satellite died before it reported an outcome.
   SatelliteGone(reason: String)
+
   /// The execution never started — the token, the host actor, or the
   /// launch itself.
   StartFailed(reason: String)
+
   /// The capability channel or the terminal frame broke protocol.
   ChannelFaulted(reason: String)
 }
@@ -292,6 +303,7 @@ pub type RunFailure {
 pub type Outcome {
   /// The program finished with this structured value.
   Completed(value: MsgPackValue)
+
   /// The program failed in a controlled way and said why.
   Errored(message: String, details: MsgPackValue)
 }
@@ -305,6 +317,7 @@ pub type Report {
   /// skipped (`skipped`, named without their `skip:` prefix), and whether
   /// the run counts as degraded.
   Enforced(applied: List(String), skipped: List(String), degraded: Bool)
+
   /// This stage produced no report, and this is why.
   Unreported(reason: String)
 }
@@ -322,10 +335,13 @@ pub type Enforcement {
 pub type ExecResult {
   /// Vetting refused the program; nothing was compiled or run.
   VetRejected(rejections: List(Rejection))
+
   /// The program vetted but did not compile.
   CompileFailed(failure: CompileFailure)
+
   /// The program compiled but the satellite returned no outcome.
   RunFailed(failure: RunFailure)
+
   /// The program ran. `manifest_hash` is the artifact's content address,
   /// the durable fingerprint of exactly what executed.
   Ran(outcome: Outcome, manifest_hash: String)
@@ -355,6 +371,7 @@ pub type PolicyRefusal {
   /// on policy, or the one that was is not one an approval could widen.
   /// The execution may still have failed for any other reason.
   NothingRefused
+
   /// The **run** phase was refused before the satellite serviced a single
   /// capability call, so nothing of the program ran.
   ///
@@ -858,6 +875,7 @@ fn once_more_if_approved(
     RunRefused(denial:, deadline_ms:) ->
       case ctx.raise_refusal(tool.RaisedRefusal(denial:, deadline_ms:)) {
         tool.Settle -> execution
+
         // Appended rather than substituted: an approval widens what this
         // call already carried, and the grants the call arrived with are
         // ones a human approved for it too — through the driver's own

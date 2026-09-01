@@ -66,10 +66,13 @@ type Entry {
 pub type Refusal {
   /// The bytes match no token ever minted by this vault.
   UnknownToken
+
   /// The token was revoked (directly or via `revoke_all`).
   Revoked
+
   /// The binding's deadline has passed.
   Expired(deadline_ms: Int)
+
   /// The token is live but bound to a different `{op_id, step_id}`.
   WrongBinding
 }
@@ -78,6 +81,7 @@ pub type Refusal {
 pub type MintError {
   /// The entropy source returned the wrong number of bytes.
   EntropyFailure(got_bytes: Int)
+
   /// The entropy source repeated an existing token's bytes — with real
   /// entropy this is unreachable; with injected test entropy it is a
   /// fixture bug worth naming.

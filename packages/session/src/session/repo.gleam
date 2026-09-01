@@ -58,6 +58,7 @@ pub type ForkScope {
   /// seeded on first attachment). Entry labels are copied only for copied
   /// entries.
   ForkBranch(strand: String, at: EntryId)
+
   /// Copy the whole tree: every entry, every strand's configuration and
   /// leaf, every entry label. Each destination strand starts with a fresh
   /// `StrandState`.
@@ -69,6 +70,7 @@ pub type ForkScope {
 pub type ForkDestination {
   /// A fresh in-memory session.
   ForkIntoMemory
+
   /// A fresh SQLite session file (created at `path`), opened with the
   /// writer lease held by `owner` — the forked session is returned open,
   /// per pi §2.8.
@@ -80,15 +82,20 @@ pub type ForkDestination {
 pub type ForkError {
   /// Reading the source failed.
   ForkSourceRead(error: session.SessionError)
+
   /// The branch-scope fork point names no committed entry.
   ForkPointUnknown(id: EntryId)
+
   /// The destination backend refused to open.
   ForkDestinationOpen(error: session.OpenError)
+
   /// Probing the freshly opened destination failed.
   ForkDestinationRead(error: StorageError)
+
   /// The destination already holds entries — forking must never splice
   /// two histories together.
   ForkDestinationNotEmpty
+
   /// The single copy transaction was refused by the destination. A
   /// `StaleExpectation` on `session/id` means the destination was already
   /// identified by an earlier open — entry-empty but not fresh, which a
@@ -147,6 +154,7 @@ pub fn fork(
         list.map(entries, fn(entry) { InsertEntry(entry:) }),
         list.append(registers, identity_writes(minted, parent)),
       )
+
     // The destination must be unidentified as well as entry-empty:
     // `require_empty` only looks at entries, and a session file that a
     // prior open identified but never wrote an entry into would other-
@@ -587,14 +595,18 @@ pub type MemoryRewrite {
 pub type RewriteError {
   /// Reading the source failed.
   RewriteSourceRead(error: session.SessionError)
+
   /// The entry transform reported corruption, or changed an entry's id,
   /// parent, or kind.
   RewriteEntryFailed(report: CorruptionReport)
+
   /// The value transform reported corruption for a register payload or a
   /// usage-details blob.
   RewriteValueFailed(report: CorruptionReport)
+
   /// The rebuilt destination refused to open.
   RewriteDestinationOpen(error: session.OpenError)
+
   /// The rebuild transaction was refused.
   RewriteCopyFailed(error: CommitError)
 }
@@ -639,12 +651,14 @@ pub fn rewrite_memory(
       RewriteSourceRead(error: session.StoreFailure(error:))
     }),
   )
+
   // Usage details are opaque JSON and can carry the needle (provider
   // echoes, request annotations); they go through the value transform on
   // the way into the rebuild, matching the SQLite path's audit scope.
   use usage_rows <- result.try(
     list.try_map(usage_rows, fn(row) { rewrite_usage_row(row, rewrite_value) }),
   )
+
   // Every register cell is retained — a rewrite erases content, not
   // history — but its payload runs through the value transform first:
   // pending messages, tool arguments, and preparation copies are exactly
@@ -714,6 +728,7 @@ fn place_rewritten_entry(
       )),
     )
   })
+
   // Keep the stored placement even if the transform touched the
   // placeholder fields.
   let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)

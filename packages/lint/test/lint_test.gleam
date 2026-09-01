@@ -1023,6 +1023,395 @@ fn wide(a, b, c, d, e, f, g, h) { wide(a, b, c, d, e, f, g, h) }",
   |> should.be_true
 }
 
+// --- R9: a Bool with nothing on it ------------------------------------------
+
+pub fn r9_flags_a_bool_parameter_test() {
+  module("fn render(document, compact: Bool) { #(document, compact) }")
+  |> fired(finding.NakedBool)
+  |> should.be_true
+}
+
+pub fn r9_flags_a_bool_record_field_test() {
+  module("pub type Entry { Entry(id: String, revoked: Bool) }")
+  |> fired(finding.NakedBool)
+  |> should.be_true
+}
+
+/// `Option(Bool)` is the same hazard with a third state bolted on, and
+/// `Dict(_, Bool)` is a set that never said what membership means. The
+/// search descends into type parameters for both.
+pub fn r9_flags_a_bool_inside_a_container_test() {
+  module("pub type State { State(seen: List(Bool)) }")
+  |> fired(finding.NakedBool)
+  |> should.be_true
+}
+
+/// The narrowing that keeps the rule from flagging the language. A
+/// predicate *returns* `Bool` because `case`, `&&` and `bool.guard` consume
+/// it, and the stdlib's own `is_*` vocabulary is built that way.
+pub fn r9_leaves_a_bool_return_alone_test() {
+  module("fn is_empty(xs) -> Bool { xs == [] }")
+  |> fired(finding.NakedBool)
+  |> should.be_false
+}
+
+/// The same narrowing from the other side: a predicate handed *to* a
+/// function is that legitimate `is_*` arriving as an argument, so the
+/// search stops at a `fn(…)` rather than reading its return type.
+pub fn r9_leaves_a_predicate_parameter_alone_test() {
+  module("fn keep(xs, ready: fn(Int) -> Bool) { list.filter(xs, ready) }")
+  |> fired(finding.NakedBool)
+  |> should.be_false
+}
+
+pub fn r9_says_which_declaration_it_found_test() {
+  case
+    module("pub type Entry { Entry(revoked: Bool) }")
+    |> findings
+    |> list.filter(fn(found) { found.rule == finding.NakedBool })
+  {
+    [only] -> should.be_true(string.contains(only.detail, "`revoked` field"))
+    _ -> should.fail()
+  }
+}
+
+// --- R10: a comment with no room above it -----------------------------------
+
+pub fn r10_flags_a_comment_welded_to_the_line_above_test() {
+  "fn f(x) {
+  let a = x + 1
+  // Why the next line is what it is.
+  let b = a + 1
+  b
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_true
+}
+
+pub fn r10_accepts_a_comment_with_a_blank_line_above_it_test() {
+  "fn f(x) {
+  let a = x + 1
+
+  // Why the next line is what it is.
+  let b = a + 1
+  b
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// The exemption the formatter forces. `gleam format` deletes a blank line
+/// at the top of a block, so a comment opening a body cannot have one above
+/// it and a finding about it could never be acted on.
+pub fn r10_exempts_a_comment_opening_a_body_test() {
+  "fn f(x) {
+  // What this function is for.
+  let a = x + 1
+  a
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// A `case` arm is a sibling too: the reasoning for an arm is the commonest
+/// place this repo writes prose inside a function.
+pub fn r10_flags_a_comment_between_case_arms_test() {
+  "fn f(x) {
+  case x {
+    Ok(value) -> value
+    // Why the error arm does what it does.
+    Error(_) -> 0
+  }
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_true
+}
+
+pub fn r10_exempts_a_comment_above_the_first_arm_test() {
+  "fn f(x) {
+  case x {
+    // What this dispatch is about.
+    Ok(value) -> value
+    Error(_) -> 0
+  }
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// The narrowing that keeps a rule about paragraphs out of a data literal.
+/// A comment naming one element of a wrapped constructor annotates that
+/// element; it opens no stanza, and no blank line is owed above it. This is
+/// R2's "a wrapped literal is not depth" in the layout register, and
+/// removing it would flood every encoder in the tree.
+pub fn r10_ignores_a_comment_inside_a_wrapped_literal_test() {
+  "fn f(x) {
+  let a = 1
+  wide(
+    x,
+    // Why this argument is what it is.
+    x,
+  )
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// The variants of a custom type are siblings too, and this is where the
+/// tree writes most of its `///` prose. `gleam format` preserves a blank
+/// line between two variants, so the rule may ask for one.
+pub fn r10_flags_a_comment_between_type_variants_test() {
+  "pub type Rule {
+  /// The first variant.
+  NakedBool
+  /// The second, welded to the line above.
+  CommentStanza
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_true
+}
+
+pub fn r10_exempts_the_first_variant_test() {
+  "pub type Rule {
+  /// The first variant, which has only the brace above it.
+  NakedBool
+
+  /// The second.
+  CommentStanza
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// The formatter decides this one, not the rule. `gleam format` **deletes**
+/// a blank line between two fields of a constructor while preserving one
+/// between two variants, so a finding here could never be acted on — the
+/// same reasoning that exempts the first statement of a body. Fields are
+/// not siblings R10 knows about, and removing that would make the linter
+/// and the formatter demand opposite things.
+pub fn r10_ignores_record_fields_test() {
+  "pub type Finding {
+  Finding(
+    /// Which rule fired.
+    rule: Rule,
+    /// Where it fired, welded to the line above.
+    path: String,
+  )
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// A variant head is an upper-case name at bracket depth zero. A field's
+/// own type is inside the variant's parentheses, so `Int` and a qualified
+/// `option.Option` are never mistaken for the next variant.
+pub fn variant_offsets_skips_field_types_test() {
+  let code = "pub type T {\n  A\n  B(x: Int)\n}\n"
+  case source.variant_offsets(code, [#(0, string.byte_size(code))]) {
+    [offsets] -> should.equal(list.length(offsets), 2)
+    _ -> should.fail()
+  }
+}
+
+/// A whole comment block moves together, so the finding points at its first
+/// line — the one a blank line has to go above — rather than at the last.
+pub fn r10_reports_the_top_of_a_comment_block_test() {
+  case
+    "fn f(x) {
+  let a = x + 1
+  // First line of the reason.
+  // Second line of the reason.
+  let b = a + 1
+  b
+}
+"
+    |> findings
+    |> list.filter(fn(found) { found.rule == finding.CommentStanza })
+  {
+    [only] -> should.equal(only.line, 3)
+    _ -> should.fail()
+  }
+}
+
+// --- R11: a body written as one block ---------------------------------------
+
+/// Nine statements welded together, one over the default threshold.
+pub fn r11_flags_a_body_with_no_paragraphs_test() {
+  "fn f(x) {
+  let a = x
+  let b = a
+  let c = b
+  let d = c
+  let e = d
+  let g = e
+  let h = g
+  let i = h
+  i
+}
+"
+  |> fired(finding.DenseStanza)
+  |> should.be_true
+}
+
+/// The same nine statements with one blank line in them: two paragraphs of
+/// five and four, neither over the threshold.
+pub fn r11_accepts_the_same_body_broken_into_stanzas_test() {
+  "fn f(x) {
+  let a = x
+  let b = a
+  let c = b
+  let d = c
+
+  let e = d
+  let g = e
+  let h = g
+  let i = h
+  i
+}
+"
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+/// A comment breaks a run exactly as a blank line does — it is a heading,
+/// which is the whole point of the rule.
+pub fn r11_accepts_a_body_broken_by_a_comment_test() {
+  "fn f(x) {
+  let a = x
+  let b = a
+  let c = b
+  let d = c
+
+  // What the rest of this does.
+  let e = d
+  let g = e
+  let h = g
+  let i = h
+  i
+}
+"
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+/// The narrowing the first census forced. A `use`-chained decoder is a
+/// table of fields written down the page, not a paragraph of steps, and the
+/// only way to satisfy a rule that counted them would be to break the table
+/// at an arbitrary field.
+pub fn r11_does_not_count_a_use_chain_test() {
+  module(
+    "fn decode(fields) {
+  use a <- result.try(field(fields, 1))
+  use b <- result.try(field(fields, 2))
+  use c <- result.try(field(fields, 3))
+  use d <- result.try(field(fields, 4))
+  use e <- result.try(field(fields, 5))
+  use g <- result.try(field(fields, 6))
+  use h <- result.try(field(fields, 7))
+  use i <- result.try(field(fields, 8))
+  use j <- result.try(field(fields, 9))
+  use k <- result.try(field(fields, 10))
+  Ok(#(a, b, c, d, e, g, h, i, j, k))
+}",
+  )
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+/// A `use` carries a run across rather than breaking it: nine `let`s
+/// threaded through a decoder chain still read as nine.
+pub fn r11_carries_a_run_across_a_use_test() {
+  module(
+    "fn f(x) {
+  let a = x
+  let b = a
+  let c = b
+  let d = c
+  use e <- result.try(g(d))
+  let h = e
+  let i = h
+  let j = i
+  let k = j
+  let l = k
+  Ok(l)
+}",
+  )
+  |> fired(finding.DenseStanza)
+  |> should.be_true
+}
+
+/// Density is counted in statements, never in lines, for the reason R2
+/// counts depth on the AST: `gleam format` gives a wide call one argument
+/// per line, and a twelve-line literal is one statement.
+pub fn r11_does_not_count_a_wrapped_literal_test() {
+  "fn f() {
+  let rows = [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+  ]
+  rows
+}
+"
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+// --- how a file's lines are classified --------------------------------------
+
+pub fn classify_names_the_three_kinds_of_line_test() {
+  let lines = source.classify("let x = 1\n\n// why\nlet y = 2\n")
+  should.equal(source.kind_of(lines, 1), source.Code)
+  should.equal(source.kind_of(lines, 2), source.Blank)
+  should.equal(source.kind_of(lines, 3), source.CommentLine)
+  should.equal(source.kind_of(lines, 4), source.Code)
+}
+
+/// A trailing comment annotates the line it sits on rather than opening a
+/// stanza, so the line is code. The house rule forbids the spelling anyway;
+/// the classification is what keeps a rule about headings from finding one
+/// here.
+pub fn classify_reads_a_trailing_comment_as_code_test() {
+  source.classify("let x = 1  // and why\n")
+  |> source.kind_of(1)
+  |> should.equal(source.Code)
+}
+
+/// Over tokens, not over text: a line of a multi-line string that begins
+/// `//` is a string, and telling its author to put a blank line above it
+/// would be advice nobody could act on. The same reason the keyword scan
+/// lexes rather than searches.
+pub fn classify_ignores_a_comment_inside_a_string_test() {
+  source.classify("let s = \"one\n// two\"\n")
+  |> source.kind_of(2)
+  |> should.equal(source.Code)
+}
+
+/// Line 1 begins at 0, which `line_starts` does not report, and every later
+/// line begins one byte past the newline before it — the same index
+/// `lines_of` walks, so a caller that classified a file need not build it
+/// twice.
+pub fn classify_agrees_with_the_line_index_test() {
+  let code = "a\nbb\n\nc\n"
+  should.equal(source.classify(code).starts, source.line_starts(code))
+}
+
 // --- R6: the portable subset ------------------------------------------------
 
 /// A source at the path a package's file really has, so the rule can tell
@@ -1218,16 +1607,53 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4 and R6 gate, and R1, R3 and R5
-/// warn. R3 can never join them and R1 and R5 have a census to clear first,
-/// so a change here is a change of policy, not of implementation.
+/// The staging decision, pinned: R0, R2, R4, R6 and R10 gate; R1, R3, R5,
+/// R7, R8, R9 and R11 warn. R3 and R8 can never join them, and R1, R5 and
+/// R9 have a census to clear first, so a change here is a change of policy
+/// and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,
     finding.NestingDepth,
     finding.PanicInSource,
     finding.PortablePurity,
+    finding.CommentStanza,
   ])
+}
+
+/// R10 gates, and the promotion is only real if a welded comment stops a
+/// build. Its census was driven to zero across all eighteen packages in the
+/// change that wrote it, which is the condition under which promotion
+/// cannot fail correct code.
+pub fn r10_gates_a_welded_comment_test() {
+  gate_of(
+    "packages/core/src/core/welded.gleam",
+    "fn f(x) {
+  let a = x + 1
+  // A comment with code directly above it.
+  let b = a + 1
+  b
+}
+",
+  )
+  |> should.equal(#(1, 0))
+}
+
+/// The other side of the same promotion: the shape the rule asks for is
+/// silent, so a build does not fail for writing prose correctly.
+pub fn r10_does_not_gate_a_comment_with_room_test() {
+  gate_of(
+    "packages/core/src/core/roomy.gleam",
+    "fn f(x) {
+  let a = x + 1
+
+  // A comment with a blank line above it.
+  let b = a + 1
+  b
+}
+",
+  )
+  |> should.equal(#(0, 0))
 }
 
 /// A source `glance` cannot read is a linter switched off for that file.

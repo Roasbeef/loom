@@ -29,6 +29,7 @@ import gleam/string
 pub type Content {
   /// A text block: `{type: "text", text}` on the wire.
   Text(text: String)
+
   /// Any other block kind, carried as its `type` string verbatim.
   Other(kind: String)
 }
@@ -60,14 +61,17 @@ pub type McpError {
   /// (`is_error: true`). `message` is the joined text content; the full
   /// blocks ride along for a caller that wants more than prose.
   ToolFailed(message: String, content: List(Content))
+
   /// The capability channel could not carry the call, or the harness
   /// router refused it as `mcp_unavailable` — the server is not running
   /// or its client has gone. (A server this host never configured is a
   /// different refusal: `unsupported_cap`, under `McpDenied`.)
   ServerUnavailable(reason: String)
+
   /// Any other in-band broker or router refusal, code preserved
   /// verbatim (`unsupported_cap`, `mcp_timeout`, a ceiling, …).
   McpDenied(code: String, message: String)
+
   /// The `cap_result` did not match the pinned result shape.
   ResultMalformed(reason: String)
 }

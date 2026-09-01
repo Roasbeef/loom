@@ -241,19 +241,25 @@ pub type FsRefusal {
   /// `resolve_real` refused the path — or, on the write arms,
   /// `resolve_writable` did, which adds the protected-path refusal.
   PathRefused(error: fs.PathError)
+
   /// The path resolved and the read did not produce text.
   ReadRefused(error: fs.ReadError)
+
   /// The directory could not be enumerated, with the backend's reason.
   ListRefused(error: tool.FsError)
+
   /// The path resolved to something that is not a directory, so there
   /// is nothing to list. Its own variant rather than a `ListRefused`
   /// carrying an errno sentence, because it is the one listing failure
   /// a program can act on directly — `fs.read` is the call it wanted.
   NotADirectory(path: String)
+
   /// The directory holds more than `max_list_entries` entries.
   TooManyEntries(count: Int, limit: Int)
+
   /// The path resolved, the check passed, and the write itself failed.
   WriteRefused(error: tool.FsError)
+
   /// The replacements could not be applied; nothing was written.
   EditRefused(refusal: EditRefusal)
 }
@@ -272,10 +278,12 @@ pub type EditRefusal {
   /// `StaleContent` under this contract: the text the program committed
   /// to is no longer there.
   StaleFind(find: String)
+
   /// A `find` matched more than once. A `Replacement` carries no
   /// position, so which occurrence was meant is unknowable; refused
   /// rather than guessed.
   AmbiguousFind(find: String, count: Int)
+
   /// A `find` was empty, which matches everywhere and means nothing.
   EmptyFind
 }
@@ -310,6 +318,7 @@ pub fn apply_replacements(
   list.try_fold(edits, text, fn(current, edit) {
     let Replacement(find:, replace_with:) = edit
     use <- bool.guard(when: find == "", return: Error(EmptyFind))
+
     // Occurrences counted by splitting: n parts means n - 1 matches.
     // Non-overlapping, which is also `string.replace`'s reading, so the
     // count and the replacement agree about what a match is.
@@ -330,6 +339,7 @@ pub fn apply_replacements(
 pub type KvRefusal {
   /// The value is larger than one entry may be.
   EntryTooLarge(bytes: Int, limit: Int)
+
   /// The store is not running, or did not answer.
   StoreUnavailable(reason: String)
 }
@@ -582,6 +592,7 @@ fn kv_get_plan(
     ServedHere(fn() {
       case seam.kv_get(key) {
         Error(refusal) -> kv_refused(refusal)
+
         // `found` and `value` as two fields rather than a nullable one:
         // `cap/kv.get` reads the flag first and only then the bytes, so a
         // stored empty `BitArray` is distinguishable from an absent key.
@@ -736,6 +747,7 @@ fn path_denial(error: fs.PathError) -> CapDenial {
         code: permission_denied_code,
         message: "path `" <> path <> "` resolves outside the workspace root",
       )
+
     // Reads are not refused by the protected list — the harness's own
     // `fs_read` does not consult it either, and an unreadable `.git` would
     // make most of what a program is asked to do impossible. This arm is
@@ -755,6 +767,7 @@ fn path_denial(error: fs.PathError) -> CapDenial {
         code: unresolvable_code,
         message: "path `" <> path <> "` could not be resolved: " <> reason,
       )
+
     // The session's own `protected` list cannot be applied, so the write
     // is refused without being judged. Its own code rather than
     // `permission_denied`, and the choice is about what survives the

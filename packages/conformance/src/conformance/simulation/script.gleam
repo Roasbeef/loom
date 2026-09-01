@@ -39,12 +39,16 @@ pub type Call {
 pub type Settle {
   /// A final answer that ends the turn.
   Answer(text: String, tokens: Int)
+
   /// A tool-use response.
   Calls(calls: List(Call), tokens: Int)
+
   /// A retryable provider failure: drives the retry ladder.
   Transient
+
   /// A deferred stop with a valid handle: drives the poll path.
   Defer
+
   /// A length stop below the intended output limit: classified as
   /// overflow, which drives compaction and the resume one-shot.
   Overflow
@@ -54,6 +58,7 @@ pub type Settle {
 pub type ToolBehavior {
   /// An ordinary result.
   ToolOk(text: String)
+
   /// An in-band error result.
   ToolErr(text: String)
 }
@@ -62,6 +67,7 @@ pub type ToolBehavior {
 pub type Structural {
   /// The decision hook supplies the summary itself; no provider request.
   Supplied
+
   /// The decision hook selects generation; `split` asks for a second
   /// nested request before the summary is produced.
   Generated(split: Bool)
@@ -78,8 +84,10 @@ pub type Trigger {
   /// While the generation request at `turn` assistant messages of
   /// projected context is in flight.
   DuringTurn(turn: Int)
+
   /// While the tool execution for this call id is in flight.
   DuringCall(call: String)
+
   /// From the writer, immediately after the terminal transaction is
   /// durable and before its committer learns of it: the §4.6
   /// abort-versus-finish race.
@@ -91,8 +99,10 @@ pub type Trigger {
 pub type Intervention {
   /// Admit a steer item.
   Steer(trigger: Trigger, text: String)
+
   /// Admit a follow-up item.
   FollowUp(trigger: Trigger, text: String)
+
   /// Request durable cancellation.
   Abort(trigger: Trigger)
 }
@@ -101,8 +111,10 @@ pub type Intervention {
 pub type Op {
   /// A conversational run.
   RunOp(prompt: String, settles: List(Settle), post: Settle)
+
   /// A standalone compaction operation.
   CompactOp
+
   /// A navigation to an earlier entry, optionally summarized.
   NavigateOp(summarize: Bool)
 }
@@ -361,6 +373,7 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
   // batch so the per-call frontier actually overlaps.
   let #(parallel, rng) = random.chance(rng, 35)
   let #(escalate, rng) = random.chance(rng, 40)
+
   // A run continues only while its turns keep asking for more, so the
   // shape is: some number of continuing turns, then one that ends it.
   let #(drawn_count, rng) = random.weighted(rng, [#(3, 0), #(4, 1), #(2, 2)], 0)
@@ -368,6 +381,7 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
     True -> 1
     False -> drawn_count
   }
+
   // At most one deferred turn per script: the poll settlement is one
   // scripted value, so two polls would reuse its call ids and a call id
   // must name exactly one call in the tree.
@@ -527,6 +541,7 @@ fn tool_table(rng: Rng) -> #(List(#(String, ToolBehavior)), Rng) {
 fn interventions(rng: Rng) -> #(List(Intervention), Rng) {
   let #(count, rng) = random.weighted(rng, [#(4, 0), #(4, 1), #(2, 2)], 0)
   let #(drawn, rng) = random.list_of(rng, count, intervention)
+
   // Two identical interventions are one intervention: they fire under
   // one claim, so a script that listed both would describe work it does
   // not do.

@@ -28,16 +28,22 @@ pub type ModelIdentity {
 pub type ThinkingLevel {
   /// No visible reasoning requested.
   ThinkingOff
+
   /// Minimal reasoning effort.
   ThinkingMinimal
+
   /// Low reasoning effort.
   ThinkingLow
+
   /// Medium reasoning effort.
   ThinkingMedium
+
   /// High reasoning effort.
   ThinkingHigh
+
   /// Extra-high reasoning effort.
   ThinkingXHigh
+
   /// Maximum reasoning effort.
   ThinkingMax
 }

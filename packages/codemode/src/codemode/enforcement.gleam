@@ -59,6 +59,7 @@ pub type Report {
   /// not provide appears as its own `skip:` entry rather than going
   /// unmentioned.
   Reported(entries: List(String), degraded: Bool)
+
   /// No report exists for this stage, and this is why: it was never
   /// dispatched, it died before the helper could report, or its
   /// settlement never arrived.
@@ -86,6 +87,7 @@ pub type Widening {
   /// one was and no stage ever reached the point of composing it — because
   /// an operator reviewing an approval needs to know whether it was spent.
   NotWidened(reason: String)
+
   /// The run phase composed these grants: the satellite node's own
   /// clearance and every capability call the program made were cleared
   /// under `base ⊕ requirements ⊕ grants` rather than under the meet
