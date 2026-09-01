@@ -251,26 +251,26 @@ pub fn main() {
     )
   let initial = case parse_launch(argv.load().arguments) {
     Demo -> base
-    Local(options) ->
+    Local(options) -> {
+      // The footer names the workspace the session was launched for, which
+      // is only the current directory when no `--workspace` was given; a
+      // later `/sessions` switch derives it the same way from its choice.
+      let local =
+        Model(
+          ..base,
+          local_options: Some(options),
+          workspace: case options.workspace {
+            "" -> project
+            path -> workspace.discover_from(path)
+          },
+        )
       case bootstrap.resolve(options) {
         Error(reason) ->
-          append_error(
-            Model(
-              ..base,
-              local_options: Some(options),
-              notice: "local startup failed",
-            ),
-            reason,
-          )
+          append_error(Model(..local, notice: "local startup failed"), reason)
         Ok(bootstrap.Target(address:, session:, token:)) ->
-          connect_remote(
-            Model(..base, local_options: Some(options)),
-            inbox,
-            address,
-            session,
-            token,
-          )
+          connect_remote(local, inbox, address, session, token)
       }
+    }
     Invalid(reason) ->
       append_error(Model(..base, notice: "invalid launch"), reason)
     Remote(address, session, token) ->
