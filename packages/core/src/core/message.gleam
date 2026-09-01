@@ -45,6 +45,7 @@ import gleam/option.{type Option}
 pub type AgentMessage {
   /// A user-authored turn.
   UserMessage(content: List(UserBlock), timestamp: Int)
+
   /// A provider response.
   AssistantMessage(
     content: List(AssistantBlock),
@@ -62,6 +63,7 @@ pub type AgentMessage {
     end_turn: Option(Bool),
     timestamp: Int,
   )
+
   /// The result of executing one tool call.
   ToolResultMessage(
     tool_call_id: String,
@@ -73,6 +75,7 @@ pub type AgentMessage {
     is_error: Bool,
     timestamp: Int,
   )
+
   /// An application-defined message under a registered runtime schema.
   CustomMessage(schema: String, payload: JsonValue)
 }
@@ -85,6 +88,7 @@ pub type AgentMessage {
 pub type UserBlock {
   /// Text authored by the user.
   UserText(text: String, text_signature: Option(String))
+
   /// An image supplied by the user.
   UserImage(data: String, mime_type: String)
 }
@@ -98,12 +102,14 @@ pub type UserBlock {
 pub type AssistantBlock {
   /// Text produced by the model.
   AssistantText(text: String, text_signature: Option(String))
+
   /// A reasoning block, possibly redacted.
   AssistantThinking(
     thinking: String,
     thinking_signature: Option(String),
     redacted: Bool,
   )
+
   /// A request to invoke a tool.
   AssistantToolCall(call: ToolCall)
 }
@@ -115,6 +121,7 @@ pub type AssistantBlock {
 pub type ToolResultBlock {
   /// Text output from the tool.
   ToolResultText(text: String, text_signature: Option(String))
+
   /// An image produced by the tool.
   ToolResultImage(data: String, mime_type: String)
 }
@@ -145,16 +152,22 @@ pub type ToolCall {
 pub type StopReason {
   /// The stream has not settled yet.
   Pending
+
   /// The model ended its turn normally.
   Stop
+
   /// The response hit a token limit.
   Length
+
   /// The model requested tool calls.
   ToolUse
+
   /// The request failed; `error_message` says why. Wire form `"error"`.
   Errored
+
   /// The request was aborted by the caller.
   Aborted
+
   /// The provider returned a durable handle to poll instead of a response.
   Deferred
 }

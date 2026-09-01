@@ -41,6 +41,7 @@ pub const excerpt_bytes = 2048
 pub type Bounded {
   /// At or under the threshold; carried inline.
   Inline(text: String)
+
   /// Over the threshold; the full text lives in the blob store.
   /// Invariants: `ref` is the content address (`sha256-<hex>`), `size`
   /// the full byte length, and the excerpts are UTF-8-clean prefixes
@@ -259,6 +260,7 @@ fn utf8_slice_at(bytes: BitArray, start: Int, length: Int) -> String {
         Ok(slice) ->
           case bit_array.to_string(slice) {
             Ok(text) -> text
+
             // The cut landed inside a multi-byte character; shrink.
             Error(Nil) -> utf8_slice_at(bytes, start, length - 1)
           }
@@ -275,6 +277,7 @@ fn utf8_slice_from(bytes: BitArray, start: Int, length: Int) -> String {
         Ok(slice) ->
           case bit_array.to_string(slice) {
             Ok(text) -> text
+
             // The cut landed inside a multi-byte character; move the
             // start forward to the next boundary.
             Error(Nil) -> utf8_slice_from(bytes, start + 1, length - 1)

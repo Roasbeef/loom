@@ -232,6 +232,7 @@ pub type Caller {
 pub type Minter {
   /// The planned tool call is itself the minter: a model's `agent_spawn`.
   ToolCall
+
   /// A code-mode program running under the planned tool call is the
   /// minter, on its `ordinal`-th spawn admission.
   Program(ordinal: Int)
@@ -251,6 +252,7 @@ pub type Handle {
 pub type Provenance {
   /// At the root of the tree: the child reads its brief and nothing else.
   Fresh
+
   /// At the caller's current leaf, copying the caller's entire
   /// conversation into the child's context window.
   MyConversation
@@ -315,19 +317,25 @@ pub type ResultField {
 pub type FieldType {
   /// `{"type": "string"}`.
   StringField
+
   /// `{"type": "integer"}`: a JSON number with no fraction or exponent.
   IntegerField
+
   /// `{"type": "number"}`: any JSON number, integral or not.
   NumberField
+
   /// `{"type": "boolean"}`.
   BooleanField
+
   /// `{"type": "object"}`. The keys underneath are not described: this
   /// is the smallest thing that says "an object with these keys of these
   /// types", and nesting a second level of that is a schema language.
   ObjectField
+
   /// `{"type": "array", "items": {...}}`, or `{"type": "array"}` with
   /// `items` absent, which is an array of anything.
   ArrayField(items: FieldType)
+
   /// A property object with no `type` at all — the shape
   /// `tool.any_property` emits. Anything matches, `null` included.
   AnyField
@@ -341,8 +349,10 @@ pub type FieldType {
 pub type Mismatch {
   /// The result was not a JSON object at all.
   NotAnObject(received: String)
+
   /// A required field was not there.
   FieldMissing(name: String, expects: FieldType)
+
   /// A field was there and had the wrong type.
   FieldWrongType(name: String, expects: FieldType, received: String)
 }
@@ -358,11 +368,14 @@ pub type Mismatch {
 pub type TerminalResult {
   /// The spawn asked for no schema. Nothing is rendered for it.
   NoResultAsked
+
   /// The child recorded a result and it matched.
   ResultGiven(value: JsonValue)
+
   /// A schema was asked for and the child's run ended without recording
   /// anything under `result_note_key`.
   ResultAbsent(schema: ResultSchema)
+
   /// A result cell is there and does not match. Reachable even though
   /// the write is checked, because the cell is read back out of the
   /// durable store, and a value crossing that boundary is decoded rather
@@ -401,8 +414,10 @@ pub type Spawned {
 pub type Outcome {
   /// The run finished normally.
   Completed
+
   /// The run failed terminally.
   Failed(reason: String)
+
   /// The run was aborted — deadline, reap, or operator.
   Aborted
 }
@@ -427,6 +442,7 @@ pub type Waited {
     result: TerminalResult,
     notes: List(#(String, JsonValue)),
   )
+
   /// The deadline expired first. Not an error: call again, or do other
   /// work and come back.
   Pending(handle: Handle, waited_ms: Int)
@@ -437,6 +453,7 @@ pub type Waited {
 pub type Delivery {
   /// The target had an open run: the message is a durable steer on it.
   Steered(entry: EntryId)
+
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
 }
@@ -445,6 +462,7 @@ pub type Delivery {
 pub type Relation {
   /// The strand that spawned the caller.
   ParentOf
+
   /// A strand the caller spawned.
   ChildOf
 }
@@ -469,31 +487,40 @@ pub type Peer {
 pub type Refusal {
   /// This host wired no messaging plane, or its holder is not up yet.
   AgencyUnavailable
+
   /// The handle text did not parse.
   MalformedHandle(text: String)
+
   /// The named strand is not the caller's parent and not a descendant of
   /// it. Also the answer for a strand with no lineage cell at all: "no
   /// lineage fact" means "not a descendant", never "unknown, allow".
   NotAddressable(strand: String)
+
   /// A wait named a strand that is not a descendant of the caller. Waits
   /// are strictly downward — that is what makes the wait graph acyclic.
   NotADescendant(strand: String)
+
   /// The caller is already at the spawning depth cap.
   DepthCapReached(depth: Int)
+
   /// The caller, or the session, already has as many live strands as it
   /// may have.
   FanOutCapReached(live: Int, cap: Int)
+
   /// The spawn asked for a tool the caller does not itself hold. A child
   /// may narrow its parent's set, never widen it.
   UnknownTool(name: String)
+
   /// An argument was unusable — an empty purpose, an unusable one, too
   /// many handles, a blackboard key outside the allowed shape.
   InvalidArgument(reason: String)
+
   /// A send upward would have *started* a run rather than steered one:
   /// the parent has finished and nobody is watching it. Reporting into a
   /// finished parent burns tokens with no human present, which is the
   /// exact property auto-enqueued results were rejected over.
   ParentRunEnded(strand: String)
+
   /// A child's terminal result did not match the schema its parent asked
   /// for. Refused to the *child*, on the child's own `agent_note` call:
   /// the child is the party that can fix it, and it can fix it now,
@@ -504,6 +531,7 @@ pub type Refusal {
     received: JsonValue,
     mismatch: Mismatch,
   )
+
   /// The name this spawn derives is already a child's, and the ledger
   /// says a different minter made it. Reconciliation hands an existing
   /// child back on a name match — that is what makes a replayed spawn
@@ -514,6 +542,7 @@ pub type Refusal {
   /// with somebody else's work. Refused rather than adopted, because a
   /// wrong answer that reads like a right one is the worse outcome.
   NameAlreadyMinted(strand: String)
+
   /// The durable plane refused or failed — a commit, a read, a decode.
   PlaneFailed(reason: String)
 }
@@ -753,6 +782,7 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
     Error(Nil) -> Error("must carry a `properties` object")
   })
   use required <- result.try(required_names(fields))
+
   // The bound sits above the walk, and that ordering is the whole of its
   // protection: `list.drop` answers a question about the first
   // `max_result_fields` entries without walking whatever a model pasted
@@ -1475,6 +1505,7 @@ fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     when: texts == [],
     return: tool.failure("invalid arguments: `handles` must not be empty"),
   )
+
   // `texts` is model-supplied and not otherwise bounded, so a caller
   // that lists far more than `max_handles` handles must not force a walk
   // of the whole array just to say so — `list.drop` stops at the bound.
@@ -1993,6 +2024,7 @@ fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
           mask_64,
         ),
       )
+
     // UTF-8 encoding is always byte-aligned, so the only other shape is
     // the empty array.
     _ -> accumulator

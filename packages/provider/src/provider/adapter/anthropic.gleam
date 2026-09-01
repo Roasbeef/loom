@@ -221,6 +221,7 @@ fn to_turn(message: AgentMessage) -> Result(#(String, List(JsonValue)), Nil) {
           ]),
         ]),
       )
+
     // Custom messages are an application extension point; projection
     // renders them into user/assistant content before requests are built.
     CustomMessage(schema: _, payload: _) -> Error(Nil)
@@ -455,6 +456,7 @@ fn mark_user_turns(
 ) -> List(#(String, List(JsonValue))) {
   case newest_first, remaining {
     [], _ -> marked
+
     // Budget spent: the rest of the conversation is already in
     // newest-first order, so one reverse restores it ahead of the marked
     // tail.
@@ -493,8 +495,10 @@ pub fn map_stop_reason(
     "end_turn" -> Ok(#(Stop, None))
     "max_tokens" -> Ok(#(Length, None))
     "tool_use" -> Ok(#(ToolUse, None))
+
     // We supply no stop sequences, but proxies may still report this.
     "stop_sequence" -> Ok(#(Stop, None))
+
     // The provider paused a long turn; resubmitting continues it, so the
     // harness treats it as an ordinary stop.
     "pause_turn" -> Ok(#(Stop, None))
@@ -615,6 +619,7 @@ fn on_chunk(
         })
       #(acc, list.reverse(reversed_events))
     }
+
     // Error statuses stream their body too; collect it for the error
     // report at end-of-body.
     _ ->
@@ -728,6 +733,7 @@ fn handle_message(
         ),
       )
     }
+
     // Unknown event types are ignored per the Messages API versioning
     // policy: new event kinds must not break existing clients.
     _ -> #(acc, [])
@@ -836,6 +842,7 @@ fn start_block(
         wire.string_field_or(block, "id", or: ""),
         wire.string_field_or(block, "name", or: ""),
       )
+
     // Unknown block types are ignored for forward compatibility.
     _ -> #(acc, [])
   }
@@ -917,6 +924,7 @@ fn apply_block_delta(
       let fragment = wire.string_field_or(delta, "signature", or: "")
       append_to_block(acc, index, signature_delta_update(_, fragment))
     }
+
     // Unknown delta types are ignored for forward compatibility.
     _ -> #(acc, [])
   }
@@ -1122,6 +1130,7 @@ fn settle_with_stop(
     MalformedStream,
   )
   let usage = build_usage(acc)
+
   // Adapter-computed overflow (spec §1.5): the request did not fit and
   // nothing substantive came back, so the response settles as `error`
   // with the canonical overflow message. The raw stop reason is
@@ -1164,6 +1173,7 @@ fn settle_with_stop(
       end_turn: option.map(acc.raw_stop, fn(raw) { raw == "end_turn" }),
       timestamp: acc.now,
     )
+
   // Unreachable by construction (the stop reason above is never
   // Pending), reported totally rather than asserted.
   use settled <- or_fail(stream.settle(assistant), acc, fn(_nil) {

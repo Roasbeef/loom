@@ -54,6 +54,7 @@ import provider/http.{type HttpRequest, type Transport}
 pub type Delta {
   /// A fragment of a text block.
   TextDelta(index: Int, text: String)
+
   /// A fragment of a tool call's streamed JSON arguments.
   ToolCallDelta(
     index: Int,
@@ -61,6 +62,7 @@ pub type Delta {
     name: String,
     arguments_json: String,
   )
+
   /// A fragment of a thinking block.
   ThinkingDelta(index: Int, thinking: String)
 }
@@ -75,8 +77,10 @@ pub type Delta {
 pub type StreamEvent {
   /// A streamed fragment of the in-progress response.
   Delta(delta: Delta)
+
   /// The response settled completely.
   Settled(message: SettledAssistantMessage, usage: Usage)
+
   /// The request failed before settling; in-band, never a crash.
   Failed(error: ProviderError)
 }
@@ -135,12 +139,16 @@ pub fn message(settled: SettledAssistantMessage) -> AgentMessage {
 pub type ProviderError {
   /// The request owner accepted an explicit cancellation before settlement.
   ProviderCancelled
+
   /// The caller requested cancellation but no owner-authored terminal arrived.
   CancellationUnconfirmed
+
   /// The owner exited abnormally, so its descendants may still be live.
   DrainProofLost
+
   /// The transport failed before or during the response.
   TransportFailed(reason: String)
+
   /// The provider returned a non-success HTTP status.
   HttpError(
     status: Int,
@@ -148,19 +156,26 @@ pub type ProviderError {
     message: String,
     retry_after_ms: Option(Int),
   )
+
   /// The provider reported an error event inside the stream.
   StreamError(api_error_type: String, message: String)
+
   /// The stream ended before the response settled.
   StreamDisconnected(context: String)
+
   /// The stream carried data the adapter could not decode.
   MalformedStream(report: CorruptionReport)
+
   /// The provider used a stop reason the adapter does not know.
   UnmappedStopReason(raw: String)
+
   /// The requested role has no configured identity (dispatch-time
   /// counterpart of `resolve`'s `MissingIdentity`).
   NoIdentity(role: String)
+
   /// A resolved identity names a provider the gateway does not know.
   UnknownProvider(provider: String)
+
   /// The provider's API-key secret is not available from the store.
   NoSecret(provider: String, secret_name: String)
 }
@@ -220,6 +235,7 @@ pub fn describe_error(error: ProviderError) -> String {
 pub type SseEvent {
   /// A dispatched event.
   SseMessage(event: Option(String), data: String)
+
   /// A line that could not be decoded.
   SseMalformed(reason: String)
 }
@@ -317,6 +333,7 @@ pub fn feed(
   chunk: BitArray,
 ) -> #(SseParser, List(SseEvent)) {
   let buffer = bit_array.append(parser.carry, chunk)
+
   // `from` is the old carry's already-scanned prefix, still valid against
   // `buffer` because the new chunk is appended after it: scanning resumes
   // exactly there instead of re-examining bytes this or an earlier feed
@@ -398,6 +415,7 @@ fn take_line(buffer: BitArray, at: Int) -> LineScan {
             line: slice_or_empty(buffer, 0, at),
             rest: drop_bytes(buffer, at + 1),
           )
+
         // A lone trailing \r: wait for the next chunk, re-scanning from
         // the \r itself.
         Error(Nil) -> NoTerminator(scanned: at)
@@ -557,8 +575,10 @@ pub type StreamHandle {
 pub type DrainOutcome {
   /// The owner exited normally and certified complete transitive teardown.
   Drained
+
   /// The observation deadline elapsed while the owner remained live.
   TimedOut
+
   /// The owner exited without the normal reason required to prove teardown.
   ProofLost
 }
@@ -874,12 +894,16 @@ pub type Control {
 pub type AttemptOutcome {
   /// The provider produced the attempt's single terminal event.
   AttemptTerminal(terminal: StreamEvent)
+
   /// Cancellation was acknowledged before another terminal won the race.
   AttemptCancelled
+
   /// Cancellation began, but no terminal acknowledged it within the grace.
   AttemptCancellationUnconfirmed
+
   /// The transport owner died without proving its descendants drained.
   AttemptDrainProofLost
+
   /// The process which could consume deltas exited, so the attempt was drained.
   ConsumerGone
 }

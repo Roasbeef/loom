@@ -235,6 +235,7 @@ fn observer_loop(
       process.send(acknowledged, Nil)
       observer_loop(control, observe, creator_monitor)
     }
+
     // Before adoption, the guard is the observer's only reachable owner.
     // After adoption, the same edge closes the leaf promptly while the public
     // custodian still adjudicates whether the guard itself drained normally.
@@ -573,6 +574,7 @@ fn cancel_during_start(
   observer_monitor: Monitor,
 ) -> Nil {
   stream.cancel(inner)
+
   // Reuse the ordinary cancelling state machine so startup cancellation has
   // the same single scheduled deadline. `await_terminal` uses an idle timeout
   // and would let each late delta silently renew this grace period.
@@ -726,6 +728,7 @@ fn fail_and_drain(
     }
     stream.ProofLost -> {
       process.send(outer, stream.Failed(error: stream.DrainProofLost))
+
       // Returning normally here would let the outer custodian certify a
       // subtree whose transitive owner died abnormally.
       process.kill(process.self())

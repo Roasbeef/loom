@@ -96,6 +96,7 @@ pub type Input {
     files_read: List(String),
     files_modified: List(String),
   )
+
   /// A branch summary: the work on a branch being navigated away from.
   Branch(conversation: String, custom_instructions: Option(String))
 }
@@ -337,6 +338,7 @@ fn user_block(block: message.UserBlock) -> String {
 fn assistant_block(block: message.AssistantBlock) -> String {
   case block {
     message.AssistantText(text:, ..) -> text
+
     // Thinking is not carried: it is the least durable part of a turn
     // (providers redact it, signatures are opaque) and the decisions
     // worth keeping are the ones that reached the text or the calls.

@@ -189,6 +189,7 @@ fn parse_rule(
     place,
   ))
   use name <- result.try(rule_name(fields, place))
+
   // Once the rule has a name, say the name: an operator reading a
   // refusal about `rule 7` has to count tables to find it.
   let place = place <> " (" <> name <> ")"

@@ -36,6 +36,7 @@ pub type CallFault {
   /// The callee did not reply within the timeout. It may still be
   /// alive, and may still reply later.
   NoReply
+
   /// The callee was not alive to be sent to, or died before replying.
   CalleeGone
 }
@@ -60,6 +61,7 @@ pub fn try_call(
     |> process.select_map(reply_subject, Ok)
     |> process.select_specific_monitor(monitor, fn(_down) { Error(CalleeGone) })
     |> process.selector_receive(timeout)
+
   // Demonitoring flushes a `DOWN` that arrived after the timeout, so the
   // only thing this exchange can leave behind is a late reply — see the
   // module doc on why that is a bounded term rather than a leak.

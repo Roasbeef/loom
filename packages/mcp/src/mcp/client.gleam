@@ -139,14 +139,18 @@ pub type ClientError {
   /// died, the transport closed, a framing fault latched the client
   /// dead, or the actor itself is gone. `reason` names which.
   Unavailable(reason: String)
+
   /// The call did not complete within its own deadline. The id is
   /// forgotten; a response arriving later is dropped silently.
   CallTimedOut(after_ms: Int)
+
   /// The server answered the call with a JSON-RPC error.
   ServerError(code: Int, message: String)
+
   /// The server's result was well-formed JSON-RPC but not the shape the
   /// method promises; `reason` names the field that broke it.
   ResultMalformed(reason: String)
+
   /// `tools/list` pagination did not exhaust within `max_tool_pages`
   /// pages; `cap` restates the ceiling that was hit.
   TooManyPages(cap: Int)
@@ -158,13 +162,16 @@ pub type StartError {
   /// The transport could not open — the server executable did not
   /// spawn, or the actor could not start.
   TransportFailed(reason: String)
+
   /// The `initialize` exchange itself failed: a server error, a
   /// malformed result, a closed transport, or the handshake deadline.
   HandshakeFailed(error: ClientError)
+
   /// The server negotiated a protocol revision this client cannot
   /// speak. Carries both sides so the refusal can be worded without
   /// re-asking.
   VersionUnsupported(server: String, supported: List(String))
+
   /// The server did not declare the tools capability, and tools are the
   /// only thing this client exists to reach.
   ToolsNotDeclared
@@ -181,13 +188,17 @@ pub opaque type Msg {
     deadline_ms: Int,
     reply: Subject(Result(JsonValue, ClientError)),
   )
+
   /// One outbound notification, fire-and-forget.
   Notify(message: JsonValue)
+
   /// Inbound bytes or the close, from the port selector or a test peer.
   FromTransport(event: transport.TransportEvent)
+
   /// A call's deadline lapsed; if the id is still in flight the caller
   /// is answered `CallTimedOut` and the id is forgotten.
   Expire(id: Int)
+
   /// Teardown: close the transport, kill the child, settle in-flight
   /// calls as `Unavailable`, stop.
   Shutdown
@@ -410,6 +421,7 @@ fn exchange(
           Error(Unavailable(reason: "mcp client is not running"))
         })
         |> process.selector_receive(waiting)
+
       // Demonitoring flushes a DOWN that arrived after the wait, so the
       // only thing this exchange can leave behind is a late reply.
       process.demonitor_process(monitor)
@@ -423,6 +435,7 @@ fn exchange(
 fn malformed(fault: protocol.ProtocolFault) -> ClientError {
   case fault {
     protocol.BadResult(reason:) -> ResultMalformed(reason:)
+
     // Unreachable outside `initialize` (only its decoder checks the
     // version), but the type is shared, so it settles as data too.
     protocol.UnsupportedVersion(server:, ..) ->
@@ -447,6 +460,7 @@ fn start_actor(transport_spec: Transport) -> Result(Client, actor.StartError) {
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(inbound, FromTransport)
+
     // The transport must be opened by this process: port messages are
     // delivered to the opener, and the opener is where the selector
     // lives.
@@ -517,6 +531,7 @@ fn handle_request(
           let _ = process.send_after(state.commands, deadline_ms, Expire(id:))
           actor.continue(state)
         }
+
         // The call was tracked before the write, so `die` settles this
         // caller along with every other in-flight one.
         Error(Nil) -> actor.continue(die(state, "mcp transport write failed"))
@@ -611,6 +626,7 @@ fn handle_line(state: State, line: String) -> Result(State, String) {
     Ok(jsonrpc.Response(id:, outcome:)) ->
       Ok(settle_response(state, id, outcome))
     Ok(jsonrpc.ServerRequest(id:, ..)) -> refuse_server_request(state, id)
+
     // v1 subscribes to nothing, so every notification is decoded (so
     // nothing hostile hides in one) and dropped.
     Ok(jsonrpc.Notification(..)) -> Ok(state)

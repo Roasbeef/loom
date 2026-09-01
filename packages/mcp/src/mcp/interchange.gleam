@@ -69,6 +69,7 @@ pub const min_msgpack_int = -9_223_372_036_854_775_808
 pub type InterchangeFault {
   /// A msgpack value with no JSON counterpart.
   NotJson(at: String, what: String)
+
   /// A JSON value with no msgpack counterpart.
   NotMsgpack(at: String, what: String)
 }

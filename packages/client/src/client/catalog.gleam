@@ -90,6 +90,7 @@ import tom
 pub type Dialect {
   /// The Anthropic Messages API.
   Anthropic
+
   /// An OpenAI-compatible chat-completions API (OpenAI itself, Baseten,
   /// and every other endpoint speaking that dialect).
   OpenAiCompatible
@@ -198,6 +199,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     tom.parse(text)
     |> result.map_error(describe_parse_error),
   )
+
   // Top-level strictness lives here, including over the `[[rule]]`
   // tables this module never reads (`client/rules` owns their
   // contents): it has to live in exactly one parser, or a typoed table
@@ -268,6 +270,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
   })
+
   // Refuse unknown keys instead of ignoring them: a typoed
   // `api_key_env` silently ignored would dispatch with the wrong key
   // name and fail confusingly at the first request. `headers` gets its
@@ -409,6 +412,7 @@ fn parse_mcp_server(
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
   })
+
   // Same strictness as models: a typoed `api_key_env` silently ignored
   // would spawn the server with no key and fail confusingly at its
   // first request.
@@ -546,6 +550,7 @@ fn parse_roles(
       Ok(#(role, chain))
     }),
   )
+
   // Canonical role order, independent of TOML dict order, so listings
   // and snapshots are deterministic.
   let roles =

@@ -49,6 +49,7 @@ pub type ReplaySafety {
   /// Re-execution could repeat an external effect; recovery must
   /// synthesize an interrupted result instead (the pi §0.5 scenario).
   Never
+
   /// Re-execution with the persisted arguments is harmless: the tool is
   /// a read, or its writes are idempotent and guarded (fs_edit's plan
   /// is digest-bound to the exact pre-image content, so a replay after
@@ -67,6 +68,7 @@ pub type ExecutionMode {
   /// Must run alone: the tool mutates shared state (bash, fs_write,
   /// fs_edit).
   Exclusive
+
   /// May run alongside other `Concurrent` calls: the tool only reads
   /// (fs_read, grep).
   Concurrent
@@ -78,8 +80,10 @@ pub type ExecutionMode {
 pub type FsError {
   /// The path does not exist.
   FsNotFound(path: String)
+
   /// The operating system denied access.
   FsPermissionDenied(path: String)
+
   /// Any other failure, with the backend's description.
   FsFailure(path: String, reason: String)
 }
@@ -94,8 +98,10 @@ pub type LinkStatus {
   /// The path is a symlink; `target` is its stored target, verbatim —
   /// possibly relative to the symlink's own directory.
   LinkTarget(target: String)
+
   /// The path exists and is not a symlink.
   NotALink
+
   /// Nothing exists at the path (including an ancestor that is not a
   /// directory).
   LinkMissing
@@ -167,6 +173,7 @@ pub type Escalated {
   /// record was written, and whether anyone was asked, is the host's
   /// business and deliberately not visible here.
   Settle
+
   /// A human approved exactly these grants, for exactly this call. Retry
   /// the refused work **once** under them; if it is refused again that
   /// second refusal stands (design §5.3: one re-execution under the
@@ -851,11 +858,13 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
       failure("execution budget refused the call: " <> budget_text(refusal))
     broker.MintRefused(error: _) ->
       failure("the broker could not mint a capability token")
+
     // Reaching the model at all means the clearance already waited out
     // its whole budget on a full pool (`broker.clear_call`), so this is
     // sustained saturation rather than an ordinary wide batch.
     broker.NoHelper(error:) ->
       failure("no sandbox helper available: " <> checkout_text(error))
+
     // The strand aborted this operation while the call was still
     // clearing. The synthetic interrupted result is the runtime's to
     // write; this text exists so nothing renders blank if one reaches
@@ -883,6 +892,7 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
       "the execution ran without the demanded enforcement"
     exec.RefusedByHelper(code:, message:) ->
       "the sandbox helper refused (" <> code <> "): " <> message
+
     // The report names the field that failed to decode, which is the
     // difference between "something is wrong with the helper" and
     // "this helper predates a required frame field" — a diagnosis a
@@ -992,6 +1002,7 @@ fn policy_error_text(error: policy.PolicyError) -> String {
       <> limit_field_text(field)
       <> "="
       <> int.to_string(value)
+
     // Naming the layer is the useful part: a caller who asked for a
     // scratch of "/" is reading a refusal from the *policy*, not from
     // the jail, and the reason is Landlock's rather than bubblewrap's.

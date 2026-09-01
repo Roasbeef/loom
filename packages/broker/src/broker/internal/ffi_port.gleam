@@ -13,8 +13,10 @@ pub type PortEvent {
   /// A chunk of the helper's stdout reached us. Invariant: raw protocol
   /// bytes, not yet deframed.
   PortBytes(data: BitArray)
+
   /// The helper process exited with this OS status.
   PortClosed(status: Int)
+
   /// A message matched the port selector but was not a recognised port
   /// message shape; ignored by the pool.
   PortJunk

@@ -55,6 +55,7 @@ const admit_timeout_ms = 5000
 pub type Next(state) {
   /// Keep running with this (possibly updated) state.
   Continue(state: state)
+
   /// Stop the actor.
   Stop
 }
@@ -86,9 +87,11 @@ pub opaque type Reply(value) {
 pub type ActorError {
   /// The actor failed to start.
   StartFailed(message: String)
+
   /// The mailbox stayed full past the timeout; the message was not
   /// admitted.
   MailboxTimeout
+
   /// The actor did not answer a `call`/`get` within the timeout.
   NoReply
 }
@@ -283,6 +286,7 @@ fn handle_admit(
       let admitted = Runner(..state, queue: queue_push(state.queue, item))
       actor.continue(kick(admitted))
     }
+
     // Full: park the sender (do not ack) until a slot frees.
     False ->
       actor.continue(

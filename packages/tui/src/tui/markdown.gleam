@@ -66,6 +66,7 @@ type CodeCharacter {
 /// ```
 pub fn render(markdown: String) -> List(span.Line) {
   let safe = text_hygiene.multiline(markdown)
+
   // Chat output is content, not a document envelope. Enable the extensions
   // that affect presentation without treating a leading thematic break as
   // frontmatter and silently discarding model text.

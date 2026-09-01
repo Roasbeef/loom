@@ -221,6 +221,7 @@ pub type PlannerInputs {
 pub type ThresholdStatus {
   /// The projected context fits (or compaction is disabled).
   ThresholdNotExceeded
+
   /// The threshold is crossed; the outcome of building a preparation.
   ThresholdExceeded(outcome: PreparationOutcome)
 }
@@ -229,6 +230,7 @@ pub type ThresholdStatus {
 pub type PreparationOutcome {
   /// A non-empty preparation was built.
   Prepared(preparation: StructuralPreparation)
+
   /// There was nothing to compact — the boundary is marked checked and
   /// the run continues (threshold), or the failure drains (overflow).
   EmptyPreparation
@@ -240,6 +242,7 @@ pub type RequestAdmission {
   /// The captured model or a configured tool implementation is
   /// unavailable; `error` carries the stable configuration-failure code.
   AdmissionUnavailable(error: OperationError)
+
   /// Admitted: `stream_options` is the composed per-attempt options value
   /// the request must use; the two limits and `api` (the resolved
   /// adapter api the request will be made against) are persisted in the
@@ -259,6 +262,7 @@ pub type RequestAdmission {
 pub type ModelResolution {
   /// The captured identity resolves.
   ModelResolved
+
   /// It does not; `error` carries the configuration-failure description.
   ModelUnresolved(error: OperationError)
 }
@@ -267,9 +271,11 @@ pub type ModelResolution {
 pub type StructuralVerdict {
   /// The hook declined.
   VerdictDeclined
+
   /// The hook supplied the finished summary itself; `usage` is its
   /// reported cost, written as a ledger row at publication.
   VerdictSupplied(summary: String, usage: Option(Usage))
+
   /// The hook selected generation.
   VerdictGenerate
 }
@@ -279,10 +285,12 @@ pub type StructuralVerdict {
 pub type SummaryProgress {
   /// The attempt needs another nested provider request (split turns).
   SummaryNeedsRequest
+
   /// The attempt produced the final summary text; `usage` is the display
   /// snapshot stored on the published entry (provider usage rows were
   /// already written per request).
   SummaryProduced(summary: String, usage: Option(Usage))
+
   /// The attempt failed; `retryable` and the captured policy decide
   /// between a retry wait and failure.
   SummaryFailed(error: OperationError, retryable: Bool)
@@ -292,12 +300,15 @@ pub type SummaryProgress {
 pub type Observation {
   /// Nothing new.
   NoObservation
+
   /// The run-start hook finished; `messages` are its injected messages
   /// (possibly empty). Consumed by the `Starting` phase.
   ObservedRunStart(messages: List(AgentMessage))
+
   /// The pre-request hook and identity resolution finished for the
   /// current `ready` generation attempt.
   ObservedAdmission(admission: RequestAdmission)
+
   /// The pending assistant request settled. `overflow_preparation` is
   /// supplied (on request via `OverflowPreparationKey`) when the
   /// settlement classifies as a first overflow.
@@ -305,10 +316,12 @@ pub type Observation {
     settled: SettledAssistantMessage,
     overflow_preparation: Option(PreparationOutcome),
   )
+
   /// The pending assistant request is orphaned (its process-local
   /// continuation is lost); `partial` is the content reconstructed from
   /// the committed stream prefix, `[]` when none.
   ObservedAssistantOrphaned(partial: List(message.AssistantBlock))
+
   /// Clearance passed for the planned call at `source_index`:
   /// `effective_arguments` are the post-hook arguments to persist, and
   /// `replay` is the tool's declared replay policy.
@@ -317,13 +330,16 @@ pub type Observation {
     effective_arguments: JsonValue,
     replay: operation.ReplayPolicy,
   )
+
   /// Clearance refused the call (unknown tool, invalid arguments, hook
   /// block): `result` is the complete synthetic error result to stage.
   ObservedToolRefused(source_index: Int, result: AgentMessage)
+
   /// The effect-pending call at `source_index` finished and post-effect
   /// hooks ran; `result` is the finalized result message and `terminate`
   /// its termination flag.
   ObservedToolSettled(source_index: Int, result: AgentMessage, terminate: Bool)
+
   /// The effect-pending call at `source_index` is orphaned.
   /// `replay_still_safe` reports whether the current registration still
   /// declares safe replay; `checkpoint` is the latest durable progress
@@ -333,24 +349,32 @@ pub type Observation {
     replay_still_safe: Bool,
     checkpoint: Option(AgentMessage),
   )
+
   /// Whether a captured identity resolves (deferred polls, summary
   /// requests).
   ObservedResolution(resolution: ModelResolution)
+
   /// The pending deferred fetch settled.
   ObservedDeferredSettled(settled: SettledAssistantMessage)
+
   /// The pending deferred fetch is orphaned; recovery replaces the poll
   /// under fresh ids at the same poll number once a permit and identity
   /// resolution allow.
   ObservedDeferredOrphaned
+
   /// The structural decision hook returned.
   ObservedStructuralDecision(verdict: StructuralVerdict)
+
   /// The current nested summary request returned with its usage.
   ObservedSummaryReturned(usage: Usage)
+
   /// The attempt's progress after its latest request cleared.
   ObservedSummaryProgress(progress: SummaryProgress)
+
   /// The live structural attempt is orphaned; it is wholly uncertain and
   /// advances to a later attempt under the captured policy.
   ObservedSummaryOrphaned
+
   /// The run-end hook returned; `follow_up` is its optional born-placed
   /// follow-up message.
   ObservedRunEnd(follow_up: Option(AgentMessage))
@@ -365,14 +389,19 @@ pub type Observation {
 pub type EffectKey {
   /// Run-start hook output for the `Starting` phase.
   RunStartKey(operation: OpId)
+
   /// Pre-request admission for a `ready` generation attempt.
   AdmissionKey(operation: OpId, step_id: String, attempt: Int)
+
   /// The pending assistant request (settlement or orphan report).
   AssistantKey(operation: OpId, step_id: String, response_entry: EntryId)
+
   /// An overflow settlement needs its compaction preparation.
   OverflowPreparationKey(operation: OpId, response_entry: EntryId)
+
   /// Clearance for the planned call at `source_index`.
   ToolClearanceKey(operation: OpId, step_id: String, source_index: Int)
+
   /// The pending tool effect at `source_index` (settlement or orphan
   /// report). In parallel mode this names the first pending call; any
   /// pending call's observation satisfies it.
@@ -382,17 +411,23 @@ pub type EffectKey {
     source_index: Int,
     result_entry: EntryId,
   )
+
   /// Identity resolution before a deferred poll intent.
   PollAdmissionKey(operation: OpId, step_id: String, poll: Int)
+
   /// The pending deferred fetch (settlement or orphan report).
   PollKey(operation: OpId, step_id: String, poll: Int, response_entry: EntryId)
+
   /// The structural decision hook for the named task.
   DecisionKey(operation: OpId, task_id: String)
+
   /// Identity resolution before a summary request, or the pending nested
   /// request itself when one is in flight.
   SummaryKey(operation: OpId, task_id: String, attempt: Int)
+
   /// The attempt's progress after its latest request cleared.
   SummaryProgressKey(operation: OpId, task_id: String, attempt: Int)
+
   /// The run-end hook at a finishable boundary.
   RunEndKey(operation: OpId)
 }
@@ -413,6 +448,7 @@ pub type EffectIntent {
     intended_output_limit: Int,
     context_window: Int,
   )
+
   /// One real tool execution with the persisted effective arguments.
   ToolRequest(
     operation: OpId,
@@ -423,6 +459,7 @@ pub type EffectIntent {
     replay: operation.ReplayPolicy,
     result_entry: EntryId,
   )
+
   /// Safe re-execution of an orphaned call with its persisted arguments
   /// (`op.tool_args/{key}`) under the same reserved result id. No new
   /// intent is written; the paired transaction only fences the state.
@@ -434,6 +471,7 @@ pub type EffectIntent {
     arguments_key: String,
     result_entry: EntryId,
   )
+
   /// One deferred fetch against the newest source handle.
   DeferredFetch(
     operation: OpId,
@@ -445,6 +483,7 @@ pub type EffectIntent {
     configuration: StrandConfiguration,
     stream_options: JsonValue,
   )
+
   /// One nested summary provider request.
   SummaryProviderRequest(
     operation: OpId,
@@ -460,6 +499,7 @@ pub type EffectIntent {
 pub type WaitUntil {
   /// A retry wait: wake at `at` (Unix ms).
   RetryNotBefore(at: Int)
+
   /// A deferred suspension: wake when the caller grants a poll permit.
   DeferredPollDue(source_entry: EntryId)
 }
@@ -469,14 +509,19 @@ pub type WaitUntil {
 pub type Action {
   /// Commit `tx`; the operation's durable state becomes `next`.
   Transition(next: OperationState, tx: Tx)
+
   /// Commit the intent transaction, then perform the effect.
   Dispatch(intent: EffectIntent, next: OperationState, tx: Tx)
+
   /// Produce the observation named by `key`, then plan again.
   AwaitEffect(key: EffectKey)
+
   /// Nothing to do until the stated wake point.
   Wait(until: WaitUntil)
+
   /// Commit the terminal transaction; the operation ceases to exist.
   Finish(result: LastResult, tx: Tx)
+
   /// The inputs or durable state are corrupt; the caller must fault.
   Fault(report: CorruptionReport)
 }
@@ -700,6 +745,7 @@ fn begin_run(pass: RunPass) -> Action {
     ObservedRunStart(messages:) -> {
       let #(entry_writes, newest, _generator) =
         append_messages(in.generator, in.leaf, messages)
+
       // The boundary triggers on the newest injected message, or on the
       // existing leaf when the hook injected nothing. Neither existing
       // is impossible after acceptance, so it is corruption.
@@ -816,6 +862,7 @@ fn apply_writes(pass: RunPass, checkpoint: CheckpointPhase) -> Action {
         threshold_checked: checkpoint.threshold_checked,
         skip_inbox_once: True,
       )
+
     // Unprojected custom writes preserve the checkpoint, including
     // trigger and overflow flag.
     _, _ -> checkpoint
@@ -858,6 +905,7 @@ fn consume_queue(
   use Placement(writes: entry_writes, newest:, projecting: _) <- or_fault(
     place_pending(pass, consumed),
   )
+
   // A drain is only reached with an eligible queue, so placing nothing
   // means the queue and the mode disagreed — durable state, corrupt.
   use newest <- or_fault(option.to_result(
@@ -1159,6 +1207,7 @@ fn settle_assistant(
       expected_api: request_api,
       error_retryable: settled_retryable(message),
     )
+
   // One destination per classification; the arms below are dispatch
   // only, so the normative order of `classification.classify` stays
   // readable in one screen.
@@ -1224,6 +1273,7 @@ fn settle_overflow(
       overflow_operation_error(message),
     )
   }
+
   // A spent recovery drains whatever the preparation would have said,
   // so its arm matches on the first subject alone and never asks for
   // one.
@@ -1478,6 +1528,7 @@ fn settle_orphaned_assistant(
 ) -> Action {
   let RunPass(in:, control:, ..) = pass
   let AssistantAttempt(context:, number:, response_entry:, usage:, ..) = attempt
+
   // Running reports the orphan as an error; a cancelled control reports it
   // as an abort. Either way the content recovered so far is kept.
   let stop_reason = case control {
@@ -1551,6 +1602,7 @@ fn tools_action(pass: RunPass, batch: ToolBatch) -> Action {
       context: "batch_source absent",
     ),
   ))
+
   // The batch reads as three zones in source order: a completed prefix
   // already in the tree, then the frontier — whose leading outcome-ready
   // run is what materializes next, and whose head is otherwise the call
@@ -1571,6 +1623,7 @@ fn advance_batch(
   frontier: List(ToolCallState),
 ) -> Action {
   let RunPass(op:, in:, control:, ..) = pass
+
   // Consume a tool observation when one is present.
   case in.observation {
     ObservedToolCleared(source_index:, effective_arguments:, replay:) ->
@@ -1774,6 +1827,7 @@ fn dispatch_tool(
   let RunPass(op:, in:, ..) = pass
   use found <- or_fault(find_call(batch, source_index))
   use call <- or_fault(source_call(source, source_index))
+
   // Only a planned call can be cleared; anything else means the batch
   // and the observation disagree about where this call had got to.
   case found {
@@ -1832,6 +1886,7 @@ fn recover_tool(
   let RunPass(op:, in:, control:, ..) = pass
   use found <- or_fault(find_call(batch, source_index))
   use call <- or_fault(source_call(source, source_index))
+
   // Only an effect-pending call can be orphaned; anything else means the
   // batch and the observation disagree about where this call had got to.
   use #(result_entry, replay) <- or_fault(case found {
@@ -1845,6 +1900,7 @@ fn recover_tool(
         context: "orphan observed for a non-pending call",
       ))
   })
+
   // Only a still-safe replay of a still-running call re-executes; every
   // other orphan is settled with a synthetic interrupted result.
   let replayable = case control, replay {
@@ -1889,6 +1945,7 @@ fn stage_result(
     )
   })
   use found <- or_fault(find_call(batch, source_index))
+
   // A call may be staged once. Reaching here twice means an observation
   // was delivered for work the batch has already accounted for.
   use result_entry <- or_fault(case found {
@@ -1935,6 +1992,7 @@ fn materialize(
 ) -> Action {
   let RunPass(op:, in:, ..) = pass
   use #(entry_writes, newest) <- or_fault(place_ready_run(op, in, ready_run))
+
   // Unreachable: `ready_run` is non-empty at every call site, so
   // something was placed and is the new leaf.
   let newest = option.unwrap(newest, batch.assistant_entry)
@@ -2000,6 +2058,7 @@ fn place_ready_run(
         build.message_entry(result_entry, parent, message, terminate),
         build.delete_pending(result_entry),
       ]
+
       // Tool-reported usage becomes a ledger row of its own, under an id
       // minted here rather than reserved in the intent — the tool did
       // not have to report any.
@@ -2165,6 +2224,7 @@ fn start_poll(pass: RunPass, fetch: Fetch) -> Action {
     when: !in.poll_permit,
     return: Wait(until: DeferredPollDue(source_entry:)),
   )
+
   // The first fetch after a suspension is the next poll against the same
   // handle; nothing else about the fetch changes.
   let next_fetch = Fetch(..fetch, poll: poll + 1)
@@ -2335,12 +2395,14 @@ fn settle_poll(
       expected_api: message_api(message),
       error_retryable: settled_retryable(message),
     )
+
   // The same classification order as a generation settlement, but with
   // three of its destinations closed off: a poll has no retry wait, no
   // overflow compaction, and no admission to fall back on, so every
   // error lands in the same response-provenance failure drain (pi §3.2).
   case classification.classify(settled, classify_ctx) {
     CorruptClassification(report:) -> Fault(report:)
+
     // A really-settled poll under cancelled control commits normalized to
     // aborted, retaining its content and reported usage (pi §4.6 —
     // review finding ORCH-M3): only an *unknown-outcome* orphan gets the
@@ -2544,6 +2606,7 @@ fn failure_drain_action(
 ) -> Action {
   let RunPass(op:, in:, control:, settings:, inbox:, latest:) = pass
   let phase = FailureDrain(error:, provenance:)
+
   // Same priority as the checkpoint's own inbox drain — writes, then
   // steer, then follow-up — with no recovering input finishing the run
   // failed, without the run-end hook or another provider request.
@@ -2641,12 +2704,14 @@ fn reconcile_run(pass: RunPass, phase: RunPhase) -> Action {
           request_api:,
         ),
       )
+
     // Tool batches reconcile through the ordinary machinery: planned
     // calls stage aborted synthetics, pending effects settle or
     // synthesize interruption, staged outcomes materialize in source
     // order; the closing checkpoint then drains writes and finishes.
     Tools(batch:) -> tools_action(pass, batch)
     AwaitingDeferred(deferred:) -> deferred_action(pass, deferred)
+
     // Structural work not yet atomically published is discarded.
     Starting
     | Checkpoint(..)
@@ -2904,6 +2969,7 @@ fn decline_in_run(
       let next = run_state(pass, Checkpoint(checkpoint: resume))
       transition(pass, next, [build.set_op_state(op.id, next)])
     }
+
     // Overflow decline: the request still cannot fit.
     OverflowReason -> {
       let next =
@@ -2959,9 +3025,11 @@ fn generate_structural(
           ))
         other -> unexpected_observation(op, "summary ready", other)
       }
+
     // A nested request is in flight.
     SummaryEffectPending(context:, attempt:, request: Some(request), usage_ids:) ->
       settle_summary_request(task, context, attempt, request, usage_ids)
+
     // Between requests: decide whether the attempt needs another one.
     SummaryEffectPending(context:, attempt:, request: None, usage_ids:) ->
       advance_summary_attempt(task, context, attempt, usage_ids)
@@ -3386,6 +3454,7 @@ fn publish_structural(
     }
     NavigationHost(target:, label:, custom_instructions: _) -> {
       let #(summary_entry, generator) = ids.mint_entry(in.generator)
+
       // The branch summary is parented on the abandoned leaf, so a
       // navigation that never had one has nothing to summarize.
       use source_leaf <- or_fault(option.to_result(

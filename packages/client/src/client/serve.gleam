@@ -410,6 +410,7 @@ fn run_server(settings: Settings, logger: Logger) -> Nil {
 // a fatal exit — whichever way `booted.stops` fires.
 fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
   announce(booted)
+
   // The helper path is on this line because it is the answer to "which
   // binary enforced this session's sandbox", and the ladder that picked
   // it has four rungs. An operator auditing a running server should not
@@ -419,6 +420,7 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
     field.ident(key: "prompt_digest", value: booted.prompt.digest),
     field.text(key: "helper", value: booted.helper_path),
   ])
+
   // Only an entry point installs the signal handler: doing so replaces
   // the VM's default, whose answer to `SIGTERM` is an immediate
   // `init:stop()`. From here both ways the server can stop arrive on one
@@ -432,6 +434,7 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
       shutdown(booted)
       log.info(logger, "server.stopped", [])
     }
+
     // The host already tore the stack down, lease included, before it
     // said anything. All that is left is to say what died and exit
     // nonzero so whatever runs `loom-server` restarts it.
@@ -463,6 +466,7 @@ fn announce(booted: Booted) -> Nil {
     <> booted.token_path
     <> ")",
   )
+
   // The digest is what makes a cache miss attributable: a changed head
   // is either a prompt change, which this line names, or a bug.
   io.println(
@@ -587,6 +591,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       })
   })
   use helper_path <- result.try(find_helper(flags.helper))
+
   // The override is clamped to the same range the derived default is,
   // and both ends are load-bearing. A pool must hold at least two
   // helpers or code mode cannot run at all: a satellite holds one for
@@ -600,6 +605,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
   use #(catalogue, rule_list) <- result.try(load_config(flags.config))
+
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
   // directly-constructed catalogues.
@@ -1227,6 +1233,7 @@ fn assemble(
   // without. See `protecting_index` for why a model-writable index is a
   // security property rather than a tidiness one.
   use index_path <- result.try(index_path(settings))
+
   // Memory is protected on the same argument one step along: the digest
   // sidecar is text this server injects into every run's context, and
   // the store behind it is what the digest is rendered from. See
@@ -1236,6 +1243,7 @@ fn assemble(
   let base_policy =
     protecting_index(settings.base_policy, index_path)
     |> protecting_memory(memory_store, memory_digest)
+
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
@@ -1243,6 +1251,7 @@ fn assemble(
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
+
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
   // integration learned live (spec-gaps, M2 item 1).
@@ -1260,6 +1269,7 @@ fn assemble(
       <> string.inspect(error)
     }),
   )
+
   // The effect plane: a pool of jailed helpers behind the one broker.
   let spawn_config =
     exec.SpawnConfig(
@@ -1296,15 +1306,18 @@ fn assemble(
       "the broker did not start: " <> string.inspect(error)
     }),
   )
+
   // The orchestration plane: runtime over the production wiring, with
   // the hub's two composition seams — commit hints in, provider deltas
   // teed out — threaded through before `api.open`.
   let name = process.new_name(prefix: "loom_gateway")
+
   // The forwarder itself starts later, under the service supervisor.
   // Only its *name* is needed here, because that is what the writer
   // subscribes to — a subscription by name is what lets the forwarder be
   // restarted without the writer noticing.
   let forwarder_name = process.new_name(prefix: "loom_forwarder")
+
   // The triggered-rule scanner is the writer's second subscriber, and
   // reaches it the same way and for the same reason. A name is minted
   // whether or not any rule is configured — an unregistered name is a
@@ -1312,6 +1325,7 @@ fn assemble(
   // so the branch that matters is the one that decides whether to start
   // anything under it.
   let rulescan_name = process.new_name(prefix: "loom_rulescan")
+
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -1341,6 +1355,7 @@ fn assemble(
       },
     )
   let agency_seam = agency.seam(agency_config)
+
   // The escalation plane has the same knot and the same answer: a name
   // now, a holder under it after the open. `interactive` is a question
   // rather than a flag because the answer changes while a call is
@@ -1354,6 +1369,7 @@ fn assemble(
       ..escalate.default_config(escalate_name, clock),
       interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
     )
+
   // Code mode needs no such indirection — its seam closes over the
   // broker, which already exists — but it does need a toolchain and a
   // prepared build seed on this host. A host without them says so once
@@ -1375,6 +1391,7 @@ fn assemble(
       agency_seam,
       scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     )
+
   // Recall, on the same two-name pattern and gated the same way: the
   // holder that owns the index cannot exist until the runtime has been
   // opened (its canonical session id is what a scoped query and every
@@ -1384,16 +1401,19 @@ fn assemble(
   let history_name = process.new_name(prefix: "loom_history")
   let history_pulls = process.new_name(prefix: "loom_history_pulls")
   let history_seam = history_seam(index_path, history_name, logger)
+
   // The memory door, gated the same way and for the same reason: a
   // `remember` definition renders into the provider's cached byte prefix
   // and is paid for on every request, so a host whose memory plane will
   // not open registers no tool and says so once.
   let memory_seam = memory_seam(memory_store, clock, entropy, logger)
+
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
   let tool_registry =
     registry(Some(agency_seam), code_mode, history_seam, memory_seam)
+
   // The registry itself, once, at boot. Four planes decide their own
   // presence from the host they found — a messaging plane, a code-mode
   // pipeline, a search index, a memory session — so "which tools does
@@ -1404,6 +1424,7 @@ fn assemble(
   log.info(logger, "server.tools", [
     field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
   ])
+
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
   // cells are therefore read straight off the store here — legal, nothing
@@ -1422,6 +1443,7 @@ fn assemble(
       field.text(key: "detail", value: warning),
     ])
   })
+
   // The summarization pack, before the open for the same reason the
   // system prompt is: `wiring.Config` needs the decoded value. Nothing
   // about it is pinned — it is read once per compaction, never cached,
@@ -1538,6 +1560,7 @@ fn assemble(
       "the runtime did not open: " <> string.inspect(error)
     }),
   )
+
   // The writer exists now, so the other half of the pin can land: the
   // bytes every strand of this session will send and the enforcement
   // demand they describe, recorded durably so an unchanged next boot reads
@@ -1547,6 +1570,7 @@ fn assemble(
     assembled,
     settings.demand,
   ))
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -1588,6 +1612,7 @@ fn assemble(
         )
       }),
     )
+
   // The index holder is in this tier for the same reason the scratch
   // store is: it is addressed by name, and everything it holds is one
   // connection to a rebuildable projection that a restart reopens. Its
@@ -1612,6 +1637,7 @@ fn assemble(
       "the service supervisor did not start: " <> string.inspect(error)
     }),
   )
+
   // The host owns this supervisor through the record and a monitor, not
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
@@ -1679,6 +1705,7 @@ pub fn shutdown(booted: Booted) -> Nil {
   broker.stop(booted.broker)
   exec.stop_pool(booted.pool)
   summaries.stop(booted.summaries)
+
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can
   // still be calling by here — the drivers stopped with the runtime —

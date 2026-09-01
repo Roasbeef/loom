@@ -88,12 +88,16 @@ pub type Refusal {
   /// The memory session is open for writing elsewhere — a distillation
   /// run holds its lease. Nothing is lost by saying it again later.
   MemoryBusy(reason: String)
+
   /// The memory session could not be opened or committed to at all.
   MemoryUnavailable(reason: String)
+
   /// The note, after redaction, is longer than `max_note_chars`.
   NoteTooLong(chars: Int, limit: Int)
+
   /// This memory session has already accepted `max_notes` notes.
   CeilingReached(limit: Int)
+
   /// The note was empty, or was nothing but whitespace.
   NothingToRemember
 }

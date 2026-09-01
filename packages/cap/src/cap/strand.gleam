@@ -112,6 +112,7 @@ pub type Handle {
 pub type Provenance {
   /// At the root: the child reads its brief and nothing else.
   Fresh
+
   /// At the calling strand's current leaf, copying its whole conversation
   /// into the child's context window.
   MyConversation
@@ -124,16 +125,22 @@ pub type Provenance {
 pub type FieldType {
   /// Text.
   StringField
+
   /// A whole number.
   IntegerField
+
   /// Any number, whole or not.
   NumberField
+
   /// A boolean.
   BooleanField
+
   /// An object, its own fields undescribed.
   ObjectField
+
   /// A list of `items`.
   ArrayField(items: FieldType)
+
   /// Anything at all, `null` included.
   AnyField
 }
@@ -171,8 +178,10 @@ pub fn optional(name: String, expects: FieldType) -> Field {
 pub type Outcome {
   /// The run finished normally.
   Completed
+
   /// The run failed terminally.
   Failed(reason: String)
+
   /// The run was aborted — deadline, reap, or operator.
   Aborted
 }
@@ -185,11 +194,14 @@ pub type Outcome {
 pub type TerminalResult {
   /// The spawn declared no result shape.
   NoResultAsked
+
   /// The child recorded a result and it matched the declared shape.
   ResultGiven(value: Value)
+
   /// A shape was asked for and the child's run ended without recording
   /// one.
   ResultAbsent(schema: String)
+
   /// A result is there and does not match. `reason` names the field, the
   /// type wanted and the type found.
   ResultUnusable(schema: String, received: Value, reason: String)
@@ -207,6 +219,7 @@ pub type Waited {
     result: TerminalResult,
     notes: List(#(String, Value)),
   )
+
   /// The deadline expired first. An answer, not a failure: join again, or
   /// do other work and come back.
   Pending(handle: Handle, waited_ms: Int)
@@ -216,6 +229,7 @@ pub type Waited {
 pub type Delivery {
   /// The target had an open run: the message is a durable steer on it.
   Steered(entry: String)
+
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: String)
 }
@@ -224,6 +238,7 @@ pub type Delivery {
 pub type Relation {
   /// The strand that spawned the caller.
   ParentOf
+
   /// A strand the caller spawned.
   ChildOf
 }
@@ -252,47 +267,60 @@ pub type Peer {
 pub type StrandError {
   /// This host wired no messaging plane, or its holder is not up yet.
   StrandsUnavailable(message: String)
+
   /// A handle did not parse.
   MalformedHandle(message: String)
+
   /// The named strand is not the caller's parent and not a descendant of
   /// it. Also the answer for a strand with no lineage cell at all: "no
   /// lineage fact" means "not a descendant", never "unknown, allow".
   NotAddressable(message: String)
+
   /// A join named a strand that is not a descendant of the caller. Joins
   /// are strictly downward — that is what keeps the wait graph acyclic.
   NotADescendant(message: String)
+
   /// The calling strand is already at the spawning depth cap.
   DepthCapReached(message: String)
+
   /// The caller, or the session, already has as many live strands as it
   /// may have.
   FanOutCapReached(message: String)
+
   /// The spawn asked for a tool the calling strand does not itself hold.
   /// A child may narrow its parent's set, never widen it.
   UnknownTool(message: String)
+
   /// An argument was unusable — an empty purpose, too many handles, a
   /// blackboard key outside the allowed shape, a result shape the
   /// harness cannot enforce.
   InvalidArgument(message: String)
+
   /// The name this spawn derives is already a child's, minted by a
   /// different call. Reconciliation hands an existing child back on a
   /// name match, but only to the caller that minted it; anything else
   /// would be an ownership transfer. Nothing was started — spawn again
   /// under a different purpose.
   NameAlreadyMinted(message: String)
+
   /// A send upward would have *started* a run rather than steered one:
   /// the parent has finished and nobody is watching it.
   ParentRunEnded(message: String)
+
   /// A note did not match the result shape this strand's own spawn
   /// demanded of it.
   ResultSchemaUnmet(message: String)
+
   /// The durable plane refused or failed underneath the call — a commit,
   /// a read, a decode. Not the program's mistake and not a bound it hit:
   /// the harness could not carry out a call it had no objection to.
   PlaneFailed(message: String)
+
   /// This execution has admitted as many spawns as it may. The seam's own
   /// ceiling; see the module doc for why a loop needs one where a turn
   /// did not.
   SpawnCeilingReached(message: String)
+
   /// This execution has admitted as many calls of some *other* capped
   /// capability — `send`, `note` or `notes` — as it may. One variant for
   /// the three because the answer to all three is the same, stop looping,
@@ -300,8 +328,10 @@ pub type StrandError {
   /// that the bound is for the execution's whole lifetime. Retrying, or
   /// waiting first, will not free one.
   AdmissionCeilingReached(message: String)
+
   /// Any other in-band refusal, its code preserved.
   StrandRefused(code: String, message: String)
+
   /// The capability channel could not carry the call.
   StrandUnavailable(reason: String)
 }

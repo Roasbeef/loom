@@ -35,6 +35,7 @@ pub type AcceptError {
   /// No satellite connected within the timeout. Retryable: the caller
   /// polls so it can notice a node that died before ever connecting.
   AcceptTimeout
+
   /// The listener faulted or was closed under the accept.
   AcceptFailed(reason: String)
 }

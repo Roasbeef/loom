@@ -24,14 +24,19 @@ import gleam/option.{type Option}
 pub type Role {
   /// The main conversation model.
   Main
+
   /// The model used for subagent strands.
   Subagent
+
   /// The model used for plan generation.
   Plan
+
   /// The model used for compaction and navigation summaries.
   Summarize
+
   /// The model used for image-bearing requests.
   Vision
+
   /// An application-defined role.
   Custom(name: String)
 }
@@ -66,10 +71,13 @@ pub fn role_to_string(role: Role) -> String {
 pub type ThinkingLevel {
   /// No extended reasoning requested.
   ThinkingOff
+
   /// A small reasoning budget.
   ThinkingLow
+
   /// A medium reasoning budget.
   ThinkingMedium
+
   /// A large reasoning budget.
   ThinkingHigh
 }
@@ -127,6 +135,7 @@ pub type ToolSpec {
 pub type RequestTarget {
   /// Resolve the role's chain at dispatch time.
   ForRole(role: Role, thinking: Option(ThinkingLevel))
+
   /// Dispatch to a previously resolved identity, no fallback.
   ForResolved(resolved: ResolvedModel)
 }

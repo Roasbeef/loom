@@ -61,6 +61,7 @@ pub type VetResult {
   /// The source passed all three rules. The token proves it and carries the
   /// vetted source and its AST.
   Passed(Vetted)
+
   /// The source failed. Every violation found in one pass is listed, so the
   /// model can fix them all at once rather than one round-trip per rule.
   Rejected(List(Rejection))
@@ -84,10 +85,12 @@ pub type Rule {
   /// construct that can reach foreign code and we fail closed on the whole
   /// class — appeared in the submitted source.
   NoForeignInterface
+
   /// Rules 2 and 3. An import named a module that is not a byte-identical
   /// reference to an allowlisted one (a disallowed module, or a malformed /
   /// non-ASCII / lookalike name).
   ImportNotAllowed
+
   /// The source could not be parsed. A malformed program is a rejection, not a
   /// crash.
   Unparseable
@@ -103,8 +106,10 @@ pub type Rule {
 pub type Location {
   /// A byte span `[start, end)` in the source.
   SourceSpan(start: Int, end: Int)
+
   /// A single byte offset (a parse error reports a point, not a span).
   SourcePoint(byte_offset: Int)
+
   /// No span is available for this construct; see the rejection's `detail`.
   Unlocated
 }

@@ -118,6 +118,7 @@ pub fn run() -> Result(Narrative, String) {
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
     |> result.map_error(fn(_) { "the commit forwarder did not start" }),
   )
+
   // Compaction runs on the *production* seams. The demo scripts the
   // provider's answers and the tools' results, and nothing else: the
   // hooks that decide whether to compact, what to compact, and what the
@@ -154,6 +155,7 @@ pub fn run() -> Result(Narrative, String) {
       process.named_subject(forwarder_name),
     ]),
   ))
+
   // --- the served gateway -------------------------------------------------
   use _gateway <- result.try(
     gateway.start(gateway.default_options(session_id, runtime), name)
@@ -170,6 +172,7 @@ pub fn run() -> Result(Narrative, String) {
     ))
     |> result.map_error(fn(_) { "the websocket server did not start" }),
   )
+
   // --- drive the flow through the protocol --------------------------------
   let outcome = drive(hub, runtime, served)
   server.stop(served)
@@ -223,6 +226,7 @@ fn acceptance_flow(
   // 1. subscribe → full snapshot.
   use _snapshot <- result.try(subscribe_full(client))
   let lines = ["subscribed: full snapshot for " <> session_id]
+
   // 2. prompt main: tool round-trip with streamed deltas.
   use main_prompt_reply <- result.try(command_replied(
     client,
@@ -243,6 +247,7 @@ fn acceptance_flow(
     after_seq: event_seq(main_prompt_reply, fallback: 0),
   ))
   let lines = ["prompted main: run settled after a bash round-trip", ..lines]
+
   // 3. a subagent strand, created and briefed over the wire.
   use _create_reply <- result.try(command_replied(
     client,
@@ -270,6 +275,7 @@ fn acceptance_flow(
     after_seq: event_seq(research_prompt_reply, fallback: 0),
   ))
   let lines = ["created and briefed the research strand", ..lines]
+
   // 4. durable messaging: research reports to main; main acknowledges.
   let report_floor = observed_seq(client.observed_seq)
   use Nil <- result.try(
@@ -300,6 +306,7 @@ fn acceptance_flow(
     after_seq: event_seq(report_event, fallback: report_floor),
   ))
   let lines = ["research reported to main durably; main acknowledged", ..lines]
+
   // 5. escalation: raised harness-side, approved over the wire, consumed
   //    as typed grants.
   let wanted =
@@ -351,6 +358,7 @@ fn acceptance_flow(
     "escalation approved over the wire; grants consumed as typed policy grants",
     ..lines
   ]
+
   // 6. fork: a new strand at main's leaf.
   use _fork_reply <- result.try(command_replied(
     client,
@@ -364,6 +372,7 @@ fn acceptance_flow(
     "fork main",
   ))
   let lines = ["forked main in place as alt-approach", ..lines]
+
   // 7. navigate the fork back to the root of its shared history.
   use target <- result.try(oldest_entry_id(runtime))
   use _navigate_reply <- result.try(command_replied(
@@ -382,6 +391,7 @@ fn acceptance_flow(
     "navigate alt-approach",
   ))
   let lines = ["navigated alt-approach to the oldest shared entry", ..lines]
+
   // 8. compact main.
   let compaction_floor = observed_seq(client.observed_seq)
   use _compact_reply <- result.try(command_replied(
@@ -409,6 +419,7 @@ fn acceptance_flow(
     after_seq: event_seq(compacted, fallback: compaction_floor),
   ))
   let lines = ["compacted main: summary entry committed", ..lines]
+
   // 9. set_config over the wire.
   use _config_reply <- result.try(command_replied(
     client,
@@ -426,6 +437,7 @@ fn acceptance_flow(
     "set_config",
   ))
   let lines = ["set queue_mode over the wire", ..lines]
+
   // 10. catch-up replay: every durable entry event again, exactly once,
   //     in seq order, from seq 1.
   use replayed <- result.try(catch_up_all(client, 10, from_seq: 1))
@@ -434,6 +446,7 @@ fn acceptance_flow(
     "caught up from seq 1: replay is seq-ordered and duplicate-free",
     ..lines
   ]
+
   // 11. a second connection's full snapshot shows the final state.
   use snapshot <- result.try(final_snapshot(client))
   use Nil <- result.try(check_final(snapshot))

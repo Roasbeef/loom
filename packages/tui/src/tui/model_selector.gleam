@@ -37,11 +37,13 @@ pub type Action {
     /// The state to render on the next frame.
     state: State,
   )
+
   /// Close the overlay and request one catalogue model by name.
   Choose(
     /// The selected model's stable catalogue name.
     name: String,
   )
+
   /// Close the overlay without changing the model configuration.
   Close
 }
@@ -136,6 +138,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   let visible = filter_models(state.models, state.query)
+
   // The catalogue is normally short. Sizing to its rows keeps the selector a
   // focused command surface instead of obscuring the transcript with an empty
   // modal field; the cap still turns a large catalogue into a scrolling list.

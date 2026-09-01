@@ -67,6 +67,7 @@ pub fn step(state: Refine, entry: Entry) -> Refine {
     True -> state
     False -> {
       let q = state.q
+
       // The stop truncates the ordered path *before* filter and cursor:
       // a stop entry still ends the scan even when the filter or cursor
       // would drop it from the results.

@@ -49,6 +49,7 @@ pub opaque type Ledger {
 pub type Refusal {
   /// The outstanding-effect cap is already fully used.
   OutstandingCapReached(cap: Int)
+
   /// The aggregate wall deadline has passed.
   DeadlinePassed(deadline_ms: Int)
 }

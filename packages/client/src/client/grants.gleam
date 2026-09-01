@@ -182,6 +182,7 @@ pub fn decode_denial(
   use source_text <- result.try(require_string(fields, "source", where))
   use source <- result.try(case source_text {
     "policy" -> Ok(escalation.PolicyDenial)
+
     // The stored form does not carry the helper's enforcement list.
     "execution" -> Ok(escalation.ExecutionDenial(enforcement: []))
     other ->

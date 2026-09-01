@@ -110,10 +110,13 @@ pub type Split {
 pub type Hunk {
   /// Replaces the inclusive range `[from, to]` with `lines`.
   Replace(from: Ref, to: Ref, lines: List(String))
+
   /// Deletes the inclusive range `[from, to]`.
   Delete(from: Ref, to: Ref)
+
   /// Inserts `lines` immediately after the anchored line.
   InsertAfter(at: Ref, lines: List(String))
+
   /// Inserts `lines` before the first line of the file.
   InsertAtStart(lines: List(String))
 }
@@ -142,14 +145,17 @@ pub type ApplyError {
   /// range, a line number below 1, or a replacement line containing a
   /// newline.
   MalformedPlan(reason: String)
+
   /// Two hunks touch the same lines (or an insertion point inside
   /// another hunk's range); the edit is ambiguous.
   OverlappingHunks(line: Int)
+
   /// At least one referenced anchor does not match the current content
   /// — the file changed since it was read (or the reference is beyond
   /// the end of the file). Every stale reference is listed, each with
   /// fresh anchors for its region.
   StaleAnchors(stale: List(Stale))
+
   /// Every referenced anchor matches, but the whole-file digest does
   /// not: the content is not the exact content the plan was computed
   /// against. This is what a replayed plan looks like (an identical
@@ -214,6 +220,7 @@ fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
           mask_64,
         ),
       )
+
     // UTF-8 encoding is always byte-aligned, so the only other shape is
     // the empty array.
     _ -> accumulator
@@ -635,6 +642,7 @@ fn apply_placed(split: Split, placed: List(Placed)) -> String {
           )
       }
     })
+
   // An edit that grows an empty file produces a trailing newline; any
   // other edit preserves the original ending byte-exactly.
   let trailing_newline = case split.lines, lines {

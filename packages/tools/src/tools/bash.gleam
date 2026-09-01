@@ -101,6 +101,7 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     ctx.clear_call(spec, events),
     tool.refusal_outcome,
   )
+
   // The child gets no interactive stdin; close it so pipelines reading
   // stdin terminate instead of hanging.
   call.stdin(<<>>, True)
@@ -208,6 +209,7 @@ fn exited(
       #("degraded", json.Bool(result.degraded)),
       #("enforcement", json.Array(list.map(result.enforcement, json.String))),
     ])
+
   // Large bodies overflow to the blob store (spec §3.2); a blob-store
   // failure falls back to the inline body rather than losing the
   // result.

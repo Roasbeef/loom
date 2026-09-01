@@ -325,6 +325,7 @@ pub fn build_effects(config: Config) -> Effects {
 ///
 pub fn compaction_hooks(config: Config) -> effects.Hooks {
   let projection = fn(strand) { hooks.project(config.session, strand) }
+
   // The threshold's window is the *strand's*, not the session's. One
   // `Effects` record serves every strand, and a strand switched to a
   // catalogue entry with a different context window must be compacted
@@ -392,6 +393,7 @@ fn prepare_dispatch(
     effects.SummaryRequest(..) ->
       case summary_provider_request(config, spec) {
         Ok(request) -> gateway.prepare(config.gateway, request)
+
         // No preparation register behind a dispatched summary request is
         // corruption, not a transient fault: the machine writes the
         // preparation and the intent in one transaction. Fail it
@@ -926,6 +928,7 @@ pub fn provider_request(
         context,
         request_target(config, configuration),
       )
+
     // A poll never walks a chain: the handle it would fetch belongs to
     // the identity that minted it. See `resolved_target`.
     effects.PollRequest(configuration:, ..) ->

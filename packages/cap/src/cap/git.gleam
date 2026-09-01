@@ -21,8 +21,10 @@ import gleam/string
 pub type GitError {
   /// The git process ran but exited non-zero.
   CommandFailed(exit_code: Int, stderr: String)
+
   /// The underlying `cap/proc` call failed (denial, spawn, channel).
   ProcessError(error: proc.ProcError)
+
   /// Git's output could not be parsed into the expected shape.
   ParseError(message: String)
 }

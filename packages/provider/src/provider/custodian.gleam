@@ -324,6 +324,7 @@ fn monitor_child(
     None -> Child(owner:, monitor: None, kind:, cancel:, cancel_started: False)
     Some(pid) -> {
       let monitor = process.monitor(pid)
+
       // Keep even an already-dead owner until its Down is adjudicated. An
       // is_alive pre-filter would erase the only distinction between a normal
       // drain and an owner which crashed after abandoning descendants.
@@ -399,6 +400,7 @@ fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
     process.ProcessDown(monitor:, reason:, ..) -> {
       let lost_proof = case reason {
         process.Normal -> False
+
         // Starting cancellation is not an acknowledgement. An abnormal leaf
         // is fully gone, but an abnormal transitive owner may have abandoned
         // descendants which the custodian cannot discover or cancel.
@@ -414,6 +416,7 @@ fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
           cancellers: list.filter(state.cancellers, fn(held) { held != monitor }),
           poisoned: state.poisoned || lost_proof,
         )
+
       // Once a child witness dies abnormally, no later event can recreate its
       // transitive proof. Stop the remaining frontier and propagate an
       // abnormal owner exit after every still-known child has been cancelled.

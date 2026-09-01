@@ -405,6 +405,7 @@ fn start_client(
     })
   case process.receive(verdicts, within: window + hop_margin_ms) {
     Ok(verdict) -> verdict
+
     // The watcher answers inside `window` either way, so reaching this
     // is the watcher itself having died.
     Error(Nil) -> Error(mcp_client.TransportFailed(reason: too_slow(window)))
@@ -492,6 +493,7 @@ fn spawn_of(
   case command {
     [executable, ..args] ->
       transport.spawn(executable, args) |> transport.with_env(env)
+
     // Unreachable: `catalog.parse` refuses an empty command. Refusing to
     // invent an executable is the only honest answer if it ever were.
     [] -> transport.spawn("", []) |> transport.with_env(env)
@@ -856,6 +858,7 @@ fn call_failure(error: mcp_client.ClientError) -> CapOutcome {
       framing.CapErr(code: server_error_prefix <> int.to_string(code), message:)
     mcp_client.ResultMalformed(reason:) ->
       framing.CapErr(code: malformed_code, message: reason)
+
     // Pagination is a `tools/list` failure and cannot reach a call; it
     // is named rather than folded so the match stays exhaustive by
     // construction.

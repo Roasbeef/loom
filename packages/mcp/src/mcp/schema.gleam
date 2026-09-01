@@ -40,10 +40,13 @@ import gleam/set.{type Set}
 pub type Scalar {
   /// `{"type": "string"}` — enums included.
   ScalarString
+
   /// `{"type": "integer"}`.
   ScalarInt
+
   /// `{"type": "number"}`.
   ScalarFloat
+
   /// `{"type": "boolean"}`.
   ScalarBool
 }
@@ -52,8 +55,10 @@ pub type Scalar {
 pub type ParamType {
   /// Tier 1: one scalar, as its Gleam type.
   Simple(scalar: Scalar)
+
   /// Tier 1: an array of one scalar, as a Gleam `List`.
   ListOf(scalar: Scalar)
+
   /// Tier 2: anything else, as one structured `report.Value`. `reason`
   /// says what pushed it out of the typed subset, worded for a doc
   /// comment (and sanitized by the renderer, since it can embed the
@@ -88,6 +93,7 @@ pub type Plan {
   /// `required`-array order (first occurrence wins on duplicates),
   /// optionals in `properties` order.
   Typed(params: List(Param), optionals: List(Optional))
+
   /// Tier 3: the top level could not be rendered as typed arguments;
   /// `reason` is worded for the generated doc comment.
   WholeValue(reason: String)

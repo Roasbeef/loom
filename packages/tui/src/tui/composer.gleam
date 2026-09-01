@@ -30,6 +30,7 @@ pub type Attachment {
     /// A display-only estimate that must never replace the exact bytes.
     estimated_tokens: Int,
   )
+
   /// A validated local image ready for a typed prompt-content block.
   ImageAttachment(image: image_drop.Image)
 }
@@ -41,6 +42,7 @@ pub type Paste {
     /// The exact pasted bytes.
     text: String,
   )
+
   /// Text retained outside the editor so rendering stays bounded.
   Compact(
     /// The attachment that owns the exact bytes and its approximate size.

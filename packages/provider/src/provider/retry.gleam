@@ -25,6 +25,7 @@ import provider/stream.{
 pub type RetryClass {
   /// Retry may succeed: transient load, rate limit, or transport fault.
   Retryable(backoff_hint_ms: Option(Int))
+
   /// Retrying the identical request cannot help.
   Terminal
 }

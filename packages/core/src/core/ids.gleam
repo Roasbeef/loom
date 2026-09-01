@@ -436,6 +436,7 @@ fn next_random(state: Int) -> #(Int, Int) {
 
 fn uuid_to_string(uuid: Uuid) -> String {
   let Uuid(ms:, rand_a:, rand_b:) = uuid
+
   // Layout: time_high(32) - time_low(16) - ver(4)+rand_a(12) -
   // var(2)+rand_b_high(14) - rand_b_low(48).
   let group_3 = int.bitwise_or(0x7000, rand_a)
@@ -523,8 +524,10 @@ fn parse_hex_loop(
 ) -> Result(Int, Nil) {
   case digits, remaining {
     [], 0 -> Ok(accumulator)
+
     // Short: the text ran out with places still owed.
     [], _ -> Error(Nil)
+
     // Long: a digit sits past the width, which the length check caught
     // and a bare fold would have silently consumed.
     [_, ..], 0 -> Error(Nil)

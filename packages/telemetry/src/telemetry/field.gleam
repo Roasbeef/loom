@@ -71,12 +71,16 @@ pub const redacted_marker = "<redacted>"
 pub type Value {
   /// Free text. Shape-scrubbed.
   Text(String)
+
   /// A loom-minted identifier. Exempt from the shape rule only.
   Ident(String)
+
   /// A number. Never scrubbed — a count carries no credential.
   Count(Int)
+
   /// A boolean. Never scrubbed.
   Flag(Bool)
+
   /// A value deliberately withheld.
   Redacted
 }

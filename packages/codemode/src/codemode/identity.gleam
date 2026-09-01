@@ -144,6 +144,7 @@ pub const build_suffix = "-build"
 pub type Phase {
   /// The hermetic `gleam build` (`codemode/build`).
   Build
+
   /// The satellite node and every capability call the program makes
   /// (`codemode/satellite`).
   Run
@@ -161,6 +162,7 @@ pub type BuildLedger {
   /// one wall deadline. This is what production wants: the whole execution
   /// is one batch, and `max_outstanding` bounds all of it together.
   BuildSharesLedger
+
   /// The build clears under the derived sub-step `step_id <> "-build"`, so
   /// it gets a ledger of its own. Legitimate where the build is a
   /// separately accounted phase — it is a different jail under a different

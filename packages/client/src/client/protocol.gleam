@@ -63,10 +63,12 @@ pub const version = 1
 pub type ProtocolFault {
   /// The frame is not a well-formed JSON document.
   MalformedFrame(report: CorruptionReport)
+
   /// The envelope is malformed: wrong `v`, missing `cmd`/`event`,
   /// missing or non-positive command `id`. `id` carries the command id
   /// when one was readable, so the answer can still say `reply_to`.
   BadEnvelope(reason: String, id: Option(Int))
+
   /// The envelope was well-formed but a known command's body was not.
   BadBody(id: Int, cmd: String, reason: String)
 }
@@ -82,6 +84,7 @@ pub type ProtocolFault {
 pub type ForkScope {
   /// Fork the source strand's branch.
   ScopeBranch
+
   /// Fork the whole tree.
   ScopeTree
 }
@@ -98,18 +101,25 @@ pub type ForkScope {
 pub type Command {
   /// Scope the connection to a session and start the event stream.
   Subscribe(session: String, from_seq: Option(Int))
+
   /// Re-request durable events from a seq on the subscribed session.
   CatchUp(from_seq: Int)
+
   /// Start a run on an idle strand.
   Prompt(strand: String, text: String)
+
   /// Start a run on an idle strand from ordered user content blocks.
   PromptContent(strand: String, content: List(UserBlock))
+
   /// Inject into the live run at the next checkpoint.
   Steer(strand: String, text: String)
+
   /// Queue a turn to run after the live operation settles.
   FollowUp(strand: String, text: String)
+
   /// Cancel the strand's live operation.
   Abort(strand: String)
+
   /// Approve a pending escalation. `grants` is the policy diff the
   /// client displayed and `action` the action digest it displayed
   /// beside it; the gateway checks both against the record it is about
@@ -119,20 +129,28 @@ pub type Command {
   /// for, never widen it — and `action` is the empty string exactly
   /// when the record names no action.
   Approve(escalation_id: String, grants: List(Grant), action: String)
+
   /// Reject a pending escalation.
   Deny(escalation_id: String)
+
   /// Fork a strand; the new strand appears in the `strands` reply.
   Fork(strand: String, scope: ForkScope, name: Option(String))
+
   /// Move a strand's leaf to an entry.
   Navigate(strand: String, to_entry: String)
+
   /// Run a standalone compaction on a strand.
   Compact(strand: String, instructions: Option(String))
+
   /// Create a fresh strand.
   CreateStrand(name: Option(String))
+
   /// Request the model catalogue; answered by a `models` snapshot.
   ListModels
+
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
+
   /// A well-formed envelope with an unknown command name, kept as data.
   UnknownCommand(cmd: String, body: JsonValue)
 }
@@ -161,12 +179,16 @@ pub type Snapshot {
     escalations: List(EscalationRecord),
     usage: Usage,
   )
+
   /// A resume marker: replay of `from_seq <= seq < next_seq` follows.
   ResumeSnapshot(next_seq: Int)
+
   /// A full replacement strand list.
   StrandsSnapshot(strands: List(Strand))
+
   /// The effective config object.
   ConfigSnapshot(config: JsonValue)
+
   /// The model catalogue (the `models` command's reply).
   ModelsSnapshot(models: List(ModelInfo))
 }
@@ -269,8 +291,10 @@ pub type Denial {
 pub type DeltaKind {
   /// A text fragment (carried in `text`).
   TextKind
+
   /// A thinking fragment (carried in `text`).
   ThinkingKind
+
   /// A tool-call fragment (carried in `call_id`/`tool_name`/
   /// `arguments_fragment`).
   ToolCallKind
@@ -284,10 +308,13 @@ pub type DeltaKind {
 pub type Event {
   /// A snapshot reply.
   SnapshotEvent(snapshot: Snapshot)
+
   /// One appended entry.
   EntryEvent(record: EntryRecord)
+
   /// A display-level operation phase change.
   OpTransitionEvent(op: String, strand: String, phase: String)
+
   /// A live streaming fragment (`ephemeral` always true on the wire).
   StreamDeltaEvent(
     strand: String,
@@ -298,10 +325,13 @@ pub type Event {
     tool_name: Option(String),
     arguments_fragment: Option(String),
   )
+
   /// One usage-ledger append.
   UsageEvent(strand: String, op: Option(String), usage: Usage)
+
   /// An escalation lifecycle change.
   EscalationEvent(record: EscalationRecord)
+
   /// A strand's operation settled terminally.
   StrandResultEvent(
     strand: String,
@@ -309,8 +339,10 @@ pub type Event {
     status: String,
     error: Option(ResultError),
   )
+
   /// A command failure (with `reply_to`) or a connection-scoped fault.
   ErrorEvent(code: String, message: String, details: Option(JsonValue))
+
   /// A well-formed envelope with an unknown event name, kept as data.
   UnknownEvent(event: String, body: JsonValue)
 }
@@ -564,6 +596,7 @@ fn decode_command_body(
     "approve" -> {
       use fields <- result.try(body_fields(body))
       use escalation_id <- result.try(required_string(fields, "escalation_id"))
+
       // Both echoes are required, and their absence is a refused frame
       // rather than a tolerated default. A client that cannot say what
       // it rendered has not carried anyone's consent, and defaulting
@@ -611,6 +644,7 @@ fn decode_command_body(
       use name <- result.try(optional_string(fields, "name"))
       Ok(CreateStrand(name:))
     }
+
     // The body is deliberately empty today; tolerant reading applies.
     "models" -> Ok(ListModels)
     "set_config" -> {
@@ -1574,6 +1608,7 @@ fn wire_block(value: JsonValue) -> JsonValue {
               json.Object(list.filter(fields, fn(field) { field.0 != "type" })),
             ),
           ])
+
         // The wire always carries `redacted`; the codec omits `false`.
         Ok(json.String("thinking")) ->
           case list.key_find(fields, "redacted") {
@@ -1693,6 +1728,7 @@ fn positional_float(text: String, mantissa: String, exponent: Int) -> String {
     Error(Nil) -> #(mantissa, "")
   }
   let digits = whole <> fraction
+
   // The decimal point sits after `point` digits of `digits`.
   let point = string.length(whole) + exponent
   let total = string.length(digits)

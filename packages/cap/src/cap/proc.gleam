@@ -47,8 +47,10 @@ pub type Output {
 pub type ProcError {
   /// The broker refused to run the command in-band (e.g. policy).
   ProcDenied(code: String, message: String)
+
   /// The executor could not spawn the command at all.
   SpawnFailed(message: String)
+
   /// The capability channel could not carry the call.
   ProcUnavailable(reason: String)
 }

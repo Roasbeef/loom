@@ -191,6 +191,7 @@ fn launch(
     "the cap token file",
   ))
   use _ <- result.try(private_directory(directory_of(spec.cap_socket_path)))
+
   // The kernel truncates nothing and rejects instead: an AF_UNIX bind
   // address longer than the platform's sun_path limit fails with einval,
   // which reads as a kernel fault when the real problem is a workspace
@@ -326,8 +327,10 @@ fn destroy(
 type Settlement {
   /// The node's clearance succeeded; this is the handle to cancel it by.
   Cleared(handle: broker.CallHandle)
+
   /// The node settled, and this is what its helper reported.
   Settled(report: Report)
+
   /// Someone is tearing the node down and wants its report.
   Ask(reply: Subject(Report))
 }
@@ -336,8 +339,10 @@ type Settlement {
 type NodeState {
   /// The clearance has not come back yet.
   Pending
+
   /// Cleared and running under this handle.
   Running(handle: broker.CallHandle)
+
   /// Settled, with the report to hand out.
   Done(report: Report)
 }
@@ -352,6 +357,7 @@ fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
     })
   case process.receive(handoff, handoff_timeout_ms) {
     Ok(inbox) -> inbox
+
     // A holder that would not start is a report nobody can collect; the
     // ask then times out and says so, which is the honest answer.
     Error(Nil) -> process.new_subject()
@@ -482,9 +488,11 @@ fn run_janitor(
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(_down) { Nil })
   let _ = process.selector_receive_forever(down)
+
   // Nobody is left to carry the report: the host that would have reported
   // the outcome is the process that just died.
   let _report = destroy(config, spec, outbox, settlement)
+
   // The token file is the host's to unlink, and a killed host will not do
   // it. A leaked token is not a disclosure — its directory is mode 0700 —
   // but it is a leak.
@@ -497,8 +505,10 @@ fn run_janitor(
 type Out {
   /// The reader accepted a connection; adopt it and flush what buffered.
   Attach(socket: Socket)
+
   /// One encoded frame from the host.
   Emit(bytes: BitArray)
+
   /// Teardown: close the connection and the listener.
   Shutdown
 }
@@ -624,6 +634,7 @@ fn read_loop(
       process.send(wire, satellite.WireBytes(data: bytes))
       read_loop(socket, wire, exits)
     }
+
     // End of stream. The node's own exit status says far more than "the
     // peer closed", so wait briefly for it before reporting.
     Error(reason) ->

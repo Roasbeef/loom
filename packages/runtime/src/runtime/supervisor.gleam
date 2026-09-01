@@ -445,6 +445,7 @@ fn ensure_strand_running(
   let reg = process.named_subject(registry_name)
   let name = registry.ensure(reg, strand)
   use <- bool.guard(when: alive(name), return: Ok(Nil))
+
   // Sending into an unregistered name crashes the sender, and this is
   // called from `api.create_strand` on a tool's effect process: a spawn
   // racing a factory restart would take that process down and settle as
@@ -463,6 +464,7 @@ fn ensure_strand_running(
     )
   {
     Ok(_started) -> Ok(Nil)
+
     // A concurrent starter won the race: the strand is running.
     Error(error) ->
       case alive(name) {

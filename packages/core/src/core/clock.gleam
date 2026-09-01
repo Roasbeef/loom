@@ -20,8 +20,10 @@ pub opaque type Clock {
   /// Wraps an injected reader. Invariant: the function returns the current
   /// Unix time in milliseconds; the clock value itself never changes.
   InjectedClock(get: fn() -> Int)
+
   /// Always reads `now`. Invariant: `now` is a Unix-ms timestamp.
   FixedClock(now: Int)
+
   /// Reads `now`, then advances by `step`. Invariants: `now` is a Unix-ms
   /// timestamp; `step` is non-negative so time never runs backwards.
   SteppingClock(now: Int, step: Int)

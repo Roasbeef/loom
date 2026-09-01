@@ -50,6 +50,7 @@ import gleam/result
 pub type Outcome {
   /// The program finished with this value.
   Completed(value: MsgPackValue)
+
   /// The program failed in a controlled way.
   Errored(message: String, details: MsgPackValue)
 }
@@ -74,6 +75,7 @@ pub type ArtifactRef {
 pub type ReportError {
   /// The broker refused the emission in-band.
   EmitDenied(code: String, message: String)
+
   /// The capability channel could not carry the call.
   EmitUnavailable(reason: String)
 }

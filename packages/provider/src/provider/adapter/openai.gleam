@@ -311,6 +311,7 @@ pub fn map_finish_reason(
     "stop" -> Ok(#(Stop, None))
     "length" -> Ok(#(Length, None))
     "tool_calls" -> Ok(#(ToolUse, None))
+
     // The legacy function-calling dialect some proxies still emit.
     "function_call" -> Ok(#(ToolUse, None))
     "content_filter" ->
@@ -707,6 +708,7 @@ fn handle_delta(
     Ok("") | Error(Nil) -> #(acc, [])
     Ok(text) -> append_text(acc, text)
   }
+
   // Reasoning arrives under `reasoning_content` (DeepSeek and most
   // compatible servers) or `reasoning` (OpenRouter).
   let reasoning = case wire.string_field(delta, "reasoning_content") {
@@ -914,6 +916,7 @@ fn settle_with_stop(
     MalformedStream,
   )
   let usage = build_usage(acc)
+
   // Spec §1.5 words this as input plus cache-read, from before either
   // adapter reported a cache *write*. The quantity it names is the whole
   // prompt, so the write half belongs in the sum too; with nothing
@@ -949,6 +952,7 @@ fn settle_with_stop(
       end_turn: option.map(acc.raw_stop, fn(raw) { raw == "stop" }),
       timestamp: acc.now,
     )
+
   // Unreachable by construction (the stop reason above is never
   // Pending), reported totally rather than asserted.
   use settled <- or_fail(stream.settle(assistant), acc, fn(_nil) {

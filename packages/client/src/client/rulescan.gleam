@@ -275,9 +275,11 @@ type Progress {
 type Hold {
   // No rule is currently matched-and-unfired here.
   NotHeld
+
   // A rule matched and could not be admitted; the strand may yet open a
   // run, so the next pass retries.
   Holding
+
   // The held strand was judged dead on the pass its hold began — the one
   // lineage read this incarnation pays for it. No later pass looks at
   // this strand again.
@@ -400,6 +402,7 @@ fn scan_from(
     Some(_seen) -> progress
     None -> load_progress(state, strand, progress)
   }
+
   // Nothing new on this branch, and nothing waiting to be retried.
   // `progress.hold` is `NotHeld` or `Holding` here — never `Abandoned`,
   // which `finished` already keeps out of `scan_from` entirely.
@@ -443,6 +446,7 @@ fn judge(
   let pending =
     list.filter(progress.pending, fn(name) { !list.contains(spent, name) })
   let hold = next_hold(state, strand, progress.hold, held, pending)
+
   // A held or abandoned fire freezes the cursor: the entry that matched
   // must still be above it on the next pass, or the rule is lost — and
   // an abandoned strand never gets a next pass to lose it on, but the
@@ -546,11 +550,14 @@ fn newest(entries: List(Entry), floor: Seq) -> Seq {
 type Fire {
   // The injection and the mark landed together.
   Fired
+
   // The mark was already there: an earlier incarnation, or a concurrent
   // pass, did this. The rule is spent either way.
   AlreadyFired
+
   // No open run to steer. The cursor stays put and the next run gets it.
   Held
+
   // Anything else — a stolen lease, an unreadable register. Treated like
   // a hold, so the next pass tries again rather than losing the rule.
   Failed(reason: String)
@@ -599,6 +606,7 @@ fn injection(state: State, rule: Rule) -> message.AgentMessage {
 fn classify(admitted: Result(EntryId, api.ApiError)) -> Fire {
   case admitted {
     Ok(_entry) -> Fired
+
     // The mark moved between the read and the commit: somebody already
     // fired this rule on this strand, which is exactly what the
     // write-once expectation was asked to find out.
@@ -625,6 +633,7 @@ fn report(state: State, strand: String, rule: Rule, verdict: Fire) -> Nil {
   ]
   case verdict {
     Fired -> log.info(state.options.logger, "rule.fired", where)
+
     // Neither of these is a fault: one is another incarnation having
     // won, the other is a rule waiting for a run to exist.
     AlreadyFired | Held -> Nil
@@ -659,6 +668,7 @@ fn checkpoint(
     )
   {
     Ok(Nil) -> scanned
+
     // A checkpoint that would not commit is not worth a retry: the next
     // pass will be further ahead and try again, and the fired-marks are
     // what a restart actually depends on.

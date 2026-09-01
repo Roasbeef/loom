@@ -70,6 +70,7 @@ pub type Session {
 pub type OpenError {
   /// The memory backend's actor failed to start.
   MemoryOpenFailed(error: StorageError)
+
   /// The SQLite backend refused or failed (lease held, corrupt file,
   /// open failure).
   SqliteOpenFailed(error: sqlite.OpenError)
@@ -79,6 +80,7 @@ pub type OpenError {
 pub type SessionError {
   /// The underlying storage operation failed.
   StoreFailure(error: StorageError)
+
   /// A stored payload failed its total decode.
   SessionCorrupt(report: CorruptionReport)
 }
@@ -312,6 +314,7 @@ fn mint_identity(
       use Nil <- result.map(project_identity(session, minted))
       #(minted, generator)
     }
+
     // A concurrent minter won; the session's id is theirs, not ours.
     Error(tx.StaleExpectation(..)) -> adopt_minted_identity(session, generator)
     Error(error) -> Error(commit_refusal(error))
@@ -343,6 +346,7 @@ fn project_identity(
   id: SessionId,
 ) -> Result(Nil, SessionError) {
   use parent <- result.map(parent_id(session))
+
   // The discard is deliberate and the silence is accepted: this package
   // reaches no logger (its dependencies are `core`, `storage` and
   // `machine`), and a failed projection is repaired by the next open, so
@@ -456,6 +460,7 @@ fn seed_commit_result(
 ) -> Result(Nil, SessionError) {
   case result {
     Ok(_) -> Ok(Nil)
+
     // A concurrent seeder won; the strand exists.
     Error(tx.StaleExpectation(..)) -> Ok(Nil)
     Error(error) -> Error(commit_refusal(error))
@@ -471,6 +476,7 @@ fn commit_refusal(error: tx.CommitError) -> SessionError {
   case error {
     tx.Corruption(report:) -> SessionCorrupt(report:)
     tx.Faulted(reason:) -> StoreFailure(error: storage.BackendFault(reason:))
+
     // Committing against a session another writer now owns is a backend
     // failure like any other from here: this layer has no tree to reopen,
     // and the caller that does gets the reason spelled out

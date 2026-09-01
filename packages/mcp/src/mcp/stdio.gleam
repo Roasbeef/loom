@@ -88,6 +88,7 @@ pub fn push(
       use Nil <- result.try(check_line(pending_bytes))
       Ok(#(Buffer(pending: [only, ..buffer.pending], pending_bytes:), []))
     }
+
     // At least one newline: the first part completes the pending line,
     // middle parts are whole lines of their own, and the part after the
     // last newline starts the next pending line.
@@ -106,6 +107,7 @@ pub fn push(
       }
       Ok(#(Buffer(pending:, pending_bytes:), lines))
     }
+
     // `string.split` never returns an empty list, but the decoder is
     // total rather than trusting that: an impossible shape reads as an
     // empty push, not a crash.

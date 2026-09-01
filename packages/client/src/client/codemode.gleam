@@ -360,8 +360,10 @@ pub type Surface {
   /// `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
   /// `satellite.default_router`.
   Workspace
+
   /// `cap/strand` + `cap/report`, routed onto the Agency closures.
   Orchestration(agency: Agency, spawn_ceiling: Int)
+
   /// Both, with each submission naming the seam it wants; the workspace
   /// seam is what one that names none is judged against.
   Both(agency: Agency, spawn_ceiling: Int)
@@ -374,8 +376,10 @@ pub type Surface {
 pub type Seams {
   /// The workspace seam alone — the shipped default.
   WorkspaceOnly
+
   /// The orchestration seam alone.
   OrchestrationOnly
+
   /// Both, with the submission choosing.
   BothSeams
 }
@@ -951,6 +955,7 @@ fn execute_after_vetting(
   request: codemode_tool.Request,
 ) -> codemode_tool.Execution {
   let root = exec_root(config, request)
+
   // The socket check first: it is pure, and failing it after creating the
   // directory would leave one behind for an execution that never ran.
   case check_socket_path(root) |> result.try(fn(_) { prepare_root(root) }) {
@@ -985,6 +990,7 @@ fn execute_after_vetting(
             until: deadline_ms,
           ),
         )
+
       // The whole execution is over: the node is destroyed, the socket and
       // token are unlinked by the host's own teardown, and nothing but the
       // outcome outlives it. The seed clone is large and every build makes
@@ -1116,6 +1122,7 @@ fn watched_launcher(
       Ok(connection) -> Ok(connection)
       Error(reason) -> {
         let #(now, _clock) = clock.read(session_clock)
+
         // Both variants named: a bare variable in the second arm would
         // be a catch-all whatever it is called, and a third kind of
         // refusal added later would start being reported here with
@@ -1565,6 +1572,7 @@ pub fn workspace_seam(
 ) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
   let root = request.workspace
+
   // The protected list rides the request's own base policy — the same
   // value the launch composes against — so the bridge's write boundary
   // and the jail's mask are fed from one source.
@@ -1748,6 +1756,7 @@ fn classify(
     // or a seam that would not answer: none of them is a directory this
     // listing should send a program into.
     Ok(tool.LinkTarget(..)) | Ok(tool.LinkMissing) | Error(_) -> False
+
     // "Not a regular file" stands in for "directory", which over-reports
     // on the special files: a FIFO, a socket or a device node in the
     // workspace is reported here as a directory. `tool.LinkStatus`

@@ -139,6 +139,7 @@ fn message_for(
 pub fn strand_of(session: Session, operation: OpId) -> Result(String, Nil) {
   case session.op_meta(session, operation) {
     Ok(Some(session.Cell(value: meta, ..))) -> Ok(meta.strand)
+
     // No metadata, or a store that would not answer. A run is never held
     // up for a digest.
     Ok(None) -> Error(Nil)

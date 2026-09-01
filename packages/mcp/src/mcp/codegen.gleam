@@ -84,14 +84,17 @@ pub type Generated {
 pub type GenerateError {
   /// The server listed more than `max_tools` tools.
   TooManyTools(count: Int)
+
   /// Two tools' names mangled to the same Gleam function name. Carries
   /// both *original* names. With the digest rule this cannot happen by
   /// accident — byte-identical originals or an engineered digest
   /// near-miss — and a server doing either is refused, not repaired.
   ToolNameCollision(first: String, second: String)
+
   /// The rendered surface exceeded `max_surface_bytes` even after doc
   /// truncation: structural overflow, refused rather than clipped.
   SurfaceTooLarge(bytes: Int)
+
   /// The rendered source failed the `@` backstop — the sanitizer did not
   /// hold. This is an internal assertion, surfaced loudly by design.
   SanitizerBreach(detail: String)

@@ -12,64 +12,82 @@ import gleam/string
 pub type Command {
   /// Show the command reference.
   Help
+
   /// Show the model catalogue.
   Models
+
   /// Switch the active strand to one catalogue model by name.
   Model(
     /// The stable catalogue name selected by the operator.
     name: String,
   )
+
   /// Show the strand list.
   Strands
+
   /// Inspect the session's agents and sub-agents.
   Agents
+
   /// Browse the active strand's injected agent-note digest.
   Notes
+
   /// Toggle expanded reasoning and tool detail.
   Details
+
   /// Switch the active strand by name.
   Strand(
     /// The stable strand name to make active.
     name: String,
   )
+
   /// Fork the active strand.
   Fork(
     /// The operator-facing name for the new branch strand.
     name: String,
   )
+
   /// Compact the active strand.
   Compact
+
   /// Abort the active strand's live operation.
   Abort
+
   /// Inject text into the active strand's live operation.
   Steer(
     /// The instruction that must affect the in-flight turn.
     text: String,
   )
+
   /// Queue text to run after the active strand's live operation.
   Queue(
     /// The instruction that must wait for the in-flight turn to settle.
     text: String,
   )
+
   /// Clear only this client's rendered transcript.
   Clear
+
   /// Leave the client.
   Quit
+
   /// Send ordinary text as a prompt.
   Prompt(
     /// The user-authored prompt text.
     text: String,
   )
+
   /// A slash command the client does not know.
   Unknown(
     /// The first slash-prefixed word that was not recognized.
     name: String,
   )
+
   /// A known command whose required argument is absent.
   MissingArgument(
     /// The command name whose argument is missing.
     name: String,
   )
+
   /// Ignore an empty submission.
   Empty
 }

@@ -36,6 +36,7 @@ pub fn install_exclusive(channel: Channel, owner: Pid) -> Result(Nil, Nil) {
         // A prior execution's channel actor is still live: refuse rather
         // than let a survivor pick up this execution's token.
         True -> Error(Nil)
+
         // The prior owner is dead — a stale slot from a reaped execution.
         // Overwrite it and record the new owner.
         False -> Ok(do_install(channel, owner))

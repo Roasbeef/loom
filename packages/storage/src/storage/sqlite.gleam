@@ -131,15 +131,18 @@ pub type OpenError {
   /// Another writer holds an unexpired lease on this session file. Retry
   /// after it expires, or shut the other writer down.
   LeaseHeld(owner: String, expires_at_ms: Int)
+
   /// The file's catalog failed a total decode, or the file is not a Loom
   /// session at all.
   CorruptSession(report: CorruptionReport)
+
   /// The stored `storage_version` cannot be opened by this build:
   /// `found > supported` means the file was written by a newer Loom
   /// (refuse rather than misread it); `found < supported` means an older
   /// file for which the caller's migration chain has no step (see
   /// `open_with_migrations`).
   UnsupportedVersion(found: Int, supported: Int)
+
   /// The database could not be opened or initialized.
   OpenFailed(reason: String)
 }
@@ -177,46 +180,58 @@ pub type Segment {
 pub opaque type Message {
   /// Commit a transaction.
   Commit(tx: Tx, reply: Subject(Result(CommitResult, CommitError)))
+
   /// Batch entry fetch.
   GetEntries(
     ids: List(EntryId),
     reply: Subject(Result(Dict(EntryId, Entry), StorageError)),
   )
+
   /// Read one register cell.
   GetRegister(
     ns: RegisterNs,
     key: String,
     reply: Subject(Result(Option(Register), StorageError)),
   )
+
   /// List a namespace's cells.
   ListRegisters(
     ns: RegisterNs,
     key_prefix: Option(String),
     reply: Subject(Result(List(#(String, Register)), StorageError)),
   )
+
   /// Branch query.
   ScanBranch(q: BranchScan, reply: Subject(Result(List(Entry), StorageError)))
+
   /// Entry inventory scan.
   ScanEntries(q: EntryScan, reply: Subject(Result(List(Entry), StorageError)))
+
   /// Ledger read.
   ScanUsage(q: UsageScan, reply: Subject(Result(List(UsageRow), StorageError)))
+
   /// Stats projection read.
   Stats(reply: Subject(Result(SessionStats, StorageError)))
+
   /// Renew the writer lease without committing anything.
   RenewLease(reply: Subject(Result(Nil, StorageError)))
+
   /// Project the session's canonical identity into the catalog row.
   RecordIdentity(
     session_id: String,
     parent_session_id: Option(String),
     reply: Subject(Result(Nil, StorageError)),
   )
+
   /// Read the query plan of the branch segment query for one scan order.
   ScanBranchPlan(
     order: ScanOrder,
     reply: Subject(Result(List(String), StorageError)),
   )
+
   /// Read the branch-index segment metadata.
   Segments(reply: Subject(Result(List(Segment), StorageError)))
+
   /// Seal the handle: release the lease, close the file. Idempotent.
   Close(reply: Subject(Result(Nil, StorageError)))
 }
@@ -342,6 +357,7 @@ fn initialize(
   }
   case readied {
     Ok(Nil) -> Ok(fence)
+
     // The lease was claimed but this open cannot deliver a usable handle;
     // release the claim so the file is not locked out for a whole TTL.
     Error(open_error) -> {
@@ -419,6 +435,7 @@ fn admit(
       use fence <- result.try(claim_lease(conn, config, now))
       Ok(Opened(fence:, migrate_from: storage_version))
     }
+
     // A newer file is refused before any write: a schema the newer build
     // dropped or renamed must not be resurrected into it.
     Some([version]) if version > storage_version ->
@@ -910,10 +927,12 @@ pub type RewriteError {
   /// mid-rewrite after the rewrite's own lease expired. A rewrite is an
   /// offline admin operation; close (or let expire) the writer first.
   RewriteLeaseHeld(owner: String, expires_at_ms: Int)
+
   /// A stored payload failed its total decode, the file is not a
   /// current-version Loom session, or a transform broke an invariant
   /// (changed an entry's id, parent, or kind, or reported corruption).
   RewriteCorrupt(report: CorruptionReport)
+
   /// The copy, update, vacuum, swap, or sibling cleanup failed at the SQL
   /// or file level.
   RewriteFailed(reason: String)
@@ -1022,6 +1041,7 @@ fn stage_rewrite(
       |> result.replace(Nil),
     )
     use outcome <- result.try(rewrite_copy(temp, rewrite, rewrite_value))
+
     // Re-verify immediately before the swap: if the rewrite outlived its
     // TTL and a writer stole the lease, that writer's commits are in the
     // original and the copy is stale — abort rather than discard them
@@ -1363,6 +1383,7 @@ fn rewrite_copy_transaction(
     )
     use Nil <- result.try(rewrite_registers(conn, rewrite_value))
     use Nil <- result.try(rewrite_usage_details(conn, rewrite_value))
+
     // The lease this rewrite holds lives in the *original* and dies
     // with it at the swap; the copy must not carry it over.
     use _ <- result.try(
@@ -1495,6 +1516,7 @@ fn rewrite_row(
     None -> Ok(count)
     Some(new) -> {
       use Nil <- result.try(check_placement(entry, new))
+
       // Re-stamp placement from the stored row so a transform cannot move
       // an entry even accidentally.
       let stamped = storage.stamp(new, seq: entry.seq, ts: entry.ts)
@@ -1782,6 +1804,7 @@ fn do_commit(
       // Lease first: a fenced-out writer must apply nothing.
       use Nil <- result.try(check_and_renew_lease(state, now))
       use session <- result.try(read_session(state.conn))
+
       // Rule 4: evaluate every CAS expectation against the
       // pre-transaction register state before applying any write.
       use Nil <- result.try(check_expectations(state.conn, tx.expected))
@@ -1816,6 +1839,7 @@ fn fail_to_commit_error(fail: Fail) -> CommitError {
     FailSql(error) -> Faulted(reason: "sqlite: " <> describe_sqlight(error))
     FailCorrupt(report) -> Corruption(report:)
     FailStale(failed) -> StaleExpectation(failed:)
+
     // The one commit failure with its own remedy: this process is not
     // the writer any more, so no reload and no retry can help
     // (`protocol-change/005`).
@@ -1851,9 +1875,11 @@ fn check_and_renew_lease(state: ActorState, now: Int) -> Result(Nil, Fail) {
         decode.dynamic,
       )
       |> result.replace(Nil)
+
     // Someone else's claim is in the table: the lease was stolen after
     // it expired, and this writer is fenced out.
     [#(owner, _), ..] -> Error(FailLease(held_by: Some(owner)))
+
     // No claim at all — a precise rewrite clears the table so the
     // swapped-in file starts unleased. Same conclusion, no owner to
     // name.
@@ -2176,6 +2202,7 @@ fn index_child_entry(
   case tips {
     // Appending at a tip: one new row, move the tip.
     [branch_id] -> append_at_tip(conn, branch_id, id_text, seq, kind_text)
+
     // Diverging append: build a new segment covering the parent.
     [] -> diverge(conn, entry, parent_text, seq, id_text, kind_text)
     [_, ..] ->
@@ -2276,6 +2303,7 @@ fn build_diverged_segment(
   kind_text: String,
 ) -> Result(Nil, Fail) {
   use windows <- result.try(chain_windows(conn, cover_id, parent_seq, [], []))
+
   // Mandatory rule 2: search for the newest compaction at or below
   // the parent through the complete segment chain, not just the
   // newest physical segment.
@@ -2285,6 +2313,7 @@ fn build_diverged_segment(
     Some(compaction_seq) -> compaction_seq
     None -> 0
   }
+
   // Copy only rows after the compaction through the parent; the
   // older prefix is reachable through the base link instead.
   use Nil <- result.try(copy_windows(conn, branch_id, windows, floor))
@@ -2823,6 +2852,7 @@ fn do_scan_branch(
         )
     })
     use windows <- result.try(chain_windows(conn, cover_id, start_seq, [], []))
+
     // Resolve any stop to a seq boundary on the unfiltered path first
     // (the stop applies before the cursor), then clip the windows by
     // that boundary and the cursor so pages never fetch — or decode —
@@ -2869,6 +2899,7 @@ fn resolve_stop(
     Some(id) -> stop_id_seq(conn, windows, ids.entry_id_to_string(id))
     None -> Ok(None)
   })
+
   // The first stop in scan order wins: the largest matching seq when
   // scanning newest-first, the smallest when scanning oldest-first.
   case kind_seq, id_seq, q.order {
@@ -2956,6 +2987,7 @@ fn clip_windows(
         }
         #(lo, hi)
       }
+
       // Oldest-first keeps seq <= stop and seq > cursor.
       OldestFirst -> {
         let hi = case stop_bound {
@@ -3083,6 +3115,7 @@ fn scan_window_pages(
         }),
       )
       let refined = list.fold(over: entries, from: refined, with: branch.step)
+
       // The page came back under a `LIMIT fetch_cap`, so the only question
       // is whether it came back short — and a row at `fetch_cap - 1` settles
       // that without counting the page. `list.length` would walk every

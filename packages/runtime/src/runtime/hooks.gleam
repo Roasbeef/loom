@@ -325,6 +325,7 @@ pub fn project(session: Session, strand: String) -> Projected {
   case session.strand_leaf(session, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
       project_from_leaf(session, leaf)
+
     // A strand with no leaf, or a read that fails, projects as empty —
     // see the doc comment above for why that is the safe direction.
     _ -> uncompacted([])
@@ -343,6 +344,7 @@ fn project_from_leaf(session: Session, leaf: ids.EntryId) -> Projected {
 
 fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
   let messages = session.project_scan(newest_first)
+
   // The scan stops *inclusively* at the first compaction, so a
   // compaction — when there is one — is the oldest entry it returned,
   // and the projection opens with that entry's summary followed by its

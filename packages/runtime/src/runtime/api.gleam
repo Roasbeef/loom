@@ -187,12 +187,16 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
 pub type ApiError {
   /// Acceptance refused the request; nothing was written.
   AcceptRejected(reason: RejectReason)
+
   /// Queue admission refused (no active run); nothing was written.
   QueueRejected(reason: queue.QueueReject)
+
   /// A storage read or decode failed.
   ReadFailed(reason: String)
+
   /// The admission commit failed.
   CommitFailed(error: CommitError)
+
   /// Another writer holds this session's write lease, so nothing this
   /// runtime commits can land. `held_by` names the thief when the
   /// backend could see it, and is `None` when the lease row was cleared
@@ -203,20 +207,27 @@ pub type ApiError {
   /// never to retry, and a caller that cannot tell theft from a full
   /// disk cannot choose between them.
   SessionStolen(held_by: Option(String))
+
   /// The admission kept losing its seq race against the strand.
   RaceLost
+
   /// A fact write named a key under a reserved prefix.
   ReservedFactKey(key: String)
+
   /// A privileged fact operation named a key outside every reserved
   /// prefix. The two write paths are disjoint on purpose: an ordinary
   /// fact belongs to `put_fact`.
   UnreservedFactKey(key: String)
+
   /// An escalation with this id is already recorded.
   EscalationExists(id: String)
+
   /// No escalation with this id is recorded.
   EscalationNotFound(id: String)
+
   /// The escalation's current status does not permit the transition.
   EscalationWrongStatus(id: String, status: escalation.Status)
+
   /// A compare-and-set fact write lost: the cell is no longer at the seq
   /// the caller read it at, so somebody else wrote it in between. The
   /// remedy is to read again and decide again, which is the whole point
@@ -246,6 +257,7 @@ pub fn open(
     session.ensure_strand(session, options.strand, options.configuration)
     |> result.map_error(describe_session_error),
   )
+
   // The session's own name, minted here because this is the one place
   // every session — file-backed, in-memory, forked or fresh — passes
   // through on its way up (`protocol-change/008`). Idempotent: a session
@@ -610,6 +622,7 @@ fn enqueue(
           admit(op, op_state, op_state_seq, generator, PendingMessage(message:)),
           fn(reason) { QueueRejected(reason:) },
         )
+
         // Only a lost seq race reloads. Every other refusal — a stolen
         // lease above all — finishes the admission: `retry_admission`
         // decrements only on `Retry`, so a `Done` here is what keeps the
@@ -639,6 +652,7 @@ fn enqueue(
 pub fn nudge(runtime: Runtime) -> Nil {
   case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.nudge(subject)
+
     // No driver registered (mid-restart): loss is harmless — the
     // checkpoint poll finds the durable work.
     Error(Nil) -> Nil
@@ -667,6 +681,7 @@ fn addressed_strand_subject(
 pub fn abort(runtime: Runtime) -> Nil {
   case addressed_strand_subject(runtime) {
     Ok(subject) -> strand_runtime.request_abort(subject)
+
     // No live driver (mid-restart): nothing can serialize the marker
     // right now; as with a pre-commit crash, the caller re-requests
     // (pi §4.6).
@@ -740,6 +755,7 @@ pub fn await_result(
 ) -> Result(LastResult, Nil) {
   case operation_result(runtime, operation) {
     Some(last) -> Ok(last)
+
     // The store read is a fallback, not a substitute — an eager unwrap
     // here would run it even when the operation-keyed fact already
     // answered, so this stays a `case` rather than an `option.unwrap`.
@@ -794,12 +810,16 @@ fn await_result_wait(
 pub type CreateStrandError {
   /// A strand with this name already has registers in the store.
   StrandExists(name: String)
+
   /// The fork-point entry does not exist in the tree.
   UnknownForkPoint(entry: EntryId)
+
   /// Seeding the strand's registers failed.
   SeedFailed(reason: String)
+
   /// The strand driver could not be started.
   StartFailed(reason: String)
+
   /// The strand exists and its driver runs, but the task brief was not
   /// accepted.
   BriefRejected(error: ApiError)
@@ -987,6 +1007,7 @@ fn seed_strand(
     Error(tx.StaleExpectation(..)) -> Error(StrandExists(name:))
     Error(tx.Corruption(report:)) -> Error(SeedFailed(reason: report.boundary))
     Error(tx.Faulted(reason:)) -> Error(SeedFailed(reason:))
+
     // `CreateStrandError` already flattens every backend refusal into a
     // reason, and its one consumer renders it as text; the distinction
     // that has to survive as a value is the one at the admission
@@ -1001,6 +1022,7 @@ pub type Delivery {
   /// The target had an open run: the message is a durable steer item on
   /// its queue.
   Steered(entry: EntryId)
+
   /// The target was idle: the message was accepted as a fresh run.
   Started(operation: OpId)
 }
@@ -1044,6 +1066,7 @@ fn send_attempts(
           nudge(target)
           Ok(Started(operation:))
         }
+
         // A run opened between the steer refusal and the accept: try
         // the steer again.
         Error(AcceptRejected(reason: StrandBusy)) ->
@@ -1838,6 +1861,7 @@ pub fn consume_escalation_at(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(consumed.grants)
+
     // The record moved under the decision that named it. Not a retry:
     // re-reading would consume a record the caller never checked.
     Error(tx.StaleExpectation(..)) -> Error(RaceLost)

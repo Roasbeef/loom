@@ -71,13 +71,16 @@ pub type StorageError {
   /// Stored bytes failed a total decode. The session file is damaged or
   /// was written by something other than this storage version.
   CorruptRow(report: CorruptionReport)
+
   /// A query named an entry id that is not in the session (for example a
   /// `BranchScan.start` that was never committed).
   UnknownEntry(id: EntryId)
+
   /// The backend infrastructure failed: I/O error, SQL error, lost
   /// process. The reason is a human-readable description, not for
   /// dispatch.
   BackendFault(reason: String)
+
   /// The handle was used after `close`.
   HandleClosed
 }
@@ -97,10 +100,13 @@ pub type Register {
 pub type EntryKind {
   /// A `MessageEntry`.
   Message
+
   /// A `CompactionEntry`.
   Compaction
+
   /// A `BranchSummaryEntry`.
   BranchSummary
+
   /// A `CustomEntry`.
   Custom
 }
@@ -109,6 +115,7 @@ pub type EntryKind {
 pub type ScanOrder {
   /// Descending seq: the newest matching row first.
   NewestFirst
+
   /// Ascending seq: the oldest matching row first.
   OldestFirst
 }

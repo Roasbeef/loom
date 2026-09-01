@@ -173,6 +173,7 @@ const hand_over_timeout_ms = 5000
 pub type Outcome {
   /// The program finished with this structured value.
   Completed(value: MsgPackValue)
+
   /// The program failed in a controlled way, with a message and details.
   Errored(message: String, details: MsgPackValue)
 }
@@ -194,20 +195,27 @@ pub type Run {
 pub type RunError {
   /// The cap-channel token could not be minted (entropy fault).
   TokenMintFailed(reason: String)
+
   /// The private token file could not be written.
   TokenFileFailed(reason: String)
+
   /// The host actor failed to start.
   HostUnavailable(reason: String)
+
   /// The satellite node could not be launched.
   LaunchRejected(reason: String)
+
   /// The wall deadline passed before the program finished; the node was
   /// killed as a unit.
   DeadlineExceeded
+
   /// The satellite's cap channel closed before the program reported an
   /// outcome (the node died or was reaped).
   SatelliteGone(reason: String)
+
   /// The cap channel broke the framing protocol; it was closed.
   ChannelFaulted(reason: String)
+
   /// The satellite's terminal `outcome` frame was malformed.
   OutcomeMalformed(reason: String)
 }
@@ -279,6 +287,7 @@ pub type CapPlan {
   /// Dispatch a jailed clearance through the broker and render its
   /// settlement.
   ClearedCall(spec: CallSpec, render: fn(Collected) -> CapOutcome)
+
   /// Answer in the harness. `serve` runs on a process of its own — never
   /// on the host actor, which must go on reading the cap channel and
   /// arming the deadline while a call that may block for tens of seconds
@@ -435,6 +444,7 @@ pub type Launcher =
 pub type WireIn {
   /// Raw protocol bytes from the satellite.
   WireBytes(data: BitArray)
+
   /// The cap channel closed, with a reason.
   WireClosed(reason: String)
 }
@@ -615,6 +625,7 @@ fn await_result(
       }
     Error(Nil) -> {
       process.send(host.commands, Stop)
+
       // The host owns `destroy`, and with it the node's report; a host
       // that never answered never handed one back.
       Run(
@@ -661,6 +672,7 @@ fn hand_over(host: Host, connection: CapConnection) -> Option(Report) {
     // The host is gone, so it will never destroy the node — nor report
     // what confined it. Both fall to the caller here.
     Ok(HostGone) -> Some(connection.destroy())
+
     // Taken, or the host is alive but wedged; either way it owns `destroy`
     // and destroying here as well would reap the node twice.
     Ok(HostTook) | Error(Nil) -> None
@@ -760,6 +772,7 @@ fn start_host(
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(wire, FromWire)
+
     // The wall deadline is armed on `Connected`, not here: a launch that
     // outlasted a deadline armed up front stopped the host before the
     // connection arrived, and the `destroy` it carried — the host's only
@@ -826,11 +839,13 @@ fn handle_connected(
 ) -> actor.Next(State, Msg) {
   // Flush anything buffered before the launcher connected.
   list.each(list.reverse(state.pending_out), send)
+
   // The node exists from here, so the wall deadline starts here: after it,
   // the node dies as a unit (`broker.abort` plus `destroy`).
   let #(now, clock) = clock.read(state.clock)
   let delay = int.max(pooled(state).deadline_ms - now, 0)
   let _ = process.send_after(state.commands, delay, Deadline)
+
   // The host now owns `destroy`. Telling `run_launched` so is what lets it
   // distinguish this from a host that stopped first (CH-F3).
   process.send(ack, Nil)
@@ -927,6 +942,7 @@ fn handle_payload(state: State, payload: BitArray) -> FrameStep {
     Ok(frame) -> handle_frame(state, frame)
     Error(framing.UnknownKind(id: _, kind:)) if kind == outcome_kind ->
       finish_from_payload(state, payload)
+
     // Any other unknown kind is ignored (forward compatibility); a
     // genuinely malformed frame closes the channel.
     Error(framing.UnknownKind(..)) -> FrameContinue(state)
@@ -944,6 +960,7 @@ fn handle_frame(state: State, frame: framing.Frame) -> FrameStep {
         state,
         framing.Frame(id: frame.id, body: framing.Heartbeat),
       ))
+
     // No other kind flows satellite-to-host on the cap channel. A hostile
     // peer's stray well-formed frame is ignored (the deadline bounds it);
     // only a malformed frame closes the channel.
@@ -960,6 +977,7 @@ fn handle_cap_call(
 ) -> FrameStep {
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
+
   // (a) Constant-time token check — channel authentication and the
   // `{op_id, step_id, deadline}` binding, not confinement of an escaped
   // `.beam` (see the module doc). `check_for` scans without early exit.
@@ -1391,6 +1409,7 @@ fn deframe_loop(buffer: BitArray, seen: List(BitArray)) -> Deframed {
               deframe_loop(remainder, [payload, ..seen])
           }
       }
+
     // Fewer than four bytes buffered: carry.
     _ -> deframe_carry(buffer, seen)
   }

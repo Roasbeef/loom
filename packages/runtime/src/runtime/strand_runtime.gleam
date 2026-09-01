@@ -108,6 +108,7 @@ pub type Options {
 pub type EffectToken {
   /// A pending assistant generation.
   AssistantEffect(operation: OpId, step_id: String, response_entry: EntryId)
+
   /// A pending tool execution (or safe replay).
   ToolEffect(
     operation: OpId,
@@ -115,6 +116,7 @@ pub type EffectToken {
     source_index: Int,
     result_entry: EntryId,
   )
+
   /// A pending deferred fetch.
   PollEffect(
     operation: OpId,
@@ -122,6 +124,7 @@ pub type EffectToken {
     poll: Int,
     response_entry: EntryId,
   )
+
   /// A pending nested summary request.
   SummaryEffect(operation: OpId, task_id: String, attempt: Int, index: Int)
 }
@@ -132,19 +135,26 @@ pub type EffectToken {
 pub opaque type Message {
   /// Reports the ledger-authored prior-generation drain acknowledgement.
   PredecessorsResolved(Result(Nil, String))
+
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
+
   /// The periodic checkpoint poll; also grants one deferred poll permit.
   PollTick
+
   /// A retry wait elapsed.
   RetryDue
+
   /// Commit the durable abort marker for the open operation, then cancel
   /// live effects and reconcile.
   RequestAbort
+
   /// A provider-shaped effect delivered its terminal event.
   ProviderDone(token: EffectToken, terminal: stream.StreamEvent)
+
   /// A tool effect settled.
   ToolDone(token: EffectToken, outcome: effects.ToolOutcome)
+
   /// A monitored effect process exited.
   EffectExit(down: process.Down)
 }
@@ -325,10 +335,12 @@ pub fn start(
       |> process.select(internal)
       |> process.select_monitors(EffectExit)
     let logger = log.for_strand(options.logger, options.strand)
+
     // Every line this incarnation writes is correlated from here on;
     // the driver process itself also stamps the context so an OTP crash
     // report about *this* process is not orphaned.
     log.adopt(logger)
+
     // The reaper performs the potentially long predecessor claim after it has
     // handed its command subject back to this initializer. The actor can
     // therefore enter its receive loop without weakening the claim handshake.
@@ -551,6 +563,7 @@ fn provider_done(
     field.text(key: "kind", value: effect_kind(token)),
     field.text(key: "outcome", value: terminal_name(terminal)),
   ])
+
   // A live entry whose operation is no longer the strand's current one
   // belongs to an operation that reached its terminal transaction
   // without needing this outcome (a cancelled structural or
@@ -724,6 +737,7 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
           |> option.from_result,
         otherwise: state,
       )
+
       // The effect process died without reporting. Tools have no descendant
       // ownership after the worker dies, so an in-band synthetic result is
       // safe. A provider may still have a transport subtree: halt the driver
@@ -750,6 +764,7 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
 fn abort(state: State) -> Outcome {
   case abort_commit(state, 8) {
     AbortFailed(reason) -> Halt(reason)
+
     // ORCH-L5: exhausting the stale-retry ladder must not drop the abort
     // (the request is fire-and-forget, so nobody would learn it was
     // lost) and must not halt the strand (a restart disrupts the running
@@ -783,8 +798,10 @@ fn abort(state: State) -> Outcome {
 type AbortAttempt {
   /// The marker is durable (or there was nothing to abort).
   AbortDurable(State)
+
   /// The marker commit kept losing its seq race; nothing is durable yet.
   AbortRaceLost
+
   /// A read or commit failed hard.
   AbortFailed(String)
 }
@@ -824,6 +841,7 @@ fn commit_abort_marker(
     Error(tx.StaleExpectation(..)) -> abort_commit(state, attempts - 1)
     Error(tx.Corruption(report:)) -> AbortFailed(corruption.describe(report))
     Error(tx.Faulted(reason:)) -> AbortFailed(reason)
+
     // Fenced out: another writer owns the session, so the cancellation
     // marker cannot be made durable here and retrying would meet the
     // same fence.
@@ -891,6 +909,7 @@ fn plan(
       commit_then(state, plan_tx, observation, fuel, fn(state) {
         drive_loop(state, fuel - 1)
       })
+
     // The one durable state change worth an `info` line per operation:
     // the operation reached a terminal result.
     planner.Finish(result: _, tx: plan_tx) ->
@@ -952,6 +971,7 @@ fn commit_then(
 ) -> Outcome {
   case writer.commit(state.writer, plan_tx) {
     Ok(_) -> continue(state)
+
     // A concurrent admission won the seq race: reload and re-plan with
     // the observation preserved.
     Error(tx.StaleExpectation(..)) -> {
@@ -964,6 +984,7 @@ fn commit_then(
     Error(tx.Corruption(report:)) ->
       Halt("commit corruption: " <> corruption.describe(report))
     Error(tx.Faulted(reason:)) -> Halt("storage faulted: " <> reason)
+
     // Not a fault to reload past: this process is no longer the
     // session's writer, so the strand stops and the tree's reopen path
     // is the only thing that can resolve it.
@@ -1008,6 +1029,7 @@ fn park_retry(state: State, at: Int, now: Int) -> Outcome {
 
 type KeyResolution {
   KeyObservation(Observation)
+
   /// A tool clearance passed, carrying whatever grants its consumption
   /// won. Distinct from `KeyObservation` because the grants must reach
   /// the dispatch that follows: the observation alone would strand them
@@ -1055,6 +1077,7 @@ fn resolve_key(
         ),
         return: KeyWait,
       )
+
       // A restored effect_pending with no live continuation: the
       // request's outcome is unknown (spec §3.1). Loom persists no frame
       // lists (spec-gaps WP-D item 2), so the reconstructed partial is
@@ -1150,6 +1173,7 @@ fn tool_clearance_key(
   now: Int,
 ) -> KeyResolution {
   use call <- or_key_halt(source_call(loaded, source_index))
+
   // Per-tool scheduling (pi §3.8 at per-tool granularity): under
   // parallel settings the planner asks to clear the next planned call
   // while earlier effects run; an `Exclusive` tool must not start beside
@@ -1173,6 +1197,7 @@ fn tool_key(
     return: KeyWait,
   )
   use call <- or_key_halt(source_call(loaded, source_index))
+
   // Loom has no durable tool checkpoints (no list store — spec-gaps
   // WP-D item 2), so the checkpoint is always absent.
   KeyObservation(planner.ObservedToolOrphaned(
@@ -1468,6 +1493,7 @@ fn start_reaper(options: Options, internal: Subject(Message)) -> Reaper {
       process.trap_exits(True)
       let commands = process.new_subject()
       process.send(ready, commands)
+
       // The reaper itself makes the ledger claim. If the driver dies while the
       // ledger is still draining an older generation, its trapped exit remains
       // queued here and this PID stays alive until the ledger has installed its
@@ -1519,6 +1545,7 @@ fn reap(
       process.send(reply_with, committed)
       case committed {
         True -> reap(driver, commands, effects)
+
         // Publication is irreversible even when driver death rejects the
         // worker's start permit. The worker will cancel locally, while the
         // reaper retains its independent owner monitor in case that worker
@@ -1568,6 +1595,7 @@ fn await_drain(
         ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
           let #(effects, _published) =
             publish_provider_owner(effects, effect, handle)
+
           // Publication is irreversible even after draining begins. Rejecting
           // the begin permit stops new work, but retaining the monitor covers
           // the worker-death race in which only the reaper remains able to
@@ -1614,6 +1642,7 @@ fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
     None -> ProviderDrained
     Some(owner) -> {
       let monitor = process.monitor(owner)
+
       // Even an already-dead owner remains unadjudicated until this original
       // monitor supplies its reason. An is_alive pre-filter would collapse a
       // lost witness into the same state as a normal drain.
@@ -1739,6 +1768,7 @@ fn adopt_and_run(
     True -> {
       let reply = process.new_subject()
       process.send(commands, Adopt(process.self(), stop, reply))
+
       // Admission is bounded by the reaper's monitor, not a scheduling guess.
       // Timing out a live but delayed reaper would make this effect disappear
       // without either running its body or reporting a terminal result.
@@ -1770,6 +1800,7 @@ fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
   let reaper_monitor = process.monitor(reaper_pid)
   let reply = process.new_subject()
   process.send(commands, TrackProvider(process.self(), handle, reply))
+
   // The reply commits an ownership transfer. Only that reply or the reaper's
   // Down can resolve it; a wall-clock timeout cannot tell whether the reaper
   // recorded the owner and would create an ambiguous double custodian.
@@ -1884,6 +1915,7 @@ fn await_provider_selected(
       stream.cancel(handle)
       case process.is_alive(driver) {
         True -> await_provider_cancel(handle, stop, driver)
+
         // The reaper sent this stop after observing the driver's Down. No
         // caller remains to consume a terminal, and the reaper independently
         // retains `handle.owner`, so exiting transfers teardown to that

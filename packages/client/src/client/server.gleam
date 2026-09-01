@@ -56,6 +56,7 @@ pub type Auth {
   /// `token_path` is an absolute path in a directory the serving user
   /// owns.
   LocalAuth(token_path: String)
+
   /// Remote serving: the caller-supplied bearer token checked on every
   /// upgrade. Invariant: non-empty.
   BearerAuth(token: String)
@@ -87,6 +88,7 @@ pub type Server {
 pub type ServeError {
   /// The token file could not be written or restricted to `0600`.
   TokenFileFailed(reason: simplifile.FileError)
+
   /// The listener failed to start.
   ListenFailed(error: actor.StartError)
 }
@@ -113,6 +115,7 @@ pub fn serve(config: Config) -> Result(Server, ServeError) {
       }
     }
   })
+
   // The listener reports its bound port (which matters for port 0)
   // through `after_start`; the subject hands it back to this caller.
   let ports = process.new_subject()
@@ -305,6 +308,7 @@ fn upgrade(
           gateway.handle_text(gateway, state.connection, frame)
           mist.continue(state)
         }
+
         // The protocol is text-frame JSON; a binary frame is answered
         // with nothing and ignored.
         mist.Binary(_) -> mist.continue(state)

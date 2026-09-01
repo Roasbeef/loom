@@ -49,10 +49,13 @@ import gleam/string
 pub type Level {
   /// Per-step effect dispatch and settlement; off by default.
   Debug
+
   /// One line per durable state change; the default threshold.
   Info
+
   /// Degraded but progressing.
   Warning
+
   /// No automatic recovery remains; an operator must act.
   Error
 }

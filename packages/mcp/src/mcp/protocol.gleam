@@ -50,6 +50,7 @@ pub type ProtocolFault {
   /// The server negotiated a protocol revision this client cannot speak.
   /// Carries both sides so the refusal can be worded without re-asking.
   UnsupportedVersion(server: String, supported: List(String))
+
   /// The result is not the shape the method promises; `reason` names the
   /// field (and, inside a list, the index) that broke it.
   BadResult(reason: String)
@@ -341,6 +342,7 @@ fn decode_tool(
 pub type ContentBlock {
   /// A `{type: "text"}` block's text, verbatim and untrusted.
   Text(text: String)
+
   /// Any other block kind (`image`, `audio`, `resource`, ...): the type
   /// name alone, payload dropped.
   Other(kind: String)

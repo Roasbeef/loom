@@ -72,6 +72,7 @@ pub type SearchError {
   /// message is a human-readable description, not for dispatch. A
   /// syntactically invalid FTS5 query string also lands here.
   IndexFault(message: String)
+
   /// Reading the session being indexed failed; the index was left
   /// unchanged (the transaction never started or rolled back).
   SessionReadFault(error: StorageError)
@@ -131,6 +132,7 @@ pub fn open(path: String) -> Result(Search, SearchError) {
     sqlight.open(path)
     |> result.map_error(index_fault),
   )
+
   // Pragmas return a result row each, so run them as queries and
   // discard the rows (same discipline as storage/sqlite).
   use _ <- result.try(
@@ -198,6 +200,7 @@ pub fn sync(
   generation generation: Int,
 ) -> Result(Nil, SearchError) {
   let session_id = ids.session_id_to_string(session)
+
   // The cursor read decides what this call writes (how far back to
   // scan, whether to drop and re-index), so it must happen *inside* the
   // same `BEGIN IMMEDIATE` as the write, not before it. `BEGIN
@@ -208,6 +211,7 @@ pub fn sync(
   // (EV-sync-txn — was reproducible as five entries indexing as ten).
   in_transaction(search, fn() {
     use cursor <- result.try(read_cursor(search, session_id))
+
     // A missing cursor and a generation mismatch converge on the same
     // path: drop whatever rows the session may have and index from
     // zero.
@@ -232,6 +236,7 @@ pub fn sync(
         int.max(seen, entry.seq)
       })
     let rows = list.filter_map(entries, index_row)
+
     // Nothing new, no invalidation, cursor already recorded: skip the
     // write entirely so hint-driven syncs on idle sessions stay cheap.
     // Now that the read happened under the lock, this is also what a

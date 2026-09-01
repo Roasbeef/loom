@@ -52,8 +52,10 @@ pub type Operation {
 pub type OperationIntent {
   /// A conversational run.
   RunIntent(prompt_entries: List(EntryId))
+
   /// A standalone compaction.
   CompactionIntent(custom_instructions: Option(String))
+
   /// A leaf move, optionally summarizing the abandoned branch.
   NavigationIntent(
     target: Option(EntryId),
@@ -75,6 +77,7 @@ pub type OperationIntent {
 pub type Control {
   /// No cancellation requested.
   Running
+
   /// Cancellation is durable; reconciliation is next.
   CancelRequested(
     requested_at: Int,
@@ -97,9 +100,11 @@ pub type OperationError {
 pub type FailureProvenance {
   /// A settled response entry carries the failure.
   ResponseProvenance(entry: EntryId)
+
   /// A structural (summary) task failed; the task id locates its
   /// preparation register.
   StructuralProvenance(task_id: String)
+
   /// Captured configuration could not be resolved at an effect-admission
   /// boundary; no response or usage was fabricated.
   ConfigurationProvenance
@@ -113,6 +118,7 @@ pub type QueueMode {
   /// A drain point consumes every currently eligible item in acceptance
   /// order.
   ConsumeAll
+
   /// A drain point consumes only the oldest eligible item and leaves the
   /// rest pending.
   OneAtATime
@@ -122,6 +128,7 @@ pub type QueueMode {
 pub type ToolExecution {
   /// Clear, execute, and materialize one call at a time in source order.
   Sequential
+
   /// Clear and commit intents in source order; effects settle
   /// independently; tree materialization stays source ordered.
   Parallel
@@ -177,12 +184,14 @@ pub type OperationState {
     inbox: Inbox,
     latest_assistant: Option(EntryId),
   )
+
   /// A standalone compaction operation.
   CompactionState(
     control: Control,
     custom_instructions: Option(String),
     structural: StructuralDecision,
   )
+
   /// A navigation operation.
   NavigationState(control: Control, navigation: Navigation)
 }
@@ -204,13 +213,17 @@ pub type RunPhase {
   /// Payload-free by construction: the consuming transition replaces it
   /// with a checkpoint.
   Starting
+
   /// Between steps: the queue-drain / threshold / generate / finish
   /// decision point (pi §3.12).
   Checkpoint(checkpoint: CheckpointPhase)
+
   /// An assistant generation step.
   Assistant(generation: Generation)
+
   /// A tool batch produced by the newest assistant response.
   Tools(batch: ToolBatch)
+
   /// An in-run compaction (threshold or overflow). `resume_after` stores
   /// the checkpoint to restore on success or threshold decline, already
   /// marked threshold-checked so the same boundary is never rechecked.
@@ -219,8 +232,10 @@ pub type RunPhase {
     structural: StructuralDecision,
     resume_after: CheckpointPhase,
   )
+
   /// Suspended on (or polling) a provider-side deferred response.
   AwaitingDeferred(deferred: DeferredState)
+
   /// A terminal failure is draining the inbox: accepted writes and queued
   /// input are applied; projecting user-context input clears the failure,
   /// otherwise the run finishes failed (pi §3.12).
@@ -231,6 +246,7 @@ pub type RunPhase {
 pub type CompactionReason {
   /// The context-size check at a checkpoint crossed the threshold.
   ThresholdReason
+
   /// A provider request did not fit; recovery is one-shot per consumed
   /// input (the `NeedAssistant` flag).
   OverflowReason
@@ -260,6 +276,7 @@ pub type Continuation {
   /// reset to `False` by any transition that appends projecting
   /// conversational input or tool results (pi invariant 18).
   NeedAssistant(overflow_recovery_used: Bool)
+
   /// The run may finish if the inbox stays empty.
   /// `include_final_assistant` is `True` when the boundary was a settled
   /// assistant response and `False` for an all-terminating tool batch.
@@ -306,6 +323,7 @@ pub type Generation {
   /// Snapshot taken; the pre-request hook and identity resolution are
   /// next. Attempt numbering starts at 1.
   GenerationReady(context: GenerationContext, next_attempt: Int)
+
   /// A provider request is in flight (or orphaned): the one genuinely
   /// uncertain window.
   GenerationEffectPending(
@@ -317,6 +335,7 @@ pub type Generation {
     context_window: Int,
     request_api: String,
   )
+
   /// A retryable failure settled; the next attempt starts at `not_before`.
   GenerationRetryWait(
     context: GenerationContext,
@@ -333,6 +352,7 @@ pub type ReplayPolicy {
   /// Never re-execute: recovery synthesizes an interrupted result under
   /// the reserved id instead.
   ReplayNever
+
   /// Safe to re-execute with the persisted arguments.
   ReplaySafe
 }
@@ -368,14 +388,17 @@ pub type ToolBatch {
 pub type ToolCallState {
   /// Planned; clearance has not passed yet.
   CallPlanned(source_index: Int, result_entry: EntryId)
+
   /// The effect is (or may be) running; `replay` was declared at intent.
   CallEffectPending(
     source_index: Int,
     result_entry: EntryId,
     replay: ReplayPolicy,
   )
+
   /// The finalized result is staged, awaiting source-ordered placement.
   CallOutcomeReady(source_index: Int, result_entry: EntryId, terminate: Bool)
+
   /// The result entry is in the tree.
   CallCompleted(source_index: Int, result_entry: EntryId, terminate: Bool)
 }
@@ -400,6 +423,7 @@ pub type DeferredState {
     configuration: StrandConfiguration,
     stream_options: JsonValue,
   )
+
   /// One fetch is in flight (or orphaned) under reserved response/usage
   /// ids.
   DeferredEffectPending(
@@ -427,6 +451,7 @@ pub type StructuralDecision {
   /// The decision hook has not durably decided yet (it may rerun after a
   /// crash).
   Deciding(task_id: String)
+
   /// The hook selected generation; the summary generator owns the rest.
   Generating(task_id: String, generation: SummaryGeneration)
 }
@@ -435,6 +460,7 @@ pub type StructuralDecision {
 pub type SummaryKind {
   /// A compaction entry.
   CompactionSummary
+
   /// A branch-summary entry.
   BranchSummary
 }
@@ -443,8 +469,10 @@ pub type SummaryKind {
 pub type SummaryReason {
   /// The caller asked (standalone compaction).
   ManualSummary
+
   /// A checkpoint threshold check asked.
   ThresholdSummary
+
   /// An overflow recovery asked.
   OverflowSummary
 }
@@ -487,6 +515,7 @@ pub type SummaryRequest {
 pub type SummaryGeneration {
   /// The next attempt may start once the captured model resolves.
   SummaryReady(context: SummaryContext, next_attempt: Int)
+
   /// An attempt is live; at most one nested request is in flight.
   SummaryEffectPending(
     context: SummaryContext,
@@ -494,6 +523,7 @@ pub type SummaryGeneration {
     request: Option(SummaryRequest),
     usage_ids: List(UsageId),
   )
+
   /// A retryable attempt failed; the next starts at `not_before` (Unix
   /// ms).
   SummaryRetryWait(
@@ -515,6 +545,7 @@ pub type SummaryGeneration {
 pub type Navigation {
   /// Ready to commit the leaf move; the terminal transaction publishes it.
   UnsummarizedNavigation(target: Option(EntryId), label: Option(String))
+
   /// Generating (or deciding on) a branch summary before the move.
   SummarizedNavigation(
     target: EntryId,
@@ -569,12 +600,14 @@ pub type LastResult {
     outcome: RunOutcome,
     final_assistant: Option(EntryId),
   )
+
   /// A standalone compaction ended.
   CompactionLastResult(
     operation: OpId,
     leaf: Option(EntryId),
     outcome: StructuralOutcome,
   )
+
   /// A navigation ended.
   NavigationLastResult(
     operation: OpId,
@@ -590,8 +623,10 @@ pub type RunOutcome {
   /// The run finished normally; `completion` says what produced the final
   /// state.
   RunCompleted(completion: RunCompletion)
+
   /// Failure drain finished without recovering input.
   RunFailed(error: OperationError)
+
   /// Cancellation reconciliation finished.
   RunAborted
 }
@@ -600,6 +635,7 @@ pub type RunOutcome {
 pub type RunCompletion {
   /// The final assistant response ended the run.
   CompletedByAssistant
+
   /// Every finalized tool result in the final batch set `terminate`; there
   /// is no final assistant answer.
   CompletedByTerminatedTools
@@ -609,10 +645,13 @@ pub type RunCompletion {
 pub type StructuralOutcome {
   /// The result was published.
   StructuralCompleted
+
   /// The decision hook declined; nothing was published or moved.
   StructuralDeclined
+
   /// Generation failed terminally.
   StructuralFailed(error: OperationError)
+
   /// Aborted before the publication commit; nothing was published or
   /// moved.
   StructuralAborted
@@ -632,6 +671,7 @@ pub type PendingEntry {
   /// A queued or staged message (steer, follow-up, next-run input, or a
   /// finalized tool result awaiting source-ordered placement).
   PendingMessage(message: AgentMessage)
+
   /// A deferred custom tree write.
   PendingCustom(custom_type: String, data: Option(JsonValue))
 }
@@ -671,6 +711,7 @@ pub type StructuralPreparation {
     file_ops: FileOperations,
     settings: CompactionSettings,
   )
+
   /// Input for a branch summary.
   BranchSummaryPreparation(
     messages: List(AgentMessage),
