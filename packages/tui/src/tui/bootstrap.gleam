@@ -10,7 +10,6 @@
 import core/json
 import filepath
 import gleam/bit_array
-import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -166,7 +165,9 @@ pub fn resolve(options: Options) -> Result(Target, String) {
 /// non-loopback records are omitted, and so is a record still marked
 /// `starting`, whether a launcher is mid-flight behind it or a failed spawn
 /// abandoned it. Selecting a result still calls `resolve`, which verifies
-/// process identity and authenticates a real gateway snapshot.
+/// process identity and authenticates a real gateway snapshot. Two surviving
+/// records cannot name one database: each must live at the endpoint path
+/// derived from its own session file, and that path is one file.
 ///
 /// ## Examples
 ///
@@ -203,10 +204,6 @@ pub fn discover_sessions(
     |> list.filter_map(fn(name) {
       discover_session(options, state, directory, name)
     })
-    |> list.fold(dict.new(), fn(found, choice) {
-      dict.insert(found, choice.session_file, choice)
-    })
-    |> dict.values
     |> list.sort(by: fn(left, right) {
       string.compare(
         left.session
