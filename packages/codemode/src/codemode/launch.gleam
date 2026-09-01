@@ -398,35 +398,13 @@ type Held {
 // The holder is deliberately **unlinked** from whoever launched the
 // satellite: it has to outlive the host so the janitor's second `destroy`
 // is answered from memory rather than left waiting on a settlement that
-// already happened. `state_machine.start` links the machine to its caller
-// — it spawns with `process.spawn`, which links — so the start runs on a
-// throwaway process instead, which hands the subject back and then exits
-// normally. A normal exit signal is ignored by a machine that does not
-// trap exits, so the link dies with the trampoline and the holder is left
-// with nothing holding it up but its own mailbox.
-fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
-  let handoff = process.new_subject()
-  let _pid =
-    process.spawn_unlinked(fn() { hand_off_reporter(broker_actor, handoff) })
-  case process.receive(handoff, handoff_timeout_ms) {
-    Ok(inbox) -> inbox
-
-    // A holder that would not start is a report nobody can collect; the
-    // ask then times out and says so, which is the honest answer.
-    Error(Nil) -> process.new_subject()
-  }
-}
-
-// Start the holder machine and hand its inbox back over `handoff`.
+// already happened. weft's `unlinked` is that arrangement made a setting.
 //
 // The subject the machine returns is the one it built for itself, not the
 // default weft would have given it: the default carries the machine's own
 // `Held`, and what every sender in this module holds is a
 // `Subject(Settlement)`.
-fn hand_off_reporter(
-  broker_actor: Broker,
-  handoff: Subject(Subject(Settlement)),
-) -> Nil {
+fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
   let started =
     sm.new_with_initialiser(handoff_timeout_ms, fn(_default) {
       let inbox = process.new_subject()
@@ -439,14 +417,14 @@ fn hand_off_reporter(
       |> Ok
     })
     |> sm.on_event(reporter_step)
+    |> sm.unlinked
     |> sm.start
   case started {
-    Ok(machine) -> process.send(handoff, machine.data)
+    Ok(machine) -> machine.data
 
-    // Nothing is handed back, so `start_reporter`'s own receive times out
-    // and yields a subject nobody serves — the same answer a holder that
-    // never spawned would have given.
-    Error(_error) -> Nil
+    // A holder that would not start is a report nobody can collect; the
+    // ask then times out and says so, which is the honest answer.
+    Error(_error) -> process.new_subject()
   }
 }
 

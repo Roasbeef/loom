@@ -370,10 +370,8 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `Done`**, armed only once teardown has been through and re-armed by
   each answered `Ask`; it dies with a state the holder never leaves, so
   the holder ends instead of outliving the session. The holder is still
-  **unlinked** from its launcher, which `state_machine.start` does not
-  offer — it links — so the start runs on a throwaway `spawn_unlinked`
-  trampoline that hands the subject back and exits normally, and the link
-  dies with it. The machine's message type wraps `Settlement` so that the
+  **unlinked** from its launcher, through weft's `unlinked` builder
+  setting, so it outlives the host that created it. The machine's message type wraps `Settlement` so that the
   lingering deadline is one no sender can forge. Port gate: the two
   teardown-ordering invariants above (`Cleared`-after-teardown cancels,
   teardown-while-`Running` cancels) and `launch_test`'s two-`destroy`
