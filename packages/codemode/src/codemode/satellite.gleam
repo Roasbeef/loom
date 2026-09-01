@@ -147,6 +147,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/tool.{type Collected}
+import weft
 
 /// The frame kind the satellite uses for the terminal outcome (J3a).
 pub const outcome_kind = "outcome"
@@ -1231,50 +1232,52 @@ fn report_collected(
   }
 }
 
-// A harness-served call, run on a grandchild process this one monitors.
+// A harness-served call, run through weft under a wall-clock deadline.
 //
 // The indirection buys totality. `serve` is an injected closure reaching
 // a seam this module knows nothing about, so it may block for as long as
 // that seam allows and it may die; either would leave the program waiting
 // on a `cap_result` that never comes, until the wall deadline killed the
-// node. Monitoring settles both cases in band — too slow is `unsettled`,
-// dead is `cap_failed` naming the death — which is the same posture
+// node. weft settles both cases in band — too slow is `unsettled`, dead
+// is `cap_failed` naming the death — which is the same posture
 // `report_collected` takes toward a clearance that never settles.
 //
-// Answering the call is not the whole obligation, though: the worker is
-// unlinked, so when the deadline is what settles the call, nothing else
-// would ever end it. `serve` closures poll a store, and one still polling
-// for an answer this process has already reported `unsettled` for is an
-// orphan per timed-out call, holding the seam it reached open long after
-// the program stopped listening. So the timeout reaps it — the same
-// obligation `cap/runtime` discharges on its blocked reader — and the
-// reap is what makes `unsettled` the *end* of the call rather than only
-// the end of the waiting.
+// Answering the call is not the whole obligation, though: a `serve`
+// closure still polling for an answer this process has already reported
+// `unsettled` for is an orphan per timed-out call, holding the seam it
+// reached open long after the program stopped listening. So the timeout
+// has to reap it — the same obligation `cap/runtime` discharges on its
+// blocked reader — and the reap is what makes `unsettled` the *end* of
+// the call rather than only the end of the waiting. `weft.deadline` is
+// what discharges it here: on a run of one plain task, hitting the
+// deadline kills the worker and joins it before `start` returns, so by
+// the time this function reads `Abandoned` off the account there is
+// nothing left from the run that could still answer late.
 fn run_service(
   host: Subject(Msg),
   serve: fn() -> CapOutcome,
   id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
-  let answers = process.new_subject()
-  let worker = process.spawn_unlinked(fn() { process.send(answers, serve()) })
-  let monitor = process.monitor(worker)
-  let settled =
-    process.new_selector()
-    |> process.select_map(answers, Ok)
-    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-  let outcome = case process.selector_receive(settled, call_timeout_ms) {
-    Ok(Ok(answer)) -> answer
-    Ok(Error(Nil)) -> served_died_outcome()
-    Error(Nil) -> {
-      // Nobody is left to read this worker's answer, and `answers` dies
-      // with this process, so a late `serve` would send into nothing
-      // anyway. Killing it stops the work rather than the delivery.
-      process.kill(worker)
-      unsettled_outcome()
-    }
+  let served = fn() -> Result(CapOutcome, Nil) { Ok(serve()) }
+  let outcomes =
+    weft.new([served])
+    |> weft.deadline(call_timeout_ms)
+    |> weft.start
+  let outcome = case outcomes {
+    [weft.Completed(value:, ..)] -> value
+    [weft.Crashed(..)] -> served_died_outcome()
+    [weft.Abandoned(..)] | [weft.NeverStarted(..)] -> unsettled_outcome()
+
+    // `served` is wrapped to always answer `Ok`, and this is a run of one
+    // plain task with no grace configured, so `Failed`, `DrainProofLost`
+    // and `CancellationUnconfirmed` never occur; the arms below are
+    // exhaustiveness, not cases this call site can reach.
+    [weft.Failed(..)]
+    | [weft.DrainProofLost(..)]
+    | [weft.CancellationUnconfirmed(..)] -> unsettled_outcome()
+    [] | [_, _, ..] -> unsettled_outcome()
   }
-  process.demonitor_process(monitor)
   process.send(host, CapDone(id:, outcome:))
 }
 

@@ -81,6 +81,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/tool.{type Collected}
+import weft/poll
 import weft/state_machine as sm
 
 /// The environment variable naming the cap socket. Mirrors
@@ -673,54 +674,55 @@ fn reader_main(
 }
 
 // Polls the accept so a node that died before connecting is noticed as a
-// death rather than as a timeout.
+// death rather than as a timeout. `poll.until` owns the wall-clock budget
+// and the sleep between attempts; there is deliberately almost none of
+// the latter (`every: 1`) because the real wait already happens inside
+// `accept_attempt`, which blocks in the FFI call for one slice at a time.
 fn accept_loop(
   listener: Listener,
   outbox: Subject(Out),
   wire: Subject(satellite.WireIn),
   exits: Subject(String),
-  remaining: Int,
+  accept_timeout_ms: Int,
 ) -> Nil {
-  case process.receive(exits, 0) {
-    Ok(reason) -> close_wire(wire, reason)
-    Error(Nil) -> poll_accept(listener, outbox, wire, exits, remaining)
-  }
-}
-
-fn poll_accept(
-  listener: Listener,
-  outbox: Subject(Out),
-  wire: Subject(satellite.WireIn),
-  exits: Subject(String),
-  remaining: Int,
-) -> Nil {
-  let slice = int.min(accept_poll_ms, int.max(remaining, 0))
-  case ffi_unix.accept(listener, slice) {
-    Ok(socket) -> {
+  case
+    poll.until(within: accept_timeout_ms, every: 1, attempt: fn() {
+      accept_attempt(listener, exits)
+    })
+  {
+    poll.Answered(socket) -> {
       process.send(outbox, Attach(socket:))
       read_loop(socket, wire, exits)
     }
-    Error(ffi_unix.AcceptTimeout) ->
-      retry_or_give_up(listener, outbox, wire, exits, remaining, slice)
-    Error(ffi_unix.AcceptFailed(reason:)) ->
-      close_wire(
-        wire,
-        "the cap socket faulted before the satellite connected: " <> reason,
-      )
+    poll.Failed(reason) -> close_wire(wire, reason)
+    poll.Expired ->
+      close_wire(wire, "the satellite never connected to the cap socket")
   }
 }
 
-fn retry_or_give_up(
+// One slice of the accept poll. The node's own exit is checked *before*
+// the accept, non-blockingly, so a node that died between slices is
+// reported as a death on the very next attempt rather than waiting out
+// the rest of the budget only to time out — the distinction
+// `retry_or_give_up` used to draw by giving up early is drawn here by
+// answering `Fail` instead of `Retry`. Finding nothing yet blocks in
+// `ffi_unix.accept` for up to `accept_poll_ms`, which is what stands in
+// for the sleep between polls.
+fn accept_attempt(
   listener: Listener,
-  outbox: Subject(Out),
-  wire: Subject(satellite.WireIn),
   exits: Subject(String),
-  remaining: Int,
-  slice: Int,
-) -> Nil {
-  case remaining - slice > 0 {
-    True -> accept_loop(listener, outbox, wire, exits, remaining - slice)
-    False -> close_wire(wire, "the satellite never connected to the cap socket")
+) -> poll.Attempt(Socket, String) {
+  case process.receive(exits, 0) {
+    Ok(reason) -> poll.Fail(reason)
+    Error(Nil) ->
+      case ffi_unix.accept(listener, accept_poll_ms) {
+        Ok(socket) -> poll.Done(socket)
+        Error(ffi_unix.AcceptTimeout) -> poll.Retry
+        Error(ffi_unix.AcceptFailed(reason:)) ->
+          poll.Fail(
+            "the cap socket faulted before the satellite connected: " <> reason,
+          )
+      }
   }
 }
 

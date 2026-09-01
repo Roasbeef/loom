@@ -166,8 +166,12 @@ strand roots, and can reach neither the disk, the network, nor a process.
   harness's own vocabulary), `glance` 6.1+ + `glexer` (vetting parses and
   token-scans; the Glance floor admits the syntax accepted by the shipped
   Gleam compiler), `simplifile` + `filepath`, `gleam_erlang`,
-  `gleam_otp`, `weft` (`weft/state_machine`, for the launcher's
-  node-report holder).
+  `gleam_otp`, `weft` — `weft/state_machine` for the launcher's
+  node-report holder, `weft` itself for the served-call deadline
+  (`satellite.run_service`: one plain task, `weft.deadline`, kill-then-
+  join on the way out), and `weft/poll` for the launcher's accept retry
+  (`launch.accept_loop`: `poll.until` over a blocking, sliced
+  `ffi_unix.accept`).
 - **Deliberately does not depend on `cap`.** `cap` is the prelude compiled
   *into* the satellite; linking it into the harness would put
   model-facing code in the harness VM. Shared names (`LOOM_CAP_SOCK`,
@@ -199,12 +203,14 @@ strand roots, and can reach neither the disk, the network, nor a process.
   jailed build and the node itself, on both seams. Every one of those keys
   is derived from `ExecConfig.identity`; see the identity invariant below
   for what an execution may spend. An orchestration `cap_call` reaches no
-  clearance at all — it is a `ServedHere` plan answered by the Agency, on
-  a process the host spawns and monitors, bounded by `call_timeout_ms`.
-  Reaching that bound answers `unsettled` **and kills the process**: it is
-  unlinked, so nothing else ever would, and a `serve` closure still
-  polling for an answer nobody will read is one orphan per timed-out call.
-  A `ClearedCall` that reaches the same bound is revoked the same way, by
+  clearance at all — it is a `ServedHere` plan answered by the Agency,
+  through `satellite.run_service`: a one-task `weft` run under
+  `weft.deadline(call_timeout_ms)`. Reaching that bound answers
+  `unsettled` **and kills the process**: `weft`'s deadline kills the
+  worker and joins it before `start` returns, so a `serve` closure still
+  polling for an answer nobody will read is never left running — one
+  orphan per timed-out call, closed rather than leaked. A `ClearedCall`
+  that reaches the same bound is revoked the same way, by
   `broker.cancel` on the handle `CapStarted` carried back — bounded by the
   kernel and the broker's monitoring rather than unbounded like the served
   orphan, but a call reported over while its effect ran on all the same.
