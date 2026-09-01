@@ -167,9 +167,8 @@ leaving connections attached to a corpse.
 
 Transport is websocket, text frames, one JSON envelope per frame, at
 `/v1/ws`. The envelope is frozen by the implementation spec Part 1.6;
-the bodies under it are defined by
-`packages/tui/internal/proto/protocol.md`, which both implementations
-build to.
+the bodies under it are defined by `packages/client/protocol.md`, which both
+the gateway and native client build to.
 
 ```
 c→s  {"v":1, "id":<uint>, "cmd":<name>, "body":{...}}
@@ -231,11 +230,10 @@ the hub already emits two labels protocol.md does not list
 ### Pinned to the byte
 
 The two implementations are not kept compatible by discipline. **Golden
-fixtures under `packages/tui/internal/proto/testdata/` pin the canonical
-text of every command and event shape**, thirty-five files; the Go
-package decodes and re-encodes each one and compares, and the Gleam
-package's conformance test does the same against the same files. Either
-side drifting fails a test rather than a session.
+fixtures under `packages/client/testdata/protocol/` pin the canonical text of
+every command and event shape**, thirty-five files; the gateway conformance
+test and the native client's total decoders are held against that vocabulary.
+Either side drifting fails a test rather than a session.
 
 Three details in those fixtures differ from what `core/codec` produces,
 and the wire follows the fixtures while the harness keeps the codec's
@@ -484,83 +482,45 @@ reaches the websocket handler without passing the check.
 
 ## The terminal client
 
-`loom-tui` is a standalone Go binary on the bubbletea stack — `bubbles`
-for the text area and viewport, `lipgloss` for layout and style,
-`glamour` for markdown, `coder/websocket` for the wire. It is the one
-piece of Loom deliberately written outside Gleam, for two reasons the
-spec gives and the code bears out. Terminal UI is where Go's ecosystem
-is strongest, and bubbletea's pure `Model`/`Update`/`View` shape maps
-onto protocol events with no impedance at all: an event becomes a
-message, a key press becomes a command. And writing it outside the tree
-proves the protocol is a real boundary rather than a shared-memory
-convention — the module imports no Loom package. Its entire coupling to
-the harness is the protocol document and the golden fixtures.
+`loom-tui` is the native Gleam client in `packages/tui`. Etui owns raw
+terminal input and frame diffs, Mork parses CommonMark into a structured tree,
+and Stratus owns the websocket actor. One immutable model keeps durable records,
+transient stream fragments, overlays, prompt state, scroll position, and the
+server-reported usage ledger separate. `view` is pure; socket messages and keys
+reduce the model before the next frame.
 
-The connection actor is where the seq discipline lives. `Run` dials,
-subscribes, and pumps until its context is cancelled, reconnecting with
-exponential backoff from 100ms to 5s with ±25% jitter. A single reader
-goroutine decodes each frame, resolves any `Request` waiting on that
-`reply_to`, then applies four rules:
+The protocol remains a real boundary even though both ends use Gleam. The TUI
+imports the portable `core` package only to decode durable entry bodies. It
+hand-writes the frozen ClientGateway envelope and event union, and both ends
+decode the same golden corpus under `packages/client/testdata/protocol`.
 
-- an event at or below the last seq is a duplicate from catch-up overlap
-  and is dropped;
-- an event more than one past it, once a full snapshot has been applied,
-  triggers exactly one `catch_up` from `last+1` and is *not* applied —
-  the replay redelivers it in order;
-- a full snapshot resets the position to `next_seq - 1`, since everything
-  below is already in the snapshot body; a resume snapshot resets
-  nothing, because its replay carries the original seqs;
-- events with no seq — snapshots, deltas, errors — never move the
-  position.
+Typed text is a `prompt` on an idle strand and a `steer` while that strand has
+a live operation. Tab changes a live draft into a queued `follow_up`. Typing
+`/` opens the command palette; `/model`, `/agents`, `/notes`, `/strand`,
+`/fork`, `/compact`, `/abort`, `/details`, and `/quit` own the rest of the
+surface. The model selector searches catalogue names and provider identities.
+The agent inspector is a projection of server strands and operation phases,
+not a second lifecycle registry.
 
-**Reconnects resume, they do not restart**, but only once a full
-snapshot has been applied; before that a reconnect re-subscribes from
-zero. A malformed frame is reported as a message and the connection
-survives. In-flight requests fail loudly with `ErrDisconnected` rather
-than hanging when their connection drops, and sends after close fail
-with `ErrClosed`. The read limit is 16 MiB, which is the one direction
-of this protocol that has a frame cap.
+Durable records and transient streams never alias. The client caches wrapped
+durable rows by strand, width, and detail mode, and rewraps only the changing
+stream fragments. When the durable assistant entry arrives, it clears that
+strand's fragments and becomes the sole transcript authority. Model-authored
+terminal controls are replaced before Mork or etui sees them; source blocks
+retain their bytes and indentation without executing ANSI or HTML.
 
-The bubbletea model keeps `Update` pure: every send leaves as a
-`tea.Cmd` closure rather than touching the socket inline, which is what
-makes the entire interaction surface table-testable without a terminal.
-Typed text is a `prompt` on an idle strand and a `steer` when the active
-strand has a live operation — the client decides which from the strand
-list it already holds. Tab cycles strands, `ctrl+t` toggles thinking
-blocks, and a `:` prefix opens a small palette: `:fork`, `:compact`,
-`:abort`, `:strand`, `:models`, `:quit`.
+`loom-tui --demo` runs a canned local model without a server or network. A live
+client requires `--addr`, `--session`, and `--token-file` or `--token`. The
+release is a separate Erlang shipment rather than part of the server archive.
+It does not carry a second ERTS, so the terminal host needs compatible
+Erlang/OTP 29 on `PATH`.
 
-Two modals stack above the transcript. The escalation prompt is the
-higher one and swallows keys until decided: it prints the denial's
-reason and every wanted grant verbatim, and `y` approves with exactly
-that wanted list while `n` denies and `esc` defers it until `ctrl+e`
-calls it back. The `:models` picker is the lower one. `:models` sends
-the `models` command; the reply is a `models` snapshot listing one row
-per catalogue entry — name, dialect, the provider's own model id, and
-the roles whose fallback chain lists the entry with a star on the ones
-it currently heads — and the picker
-opens on that list with the cursor on the active strand's current model
-where the client knows it. Enter sends `set_config {strand, config:
-{model_name}}`, the gateway resolves the name against the catalogue it
-was booted with, and the `config` snapshot that acks it carries the
-catalogue name back, which the client pins into the status bar. A
-gateway with no catalogue answers an empty list and says so.
-
-An in-memory `fake` gateway speaks the same protocol backed by
-in-process state — snapshot on subscribe, resume with replay, per-command
-replies, the escalation lifecycle, in-band errors. It is the substrate
-for the client's tests and for `loom-tui --demo`, which runs a canned
-session with no server and no network. It exists because the Go side was
-built before the Gleam gateway landed, and it carries a standing hazard
-worth naming: where the fake diverges from `protocol.md`, the tests are
-testing fiction.
-
-Two features the work package lists are not built. There is no diff
-viewer — the escalation overlay renders the policy diff, but nothing
-renders a file diff. And there is no transcript browser: the snapshot
-carries a recent window, the viewport pages within what the client has,
-and nothing pulls older entries, even though `catch_up` over storage
-seqs would serve that today.
+Two protocol behaviors remain deliberately incomplete. Pending escalations are
+visible, but the native client does not yet send protocol-change/007's exact
+action-and-grant echo, so it cannot approve or deny. A dropped websocket ends
+the current connection; automatic reconnect and sparse-sequence catch-up remain
+follow-up work. The server's approval and replay contracts are unchanged, and
+the client never claims either operation succeeded locally.
 
 ## What the acceptance actually proves
 
@@ -599,16 +559,14 @@ real websocket `subscribe` returning a snapshot.
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
-| `internal/proto/` | The Go protocol types, the name constants, the entry parse tree, and `protocol.md` — the normative body document. |
-| `internal/proto/testdata/` | The golden fixtures both implementations are pinned against. |
-| `internal/client/client.go` | The connection actor: dial, subscribe, reconnect, seq discipline, request/reply correlation. |
-| `internal/ui/` | The bubbletea program: pure `Update`, the transcript, the escalation overlay, the models picker. |
-| `internal/fake/` | The in-memory gateway behind the TUI's tests and `--demo`. |
-| `cmd/loom-tui/main.go` | The binary. |
+| `packages/client/protocol.md` | The normative ClientGateway body document. |
+| `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
+| `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
+| `packages/tui/src/tui/connection.gleam` | The websocket-owning actor and terminal inbox. |
+| `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
 
-Each Gleam path is relative to its package's source root —
-`client/gateway.gleam` is `packages/client/src/client/gateway.gleam` —
-and each Go path is relative to `packages/tui`. For the operation model
+Each unqualified Gleam path is relative to its package's source root —
+`client/gateway.gleam` is `packages/client/src/client/gateway.gleam`. For the operation model
 the commands admit into, see `docs/architecture/orchestration.md`; for
 seqs, write-once rows, and why the event stream needs no side index,
 `docs/architecture/durability.md`; for the policy vocabulary an

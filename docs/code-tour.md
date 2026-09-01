@@ -2,8 +2,8 @@
 
 Someone types `fix the flaky test in auth_test.gleam` into `loom-tui` and
 presses enter. Between that key press and an answer appearing on their
-screen, the request crosses a Go binary, a websocket, a Gleam actor, a
-pure state machine, a SQLite file, an HTTP stream, a second Go binary
+screen, the request crosses a native Gleam terminal process, a websocket, a
+Gleam actor, a pure state machine, a SQLite file, an HTTP stream, a Go binary
 inside a kernel jail, and all the way back. Every major piece of Loom
 sits somewhere on that path.
 
@@ -16,13 +16,12 @@ more depth the cross-reference is the depth.
 
 Paths follow the convention those docs use: a Gleam path is relative to
 its package's source root, so `runtime/api.gleam:251` is
-`packages/runtime/src/runtime/api.gleam` line 251; a Go path is relative
-to its module, so `internal/ui/model.go:382` is under `packages/tui` and
-`internal/jail/stage2.go:43` under `packages/sandbox`.
+`packages/runtime/src/runtime/api.gleam` line 251; the remaining Go paths are
+relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-Nineteen packages, seventeen Gleam and two Go, split across three planes.
+Nineteen packages, eighteen Gleam and one Go, split across three planes.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -41,7 +40,7 @@ for the third-party servers those programs can be handed.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
 the production wiring, and the `loom-server` entry point — and `tui` is
-the Go terminal client on the far side of the wire. `prompt` renders the
+the native terminal client on the far side of the wire. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
 into the harness.
@@ -109,33 +108,22 @@ binds.
 
 ## 1. The key press
 
-`loom-tui` is a bubbletea program, and bubbletea hands every key press to
-`Update` as a `tea.KeyMsg`. `Update` dispatches to `onKey`
-(`internal/ui/model.go:244`), which passes anything that is not a modal
-key or a navigation key to the text input — until enter, which routes to
-`onEnter` (`internal/ui/model.go:382`).
+Etui hands each key to `update_key` in
+`packages/tui/src/tui.gleam`. Modal keys stay with the open
+selector or inspector; ordinary keys update the textarea; Enter passes the
+current draft to the submission reducer.
 
-`onEnter` makes one decision, and it makes it from state the client
-already holds:
+That reducer makes one decision from state the client already holds. Typed
+text on an idle strand is a `prompt`; typed text while the strand has a live
+operation is a `steer`. Tab changes the live submission mode to a queued
+`follow_up`. A `/` prefix opens the command palette instead (`/fork`,
+`/compact`, `/abort`, `/strand`, `/model`, `/quit`).
 
-```go
-	if op := m.liveOp(strand); op != "" {
-		m.statusNote = "steering live run on " + strand
-		return m.refresh(), m.send(proto.CmdSteer, proto.SteerBody{Strand: strand, Text: text})
-	}
-	return m.refresh(), m.send(proto.CmdPrompt, proto.PromptBody{Strand: strand, Text: text})
-```
-
-Typed text on an idle strand is a `prompt`; typed text while the strand
-has a live operation is a `steer`. A `:` prefix opens the palette
-instead (`:fork`, `:compact`, `:abort`, `:strand`, `:models`, `:quit`).
-
-`Update` never touches the socket. `send` returns a `tea.Cmd` closure and
-bubbletea runs it (`internal/ui/model.go:152`), which is what keeps the
-entire interaction surface table-testable without a terminal. The closure
-calls `Client.Send` (`internal/client/client.go:205`), which stamps a
-monotonic command id, marshals the envelope, and drops it on a bounded
-outbound channel. A full queue is an error rather than a stall.
+The update loop never performs websocket I/O. It sends a typed message to the
+connection actor in `tui/connection.gleam`; that actor stamps the command
+id, serializes the frozen envelope, and owns the Stratus socket. Incoming text
+returns through the terminal process's mailbox and reduces the same immutable
+model before `view` draws the next frame.
 
 ## 2. The frame, and the fence at the door
 
@@ -147,10 +135,10 @@ c→s  {"v":1, "id":<uint>, "cmd":<name>, "body":{...}}
 s→c  {"v":1, "reply_to":<uint>?, "event":<name>, "seq":<uint>?, "body":{...}}
 ```
 
-Both implementations build to
-`packages/tui/internal/proto/protocol.md` and are pinned to each other by
-thirty-five golden fixtures under `internal/proto/testdata/`, which the
-Gleam side decodes and re-encodes byte for byte. Drift fails a test
+Both implementations build to `packages/client/protocol.md` and are pinned to
+each other by thirty-five golden fixtures under
+`packages/client/testdata/protocol/`, which the gateway conformance suite
+decodes and re-encodes byte for byte. Drift fails a test
 rather than a session. `docs/architecture/client.md` covers the envelope,
 the reply table, and the three places the fixtures deliberately differ
 from `core/codec`.
@@ -632,34 +620,18 @@ emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
 
-On the Go side, `handleEvent` (`internal/client/client.go:445`) applies
-the seq discipline before delivering anything:
-
-```go
-	if ev.Seq != 0 && replayableRow(ev.Event) && !c.advance(ev.Seq) {
-		return // duplicate from a resume overlap
-	}
-```
-
-A duplicate is dropped and everything else is applied. There is
-deliberately no gap detection, and the reason is the seq's provenance: it
-*is* the storage seq of the commit that produced the event
-(`protocol-change/006`), so the stream is legitimately sparse — commits
+The native connection actor decodes the event and returns it to the terminal
+model, which replaces transient stream fragments when the matching durable
+entry arrives. The event's seq *is* the storage seq of the commit that produced
+it (`protocol-change/006`), so the stream is legitimately sparse — commits
 that write no client event consume seqs too — and a forward jump carries
-no information at all. An earlier version treated one as a gap and asked
-for a replay; the replay was sparse for the same reason, so against a
-real server nothing after the first event was ever applied. Only the
-immutable rows — `entry` and `usage` — move the position, because
-`op_transition`, `escalation` and `strand_result` are read from registers
-as current state, interleave with the rows, and can arrive ahead of one.
-A full snapshot resets the position to `next_seq - 1`, and events with no
-seq — snapshots, stream deltas, errors — never move it. Reconnects resume
-rather than restart, but only once a full snapshot has been applied.
-
-That bug survived because both ends of the earlier test were fakes: the
-Go fake gateway numbers its events 1, 2, 3, …, so the gap rule never
-fired. `packages/client`'s `tui_e2e_test` — the real binary against the
-real server — is what caught it.
+no information at all. The retired Go client once treated one as a gap and
+asked for a replay; the replay was sparse for the same reason, so against a
+real server nothing after the first event was applied. The real terminal
+end-to-end caught that bug. The native client starts from a full snapshot and
+applies the live connection's events, but does not yet reconnect or issue
+sequence catch-up after a drop. That limitation is explicit rather than a
+claim that sparse events have become contiguous.
 
 The typed message reaches `Update`, which folds it into the transcript,
 and the loop closes. `docs/architecture/client.md` covers the hub, the
@@ -967,9 +939,10 @@ person typed while the model was working is picked up *here*, not when it
 was sent — it was durable from the moment it committed, and the doorbell
 only shortened the wait.
 
-**The strand is busy, so the client sends a different command.** That
-decision was made back at `internal/ui/model.go:381` from the strand list
-the client already holds. A `steer` ack is not what the reply table alone
+**The strand is busy, so the client sends a different command.** That decision
+was made by `update_main_key_without_palette` in
+`packages/tui/src/tui.gleam` from the strand list the client
+already holds. A `steer` ack is not what the reply table alone
 suggests: the queue admission mints a reserved entry id and writes the
 payload to a pending register, so the ack carries that reserved id with
 no parent and no envelope seq, and the placed entry broadcasts later with

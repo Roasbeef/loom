@@ -91,12 +91,11 @@ call's own effect process, at the exact moment it composes the granted
 policy and re-clears. So an escalation record that reaches `Consumed`
 is proof that a call which had already been refused woke back up and
 spent an approval that arrived over a websocket — not merely that a
-human clicked approve. `packages/client/test/client/tui_e2e_test.gleam`
-asserts on `Consumed` for exactly this reason, and it is the only test
-in the tree that can: every other approval anywhere else is an in-process
-`api.approve_escalation` with `interactive` hard-coded, so nothing else
-ever watched a decision travel from a real keystroke into a call standing
-at a door waiting for it.
+human clicked approve. `client/demo` asserts on `Consumed` while driving the
+complete flow through the websocket protocol. The native terminal end-to-end
+does not claim this leg yet: it proves terminal input, durable output, fork,
+and clean detach against the real server, while approval remains visible but
+non-interactive in `tui`.
 
 An approval buys exactly one re-clearance of exactly one call — the
 record's `CallScope` is checked against the call in hand before anything

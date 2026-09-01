@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command dev loop: build the helper and the TUI, start the server on
+# One-command dev loop: build the helper and native TUI, start the server on
 # a scratch session (or $SESSION) in the background, wait for its startup
 # line, attach the TUI, and tear the server down when the TUI exits.
 # Interactive — run it from a real terminal.

@@ -92,7 +92,7 @@ touches the world.
 | `tools` | effect | bash, hash-anchored filesystem reads and edits, grep, the `agent_*` family, and the `code_mode` door. |
 | `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
 | `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
-| `tui` | client | A terminal client over the gateway protocol, runnable against a fake with `--demo`. Go. |
+| `tui` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
 | `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loom-server` entry point. |
 | `telemetry` | cross-cutting | Structured logs whose correlation context travels as a value, and two enforced redaction rules. A leaf over `core`, so every impure package may depend on it. |
 | `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
@@ -476,15 +476,16 @@ can check whether it is still true.
 
 Two downloads, per platform: the **server**, which is a tarball carrying
 the BEAM runtime system and the sandbox helper, and the **client**, which
-is a single Go binary. Nothing else has to be installed — in particular
-not Erlang, which the server bundles.
+is a separate native Erlang shipment. The server needs nothing installed.
+The client currently needs a compatible Erlang/OTP 29 installation on its
+host; Loom deliberately does not bundle a second ERTS into the client archive.
 
 Nothing is published yet. `make dist` builds both, and the sizes below
 are what it produced on a Linux x86_64 development container:
 
 ```
 dist/loom-0.1.0-linux-x86_64.tar.gz    21 MB   the server (58 MB unpacked)
-dist/loom-tui-0.1.0-linux-x86_64       16 MB   the terminal client
+dist/loom-tui-0.1.0-linux-x86_64.tar.gz        the terminal client shipment
 dist/SHA256SUMS
 ```
 
@@ -528,7 +529,7 @@ loom-0.1.0-linux-x86_64/bin/loom \
 
 # terminal 2 — a client attaches
 loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
-  --token "$(cat ~/sessions/myproj.db.token)"
+  --token-file ~/sessions/myproj.db.token
 ```
 
 The session file is created if absent; the session name clients subscribe
@@ -537,8 +538,8 @@ a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
 over their own transport.
 
-`loom-tui --demo` runs the client against an in-process fake with a
-canned session — no server, no network, a fine first thing to try.
+`loom-tui --demo` renders a self-contained preview from a canned local model —
+no server, no network, a fine first thing to try.
 
 What the server needs beyond itself: optionally a provider key.
 `ANTHROPIC_API_KEY` is read from the environment at dispatch time;
@@ -598,12 +599,12 @@ Precedence is flags > config file > environment > defaults: with
 entirely, and without it those variables act as a one-entry catalogue.
 API keys never live in the file — each entry's `api_key_env` names the
 environment variable to read at dispatch. The TUI lists the catalogue
-with `:models` and switches the active strand's model by name.
+with `/model` and switches the active strand's model by name.
 
 ## Working on Loom
 
 You need Gleam 1.18 or newer, Erlang/OTP 29 or newer, and Go 1.24 or
-newer for the sandbox helper and the terminal client. `make release`
+newer for the sandbox helper. `make release`
 additionally needs `rebar3`, `strip` and a prepared build seed (`make
 codemode-seed`, once, with the network); nothing else does. Nothing is
 published to Hex — the packages are monorepo-internal and are built where
@@ -612,14 +613,14 @@ they sit.
 ```
 make check            # the full gate: format check, warning-free build, tests, lint
 make lint             # the house rules on their own (lint-<package> narrows it)
-make binaries         # bin/loom-exec and bin/loom-tui (the Go binaries)
+make binaries         # bin/loom-exec plus the native TUI shipment and launcher
 make dev              # build, start a server on a scratch session, attach the TUI
 make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
 make e2e              # the jailed end-to-end against a freshly built helper
 make codemode-seed    # the offline package cache a code-mode build clones
 make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
 make release          # the self-contained server into build/release/loom (needs rebar3)
-make dist             # dist/: the server tarball, the client, SHA256SUMS
+make dist             # dist/: separate server and native-client tarballs, SHA256SUMS
 make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
 make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
 make help             # everything else
@@ -654,9 +655,16 @@ launcher — a shipment bundles compiled BEAM files and not the runtime
 system, so it needs an Erlang/OTP installation to run, which is exactly
 the gap `make release` closes.
 
-Every Go build in the tree goes through `scripts/go-build.sh` with the
-same flags, so `bin/loom-exec`, `packages/sandbox/loom-exec` and the
-helper inside a release are byte-identical. That is what lets `make
+`make tui-shipment` exports the native client into
+`build/tui-erlang-shipment` and writes `bin/loom-tui`. The launcher disables
+the emulator's break handler so `Ctrl+C` reaches etui and shuts the client down
+cleanly. Like every Erlang shipment, this one carries BEAM files but no ERTS;
+the client host therefore needs compatible Erlang/OTP 29 on `PATH`.
+
+The only Go build in the tree is the sandbox helper, and it goes through
+`scripts/go-build.sh` with the same flags everywhere, so `bin/loom-exec`,
+`packages/sandbox/loom-exec` and the helper inside a release are
+byte-identical. That is what lets `make
 selftest`'s verdict say something about the artifact rather than about a
 development build of it.
 

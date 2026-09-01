@@ -90,7 +90,7 @@ text. A read failure leaves the editor untouched and shows a local error.
 - Golden fixtures and protocol tests cover text-only stability, content-block
   round trip, malformed blocks, an empty list, and generic unknown-command
   refusal behavior.
-- `tui_gleam` gains image attachments, bounded file reads, MIME sniffing,
+- `tui` gains image attachments, bounded file reads, MIME sniffing,
   base64 encoding, and a `prompt_content` encoder.
 - Provider and durable entry formats do not change.
 

@@ -605,8 +605,8 @@ over one session file. WP-L.
   (the pure-Gleam TOML parser behind `--config`); `client/system_prompt`
   added `prompt`, whose purity is why the I/O had to live on this side.
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
-  `client/wiring` (legal — T depends on all). `packages/tui` is its Go
-  client, coupled only through the protocol and the golden fixtures.
+  `client/wiring` (legal — T depends on all). `packages/tui` is its
+  native client, coupled only through the protocol and the golden fixtures.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
   wall clock, unique entropy, `PATH` lookup, `code:root_dir/0` and the
   running ERTS version (the anchor `client/install` builds every
@@ -705,8 +705,8 @@ over one session file. WP-L.
   `snake_case`, but values that already have a durable form in the
   harness — entries, messages, usage — are carried in `core/codec`'s
   vocabulary (pi field names, camelCase) rather than re-rendered.
-- **The wire form is pinned by the Go golden fixtures** under
-  `packages/tui/internal/proto/testdata/`, which this package decodes and
+- **The wire form is pinned by the golden fixtures** under
+  `packages/client/testdata/protocol/`, which this package decodes and
   re-encodes byte for byte. Three details differ from `core/codec` and
   the wire follows the fixtures: `toolCall` blocks nest under a
   `toolCall` key, `thinking` blocks always carry `redacted`, and floats

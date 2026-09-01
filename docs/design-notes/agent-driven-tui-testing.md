@@ -4,6 +4,12 @@ Status: **note, not a work package.** Captured while the idea is fresh;
 nothing here is built. Promote to a numbered work package when the code
 mode milestone closes.
 
+> **Adoption update (2026-08-31).** This note records the retired Go client
+> and its proposed Bubble Tea test stack. Loom now ships the native Gleam
+> `packages/tui` client. Its model tests and the real terminal/server scenario
+> in `client/tui_e2e_test` cover the first two fidelity layers below; a
+> persistent agent-facing tmux harness remains design work.
+
 ## The gap
 
 Every layer of Loom is tested except the one a person actually touches.

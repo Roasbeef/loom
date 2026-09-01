@@ -373,7 +373,7 @@ Linux equivalence select `FullEnforcement` explicitly.
 
 ### WP-L `client` — gateway + TUI
 
-**Scope**: ClientGateway (Part 1.6) over websocket; auth (local: unix-socket peer creds; remote: bearer tokens); snapshot/catch-up; escalation approval flow UI contract. TUI: a standalone Go binary on the bubbletea/lipgloss stack (bubbles components; glamour for markdown rendering), coupled to the harness *only* through the Part 1.6 websocket protocol — protocol events map onto bubbletea messages, commands onto websocket sends. It hand-writes the protocol types (small, versioned JSON; the Gleam-JS shared wire types serve web clients instead). Features: stream rendering, strand switcher, approval prompts, diff viewer, transcript browser.
+**Scope**: ClientGateway (Part 1.6) over websocket; bearer-token auth; snapshot/catch-up; escalation approval flow UI contract. TUI: a native Gleam shipment over etui, coupled to the harness through the Part 1.6 websocket protocol — protocol events reduce an immutable presentation model and commands become websocket sends. It hand-writes the protocol envelope and event union while reusing `core` only for total durable-entry decoding. Features: stream rendering, strand and model selectors, agent inspection, structured tool and markdown views, prompt attachments, transcript scrollback, and usage reporting. Pending escalations are visible, but exact action-and-grant approval and automatic reconnect/catch-up remain follow-up work.
 **Exit**: protocol conformance tests both directions (golden transcripts); reconnect/catch-up fuzz; a scripted end-to-end demo session driven purely through the public protocol (this doubles as the acceptance test for M3).
 
 ### WP-M `ext` — skills & extension zone
@@ -586,21 +586,14 @@ Linux development container.
   gateway request under the summarization pack, and the demo installs
   those same hooks — it has no compaction hooks of its own, so the
   `CompactionEntry` it asserts on carries text the provider produced.
-  *The TUI leg is closed* (issue #7): `client/tui_e2e_test` builds the
-  real `loom-tui` binary, runs it in a real terminal under `tmux` against
-  a real `client/serve.boot`, and drives a turn, a fork and an escalation
-  through keystrokes alone — only the model is scripted. It found two
-  bugs no fake-driven test could: the Go client treated the gateway's
-  sparse *storage* seqs as stream gaps and dropped every durable event
-  after the first (the fake numbers its events 1, 2, 3, …), and the
-  bubbletea view was one line taller than the window, which costs the
-  status bar because oversized frames are trimmed from the top. It also
-  reaches what nothing else did — an approval travelling from a keystroke
-  over the websocket into a *parked* call, asserted as `Consumed` rather
-  than `Approved`, since only `client/escalate`'s park loop writes the
-  former. That needed one seam: the session base policy is now a
-  `serve.Settings` field, because under `serve.base_policy` no shipped
-  tool's requirements can exceed the base and nothing can ever park.
+  *The native TUI leg is closed for its implemented surface* (issue #7):
+  `client/tui_e2e_test` exports the real `tui` shipment, runs it in a
+  terminal under `tmux` against a real `client/serve.boot`, and drives a turn,
+  a fork, and clean detach through keystrokes alone — only the model is
+  scripted. The older Go-client version of this test also found sparse-seq and
+  oversized-frame bugs and proved an approval reached `Consumed`; that client
+  has been retired. Approval is no longer claimed by the native terminal test
+  until it implements protocol-change/007's exact action-and-grant echo.
   The former `H(macOS)` filesystem and network gap is now delivered: Darwin
   generates a parameterized deny-default Seatbelt profile, proves it against
   the live kernel with all nine sandbox probes, and runs both real jailed
@@ -694,7 +687,7 @@ and rewriting their acceptance would erase what was actually accepted.
 | Anthropic prompt caching at four breakpoints, and cache writes counted toward the overflow comparison | `provider/adapter/anthropic` | no row; spec-gaps WP-F 8, 9 |
 | The `code_mode` tool and its wiring behind a discovered build seed — a host without one registers no tool rather than one that always refuses | `tools/codemode`, `client/codemode` | M4 integrated WP-J but no row required a door to it |
 | The macOS Seatbelt jail and live regression gate | `packages/sandbox`, `.github/workflows/ci.yml` | the delivered M3 `H(macOS)` half, with exact resource-limit skips surfaced |
-| An approval bound to the **action** it was granted for: the record carries the tool, a digest of the call's effective arguments and a bounded preview, the claim and the spend both guard on it, and the approval overlay renders the command rather than only the policy diff | `client/escalate`, `client/wiring`, `packages/tui`, `protocol-change/007` | no row named consent granularity; M2's escalation row predates it |
+| An approval bound to the **action** it was granted for: the record carries the tool, a digest of the call's effective arguments and a bounded preview, and the claim and spend both guard on it. The native client renders pending records but does not yet send the exact echo. | `client/escalate`, `client/wiring`, `protocol-change/007` | no row named consent granularity; M2's escalation row predates it |
 | The `code_mode` description carrying the prelude's public signatures — generated from `packages/cap` through the compiler's own `package-interface`, filtered by each seam's allowlist, and digest-gated inside `make check` | `tools/prelude`, `scripts/gen-prelude.{sh,py}` | M4 required a door to code mode, not an oracle behind it |
 | `packages/lint` and `make lint`: seven house rules over Gleam source, four of them (R0, R2, R4, R6) gating `make check` at error level on a census that is zero and argued | `packages/lint`, `scripts/lint.sh` | no row; the conventions in §0.2 asserted rules nothing checked |
 | A CI configuration: a Linux gate, a macOS gate, a jail job that installs the kernel layers and checks the self-test against `.github/enforcement-expectations` probe by probe, and a nightly soak | `.github/workflows/` | §0.3's definition of done; see the caveat above for what it has actually run |
@@ -757,4 +750,4 @@ The DAG says *what can* parallelize; this says *what must happen first*:
 - ~~**ADR-003 (bootstrap-blocking)**: msgpack library choice / vendoring~~ — accepted, `docs/adr/003-msgpack.md`: our own codec in `core/msgpack` on the Gleam side, a pinned library on the Go side, both held to the golden frames in `protocol/msgpack-fixtures/`.
 - Satellite boot time target: measure `erl -noshell` cold start with preloaded prelude; decide pool-warm default.
 - ~~Hashline anchor length; whether anchors include line-number salt~~ — settled by WP-I as built (spec-gaps WP-I 1): 8 hex of a package-internal 64-bit hash, no salt, line numbers travelling beside anchors in refs, because an anchor never outlives one read-edit round trip.
-- ~~TUI implementation substrate~~ — settled: Go sidecar (bubbletea) over the client protocol; the protocol keeps this swappable if a BEAM-native TUI ever becomes viable.
+- ~~TUI implementation substrate~~ — amended by the issue #114 evaluation: native Gleam over etui, shipped as a separate Erlang shipment over the unchanged client protocol. The client archive requires compatible OTP 29 because it does not carry a second ERTS.

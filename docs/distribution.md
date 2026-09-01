@@ -238,7 +238,7 @@ than against a frozen one `seed.verify` would then reject.
 
 ## The TUI is a separate download
 
-`loom-tui` is not in the server tarball. It is a client over the frozen
+`loom-tui` is not in the server tarball. It is the native Gleam client over the frozen
 gateway protocol, and three things follow from that:
 
 - The two halves belong on different machines as often as not. The
@@ -252,8 +252,12 @@ gateway protocol, and three things follow from that:
 - Fusing them implies they must match versions. The protocol being
   frozen is exactly the claim that they need not.
 
-It is also a single static Go binary, so it needs no tree around it and
-ships as a bare file rather than a tarball.
+`make tui-shipment` exports the client's compiled BEAM closure and writes a
+thin `bin/loom-tui` launcher over it. `make dist` packages those together as
+`loom-tui-<version>-<platform>.tar.gz`. The archive deliberately carries no
+second ERTS: the client host needs compatible Erlang/OTP 29 on `PATH`. This is
+not the server's installation contract. The server tarball remains
+self-contained and still needs no host Erlang installation.
 
 ## Cross-compilation: there is none
 
@@ -281,19 +285,19 @@ Seatbelt profile. That binary is intentionally not bundled: the absolute
 system path is part of the trust boundary. Release smoke and CI run the live
 profile rather than accepting profile text as proof of confinement.
 
-`loom-tui` is the exception: Go cross-compiles it with `GOOS`/`GOARCH`
-alone, so client binaries for every platform can be built anywhere. The
-`make dist` target does not do that today — it builds the client for the
-host beside the server, because that is what has been run and tested.
+The native client shipment is also built on the host. Its BEAM files are
+portable across compatible OTP systems, while etui still talks to the host's
+terminal and the launcher depends on a host `erl`. The archive keeps the
+platform label so release automation can validate one server/client pair per
+runner instead of implying an untested universal client artifact.
 
 ## Sizes, measured
 
-Stripping the Go binaries was free and was taken:
+Stripping the Go helper was free and was taken:
 
 | binary | before | after `-s -w` | |
 |---|---|---|---|
 | `bin/loom-exec` | 4,878,696 | 3,281,120 | 32.7% off |
-| `bin/loom-tui` | 21,700,138 | 15,798,564 | 27.2% off |
 
 The bundled `gleam` was not stripped upstream and everything else in the
 release is, so it is stripped on the way in — 29,168,608 to 22,826,152
@@ -320,7 +324,7 @@ and smoke-tested by that CI runner.
 | `share/codemode-seed` | 5.9 MB | — |
 | **the release tree** | **59 MB** | **30 MB** |
 | **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **22 MB** | **11 MB** |
-| `dist/loom-tui-0.1.0-linux-x86_64` | 16 MB | 16 MB |
+| `dist/loom-tui-0.1.0-linux-x86_64.tar.gz` | native BEAM shipment; measured by the current build | same archive |
 
 So code mode costs **+29 MB unpacked and +11 MB compressed**, a little
 over a doubling either way. That is close to the estimate #102 worked
@@ -342,9 +346,9 @@ code-mode execution pays that, on top of a jail spin-up, so the 4.3 MB
 stays; but the reason is a second of `erlc` per call, not "a fresh
 compile of the world", and it is worth stating the real number.
 
-For comparison, what the tree produced before any of this: an 11 MB
-shipment plus 26.6 MB of unstripped Go binaries, which needed an OTP
-installation on top.
+For comparison, the retired client was a 16 MB stripped Go binary. The native
+client trades that self-contained process for a smaller BEAM shipment and an
+explicit OTP-on-the-client-host dependency.
 
 ## Code mode ships in the release, and doubling the artifact is the cost
 
@@ -461,6 +465,8 @@ on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
 Nothing about the helper ladder: #101 is closed above, and the launcher
 is three lines shorter for it.
 
-One thing this did not touch: **`make dist` still builds `loom-tui` for the
-host only**, though Go cross-compiles it with
-`GOOS`/`GOARCH` alone, because that is what has been built and tested.
+One thing this does not do is bundle a second ERTS for `loom-tui`. The client
+archive is a host-built Erlang shipment and requires compatible Erlang/OTP 29
+on the machine where the terminal runs. Making that client archive
+self-contained would be a separate packaging decision with its own size and
+platform matrix.

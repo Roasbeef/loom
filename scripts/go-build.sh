@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build one of Loom's Go binaries with the flags every caller must use.
+# Build Loom's Go sandbox helper with the flags every caller must use.
 #
 #   scripts/go-build.sh <module-dir> <package> <output>
 #
