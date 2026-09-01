@@ -105,6 +105,93 @@ pub fn private_file_round_trip_is_bounded_test() {
   let _ = simplifile.delete(root)
 }
 
+pub fn private_directory_listing_is_bounded_test() {
+  let root = test_root("bounded-directory")
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(filepath.join(root, "first"), "one")
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(filepath.join(root, "second"), "two")
+  assert ffi_bootstrap.list_directory_bounded(root, 1)
+    == Error("directory exceeds the entry limit")
+  let assert Ok(entries) = ffi_bootstrap.list_directory_bounded(root, 2)
+  assert list.length(entries) == 2
+  let _ = simplifile.delete(root)
+}
+
+pub fn local_session_discovery_validates_launcher_records_test() {
+  let root = test_root("session-discovery")
+  let workspace = filepath.join(root, "workspace")
+  let state = filepath.join(root, "state")
+  let session_directory = filepath.join(state, "sessions")
+  let session = filepath.join(session_directory, "review.db")
+  let endpoint_directory = filepath.join(state, "endpoints")
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(state)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(session_directory)
+  let assert Ok(Nil) =
+    ffi_bootstrap.ensure_private_directory(endpoint_directory)
+  let assert Ok(Nil) = simplifile.write(session, "")
+  let assert Ok(canonical_workspace) =
+    ffi_bootstrap.canonical_directory(workspace)
+  let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
+  let assert Ok(canonical_session) = ffi_bootstrap.canonical_path(session)
+  let key = digest_prefix(canonical_session, 24)
+  let endpoint = filepath.join(endpoint_directory, key <> ".json")
+  let record =
+    json.Object([
+      #("version", json.Int(2)),
+      #("gateway_protocol", json.Int(1)),
+      #("status", json.String("ready")),
+      #("workspace", json.String(canonical_workspace)),
+      #("session_file", json.String(canonical_session)),
+      #("session", json.String("review")),
+      #("address", json.String("ws://127.0.0.1:44123/v1/ws")),
+      #(
+        "token_file",
+        json.String(filepath.join(
+          filepath.join(canonical_state, "tokens"),
+          key <> ".token",
+        )),
+      ),
+      #(
+        "log_file",
+        json.String(filepath.join(
+          filepath.join(canonical_state, "logs"),
+          key <> ".log",
+        )),
+      ),
+      #("server_pid", json.Int(0)),
+      #("server_birth", json.String("")),
+      #("started_at_ms", json.Int(ffi_bootstrap.system_time_ms())),
+    ])
+    |> json.to_string
+  let assert Ok(Nil) = ffi_bootstrap.atomic_write_private(endpoint, record)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(
+      filepath.join(endpoint_directory, "malformed.json"),
+      "not json",
+    )
+  let options = bootstrap.Options(workspace, session, "/bin/loomd", state)
+  let assert Ok([choice]) = bootstrap.discover_sessions(options)
+  assert choice
+    == bootstrap.SessionChoice(
+      session: "review",
+      workspace: canonical_workspace,
+      session_file: canonical_session,
+    )
+  assert bootstrap.session_options(options, choice)
+    == bootstrap.Options(
+      workspace: canonical_workspace,
+      session_file: canonical_session,
+      server: "/bin/loomd",
+      state_directory: state,
+    )
+  let _ = simplifile.delete(root)
+}
+
 pub fn launch_lock_is_single_winner_test() {
   let root = test_root("launch-lock")
   let path = filepath.join(root, "session.lock")
@@ -340,4 +427,11 @@ fn test_root(name: String) -> String {
   <> name
   <> "-"
   <> string.inspect(ffi_bootstrap.system_time_ms())
+}
+
+fn digest_prefix(value: String, length: Int) -> String {
+  ffi_bootstrap.sha256(<<value:utf8>>)
+  |> bit_array.base16_encode
+  |> string.lowercase
+  |> string.slice(at_index: 0, length:)
 }

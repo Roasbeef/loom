@@ -70,6 +70,16 @@ pub fn absolute_path(path: String) -> Result(String, String)
 @external(erlang, "tui_ffi", "ensure_private_directory")
 pub fn ensure_private_directory(path: String) -> Result(Nil, String)
 
+/// Lists one directory only when its entry count is within `limit`.
+///
+/// Uses OTP `file:list_dir/1`; the bound limits the launcher records returned
+/// to Gleam and therefore the number of endpoint files the client will parse.
+@external(erlang, "tui_ffi", "list_directory_bounded")
+pub fn list_directory_bounded(
+  path: String,
+  limit: Int,
+) -> Result(List(String), String)
+
 /// Attempts to acquire an automatically released cross-process file lock.
 ///
 /// Uses the platform `lockf` or `flock` utility behind an Erlang port. The

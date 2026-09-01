@@ -7,6 +7,7 @@
          canonical_directory/1, canonical_path/1, path_exists/1,
          absolute_path/1,
          ensure_private_directory/1,
+         list_directory_bounded/2,
          try_launch_lock/1, release_launch_lock/1,
          read_regular_bounded/2, read_private_bounded/2,
          atomic_write_private/2, find_executable/1,
@@ -151,6 +152,19 @@ ensure_private_directory(PathBinary) ->
         {unix, linux} -> ensure_private_unix(PathBinary);
         _ -> {error, <<"automatic local startup is supported only on macOS and Linux">>}
     end.
+
+list_directory_bounded(PathBinary, Limit)
+  when is_integer(Limit), Limit >= 0 ->
+    case file:list_dir(binary_to_list(PathBinary)) of
+        {ok, Entries} when length(Entries) =< Limit ->
+            {ok, lists:map(fun unicode:characters_to_binary/1, Entries)};
+        {ok, _Entries} ->
+            {error, <<"directory exceeds the entry limit">>};
+        {error, Reason} ->
+            {error, describe(Reason)}
+    end;
+list_directory_bounded(_PathBinary, _Limit) ->
+    {error, <<"directory entry limit must be non-negative">>}.
 
 ensure_private_unix(PathBinary) ->
     Path = binary_to_list(PathBinary),
