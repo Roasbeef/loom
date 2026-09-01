@@ -471,10 +471,15 @@ statically validated endpoint records from the active private state root, then
 resolves the selected workspace and database through the complete bootstrap
 path. Resolution, optional daemon startup, and replacement websocket startup
 run in a monitored worker with a 70-second outer deadline. The terminal
-keeps the old session usable until it adopts the new socket, swaps to a fresh
-mailbox, and closes the prior connection. Thus, late frames from the old socket
-cannot mutate the new session projection. A fresh full snapshot remains the
-authority after every switch.
+keeps the old session usable until it adopts the new socket, acknowledges the
+worker that retained it, swaps to a fresh mailbox, and closes the prior
+connection. Each attempt has its own result mailbox, so an expired attempt
+cannot be adopted by a later switch, and a queued result wins over the timeout
+edge. Late frames from the old socket cannot mutate the new session projection.
+A fresh full snapshot remains the authority after every switch. The selector
+uses the canonical database path as identity and shows its basename, keeping
+multi-dot databases distinct even when the server derives the same short
+session name from both.
 
 The selector is deliberately local. Explicit remote attachments have no
 authority to enumerate sibling sessions, and gaining that ability would need a
@@ -487,7 +492,7 @@ to the already-large `tui.gleam` module.
 `multi.part.db` session twice through the native Gleam bootstrap, discovers its
 launcher record, and opens plus adopts a replacement websocket. This proves
 authenticated readiness, same-pid reuse, manual replacement attachment, and
-process-group cleanup. The focused `make check-tui` gate passes 90 tests; the
+process-group cleanup. The focused `make check-tui` gate passes 93 tests; the
 expected panic regression prints an Erlang crash report while proving the
 terminal process survives.
 

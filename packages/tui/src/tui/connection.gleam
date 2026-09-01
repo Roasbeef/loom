@@ -206,6 +206,12 @@ pub fn close(connection: Connection) -> Nil {
 /// Session resolution opens replacement sockets in an unlinked worker. The
 /// terminal adopts the successful actor before it replaces the active socket,
 /// restoring the same lifecycle ownership as an ordinary startup connection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// connection.adopt(socket)
+/// ```
 pub fn adopt(connection: Connection) -> Result(Nil, String) {
   let Connection(subject) = connection
   use owner <- result.try(

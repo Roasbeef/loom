@@ -31,9 +31,10 @@ that tree separately from the self-contained server.
   record. Bootstrap policy, record validation, retry timing, executable
   discovery order, and lifecycle decisions remain in Gleam.
 - `tui/sessions.State` owns the `/sessions` selection cursor, while
-  `tui/sessions.SwitchStatus` retains the monitored worker and deadline for
-  one replacement attachment. The old connection remains authoritative until
-  the terminal process adopts the replacement socket.
+  `tui/sessions.SwitchStatus` retains the monitored worker, per-attempt
+  mailbox, and deadline for one replacement attachment. The worker retains
+  ownership of a ready socket until the terminal acknowledges adoption, and
+  the old connection remains authoritative until that handoff completes.
 - `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
   unavailable in pure Gleam: private and bounded file operations, process
   identity and launch, a kernel lock, loopback port reservation, time, and
@@ -226,11 +227,13 @@ that tree separately from the self-contained server.
   client.
 - **Session replacement is fail-preserving.** Resolution, optional daemon
   startup, and websocket startup run in a monitored worker with a bounded
-  deadline. Failure leaves the old socket and model intact. Success gives the
-  replacement a fresh inbox, the terminal process links to its socket actor,
-  and only then does it close the prior socket and await the new authoritative
-  full snapshot. Late frames and close notices from the abandoned inbox cannot
-  mutate the replacement session.
+  deadline and a mailbox unique to that attempt. A queued result wins over its
+  deadline, while a timed-out worker cannot leak a result or socket into a
+  later switch. Failure leaves the old socket and model intact. Success gives
+  the replacement a fresh connection inbox, the terminal process links to its
+  socket actor, and only then does it close the prior socket and await the new
+  authoritative full snapshot. Late frames and close notices from the
+  abandoned inbox cannot mutate the replacement session.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
   this client cannot approve or deny an action. The server still enforces the

@@ -144,7 +144,6 @@ type Model {
     local_options: Option(bootstrap.Options),
     inbox: Subject(connection.Message),
     socket: Option(connection.Connection),
-    session_inbox: Subject(sessions.Message),
     session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
@@ -180,7 +179,6 @@ type Model {
 /// ```
 pub fn main() {
   let inbox = connection.new_inbox()
-  let session_inbox = sessions.new_inbox()
   let project = workspace.discover()
   let strands = demo_strands()
   let base =
@@ -224,7 +222,6 @@ pub fn main() {
       local_options: None,
       inbox:,
       socket: None,
-      session_inbox:,
       session_switch: sessions.Idle,
       next_id: 1,
       usage: zero_usage(),
@@ -1450,7 +1447,7 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
 }
 
 fn drain_session_switch(model: Model) -> Model {
-  case sessions.receive(model.session_inbox, model.session_switch) {
+  case sessions.receive(model.session_switch) {
     Error(Nil) -> model
     Ok(message) -> handle_session_switch_message(model, message)
   }
@@ -1473,17 +1470,21 @@ fn handle_session_switch_message(
         "open session " <> session <> " crashed: " <> reason,
       )
       |> mark_activity
-    sessions.Ready(choice, options, target, inbox, socket) ->
+    sessions.Ready(choice, options, target, inbox, socket, adopted) ->
       case connection.adopt(socket) {
         Error(reason) -> {
           connection.close(socket)
+          process.send(adopted, Nil)
           append_error(
             Model(..model, session_switch: sessions.Idle),
             "open session " <> target.session <> ": " <> reason,
           )
           |> mark_activity
         }
-        Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
+        Ok(Nil) -> {
+          process.send(adopted, Nil)
+          adopt_session(model, choice, options, target, inbox, socket)
+        }
       }
   }
 }
@@ -2673,13 +2674,17 @@ fn open_local_session_selector(
       case bootstrap.discover_sessions(options) {
         Error(reason) -> append_error(model, reason)
         Ok([]) -> append_error(model, "no locally managed sessions found")
-        Ok(choices) ->
+        Ok(choices) -> {
+          let current =
+            bootstrap.session_file(options)
+            |> result.unwrap("")
           Model(
             ..model,
-            overlay: SessionSelector(sessions.new(choices, model.session)),
+            overlay: SessionSelector(sessions.new(choices, current)),
             repaint_phase: !model.repaint_phase,
             notice: "session selector",
           )
+        }
       }
   }
 }
@@ -2698,7 +2703,7 @@ fn begin_session_switch(
       Model(
         ..model,
         overlay: NoOverlay,
-        session_switch: sessions.start(choice, options, model.session_inbox),
+        session_switch: sessions.start(choice, options),
         repaint_phase: !model.repaint_phase,
         notice: "opening session " <> choice.session,
       )

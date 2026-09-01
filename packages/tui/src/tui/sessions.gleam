@@ -10,6 +10,7 @@ import etui/keys
 import etui/span
 import etui/widgets/block
 import etui/widgets/paragraph
+import filepath
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -30,7 +31,7 @@ pub type State {
     choices: List(SessionChoice),
     /// The zero-based cursor within the visible rows.
     selected: Int,
-    /// The session currently attached to the terminal.
+    /// The canonical session file currently attached to the terminal.
     current: String,
   )
 }
@@ -53,18 +54,36 @@ pub type SwitchStatus {
   Idle
 
   /// A worker is resolving or connecting to the named session.
-  Resolving(session: String, worker: Pid, monitor: Monitor, deadline_ms: Int)
+  Resolving(
+    /// The session name shown while the replacement is opening.
+    session: String,
+    /// The process that owns the replacement until terminal adoption.
+    worker: Pid,
+    /// The monitor that turns an untyped worker exit into a typed result.
+    monitor: Monitor,
+    /// The mailbox used only by this replacement attempt.
+    inbox: Subject(Message),
+    /// The absolute monotonic deadline for this replacement attempt.
+    deadline_ms: Int,
+  )
 }
 
 /// One result returned by a replacement-attachment worker.
 pub type Message {
   /// A replacement websocket is ready for terminal-process adoption.
   Ready(
+    /// The discovered launcher record selected by the operator.
     choice: SessionChoice,
+    /// The local launch inputs reconstructed from that record.
     options: Options,
+    /// The authenticated target returned by local bootstrap.
     target: bootstrap.Target,
+    /// The fresh mailbox that receives the replacement session's frames.
     inbox: Subject(connection.Message),
+    /// The replacement websocket actor awaiting terminal adoption.
     socket: connection.Connection,
+    /// The acknowledgement that releases the worker after adoption.
+    adopted: Subject(Nil),
   )
 
   /// Resolution or connection failed while the old session remained active.
@@ -75,11 +94,23 @@ pub type Message {
 }
 
 /// Opens a selector over discovered launcher records.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.new(choices, "/home/me/.loom/sessions/project.db")
+/// ```
 pub fn new(choices: List(SessionChoice), current: String) -> State {
   State(choices:, selected: selected_session(choices, current, 0), current:)
 }
 
 /// Handles one key while the selector owns input focus.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.update(keys.Down, state)
+/// ```
 pub fn update(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Close
@@ -120,52 +151,65 @@ pub fn update(key: keys.Key, state: State) -> Action {
   }
 }
 
-/// Creates the terminal-owned mailbox for replacement attachments.
-pub fn new_inbox() -> Subject(Message) {
-  process.new_subject()
-}
-
 /// Starts one replacement attachment without blocking terminal input.
-pub fn start(
-  choice: SessionChoice,
-  base: Options,
-  receiver: Subject(Message),
-) -> SwitchStatus {
+///
+/// ## Examples
+///
+/// ```gleam
+/// let status = sessions.start(choice, options)
+/// ```
+pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
   let options = bootstrap.session_options(base, choice)
   let owner = process.self()
+  let receiver = process.new_subject()
   let worker =
     process.spawn_unlinked(fn() {
       let answer = resolve_and_connect(choice, options, owner)
       process.send(receiver, answer)
+      await_adoption(answer)
     })
   Resolving(
     session: choice.session,
     worker:,
     monitor: process.monitor(worker),
+    inbox: receiver,
     deadline_ms: ffi_bootstrap.system_time_ms() + switch_timeout_ms,
   )
 }
 
 /// Receives one completed replacement attachment, when ready.
-pub fn receive(
-  inbox: Subject(Message),
-  status: SwitchStatus,
-) -> Result(Message, Nil) {
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.receive(status)
+/// ```
+pub fn receive(status: SwitchStatus) -> Result(Message, Nil) {
   case status {
-    Idle -> process.receive(inbox, 0)
-    Resolving(session:, worker:, monitor:, deadline_ms:) ->
-      case ffi_bootstrap.system_time_ms() >= deadline_ms {
-        True -> {
-          process.kill(worker)
-          process.demonitor_process(monitor)
-          Ok(Failed(session, "session startup timed out"))
-        }
-        False -> receive_monitored(inbox, session, monitor)
+    Idle -> Error(Nil)
+    Resolving(session:, worker:, monitor:, inbox:, deadline_ms:) ->
+      case receive_monitored(inbox, session, monitor) {
+        Ok(message) -> Ok(message)
+        Error(Nil) ->
+          case ffi_bootstrap.system_time_ms() >= deadline_ms {
+            True -> {
+              process.kill(worker)
+              process.demonitor_process(monitor)
+              Ok(Failed(session, "session startup timed out"))
+            }
+            False -> Error(Nil)
+          }
       }
   }
 }
 
 /// Stops an unfinished replacement attachment before terminal exit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.cancel(status)
+/// ```
 pub fn cancel(status: SwitchStatus) -> Nil {
   case status {
     Idle -> Nil
@@ -177,6 +221,13 @@ pub fn cancel(status: SwitchStatus) -> Nil {
 }
 
 /// Reports whether a replacement attachment is already in flight.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.busy(sessions.Idle)
+/// // -> False
+/// ```
 pub fn busy(status: SwitchStatus) -> Bool {
   case status {
     Idle -> False
@@ -205,6 +256,12 @@ fn receive_monitored(
 }
 
 /// Renders the local session selector above the main interface.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.render(buffer, screen, state)
+/// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   let width = int.max(1, int.min(96, screen.size.width - 6))
   let height =
@@ -252,6 +309,17 @@ fn resolve_and_connect(
   }
 }
 
+fn await_adoption(message: Message) -> Nil {
+  case message {
+    Ready(socket:, adopted:, ..) ->
+      case process.receive(adopted, switch_timeout_ms) {
+        Ok(Nil) -> Nil
+        Error(Nil) -> connection.close(socket)
+      }
+    Failed(..) | WorkerCrashed(..) -> Nil
+  }
+}
+
 fn connect_target(
   choice: SessionChoice,
   options: Options,
@@ -262,11 +330,12 @@ fn connect_target(
   case connection.connect(target.address, target.token, inbox) {
     Error(reason) -> Failed(choice.session, "connect: " <> reason)
     Ok(socket) -> {
+      let adopted = process.new_subject()
       connection.send(socket, protocol.subscribe(1, target.session))
       connection.send(socket, protocol.models(2))
       connection.send(socket, protocol.config(3, "main"))
       case process.is_alive(owner) {
-        True -> Ready(choice, options, target, inbox, socket)
+        True -> Ready(choice, options, target, inbox, socket, adopted)
         False -> {
           connection.close(socket)
           Failed(choice.session, "the terminal closed during startup")
@@ -322,12 +391,12 @@ fn choice_lines(
   selected: Int,
   current: String,
 ) -> List(span.Line) {
-  let SessionChoice(session:, workspace:, ..) = choice
+  let SessionChoice(session:, workspace:, session_file:) = choice
   let #(marker, row_style) = case index == selected {
     True -> #("▸ ", theme.overlay_signal())
     False -> #("  ", theme.overlay_plain())
   }
-  let current_badge = case session == current {
+  let current_badge = case session_file == current {
     True -> "  ● current"
     False -> ""
   }
@@ -341,6 +410,11 @@ fn choice_lines(
       span.span_styled("    ", theme.overlay_plain()),
       span.span_styled(
         text_hygiene.single_line(workspace),
+        theme.overlay_quiet(),
+      ),
+      span.span_styled("  ·  ", theme.overlay_quiet()),
+      span.span_styled(
+        text_hygiene.single_line(filepath.base_name(session_file)),
         theme.overlay_quiet(),
       ),
     ]),
@@ -372,7 +446,7 @@ fn selected_session(
   let found =
     choices
     |> list.index_fold(-1, fn(found, choice, index) {
-      case found < 0 && choice.session == current {
+      case found < 0 && choice.session_file == current {
         True -> index
         False -> found
       }

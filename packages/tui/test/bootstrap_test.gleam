@@ -314,13 +314,17 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert first.token == second.token
   let assert Ok([choice]) = bootstrap.discover_sessions(options)
   assert choice.session == first.session
-  let switch_inbox = sessions.new_inbox()
-  let _ = sessions.start(choice, options, switch_inbox)
-  let assert Ok(sessions.Ready(target: switched, socket: switched_socket, ..)) =
-    process.receive(switch_inbox, 40_000)
+  let switch = sessions.start(choice, options)
+  let assert Ok(sessions.Ready(
+    target: switched,
+    socket: switched_socket,
+    adopted:,
+    ..,
+  )) = wait_for_switch(switch, 40_000)
     as "session switch should connect"
   assert switched.session == first.session
   assert connection.adopt(switched_socket) == Ok(Nil)
+  process.send(adopted, Nil)
   connection.close(switched_socket)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
@@ -388,6 +392,20 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
     Error(_), _ -> {
       process.sleep(50)
       assert_process_stops(pid, attempts - 1)
+    }
+  }
+}
+
+fn wait_for_switch(
+  status: sessions.SwitchStatus,
+  remaining_ms: Int,
+) -> Result(sessions.Message, Nil) {
+  case sessions.receive(status), remaining_ms <= 0 {
+    Ok(message), _ -> Ok(message)
+    Error(Nil), True -> Error(Nil)
+    Error(Nil), False -> {
+      process.sleep(10)
+      wait_for_switch(status, remaining_ms - 10)
     }
   }
 }

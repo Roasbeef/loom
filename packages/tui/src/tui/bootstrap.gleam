@@ -165,6 +165,12 @@ pub fn resolve(options: Options) -> Result(Target, String) {
 /// Endpoint files remain hints: malformed, misplaced, incompatible, and
 /// non-loopback records are omitted. Selecting a result still calls `resolve`,
 /// which verifies process identity and authenticates a real gateway snapshot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.discover_sessions(bootstrap.Options("", "", "", ""))
+/// ```
 pub fn discover_sessions(
   options: Options,
 ) -> Result(List(SessionChoice), String) {
@@ -209,6 +215,12 @@ pub fn discover_sessions(
 }
 
 /// Rebuilds local-launch inputs for one discovered session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.session_options(options, choice)
+/// ```
 pub fn session_options(base: Options, choice: SessionChoice) -> Options {
   Options(
     workspace: choice.workspace,
@@ -216,6 +228,20 @@ pub fn session_options(base: Options, choice: SessionChoice) -> Options {
     server: base.server,
     state_directory: base.state_directory,
   )
+}
+
+/// Resolves the canonical database identity selected by local launch options.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.session_file(bootstrap.Options("", "", "", ""))
+/// ```
+@internal
+pub fn session_file(options: Options) -> Result(String, String) {
+  use workspace <- result.try(canonical_workspace(options.workspace))
+  use paths <- result.try(resolve_paths(options, workspace))
+  Ok(paths.session)
 }
 
 fn discover_session(

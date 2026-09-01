@@ -20,6 +20,7 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/image_drop
+import tui/internal/ffi_bootstrap
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/markdown
@@ -299,12 +300,60 @@ pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
 
   let first = bootstrap.SessionChoice("alpha", "/work/alpha", "/state/a.db")
   let second = bootstrap.SessionChoice("beta", "/work/beta", "/state/b.db")
-  let state = sessions.new([first, second], "beta")
+  let state = sessions.new([first, second], "/state/b.db")
   assert state.selected == 1
   let assert sessions.Continue(wrapped) = sessions.update(keys.Down, state)
     as "Down keeps the selector open"
   assert wrapped.selected == 0
   assert sessions.update(keys.Enter, wrapped) == sessions.Choose(first)
+}
+
+pub fn session_selector_uses_database_identity_test() {
+  let first =
+    bootstrap.SessionChoice("review", "/work/project", "/state/review.db")
+  let second =
+    bootstrap.SessionChoice(
+      "review",
+      "/work/project",
+      "/state/review.archive.db",
+    )
+  let state = sessions.new([first, second], "/state/review.archive.db")
+  assert state.selected == 1
+}
+
+pub fn queued_session_result_wins_over_timeout_test() {
+  let inbox = process.new_subject()
+  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let monitor = process.monitor(worker)
+  let status =
+    sessions.Resolving(
+      session: "queued",
+      worker:,
+      monitor:,
+      inbox:,
+      deadline_ms: 0,
+    )
+  process.send(inbox, sessions.Failed("queued", "arrived before timeout"))
+  assert sessions.receive(status)
+    == Ok(sessions.Failed("queued", "arrived before timeout"))
+  process.kill(worker)
+}
+
+pub fn session_attempts_have_isolated_mailboxes_test() {
+  let stale = process.new_subject()
+  process.send(stale, sessions.Failed("old", "stale result"))
+  let current = process.new_subject()
+  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let status =
+    sessions.Resolving(
+      session: "new",
+      worker:,
+      monitor: process.monitor(worker),
+      inbox: current,
+      deadline_ms: ffi_bootstrap.system_time_ms() + 5000,
+    )
+  assert sessions.receive(status) == Error(Nil)
+  sessions.cancel(status)
 }
 
 pub fn agent_inspector_selection_wraps_and_resolves_a_strand_test() {
