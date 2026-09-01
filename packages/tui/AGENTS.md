@@ -39,7 +39,11 @@ that tree separately from the self-contained server.
 - `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
   unavailable in pure Gleam: private and bounded file operations, process
   identity and launch, a kernel lock, loopback port reservation, time, and
-  SHA-256. Its Erlang implementations must not acquire bootstrap policy.
+  SHA-256. Its Erlang implementations must not acquire bootstrap policy. Every
+  path or name crossing into Erlang is converted with
+  `unicode:characters_to_list/1`, never `binary_to_list/1`, which would split a
+  UTF-8 binary into bytes and send an accented path to a directory nobody
+  created.
 - `tui/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
@@ -168,6 +172,12 @@ that tree separately from the self-contained server.
   are canonical before their endpoint key and kernel lock are chosen. The
   bearer token always lives under the private state root, even when an explicit
   session database lives in the workspace.
+- **Launcher waits are monotonic.** The lock, cold start, live probe, starting
+  record adoption, and snapshot deadlines come from `monotonic_time_ms`, so a
+  wall-clock step cannot stretch or cut them. Only the reads that compare
+  against a persisted `started_at_ms` use the wall clock, and a starting
+  record's remaining budget is converted to a monotonic deadline before the
+  wait begins.
 - **FFI stays mechanical.** The Erlang shim may expose platform primitives,
   but branching policy and state transitions belong in readable, testable
   Gleam. New compound behavior should first be decomposed into the smallest
@@ -230,6 +240,11 @@ that tree separately from the self-contained server.
   its styled spans so transcript attributes cannot bleed into the overlay.
   `Ctrl+C` remains global so every overlay can be escaped by terminating the
   client.
+- **Overlay rows never wrap.** The model, agent, and session overlays compute
+  their visible window as a fixed number of rows per entry, so they render by
+  rows and cut each row to the width with `text_hygiene.fit_tail` first. A
+  wrapped row would spend the next entry's rows and push the selection or the
+  footer past the clip.
 - **Session replacement is fail-preserving.** Resolution, optional daemon
   startup, and websocket startup run as one `weft` task under
   `weft.start_detached` with a 90-second deadline; the terminal pulls its

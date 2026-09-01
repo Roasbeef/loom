@@ -521,6 +521,19 @@ same way. The stale-record switch itself behaved: the old session stayed on
 screen with an `opening session` notice, the worker cold-started a daemon,
 and the terminal adopted the replacement with its model catalogue loaded.
 
+Branch `tui/overlay-path-deadline-hardening`, stacked on the switcher, takes
+the three pre-existing findings the review pass surfaced. The model selector
+and agent inspector had the same wrap-inside-row-arithmetic shape and now
+render by rows with `text_hygiene.fit_tail`, which moved there from the
+session selector. The Erlang shim converted every path with `binary_to_list`,
+which double-encodes UTF-8, so a `HOME` or workspace with an accent broke the
+launcher; it now converts with `unicode:characters_to_list`, and a new
+`ffi_path_test` drives the externals through a `café-é` fixture. And every
+elapsed-time deadline in bootstrap moved from the wall clock to
+`monotonic_time_ms`. Two paths there, adopting another launcher's starting
+record and re-probing a live ready record, are converted by reading only:
+no test reaches them without a second concurrent launcher.
+
 The bounded limits are deliberate: automatic startup is macOS/Linux only;
 trusted `loom.toml` configuration and manually managed servers use explicit
 attachment; there is no daemon status/shutdown/upgrade protocol or automatic
