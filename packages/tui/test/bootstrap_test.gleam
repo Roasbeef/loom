@@ -67,6 +67,13 @@ pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
   assert !list.contains(arguments, "--config")
 }
 
+pub fn implicit_path_discovery_ignores_relative_entries_test() {
+  assert bootstrap.installed_path_candidates(
+      "bin:/opt/loom/bin::../tools:/usr/local/bin",
+    )
+    == ["/opt/loom/bin/loomd", "/usr/local/bin/loomd"]
+}
+
 pub fn private_file_round_trip_is_bounded_test() {
   let root = test_root("private-file")
   let path = filepath.join(root, "record")
@@ -90,6 +97,28 @@ pub fn launch_lock_is_single_winner_test() {
   ffi_bootstrap.release_launch_lock(first)
   let assert Ok(second) = ffi_bootstrap.try_launch_lock(path)
   ffi_bootstrap.release_launch_lock(second)
+  let _ = simplifile.delete(root)
+}
+
+pub fn launch_lock_is_released_when_its_owner_dies_test() {
+  let root = test_root("launch-lock-owner-death")
+  let path = filepath.join(root, "session.lock")
+  let ready = process.new_subject()
+  let parked = process.new_subject()
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let holder =
+    process.spawn_unlinked(fn() {
+      let assert Ok(lock) = ffi_bootstrap.try_launch_lock(path)
+      process.send(ready, Nil)
+      let _ = process.receive(parked, 5000)
+      ffi_bootstrap.release_launch_lock(lock)
+    })
+  let assert Ok(Nil) = process.receive(ready, 1000)
+  assert ffi_bootstrap.try_launch_lock(path) == Error("busy")
+  process.kill(holder)
+  let assert Ok(recovered) = acquire_lock_eventually(path, 20)
+  ffi_bootstrap.release_launch_lock(recovered)
   let _ = simplifile.delete(root)
 }
 
@@ -123,24 +152,59 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let session_directory = filepath.join(root, "session")
   let session = filepath.join(session_directory, "multi.part.db")
   let state = filepath.join(root, "state")
+  let other_workspace = filepath.join(root, "other-workspace")
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(other_workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(session_directory)
   let options = bootstrap.Options(workspace, session, server, state)
-  let assert Ok(first) = bootstrap.resolve(options)
-  process.sleep(100)
-  let assert Ok(second) = bootstrap.resolve(options)
+  let answers = process.new_subject()
+  list.each([1, 2], fn(_) {
+    process.spawn_unlinked(fn() {
+      process.send(answers, bootstrap.resolve(options))
+    })
+  })
+  let assert Ok(Ok(first)) = process.receive(answers, 40_000)
+  let assert Ok(Ok(second)) = process.receive(answers, 40_000)
   assert first.address == second.address
   assert first.session == "multi"
   assert first.session == second.session
   assert first.token == second.token
   let assert Ok(pid) = endpoint_pid(state)
+  let assert Ok(token_file) = endpoint_string(state, "token_file")
+  let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
+  assert string.starts_with(
+    token_file,
+    filepath.join(canonical_state, "tokens") <> "/",
+  )
+  let incompatible =
+    bootstrap.resolve(bootstrap.Options(other_workspace, session, server, state))
+  let assert Error(reason) = incompatible
+  assert string.contains(reason, "cached endpoint is incompatible")
+  let assert Ok(preserved_pid) = endpoint_pid(state)
+  assert preserved_pid == pid
+  let assert Ok(third) = bootstrap.resolve(options)
+  assert third.address == first.address
   let assert Ok(identity) = ffi_bootstrap.process_identity(pid)
   assert ffi_bootstrap.process_identity(pid) == Ok(identity)
   ffi_bootstrap.terminate_process_group(pid)
   assert_process_stops(pid, 20)
   let _ = simplifile.delete(root)
   Nil
+}
+
+fn acquire_lock_eventually(
+  path: String,
+  attempts: Int,
+) -> Result(ffi_bootstrap.LaunchLock, String) {
+  case ffi_bootstrap.try_launch_lock(path), attempts {
+    Ok(lock), _ -> Ok(lock)
+    Error("busy"), attempts if attempts > 0 -> {
+      process.sleep(25)
+      acquire_lock_eventually(path, attempts - 1)
+    }
+    Error(reason), _ -> Error(reason)
+  }
 }
 
 fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
@@ -155,6 +219,24 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
 }
 
 fn endpoint_pid(state: String) -> Result(Int, String) {
+  use fields <- result.try(endpoint_fields(state))
+  case list.key_find(fields, "server_pid") {
+    Ok(json.Int(pid)) -> Ok(pid)
+    _ -> Error("endpoint record has no server pid")
+  }
+}
+
+fn endpoint_string(state: String, key: String) -> Result(String, String) {
+  use fields <- result.try(endpoint_fields(state))
+  case list.key_find(fields, key) {
+    Ok(json.String(value)) -> Ok(value)
+    _ -> Error("endpoint record has no " <> key)
+  }
+}
+
+fn endpoint_fields(
+  state: String,
+) -> Result(List(#(String, json.JsonValue)), String) {
   let directory = filepath.join(state, "endpoints")
   use names <- result.try(
     simplifile.read_directory(directory)
@@ -173,11 +255,7 @@ fn endpoint_pid(state: String) -> Result(Int, String) {
     |> result.map_error(fn(report) { report.expected }),
   )
   case value {
-    json.Object(fields) ->
-      case list.key_find(fields, "server_pid") {
-        Ok(json.Int(pid)) -> Ok(pid)
-        _ -> Error("endpoint record has no server pid")
-      }
+    json.Object(fields) -> Ok(fields)
     _ -> Error("endpoint record is not an object")
   }
 }

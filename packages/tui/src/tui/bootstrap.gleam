@@ -39,6 +39,8 @@ const max_token_bytes = 16_384
 
 const startup_log_tail_bytes = 4096
 
+const endpoint_future_skew_ms = 5000
+
 /// Local bootstrap overrides.
 ///
 /// Empty fields take the private per-user and per-workspace defaults. These
@@ -106,6 +108,12 @@ type Reuse {
   Replace
 }
 
+type ProcessMatch {
+  SameProcess
+  DifferentProcess
+  ProcessUnknown(String)
+}
+
 /// Resolves a compatible local server, starting one when necessary.
 ///
 /// A returned target has completed a real authenticated `subscribe` and named
@@ -143,9 +151,29 @@ fn resolve_locked(
             Replace -> start_server(options, workspace, paths)
           }
         }
-        False -> start_server(options, workspace, paths)
+        False ->
+          preserve_incompatible_or_start(endpoint, options, workspace, paths)
       }
     Error(_) -> start_server(options, workspace, paths)
+  }
+}
+
+fn preserve_incompatible_or_start(
+  endpoint: Endpoint,
+  options: Options,
+  workspace: String,
+  paths: Paths,
+) -> Result(Target, String) {
+  case match_process(endpoint.server_pid, endpoint.server_birth) {
+    DifferentProcess -> start_server(options, workspace, paths)
+    SameProcess ->
+      Error(
+        "the cached endpoint is incompatible, but loomd process "
+        <> int.to_string(endpoint.server_pid)
+        <> " is still alive; the record was preserved to avoid starting a competing session writer",
+      )
+    ProcessUnknown(reason) ->
+      Error(identity_unknown_message(endpoint.server_pid, reason))
   }
 }
 
@@ -159,9 +187,11 @@ fn reuse_endpoint(
       case endpoint.status {
         "starting" -> await_starting(endpoint, endpoint_path)
         "ready" ->
-          case process_matches(endpoint.server_pid, endpoint.server_birth) {
-            True -> await_live(endpoint)
-            False -> Ok(Replace)
+          case match_process(endpoint.server_pid, endpoint.server_birth) {
+            SameProcess -> await_live(endpoint)
+            DifferentProcess -> Ok(Replace)
+            ProcessUnknown(reason) ->
+              Error(identity_unknown_message(endpoint.server_pid, reason))
           }
         _ -> Ok(Replace)
       }
@@ -172,7 +202,20 @@ fn await_starting(
   endpoint: Endpoint,
   endpoint_path: String,
 ) -> Result(Reuse, String) {
-  let deadline = endpoint.started_at_ms + startup_timeout_ms
+  let now = ffi_bootstrap.system_time_ms()
+  let deadline =
+    int.min(
+      endpoint.started_at_ms + startup_timeout_ms,
+      now + startup_timeout_ms,
+    )
+  await_starting_until(endpoint, endpoint_path, deadline)
+}
+
+fn await_starting_until(
+  endpoint: Endpoint,
+  endpoint_path: String,
+  deadline: Int,
+) -> Result(Reuse, String) {
   case ffi_bootstrap.system_time_ms() < deadline {
     False -> abandoned_start(endpoint)
     True ->
@@ -187,27 +230,39 @@ fn await_starting(
           )
           Ok(Reused(target))
         }
-        Error(_) ->
-          case
-            endpoint.server_pid > 0
-            && !process_matches(endpoint.server_pid, endpoint.server_birth)
-          {
-            True -> Ok(Replace)
-            False -> {
-              process.sleep(startup_poll_ms)
-              await_starting(endpoint, endpoint_path)
-            }
-          }
+        Error(_) -> retry_starting(endpoint, endpoint_path, deadline)
       }
   }
 }
 
-fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
-  case
-    endpoint.server_pid > 0
-    && process_matches(endpoint.server_pid, endpoint.server_birth)
-  {
+fn retry_starting(
+  endpoint: Endpoint,
+  endpoint_path: String,
+  deadline: Int,
+) -> Result(Reuse, String) {
+  case endpoint.server_pid > 0 {
+    False -> sleep_before_starting_retry(endpoint, endpoint_path, deadline)
     True ->
+      case match_process(endpoint.server_pid, endpoint.server_birth) {
+        DifferentProcess -> Ok(Replace)
+        SameProcess | ProcessUnknown(_) ->
+          sleep_before_starting_retry(endpoint, endpoint_path, deadline)
+      }
+  }
+}
+
+fn sleep_before_starting_retry(
+  endpoint: Endpoint,
+  endpoint_path: String,
+  deadline: Int,
+) -> Result(Reuse, String) {
+  process.sleep(startup_poll_ms)
+  await_starting_until(endpoint, endpoint_path, deadline)
+}
+
+fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
+  case match_process(endpoint.server_pid, endpoint.server_birth) {
+    SameProcess ->
       Error(
         "loomd process "
         <> int.to_string(endpoint.server_pid)
@@ -215,7 +270,9 @@ fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
         <> endpoint.address
         <> log_tail(endpoint),
       )
-    False -> Ok(Replace)
+    DifferentProcess -> Ok(Replace)
+    ProcessUnknown(reason) ->
+      Error(identity_unknown_message(endpoint.server_pid, reason))
   }
 }
 
@@ -244,9 +301,9 @@ fn await_live_until(
       case probe(endpoint) {
         Ok(target) -> Ok(Reused(target))
         Error(_) ->
-          case process_matches(endpoint.server_pid, endpoint.server_birth) {
-            False -> Ok(Replace)
-            True -> {
+          case match_process(endpoint.server_pid, endpoint.server_birth) {
+            DifferentProcess -> Ok(Replace)
+            SameProcess | ProcessUnknown(_) -> {
               process.sleep(startup_poll_ms)
               await_live_until(endpoint, deadline)
             }
@@ -340,10 +397,10 @@ fn await_new_server(
           }
         }
         Error(_) ->
-          case process_matches(endpoint.server_pid, endpoint.server_birth) {
-            False ->
+          case match_process(endpoint.server_pid, endpoint.server_birth) {
+            DifferentProcess ->
               Error("loomd exited before readiness" <> log_tail(endpoint))
-            True -> {
+            SameProcess | ProcessUnknown(_) -> {
               process.sleep(startup_poll_ms)
               await_new_server(endpoint, started, deadline, endpoint_path)
             }
@@ -380,7 +437,26 @@ fn canonical_workspace(path: String) -> Result(String, String) {
 }
 
 fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
-  use state_directory <- result.try(state_directory(options.state_directory))
+  use unresolved_state <- result.try(state_directory(options.state_directory))
+  use Nil <- result.try(
+    ffi_bootstrap.ensure_private_directory(unresolved_state)
+    |> result.map_error(fn(reason) {
+      "prepare Loom state " <> unresolved_state <> ": " <> reason
+    }),
+  )
+  use state_directory <- result.try(
+    ffi_bootstrap.canonical_directory(unresolved_state)
+    |> result.map_error(fn(reason) { "resolve state directory: " <> reason }),
+  )
+  let default_session_directory = filepath.join(state_directory, "sessions")
+  use Nil <- result.try(case options.session_file {
+    "" ->
+      ffi_bootstrap.ensure_private_directory(default_session_directory)
+      |> result.map_error(fn(reason) {
+        "prepare Loom state " <> default_session_directory <> ": " <> reason
+      })
+    _ -> Ok(Nil)
+  })
   use session <- result.try(session_path(
     options.session_file,
     state_directory,
@@ -390,20 +466,17 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
   let endpoint_directory = filepath.join(state_directory, "endpoints")
   let log_directory = filepath.join(state_directory, "logs")
   let lock_directory = filepath.join(state_directory, "locks")
+  let token_directory = filepath.join(state_directory, "tokens")
   let private_directories = [
-    state_directory,
     endpoint_directory,
     log_directory,
     lock_directory,
-    ..case options.session_file {
-      "" -> [filepath.directory_name(session)]
-      _ -> []
-    }
+    token_directory,
   ]
   Ok(Paths(
     session:,
     endpoint: filepath.join(endpoint_directory, endpoint_key <> ".json"),
-    token: session <> ".token",
+    token: filepath.join(token_directory, endpoint_key <> ".token"),
     log: filepath.join(log_directory, endpoint_key <> ".log"),
     lock: filepath.join(lock_directory, endpoint_key <> ".lock"),
     private_directories:,
@@ -431,13 +504,32 @@ fn session_path(
 ) -> Result(String, String) {
   case override {
     "" ->
-      Ok(filepath.join(
+      canonical_session_path(filepath.join(
         filepath.join(state_directory, "sessions"),
         workspace_name(workspace) <> ".db",
       ))
-    path ->
-      ffi_bootstrap.absolute_path(path)
+    path -> canonical_session_path(path)
+  }
+}
+
+fn canonical_session_path(path: String) -> Result(String, String) {
+  use absolute <- result.try(
+    ffi_bootstrap.absolute_path(path)
+    |> result.map_error(fn(reason) { "resolve session file: " <> reason }),
+  )
+  case ffi_bootstrap.path_exists(absolute) {
+    True ->
+      ffi_bootstrap.canonical_path(absolute)
       |> result.map_error(fn(reason) { "resolve session file: " <> reason })
+    False -> {
+      use parent <- result.try(
+        ffi_bootstrap.canonical_directory(filepath.directory_name(absolute))
+        |> result.map_error(fn(reason) {
+          "resolve session directory: " <> reason
+        }),
+      )
+      Ok(filepath.join(parent, filepath.base_name(absolute)))
+    }
   }
 }
 
@@ -521,10 +613,12 @@ fn endpoint_matches(
   workspace: String,
   paths: Paths,
 ) -> Bool {
+  let now = ffi_bootstrap.system_time_ms()
   endpoint.version == endpoint_version
   && endpoint.gateway_protocol == gateway_protocol
   && { endpoint.status == "starting" || endpoint.status == "ready" }
   && endpoint.started_at_ms > 0
+  && endpoint.started_at_ms <= now + endpoint_future_skew_ms
   && endpoint.workspace == workspace
   && endpoint.session_file == paths.session
   && endpoint.session == session_id(paths.session)
@@ -700,15 +794,31 @@ fn find_configured_server() -> Result(String, String) {
 
 fn find_installed_server() -> Result(String, String) {
   let sibling_candidates = case ffi_bootstrap.getenv("LOOM_EXECUTABLE") {
-    Ok(executable) -> {
-      let directory = filepath.directory_name(executable)
-      [
-        filepath.join(directory, "loomd"),
-      ]
-    }
+    Ok(executable) ->
+      case string.starts_with(executable, "/") {
+        True -> [filepath.join(filepath.directory_name(executable), "loomd")]
+        False -> []
+      }
     Error(Nil) -> []
   }
-  find_first_server(list.append(sibling_candidates, ["loomd"]))
+  let path_candidates = case ffi_bootstrap.getenv("PATH") {
+    Ok(path) -> installed_path_candidates(path)
+    Error(Nil) -> []
+  }
+  find_first_server(list.append(sibling_candidates, path_candidates))
+}
+
+/// Expands only absolute PATH entries for implicit daemon discovery.
+///
+/// Relative entries resolve through the workspace and therefore cannot be
+/// implicit launch authority. Operators can still select any executable with
+/// `--server` or `LOOM_SERVER`.
+@internal
+pub fn installed_path_candidates(path: String) -> List(String) {
+  path
+  |> string.split(":")
+  |> list.filter(fn(directory) { string.starts_with(directory, "/") })
+  |> list.map(fn(directory) { filepath.join(directory, "loomd") })
 }
 
 fn find_first_server(candidates: List(String)) -> Result(String, String) {
@@ -789,11 +899,24 @@ pub fn launch_arguments(
   }
 }
 
-fn process_matches(pid: Int, birth: String) -> Bool {
+fn match_process(pid: Int, birth: String) -> ProcessMatch {
   case pid > 1 && birth != "" {
-    False -> False
-    True -> ffi_bootstrap.process_identity(pid) == Ok(birth)
+    False -> DifferentProcess
+    True ->
+      case ffi_bootstrap.process_identity(pid) {
+        Ok(current) if current == birth -> SameProcess
+        Ok(_) -> DifferentProcess
+        Error(reason) -> ProcessUnknown(reason)
+      }
   }
+}
+
+fn identity_unknown_message(pid: Int, reason: String) -> String {
+  "could not verify loomd process "
+  <> int.to_string(pid)
+  <> ": "
+  <> reason
+  <> "; the endpoint was preserved to avoid starting a competing session writer"
 }
 
 fn probe(endpoint: Endpoint) -> Result(Target, String) {

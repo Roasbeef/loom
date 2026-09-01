@@ -39,6 +39,17 @@ pub fn getenv(name: String) -> Result(String, Nil)
 @external(erlang, "tui_ffi", "canonical_directory")
 pub fn canonical_directory(path: String) -> Result(String, String)
 
+/// Resolves an existing path through every symbolic link.
+///
+/// This is a mechanical operating-system primitive. Bootstrap decides when an
+/// existing file or its parent directory is the identity-bearing object.
+@external(erlang, "tui_ffi", "canonical_path")
+pub fn canonical_path(path: String) -> Result(String, String)
+
+/// Reports whether a path entry exists without following its final link.
+@external(erlang, "tui_ffi", "path_exists")
+pub fn path_exists(path: String) -> Bool
+
 /// Resolves a path against the current working directory.
 ///
 /// Uses OTP `filename:absname/1`; the process working directory is ambient

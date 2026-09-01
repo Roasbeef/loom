@@ -4,7 +4,8 @@
 
 -export([read_prefix/2, read_bounded/2,
          system_time_ms/0, sha256/1, getenv/1,
-         canonical_directory/1, absolute_path/1,
+         canonical_directory/1, canonical_path/1, path_exists/1,
+         absolute_path/1,
          ensure_private_directory/1,
          try_launch_lock/1, release_launch_lock/1,
          read_regular_bounded/2, read_private_bounded/2,
@@ -113,6 +114,28 @@ canonical_directory(Path0) ->
             end
     end.
 
+canonical_path(PathBinary) ->
+    Path = filename:absname(binary_to_list(PathBinary)),
+    case realpath_executable() of
+        {error, _} = Error -> Error;
+        {ok, Realpath} ->
+            case run_capture(Realpath, [Path], 5000) of
+                {ok, Output} ->
+                    Resolved = string:trim(Output),
+                    case Resolved of
+                        <<>> -> {error, <<"realpath returned an empty path">>};
+                        _ -> {ok, Resolved}
+                    end;
+                {error, _} = Error -> Error
+            end
+    end.
+
+path_exists(PathBinary) ->
+    case file:read_link_info(binary_to_list(PathBinary), [{time, posix}]) of
+        {ok, _} -> true;
+        {error, _} -> false
+    end.
+
 absolute_path(Path) ->
     try
         {ok, unicode:characters_to_binary(
@@ -157,8 +180,8 @@ ensure_private_unix(PathBinary) ->
 try_launch_lock(PathBinary) ->
     Path = binary_to_list(PathBinary),
     case lock_command(Path) of
-        {error, _} = Error ->
-            Error;
+        {error, Reason} ->
+            {error, describe(Reason)};
         {ok, Executable, Arguments} ->
             try
                 Port = open_port(
@@ -171,10 +194,10 @@ try_launch_lock(PathBinary) ->
                     {Port, {exit_status, _Status}} -> {error, <<"busy">>}
                 after 1000 ->
                     _ = safe_port_close(Port),
-                    {error, lock_helper_did_not_settle}
+                    {error, describe(lock_helper_did_not_settle)}
                 end
             catch
-                Class:Reason -> {error, {Class, Reason}}
+                Class:Reason -> {error, describe({Class, Reason})}
             end
     end.
 
