@@ -385,6 +385,11 @@ fn resolve_outcome(
     // run that someday grows one of those stays exhaustively checked.
     weft.Abandoned(..) | weft.NeverStarted(..) ->
       Error(Refusal(server: configured.name, reason: "its bring-up never ran"))
+
+    // Likewise unreachable: only a managed task carries a drain proof to
+    // lose, and bring-up tasks are plain.
+    weft.DrainProofLost(..) | weft.CancellationUnconfirmed(..) ->
+      Error(Refusal(server: configured.name, reason: "its bring-up never ran"))
   }
 }
 
