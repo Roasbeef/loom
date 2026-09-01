@@ -417,6 +417,28 @@ pub fn failed_session_attempt_discards_queued_frames_test() {
   process.kill(worker)
 }
 
+pub fn crashed_session_worker_becomes_a_typed_result_test() {
+  let inbox = process.new_subject()
+  let frames = connection.new_inbox()
+  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let status =
+    sessions.Resolving(
+      session: "crashed",
+      worker:,
+      monitor: process.monitor(worker),
+      inbox:,
+      frames:,
+      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
+    )
+  process.send(frames, connection.Connected)
+  process.kill(worker)
+  let assert Ok(sessions.WorkerCrashed("crashed", reason)) =
+    wait_for_switch(status, 5000)
+    as "a killed worker should surface as a crash"
+  assert string.contains(reason, "Killed")
+  assert connection.receive(frames) == Error(Nil)
+}
+
 pub fn timed_out_session_attempt_discards_late_results_test() {
   let inbox = process.new_subject()
   let frames = connection.new_inbox()
