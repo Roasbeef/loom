@@ -684,12 +684,56 @@ and stopped; for an operator-only feature that example *is* the
 discovery surface, so it now covers both timings and both bounds, gated
 by tests the same way the rules half already was.
 
+**The operator-only cut has since been reversed, and the model can now
+schedule its own heartbeats.** `docs/design-notes/scheduled-heartbeats.md`
+carries the addendum with the whole argument; the short form is that the
+original ruling read as one argument and was really two. Waking an idle
+strand keeps a session working after everyone has gone home, which is the
+sharp case. Steering a run already open cannot extend liveness at all,
+because it holds when the strand is idle exactly as a triggered rule does.
+The middle position is built (`ModelSchedulesSteer`) and is not the
+default, because a heartbeat that can only steer an open run never fires
+when a heartbeat is for. The default is `ModelSchedulesWake` — open — and
+what makes that defensible is the guardrail the original ruling already
+identified as what made operator `wake = true` safe, applied unchanged to
+a model: every recurring schedule expires on both bounds with the earlier
+winning, and no model-created schedule can raise either.
+
+It is reachable two ways, over one implementation
+(`client/scheduleseam.Door`): the `schedule_create`/`schedule_list`/
+`schedule_cancel` tools, and the `schedule.*` code-mode capabilities
+behind `cap/schedule`. Either door can cancel what the other created. A
+schedule always targets the strand that created it — there is no `target`
+argument on either door, and for code mode the strand is bound host-side
+from the request and never travels over the cap channel.
+
+Three things are deliberately still not built. **Scheduling on behalf of a
+subagent** is the obvious next increment and the case the original ruling
+named as motivating `wake`: a parent extending a child's liveness, which
+it already controls, is a defensible argument nobody has written down, and
+it needs a lineage check. **The escalation-gated grant** the original note
+proposed was dropped on measurement rather than taste — `gateway.attached`
+answers zero when nobody is watching and the seam settles as a refusal, so
+a model could only get a schedule approved while someone was present,
+which is exactly when a heartbeat is least needed. And **`cap/schedule` is
+on the workspace seam only**, because the intersection of the two seams'
+allowlists is a confinement property a test asserts, and widening it from
+one module to two costs a real guarantee.
+
 The live check is worth repeating on any change here: point a
-`[[schedule]]` at a scratch session and watch it fire in the TUI. An
-`every = "60s"` schedule fires at boot and again on the next boundary; a
-one-shot fires at its instant with no late annotation. `wake = true`
-opens a fresh run on an idle strand with nobody at the keyboard, which
-is the whole feature and the only part no unit test can show you.
+`[[schedule]]` at a scratch session and watch it fire in the TUI, or ask
+the model to call `schedule_create` and watch the same thing happen with
+nobody having configured anything. An `every = "60s"` schedule fires at
+boot and again on the next boundary; a one-shot fires at its instant with
+no late annotation. `wake = true` opens a fresh run on an idle strand with
+nobody at the keyboard, which is the whole feature and the only part no
+unit test can show you. Both were run against a real Baseten model on this
+branch, not only against the fake provider.
+
+One CI note for whoever picks this up: `soak (200 seeds)` is **red on
+`main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
+pass locally on this branch. Do not read that failure as this branch's.
+`gate (linux)`, `gate (macos)` and `jail (linux)` all pass.
 
 ---
 
