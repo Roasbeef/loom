@@ -154,7 +154,7 @@ Ranked by LOC-reduction-per-risk:
 ### Tier 3 — biggest LOC, needs a spike first
 
 7. **`provider/gateway.guard_request`/`guard_cancelling` →
-   `weft/state_machine`** (`gateway.gleam:495-770`, ~276 lines) and
+   `weft/state_machine`** (`provider/gateway.gleam:495-770`, ~276 lines) and
 8. **`client/provider_relay` four-state forward/cancel guard**
    (`provider_relay.gleam:314-669`, ~320 lines, the same grace-timer arm
    copied at three sites). Both are the README's `Connecting`/`Backoff`
@@ -177,7 +177,7 @@ Ranked by LOC-reduction-per-risk:
    adopt blindly.
 
 9. **`client/mcp.start` server bring-up → `weft.start` + `partition`**
-   (`mcp.gleam:299-324`, ~30 lines). Today each server handshake blocks
+   (`client/mcp.gleam:299-324`, ~30 lines). Today each server handshake blocks
    the next, so N misconfigured servers pay their timeouts serially at
    boot. `weft.start` returns outcomes in input order, so the documented
    "in catalogue order" contract holds; verify nothing depends on
