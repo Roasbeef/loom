@@ -728,7 +728,7 @@ pub fn discover(seed_root: String) -> Result(Toolchain, String) {
     "gleam",
     beside: install.gleam_compiler(),
     remedy: "code mode compiles the model's program with it, so put `gleam` "
-      <> "(>= 1.18) on PATH, or run the `bin/loom` of a release built with "
+      <> "(>= 1.18) on PATH, or run the `bin/loomd` of a release built with "
       <> "the code-mode bundle, which ships one",
   ))
   use erl_path <- result.try(locate(

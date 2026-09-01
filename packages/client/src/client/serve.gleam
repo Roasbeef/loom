@@ -1,6 +1,6 @@
 //// The session server: the production host the wiring adapter was
 //// promoted for. `gleam run -m client/serve -- --session path.db`
-//// (or the erlang shipment's `bin/loom-server`) opens or creates one
+//// (or the erlang shipment's `bin/loomd`) opens or creates one
 //// SQLite session, stands up the whole stack over it — helper pool,
 //// ToolBroker, tool registry, provider gateway, runtime with the
 //// `client/wiring` effects, gateway hub, and the `client/server`
@@ -126,7 +126,7 @@
 ////   listener is closed and the session lease is released, not left to
 ////   its sixty-second TTL — and only then reports what died. `main`
 ////   prints it and exits 1, leaving the restart to whatever runs
-////   `loom-server`.
+////   `loomd`.
 ////
 //// Either way `shutdown` is the same path, front to back: listener,
 //// then the service supervisor, then the runtime (whose close stops the
@@ -384,7 +384,7 @@ pub fn main() -> Nil {
     // A flag error is a message to a human at a terminal, and it carries
     // the usage text: stderr, not the log stream.
     Error(reason) -> {
-      io.println_error("loom-server: " <> reason)
+      io.println_error("loomd: " <> reason)
       ffi_os.halt(1)
     }
     Ok(settings) -> run_server(settings, logger)
@@ -437,7 +437,7 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
 
     // The host already tore the stack down, lease included, before it
     // said anything. All that is left is to say what died and exit
-    // nonzero so whatever runs `loom-server` restarts it.
+    // nonzero so whatever runs `loomd` restarts it.
     host.Faulted(child:, reason:) -> {
       log.error(logger, "server.faulted", [
         field.text(key: "child", value: child),
@@ -456,7 +456,7 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
 // record; the one fact they share is the port.
 fn announce(booted: Booted) -> Nil {
   io.println(
-    "loom-server: session "
+    "loomd: session "
     <> booted.session_id
     <> " listening on ws://"
     <> booted.bind_host
@@ -470,7 +470,7 @@ fn announce(booted: Booted) -> Nil {
   // The digest is what makes a cache miss attributable: a changed head
   // is either a prompt change, which this line names, or a bug.
   io.println(
-    "loom-server: system prompt "
+    "loomd: system prompt "
     <> system_prompt.named(booted.prompt.origin)
     <> ", digest "
     <> booted.prompt.digest,
@@ -539,7 +539,7 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   }
 }
 
-const usage = "usage: loom-server --session <path.db>
+const usage = "usage: loomd --session <path.db>
   [--bind <host:port>]     listen interface (default 127.0.0.1:0)
   [--token-file <path>]    bearer token file (default <session>.token)
   [--workspace <dir>]      workspace root (default the current directory)
@@ -890,7 +890,7 @@ fn no_helper_anywhere() -> String {
   <> ", then on PATH, then at "
   <> repo_helper
   <> ". Supply one with --helper <path>, build one from a checkout with "
-  <> "`make binaries`, or run the `bin/loom` of an unpacked release, "
+  <> "`make binaries`, or run the `bin/loomd` of an unpacked release, "
   <> "which ships its own."
 }
 
@@ -1260,7 +1260,7 @@ fn assemble(
   use opened <- result.try(
     session.open_sqlite(
       path: settings.session_path,
-      owner: "loom-server",
+      owner: "loomd",
       lease_ttl_ms: 60_000,
       clock:,
     )

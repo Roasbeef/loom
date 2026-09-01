@@ -106,7 +106,7 @@ pub fn a_leased_source_is_skipped_test() {
   let assert Ok(live) =
     session.open_sqlite(
       path: root <> "/live.db",
-      owner: "loom-server",
+      owner: "loomd",
       lease_ttl_ms: 60_000,
       clock: a_clock(),
     )

@@ -151,11 +151,11 @@ fn prerequisites() -> Result(Ready, String) {
   use tmux <- result.try(terminal.available())
   use gleam <- result.try(
     ffi_proc.which("gleam")
-    |> result.replace_error("gleam is not on PATH, so loom-tui cannot be built"),
+    |> result.replace_error("gleam is not on PATH, so loom cannot be built"),
   )
   use _erl <- result.try(
     ffi_proc.which("erl")
-    |> result.replace_error("erl is not on PATH, so loom-tui cannot run"),
+    |> result.replace_error("erl is not on PATH, so loom cannot run"),
   )
   use workdir <- result.try(
     simplifile.current_directory()
@@ -166,7 +166,7 @@ fn prerequisites() -> Result(Ready, String) {
 }
 
 fn build_tui(gleam: String, workdir: String) -> Result(String, String) {
-  let out = workdir <> "/" <> root <> "/loom-tui"
+  let out = workdir <> "/" <> root <> "/loom"
   let assert Ok(Nil) = simplifile.create_directory_all(workdir <> "/" <> root)
     as "the end-to-end's build directory must exist"
   case
@@ -359,7 +359,7 @@ fn drive(ready: Ready) -> Nil {
 
 // --- the terminal ----------------------------------------------------------
 
-const socket = "loom-tui-e2e"
+const socket = "loom-e2e"
 
 const tmux_session = "loom"
 

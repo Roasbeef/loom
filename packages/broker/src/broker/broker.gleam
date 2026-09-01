@@ -309,7 +309,7 @@ type State {
     // abort-on-every-teardown — the only production caller of `abort` —
     // costs one entry per operation that ran code mode at all, however
     // many times it ran it. An entry measures ~110 bytes, and the
-    // broker's lifetime is exactly one `loom-server` process serving
+    // broker's lifetime is exactly one `loomd` process serving
     // one session (its death is fatal to the server; nothing restarts
     // it), so ten thousand such operations in a session hold about a
     // megabyte — against a conversation store that has committed

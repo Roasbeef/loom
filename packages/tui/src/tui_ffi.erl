@@ -280,7 +280,7 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
             [binary, exit_status, use_stdio, hide,
              {cd, Working},
              {env, [{"LOOM_LOG", Log}]},
-             {args, ["-c", Script, "loom-server", Executable | Arguments]}]
+             {args, ["-c", Script, "loomd", Executable | Arguments]}]
         ),
         case erlang:port_info(Port, os_pid) of
             {os_pid, Pid} -> {ok, {Port, Pid}};

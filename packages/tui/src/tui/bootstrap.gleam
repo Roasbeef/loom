@@ -209,7 +209,7 @@ fn abandoned_start(endpoint: Endpoint) -> Result(Reuse, String) {
   {
     True ->
       Error(
-        "loom-server process "
+        "loomd process "
         <> int.to_string(endpoint.server_pid)
         <> " is alive but did not become ready at "
         <> endpoint.address
@@ -233,7 +233,7 @@ fn await_live_until(
   case ffi_bootstrap.system_time_ms() < deadline {
     False ->
       Error(
-        "loom-server process "
+        "loomd process "
         <> int.to_string(endpoint.server_pid)
         <> " is still alive but its authenticated gateway did not answer at "
         <> endpoint.address
@@ -290,7 +290,7 @@ fn start_server(
   case ffi_bootstrap.process_identity(pid) {
     Error(reason) -> {
       stop_started(StartedProcess(process:, pid:))
-      Error("identify loom-server process: " <> reason)
+      Error("identify loomd process: " <> reason)
     }
     Ok(server_birth) -> {
       let endpoint = Endpoint(..endpoint, server_pid: pid, server_birth:)
@@ -321,7 +321,7 @@ fn await_new_server(
     False -> {
       stop_started(started)
       Error(
-        "timed out waiting for loom-server at "
+        "timed out waiting for loomd at "
         <> endpoint.address
         <> log_tail(endpoint),
       )
@@ -342,7 +342,7 @@ fn await_new_server(
         Error(_) ->
           case process_matches(endpoint.server_pid, endpoint.server_birth) {
             False ->
-              Error("loom-server exited before readiness" <> log_tail(endpoint))
+              Error("loomd exited before readiness" <> log_tail(endpoint))
             True -> {
               process.sleep(startup_poll_ms)
               await_new_server(endpoint, started, deadline, endpoint_path)
@@ -699,24 +699,23 @@ fn find_configured_server() -> Result(String, String) {
 }
 
 fn find_installed_server() -> Result(String, String) {
-  let sibling_candidates = case ffi_bootstrap.getenv("LOOM_TUI_EXECUTABLE") {
+  let sibling_candidates = case ffi_bootstrap.getenv("LOOM_EXECUTABLE") {
     Ok(executable) -> {
       let directory = filepath.directory_name(executable)
       [
-        filepath.join(directory, "loom-server"),
-        filepath.join(directory, "loom"),
+        filepath.join(directory, "loomd"),
       ]
     }
     Error(Nil) -> []
   }
-  find_first_server(list.append(sibling_candidates, ["loom-server"]))
+  find_first_server(list.append(sibling_candidates, ["loomd"]))
 }
 
 fn find_first_server(candidates: List(String)) -> Result(String, String) {
   case candidates {
     [] ->
       Error(
-        "loom-server was not found; install it beside loom-tui, put it on PATH, or pass --server <path>",
+        "loomd was not found; install it beside loom, put it on PATH, or pass --server <path>",
       )
     [candidate, ..rest] ->
       case ffi_bootstrap.find_executable(candidate) {
@@ -737,7 +736,7 @@ fn spawn(endpoint: Endpoint, server: String) -> Result(StartedProcess, String) {
   |> result.map(fn(started) {
     StartedProcess(process: started.0, pid: started.1)
   })
-  |> result.map_error(fn(reason) { "start loom-server: " <> reason })
+  |> result.map_error(fn(reason) { "start loomd: " <> reason })
 }
 
 fn stop_started(started: StartedProcess) -> Nil {

@@ -171,7 +171,7 @@ type Model {
 /// ## Examples
 ///
 /// ```sh
-/// gleam run -- --addr ws://127.0.0.1:8080/v1/ws --session demo
+/// loom --addr ws://127.0.0.1:8080/v1/ws --session demo
 /// ```
 pub fn main() {
   let inbox = connection.new_inbox()
@@ -335,9 +335,9 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 }
 
 fn launch_usage() -> String {
-  "usage: tui [--workspace <path>] [--session-file <path>] "
+  "usage: loom [--workspace <path>] [--session-file <path>] "
   <> "[--server <path>] [--state-dir <path>]\n"
-  <> "       tui --addr <websocket-url> --session <id> "
+  <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
 }
 

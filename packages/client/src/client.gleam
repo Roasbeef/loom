@@ -1,5 +1,5 @@
 //// The package entry point. `gleam run` on this package — and the
-//// erlang shipment's `entrypoint.sh run`, which is what `bin/loom-server`
+//// erlang shipment's `entrypoint.sh run`, which is what `bin/loomd`
 //// execs — starts the session server. Everything real lives in
 //// `client/serve`; this module exists because both runners call the
 //// module named after the package.
@@ -12,7 +12,7 @@ import client/serve
 /// ## Examples
 ///
 /// ```gleam
-/// // bin/loom-server --session ./loom.db
+/// // bin/loomd --session ./loom.db
 /// ```
 ///
 pub fn main() -> Nil {
