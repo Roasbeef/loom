@@ -736,6 +736,20 @@ nobody at the keyboard, which is the whole feature and the only part no
 unit test can show you. Both were run against a real Baseten model on this
 branch, not only against the fake provider.
 
+A Fable adversarial review ran over the whole branch after the reversal
+landed (the original PR's review predates every model-facing change).
+Three findings are fixed in `edb005b`: a timer chain leaked per `poke`,
+an unbounded timer delay that killed the scanner silently, and an
+`injection` that attributed model-written bodies to the operator. Four
+are filed — **#161** (a model can chain wake-schedules indefinitely;
+expiry is per-schedule, not per-session, and the design note's original
+claim to the contrary is corrected in place), **#162** (concurrent
+`schedule.create` through code mode), **#163** (settled-subagent
+schedules), **#164** (tombstone growth). #161 is the one that matters
+before merge: it does not break any property the code tests, but it does
+mean the open default rests on a narrower argument than the note first
+made.
+
 One CI note for whoever picks this up: `soak (200 seeds)` is **red on
 `main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
 pass locally on this branch (exit 0), as does the 101..150 band CI names.

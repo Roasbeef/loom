@@ -352,8 +352,29 @@ feared.
 An operator who wants the strong property has `ModelSchedulesSteer`,
 under which no model-created schedule can wake an idle strand at all, and
 `ModelSchedulesOff`. Whether the *default* should remain
-`ModelSchedulesWake` given the chaining hole is a live question and is
-tracked as its own issue rather than silently settled here.
+`ModelSchedulesWake` given the chaining hole is a live question, tracked
+as **issue #161** rather than silently settled here.
+
+### The rest of what that review found
+
+Three findings were fixed on the branch: the scanner leaked a timer chain
+per `poke`, an unbounded timer delay could kill the scanner silently, and
+`injection` told every fire it was operator configuration including ones
+the model wrote. Four were filed rather than fixed, because each needs a
+decision or new mechanism rather than a correction:
+
+- **#161** — the chaining hole above, and whether the default survives it.
+- **#162** — concurrent `schedule.create` through the *code-mode* door can
+  double-create and over-admit. The "Exclusive, one batch at a time"
+  argument in `client/scheduleseam`'s doc covers the tool door only;
+  `ServedHere` plans run on their own processes.
+- **#163** — schedules on a settled subagent strand are uncancellable,
+  burn the session ceiling, and with `wake = true` re-open runs on that
+  settled strand. The inverse of the ownership question #154 is waiting
+  on: we refused to let a parent schedule onto a child, and a child can
+  schedule onto itself indefinitely.
+- **#164** — cancellation tombstones grow the config prefix without
+  bound, and every tick and every seam call reads the whole prefix.
 
 ### What this cost, and what is still not built
 
