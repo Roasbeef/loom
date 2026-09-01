@@ -71,6 +71,17 @@ extended by the M3 runtime wave.
   restartable registry and is a significant temporary child: only a normal
   reaper `Down` retires a generation, while an abnormal `Down` kills the ledger
   and stops the session instead of inventing an empty ownership history.
+- `runtime/internal/provider_custodian.Prepared` — one provider request as a
+  parked owner plus the one-way `begin` permit that releases it. The worker
+  behind it is a `weft/state_machine`, `Parked → Forwarding → Cancelling →
+  Draining` over data that is `Awaiting` before the permit and `Serving`
+  after it. `Parked` selects only the permit and the custodian's stop; the
+  step that grants the permit installs the real selector with
+  `sm.with_selector`, because the inner stream's events subject is created
+  by that handler and must be delivered to this process. Its cancellation
+  grace is the `Cancelling` state's **state timeout**, so it is armed by the
+  move in, cancelled by the move out, and never re-armed by the `keep` that
+  every late delta produces.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
@@ -178,7 +189,9 @@ extended by the M3 runtime wave.
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
   about), `gleam_erlang`, `gleam_otp`, `weft` (the strand driver is a
   `weft/actor`, adopted for `continuing` — the recovery barrier as a
-  guaranteed-first message; see loom#159 for the adoption plan).
+  guaranteed-first message; the parked provider request worker is a
+  `weft/state_machine`, adopted for the state timeout that *is* the
+  cancellation grace; see loom#159 for the adoption plan).
 - **Depended on by**: `client` (the gateway dispatches protocol commands
   onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
@@ -318,7 +331,9 @@ extended by the M3 runtime wave.
   scope's exit reason abnormal. The parked worker is linked to the provider
   effect because they are one failure domain: an unexpected surface crash must
   still fault the effect and recover, not become a fabricated provider
-  response. Production surfaces return a `PreparedStream`: the worker
+  response. That worker is a `weft/state_machine`, started with a plain linked
+  `sm.start` from the effect, so the link is weft's rather than something this
+  module arranges. Production surfaces return a `PreparedStream`: the worker
   publishes its parked owner to the reaper before granting the begin permit,
   so a rejected publication cannot leave unowned provider work. Immediate
   `ProviderSurface` values remain only for in-memory fakes with no external
