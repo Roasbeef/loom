@@ -23,6 +23,8 @@ server only when no compatible endpoint exists. Concurrent launchers share an
 operating-system lock, and the server survives terminal exit so later clients
 reuse the same session. Workspace content is data, not launch authority: this
 path neither loads `loom.toml` nor runs the server from the repository.
+Implicit daemon discovery ignores relative `PATH` entries, and bearer tokens
+stay below the private state root even when `--session-file` points elsewhere.
 
 ## One model owns the terminal
 

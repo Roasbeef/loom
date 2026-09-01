@@ -261,11 +261,12 @@ self-contained and still needs no host Erlang installation.
 
 When both downloads are installed on one machine, `loom` can start a local
 server as a convenience. It finds a sibling `loomd`, an explicit `--server` or
-`LOOM_SERVER`, or `loomd` on `PATH`, then attaches over the same loopback
-websocket an explicit client would use. It neither
-loads a workspace `loom.toml` nor uses the workspace as the server's working
-directory, because both surfaces can select host-side processes. Nothing is
-linked or bundled together: a remote
+`LOOM_SERVER`, or `loomd` through an absolute directory on `PATH`, then attaches
+over the same loopback websocket an explicit client would use. Relative `PATH`
+entries are ignored because they would make the workspace launch authority. It
+neither loads a workspace `loom.toml` nor uses the workspace as the server's
+working directory, because both surfaces can select host-side processes.
+Nothing is linked or bundled together: a remote
 client still carries no server runtime, a headless server still carries no
 terminal, and `--addr` remains the attachment path between machines.
 

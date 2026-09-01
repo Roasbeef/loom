@@ -554,8 +554,10 @@ session snapshot. `--workspace`, `--session-file`, `--server`, and
 `--state-dir` override those local defaults; `LOOM_SERVER` is the environment
 form of `--server`. The convenience path never loads a workspace `loom.toml`
 or runs the server from the workspace, because neither repository content nor
-its configuration is trusted launch authority. Explicit `--addr` attachment
-continues to handle remote or manually configured servers.
+its configuration is trusted launch authority. It ignores relative `PATH`
+entries during implicit daemon discovery and keeps its bearer token under the
+private state root. Explicit `--addr` attachment continues to handle remote or
+manually configured servers.
 
 `loom --demo` renders a self-contained preview from a canned local model —
 no server, no network, a fine first thing to try.

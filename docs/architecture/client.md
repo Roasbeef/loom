@@ -509,11 +509,12 @@ strand's fragments and becomes the sole transcript authority. Model-authored
 terminal controls are replaced before Mork or etui sees them; source blocks
 retain their bytes and indentation without executing ANSI or HTML.
 
-`loom --demo` runs a canned local model without a server or network. A live
-client requires `--addr`, `--session`, and `--token-file` or `--token`. The
-release is a separate Erlang shipment rather than part of the server archive.
-It does not carry a second ERTS, so the terminal host needs compatible
-Erlang/OTP 29 on `PATH`.
+`loom --demo` runs a canned local model without a server or network. Plain
+`loom` resolves the private session for the current workspace and starts or
+reuses `loomd`. Manual attachment instead requires `--addr`, `--session`, and
+`--token-file` or `--token`. The release is a separate Erlang shipment rather
+than part of the server archive. It does not carry a second ERTS, so the
+terminal host needs compatible Erlang/OTP 29 on `PATH`.
 
 Two protocol behaviors remain deliberately incomplete. Pending escalations are
 visible, but the native client does not yet send protocol-change/007's exact

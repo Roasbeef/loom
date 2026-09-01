@@ -130,9 +130,12 @@ that tree separately from the self-contained server.
   records can be replaced without treating a reused pid as the old server.
 - **Repositories do not choose host processes.** Automatic startup neither
   loads a workspace `loom.toml` nor uses the workspace as its working
-  directory. It pins an executable sibling `loom-exec` when available and
-  otherwise follows the server's trusted installation lookup from private
-  state.
+  directory. Implicit daemon lookup accepts only a sibling install or absolute
+  `PATH` entries, and it pins an executable sibling `loom-exec` when available.
+- **Launcher secrets stay under launcher authority.** Session and state paths
+  are canonical before their endpoint key and kernel lock are chosen. The
+  bearer token always lives under the private state root, even when an explicit
+  session database lives in the workspace.
 - **FFI stays mechanical.** The Erlang shim may expose platform primitives,
   but branching policy and state transitions belong in readable, testable
   Gleam. New compound behavior should first be decomposed into the smallest
