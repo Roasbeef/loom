@@ -107,6 +107,14 @@ protocol (spec Part 1.4). WP-G.
     weft's timer book. `HeartbeatTick` stays a hand-rolled
     `process.send_after`: it must fire every N ms regardless of activity,
     which none of weft's three timeout kinds says.
+    An `AwaitReady` asked during `AwaitingHello` is parked with weft's
+    `postpone` rather than a hand-rolled list: the `AwaitingHello,
+    AwaitReady` arm answers `keep(data) |> postpone`, and weft replays
+    the event, in arrival order, exactly once, on the next change of
+    state — the hello's move to `Idle` or a death's move to `Dead` —
+    where the ordinary `Idle`/`Running`/`Cancelling` and `Dead` arms
+    answer it with that state's outcome. No queue is threaded through
+    `Data`, and no settle site has to remember to flush one.
     A state's payload is immutable for the life of that state. A state
     timeout dies only on a move to a state that compares *unequal*, so
     per-frame bookkeeping (the deframer, the id counter,
