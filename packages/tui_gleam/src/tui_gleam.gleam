@@ -42,6 +42,7 @@ import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
 import tui_gleam/text_hygiene
 import tui_gleam/theme
+import tui_gleam/workspace
 
 type Speaker {
   System
@@ -91,10 +92,22 @@ type Interrupt {
   Interrupt(strand: String, pending: Option(String))
 }
 
-// Twenty frames per second keeps streamed text and keyboard response below a
-// perceptible terminal delay while avoiding sixty full buffer diffs per second
-// when the websocket inbox is idle.
-const terminal_poll_ms = 50
+// Recent terminal or websocket activity keeps input and stream latency below a
+// perceptible delay. After a quiet window, the loop backs off so reading a
+// completed response does not keep waking and rebuilding the terminal.
+const active_poll_ms = 40
+
+const quiet_poll_ms = 400
+
+const quiet_after_ms = 320
+
+type FrameCache {
+  FrameCache(
+    screen: Rect,
+    revision: Int,
+    rendered: #(buffer.Buffer, Result(geometry.Position, Nil)),
+  )
+}
 
 type Model {
   Model(
@@ -118,7 +131,9 @@ type Model {
     overlay: Overlay,
     models: List(protocol.ModelInfo),
     current_model: String,
+    workspace: workspace.Context,
     strands: List(protocol.Strand),
+    agent_summary: String,
     active_strand: String,
     session: String,
     inbox: Subject(connection.Message),
@@ -141,6 +156,10 @@ type Model {
     record_cache_width: Int,
     record_cache_strand: String,
     record_cache_details: Bool,
+    frame_revision: Int,
+    frame_cache: Option(FrameCache),
+    activity_revision: Int,
+    quiet_for_ms: Int,
   )
 }
 
@@ -153,6 +172,8 @@ type Model {
 /// ```
 pub fn main() {
   let inbox = connection.new_inbox()
+  let project = workspace.discover()
+  let strands = demo_strands()
   let base =
     Model(
       quit: False,
@@ -186,7 +207,9 @@ pub fn main() {
       overlay: NoOverlay,
       models: demo_models(),
       current_model: "baseten-kimi-k3",
-      strands: demo_strands(),
+      workspace: project,
+      strands:,
+      agent_summary: agents.summary(strands),
       active_strand: "main",
       session: "demo",
       inbox:,
@@ -209,6 +232,10 @@ pub fn main() {
       record_cache_width: 0,
       record_cache_strand: "",
       record_cache_details: False,
+      frame_revision: 0,
+      frame_cache: None,
+      activity_revision: 0,
+      quiet_for_ms: quiet_after_ms,
     )
   let initial = case parse_launch(argv.load().arguments) {
     Demo -> base
@@ -218,7 +245,12 @@ pub fn main() {
       case connection.connect(address, token, inbox) {
         Error(reason) ->
           append_error(
-            Model(..base, session:, strands: []),
+            Model(
+              ..base,
+              session:,
+              strands: [],
+              agent_summary: agents.summary([]),
+            ),
             "connect: " <> reason,
           )
         Ok(socket) -> {
@@ -232,6 +264,7 @@ pub fn main() {
             next_id: 4,
             models: [],
             strands: [],
+            agent_summary: agents.summary([]),
             transcript: [Line(System, "connecting to session " <> session)],
             notice: "connecting",
           )
@@ -239,13 +272,13 @@ pub fn main() {
       }
   }
   let _ =
-    app.run_buffered_cursor(
+    app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
       initial,
       view,
       update,
       fn(model) { model.quit },
-      terminal_poll_ms,
+      terminal_poll_timeout,
     )
   Nil
 }
@@ -295,6 +328,43 @@ fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
 }
 
 fn view(
+  model: Model,
+  screen: Rect,
+) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
+  case model.frame_cache {
+    Some(FrameCache(screen: cached_screen, revision:, rendered:)) ->
+      cached_frame(
+        rendered,
+        cached_screen,
+        revision,
+        screen,
+        model.frame_revision,
+        fn() { render_frame(model, screen) },
+      )
+    None -> render_frame(model, screen)
+  }
+}
+
+/// Reuses a completed frame only while its screen and revision still match.
+///
+/// The cached tuple is returned directly rather than reconstructed, preserving
+/// the Buffer term identity that etui uses as its constant-time diff fast path.
+@internal
+pub fn cached_frame(
+  cached: #(buffer.Buffer, Result(geometry.Position, Nil)),
+  cached_screen: Rect,
+  cached_revision: Int,
+  screen: Rect,
+  revision: Int,
+  build: fn() -> #(buffer.Buffer, Result(geometry.Position, Nil)),
+) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
+  case cached_screen == screen && cached_revision == revision {
+    True -> cached
+    False -> build()
+  }
+}
+
+fn render_frame(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
@@ -360,7 +430,7 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(1),
+      Length(footer_height(screen.size.width, model)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -563,70 +633,176 @@ fn render_footer(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let shortcuts = case active_strand_live(model) {
-    True ->
-      case active_interrupt(model), model.submission_mode {
-        Some(_), _ -> [
-          span.span_styled(" esc ", theme.signal_bold()),
-          span.span_styled("stop · ", theme.quiet_text()),
-          span.span_styled("enter ", theme.signal_bold()),
-          span.span_styled("steer after", theme.quiet_text()),
-        ]
-        None, SteerNow -> [
-          span.span_styled(" enter ", theme.signal_bold()),
-          span.span_styled("steer · ", theme.quiet_text()),
-          span.span_styled("tab ", theme.signal_bold()),
-          span.span_styled("queue", theme.quiet_text()),
-        ]
-        None, QueueAfter -> [
-          span.span_styled(" enter ", theme.signal_bold()),
-          span.span_styled("queue · ", theme.quiet_text()),
-          span.span_styled("tab ", theme.signal_bold()),
-          span.span_styled("steer", theme.quiet_text()),
-        ]
-      }
-    False -> [
-      span.span_styled(" /help ", theme.signal_bold()),
-      span.span_styled("commands · ", theme.quiet_text()),
-      span.span_styled("/agents ", theme.signal_bold()),
-      span.span_styled("agents", theme.quiet_text()),
-    ]
+  let #(project, model_name, usage, status, combined) = footer_sections(model)
+  case area.size.height {
+    1 -> render_single_footer(buf, area, project, usage, combined)
+    2 -> render_stacked_footer(buf, area, project, model_name, usage, status)
+    _ -> render_split_footer(buf, area, project, model_name, usage, status)
   }
+}
+
+fn footer_sections(
+  model: Model,
+) -> #(span.Line, span.Line, span.Line, span.Line, span.Line) {
+  let project_text =
+    model.workspace |> workspace.label |> text_hygiene.single_line
+  let model_text = text_hygiene.single_line(model.current_model)
+  let status_text = model |> model_footer_status |> text_hygiene.single_line
+  let project =
+    span.line_new([
+      span.span_styled(
+        " " <> compact(project_text, 68) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  let model_name =
+    span.line_new([
+      span.span_styled(
+        " " <> compact(model_text, 28) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  let usage =
+    span.line_new([
+      span.span_styled(
+        " " <> usage_summary(model.usage) <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  let status =
+    span.line_new([
+      span.span_styled(" " <> status_text <> " ", theme.quiet_text()),
+    ])
+  let combined =
+    span.line_new([
+      span.span_styled(
+        " " <> compact(model_text, 28) <> " · " <> status_text <> " ",
+        theme.quiet_text(),
+      ),
+    ])
+  #(project, model_name, usage, status, combined)
+}
+
+fn model_footer_status(model: Model) -> String {
+  footer_status(model.agent_summary, model.notice)
+}
+
+/// Preserves transient operator feedback beside the agent summary.
+@internal
+pub fn footer_status(agent_summary: String, notice: String) -> String {
+  let safe_summary = text_hygiene.single_line(agent_summary)
+  let safe_notice = text_hygiene.single_line(notice)
+  case string.starts_with(safe_notice, "model: ") {
+    True -> compact(safe_summary, 40)
+    False -> compact(safe_summary <> " · " <> safe_notice, 40)
+  }
+}
+
+fn footer_height(width: Int, model: Model) -> Int {
+  let #(project, model_name, usage, status, _) = footer_sections(model)
+  footer_rows(width, project, model_name, usage, status)
+}
+
+/// Returns the rows needed to render all footer sections without collision.
+@internal
+pub fn footer_rows(
+  width: Int,
+  project: span.Line,
+  model_name: span.Line,
+  usage: span.Line,
+  status: span.Line,
+) -> Int {
+  let single_width =
+    span.line_width(project)
+    + span.line_width(usage)
+    + span.line_width(model_name)
+    + span.line_width(status)
+    + 1
+  case single_width <= width {
+    True -> 1
+    False ->
+      case
+        span.line_width(project) + span.line_width(model_name) <= width
+        && span.line_width(usage) + span.line_width(status) <= width
+      {
+        True -> 2
+        False -> 3
+      }
+  }
+}
+
+fn render_single_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  left: span.Line,
+  usage: span.Line,
+  right: span.Line,
+) -> buffer.Buffer {
   let bar =
     statusbar.statusbar_new()
     |> statusbar.with_style(theme.paper, theme.graphite)
-    |> statusbar.with_left([
-      span.line_new(
-        list.append(shortcuts, [
-          span.span_styled(" · ⇧tab ", theme.signal_bold()),
-          span.span_styled("rail · ", theme.quiet_text()),
-          span.span_styled("^g ", theme.signal_bold()),
-          span.span_styled("detail", theme.quiet_text()),
-        ]),
-      ),
-    ])
-    |> statusbar.with_center([
-      span.line_new([
-        span.span_styled(
-          " " <> usage_summary(model.usage) <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
-    ])
-    |> statusbar.with_right([
-      span.line_new([
-        span.span_styled(
-          " "
-            <> compact(
-            agents.summary(model.strands) <> " · " <> model.notice,
-            36,
-          )
-            <> " ",
-          theme.quiet_text(),
-        ),
-      ]),
-    ])
+    |> statusbar.with_left([left])
+    |> statusbar.with_center([usage])
+    |> statusbar.with_right([right])
   statusbar.render(buf, area, bar)
+}
+
+fn render_stacked_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  project: span.Line,
+  model_name: span.Line,
+  usage: span.Line,
+  status: span.Line,
+) -> buffer.Buffer {
+  let primary =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([project])
+    |> statusbar.with_right([model_name])
+  let usage_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([usage])
+    |> statusbar.with_right([status])
+  case geometry.split_v(area, [Length(1), Length(1)]) {
+    [primary_area, usage_area] ->
+      buf
+      |> statusbar.render(primary_area, primary)
+      |> statusbar.render(usage_area, usage_bar)
+    _ -> statusbar.render(buf, area, primary)
+  }
+}
+
+fn render_split_footer(
+  buf: buffer.Buffer,
+  area: Rect,
+  project: span.Line,
+  model_name: span.Line,
+  usage: span.Line,
+  status: span.Line,
+) -> buffer.Buffer {
+  let primary =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([project])
+    |> statusbar.with_right([model_name])
+  let usage_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([usage])
+  let status_bar =
+    statusbar.statusbar_new()
+    |> statusbar.with_style(theme.paper, theme.graphite)
+    |> statusbar.with_left([status])
+  case geometry.split_v(area, [Length(1), Length(1), Length(1)]) {
+    [primary_area, usage_area, status_area] ->
+      buf
+      |> statusbar.render(primary_area, primary)
+      |> statusbar.render(usage_area, usage_bar)
+      |> statusbar.render(status_area, status_bar)
+    _ -> statusbar.render(buf, area, primary)
+  }
 }
 
 // Etui's incremental diff can retain cells when one action replaces most of
@@ -909,21 +1085,122 @@ fn render_command_palette(
 
 fn update(event: backend.InputEvent, model: Model) -> Model {
   let updated = case event {
-    backend.Resize(width, height) -> Model(..model, width:, height:)
-    backend.Tick ->
-      drain_connection(
-        Model(..model, activity_frame: model.activity_frame + 1),
-        64,
-      )
-    backend.KeyPress(key) -> update_key(keys.match(key), model)
-    backend.Paste(text) -> handle_paste(model, text)
-    backend.MouseScroll(_, _, up) -> scroll_transcript(model, up, 3)
+    backend.Resize(width, height) ->
+      Model(..model, width:, height:)
+      |> mark_activity
+      |> invalidate_frame
+    backend.Tick -> update_tick(model)
+    backend.KeyPress(key) ->
+      update_key(keys.match(key), model)
+      |> mark_activity
+      |> invalidate_frame
+    backend.Paste(text) ->
+      handle_paste(model, text)
+      |> mark_activity
+      |> invalidate_frame
+    backend.MouseScroll(_, _, up) ->
+      scroll_transcript(model, up, 3)
+      |> mark_activity
+      |> invalidate_frame
     backend.MousePress(..)
     | backend.MouseRelease(..)
     | backend.MouseDrag(..)
     | backend.MouseMove(..) -> model
   }
   refresh_render_cache(model, updated)
+  |> refresh_frame_cache
+}
+
+// A terminal tick is the only idle-time event. Visible socket traffic marks
+// activity while it is drained; otherwise the accumulated quiet time advances
+// by the timeout that led to this tick. A live operation animates at this
+// cadence but does not by itself force the fast polling regime forever.
+fn update_tick(model: Model) -> Model {
+  let animated = advance_activity_indicator(model)
+  let drained = drain_connection(animated, 64)
+  let quiet_for_ms =
+    next_quiet_for(
+      model.quiet_for_ms,
+      terminal_poll_timeout(model),
+      drained.activity_revision != model.activity_revision,
+    )
+  Model(..drained, quiet_for_ms:)
+}
+
+fn advance_activity_indicator(model: Model) -> Model {
+  case active_strand_live(model) {
+    False -> model
+    True -> {
+      let activity_frame = model.activity_frame + 1
+      let advanced = Model(..model, activity_frame:)
+      case
+        activity_glyph(model.activity_frame) == activity_glyph(activity_frame)
+      {
+        True -> advanced
+        False -> invalidate_frame(advanced)
+      }
+    }
+  }
+}
+
+// Rendering is pure, so caching the completed frame inside the next immutable
+// model gives etui the exact same Buffer term on unchanged iterations. The
+// cache key stays scalar and screen-local; no complete Model comparison sits
+// on the idle path.
+fn refresh_frame_cache(model: Model) -> Model {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  case model.frame_cache {
+    Some(FrameCache(screen: cached_screen, revision:, ..))
+      if cached_screen == screen && revision == model.frame_revision
+    -> model
+    None | Some(_) ->
+      Model(
+        ..model,
+        frame_cache: Some(FrameCache(
+          screen:,
+          revision: model.frame_revision,
+          rendered: render_frame(model, screen),
+        )),
+      )
+  }
+}
+
+/// Returns the active or quiet poll timeout for an inactivity duration.
+@internal
+pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
+  case quiet_for_ms >= quiet_after_ms {
+    True -> quiet_poll_ms
+    False -> active_poll_ms
+  }
+}
+
+fn terminal_poll_timeout(model: Model) -> Int {
+  poll_timeout_for(model.quiet_for_ms)
+}
+
+/// Advances inactivity after one poll, resetting immediately on activity.
+@internal
+pub fn next_quiet_for(
+  quiet_for_ms: Int,
+  elapsed_ms: Int,
+  activity_seen: Bool,
+) -> Int {
+  case activity_seen {
+    True -> 0
+    False -> int.min(quiet_after_ms, quiet_for_ms + elapsed_ms)
+  }
+}
+
+fn mark_activity(model: Model) -> Model {
+  Model(
+    ..model,
+    activity_revision: model.activity_revision + 1,
+    quiet_for_ms: 0,
+  )
+}
+
+fn invalidate_frame(model: Model) -> Model {
+  Model(..model, frame_revision: model.frame_revision + 1)
 }
 
 // Terminal polling still produces idle ticks so the websocket inbox can be
@@ -1075,29 +1352,37 @@ fn handle_connection_message(
   incoming: connection.Message,
 ) -> Model {
   case incoming {
-    connection.Connected -> Model(..model, notice: "connected")
+    connection.Connected ->
+      Model(..model, notice: "connected")
+      |> mark_activity
+      |> invalidate_frame
     connection.Closed(reason) ->
       append_error(
         Model(..model, socket: None),
         "connection closed: " <> reason,
       )
+      |> mark_activity
     connection.NetworkFault(reason) ->
       append_error(model, "network: " <> reason)
+      |> mark_activity
     connection.Incoming(text) ->
       case protocol.decode_event(text) {
         Ok(event) -> apply_event(model, event)
-        Error(reason) -> append_error(model, "protocol: " <> reason)
+        Error(reason) ->
+          append_error(model, "protocol: " <> reason)
+          |> mark_activity
       }
   }
 }
 
 fn apply_event(model: Model, event: protocol.Event) -> Model {
-  case event {
+  let updated = case event {
     protocol.FullSnapshot(session:, strands:, entries:, usage:) ->
       Model(
         ..model,
         session:,
         strands:,
+        agent_summary: agents.summary(strands),
         usage:,
         records: list.reverse(entries),
         streams: [],
@@ -1110,8 +1395,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         transcript: [Line(System, "attached to session " <> session)],
       )
       |> invalidate_transcript
-    protocol.StrandsSnapshot(strands:) ->
-      Model(..model, strands:, notice: agents.summary(strands))
+    protocol.StrandsSnapshot(strands:) -> {
+      let summary = agents.summary(strands)
+      Model(..model, strands:, agent_summary: summary, notice: summary)
+    }
     protocol.ModelsSnapshot(models:) -> {
       let overlay = case model.overlay {
         ModelSelector(selector) ->
@@ -1170,11 +1457,13 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Some(target) if target == strand -> None
         other -> other
       }
+      let strands = set_strand_phase(model.strands, strand, phase)
       let updated =
         Model(
           ..model,
           submitting:,
-          strands: set_strand_phase(model.strands, strand, phase),
+          strands:,
+          agent_summary: agents.summary(strands),
           streams: case phase == "done" {
             True -> clear_streams(model.streams, strand)
             False -> model.streams
@@ -1196,6 +1485,22 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.ServerError(code:, message:) ->
       append_error(Model(..model, submitting: None), code <> ": " <> message)
     protocol.Ignored(_) -> model
+  }
+  case event {
+    protocol.Ignored(_) -> updated
+    protocol.FullSnapshot(..)
+    | protocol.StrandsSnapshot(..)
+    | protocol.ModelsSnapshot(..)
+    | protocol.ConfigSnapshot(..)
+    | protocol.EntryAdded(..)
+    | protocol.StreamDelta(..)
+    | protocol.OperationChanged(..)
+    | protocol.UsageChanged(..)
+    | protocol.EscalationPending(..)
+    | protocol.ServerError(..) ->
+      updated
+      |> mark_activity
+      |> invalidate_frame
   }
 }
 
@@ -2046,7 +2351,22 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
-  int.max(1, model.height - input_height(model) - 4)
+  transcript_height(
+    model.height,
+    input_height(model),
+    footer_height(model.width, model),
+  )
+}
+
+/// Returns the transcript rows left after fixed terminal surfaces are reserved.
+@internal
+pub fn transcript_height(
+  height: Int,
+  input_rows: Int,
+  footer_rows: Int,
+) -> Int {
+  // The header consumes one row and the transcript border consumes two.
+  int.max(1, height - input_rows - footer_rows - 3)
 }
 
 fn transcript_width(model: Model) -> Int {
@@ -2637,6 +2957,7 @@ fn append_system(model: Model, text: String) -> Model {
     notice: text,
   )
   |> invalidate_transcript
+  |> invalidate_frame
 }
 
 fn append_error(model: Model, text: String) -> Model {
@@ -2647,6 +2968,7 @@ fn append_error(model: Model, text: String) -> Model {
     notice: text,
   )
   |> invalidate_transcript
+  |> invalidate_frame
 }
 
 // Transcript revisions advance only beside mutations of the projection's

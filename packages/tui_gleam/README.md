@@ -21,11 +21,11 @@ process owns presentation state.
 ```mermaid
 flowchart LR
     Keys["terminal events"]
-    Tick["50 ms Tick"]
+    Tick["40 ms active / 400 ms quiet Tick"]
     Sock["Stratus socket actor"]
     Update["update(Model, Message)"]
     Model["immutable Model"]
-    View["view(Model)"]
+    View["view(Model) or exact cached frame"]
     Screen["etui buffer"]
 
     Keys --> Update

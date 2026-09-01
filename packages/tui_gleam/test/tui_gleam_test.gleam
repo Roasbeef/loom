@@ -1,22 +1,30 @@
 import core/json
 import core/message
+import etui/buffer
+import etui/geometry.{Position}
 import etui/keys
 import etui/span
 import etui/style
 import etui/widgets/textarea as text_area
+import gleam/bit_array
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
+import simplifile
 import tui_gleam
 import tui_gleam/agents
 import tui_gleam/command
 import tui_gleam/composer
 import tui_gleam/connection
+import tui_gleam/internal/workspace_file
 import tui_gleam/markdown
 import tui_gleam/model_selector
 import tui_gleam/protocol.{ModelInfo, Strand}
 import tui_gleam/theme
+import tui_gleam/workspace
+import tui_gleam_test/ffi_term
 
 pub fn main() {
   gleeunit.main()
@@ -70,12 +78,193 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
     == "in 12k · out 678 · cache 90k/123 · $0.037"
 }
 
+pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
+  let project =
+    span.line_plain(
+      " ~/.codex/worktrees/loom-etui-idle-perf (client/etui-idle-loop) ",
+    )
+  let usage = span.line_plain(" in 875k · out 54k · cache 5m/0 · $0.0 ")
+  let model_name = span.line_plain(" baseten-kimi-k3 ")
+  let status = span.line_plain(" 0 live / 3 agents · connected ")
+  let needed =
+    span.line_width(project)
+    + span.line_width(usage)
+    + span.line_width(model_name)
+    + span.line_width(status)
+    + 1
+
+  assert tui_gleam.footer_rows(needed, project, model_name, usage, status) == 1
+  assert tui_gleam.footer_rows(needed - 1, project, model_name, usage, status)
+    == 2
+  assert tui_gleam.footer_rows(133, project, model_name, usage, status) == 2
+  assert tui_gleam.footer_rows(40, project, model_name, usage, status) == 3
+  assert tui_gleam.footer_rows(180, project, model_name, usage, status) == 1
+  assert tui_gleam.transcript_height(40, 3, 2) == 32
+  assert tui_gleam.transcript_height(40, 3, 3) == 31
+  assert tui_gleam.transcript_height(40, 3, 1) == 33
+  assert tui_gleam.viewport_height_changed(
+    tui_gleam.transcript_height(40, 3, 2),
+    tui_gleam.transcript_height(40, 3, 1),
+  )
+}
+
+pub fn workspace_path_abbreviates_macos_and_linux_homes_test() {
+  assert workspace.path_label("/Users/alice/gocode/src/repo")
+    == "~/gocode/src/repo"
+  assert workspace.path_label("/home/alice/gocode/src/repo")
+    == "~/gocode/src/repo"
+  assert workspace.path_label("/srv/loom") == "/srv/loom"
+}
+
+pub fn workspace_branch_decodes_symbolic_and_detached_heads_test() {
+  assert workspace.branch_from_head("ref: refs/heads/client/footer\n")
+    == Some("client/footer")
+  assert workspace.branch_from_head(
+      "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    == Some("01234567")
+  assert workspace.branch_from_head("not-a-commit\n") == None
+  assert workspace.branch_from_head("ref: refs/heads/unsafe\nname\n") == None
+  assert workspace.branch_from_head("\n") == None
+}
+
+pub fn workspace_metadata_read_is_descriptor_bounded_test() {
+  let path = "build/tui-workspace-metadata.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: path, bits: <<"thirteen bytes":utf8>>)
+  let oversized = workspace_file.read_small_regular(path, 12)
+  let exact = workspace_file.read_small_regular(path, 14)
+  let _ = simplifile.delete(path)
+
+  assert oversized == Error(Nil)
+  let assert Ok(contents) = exact
+  assert bit_array.to_string(contents) == Ok("thirteen bytes")
+}
+
+pub fn footer_status_preserves_transient_operator_feedback_test() {
+  assert tui_gleam.footer_status("0 live / 3 agents", "queued after main")
+    == "0 live / 3 agents · queued after main"
+}
+
+pub fn footer_status_sanitizes_untrusted_server_text_test() {
+  assert tui_gleam.footer_status("0 live", "\u{1b}[31mhostile\nnotice")
+    == "0 live · hostile notice"
+}
+
+pub fn footer_status_omits_the_dedicated_model_label_test() {
+  assert tui_gleam.footer_status("0 live / 3 agents", "model: baseten-kimi-k3")
+    == "0 live / 3 agents"
+}
+
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
   assert tui_gleam.activity_glyph(0) == "◐"
   assert tui_gleam.activity_glyph(3) == "◓"
   assert tui_gleam.activity_glyph(6) == "◑"
   assert tui_gleam.activity_glyph(9) == "◒"
   assert tui_gleam.activity_glyph(12) == "◐"
+}
+
+pub fn cached_frame_reuses_the_exact_buffer_term_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let cached = #(cached_buffer, Ok(Position(2, 1)))
+  let #(reused, cursor) =
+    tui_gleam.cached_frame(cached, screen, 7, screen, 7, fn() {
+      panic as "a matching frame cache must not rebuild"
+    })
+
+  assert ffi_term.same_term(cached_buffer, reused)
+  assert cursor == Ok(Position(2, 1))
+}
+
+pub fn cached_frame_rebuilds_after_visible_revisions_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let cached = #(cached_buffer, Error(Nil))
+  let changes = [
+    "transcript",
+    "input and cursor",
+    "overlay",
+    "status",
+    "activity indicator",
+  ]
+
+  list.each(changes, fn(label) {
+    let replacement =
+      buffer.set_string(
+        buffer.buffer_new(screen),
+        Position(0, 0),
+        label,
+        style.new(style.Default, style.Default, style.none()),
+      )
+    let #(rebuilt, _) =
+      tui_gleam.cached_frame(cached, screen, 7, screen, 8, fn() {
+        #(replacement, Error(Nil))
+      })
+    assert ffi_term.same_term(replacement, rebuilt)
+    assert !ffi_term.same_term(cached_buffer, rebuilt)
+  })
+}
+
+pub fn cached_frame_rebuilds_for_resize_test() {
+  let before = geometry.rect_new(0, 0, 8, 2)
+  let after = geometry.rect_new(0, 0, 9, 2)
+  let cached_buffer = buffer.buffer_new(before)
+  let replacement = buffer.buffer_new(after)
+  let #(rebuilt, cursor) =
+    tui_gleam.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      before,
+      4,
+      after,
+      4,
+      fn() { #(replacement, Ok(Position(1, 1))) },
+    )
+
+  assert ffi_term.same_term(replacement, rebuilt)
+  assert cursor == Ok(Position(1, 1))
+}
+
+pub fn cached_frame_rebuilds_for_cursor_revision_test() {
+  let screen = geometry.rect_new(0, 0, 8, 2)
+  let cached_buffer = buffer.buffer_new(screen)
+  let replacement = buffer.buffer_new(screen)
+  let #(rebuilt, cursor) =
+    tui_gleam.cached_frame(
+      #(cached_buffer, Ok(Position(1, 1))),
+      screen,
+      4,
+      screen,
+      5,
+      fn() { #(replacement, Ok(Position(3, 1))) },
+    )
+
+  assert ffi_term.same_term(replacement, rebuilt)
+  assert !ffi_term.same_term(cached_buffer, rebuilt)
+  assert cursor == Ok(Position(3, 1))
+}
+
+pub fn adaptive_poll_enters_quiet_only_after_hysteresis_test() {
+  assert tui_gleam.poll_timeout_for(0) == 40
+  assert tui_gleam.poll_timeout_for(319) == 40
+  assert tui_gleam.poll_timeout_for(320) == 400
+
+  let after_seven_ticks =
+    [1, 2, 3, 4, 5, 6, 7]
+    |> list.fold(0, fn(quiet_for, _) {
+      tui_gleam.next_quiet_for(quiet_for, 40, False)
+    })
+  assert after_seven_ticks == 280
+  assert tui_gleam.poll_timeout_for(after_seven_ticks) == 40
+  let quiet = tui_gleam.next_quiet_for(after_seven_ticks, 40, False)
+  assert quiet == 320
+  assert tui_gleam.poll_timeout_for(quiet) == 400
+}
+
+pub fn adaptive_poll_activity_immediately_restores_fast_cadence_test() {
+  let reset = tui_gleam.next_quiet_for(320, 400, True)
+  assert reset == 0
+  assert tui_gleam.poll_timeout_for(reset) == 40
 }
 
 pub fn slash_command_palette_filters_and_completes_test() {
