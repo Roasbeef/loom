@@ -309,8 +309,51 @@ true` safe, and it applies unchanged to a model:
   so a cancel frees a slot and a creation loop meets a wall it can read.
 - The session is one an operator is running and can stop.
 
-The worst case is therefore bounded and computable, which is what the
-original ruling asked of `wake` and got.
+The worst case *per schedule* is therefore bounded and computable.
+
+### Correction: the bound is per schedule, not per session
+
+An adversarial review of this change found that the paragraph above, as
+first written, claimed more than the code delivers. It said a model "can
+wake itself, and cannot wake itself indefinitely." **The second half is
+false**, and the mechanism is simple enough that it should have been
+caught before the reversal shipped.
+
+Expiry is derived from fired-marks under
+`schedule/fired/<strand>/<name>/`. A *fresh name* is therefore a *fresh
+clock*. A model with a `wake = true` heartbeat is, by construction, a
+running model every time that heartbeat fires — and a running model can
+call `schedule_create` again. So `hb-1` runs to its bound, and at any
+fire along the way the model creates `hb-2`; or it cancels `hb-1`, which
+frees a ceiling slot, and recreates it under a new name. Nothing in
+`scheduleseam.create` prevents this, and the `max_model_schedules`
+ceiling does not either: it bounds how many schedules exist at once, not
+how many a session may create over its life.
+
+What actually holds is narrower, and it is what the code should be read
+as claiming:
+
+- **No single schedule is unbounded.** Every recurring one expires on
+  both bounds, earliest wins, and no model can raise either.
+- **No session holds more than `max_model_schedules` at a time.**
+- **Nothing here escapes the session.** Every schedule dies with the
+  server, and an operator who stops it stops all of them.
+
+What does *not* hold is "a model cannot keep a session alive
+indefinitely." A model that wants to can chain wakes for as long as the
+operator leaves the server running. Whether that is acceptable is a
+policy question rather than a bug — it is a *cost* and *supervision*
+concern, not an escape — but the original ruling's objection was exactly
+this, and the reversal above does not answer it. It narrows it: the
+liveness a model extends is bounded by the process an operator controls
+and can see, rather than being unbounded in the way the original note
+feared.
+
+An operator who wants the strong property has `ModelSchedulesSteer`,
+under which no model-created schedule can wake an idle strand at all, and
+`ModelSchedulesOff`. Whether the *default* should remain
+`ModelSchedulesWake` given the chaining hole is a live question and is
+tracked as its own issue rather than silently settled here.
 
 ### What this cost, and what is still not built
 

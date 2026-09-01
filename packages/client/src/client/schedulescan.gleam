@@ -164,11 +164,29 @@ pub type Options {
   )
 }
 
-/// The scanner's mailbox. One variant: every tick is self-armed through
-/// the injected `runtime/effects.Timers` seam, so nothing external ever
-/// sends this actor anything else.
+/// The scanner's mailbox.
+///
+/// Two variants, and the split exists to stop a leak rather than to
+/// express two kinds of work — both do the identical scan. Every tick
+/// ends by arming the next one, so anything that delivers a `Tick`
+/// delivers a *chain*, not an event: two `Tick`s in flight become two
+/// self-perpetuating chains, and with the door open's rescan floor
+/// neither ever goes quiet. `poke` used to send `Tick` and so leaked one
+/// chain per model `schedule_create`, forever.
+///
+/// `Tick` therefore carries the generation it was armed under, and a tick
+/// whose generation is stale is dropped without re-arming — so a chain
+/// the actor has moved on from dies at its next delivery. `Rescan` is the
+/// out-of-band "look now" that `poke` sends: it scans and adopts a fresh
+/// generation, which is what retires whichever chain was already pending.
 pub type Message {
-  Tick
+  /// A wake armed by this actor, tagged with the generation current when
+  /// it was armed. A stale one is a chain being retired.
+  Tick(generation: Int)
+
+  /// Look now, out of band. Adopts a new generation, so any pending
+  /// `Tick` becomes stale and dies rather than compounding.
+  Rescan
 }
 
 /// The shipped options for a schedule list: a silent logger.
@@ -210,7 +228,15 @@ pub fn with_logger(options: Options, logger: Logger) -> Options {
 }
 
 type State {
-  State(options: Options, runtime: Runtime, self: Subject(Message))
+  State(
+    options: Options,
+    runtime: Runtime,
+    self: Subject(Message),
+    /// The generation a `Tick` must carry to be acted on. Incremented by
+    /// every scan, so exactly one armed chain is live at a time however
+    /// many pokes arrive.
+    generation: Int,
+  )
 }
 
 // Whether a schedule is still worth waking up for, and if so, in how
@@ -244,9 +270,9 @@ pub fn start(
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
     runtime.effects.timers.after(first_tick_delay_ms, fn() {
-      process.send(subject, Tick)
+      process.send(subject, Tick(generation: 1))
     })
-    actor.initialised(State(options:, runtime:, self: subject))
+    actor.initialised(State(options:, runtime:, self: subject, generation: 1))
     |> actor.returning(subject)
     |> Ok
   })
@@ -274,15 +300,28 @@ pub fn supervised(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Tick -> {
-      let #(now_ms, _clock) = clock.read(state.runtime.effects.clock)
-      let now_s = now_ms / 1000
-      due_schedules(state)
-      |> list.map(fn(sched) { process_schedule(state, sched, now_ms, now_s) })
-      |> rearm(state, _)
-      actor.continue(state)
-    }
+    // A wake from a chain this actor has already replaced. Dropping it
+    // *without* re-arming is the whole mechanism: that is where the
+    // superseded chain ends.
+    Tick(generation:) if generation != state.generation -> actor.continue(state)
+
+    Tick(..) | Rescan -> scan(state)
   }
+}
+
+// One pass over every due schedule, ending in exactly one armed wake.
+//
+// The generation moves first and the arm captures the new value, so a
+// `Tick` still in flight under the old one is already stale by the time
+// it is delivered.
+fn scan(state: State) -> actor.Next(State, Message) {
+  let scanned = State(..state, generation: state.generation + 1)
+  let #(now_ms, _clock) = clock.read(scanned.runtime.effects.clock)
+  let now_s = now_ms / 1000
+  due_schedules(scanned)
+  |> list.map(fn(due) { process_schedule(scanned, due, now_ms, now_s) })
+  |> rearm(scanned, _)
+  actor.continue(scanned)
 }
 
 // Every schedule this tick must consider: the operator's, fixed at boot,
@@ -301,8 +340,26 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // empty list: a transient store fault must not look like "the model
 // cancelled everything", which would silently stop firing the very
 // schedules a model may be relying on.
-fn due_schedules(state: State) -> List(Schedule) {
-  list.append(state.options.schedules, model_schedules(state))
+fn due_schedules(state: State) -> List(Due) {
+  let operator =
+    list.map(state.options.schedules, fn(sched) {
+      Due(schedule: sched, origin: schedule.OperatorConfigured)
+    })
+  let model =
+    list.map(model_schedules(state), fn(sched) {
+      Due(schedule: sched, origin: schedule.ModelCreated)
+    })
+  list.append(operator, model)
+}
+
+// A schedule paired with where it came from. The origin is not carried on
+// `Schedule` itself because it is not a property of the schedule — it is a
+// property of the store it was read out of, and this is the one place both
+// stores are in scope. It exists so a fire can say whose text it is: a
+// model reading "standing operator configuration" above a body it wrote
+// itself has been handed an authority nobody granted.
+type Due {
+  Due(schedule: Schedule, origin: schedule.Origin)
 }
 
 fn model_schedules(state: State) -> List(Schedule) {
@@ -318,14 +375,14 @@ fn model_schedules(state: State) -> List(Schedule) {
 
 fn process_schedule(
   state: State,
-  sched: Schedule,
+  due: Due,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
-  case sched.timing {
+  case due.schedule.timing {
     schedule.Interval(seconds:, expiry:) ->
-      process_interval(state, sched, seconds, expiry, now_ms, now_s)
-    schedule.OneShot(at:) -> process_one_shot(state, sched, at, now_ms, now_s)
+      process_interval(state, due, seconds, expiry, now_ms, now_s)
+    schedule.OneShot(at:) -> process_one_shot(state, due, at, now_ms, now_s)
   }
 }
 
@@ -358,10 +415,31 @@ fn rearm(state: State, statuses: List(ScheduleStatus)) -> Nil {
   }
 }
 
+// Arms one wake, tagged with this scan's generation and clamped to what
+// a BEAM timer can actually hold.
+//
+// The clamp is not a nicety. `runtime/effects.real_timers` is
+// `spawn_unlinked(sleep(delay); wake())`, `process.sleep` is a `receive
+// after`, and a timeout above 2^32-1 ms raises `timeout_value` — on an
+// *unlinked* process, so the chain dies silently and the scanner never
+// ticks again. Nothing else bounds this: neither creation path caps an
+// interval from above, and a one-shot `at` far enough out overflows on
+// its own. Waking early costs one wasted scan, which re-derives the same
+// answer and re-arms; waking never costs every schedule in the session.
 fn arm(state: State, delay_ms: Int) -> Nil {
   let self = state.self
-  state.runtime.effects.timers.after(delay_ms, fn() { process.send(self, Tick) })
+  let generation = state.generation
+  state.runtime.effects.timers.after(
+    int.min(delay_ms, max_timer_delay_ms),
+    fn() { process.send(self, Tick(generation:)) },
+  )
 }
+
+/// The longest delay a BEAM `receive after` accepts (2^32-1 ms, about
+/// 49.7 days). A larger one raises `timeout_value` rather than sleeping,
+/// so every armed delay is clamped to it and a longer wait is served by
+/// re-arming after the clamp expires.
+pub const max_timer_delay_ms = 4_294_967_295
 
 // The floor an otherwise-quiet scanner rescans on when the model may
 // create schedules. A function rather than a `const`: Gleam constants
@@ -374,12 +452,15 @@ fn idle_rescan_ms() -> Int {
 /// deadline — what `client/scheduleseam` calls the moment it writes a
 /// schedule's config cell.
 ///
-/// Sending `Tick` directly is deliberate rather than a second message
-/// variant: a tick with no logical time having passed is already required
-/// to be harmless (every occurrence check is against a durable mark, not
-/// against how the actor was woken), so "look again now" and "your timer
-/// fired" want the same handler. A poke that arrives while the actor is
-/// restarting is simply lost, which is why `rearm` keeps a floor.
+/// It sends `Rescan`, not `Tick`, and that distinction is load-bearing.
+/// Every scan ends by arming the next wake, so a bare `Tick` would start
+/// a second self-perpetuating chain beside the one already pending —
+/// which is what this did before, leaking one permanent chain per model
+/// `schedule_create` or `schedule_cancel`. `Rescan` takes a fresh
+/// generation, which retires the pending chain at its next delivery.
+///
+/// A poke that arrives while the actor is restarting is simply lost,
+/// which is why `rearm` keeps a floor.
 ///
 /// ## Examples
 ///
@@ -401,7 +482,7 @@ pub fn poke(name: Name(Message)) -> Nil {
     Ok(pid) ->
       case process.is_alive(pid) {
         False -> Nil
-        True -> process.send(subject, Tick)
+        True -> process.send(subject, Rescan)
       }
   }
 }
@@ -410,33 +491,41 @@ pub fn poke(name: Name(Message)) -> Nil {
 
 fn process_interval(
   state: State,
-  sched: Schedule,
+  due: Due,
   seconds: Int,
   expiry: schedule.Expiry,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
-  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+  let prefix =
+    schedule.fired_key_prefix(
+      strand: due.schedule.target,
+      name: due.schedule.name,
+    )
   case read_prefix(state, prefix) {
     // A store read that fails is not worth stopping for: retry on the
     // schedule's own cadence, which is already bounded well above a
     // busy loop (`schedule.min_interval_s`).
     Error(Nil) -> Active(next_delay_ms: seconds * 1000)
     Ok(marks) ->
-      interval_with_marks(state, sched, seconds, expiry, now_ms, now_s, marks)
+      interval_with_marks(state, due, seconds, expiry, now_ms, now_s, marks)
   }
 }
 
 fn interval_with_marks(
   state: State,
-  sched: Schedule,
+  due: Due,
   seconds: Int,
   expiry: schedule.Expiry,
   now_ms: Int,
   now_s: Int,
   marks: List(#(String, JsonValue)),
 ) -> ScheduleStatus {
-  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+  let prefix =
+    schedule.fired_key_prefix(
+      strand: due.schedule.target,
+      name: due.schedule.name,
+    )
   let occurrences =
     list.filter_map(marks, fn(pair) {
       let #(key, _value) = pair
@@ -446,7 +535,7 @@ fn interval_with_marks(
     True -> Expired
     False -> {
       let occurrence = schedule.interval_occurrence(seconds:, now_s:)
-      maybe_fire_interval(state, sched, occurrence, seconds, occurrences)
+      maybe_fire_interval(state, due, occurrence, seconds, occurrences)
       Active(next_delay_ms: next_interval_delay_ms(occurrence, seconds, now_ms))
     }
   }
@@ -464,16 +553,20 @@ fn interval_with_marks(
 // attempt is a debt carried forward.
 fn maybe_fire_interval(
   state: State,
-  sched: Schedule,
+  due: Due,
   occurrence: Int,
   seconds: Int,
   occurrences: List(Int),
 ) -> Nil {
   use <- bool.guard(when: list.contains(occurrences, occurrence), return: Nil)
   let key =
-    schedule.fired_key(strand: sched.target, name: sched.name, occurrence:)
+    schedule.fired_key(
+      strand: due.schedule.target,
+      name: due.schedule.name,
+      occurrence:,
+    )
   let late = schedule.interval_late(occurrences:, seconds:, occurrence:)
-  let _verdict = fire(state, sched, key, late:)
+  let _verdict = fire(state, due, key, late:)
   Nil
 }
 
@@ -489,18 +582,22 @@ fn next_interval_delay_ms(occurrence: Int, seconds: Int, now_ms: Int) -> Int {
 
 fn process_one_shot(
   state: State,
-  sched: Schedule,
+  due: Due,
   at: Int,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
   let key =
-    schedule.fired_key(strand: sched.target, name: sched.name, occurrence: at)
+    schedule.fired_key(
+      strand: due.schedule.target,
+      name: due.schedule.name,
+      occurrence: at,
+    )
   case read_fact(state, key) {
     // Fired forever: a one-shot's occurrence count is 1 by construction,
     // and its mark existing is the whole of that fact.
     Some(_already_fired) -> Expired
-    None -> due_one_shot(state, sched, key, at, now_ms, now_s)
+    None -> due_one_shot(state, due, key, at, now_ms, now_s)
   }
 }
 
@@ -524,7 +621,7 @@ fn held_or_failed_retry_ms() -> Int {
 // genuinely not-yet-due wait uses.
 fn due_one_shot(
   state: State,
-  sched: Schedule,
+  due: Due,
   key: String,
   at: Int,
   now_ms: Int,
@@ -533,7 +630,7 @@ fn due_one_shot(
   case now_s >= at {
     False -> Active(next_delay_ms: int.max(at * 1000 - now_ms, 1000))
     True ->
-      case fire(state, sched, key, late: now_s >= at + late_grace_s) {
+      case fire(state, due, key, late: now_s >= at + late_grace_s) {
         Fired | AlreadyFired -> Expired
         Held | Failed(..) -> Active(next_delay_ms: held_or_failed_retry_ms())
       }
@@ -561,23 +658,23 @@ type Fire {
   Failed(reason: String)
 }
 
-fn fire(state: State, sched: Schedule, key: String, late late: Bool) -> Fire {
-  let mark = api.Mark(key:, value: schedule.fired_value(sched))
-  let text = injected_message(state, sched, late)
-  let verdict = case sched.wake {
+fn fire(state: State, due: Due, key: String, late late: Bool) -> Fire {
+  let mark = api.Mark(key:, value: schedule.fired_value(due.schedule))
+  let text = injected_message(state, due, late)
+  let verdict = case due.schedule.wake {
     False -> {
-      let target = api.on_strand(state.runtime, sched.target)
+      let target = api.on_strand(state.runtime, due.schedule.target)
       classify_steer(api.steer_marking(target, text, mark:))
     }
     True ->
       classify_send(api.send_to_strand_marking(
         state.runtime,
-        to: sched.target,
+        to: due.schedule.target,
         message: text,
         mark:,
       ))
   }
-  report(state, sched, verdict)
+  report(state, due.schedule, verdict)
   verdict
 }
 
@@ -587,14 +684,14 @@ fn fire(state: State, sched: Schedule, key: String, late late: Bool) -> Fire {
 // job.
 fn injected_message(
   state: State,
-  sched: Schedule,
+  due: Due,
   late: Bool,
 ) -> message.AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
   message.UserMessage(
     content: [
       message.UserText(
-        text: schedule.injection(sched, late),
+        text: schedule.injection(due.schedule, late, due.origin),
         text_signature: None,
       ),
     ],

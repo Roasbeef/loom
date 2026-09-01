@@ -293,9 +293,19 @@ fn stop(rig: Rig) -> Nil {
 
 // Sends the scanner's mailbox message directly, simulating a spurious
 // extra wake with no logical time having passed — exactly the case
-// `runtime/effects.Timers`'s own doc says must be harmless.
+// `runtime/effects.Timers`'s own doc says must be harmless. `Rescan` is
+// what `poke` sends, and is the shape an out-of-band wake actually takes.
 fn replay_tick(rig: Rig) -> Nil {
-  process.send(process.named_subject(rig.scanner), schedulescan.Tick)
+  process.send(process.named_subject(rig.scanner), schedulescan.Rescan)
+}
+
+// A wake tagged with a generation the actor has already moved past — the
+// shape a superseded timer chain delivers.
+fn stale_tick(rig: Rig, generation: Int) -> Nil {
+  process.send(
+    process.named_subject(rig.scanner),
+    schedulescan.Tick(generation:),
+  )
 }
 
 // A provider whose every request parks forever: the returned handle
@@ -574,4 +584,69 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "an expired schedule must stop contributing to the re-arm"
   stop(rig)
+}
+
+// --- one chain, however many wakes ----------------------------------------
+
+// Every scan ends by arming the next wake, so anything delivering a wake
+// delivers a *chain*, not an event. Before the generation tag, `poke`
+// sent a bare tick and the extra chain re-armed itself forever: one
+// permanent chain per model `schedule_create` or `schedule_cancel`, each
+// costing a full store scan per period for the life of the session.
+// Measured 2 -> 5 pending after three pokes, and it never came back down.
+//
+// The property is convergence, not an instantaneous count: a superseded
+// chain is still sitting in the timer wheel until its deadline arrives,
+// and what the fix guarantees is that when it *does* arrive it dies there
+// instead of re-arming. So this drains the wheel and asserts the actor is
+// back to exactly one live chain.
+pub fn pokes_leave_exactly_one_live_timer_chain_test() {
+  let sched = interval_schedule(name: "hb", seconds: 60, wake: True)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  process.sleep(300)
+  let before = fake_pending(rig.fc)
+
+  replay_tick(rig)
+  replay_tick(rig)
+  replay_tick(rig)
+  process.sleep(300)
+
+  // Drain: each pop runs one wake. The live chain re-arms, the superseded
+  // ones do not, so the wheel settles back to its one-chain baseline.
+  drain(rig, 12)
+
+  assert fake_pending(rig.fc) == before
+  stop(rig)
+}
+
+// The other half of the same mechanism, isolated: a wake from a chain the
+// actor has replaced must die where it lands rather than re-arming.
+pub fn a_stale_tick_does_not_rearm_test() {
+  let sched = interval_schedule(name: "hb", seconds: 60, wake: True)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  process.sleep(300)
+  let before = fake_pending(rig.fc)
+
+  // Generation 0 is behind whatever the actor has reached.
+  stale_tick(rig, 0)
+  stale_tick(rig, 0)
+  process.sleep(300)
+
+  // No new deadline was armed by either: a stale tick is inert.
+  assert fake_pending(rig.fc) == before
+  stop(rig)
+}
+
+fn drain(rig: Rig, remaining: Int) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False ->
+      case fake_advance(rig.fc) {
+        False -> Nil
+        True -> {
+          process.sleep(60)
+          drain(rig, remaining - 1)
+        }
+      }
+  }
 }

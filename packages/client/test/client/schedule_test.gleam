@@ -7,6 +7,7 @@
 //// bound that broke rather than leaving that to a diff.
 
 import client/schedule
+import client/schedulescan
 import core/json
 import gleam/int
 import gleam/list
@@ -544,7 +545,7 @@ fn sched() -> schedule.Schedule {
 }
 
 pub fn the_injection_names_itself_and_fences_the_body_test() {
-  let text = schedule.injection(sched(), False)
+  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
   assert string.contains(text, "scheduled heartbeat \"heartbeat\"")
   assert string.contains(text, "not a turn from the user")
   assert string.contains(
@@ -556,12 +557,12 @@ pub fn the_injection_names_itself_and_fences_the_body_test() {
 }
 
 pub fn a_prompt_fire_carries_no_late_annotation_test() {
-  let text = schedule.injection(sched(), False)
+  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
   assert !string.contains(text, "This fire is late")
 }
 
 pub fn a_late_fire_says_so_test() {
-  let text = schedule.injection(sched(), True)
+  let text = schedule.injection(sched(), True, schedule.OperatorConfigured)
   assert string.contains(text, "This fire is late")
 }
 
@@ -608,7 +609,10 @@ pub fn the_committed_example_shows_both_timings_test() {
 // producing end.
 pub fn the_first_line_names_the_schedule_completely_test() {
   let assert Ok(#(first, _body)) =
-    string.split_once(schedule.injection(sched(), False), "\n")
+    string.split_once(
+      schedule.injection(sched(), False, schedule.OperatorConfigured),
+      "\n",
+    )
     as "an injection must have a body below its attribution line"
 
   assert first == "[loom] scheduled heartbeat \"heartbeat\""
@@ -619,12 +623,18 @@ pub fn the_first_line_names_the_schedule_completely_test() {
 // fact about a fire that changes what they should do about it.
 pub fn the_first_line_carries_the_late_marker_test() {
   let assert Ok(#(first, _body)) =
-    string.split_once(schedule.injection(sched(), True), "\n")
+    string.split_once(
+      schedule.injection(sched(), True, schedule.OperatorConfigured),
+      "\n",
+    )
     as "a late injection must have a body below its attribution line"
 
   assert first == "[loom] scheduled heartbeat \"heartbeat\" (late)"
   // The prose reason stays in the body, where an expanded reader finds it.
-  assert string.contains(schedule.injection(sched(), True), "This fire is late")
+  assert string.contains(
+    schedule.injection(sched(), True, schedule.OperatorConfigured),
+    "This fire is late",
+  )
 }
 
 // --- the [schedules] policy table ------------------------------------------
@@ -856,4 +866,94 @@ pub fn the_committed_example_configs_policy_parses_test() {
   let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
     as "the committed example config must be readable"
   assert schedule.parse_policy(text) == Ok(schedule.ModelSchedulesWake)
+}
+
+// --- attribution -----------------------------------------------------------
+
+// The fence exists to answer one question: whose text is this. Getting it
+// wrong in the model-created direction is the sharp error — a model
+// reading "standing operator configuration" above a body it wrote itself
+// has been handed an authority nobody granted, on a schedule it set.
+pub fn a_model_created_fire_does_not_claim_to_be_operator_configuration_test() {
+  let text = schedule.injection(sched(), False, schedule.ModelCreated)
+
+  assert !string.contains(text, "standing operator configuration")
+  assert !string.contains(text, "operator")
+    || string.contains(text, "not operator configuration")
+  assert string.contains(text, "you")
+}
+
+pub fn an_operator_fire_still_says_it_is_operator_configuration_test() {
+  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
+
+  assert string.contains(text, "standing operator configuration")
+}
+
+// Both origins keep the two things every injection owes a reader,
+// whatever else differs: it is not the user talking, and no reply is
+// wanted.
+pub fn both_origins_disclaim_the_user_and_a_reply_test() {
+  [schedule.OperatorConfigured, schedule.ModelCreated]
+  |> list.each(fn(origin) {
+    let text = schedule.injection(sched(), False, origin)
+    // Lowercased: one origin opens the clause mid-sentence, the other
+    // starts a sentence with it.
+    let lowered = string.lowercase(text)
+    assert string.contains(lowered, "not a turn from the user")
+    assert string.contains(lowered, "no reply is expected")
+    // And the collapsed first line still names the schedule completely.
+    let assert Ok(#(first, _body)) = string.split_once(text, "\n")
+      as "an injection must have a body below its attribution line"
+    assert first == "[loom] scheduled heartbeat \"heartbeat\""
+  })
+}
+
+// An interval above the expiry window can never fire twice, and — the
+// reason this is an error rather than a nit — an unbounded interval
+// becomes an unbounded timer delay. `client/schedulescan.arm` clamps to
+// 2^32-1 ms because a `receive after` above that raises `timeout_value`
+// inside an *unlinked* timer process, which would leave the scanner
+// silently deaf for the rest of the session. Refusing here keeps that
+// clamp a backstop rather than the only guard.
+pub fn build_refuses_an_interval_above_the_expiry_window_test() {
+  let over =
+    schedule.build(
+      name: "slow",
+      target: "main",
+      timing: schedule.Interval(
+        seconds: schedule.max_interval_s + 1,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
+      ),
+      wake: False,
+      body: "b",
+    )
+  let assert Error(reason) = over
+    as "an interval above the maximum must be refused"
+  assert string.contains(reason, int.to_string(schedule.max_interval_s))
+
+  // The boundary itself is fine, and stays well inside the timer limit.
+  let assert Ok(_edge) =
+    schedule.build(
+      name: "slow",
+      target: "main",
+      timing: schedule.Interval(
+        seconds: schedule.max_interval_s,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
+      ),
+      wake: False,
+      body: "b",
+    )
+    as "the maximum interval itself must build"
+  assert schedule.max_interval_s * 1000 <= schedulescan.max_timer_delay_ms
+}
+
+// The operator's TOML path is held to the same ceiling, in its own words.
+pub fn the_toml_path_refuses_an_interval_above_the_maximum_test() {
+  let text =
+    "[[schedule]]\nname = \"slow\"\nevery = \""
+    <> int.to_string(schedule.max_interval_s + 1)
+    <> "s\"\nbody = \"b\"\n"
+  let assert Error(reason) = schedule.parse(text)
+    as "an operator interval above the maximum must be refused"
+  assert string.contains(reason, "maximum")
 }

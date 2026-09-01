@@ -1725,32 +1725,38 @@ fn assemble(
       "the websocket server did not start: " <> string.inspect(error)
     }),
   )
-  Ok(
-    Booted(
-      runtime:,
-      served:,
-      broker: broker_actor,
-      pool:,
-      summaries: summary_sink,
-      gateway: hub.Gateway(name:),
-      services: services.pid,
-      stops:,
-      session_id: settings.session_id,
-      token_path: settings.token_path,
-      bind_host: settings.bind_host,
-      prompt: assembled,
-      helper_path: settings.helper_path,
-      mcp: mcp_layer,
-      rulescan: case settings.rules {
-        [] -> None
-        _configured -> Some(rulescan_name)
-      },
-      schedulescan: case settings.schedules {
-        [] -> None
-        _configured -> Some(schedulescan_name)
-      },
-    ),
-  )
+  Ok(Booted(
+    runtime:,
+    served:,
+    broker: broker_actor,
+    pool:,
+    summaries: summary_sink,
+    gateway: hub.Gateway(name:),
+    services: services.pid,
+    stops:,
+    session_id: settings.session_id,
+    token_path: settings.token_path,
+    bind_host: settings.bind_host,
+    prompt: assembled,
+    helper_path: settings.helper_path,
+    mcp: mcp_layer,
+    rulescan: case settings.rules {
+      [] -> None
+      _configured -> Some(rulescan_name)
+    },
+    // The same two questions `with_schedule_scanner` starts one on, in
+    // the same order. Deriving this from `schedules` alone was wrong the
+    // moment the model-facing door could start a scanner with no
+    // operator schedules configured: the field said `None` while a
+    // scanner was running under that very name.
+    schedulescan: case
+      settings.schedules,
+      schedule.policy_opens_the_door(settings.schedule_policy)
+    {
+      [], False -> None
+      _configured, _door -> Some(schedulescan_name)
+    },
+  ))
 }
 
 /// Takes a booted server apart, front to back: the listener first so no

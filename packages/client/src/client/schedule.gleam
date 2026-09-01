@@ -469,6 +469,16 @@ fn parsed_every_seconds(
       )
     Ok(seconds) if seconds <= 0 ->
       Error(place <> ".every must be a positive number of seconds")
+    Ok(seconds) if seconds > max_interval_s ->
+      Error(
+        place
+        <> ".every is "
+        <> string.inspect(seconds)
+        <> "s, above the "
+        <> string.inspect(max_interval_s)
+        <> "s maximum: a longer interval than the expiry window can never "
+        <> "fire twice — use `at` for a one-shot",
+      )
     Ok(seconds) if seconds < min_interval_s ->
       Error(
         place
@@ -926,14 +936,50 @@ fn earliest(occurrences: List(Int)) -> Option(Int) {
 /// ## Examples
 ///
 /// ```gleam
-/// // schedule.injection(sched, False) |> string.contains("scheduled heartbeat")
+/// // schedule.injection(sched, False, schedule.OperatorConfigured)
 /// ```
 ///
 /// ```gleam
-/// // schedule.injection(sched, True) |> string.contains("This fire is late")
+/// // schedule.injection(sched, True, schedule.ModelCreated)
 /// ```
 ///
-pub fn injection(schedule: Schedule, late: Bool) -> String {
+pub type Origin {
+  /// An operator's `[[schedule]]` table. Standing configuration the model
+  /// had no hand in.
+  OperatorConfigured
+
+  /// A schedule the model created for itself through `tools/schedule` or
+  /// the `schedule.*` capabilities.
+  ModelCreated
+}
+
+/// How a fire attributes itself, which is the whole point of the fence.
+///
+/// Both origins say the same two things — this is not a turn from the
+/// user, and it arrived on a timer — and then diverge on the one question
+/// the fence exists to answer: *whose text is this*. Getting that wrong
+/// in the model-created direction is the sharper error, because a model
+/// reading "this is standing operator configuration" above text it wrote
+/// itself has been handed an authority nobody granted, on a schedule it
+/// set. So the model-created line says plainly that the reader wrote it.
+fn attribution(origin: Origin) -> String {
+  case origin {
+    OperatorConfigured ->
+      "This is standing operator configuration, firing automatically on a "
+      <> "timer. It is not a turn from the user — nobody necessarily "
+      <> "prompted it — and no reply is expected; treat it as scheduled "
+      <> "instruction and carry on with the work in hand."
+
+    ModelCreated ->
+      "This is a heartbeat *you* scheduled earlier, firing automatically "
+      <> "on a timer. It is not a turn from the user, and it is not "
+      <> "operator configuration — it carries no authority beyond what you "
+      <> "already had when you set it. No reply is expected; treat it as a "
+      <> "note to self and carry on with the work in hand."
+  }
+}
+
+pub fn injection(schedule: Schedule, late: Bool, origin: Origin) -> String {
   let late_line = case late {
     True ->
       "This fire is late: the scheduled window for this occurrence has "
@@ -961,10 +1007,8 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
   <> "\""
   <> late_marker
   <> "\n\n"
-  <> "This is standing operator configuration, firing automatically on a "
-  <> "timer. It is not a turn from the user — nobody necessarily prompted "
-  <> "it — and no reply is expected; treat it as scheduled instruction "
-  <> "and carry on with the work in hand.\n\n"
+  <> attribution(origin)
+  <> "\n\n"
   <> late_line
   <> "--- begin scheduled heartbeat \""
   <> schedule.name
@@ -1033,6 +1077,21 @@ pub type Policy {
 /// started with no config file at all gets. See `Policy` for why the door
 /// defaults open.
 pub const default_policy = ModelSchedulesWake
+
+/// The longest recurring interval, in seconds — the same 7 days
+/// `max_expires_after_s` caps the expiry window at.
+///
+/// Two things rest on this bound, and the second is why it is an error
+/// rather than a nit. An interval longer than the schedule's own expiry
+/// window can never fire twice, so it is a one-shot written the hard way
+/// and `describe_timing` would tell the model "at most 1000 times" about
+/// something that fires once. And an unbounded interval becomes an
+/// unbounded *timer delay*: `client/schedulescan.arm` must clamp anyway
+/// (a one-shot `at` can be arbitrarily far out), but a delay above
+/// 2^32-1 ms raises `timeout_value` inside an unlinked timer process, so
+/// the scanner would go silently deaf. Refusing here keeps the clamp a
+/// backstop rather than the only guard.
+pub const max_interval_s = 604_800
 
 /// The most schedules one session will hold on a model's behalf, across
 /// every strand.
@@ -1304,15 +1363,23 @@ fn checked_timing(timing: Timing) -> Result(Nil, String) {
 }
 
 fn checked_interval(seconds: Int) -> Result(Nil, String) {
-  case seconds < min_interval_s {
-    True ->
+  case seconds < min_interval_s, seconds > max_interval_s {
+    True, _ ->
       Error(
         "every_s must be at least "
         <> int.to_string(min_interval_s)
         <> " seconds: anything tighter is a busy-loop against provider "
         <> "budget",
       )
-    False -> Ok(Nil)
+    _, True ->
+      Error(
+        "every_s must be at most "
+        <> int.to_string(max_interval_s)
+        <> " seconds: a longer interval than the schedule's own expiry "
+        <> "window can never fire twice, so it is a one-shot written the "
+        <> "hard way — use `at`",
+      )
+    False, False -> Ok(Nil)
   }
 }
 
