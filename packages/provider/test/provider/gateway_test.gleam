@@ -328,7 +328,21 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
   assert process.receive(cancelled, within: 1000)
     == Ok("https://primary.test/v1/messages")
   assert process.receive(started, within: 100) == Error(Nil)
-  assert process.receive(cancelled, within: 100) == Error(Nil)
+
+  // The witness asks every adopted owner to stop the moment teardown
+  // begins, and the pump cancels its active transport as well, so the
+  // primary may hear its cancel more than once; a cancel capability is
+  // idempotent by contract (protocol-change/010). What must never happen
+  // is a cancel addressed to a transport that was never started.
+  assert only_primary_cancelled(cancelled)
+}
+
+fn only_primary_cancelled(cancelled: process.Subject(String)) -> Bool {
+  case process.receive(cancelled, within: 100) {
+    Error(Nil) -> True
+    Ok("https://primary.test/v1/messages") -> only_primary_cancelled(cancelled)
+    Ok(_other) -> False
+  }
 }
 
 pub fn cancellation_before_begin_starts_no_provider_work_test() {

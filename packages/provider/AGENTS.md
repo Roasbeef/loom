@@ -62,7 +62,8 @@ processful shell around that sans-io core. WP-F.
 
 - **Depends on**: `core` (json, messages, corruption — for the durable
   message shapes and total JSON parsing), `gleam_erlang` (the stream pump
-  runs on its own process).
+  runs on its own process), `weft` (the custodian is a witnessed run with
+  a managed task; see `custodian.gleam`).
 - **Depended on by**: `runtime` (`effects.ProviderSurface` is
   type-compatible with `StreamHandle`, and `settle_failure` bridges
   `retry.classify` into the machine's retryability convention),
@@ -95,9 +96,13 @@ processful shell around that sans-io core. WP-F.
 
 - **Actor messages**: `gateway.prepare` first publishes a minimal custodian;
   its begin permit then releases a guard and private pump for the whole
-  fallback walk. The
-  custodian adopts both workers and every transport owner before work begins;
-  its pid, rather than a crashable worker, is the public drain witness. The
+  fallback walk. The custodian is a weft *witnessed run* (`weft.managed`
+  task, `weft.start_witnessed`): the guard is adopted as a leaf owner whose
+  cancel capability is its typed stop message, every child the guard
+  discovers is published through the run's `weft.Ledger`, and the scope's
+  pid, rather than a crashable worker, is the public drain witness. The
+  guard's exit and the consumer's exit are both `weft.cancel_when_exits`
+  causes, so either fans cancellation out to every adopted child. The
   guard monitors the direct consumer and retains each active transport
   capability the pump publishes. The pump selects active-transport Down,
   absolute attempt deadline, cumulative response budget, and private
@@ -167,7 +172,12 @@ processful shell around that sans-io core. WP-F.
   child before begin. A leaf owns no descendants, so its own Down completes its
   lifetime; a transitive child requires `Normal`. An unexpected killed or
   abnormal transitive `Down` poisons the custodian even after cancellation has
-  begun and propagates failure after the remaining known frontier is cancelled.
+  begun and propagates failure after the remaining known frontier is cancelled
+  — as weft's `weft_drain_proof_lost` exit reason, which every judgement in
+  this tree treats exactly like a kill. Cancel capabilities must stay
+  idempotent: the witness asks every adopted owner to stop the moment
+  teardown begins, and the pump cancels its active transport as well, so an
+  owner may hear its cancel twice (protocol-change/010 permits it).
   A waiter which attaches after exit cannot recover this fact because Erlang
   reports `noproc`; critical callers retain a `DrainWitness` across `begin`.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not

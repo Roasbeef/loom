@@ -3,101 +3,73 @@
 //// A process doing useful work is a poor teardown acknowledgement: if that
 //// process crashes, its Down arrives before the work beneath it has finished
 //// cancelling. This module keeps the public witness deliberately boring. It
-//// receives typed ownership registrations, monitors the worker and every
-//// registered child, and runs fallible cancellation closures on disposable
-//// helper processes. The witness itself performs no provider callback, HTTP
-//// operation, or foreign call.
+//// is a weft *witnessed run* — a scope that monitors the worker and every
+//// registered child, runs fallible cancellation closures on disposable
+//// helper processes, and performs no provider callback, HTTP operation, or
+//// foreign call of its own. Everything this module used to hand-roll (the
+//// adoption ledger, the leaf/transitive proof rule, the poisoned exit, the
+//// canceller helpers) is now weft's contract, and this file is the
+//// translation between loom's vocabulary and weft's.
 ////
 //// Child adoption is an acknowledged prepare/publish/begin boundary. A worker
 //// must register a child before permitting that child to start. If teardown
-//// already began, the custodian rejects the permit, invokes cancellation, and
-//// still waits for both the child and the worker. The public owner therefore
-//// retires normally only after the complete registered subtree is gone. A
-//// leaf's `Down` completes that leaf, while an unexpected abnormal transitive
-//// owner exit destroys its descendant proof and becomes an abnormal custodian
+//// already began, the scope refuses the permit, still asks the child to
+//// stop, and still waits for both the child and the worker. The public owner
+//// therefore retires normally only after the complete registered subtree is
+//// gone. A leaf's `Down` completes that leaf, while an abnormal transitive
+//// owner exit destroys its descendant proof and becomes an abnormal owner
 //// exit after every still-known child is cancelled.
 ////
 //// ## The process shape
 ////
-//// The custodian is not another worker. It is the small, unlinked process that
-//// remembers every process which can still own work:
+//// The custodian is not another worker. It is the scope that remembers every
+//// process which can still own work:
 ////
 //// ```text
-//// caller --cancel--> custodian --stop--> worker
-////                       |                  |
-////                       |                  +-- starts child
-////                       |<----- adopt(child, cancel)
-////                       |
-////                       +-- exits only after worker, child, and cancellation
-////                           helpers have all exited
+//// caller --cancel--> scope --stop--> worker
+////                      |               |
+////                      |               +-- starts child
+////                      |<----- adopt(child, cancel)
+////                      |
+////                      +-- exits only after worker, child, and cancellation
+////                          helpers have all exited
 //// ```
+////
+//// The worker is adopted as a *leaf* whose cancel capability is its typed
+//// stop message, so a crashing worker loses no proof: its children are
+//// adopted into the scope directly, never beneath it. The worker's exit is
+//// also a watched exit, so its death — however it dies — fans cancellation
+//// out to every child adopted beside it. Children are cancelled *after* the
+//// worker is gone, never beside it: every child is published beneath the
+//// worker (`weft.adopt_under`), so a worker that is asked to stop keeps sole
+//// custody of its own cancellation and terminal arbitration, and the scope
+//// reaches a child directly only when the worker died without finishing
+//// that job. The direct consumer is watched the same way: a
+//// stream nobody can receive cancels itself. A lost proof cancels the run
+//// (`weft.CancelSiblings`), which is how a dead transitive child asks the
+//// worker to stop rather than leaving it parked behind evidence that no
+//// longer exists.
 ////
 //// Code which monitors `owner(custodian)` consequently learns a stronger fact
 //// than "the worker returned": a normal `Down` proves cancellation crossed
-//// every registered ownership boundary, while an abnormal `Down` explicitly
-//// reports that the proof was lost. Keeping callbacks off the custodian itself
-//// matters because a crashing callback must not destroy that evidence.
+//// every registered ownership boundary, while an abnormal `Down` — weft's
+//// `weft_drain_proof_lost` — explicitly reports that the proof was lost.
+//// Keeping callbacks off the scope itself matters because a crashing callback
+//// must not destroy that evidence.
 ////
 //// ## The ownership protocol
 ////
 //// A worker starts a child parked, calls `adopt`, and starts the child only
 //// when `adopt` returns `True`. A `False` result means teardown already won;
 //// the worker must not begin new work. `owner: None` is reserved for work with
-//// no asynchronous descendant. Its cancellation closure may run, but there is
-//// no child process for the custodian to retain.
+//// no asynchronous descendant: there is no child process for the scope to
+//// retain and nothing for the witness to cancel, so the adoption is only the
+//// permit question. The scope answers it through a stand-in leaf that exits
+//// at once (see `ownerless`), the seam loom#159 names for ownerless work.
 
-import gleam/erlang/process.{type Monitor, type Pid, type Subject}
-import gleam/list
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/option.{type Option, None, Some}
-import gleam/result
-
-type Message {
-  Adopt(
-    owner: Option(Pid),
-    kind: ChildKind,
-    cancel: fn() -> Nil,
-    reply_with: Subject(Bool),
-  )
-  Cancel
-}
-
-type Event {
-  Command(Message)
-  Down(process.Down)
-}
-
-type Child {
-  Child(
-    owner: Option(Pid),
-    monitor: Option(Monitor),
-    kind: ChildKind,
-    cancel: fn() -> Nil,
-    cancel_started: Bool,
-  )
-}
-
-// A leaf's own Down completes its lifetime regardless of reason. A transitive
-// witness speaks for work beneath itself, so only Normal can carry its proof.
-type ChildKind {
-  Leaf
-  Transitive
-}
-
-type State(stop) {
-  State(
-    commands: Subject(Message),
-    worker: Pid,
-    worker_monitor: Monitor,
-    worker_alive: Bool,
-    worker_stop: Subject(stop),
-    stop_message: stop,
-    consumer_monitor: Monitor,
-    children: List(Child),
-    cancellers: List(Monitor),
-    closing: Bool,
-    poisoned: Bool,
-  )
-}
+import weft
 
 /// The typed capability for one transitive drain witness.
 ///
@@ -105,7 +77,16 @@ type State(stop) {
 /// children, or monitor the witness without sending arbitrary process
 /// messages.
 pub opaque type Custodian {
-  Custodian(commands: Subject(Message), owner: Pid)
+  Custodian(
+    /// The witnessed run whose scope is the public owner.
+    run: weft.Witnessed,
+    /// The ledger children are published through. `None` only when the
+    /// scope died before handing it over, in which case every adoption is
+    /// refused and the owner's `Down` already carries the verdict.
+    ledger: Option(weft.Ledger),
+    /// The worker every child is published beneath.
+    worker: Pid,
+  )
 }
 
 // --- Public protocol -------------------------------------------------------
@@ -113,9 +94,10 @@ pub opaque type Custodian {
 /// Starts a custodian for `worker` and every child it later adopts.
 ///
 /// `worker_stop` is the worker's typed cooperative-stop capability. `consumer`
-/// is monitored because a stream nobody can receive must cancel itself. The
-/// returned custodian is unlinked: its purpose is to survive a crashing worker
-/// long enough to account for the worker's descendants.
+/// is watched because a stream nobody can receive must cancel itself. The
+/// returned custodian's scope is linked to the caller as every weft scope is,
+/// but it survives a crashing worker long enough to account for the worker's
+/// descendants, which is its whole purpose.
 ///
 /// ## Examples
 ///
@@ -134,29 +116,39 @@ pub fn start(
   stop_message: stop,
   consumer: Pid,
 ) -> Custodian {
-  let ready = process.new_subject()
-  let owner =
-    process.spawn_unlinked(fn() {
-      let commands = process.new_subject()
-      let state =
-        State(
-          commands:,
-          worker:,
-          worker_monitor: process.monitor(worker),
-          worker_alive: process.is_alive(worker),
-          worker_stop:,
-          stop_message:,
-          consumer_monitor: process.monitor(consumer),
-          children: [],
-          cancellers: [],
-          closing: False,
-          poisoned: False,
-        )
-      process.send(ready, commands)
-      loop(state)
-    })
-  let commands = process.receive_forever(ready)
-  Custodian(commands:, owner:)
+  let handoff = process.new_subject()
+  let run =
+    weft.new_prepared([
+      weft.managed(fn(ledger) {
+        // The worker is adopted before this closure returns, so the task's
+        // account cannot be sealed by its own return: from here the worker's
+        // exit is an owner fact the scope waits for. A leaf, because the
+        // worker's children are adopted into the scope directly and a
+        // crashing worker therefore abandons nothing the scope cannot see.
+        let _adoption =
+          weft.adopt_leaf(ledger, owner: worker, cancel: fn() {
+            process.send(worker_stop, stop_message)
+          })
+        process.send(handoff, ledger)
+        Ok(Nil)
+      }),
+    ])
+    |> weft.on_failure(weft.CancelSiblings)
+    |> weft.cancel_when_exits(worker)
+    |> weft.cancel_when_exits(consumer)
+    |> weft.start_witnessed
+
+  // The ledger arrives from inside the scope's worker; racing it against the
+  // scope's own death is what keeps this total when something outside the
+  // run destroys the scope before its first task runs.
+  let watch = process.monitor(weft.witness_pid(run))
+  let ledger =
+    process.new_selector()
+    |> process.select_map(handoff, Some)
+    |> process.select_specific_monitor(watch, fn(_down) { None })
+    |> process.selector_receive_forever()
+  process.demonitor_process(watch)
+  Custodian(run:, ledger:, worker:)
 }
 
 /// Returns the PID whose `Down` proves that the registered subtree drained.
@@ -172,7 +164,7 @@ pub fn start(
 /// ```
 ///
 pub fn owner(custodian: Custodian) -> Pid {
-  custodian.owner
+  weft.witness_pid(custodian.run)
 }
 
 /// Requests cooperative teardown of the worker and its adopted children.
@@ -189,7 +181,7 @@ pub fn owner(custodian: Custodian) -> Pid {
 /// ```
 ///
 pub fn cancel(custodian: Custodian) -> Nil {
-  process.send(custodian.commands, Cancel)
+  weft.cancel_witnessed(custodian.run)
 }
 
 /// Publishes an optional child owner and its cancellation capability.
@@ -212,7 +204,10 @@ pub fn adopt(
   owner: Option(Pid),
   cancel: fn() -> Nil,
 ) -> Bool {
-  adopt_as(custodian, owner, Transitive, cancel)
+  case owner {
+    Some(pid) -> adopt_as(custodian, pid, Transitive, cancel)
+    None -> adopt_as(custodian, ownerless(), Leaf, fn() { Nil })
+  }
 }
 
 /// Publishes a required transitive owner/cancel pair.
@@ -234,7 +229,7 @@ pub fn adopt_owner(
   owner: Pid,
   cancel: fn() -> Nil,
 ) -> Bool {
-  adopt(custodian, Some(owner), cancel)
+  adopt_as(custodian, owner, Transitive, cancel)
 }
 
 /// Publishes a required leaf process and its cancellation capability.
@@ -255,211 +250,46 @@ pub fn adopt_leaf(
   owner: Pid,
   cancel: fn() -> Nil,
 ) -> Bool {
-  adopt_as(custodian, Some(owner), Leaf, cancel)
+  adopt_as(custodian, owner, Leaf, cancel)
+}
+
+// A leaf's own Down completes its lifetime regardless of reason. A transitive
+// witness speaks for work beneath itself, so only Normal can carry its proof.
+type ChildKind {
+  Leaf
+  Transitive
 }
 
 fn adopt_as(
   custodian: Custodian,
-  owner: Option(Pid),
+  owner: Pid,
   kind: ChildKind,
   cancel: fn() -> Nil,
 ) -> Bool {
-  let reply = process.new_subject()
-  let witness_monitor = process.monitor(custodian.owner)
-  process.send(
-    custodian.commands,
-    Adopt(owner:, kind:, cancel:, reply_with: reply),
-  )
-  let accepted =
-    process.new_selector()
-    |> process.select_map(reply, Ok)
-    |> process.select_specific_monitor(witness_monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive_forever()
-    |> result.unwrap(False)
-  process.demonitor_process(witness_monitor)
-  accepted
-}
-
-// --- Ownership loop -------------------------------------------------------
-
-// One mailbox serializes the two facts which would otherwise race: whether
-// cancellation has begun, and which descendants teardown must still cover.
-// Monitors turn process death into data for the same transition loop.
-fn loop(state: State(stop)) -> Nil {
-  let event =
-    process.new_selector()
-    |> process.select_map(state.commands, Command)
-    |> process.select_monitors(Down)
-    |> process.selector_receive_forever()
-  case event {
-    Command(Adopt(owner:, kind:, cancel:, reply_with:)) -> {
-      case owner {
-        None -> {
-          process.send(reply_with, !state.closing)
-          continue_or_stop(state)
-        }
-        Some(_) -> {
-          let child = monitor_child(owner, kind, cancel)
-          let state = State(..state, children: [child, ..state.children])
-          process.send(reply_with, !state.closing)
-          let state = case state.closing && !state.worker_alive {
-            True -> cancel_child(state, child)
-            False -> state
-          }
-          continue_or_stop(state)
-        }
+  case custodian.ledger {
+    // The scope was gone before it handed the ledger over; there is nobody
+    // to transfer custody to, which is the answer a dead witness gives.
+    None -> False
+    Some(ledger) -> {
+      let parent = custodian.worker
+      let adoption = case kind {
+        Transitive -> weft.adopt_under(ledger, parent:, owner:, cancel:)
+        Leaf -> weft.adopt_leaf_under(ledger, parent:, owner:, cancel:)
       }
-    }
-    Command(Cancel) -> continue_or_stop(begin_close(state))
-    Down(down) -> continue_or_stop(handle_down(state, down))
-  }
-}
-
-fn monitor_child(
-  owner: Option(Pid),
-  kind: ChildKind,
-  cancel: fn() -> Nil,
-) -> Child {
-  case owner {
-    None -> Child(owner:, monitor: None, kind:, cancel:, cancel_started: False)
-    Some(pid) -> {
-      let monitor = process.monitor(pid)
-
-      // Keep even an already-dead owner until its Down is adjudicated. An
-      // is_alive pre-filter would erase the only distinction between a normal
-      // drain and an owner which crashed after abandoning descendants.
-      Child(
-        owner:,
-        monitor: Some(monitor),
-        kind:,
-        cancel:,
-        cancel_started: False,
-      )
-    }
-  }
-}
-
-// Closing first tells the worker to stop producing descendants. Children are
-// cancelled after worker death, when the adoption set can no longer grow.
-fn begin_close(state: State(stop)) -> State(stop) {
-  case state.closing {
-    True -> state
-    False -> {
-      process.send(state.worker_stop, state.stop_message)
-      State(..state, closing: True)
-    }
-  }
-}
-
-// Cancellation callbacks are external behavior and may crash. A disposable
-// helper contains that failure while its monitor keeps the witness alive until
-// the callback itself has returned or died.
-fn cancel_child(state: State(stop), child: Child) -> State(stop) {
-  case child.cancel_started {
-    True -> state
-    False -> {
-      let canceller = process.spawn_unlinked(child.cancel)
-      let monitor = process.monitor(canceller)
-      let cancellers = case process.is_alive(canceller) {
-        True -> [monitor, ..state.cancellers]
-        False -> {
-          process.demonitor_process(monitor)
-          state.cancellers
-        }
-      }
-      State(
-        ..state,
-        children: mark_cancel_started(state.children, child),
-        cancellers:,
-      )
-    }
-  }
-}
-
-fn mark_cancel_started(children: List(Child), target: Child) -> List(Child) {
-  list.map(children, fn(child) {
-    case child.monitor == target.monitor && child.owner == target.owner {
-      True -> Child(..child, cancel_started: True)
-      False -> child
-    }
-  })
-}
-
-// A worker Down closes the adoption frontier. At that point every retained
-// child is known, so cancellation can fan out without missing a late publish.
-fn handle_down(state: State(stop), down: process.Down) -> State(stop) {
-  case down {
-    process.PortDown(..) -> state
-    process.ProcessDown(monitor:, ..) if monitor == state.worker_monitor -> {
-      let state = State(..state, worker_alive: False)
-      let state = begin_close(state)
-      list.fold(state.children, state, cancel_child)
-    }
-    process.ProcessDown(monitor:, ..) if monitor == state.consumer_monitor ->
-      begin_close(state)
-    process.ProcessDown(monitor:, reason:, ..) -> {
-      let lost_proof = case reason {
-        process.Normal -> False
-
-        // Starting cancellation is not an acknowledgement. An abnormal leaf
-        // is fully gone, but an abnormal transitive owner may have abandoned
-        // descendants which the custodian cannot discover or cancel.
-        process.Killed | process.Abnormal(_) ->
-          list.any(state.children, fn(child) {
-            child.monitor == Some(monitor) && child.kind == Transitive
-          })
-      }
-      let state =
-        State(
-          ..state,
-          children: forget_child(state.children, monitor),
-          cancellers: list.filter(state.cancellers, fn(held) { held != monitor }),
-          poisoned: state.poisoned || lost_proof,
-        )
-
-      // Once a child witness dies abnormally, no later event can recreate its
-      // transitive proof. Stop the remaining frontier and propagate an
-      // abnormal owner exit after every still-known child has been cancelled.
-      case lost_proof {
-        True -> begin_close(state)
-        False -> state
+      case adoption {
+        weft.Adopted -> True
+        weft.Refused -> False
       }
     }
   }
 }
 
-fn forget_child(children: List(Child), monitor: Monitor) -> List(Child) {
-  list.filter(children, fn(child) { child.monitor != Some(monitor) })
-}
-
-// The witness exits only at the conjunction which gives `owner` its meaning:
-// the worker is gone, every asynchronous child is gone, and no cancellation
-// callback remains live. Until then a monitorable proof still has work to do.
-fn continue_or_stop(state: State(stop)) -> Nil {
-  let async_children =
-    list.any(state.children, fn(child) { child.owner != None })
-  case
-    state.closing
-    && !state.worker_alive
-    && !async_children
-    && list.is_empty(state.cancellers)
-  {
-    True ->
-      case state.poisoned {
-        True -> process.kill(process.self())
-        False -> forget(state)
-      }
-    False -> loop(state)
-  }
-}
-
-fn forget(state: State(stop)) -> Nil {
-  process.demonitor_process(state.worker_monitor)
-  process.demonitor_process(state.consumer_monitor)
-  list.each(state.children, fn(child) {
-    case child.monitor {
-      None -> Nil
-      Some(monitor) -> process.demonitor_process(monitor)
-    }
-  })
+// Ownerless work has no process to wait for, and the hand-rolled loop never
+// retained it: adopting `None` was the permit question and nothing more,
+// its cancellation closure being the worker's to run. The scope's ledger
+// needs a pid to answer that question against, so this is a leaf that
+// exits at once — resolved as drained the moment it is watched, cancelled
+// by a no-op, and holding nothing open.
+fn ownerless() -> Pid {
+  process.spawn_unlinked(fn() { Nil })
 }
