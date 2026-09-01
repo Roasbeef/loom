@@ -44,6 +44,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/set.{type Set}
 import runtime/api
+import weft
 
 /// Messages understood by the control actor. Opaque: callers use the
 /// wrapper functions.
@@ -556,6 +557,13 @@ pub type Attempted(value) {
 /// die keeps the caller alive; waiting for the reply keeps the action
 /// ordered before whatever the caller does next.
 ///
+/// The carrier runs inside a one-task `weft` run rather than a bare
+/// `spawn_unlinked`. Weft links every worker to its own scope process,
+/// never to the caller — that is the library's core guarantee, and
+/// exactly the property the hand-rolled unlinked spawn this replaces
+/// existed to get by hand: a crashing carrier cannot take the simulation
+/// down with it.
+///
 /// # Not simulation-safe
 ///
 /// The `within_ms` budget is real milliseconds, not logical ones, and
@@ -569,12 +577,12 @@ pub type Attempted(value) {
 ///
 /// What used to reach it routinely was the carrier *dying* — the
 /// overwhelmingly common non-answer, and one with nothing timing-shaped
-/// about it. That is now observed through a monitor and returned as
-/// `Raised` immediately, which takes the wall clock off the ordinary
-/// path entirely. Every `Expired` that does happen is recorded through
-/// `note_wait`, reaches the runner as `Report.waits`, and is named in
-/// the failure a run reports, so a seed that touched the wall clock says
-/// so instead of looking like a behaviour difference.
+/// about it. That is now surfaced immediately as weft's `Crashed`
+/// outcome and returned as `Raised`, which takes the wall clock off the
+/// ordinary path entirely. Every `Expired` that does happen is recorded
+/// through `note_wait`, reaches the runner as `Report.waits`, and is
+/// named in the failure a run reports, so a seed that touched the wall
+/// clock says so instead of looking like a behaviour difference.
 ///
 /// # Perturbation
 ///
@@ -585,6 +593,10 @@ pub type Attempted(value) {
 /// kill is still the right move, because a carrier left running could
 /// land its admission *after* the caller has retried and land the same
 /// turn twice, which corrupts a run far worse than losing a reply does.
+/// `weft.deadline`'s cancellation kills the worker and joins it before
+/// `start` returns, so this caller has proof the carrier is gone rather
+/// than merely a kill signal sent — stronger than the fire-and-forget
+/// `process.kill` this replaces.
 ///
 /// ## Examples
 ///
@@ -600,41 +612,51 @@ pub fn attempt(
   action action: fn() -> value,
   within_ms within_ms: Int,
 ) -> Attempted(value) {
-  let reply: Subject(value) = process.new_subject()
-  let pid: Pid = process.spawn_unlinked(fn() { process.send(reply, action()) })
+  let outcomes =
+    weft.new([fn() { Ok(action()) }])
+    |> weft.deadline(within_ms)
+    |> weft.start
 
-  // Monitoring after the spawn is safe even when the carrier is already
-  // gone: `erlang:monitor/2` answers a dead pid with an immediate
-  // `noproc` down rather than with silence. And a carrier that replied
-  // and then exited normally leaves both messages queued, reply first,
-  // so the selector reads the reply — a scan of the mailbox in arrival
-  // order, not a race.
-  let monitor = process.monitor(pid)
-  let outcome =
-    process.new_selector()
-    |> process.select_map(reply, Answered)
-    |> process.select_specific_monitor(monitor, fn(_down) { Raised })
-    |> process.selector_receive(within: within_ms)
-    |> expired_when_silent(pid)
-  process.demonitor_process(monitor)
+  let outcome = case outcomes {
+    [weft.Completed(value:, ..)] -> Answered(value)
+
+    // `action` never returns `Error` — the one-task closure only ever
+    // hands weft `Ok(action())`, with no channel for `action` itself to
+    // signal failure through — so this arm is unreachable by
+    // construction. It stays because `Outcome` is matched exhaustively
+    // rather than through a catch-all (R3), and nothing in the type lets
+    // the checker see that the closure never takes this branch.
+    [weft.Failed(..)] -> Raised
+
+    // The carrier's process died instead of answering: exactly what the
+    // old spawn_unlinked/monitor pair existed to observe without taking
+    // the caller down. Weft's scope now holds that link instead — a
+    // crashing worker arrives at the scope as a trapped `EXIT` and is
+    // reported here as `Crashed`, never propagating to this caller.
+    [weft.Crashed(..)] -> Raised
+
+    // The one place the wall clock actually decides something: a
+    // one-task run only produces `Abandoned` or `NeverStarted` through
+    // `weft.deadline`'s cancellation, so both name the deadline firing
+    // rather than two different failures. `weft.new` hands its single
+    // task a slot the instant the run starts, so `NeverStarted` cannot
+    // arise any other way here; `Abandoned` is that same task caught
+    // mid-flight when the deadline cancelled it. See the perturbation
+    // note on `attempt` for what the cancellation itself guarantees.
+    [weft.Abandoned(..)] -> Expired
+    [weft.NeverStarted(..)] -> Expired
+
+    // A one-task run yields exactly one outcome — `weft.start`'s own
+    // contract. Any other shape means the account weft handed back does
+    // not match the run it was given: a defect in the engine, not in
+    // this caller, so it is answered as `Raised` rather than asserted
+    // away. R4 forbids `let assert`/`panic` in `src`, and a caller that
+    // cannot observe its own admission should fail the attempt, not the
+    // whole simulation.
+    [] | [_, _, ..] -> Raised
+  }
   record_attempt(ctl, at, outcome)
   outcome
-}
-
-// The one place the wall clock actually decides something: no reply and
-// no death inside the budget. The carrier is killed on the way out (see
-// the perturbation note on `attempt`).
-fn expired_when_silent(
-  received: Result(Attempted(value), Nil),
-  pid: Pid,
-) -> Attempted(value) {
-  case received {
-    Ok(outcome) -> outcome
-    Error(Nil) -> {
-      process.kill(pid)
-      Expired
-    }
-  }
 }
 
 // An answered attempt is the ordinary case and says nothing worth
