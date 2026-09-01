@@ -16,6 +16,7 @@ broker = { path = "../broker" }
 tools = { path = "../tools" }
 client = { path = "../client" }
 prompt = { path = "../prompt" }
+weft = ">= 0.1.0 and < 1.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
