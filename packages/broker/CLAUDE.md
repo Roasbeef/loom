@@ -34,8 +34,9 @@ protocol (spec Part 1.4). WP-G.
   what is left on `process.call` is the two `@internal` test accessors,
   whose callers do want the crash.
 - `broker/exec.{Helper, Pool, ExecRequest, ExecResult, ExecFailure,
-  EnforcementDemand, Transport}` — the helper actor, the pool, and the
-  transport seam (`PortTransport` real, `ChannelTransport` for tests).
+  EnforcementDemand, Transport}` — the helper state machine, the pool,
+  and the transport seam (`PortTransport` real, `ChannelTransport` for
+  tests).
   Three of those types carry a variant for a peer that answered
   nothing: `CheckoutError.PoolUnavailable`,
   `ExecFailure.HelperUnresponsive`, and `HelperStatus.StatusUnresponsive`
@@ -61,8 +62,9 @@ protocol (spec Part 1.4). WP-G.
 ## Relationships
 
 - **Depends on**: `core` (msgpack for the wire, ids for `OpId`,
-  corruption), `gleam_erlang` + `gleam_otp` (the broker, helper, and pool
-  are actors; ports carry the helper channel).
+  corruption), `gleam_erlang` + `gleam_otp` (the broker and pool are
+  actors; ports carry the helper channel), `weft` (the helper is a
+  `weft/state_machine`, for the two state timeouts below).
 - **Depended on by**: `tools` (every jailed tool clears through
   `clear_call`), `conformance` (wiring and the jailed e2e).
 - **FFI**: `broker/internal/ffi_crypto` — `crypto:strong_rand_bytes` and
@@ -87,8 +89,29 @@ protocol (spec Part 1.4). WP-G.
     observability, reached only by `relay_pid` and `abort_epoch_count`.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
-    `CancelDeadline(exec_id)`, `HandshakeDeadline`, `HeartbeatTick`,
-    `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`.
+    `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
+    `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`. The helper is a
+    `weft/state_machine`, not a `gleam/otp/actor`: its state is
+    `exec.Phase` — `AwaitingHello | Idle(features) | Running(features,
+    exec) | Cancelling(features, exec) | Dead(failure)` — and everything
+    else the process carries is `exec.Data`. `handle` is one exhaustive
+    `case phase, message` matrix; `entered` is where each state's
+    deadline is armed.
+    Two of those messages are delivered by **state timeouts** rather than
+    by anyone: `HandshakeDeadline` is armed on entering `AwaitingHello`
+    and `CancelDeadline` on entering `Cancelling`, and each is cancelled
+    by the move out of the state that armed it. That is why
+    `CancelDeadline` carries no execution id and neither handler
+    re-checks whether it is still relevant — reaching `Idle` or `Dead`
+    *is* the cancellation, and a fire that raced the move is dropped by
+    weft's timer book. `HeartbeatTick` stays a hand-rolled
+    `process.send_after`: it must fire every N ms regardless of activity,
+    which none of weft's three timeout kinds says.
+    A state's payload is immutable for the life of that state. A state
+    timeout dies only on a move to a state that compares *unequal*, so
+    per-frame bookkeeping (the deframer, the id counter,
+    `tick_outstanding`) lives in `Data` — putting any of it in `Phase`
+    would have an ordinary inbound chunk restart the cancel escalation.
   - `exec.PoolMsg` — `Checkout(reply)`, `Checkin(helper)`, `StopPool`.
     `Checkout` answers immediately, `AllBusy` included: it never defers a
     reply, because its one run-time borrower is the broker actor. It can
@@ -326,7 +349,7 @@ protocol (spec Part 1.4). WP-G.
 - **The fd-3 policy file is unlinked on every reachable path.** Erlang
   ports cannot map arbitrary descriptors, so the policy is written
   mode-0600 inside a mode-0700 directory and the helper is spawned through
-  `/bin/sh -c 'exec 3<"$2" "$1"'`. Unlinking happens in-actor (hello,
+  `/bin/sh -c 'exec 3<"$2" "$1"'`. Unlinking happens in-machine (hello,
   channel death, `Shutdown`), in `spawn_helper`'s failure branches, and via
   a janitor process that monitors the helper actor for deaths the actor
   never sees. Only an unclean VM death leaks the file — a disk-space leak,
