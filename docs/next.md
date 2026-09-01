@@ -19,38 +19,62 @@ preferences.
   Return position is deliberately outside the rule: `is_empty(xs) -> Bool` is
   the predicate `case`, `&&` and `bool.guard` are built to consume, and
   flagging it would flag the language. Census **223**.
-- **R10 `comment-stanza`** — a `//` comment between two siblings (statements
-  of a body, or arms of a `case`) with code on the line directly above it.
-  Census **404**, and **0 in `packages/lint` itself**, which was swept as
-  part of this change.
+- **R10 `comment-stanza`** — a comment between two siblings with code on the
+  line directly above it. Siblings are the statements of a body, the arms of
+  a `case`, and the **variants of a custom type** (720 of the original
+  1137 — it is where most of the tree's `///` prose lives). Census was
+  **1137**; it is **0** now, in `src/` and `test/` alike, and the rule
+  **gates**.
 - **R11 `dense-stanza`** — a function whose longest run of statements with
   no blank line and no comment between any two of them exceeds 8. Census
   **17**.
 
-All three warn. `finding.error_by_default`'s doc comment carries the census
-and the argument for each; `packages/lint/CLAUDE.md` has the rules in full.
-The whole run is now `0 errors, 980 warnings` and takes under two seconds.
+R10 gates; R9 and R11 warn. `finding.error_by_default`'s doc comment carries
+the census and the argument for each; `packages/lint/CLAUDE.md` has the
+rules in full. The whole run is `0 errors, 576 warnings` in under two
+seconds.
 
-**What is next, in order of how ready it is.** R10 is the promotion this set
-is aiming at: 404 findings, one blank line each, no behaviour change, and
-`packages/lint` already proves the shape of the fix. R11's 17 are a small,
-genuinely interesting sweep — `runtime/supervisor.start` is ten `let`s in a
-wall that reads as three stanzas once broken. R9's 223 are the largest and
-the least mechanical: some of them are frozen Part-1 fields (`terminate:
-Bool`, `from_hook: Bool`) which cost a `protocol-change/NNN.md` rather than
-an edit, and four are irreducible (`core/json`'s `Bool(value: Bool)`,
-`core/msgpack`'s `BoolValue`, `cap/wire`'s `bool`, `core/codec`'s
-`encode_default_false`).
+**The R10 sweep is done and it is worth knowing how it was verified**, because
+the same method applies to the next one. 1137 blank lines went in by script
+rather than by hand — pure whitespace, no judgement, so no agent and no
+model touched a line of code. Then the only authority that could contradict
+the rule was asked: `gleam format --check` passes on all eighteen packages
+afterwards, proving no finding ever demanded a blank line the formatter
+would delete. Every swept package went to exactly 0 with nothing re-firing,
+which is the convergence proof. `make gen-prelude` had to be re-run — `cap`'s
+sources changed — and the regenerated `prelude.gleam` differed only in the
+recorded source digests, which is independent confirmation that the sweep
+did not touch a public surface.
 
-**Two narrowings were forced by the first census and must not be removed.**
-R11 counted `use` chains and reported 57, of which the worst was
+**What is next.** R11's 17 are a small, genuinely interesting sweep —
+`runtime/supervisor.start` is ten `let`s in a wall that reads as three
+stanzas once broken — and unlike R10's they need judgement about where the
+paragraphs go, so they are not scriptable. R9's 223 are the largest and the
+least mechanical of all: each site needs a domain-named two-variant type and
+edits at every construction and match site. Some are frozen Part-1 fields
+(`terminate: Bool`, `from_hook: Bool`) which cost a `protocol-change/NNN.md`
+rather than an edit, and four are irreducible (`core/json`'s `Bool(value:
+Bool)`, `core/msgpack`'s `BoolValue`, `cap/wire`'s `bool`, `core/codec`'s
+`encode_default_false`). R9 is the one where fanning work out across
+packages would actually pay; R10's never would have.
+
+**Narrowings forced by measurement, none of which may be removed.** R11
+counted `use` chains and reported 57, of which the worst was
 `core/codec.decode_assistant_message` — nineteen `use field <-
 result.try(…)` lines, which is a table of fields and exactly right. A `use`
 binding is now weightless: it carries a run across without lengthening it,
 and the census fell to 17. R10 ignores a comment inside a wrapped literal
 for the same family of reason R2 measures depth on the AST — a comment
-naming one element of a `json.Object([…])` opens no stanza. Both have tests
-from both sides.
+naming one element of a `json.Object([…])` opens no stanza. And R10 reaches
+the variants of a type but **not the fields of a constructor**, because
+`gleam format` preserves a blank line in the first position and deletes it
+in the second. All three have tests from both sides.
+
+**Before adding a fourth sibling kind to `lint/layout`, ask the formatter.**
+`gleam format --stdin < probe.gleam` settles in one second whether a blank
+line survives in a given position, and a rule that demands one the formatter
+deletes is unsatisfiable — the worst kind of gate. That check is how the
+field-versus-variant split above was found rather than guessed.
 
 ## Provider stream ownership (#131)
 
@@ -606,6 +630,12 @@ filing's self-assessment, including when the filing sounds alarming.**
   `docs/architecture/mcp.md` carries the whole argument.
 - **R3 and R8 will never gate.** Both over-report by construction; they are
   censuses, and measuring rather than refusing is the point.
+- **R10's exemptions are the formatter's, not the rule's.** A comment at the
+  top of a block and a comment between two fields of a constructor are
+  exempt because `gleam format` deletes a blank line in both positions —
+  while preserving one between two *variants* of the same type. Do not
+  "complete" the rule by adding constructor fields; it would demand what the
+  formatter removes and no source could satisfy it.
 
 ---
 
@@ -613,11 +643,10 @@ filing's self-assessment, including when the filing sounds alarming.**
 
 - **CI has never completed a run** (#99) — all jobs die in under four seconds.
   This is owner-action; local `make check` is the real gate today.
-- **`make lint` reports 980 warnings at 0 errors.** That is the designed
+- **`make lint` reports 576 warnings at 0 errors.** That is the designed
   state. R5's promotion is five one-line fixes away (#73 names the files).
-  644 of the 980 are the three literate-style rules added on
-  `style/literate-gleam` (R9 223, R10 404, R11 17) and are a baseline for
-  the sweeps that section schedules, not a regression.
+  240 of the 576 are R9's 223 and R11's 17, the two literate-style rules
+  that still warn; R10's 1137 were swept to zero and it now gates.
 - **Jail and sandbox tests degrade in this container** — no cgroup v2, no
   Landlock. `make selftest` says what the host actually enforces. Failures
   there are environmental until run on a real host; #62 is that nobody has

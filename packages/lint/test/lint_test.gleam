@@ -1607,16 +1607,53 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4 and R6 gate, and R1, R3 and R5
-/// warn. R3 can never join them and R1 and R5 have a census to clear first,
-/// so a change here is a change of policy, not of implementation.
+/// The staging decision, pinned: R0, R2, R4, R6 and R10 gate; R1, R3, R5,
+/// R7, R8, R9 and R11 warn. R3 and R8 can never join them, and R1, R5 and
+/// R9 have a census to clear first, so a change here is a change of policy
+/// and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,
     finding.NestingDepth,
     finding.PanicInSource,
     finding.PortablePurity,
+    finding.CommentStanza,
   ])
+}
+
+/// R10 gates, and the promotion is only real if a welded comment stops a
+/// build. Its census was driven to zero across all eighteen packages in the
+/// change that wrote it, which is the condition under which promotion
+/// cannot fail correct code.
+pub fn r10_gates_a_welded_comment_test() {
+  gate_of(
+    "packages/core/src/core/welded.gleam",
+    "fn f(x) {
+  let a = x + 1
+  // A comment with code directly above it.
+  let b = a + 1
+  b
+}
+",
+  )
+  |> should.equal(#(1, 0))
+}
+
+/// The other side of the same promotion: the shape the rule asks for is
+/// silent, so a build does not fail for writing prose correctly.
+pub fn r10_does_not_gate_a_comment_with_room_test() {
+  gate_of(
+    "packages/core/src/core/roomy.gleam",
+    "fn f(x) {
+  let a = x + 1
+
+  // A comment with a blank line above it.
+  let b = a + 1
+  b
+}
+",
+  )
+  |> should.equal(#(0, 0))
 }
 
 /// A source `glance` cannot read is a linter switched off for that file.

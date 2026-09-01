@@ -401,11 +401,13 @@ than about wording and is the one R10 checks.
 A function body is prose, so give it paragraphs. Two rules, both
 mechanical, both linted.
 
-**A `//` comment inside a body has a blank line above it.** Not a
-suggestion — the blank line is what turns the comment from a footnote on
-the line above into the heading of the stanza below, and the difference is
-the whole of whether a reader scanning a four-hundred-line module can find
-the part they need. Compare:
+**A comment has a blank line above it.** Not a suggestion — lint R10
+**gates**, so a welded comment fails the build. The blank line is what
+turns the comment from a footnote on the line above into the heading of
+the stanza below, and the difference is the whole of whether a reader
+scanning a four-hundred-line module can find the part they need. It
+applies in three places: between the statements of a body, between the
+arms of a `case`, and between the variants of a custom type. Compare:
 
 ```gleam
 // Wrong: the comment is welded to the line above it, so it reads as a
@@ -424,11 +426,52 @@ let cell = Lineage(strand: name, parent: caller.strand, reaped: False)
 use Nil <- result.try(write_result_schema(config, cell))
 ```
 
-The one exemption is forced rather than chosen: a comment that is the
-**first line of a block** cannot have a blank line above it, because
-`gleam format` deletes a blank line at the top of a block. Open a body or
-a `case` with prose whenever the body needs it; the formatter puts it
-flush against the brace and that is correct.
+The variants of a custom type are where most of this tree's `///` prose
+lives, and they were 720 of the rule's original 1137 findings:
+
+```gleam
+// Wrong: a wall of variants where nothing separates one paragraph of
+// documentation from the next.
+pub type RegisterNs {
+  /// Key: strand name → `Option(EntryId)`, the strand's current leaf.
+  StrandLeaf
+  /// Key: strand name → `StrandConfiguration`.
+  StrandConfig
+}
+
+// Right.
+pub type RegisterNs {
+  /// Key: strand name → `Option(EntryId)`, the strand's current leaf.
+  StrandLeaf
+
+  /// Key: strand name → `StrandConfiguration`.
+  StrandConfig
+}
+```
+
+**The exemptions are the formatter's decision, not a matter of taste, and
+there are two.** A comment that is the **first line of a block** cannot
+have a blank line above it, because `gleam format` deletes one at the top
+of a function body or a `case`. And a comment between two **fields of a
+constructor** cannot either — the formatter deletes that one too, which is
+the sharp edge here, because it *preserves* the same blank line between
+two variants of the same type:
+
+```gleam
+pub type Finding {
+  Finding(
+    /// Which rule fired.
+    rule: Rule,
+    /// No blank line here: `gleam format` would delete it.
+    path: String,
+  )
+}
+```
+
+So the rule reaches variants and not fields. If you are ever unsure
+whether a blank line survives somewhere, do not guess — `gleam format
+--stdin < probe.gleam` answers in a second, and that is how both of these
+were settled.
 
 **A body does not run more than about eight statements without a break.**
 A blank line or a comment, either counts — a paragraph break is a
@@ -1021,10 +1064,13 @@ tighten the ecosystem defaults:
    record field. Model the question with a two-variant type named for the
    domain (Part III, "No naked `Bool`", which has the three escapes and
    why return position is outside the rule). Lint R9 counts them.
-9. **Code is written in stanzas**: a `//` comment inside a function body
-   has a blank line above it, and a body does not run more than about
-   eight statements without a break (Part II, "Stanzas: how code
-   breathes"). Statements, never lines — a wrapped literal is one
-   statement and a `use` chain is a table. Lint R10 and R11 check both.
-   This is the layout half of the literate register `CLAUDE.md` requires:
-   prose a reader cannot find is prose that was not written.
+9. **Code is written in stanzas**: a comment has a blank line above it —
+   between statements, between `case` arms, and between the variants of a
+   custom type — and a body does not run more than about eight statements
+   without a break (Part II, "Stanzas: how code breathes"). Statements,
+   never lines: a wrapped literal is one statement and a `use` chain is a
+   table. **Lint R10 gates**; R11 warns. The exemptions are the two places
+   `gleam format` deletes a blank line, the top of a block and between a
+   constructor's fields, and a rule must never demand what the formatter
+   removes. This is the layout half of the literate register `CLAUDE.md`
+   requires: prose a reader cannot find is prose that was not written.

@@ -20,8 +20,8 @@
 //// disabled, so the false-positive rate on this corpus is a thing to
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4 and R6 have made
-//// that argument and gate; R1, R5, R9, R10 and R11 have a census to clear
+//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6 and R10 have made
+//// that argument and gate; R1, R5, R9 and R11 have a census to clear
 //// first; R3 and R8 over-report by construction and warn forever. The
 //// decision is data, in `finding.error_by_default`, which is where each
 //// argument is written down; `lint/cli`'s `--error` promotes one for a

@@ -10,12 +10,11 @@ whether `panic` belongs in `src/`. Those rules were enforced by review
 alone until the de-nesting wave violated one of them and shipped a
 quadratic JSON parser whose every unit test passed (`08cdbce`).
 
-A pure analysis over `glance`'s AST, plus three `glexer` token scans for
+A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Four of the twelve rules gate — R0, R2, R4
-and R6 — and each of their censuses must stay zero; the other eight
-report. See **Staging** below before wiring anything else to the exit
+classification of every source. Five of the twelve rules gate — R0, R2, R4, R6 and R10 — and each of
+their censuses must stay zero; the other seven report. See **Staging** below before wiring anything else to the exit
 code.
 
 Three of the twelve are not questions about the AST at all. R10 and R11
@@ -106,7 +105,8 @@ wrote ourselves. Nothing here is a security control.
 - `lint/layout.{Block, Step, Weight, blocks, offsets, findings}` — R10 and
   R11, which are the only rules about how a file was *written* rather than
   what it parses to. `blocks` walks the tree for every list of
-  siblings — the statements of a body, the arms of a `case` — and reports
+  siblings — `Statements` of a body, `Branches` of a `case`, `Variants` of
+  a custom type — and reports
   where each one begins, in offsets; `offsets` is what
   `source.line_map` resolves in one merged pass; `findings` then judges in
   line numbers against `source.classify`'s table. `Weight` is the R11
@@ -114,10 +114,11 @@ wrote ourselves. Nothing here is a security control.
   lengthening it, because a `use`-chained decoder is a table of fields and
   not a paragraph of steps.
 - `lint/source.{line_starts, lines_of, line_of, keyword_offsets,
-  Keywords, external_offsets, LineKind, Lines, classify, kind_of,
-  offset_of, line_map}` — byte offsets to lines, the three token scans
-  (R4's backstop, R6's `@external` half, and the comment scan `classify`
-  rests on), and the line classification the layout rules index.
+  Keywords, external_offsets, variant_offsets, LineKind, Lines, classify,
+  kind_of, offset_of, line_map}` — byte offsets to lines, the four token
+  scans (R4's backstop, R6's `@external` half, the comment scan `classify`
+  rests on, and `variant_offsets` for the variant heads `glance` gives no
+  span for), and the line classification the layout rules index.
   `classify` reads comments from `glexer`'s tokens rather than from the
   text, so a line of a multi-line string beginning `//` is code.
 - `lint/cli.main` — argument parsing, file discovery, the report and the
@@ -334,16 +335,29 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   reads as that line's footnote; the blank line is what makes it the
   heading of the stanza below, and that is the difference between prose a
   reader can find and prose they cannot (`CLAUDE.md`, "Literate code").
-  Siblings are the statements of a body **and the arms of a `case`** —
-  the reasoning for an arm is the commonest place this repo writes prose
-  inside a function. Two exemptions, both forced rather than chosen: a
-  comment that is the **first line of a block** is exempt because `gleam
-  format` deletes a blank line at the top of a block, so a finding there
-  could never be acted on; and a comment **inside a wrapped literal** is
-  invisible, because it annotates an element of a data structure rather
-  than opening a stanza. The second is R2's "a wrapped literal is not
-  depth" in the layout register, and without it the rule would flood
-  every encoder in the tree.
+  Siblings are of three kinds: the statements of a body, the **arms of a
+  `case`** — the reasoning for an arm is the commonest place this repo
+  writes prose inside a function — and the **variants of a custom type**,
+  which is where most of the tree's `///` prose lives and which was 720 of
+  the original 1137. A variant head is found by token scan rather than by
+  the AST, because `glance.Variant` carries no `Span` at all
+  (`source.variant_offsets`); the enclosing `CustomType` does, which is
+  what keeps that scan from having to recognize a type on its own.
+
+  **Three exemptions, and every one of them is the formatter's decision
+  rather than the rule's.** A comment that is the **first line of a
+  block** is exempt because `gleam format` deletes a blank line at the top
+  of a function body or a `case`. A comment between two **fields of a
+  constructor** is exempt because the formatter deletes that blank line
+  too — and this is the sharp one, since the formatter *preserves* it
+  between two variants of the same type, so the rule reaches variants and
+  not fields. A comment **inside a wrapped literal** is invisible, because
+  it annotates an element of a data structure rather than opening a
+  stanza; that one is R2's "a wrapped literal is not depth" in the layout
+  register, and without it the rule would flood every encoder in the tree.
+  The first two are checked facts, not guesses: `gleam format --stdin`
+  over each shape says so, and the whole-tree sweep passing
+  `gleam format --check` is the standing proof.
 - **R11 `dense-stanza`** — a function whose longest run of statements with
   nothing between any two of them exceeds `dense_stanza_run` (8). A body
   with no paragraphs has nowhere to put the prose R10 is about, so density
@@ -363,9 +377,8 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 
 ## Staging
 
-**R0, R2, R4 and R6 gate; R1, R3, R5, R7, R8, R9, R10 and R11 warn.**
-`make lint` and
-`make check` fail on any of the four. The warning default is deliberate
+**R0, R2, R4, R6 and R10 gate; R1, R3, R5, R7, R8, R9 and R11 warn.**
+`make lint` and `make check` fail on any of the five. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
 producing a census that is zero, decidable, and argued — not by being
@@ -432,7 +445,7 @@ for the censuses this superseded):
 | R7 assert-without-message | 84, all in `conformance/src` | Part IV rule 3 at nothing per cent; a rule cannot gate on a census it has never been at zero for |
 | R8 lone-caller-arity | 3, and moving | **stays a warning**; a shape, never a verdict |
 | R9 naked-bool | 223 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
-| R10 comment-stanza | 404, and 0 in `lint` itself | decidable, fix is one blank line; the promotion this set is aiming at |
+| R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
 | R11 dense-stanza | 17 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
 
 R1's twenty are what the triage left after the body check removed nine
@@ -467,8 +480,30 @@ it was written to measure, which is the rule working rather than the rule
 failing. Do not tune the threshold to make the number look better; 7 is
 where the tree's own signatures stop being readable at a glance.
 
-R9, R10 and R11 are the literate-style rules and all three warn on
-arrival, which is the ordinary staging. Two of them are decidable enough
+R10 is the newest gating rule, and it met the bar the way R6 did rather
+than the way R2 did: by being driven to zero in the change that wrote it.
+The census was **1137** across the eighteen packages and it is **zero**
+now, in `src/` and in `test/` alike. It is decidable without types — a
+line is blank or it is not — and the fix is one blank line, never a change
+to what the code does.
+
+What makes that promotion safe rather than brave is that the sweep was
+verified against the only authority that could contradict the rule.
+`gleam format --check` passes on all eighteen packages after 1137
+insertions, so no finding ever asked for a blank line the formatter would
+take away — the failure mode that would have made the rule unsatisfiable.
+The two exemptions exist for precisely that reason: a comment opening a
+block and a comment between two fields of a constructor are both places
+`gleam format` deletes a blank line. **Never add a third sibling kind to
+`lint/layout` without checking the formatter first**; the check is one
+`gleam format --stdin` and it is the difference between a rule and a trap.
+
+The property is also worth a gate. It is lost the way R2's is — one
+comment at a time, each reasonable on the day it lands — and it is
+invisible in review, because a welded comment reads fine inside a diff
+hunk that begins above it.
+
+R9 and R11 warn, which is the ordinary staging, and R9 is decidable enough
 that the question of promotion is worth answering rather than deferring.
 
 R9's 223 are every one decidable — an annotation says `Bool` or it does
@@ -483,13 +518,6 @@ and always will be — `core/json`'s `Bool(value: Bool)`, `core/msgpack`'s
 permanent exceptions can still gate, the way R4 gates with a whole package
 exempted, but only once the exceptions are the census rather than 2% of
 it.
-
-R10's 404 are the promotion this set is actually aiming at: decidable
-without types, one blank line per finding, never a change to what the code
-does, and a property lost exactly the way R2's is — one comment at a time,
-each reasonable on the day it lands. `packages/lint` has already been
-swept to zero, which is what a promotion has to look like everywhere
-before it can be one.
 
 R11's 17 are precise, but its *threshold* is a judgement rather than a
 fact. Eight statements is where this tree's own bodies stop having
@@ -524,12 +552,17 @@ that a rule *fires* is not a test that it gates.
   wording without a `rescue` at the boundary to back it.
 - **No `panic`, no `let assert` in `src/`.** The tool passes its own R4;
   `make lint` says so.
+- **R10's census is zero across the whole tree and must stay zero.** It
+  gates, so a welded comment fails `make check`. The fix is always one
+  blank line above the comment, never a change to the code, and the two
+  places the rule does not reach — the top of a block, and between a
+  constructor's fields — are the two places `gleam format` deletes a blank
+  line. If a finding ever appears that cannot be fixed that way, the
+  formatter has changed and the exemptions are what to re-derive; do not
+  demote the rule.
 - **The tool passes its own R10 and R11.** `make lint-lint` reports zero
-  of each, and it did not on the day they were written — sixteen blank
-  lines went in, this package's own included. A layout rule whose own
-  package violates it is advice nobody has to take. Its R9 census is 13
-  and is part of the tree-wide sweep the rule schedules, which is a
-  different change from the one that counts them.
+  of each. Its R9 census is 13 and is part of the tree-wide sweep the rule
+  schedules, which is a different change from the one that counts them.
 - **Every gating rule's census is zero and stays zero.** R0, R2, R4 and
   R6 are wired to the exit code by default. If a finding appears the
   answer is to fix the source, not to demote the rule: an exception needs

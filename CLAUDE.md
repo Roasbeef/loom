@@ -52,13 +52,16 @@ acknowledgement transfers restart custody before work begins`, which tells the
 reader what ordering would break if the send moved.
 
 Prose a reader cannot find is prose that was not written, so the layout is
-part of the rule. **A comment inside a function body has a blank line above
-it** — that blank line is what turns a footnote on the line above into the
-heading of the stanza below — and **a body does not run more than about
-eight statements without a break**, because a body with no paragraphs has
-nowhere to put the prose. Lint R10 and R11 check both; `docs/gleam-style.md`
-Part II, "Stanzas: how code breathes", has the exemptions the formatter
-forces and the two shapes that are tables rather than paragraphs.
+part of the rule. **A comment has a blank line above it** — inside a
+function body, between `case` arms, and between the variants of a custom
+type; that blank line is what turns a footnote on the line above into the
+heading of the stanza below. **R10 gates**, so a welded comment fails the
+build. And **a body does not run more than about eight statements without
+a break**, because a body with no paragraphs has nowhere to put the prose
+(R11, a warning). `docs/gleam-style.md` Part II, "Stanzas: how code
+breathes", has the two places `gleam format` deletes a blank line and so
+exempts — the top of a block, and between a constructor's fields — and the
+shapes that are tables rather than paragraphs.
 
 Treat missing explanatory prose as unfinished work when reviewing a change.
 `docs/gleam-style.md` Part III, "Doc comments" and "Plain comments: the
@@ -136,10 +139,10 @@ R6 the portable subset `core`, `machine` and `prompt` are held to, R7 a
 `let assert` carrying no `as "message"`, R8 a one-caller function wide
 enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
 R10 a comment with no blank line above it, R11 a body written as one
-undivided block. **R0, R2, R4 and R6 fail the build**; the other eight
-warn and cost nothing. R3 and R8 are censuses and will never gate: both
-over-report by construction, which is the point of measuring rather than
-refusing.
+undivided block. **R0, R2, R4, R6 and R10 fail the build**; the other
+seven warn and cost nothing. R3 and R8 are censuses and will never gate:
+both over-report by construction, which is the point of measuring rather
+than refusing.
 A rule reaches the error tier by a census that is zero, decidable and
 argued — the staging lives in `finding.error_by_default`, and
 `packages/lint/CLAUDE.md` says what each rule is for. `make lint-<package>`
