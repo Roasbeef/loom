@@ -117,7 +117,7 @@ fn helperless_broker() -> broker.Broker {
   broker_actor
 }
 
-// The registry is production's own (`serve.registry()`), so a tool that
+// The registry is production's own (`serve.registry(, None)`), so a tool that
 // stops being registered breaks these tests rather than silently
 // changing what a request advertises.
 fn config() -> wiring.Config {
@@ -142,7 +142,7 @@ fn config() -> wiring.Config {
     ),
     broker: helperless_broker(),
     broker_timeout_ms: 1000,
-    registry: serve.registry(None, None, None, None),
+    registry: serve.registry(None, None, None, None, None),
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy: policy.workspace_default(workspace),

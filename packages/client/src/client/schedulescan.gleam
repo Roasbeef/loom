@@ -146,12 +146,22 @@ const first_tick_delay_ms = 0
 
 /// What the scanner watches and how loudly it works.
 ///
-/// Constructor invariants: `schedules` is the parsed, validated schedule
-/// list (`client/schedule.parse`) — an empty list makes every tick a
-/// no-op and the actor re-arms nothing, so it goes quiet after its first
-/// tick.
+/// Constructor invariants: `schedules` is the parsed, validated operator
+/// schedule list (`client/schedule.parse`); with `model_door_open` false
+/// an empty list makes every tick a no-op and the actor re-arms nothing,
+/// so it goes quiet after its first tick.
 pub type Options {
-  Options(schedules: List(Schedule), logger: Logger)
+  Options(
+    /// The operator's `[[schedule]]` tables, fixed for this boot.
+    schedules: List(Schedule),
+    /// Whether the model may create schedules of its own this session
+    /// (`client/schedule.policy_opens_the_door`). It changes exactly one
+    /// thing here: a scanner with nothing active keeps a slow rescan
+    /// timer instead of going quiet, because a schedule may arrive
+    /// without anything in this actor's own state changing.
+    model_door_open: Bool,
+    logger: Logger,
+  )
 }
 
 /// The scanner's mailbox. One variant: every tick is self-armed through
@@ -170,7 +180,21 @@ pub type Message {
 /// ```
 ///
 pub fn default_options(schedules: List(Schedule)) -> Options {
-  Options(schedules:, logger: log.discard())
+  Options(schedules:, model_door_open: False, logger: log.discard())
+}
+
+/// Declares that the model may create schedules this session, which keeps
+/// the scanner rescanning even with nothing of the operator's left to
+/// fire.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedulescan.default_options([]) |> schedulescan.with_model_door_open
+/// ```
+///
+pub fn with_model_door_open(options: Options) -> Options {
+  Options(..options, model_door_open: True)
 }
 
 /// Sets the logger the scanner reports fires and refusals on.
@@ -253,11 +277,42 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Tick -> {
       let #(now_ms, _clock) = clock.read(state.runtime.effects.clock)
       let now_s = now_ms / 1000
-      state.options.schedules
+      due_schedules(state)
       |> list.map(fn(sched) { process_schedule(state, sched, now_ms, now_s) })
       |> rearm(state, _)
       actor.continue(state)
     }
+  }
+}
+
+// Every schedule this tick must consider: the operator's, fixed at boot,
+// plus whatever the model has created since — read fresh from the store
+// on every tick rather than held in state.
+//
+// Re-reading is the point, not an inefficiency to fix later. A
+// model-created schedule can appear or be cancelled between any two
+// ticks, and this actor is restartable, so a cached list would be a
+// second source of truth that a restart, a cancellation, or a create on
+// another incarnation could each make stale. The scan is one indexed
+// prefix read over a list bounded by `schedule.max_model_schedules`,
+// against a tick that never runs tighter than `schedule.min_interval_s`.
+//
+// A failed read yields the operator's schedules alone rather than an
+// empty list: a transient store fault must not look like "the model
+// cancelled everything", which would silently stop firing the very
+// schedules a model may be relying on.
+fn due_schedules(state: State) -> List(Schedule) {
+  list.append(state.options.schedules, model_schedules(state))
+}
+
+fn model_schedules(state: State) -> List(Schedule) {
+  case read_prefix(state, schedule.config_key_prefix) {
+    Error(Nil) -> []
+    Ok(cells) ->
+      list.filter_map(cells, fn(pair) {
+        let #(_key, value) = pair
+        schedule.decode(value)
+      })
   }
 }
 
@@ -275,8 +330,19 @@ fn process_schedule(
 }
 
 // Re-arms one timer for the soonest boundary any still-`Active` schedule
-// needs, or none at all when every schedule is `Expired` — the actor
-// goes quiet rather than ticking forever over nothing.
+// needs.
+//
+// With nothing active there is normally nothing to wake for, and the
+// actor goes quiet rather than ticking forever over nothing. That is only
+// true while the operator's list is the whole story: once the
+// model-facing door is open, a schedule can appear between any two ticks,
+// and an actor that has gone quiet would never find out. `poke` is what
+// makes that prompt — the seam rings this actor the moment it writes a
+// cell — and the floor below is what makes it *certain*, because a poke
+// is an ordinary message and the one thing this actor must never do is
+// stop scanning because a wake went missing. The floor costs one timer
+// per `schedule.min_interval_s` and bounds the worst case to noticing a
+// new schedule one interval late instead of never.
 fn rearm(state: State, statuses: List(ScheduleStatus)) -> Nil {
   let delays =
     list.filter_map(statuses, fn(status) {
@@ -285,15 +351,58 @@ fn rearm(state: State, statuses: List(ScheduleStatus)) -> Nil {
         Active(next_delay_ms:) -> Ok(next_delay_ms)
       }
     })
-  case delays {
-    [] -> Nil
-    [first, ..rest] -> {
-      let delay = list.fold(rest, first, int.min)
-      let self = state.self
-      state.runtime.effects.timers.after(delay, fn() {
-        process.send(self, Tick)
-      })
-    }
+  case delays, state.options.model_door_open {
+    [], False -> Nil
+    [], True -> arm(state, idle_rescan_ms())
+    [first, ..rest], _ -> arm(state, list.fold(rest, first, int.min))
+  }
+}
+
+fn arm(state: State, delay_ms: Int) -> Nil {
+  let self = state.self
+  state.runtime.effects.timers.after(delay_ms, fn() { process.send(self, Tick) })
+}
+
+// The floor an otherwise-quiet scanner rescans on when the model may
+// create schedules. A function rather than a `const`: Gleam constants
+// must be literals, and this is an imported constant times another.
+fn idle_rescan_ms() -> Int {
+  schedule.min_interval_s * 1000
+}
+
+/// Rings the scanner so it rescans now rather than at its next armed
+/// deadline — what `client/scheduleseam` calls the moment it writes a
+/// schedule's config cell.
+///
+/// Sending `Tick` directly is deliberate rather than a second message
+/// variant: a tick with no logical time having passed is already required
+/// to be harmless (every occurrence check is against a durable mark, not
+/// against how the actor was woken), so "look again now" and "your timer
+/// fired" want the same handler. A poke that arrives while the actor is
+/// restarting is simply lost, which is why `rearm` keeps a floor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedulescan.poke(scanner_name)
+/// ```
+///
+pub fn poke(name: Name(Message)) -> Nil {
+  // Checked alive before sending, for the same reason `client/agency`
+  // checks its holder: a send to a name nothing is registered under
+  // raises, and the caller is a tool body whose crash would become a
+  // fault rather than an in-band result. An unregistered scanner is not
+  // even unusual here — it is exactly what a restart looks like from
+  // outside — and it costs nothing to miss, because a restarting scanner
+  // ticks immediately on the way back up and re-reads every cell.
+  let subject = process.named_subject(name)
+  case process.subject_owner(subject) {
+    Error(Nil) -> Nil
+    Ok(pid) ->
+      case process.is_alive(pid) {
+        False -> Nil
+        True -> process.send(subject, Tick)
+      }
   }
 }
 

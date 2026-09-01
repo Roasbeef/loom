@@ -51,6 +51,7 @@ import client/catalog
 import client/codemode
 import client/gateway as hub
 import client/protocol
+import client/schedule
 import client/serve
 import core/clock
 import gleam/bit_array
@@ -628,5 +629,6 @@ fn settings() -> serve.Settings {
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
     schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
   )
 }

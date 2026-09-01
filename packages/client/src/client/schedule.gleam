@@ -11,16 +11,37 @@
 //// `client/schedulescan` is the actor that watches the clock; this module
 //// is the store half.
 ////
-//// ## Schedules are operator configuration, never model-writable
+//// ## Two kinds of schedule, one `Schedule`
 ////
-//// A schedule injects text into a model's own context on a timer with
-//// nobody necessarily present to read it first, which makes a
-//// model-writable schedule store a way for a model to extend its own
-//// liveness and spend unsupervised on a clock it set itself — a sharper
-//// problem than durable prompt injection alone. So schedules live in
-//// `loom.toml` beside rules and the model catalogue, an operator edits
-//// them with an editor, and restarting the server *is* the trust
-//// decision, exactly as it is for `[[rule]]`.
+//// A schedule reaches the scanner from one of two places, and the value
+//// is the same either way — same type, same bounds, same code path once
+//// it is running.
+////
+//// **The operator's**, a `[[schedule]]` table in `loom.toml`, parsed at
+//// boot by `parse`. These live beside rules and the model catalogue, an
+//// operator edits them with an editor, and restarting the server *is*
+//// the trust decision, exactly as it is for `[[rule]]`.
+////
+//// **The model's**, created through `tools/schedule` and stored as a
+//// reserved `schedule/config/…` cell (see `config_key`, `encode`,
+//// `decode`). The first version of this feature had no such thing: a
+//// schedule injects text into a model's own context on a timer with
+//// nobody necessarily present, so letting a model write one was ruled a
+//// way for it to extend its own liveness and spend unsupervised. What
+//// changed is not the risk assessment but the *bound* — every recurring
+//// schedule now carries a mandatory expiry no model can raise, which
+//// turns "unsupervised forever" into "unsupervised for at most
+//// `default_max_fires` fires or a week." `Policy` is the operator's say
+//// over that door and defaults open; read its doc comment for the whole
+//// argument, and `docs/design-notes/scheduled-heartbeats.md`'s addendum
+//// for what the reversal cost.
+////
+//// The bounds are the important part of "the same value either way": a
+//// model-created schedule is built by `build`, which enforces exactly
+//// what `parse` enforces, through the same predicates and constants. The
+//// two paths word their refusals differently — one names a TOML key an
+//// operator must go and edit, the other names an argument a model just
+//// wrote — and can never disagree about what is allowed.
 ////
 //// ```toml
 //// [[schedule]]
@@ -110,6 +131,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/time/duration
 import gleam/time/timestamp
 import runtime/api
 import tom
@@ -306,27 +328,34 @@ fn schedule_name(
   place: String,
 ) -> Result(String, String) {
   use name <- result.try(bounded_string(fields, place, "name", max_name_length))
-  case
-    string.contains(name, "/"),
-    string.contains(name, "\""),
-    string.contains(name, "\n")
-  {
-    True, _, _ ->
+  case name_breaks_key(name), name_breaks_fence(name) {
+    True, _ ->
       Error(
         place
         <> ".name must not contain `/`: the name is a key segment of the "
         <> "durable fired-mark, and the occurrence number that follows it "
         <> "would become unreadable",
       )
-    _, True, _ | _, _, True ->
+    _, True ->
       Error(
         place
         <> ".name must not contain a quote or a newline: the name is "
         <> "quoted inside the injected text, which those would break out "
         <> "of",
       )
-    False, False, False -> Ok(name)
+    False, False -> Ok(name)
   }
+}
+
+// The two character rules a name owes, as predicates rather than as
+// spellings inside one refusal: `build` holds a model-created schedule to
+// exactly these, and a bound with two definitions is a bound that drifts.
+fn name_breaks_key(name: String) -> Bool {
+  string.contains(name, "/")
+}
+
+fn name_breaks_fence(name: String) -> Bool {
+  string.contains(name, "\"") || string.contains(name, "\n")
 }
 
 // `target` is a live strand address, and strand names in this system may
@@ -942,4 +971,483 @@ pub fn injection(schedule: Schedule, late: Bool) -> String {
   <> "\n--- end scheduled heartbeat \""
   <> schedule.name
   <> "\" ---"
+}
+
+// --- model-created schedules ---------------------------------------------
+//
+// Everything below serves the second way a schedule can come to exist: a
+// model asked for one through `tools/schedule`, rather than an operator
+// writing it in `loom.toml`. The two kinds are the same `Schedule` value
+// held to the same bounds, and `client/schedulescan` runs them through
+// one code path — the difference is entirely in where the value is read
+// from and who is allowed to have put it there.
+
+/// Whether a model may create schedules at all, and if so whether it may
+/// create ones that wake an idle strand.
+///
+/// This is the whole of the operator's say over the model-facing door,
+/// and it is deliberately one knob with three positions rather than two
+/// booleans that can disagree.
+///
+/// **The default is `ModelSchedulesWake`: the door is open.** That is a
+/// deliberate reversal of where this feature started, and the reason is
+/// that the half-open position is not a feature. A heartbeat exists to
+/// fire when nobody is prompting — to check on unattended work, to poll
+/// something that changes on its own — and a schedule that may only
+/// steer a run already open cannot do any of that. Shipping `steer` as
+/// the default would have meant shipping a cron that never fires when it
+/// matters, which reads as a bug rather than as a policy.
+///
+/// What makes the open default defensible is that the bound is
+/// structural rather than postural. Every recurring schedule expires,
+/// always, on both `max_fires` and `expires_after_s` with the earlier
+/// winning, and no model-created schedule can raise either. So a model
+/// can wake itself, and cannot wake itself indefinitely: the worst case
+/// is `max_model_schedules` schedules each firing `default_max_fires`
+/// times or for a week, whichever comes first, in a session an operator
+/// is running and can stop.
+///
+/// The other two positions remain for operators who want them.
+/// `ModelSchedulesSteer` keeps the tools but forbids waking, which is
+/// the right setting for a host that pays per token and wants a model's
+/// reminders to cost nothing while nobody is working. `ModelSchedulesOff`
+/// registers no schedule tool at all, which is the right setting for a
+/// host that wants scheduling to be its own decision entirely — and it is
+/// still the only position under which a model cannot see the door.
+pub type Policy {
+  /// No schedule tool is registered. The model cannot see the door.
+  ModelSchedulesOff
+  /// The model may create schedules, but `wake` is forced false: they
+  /// steer an open run and hold when the strand is idle.
+  ModelSchedulesSteer
+  /// The model may additionally create schedules that start a fresh run
+  /// on an idle strand.
+  ModelSchedulesWake
+}
+
+/// What a document with no `[schedules]` table means, and what a server
+/// started with no config file at all gets. See `Policy` for why the door
+/// defaults open.
+pub const default_policy = ModelSchedulesWake
+
+/// The most schedules one session will hold on a model's behalf, across
+/// every strand.
+///
+/// A ceiling rather than a rate, for the reason `tools/remember`'s note
+/// ceiling is one: each live schedule is a standing claim on the
+/// scanner's every tick and on provider budget, and a model that creates
+/// them in a loop should meet a wall it can read rather than a session
+/// that slows down. Operator `[[schedule]]` tables are counted
+/// separately, under `max_schedules`, so turning the door on can never
+/// shrink what the operator configured.
+pub const max_model_schedules = 16
+
+/// The reserved key one model-created schedule's config lives under.
+///
+/// `schedule/config/…`, disjoint from the `schedule/fired/…` marks: a
+/// fired-mark says an occurrence is spent and is written once, a config
+/// cell says a schedule exists and is overwritten when it is cancelled.
+/// Sharing a prefix would let a malformed key of one shape be read as the
+/// other. Both sit under `runtime/api.schedule_fact_prefix`, so neither
+/// is reachable by `put_fact` — a model reaches this cell through the
+/// tool seam, which is harness code, and never by writing a fact itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.config_key(strand: "main", name: "poll")
+///   == "schedule/config/main/poll"
+/// ```
+///
+pub fn config_key(strand strand: String, name name: String) -> String {
+  config_key_prefix <> strand <> "/" <> name
+}
+
+/// The prefix every model-created schedule's config cell shares, which is
+/// what `client/schedulescan` scans once per tick to find them.
+pub const config_key_prefix = api.schedule_fact_prefix <> "config/"
+
+/// A cancelled schedule's cell value.
+///
+/// Cancellation overwrites rather than deletes, because the register is a
+/// cell and "there is no such key" and "there was one and it is finished"
+/// are worth telling apart when reading the reserved namespace by hand.
+/// `decode` refuses it, so a tombstone is simply not a schedule to every
+/// caller that matters.
+pub const cancelled_value = json.Null
+
+/// Renders one schedule as the JSON its config cell holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.encode(sched) |> json.to_string
+/// ```
+///
+pub fn encode(schedule: Schedule) -> JsonValue {
+  json.Object(list.append(
+    [
+      #("name", json.String(schedule.name)),
+      #("target", json.String(schedule.target)),
+      #("wake", json.Bool(schedule.wake)),
+      #("body", json.String(schedule.body)),
+    ],
+    timing_fields(schedule.timing),
+  ))
+}
+
+fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
+  case timing {
+    Interval(seconds:, expiry:) -> [
+      #("every_s", json.Int(seconds)),
+      #("max_fires", json.Int(expiry.max_fires)),
+      #("expires_after_s", json.Int(expiry.expires_after_s)),
+    ]
+    OneShot(at:) -> [#("at_s", json.Int(at))]
+  }
+}
+
+/// Reads one config cell back, total: any value that is not a schedule
+/// this build would have accepted in the first place is `Error(Nil)`.
+///
+/// The bounds are re-checked on the way out rather than trusted from the
+/// way in. The cell is reserved, so the model cannot have written it —
+/// but it outlives the build that wrote it, and a bound that tightens in
+/// a later version would otherwise leave a stored schedule running
+/// outside limits nothing would accept today. Re-validating makes the
+/// current bounds the only ones that ever apply, and costs a dropped row
+/// rather than a migration.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.decode(schedule.encode(sched)) == Ok(sched)
+/// ```
+///
+/// ```gleam
+/// assert schedule.decode(schedule.cancelled_value) == Error(Nil)
+/// ```
+///
+pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {
+  use fields <- result.try(object_fields(value))
+  use name <- result.try(string_field(fields, "name"))
+  use target <- result.try(string_field(fields, "target"))
+  use wake <- result.try(bool_field(fields, "wake"))
+  use body <- result.try(string_field(fields, "body"))
+  use timing <- result.try(decode_timing(fields))
+  build(name:, target:, timing:, wake:, body:)
+  |> result.replace_error(Nil)
+}
+
+fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
+  case int_field(fields, "every_s"), int_field(fields, "at_s") {
+    // Exactly one, mirroring the `every`/`at` exclusivity `parse`
+    // enforces on the TOML side.
+    Ok(_seconds), Ok(_at) -> Error(Nil)
+    Error(Nil), Error(Nil) -> Error(Nil)
+    Ok(seconds), Error(Nil) -> {
+      use max_fires <- result.try(int_field(fields, "max_fires"))
+      use expires_after_s <- result.try(int_field(fields, "expires_after_s"))
+      Ok(Interval(seconds:, expiry: Expiry(max_fires:, expires_after_s:)))
+    }
+    Error(Nil), Ok(at) -> Ok(OneShot(at:))
+  }
+}
+
+fn object_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
+  case value {
+    json.Object(fields:) -> Ok(fields)
+    json.Array(..)
+    | json.String(..)
+    | json.Int(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Null -> Error(Nil)
+  }
+}
+
+fn field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(JsonValue, Nil) {
+  list.key_find(fields, key)
+}
+
+fn string_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(String, Nil) {
+  case field(fields, key) {
+    Ok(json.String(value:)) -> Ok(value)
+    Ok(_other) | Error(Nil) -> Error(Nil)
+  }
+}
+
+fn int_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Int, Nil) {
+  case field(fields, key) {
+    Ok(json.Int(value:)) -> Ok(value)
+    Ok(_other) | Error(Nil) -> Error(Nil)
+  }
+}
+
+fn bool_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Bool, Nil) {
+  case field(fields, key) {
+    Ok(json.Bool(value:)) -> Ok(value)
+    Ok(_other) | Error(Nil) -> Error(Nil)
+  }
+}
+
+/// Builds a schedule from already-typed parts, holding it to every bound
+/// `parse` holds a `[[schedule]]` table to.
+///
+/// This is the constructor the model-facing door and `decode` share.
+/// `parse` does not use it: that path refuses with messages naming the
+/// TOML key and table position an operator has to go and edit, which a
+/// model calling a tool has no use for. The *bounds* are shared as
+/// predicates and constants either way, so the two paths can word a
+/// refusal differently but can never disagree about what is allowed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.build(name: "poll", target: "main",
+/// //   timing: schedule.OneShot(at: 0), wake: False, body: "look")
+/// ```
+///
+pub fn build(
+  name name: String,
+  target target: String,
+  timing timing: Timing,
+  wake wake: Bool,
+  body body: String,
+) -> Result(Schedule, String) {
+  use Nil <- result.try(checked_name(name))
+  use Nil <- result.try(checked_target(target))
+  use Nil <- result.try(checked_body(body))
+  use Nil <- result.try(checked_timing(timing))
+  Ok(Schedule(name:, target:, timing:, wake:, body:))
+}
+
+fn checked_name(name: String) -> Result(Nil, String) {
+  case name == "", too_long(name, max_name_length) {
+    True, _ -> Error("name must not be empty")
+    _, True ->
+      Error(
+        "name must be at most "
+        <> int.to_string(max_name_length)
+        <> " characters",
+      )
+    False, False -> checked_name_characters(name)
+  }
+}
+
+fn checked_name_characters(name: String) -> Result(Nil, String) {
+  case name_breaks_key(name), name_breaks_fence(name) {
+    True, _ ->
+      Error(
+        "name must not contain `/`: it is a key segment of the durable "
+        <> "fire-mark",
+      )
+    _, True ->
+      Error(
+        "name must not contain a quote or a newline: it is quoted inside "
+        <> "the injected text",
+      )
+    False, False -> Ok(Nil)
+  }
+}
+
+fn checked_target(target: String) -> Result(Nil, String) {
+  case target == "", too_long(target, max_target_length) {
+    True, _ -> Error("target must not be empty")
+    _, True ->
+      Error(
+        "target must be at most "
+        <> int.to_string(max_target_length)
+        <> " characters",
+      )
+    False, False -> Ok(Nil)
+  }
+}
+
+fn checked_body(body: String) -> Result(Nil, String) {
+  case body == "", too_long(body, max_body_length) {
+    True, _ -> Error("body must not be empty")
+    _, True ->
+      Error(
+        "body must be at most "
+        <> int.to_string(max_body_length)
+        <> " characters",
+      )
+    False, False -> Ok(Nil)
+  }
+}
+
+fn checked_timing(timing: Timing) -> Result(Nil, String) {
+  case timing {
+    OneShot(..) -> Ok(Nil)
+    Interval(seconds:, expiry:) -> {
+      use Nil <- result.try(checked_interval(seconds))
+      checked_expiry(expiry)
+    }
+  }
+}
+
+fn checked_interval(seconds: Int) -> Result(Nil, String) {
+  case seconds < min_interval_s {
+    True ->
+      Error(
+        "every_s must be at least "
+        <> int.to_string(min_interval_s)
+        <> " seconds: anything tighter is a busy-loop against provider "
+        <> "budget",
+      )
+    False -> Ok(Nil)
+  }
+}
+
+fn checked_expiry(expiry: Expiry) -> Result(Nil, String) {
+  case
+    expiry.max_fires < 1 || expiry.max_fires > max_max_fires,
+    expiry.expires_after_s < 1 || expiry.expires_after_s > max_expires_after_s
+  {
+    True, _ ->
+      Error("max_fires must be between 1 and " <> int.to_string(max_max_fires))
+    _, True ->
+      Error(
+        "expires_after_s must be between 1 and "
+        <> int.to_string(max_expires_after_s),
+      )
+    False, False -> Ok(Nil)
+  }
+}
+
+/// The `[schedules]` policy table, or the default when the document has
+/// none.
+///
+/// Separate from `parse` because they answer different questions about
+/// the same file — `parse` reads the schedules an operator wrote, this
+/// reads whether the model may write any of its own — and because a
+/// document with no `[[schedule]]` at all may still want to open the
+/// model-facing door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.parse_policy("") == Ok(schedule.default_policy)
+/// ```
+///
+pub fn parse_policy(text: String) -> Result(Policy, String) {
+  use document <- result.try(
+    tom.parse(text) |> result.map_error(describe_parse_error),
+  )
+  case dict.get(document, "schedules") {
+    Error(Nil) -> Ok(default_policy)
+    Ok(tom.Table(fields)) -> policy_table(fields)
+    Ok(_other) -> Error("[schedules] must be a table")
+  }
+}
+
+fn policy_table(fields: Dict(String, tom.Toml)) -> Result(Policy, String) {
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["model_created"],
+    "the [schedules] table",
+  ))
+  case dict.get(fields, "model_created") {
+    Error(Nil) -> Ok(default_policy)
+    Ok(tom.String("off")) -> Ok(ModelSchedulesOff)
+    Ok(tom.String("steer")) -> Ok(ModelSchedulesSteer)
+    Ok(tom.String("wake")) -> Ok(ModelSchedulesWake)
+    Ok(_other) ->
+      Error(
+        "schedules.model_created must be one of \"off\", \"steer\" or "
+        <> "\"wake\": \"off\" registers no schedule tool at all, \"steer\" "
+        <> "lets the model create schedules that only steer a run already "
+        <> "open, and \"wake\" additionally lets one start a fresh run on "
+        <> "an idle strand",
+      )
+  }
+}
+
+/// Whether this policy registers the model-facing tools at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !schedule.policy_opens_the_door(schedule.ModelSchedulesOff)
+/// ```
+///
+pub fn policy_opens_the_door(policy: Policy) -> Bool {
+  case policy {
+    ModelSchedulesOff -> False
+    ModelSchedulesSteer | ModelSchedulesWake -> True
+  }
+}
+
+/// Whether this policy permits a model-created schedule to wake an idle
+/// strand. The seam applies this rather than trusting the tool argument,
+/// so a model asking for `wake` under `ModelSchedulesSteer` gets a
+/// schedule that steers rather than a refusal — the request is honoured
+/// as far as the operator allowed, and the result says which it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !schedule.policy_permits_wake(schedule.ModelSchedulesSteer)
+/// ```
+///
+pub fn policy_permits_wake(policy: Policy) -> Bool {
+  case policy {
+    ModelSchedulesOff | ModelSchedulesSteer -> False
+    ModelSchedulesWake -> True
+  }
+}
+
+/// Parses a model-supplied RFC3339 UTC instant into epoch seconds.
+///
+/// The same parser `at` uses on the TOML side, worded for a reader who
+/// wrote a tool argument rather than a config file. One parser, because
+/// two would be two grammars.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.parse_instant("1970-01-01T00:00:00Z") == Ok(0)
+/// ```
+///
+pub fn parse_instant(text: String) -> Result(Int, String) {
+  case timestamp.parse_rfc3339(text) {
+    Error(Nil) ->
+      Error(
+        "at must be an RFC3339 UTC instant, for example "
+        <> "\"2026-09-01T09:00:00Z\"",
+      )
+    Ok(instant) -> {
+      let #(seconds, _nanoseconds) =
+        timestamp.to_unix_seconds_and_nanoseconds(instant)
+      Ok(seconds)
+    }
+  }
+}
+
+/// Renders epoch seconds back as the RFC3339 UTC instant a model wrote,
+/// so a confirmation echoes the vocabulary of the request rather than a
+/// number nobody asked about.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.render_instant(0) == "1970-01-01T00:00:00Z"
+/// ```
+///
+pub fn render_instant(seconds: Int) -> String {
+  timestamp.from_unix_seconds(seconds)
+  |> timestamp.to_rfc3339(duration.seconds(0))
 }

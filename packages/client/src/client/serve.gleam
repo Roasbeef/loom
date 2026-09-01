@@ -185,6 +185,7 @@ import client/rules
 import client/rulescan
 import client/schedule
 import client/schedulescan
+import client/scheduleseam
 import client/scratch
 import client/server
 import client/summaries
@@ -225,6 +226,7 @@ import tools/fs
 import tools/grep
 import tools/history as history_tool
 import tools/remember
+import tools/schedule as schedule_tool
 import tools/tool.{type Registry}
 import weft/poll
 
@@ -313,8 +315,15 @@ pub type Settings {
     rules: List(rules.Rule),
     /// The scheduled heartbeats from the same `loom.toml`, in file order.
     /// Empty — the ordinary case — starts no scanner at all, the same
-    /// posture `rules` takes.
+    /// posture `rules` takes, unless `schedule_policy` opens the
+    /// model-facing door and gives the scanner something to watch for.
     schedules: List(schedule.Schedule),
+    /// Whether the model may create schedules of its own, from the
+    /// `[schedules]` table. Defaults to `schedule.default_policy`, which
+    /// is open — see `client/schedule.Policy` for why. Only
+    /// `ModelSchedulesOff` registers no schedule tool at all, the way an
+    /// absent memory plane registers no `remember`.
+    schedule_policy: schedule.Policy,
   )
 }
 
@@ -617,9 +626,9 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use #(catalogue, rule_list, schedule_list) <- result.try(load_config(
-    flags.config,
-  ))
+  use #(catalogue, rule_list, schedule_list, schedule_policy) <- result.try(
+    load_config(flags.config),
+  )
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -661,6 +670,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     codemode_seams:,
     rules: rule_list,
     schedules: schedule_list,
+    schedule_policy:,
   ))
 }
 
@@ -782,11 +792,11 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 fn load_config(
   flag: Option(String),
 ) -> Result(
-  #(catalog.Catalog, List(rules.Rule), List(schedule.Schedule)),
+  #(catalog.Catalog, List(rules.Rule), List(schedule.Schedule), schedule.Policy),
   String,
 ) {
   case flag {
-    None -> Ok(#(env_catalog(), [], []))
+    None -> Ok(#(env_catalog(), [], [], schedule.default_policy))
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -805,7 +815,10 @@ fn load_config(
       use schedule_list <- result.try(
         schedule.parse(text) |> result.map_error(named),
       )
-      Ok(#(catalogue, rule_list, schedule_list))
+      use schedule_policy <- result.try(
+        schedule.parse_policy(text) |> result.map_error(named),
+      )
+      Ok(#(catalogue, rule_list, schedule_list, schedule_policy))
     }
   }
 }
@@ -1440,8 +1453,20 @@ fn assemble(
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
+  // The scheduling door, gated on the operator's `[schedules]` policy
+  // and wired the same way the Agency is: it needs the live runtime, and
+  // the runtime does not exist until `api.open` returns the registry it
+  // is being built for. So it borrows through the Agency's holder by
+  // name, rather than standing up a second actor to hold one value.
+  let schedule_seam = schedule_door(settings, agency_config, schedulescan_name)
   let tool_registry =
-    registry(Some(agency_seam), code_mode, history_seam, memory_seam)
+    registry(
+      Some(agency_seam),
+      code_mode,
+      history_seam,
+      memory_seam,
+      schedule_seam,
+    )
 
   // The registry itself, once, at boot. Four planes decide their own
   // presence from the host they found — a messaging plane, a code-mode
@@ -1803,12 +1828,18 @@ fn with_schedule_scanner(
   name: Name(schedulescan.Message),
   logger: Logger,
 ) -> sup.Builder {
-  case settings.schedules {
-    [] -> {
+  let door_open = schedule.policy_opens_the_door(settings.schedule_policy)
+  case settings.schedules, door_open {
+    // Nothing configured and no door: the plane costs a host exactly
+    // nothing, which is the posture `with_rule_scanner` takes.
+    [], False -> {
       log.info(logger, "schedules.none", [])
       builder
     }
-    configured -> {
+    // An open door with no operator schedules still needs the scanner,
+    // because the model may create one at any moment and a scanner that
+    // was never started could not fire it.
+    configured, _ -> {
       log.info(logger, "schedules.loaded", [
         field.count(key: "schedules", value: list.length(configured)),
         field.text(
@@ -1817,17 +1848,40 @@ fn with_schedule_scanner(
             |> list.map(fn(sched) { sched.name })
             |> string.join(","),
         ),
+        field.text(
+          key: "model_created",
+          value: policy_label(settings.schedule_policy),
+        ),
       ])
       sup.add(
         builder,
         schedulescan.supervised(
           schedulescan.default_options(configured)
+            |> with_model_door(door_open)
             |> schedulescan.with_logger(logger),
           runtime,
           name,
         ),
       )
     }
+  }
+}
+
+fn with_model_door(
+  options: schedulescan.Options,
+  open: Bool,
+) -> schedulescan.Options {
+  case open {
+    True -> schedulescan.with_model_door_open(options)
+    False -> options
+  }
+}
+
+fn policy_label(policy: schedule.Policy) -> String {
+  case policy {
+    schedule.ModelSchedulesOff -> "off"
+    schedule.ModelSchedulesSteer -> "steer"
+    schedule.ModelSchedulesWake -> "wake"
   }
 }
 
@@ -2386,7 +2440,7 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.lookup(serve.registry(option.None, option.None, option.None), "bash")
+/// // tool.lookup(serve.registry(option.None, option.None, option.None, None, None), "bash")
 /// ```
 ///
 pub fn registry(
@@ -2394,6 +2448,7 @@ pub fn registry(
   code_mode: Option(codemode_tool.CodeMode),
   history: Option(history_tool.History),
   memory: Option(remember.Memory),
+  schedules: Option(schedule_tool.Schedules),
 ) -> Registry {
   tool.registry(
     list.flatten([
@@ -2420,8 +2475,37 @@ pub fn registry(
         None -> []
         Some(memory) -> [remember.tool(memory)]
       },
+      case schedules {
+        None -> []
+        Some(schedules) -> schedule_tool.tools(schedules, scheduleseam.limits())
+      },
     ]),
   )
+}
+
+// The model-facing scheduling seam, or `None` when the operator left the
+// door shut — which is the default, and which registers none of the
+// three tools rather than registering ones that always refuse. A tool
+// definition is not free: it renders into the provider's cached byte
+// prefix and is paid for on every request, which is the same argument
+// `memory_seam` and `history_seam` are gated by.
+fn schedule_door(
+  settings: Settings,
+  agency_config: agency.Config,
+  scanner: Name(schedulescan.Message),
+) -> Option(schedule_tool.Schedules) {
+  case schedule.policy_opens_the_door(settings.schedule_policy) {
+    False -> None
+    True ->
+      Some(
+        scheduleseam.seam(scheduleseam.Wiring(
+          runtime: fn() { agency.borrow_runtime(agency_config) },
+          policy: settings.schedule_policy,
+          operator_schedules: settings.schedules,
+          scanner:,
+        )),
+      )
+  }
 }
 
 /// Where a code-mode build seed lives by default, relative to the

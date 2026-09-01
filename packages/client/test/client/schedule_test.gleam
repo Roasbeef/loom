@@ -7,6 +7,8 @@
 //// bound that broke rather than leaving that to a diff.
 
 import client/schedule
+import core/json
+import gleam/int
 import gleam/list
 import gleam/string
 import simplifile
@@ -623,4 +625,235 @@ pub fn the_first_line_carries_the_late_marker_test() {
   assert first == "[loom] scheduled heartbeat \"heartbeat\" (late)"
   // The prose reason stays in the body, where an expanded reader finds it.
   assert string.contains(schedule.injection(sched(), True), "This fire is late")
+}
+
+// --- the [schedules] policy table ------------------------------------------
+
+// The door defaults open, and an operator who writes no [schedules] table
+// gets that default — including one who writes [[schedule]] tables and
+// nothing else. Pinned because it is a deliberate reversal: this feature
+// shipped its first version operator-only, and a silent drift back to
+// closed would look like a bug fix rather than the policy change it is.
+pub fn a_document_with_no_schedules_table_takes_the_default_test() {
+  assert schedule.parse_policy("") == Ok(schedule.default_policy)
+  assert schedule.parse_policy(
+      "[[schedule]]\nname=\"a\"\nevery=\"60s\"\nbody=\"b\"\n",
+    )
+    == Ok(schedule.default_policy)
+}
+
+pub fn the_default_is_open_and_permits_waking_test() {
+  assert schedule.default_policy == schedule.ModelSchedulesWake
+  assert schedule.policy_opens_the_door(schedule.default_policy)
+  assert schedule.policy_permits_wake(schedule.default_policy)
+}
+
+// Closing the door is still possible, and is still the only position
+// under which the model cannot see the tools at all.
+pub fn an_operator_can_still_shut_the_door_test() {
+  assert schedule.parse_policy("[schedules]\nmodel_created = \"off\"\n")
+    == Ok(schedule.ModelSchedulesOff)
+  assert !schedule.policy_opens_the_door(schedule.ModelSchedulesOff)
+}
+
+pub fn the_three_policy_positions_parse_test() {
+  assert schedule.parse_policy("[schedules]\nmodel_created = \"off\"\n")
+    == Ok(schedule.ModelSchedulesOff)
+  assert schedule.parse_policy("[schedules]\nmodel_created = \"steer\"\n")
+    == Ok(schedule.ModelSchedulesSteer)
+  assert schedule.parse_policy("[schedules]\nmodel_created = \"wake\"\n")
+    == Ok(schedule.ModelSchedulesWake)
+}
+
+pub fn an_unknown_policy_value_is_refused_in_words_test() {
+  let assert Error(reason) =
+    schedule.parse_policy("[schedules]\nmodel_created = \"yes\"\n")
+    as "an unknown position must be refused, not silently defaulted"
+  assert string.contains(reason, "\"off\"")
+  assert string.contains(reason, "\"steer\"")
+  assert string.contains(reason, "\"wake\"")
+}
+
+pub fn an_unknown_policy_key_is_refused_test() {
+  let assert Error(reason) =
+    schedule.parse_policy("[schedules]\nmodel_crated = \"wake\"\n")
+    as "a typo in the policy table must not read as the default"
+  assert string.contains(reason, "model_crated")
+}
+
+// Off is the only position that registers nothing, and wake is the only
+// one that grants waking. Pinned because both are load-bearing: the first
+// is the safe default, the second is the whole of the operator's say over
+// a model extending its own liveness.
+pub fn the_policy_predicates_agree_with_their_positions_test() {
+  assert !schedule.policy_opens_the_door(schedule.ModelSchedulesOff)
+  assert schedule.policy_opens_the_door(schedule.ModelSchedulesSteer)
+  assert schedule.policy_opens_the_door(schedule.ModelSchedulesWake)
+
+  assert !schedule.policy_permits_wake(schedule.ModelSchedulesOff)
+  assert !schedule.policy_permits_wake(schedule.ModelSchedulesSteer)
+  assert schedule.policy_permits_wake(schedule.ModelSchedulesWake)
+}
+
+// --- the config cell round trip --------------------------------------------
+
+pub fn a_schedule_survives_the_round_trip_test() {
+  let interval =
+    schedule.Schedule(
+      name: "poll",
+      target: "main",
+      timing: schedule.Interval(
+        seconds: 300,
+        expiry: schedule.Expiry(max_fires: 12, expires_after_s: 3600),
+      ),
+      wake: True,
+      body: "look at the build",
+    )
+  assert schedule.decode(schedule.encode(interval)) == Ok(interval)
+
+  let one_shot =
+    schedule.Schedule(
+      name: "remind",
+      target: "sub:main/worker-1",
+      timing: schedule.OneShot(at: 1_800_000_000),
+      wake: False,
+      body: "check the migration",
+    )
+  assert schedule.decode(schedule.encode(one_shot)) == Ok(one_shot)
+}
+
+pub fn a_cancelled_cell_is_not_a_schedule_test() {
+  assert schedule.decode(schedule.cancelled_value) == Error(Nil)
+}
+
+// The decoder re-checks the bounds rather than trusting what was stored,
+// so a cell written by a build with looser limits cannot outlive them.
+pub fn a_stored_cell_outside_todays_bounds_is_dropped_test() {
+  let too_tight =
+    schedule.Schedule(
+      name: "hot",
+      target: "main",
+      timing: schedule.Interval(
+        seconds: 1,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
+      ),
+      wake: False,
+      body: "spin",
+    )
+  assert schedule.decode(schedule.encode(too_tight)) == Error(Nil)
+}
+
+pub fn a_malformed_cell_is_dropped_rather_than_crashing_test() {
+  assert schedule.decode(json.String("not a schedule")) == Error(Nil)
+  assert schedule.decode(json.Object([])) == Error(Nil)
+  // Both timings at once is as meaningless here as `every` with `at` is
+  // in the TOML, and is refused the same way.
+  assert schedule.decode(
+      json.Object([
+        #("name", json.String("a")),
+        #("target", json.String("main")),
+        #("wake", json.Bool(False)),
+        #("body", json.String("b")),
+        #("every_s", json.Int(60)),
+        #("at_s", json.Int(0)),
+      ]),
+    )
+    == Error(Nil)
+}
+
+// --- build: the shared bounds ----------------------------------------------
+
+fn built(name: String, body: String) -> Result(schedule.Schedule, String) {
+  schedule.build(
+    name:,
+    target: "main",
+    timing: schedule.OneShot(at: 0),
+    wake: False,
+    body:,
+  )
+}
+
+pub fn build_refuses_what_the_toml_path_refuses_test() {
+  let assert Error(slash) = built("a/b", "body")
+    as "a name with a slash breaks the fired-mark key"
+  assert string.contains(slash, "/")
+
+  let assert Error(quote) = built("a\"b", "body")
+    as "a name with a quote breaks the injected fence"
+  assert string.contains(quote, "quote")
+
+  let assert Error(_empty_name) = built("", "body")
+    as "an empty name is not a name"
+  let assert Error(_empty_body) = built("a", "")
+    as "a schedule with nothing to inject is not a schedule"
+  let assert Ok(_fine) = built("a", "body") as "an ordinary schedule builds"
+}
+
+pub fn build_refuses_a_busy_loop_interval_test() {
+  let hot =
+    schedule.build(
+      name: "hot",
+      target: "main",
+      timing: schedule.Interval(
+        seconds: schedule.min_interval_s - 1,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
+      ),
+      wake: False,
+      body: "spin",
+    )
+  let assert Error(reason) = hot
+    as "an interval under the floor must be refused"
+  assert string.contains(reason, int.to_string(schedule.min_interval_s))
+}
+
+pub fn build_refuses_an_expiry_outside_its_caps_test() {
+  let over = fn(expiry) {
+    schedule.build(
+      name: "x",
+      target: "main",
+      timing: schedule.Interval(seconds: 60, expiry:),
+      wake: False,
+      body: "b",
+    )
+  }
+  let assert Error(_fires) =
+    over(schedule.Expiry(
+      max_fires: schedule.max_max_fires + 1,
+      expires_after_s: 3600,
+    ))
+    as "max_fires above its cap must be refused"
+  let assert Error(_window) =
+    over(schedule.Expiry(
+      max_fires: 10,
+      expires_after_s: schedule.max_expires_after_s + 1,
+    ))
+    as "expires_after_s above its cap must be refused"
+  let assert Ok(_fine) =
+    over(schedule.Expiry(max_fires: 10, expires_after_s: 3600))
+    as "an expiry inside both caps builds"
+}
+
+// --- instants --------------------------------------------------------------
+
+pub fn an_instant_round_trips_test() {
+  assert schedule.parse_instant("1970-01-01T00:00:00Z") == Ok(0)
+  assert schedule.render_instant(0) == "1970-01-01T00:00:00Z"
+  let assert Ok(seconds) = schedule.parse_instant("2026-09-01T09:00:00Z")
+    as "an ordinary UTC instant must parse"
+  assert schedule.render_instant(seconds) == "2026-09-01T09:00:00Z"
+}
+
+pub fn a_malformed_instant_is_refused_in_words_test() {
+  let assert Error(reason) = schedule.parse_instant("tomorrow")
+    as "a model writing prose instead of RFC3339 must be told so"
+  assert string.contains(reason, "RFC3339")
+}
+
+// The example config's policy table must parse, for the same reason its
+// [[schedule]] tables must: it is the operator's only documentation of a
+// knob that is now load-bearing in both directions.
+pub fn the_committed_example_configs_policy_parses_test() {
+  let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
+    as "the committed example config must be readable"
+  assert schedule.parse_policy(text) == Ok(schedule.ModelSchedulesWake)
 }

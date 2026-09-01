@@ -125,6 +125,7 @@ fn settings_under(root: String) -> serve.Settings {
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
     schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
   )
 }
 

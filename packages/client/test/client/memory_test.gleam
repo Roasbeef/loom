@@ -209,9 +209,15 @@ pub fn remember_writes_one_redacted_note_test() {
 pub fn the_tool_is_registered_only_when_memory_is_wired_test() {
   let root = fresh_root("gate")
   let with_memory =
-    serve.registry(None, None, None, Some(a_seam(root <> "/loom-memory.db")))
+    serve.registry(
+      None,
+      None,
+      None,
+      Some(a_seam(root <> "/loom-memory.db")),
+      None,
+    )
   assert list.contains(tool.names(with_memory), remember.tool_name)
-  let without = serve.registry(None, None, None, None)
+  let without = serve.registry(None, None, None, None, None)
   assert list.contains(tool.names(without), remember.tool_name) == False
 }
 
@@ -559,7 +565,13 @@ fn a_seam(path: String) -> remember.Memory {
 // which is what makes this a test of the tool and not of the closure.
 fn dispatch(root: String, note: String) -> tool.ToolOutcome {
   let registry =
-    serve.registry(None, None, None, Some(a_seam(root <> "/loom-memory.db")))
+    serve.registry(
+      None,
+      None,
+      None,
+      Some(a_seam(root <> "/loom-memory.db")),
+      None,
+    )
   tool.dispatch(
     registry,
     a_ctx(),

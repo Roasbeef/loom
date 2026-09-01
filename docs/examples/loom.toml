@@ -149,11 +149,10 @@ body = "Never force-push a shared branch. Open a new branch instead."
 # as late in the injected text — never a backlog replay of everything
 # that was missed.
 #
-# Like the MCP and rule tables, these are an operator trust decision.
-# There is deliberately no model-facing tool to create, edit or silence a
-# schedule: a model that could schedule its own future wake-ups could
-# extend its own liveness and spend unsupervised. Editing this file and
-# restarting the server IS the decision.
+# Unlike the MCP and rule tables, the model can create schedules of its
+# own — see the [schedules] table at the bottom of this file. The tables
+# here are still yours alone: a model cannot edit, cancel, or even list
+# one you wrote.
 [[schedule]]
 name = "watch-reviewer"
 every = "300s"
@@ -169,3 +168,33 @@ steer it back to the diff and ask for its findings so far.
 name = "migration-window"
 at = "2026-09-01T09:00:00Z"
 body = "The migration window opens today. Confirm the plan is ready."
+
+
+# Whether the model may create schedules of its own, with the
+# schedule_create / schedule_list / schedule_cancel tools.
+#
+#   "wake"  — the DEFAULT, and what you get with no [schedules] table at
+#             all. The model may create schedules, including ones that
+#             start a fresh run on an idle strand.
+#   "steer" — the model may create schedules, but none of them can wake an
+#             idle strand: they steer a run already open and hold
+#             otherwise, exactly as a triggered [[rule]] does. Choose this
+#             if you pay per token and want a model's own reminders to
+#             cost nothing while nobody is working.
+#   "off"   — no schedule tool is registered at all. The model cannot see
+#             the door. Choose this if scheduling should be your decision
+#             and nobody else's.
+#
+# The open default is deliberate, and it rests on a bound rather than on
+# trust. A model-created schedule is held to every limit a [[schedule]]
+# table above is held to, and it cannot raise any of them: it fires onto
+# the strand that created it and no other, it expires on both max_fires
+# and expires_after_s with the earlier winning, and one session holds a
+# limited number of them at once. So a model can wake itself, and cannot
+# wake itself indefinitely — in a session you are running and can stop.
+#
+# The half-open position was rejected as a default because it is not
+# really a feature: a heartbeat exists to fire when nobody is prompting,
+# and one that can only steer an open run never fires when it matters.
+[schedules]
+model_created = "wake"

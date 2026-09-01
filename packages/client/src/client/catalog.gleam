@@ -207,10 +207,14 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // converse obligation is the one that bites — a table missing from
   // this list is refused outright however well its own parser
   // understands it, so adding a parser to `serve.load_config` means
-  // adding its table name here.
+  // adding its table name here. `schedule` and `schedules` are two
+  // different tables, not a typo for each other: the repeated
+  // `[[schedule]]` an operator writes one of per heartbeat, and the
+  // singular `[schedules]` policy table saying whether the model may
+  // write any of its own.
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["models", "roles", "mcp", "rule", "schedule"],
+    ["models", "roles", "mcp", "rule", "schedule", "schedules"],
     "the top level",
   ))
   use model_tables <- result.try(

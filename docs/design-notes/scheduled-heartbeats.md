@@ -261,3 +261,85 @@ the new types and the marking-admission invariant respectively. Neither
 package's per-package doc existed for #27 as a separate
 `docs/architecture/*.md` file, and this follows the same precedent rather
 than inventing a `scheduling.md`.
+
+---
+
+## Addendum: model-created schedules, and the reversal of the cut
+
+The ruling above cut model-writability entirely — "cut, not deferred" —
+on the argument that a self-scheduling model extends its own liveness and
+spend unsupervised. That cut has been reversed. The tools exist
+(`tools/schedule`: `schedule_create`, `schedule_list`, `schedule_cancel`),
+the operator's say is one knob with three positions
+(`client/schedule.Policy`), and **the default is open**.
+
+The original argument was not wrong; it was under-decomposed. It reads as
+one argument and is really two, of very different strength.
+
+**Liveness.** A schedule that may wake an idle strand keeps a session
+working after everyone has gone home. This is the sharp one, and it is
+the one the cut was really about.
+
+**Spend.** A schedule that may only steer a run already open cannot
+extend liveness at all — it holds when the strand is idle, exactly as a
+triggered rule does, so the session still ends when the work in flight
+ends. All it can do is add turns to a run that was going to happen
+anyway.
+
+Separating them offered an obvious middle position: register the tools,
+force `wake` false. That was built (`ModelSchedulesSteer`) and rejected as
+the *default*, because it is not really a feature. A heartbeat exists to
+fire when nobody is prompting — to check on unattended work, to poll
+something that changes on its own — and one that can only steer an open
+run never fires when it matters. Shipping it as the default would have
+meant shipping a cron that reads as broken.
+
+So the default is `ModelSchedulesWake`, and what makes that defensible is
+that the guardrail is structural rather than postural. It is the same
+guardrail the original ruling identified as what made operator `wake =
+true` safe, and it applies unchanged to a model:
+
+- Every recurring schedule expires. Both `max_fires` and
+  `expires_after_s` are always active, earlier wins, and **a model cannot
+  raise either** — `build` holds a model's request to exactly the bounds
+  `parse` holds a `[[schedule]]` to, through the same predicates.
+- A model-created schedule fires onto the strand that created it and no
+  other. There is no `target` argument.
+- One session holds at most `max_model_schedules` of them, counted live,
+  so a cancel frees a slot and a creation loop meets a wall it can read.
+- The session is one an operator is running and can stop.
+
+The worst case is therefore bounded and computable, which is what the
+original ruling asked of `wake` and got.
+
+### What this cost, and what is still not built
+
+Two things the ruling above suggested are still not built, and neither
+became necessary.
+
+The **escalation-gated grant** — model requests, operator approves — was
+the shape the original note proposed if self-scheduling were ever wanted.
+It was not taken, and the reason is worth recording: `gateway.attached`
+answers zero when nobody is watching, and the escalation seam settles as
+a refusal rather than parking on a prompt no one will answer. So a model
+could only ever get a schedule approved *while someone was present*,
+which is precisely when a heartbeat is least needed. The authority is
+absent exactly when the capability matters. A `CallScope`-shaped approval
+also does not fit a schedule, which is not a call.
+
+**Scheduling on behalf of a subagent** — the motivating case the ruling
+names for `wake` — is still not possible. A strand may only schedule onto
+itself. Letting a parent schedule onto a child needs a lineage check and
+an ownership argument (the parent extends the child's liveness, which it
+already controls, not its own) that nobody has written down. It is the
+obvious next increment and it is deliberately not in this change.
+
+### The collision nobody would have found by reading
+
+Both kinds of schedule feed one scanner, which derives a fired-mark from
+`{target, name}` alone. Two schedules sharing both would share a mark and
+silently suppress each other's fires. Neither parser can catch it —
+`parse` never sees a model's names, and by the time the scanner has them
+they are indistinguishable — so the check lives in the seam, which is the
+one place that holds both lists at once (`client/scheduleseam`'s
+`Wiring.operator_schedules` exists for exactly this and nothing else).
