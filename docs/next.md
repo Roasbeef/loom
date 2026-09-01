@@ -31,18 +31,17 @@ await_result` and the satellite accept loop, the simulation's starved
 owner); and `loom --config <loom.toml>` for the local launcher, which the
 real-drive verification needed.
 
-**Two things a merger must do.** The branch develops against the sibling
-weft checkout as a *path dependency* in seven packages (`weft = { path =
-"../../../weft" }`) plus relocked manifests, so it does not resolve on a
-machine without that checkout, and CI cannot run it. Once weft 0.4.0 is on
-hex — everything on weft `main` since 0.3.1 is that release — switch the
-seven `gleam.toml` files back to `weft = ">= 0.4.0 and < 1.0.0"`, relock
-every manifest (`gleam deps download` per package, then hand-patch the
-requirement lists of local packages in dependents' manifests and add the
-entry to `tools`, which reaches weft only through broker — the resolver
-does neither), and run the full gate. Phase 1 (PR #160, hex 0.1.0) can
-merge on its own first; its CI red is main's own flake pattern, verified
-against four consecutive main runs.
+**Dependencies.** The branch was developed against the sibling weft
+checkout as a path dependency and switched back to hex `>= 0.4.0` in its
+last commits, with every manifest relocked and the full gate green on the
+hex resolution. Two things the resolver does not do when a local
+package's requirements change, both hand-patched then and both worth
+knowing next time: the requirement lists of local packages in dependents'
+manifests are not refreshed, and a package that reaches weft only through
+another (`tools`, through `broker`) gets no entry, which presents as
+`weft.app` not found at application start. Phase 1 (PR #160, hex 0.1.0)
+can merge on its own first; its CI red is main's own flake pattern,
+verified against four consecutive main runs.
 
 **What was measured, so nobody re-argues it.** Weft does not shrink the
 tree: the source moved by +4,046 / −2,855 (net +1,191) across the whole

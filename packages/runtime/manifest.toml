@@ -21,7 +21,7 @@ packages = [
   { name = "sqlight", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite", "gleam_stdlib"], otp_app = "sqlight", source = "hex", outer_checksum = "841768D0A81107EE2DB46B949354F284A68B2E8098315C28A1FE3C07D206C17A" },
   { name = "storage", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "simplifile", "sqlight"], source = "local", path = "../storage" },
   { name = "telemetry", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
-  { name = "weft", version = "0.3.2", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "local", path = "../../../weft" },
+  { name = "weft", version = "0.4.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "FA74C33CD6D7E9E09732744EDD86E4A75F18A7922C72751B521B92031542C264" },
 ]
 
 [requirements]
@@ -36,4 +36,4 @@ session = { path = "../session" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 storage = { path = "../storage" }
 telemetry = { path = "../telemetry" }
-weft = { path = "../../../weft" }
+weft = { version = ">= 0.4.0 and < 1.0.0" }
