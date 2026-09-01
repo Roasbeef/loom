@@ -265,7 +265,11 @@ server as a convenience. It finds a sibling `loomd`, an explicit `--server` or
 over the same loopback websocket an explicit client would use. Relative `PATH`
 entries are ignored because they would make the workspace launch authority. It
 neither loads a workspace `loom.toml` nor uses the workspace as the server's
-working directory, because both surfaces can select host-side processes.
+working directory, because both surfaces can select host-side processes. A
+catalogue the operator names on the command line, `loom --config <loom.toml>`,
+is a different matter — it is trusted the way an explicit server's `--config`
+is — and it is forwarded to a *cold* start only: a recorded endpoint whose
+server is still alive is reused with whatever catalogue it booted with.
 Nothing is linked or bundled together: a remote
 client still carries no server runtime, a headless server still carries no
 terminal, and `--addr` remains the attachment path between machines.

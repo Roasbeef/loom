@@ -52,6 +52,7 @@ pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
       "44123",
       "/state/session.db.token",
       "/bin/sleep",
+      "",
     )
   assert arguments
     == [
@@ -65,6 +66,23 @@ pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
       "/state/session.db.token",
     ]
   assert !list.contains(arguments, "--config")
+}
+
+pub fn launch_arguments_forward_an_operator_named_config_test() {
+  let arguments =
+    bootstrap.launch_arguments(
+      "/state/session.db",
+      "/workspace",
+      "44123",
+      "/state/session.db.token",
+      "/bin/sleep",
+      "/home/operator/loom-baseten.toml",
+    )
+  assert list.contains(arguments, "--config")
+  assert list.contains(arguments, "/home/operator/loom-baseten.toml")
+  // The catalogue rides behind the fixed surface, never in place of it.
+  let assert ["--session", "/state/session.db", "--workspace", "/workspace", ..] =
+    arguments
 }
 
 pub fn implicit_path_discovery_ignores_relative_entries_test() {
@@ -192,7 +210,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(other_workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(session_directory)
-  let options = bootstrap.Options(workspace, session, server, state)
+  let options = bootstrap.Options(workspace, session, server, state, "")
   let answers = process.new_subject()
   list.each([1, 2], fn(_) {
     process.spawn_unlinked(fn() {
@@ -213,7 +231,13 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     filepath.join(canonical_state, "tokens") <> "/",
   )
   let incompatible =
-    bootstrap.resolve(bootstrap.Options(other_workspace, session, server, state))
+    bootstrap.resolve(bootstrap.Options(
+      other_workspace,
+      session,
+      server,
+      state,
+      "",
+    ))
   let assert Error(reason) = incompatible
   assert string.contains(reason, "cached endpoint is incompatible")
   let assert Ok(preserved_pid) = endpoint_pid(state)

@@ -56,6 +56,14 @@ pub type Options {
     server: String,
     /// The launcher state root, or `~/.loom` when empty.
     state_directory: String,
+    /// A model catalogue file to hand the server, or none when empty.
+    ///
+    /// Named by the operator on the command line, so it is trusted the way
+    /// an explicitly attached server's `--config` is; the launcher still
+    /// never reads a catalogue out of the workspace. It shapes a *cold*
+    /// start only — a recorded endpoint whose server is still alive is
+    /// reused as it is, whatever catalogue that server booted with.
+    config: String,
   )
 }
 
@@ -318,6 +326,7 @@ fn start_server(
   paths: Paths,
 ) -> Result(Target, String) {
   use server <- result.try(find_server(options.server))
+  use config <- result.try(resolve_config(options.config))
   use port <- result.try(
     ffi_bootstrap.reserve_loopback_port()
     |> result.map_error(fn(reason) { "reserve loopback port: " <> reason }),
@@ -342,7 +351,7 @@ fn start_server(
     write_endpoint(paths.endpoint, endpoint)
     |> result.map_error(fn(reason) { "publish starting endpoint: " <> reason }),
   )
-  use started <- result.try(spawn(endpoint, server))
+  use started <- result.try(spawn(endpoint, server, config))
   let StartedProcess(process:, pid:) = started
   case ffi_bootstrap.process_identity(pid) {
     Error(reason) -> {
@@ -854,8 +863,12 @@ fn find_first_server(candidates: List(String)) -> Result(String, String) {
   }
 }
 
-fn spawn(endpoint: Endpoint, server: String) -> Result(StartedProcess, String) {
-  let arguments = server_arguments(endpoint, server)
+fn spawn(
+  endpoint: Endpoint,
+  server: String,
+  config: String,
+) -> Result(StartedProcess, String) {
+  let arguments = server_arguments(endpoint, server, config)
   ffi_bootstrap.spawn_server(
     server,
     arguments,
@@ -873,7 +886,11 @@ fn stop_started(started: StartedProcess) -> Nil {
   ffi_bootstrap.close_server_process(process)
 }
 
-fn server_arguments(endpoint: Endpoint, server: String) -> List(String) {
+fn server_arguments(
+  endpoint: Endpoint,
+  server: String,
+  config: String,
+) -> List(String) {
   let port =
     endpoint.address
     |> string.drop_start(string.length("ws://127.0.0.1:"))
@@ -884,14 +901,32 @@ fn server_arguments(endpoint: Endpoint, server: String) -> List(String) {
     port,
     endpoint.token_file,
     server,
+    config,
   )
+}
+
+// An operator-named catalogue is resolved before the port is reserved, so a
+// file that does not exist refuses the launch with a worded reason rather
+// than a server that boots without it or dies on its own flag parsing. The
+// path is made canonical because the server runs from the private state
+// directory, not from wherever the operator typed the flag.
+fn resolve_config(config: String) -> Result(String, String) {
+  case config {
+    "" -> Ok("")
+    path ->
+      ffi_bootstrap.canonical_path(path)
+      |> result.map_error(fn(reason) {
+        "resolve config " <> path <> ": " <> reason
+      })
+  }
 }
 
 /// Builds the fixed server argument surface used by automatic startup.
 ///
-/// Workspace content contributes only the `--workspace` data path. No config
-/// argument is emitted, and a helper is pinned only when it is an executable
-/// sibling of the selected server.
+/// Workspace content contributes only the `--workspace` data path. A config
+/// argument is emitted only for a catalogue the operator named explicitly
+/// (never one found in the workspace), and a helper is pinned only when it
+/// is an executable sibling of the selected server.
 @internal
 pub fn launch_arguments(
   session_file: String,
@@ -899,6 +934,7 @@ pub fn launch_arguments(
   port: String,
   token_file: String,
   server: String,
+  config: String,
 ) -> List(String) {
   let arguments = [
     "--session",
@@ -910,6 +946,10 @@ pub fn launch_arguments(
     "--token-file",
     token_file,
   ]
+  let arguments = case config {
+    "" -> arguments
+    path -> list.append(arguments, ["--config", path])
+  }
   let helper = filepath.join(filepath.directory_name(server), "loom-exec")
   case ffi_bootstrap.is_executable_file(helper) {
     True -> list.append(arguments, ["--helper", helper])

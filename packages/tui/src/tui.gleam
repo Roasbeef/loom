@@ -288,7 +288,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
 }
 
 fn default_bootstrap_options() -> bootstrap.Options {
-  bootstrap.Options("", "", "", "")
+  bootstrap.Options("", "", "", "", "")
 }
 
 fn parse_local_options(
@@ -317,6 +317,8 @@ fn parse_local_options(
             rest,
             bootstrap.Options(..options, state_directory: value),
           )
+        "--config" ->
+          parse_local_options(rest, bootstrap.Options(..options, config: value))
         _ -> Error("unknown local launch option " <> flag)
       }
   }
@@ -336,7 +338,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session-file <path>] "
-  <> "[--server <path>] [--state-dir <path>]\n"
+  <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
 }
