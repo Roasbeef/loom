@@ -165,7 +165,9 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `tools/fs`'s `PathError` and `ReadError` so a refusal keeps the
   harness's own vocabulary), `glance` 6.1+ + `glexer` (vetting parses and
   token-scans; the Glance floor admits the syntax accepted by the shipped
-  Gleam compiler), `simplifile` + `filepath`, `gleam_erlang`, `gleam_otp`.
+  Gleam compiler), `simplifile` + `filepath`, `gleam_erlang`,
+  `gleam_otp`, `weft` (`weft/state_machine`, for the launcher's
+  node-report holder).
 - **Deliberately does not depend on `cap`.** `cap` is the prelude compiled
   *into* the satellite; linking it into the harness would put
   model-facing code in the harness VM. Shared names (`LOOM_CAP_SOCK`,
@@ -354,6 +356,28 @@ strand roots, and can reach neither the disk, the network, nor a process.
   answers with `exec_exit`. A stage that genuinely made no report says
   why, which is a different value from one whose report was lost
   (issue #5, spec-gaps WP-J 14).
+- **The node-report holder is a `weft/state_machine`, and its two
+  hand-rolled queues are gone.** `Pending | Running(handle) |
+  Done(report)` is the machine's state and `Holder(broker_actor,
+  teardown)` its data — the split is load-bearing, because a change of
+  *state* is what replays a postponed event and what cancels a state
+  timeout, and neither may turn on the teardown fact. An `Ask` that
+  arrives before the node has settled is `postpone`d rather than pushed
+  onto a `waiting` list, and weft replays it on the transition to `Done`,
+  ahead of the mailbox and in arrival order, where the `Done` arm answers
+  it from the held report. The bounded wait that lets the janitor's
+  second `destroy` be answered from memory is a **state timeout on
+  `Done`**, armed only once teardown has been through and re-armed by
+  each answered `Ask`; it dies with a state the holder never leaves, so
+  the holder ends instead of outliving the session. The holder is still
+  **unlinked** from its launcher, which `state_machine.start` does not
+  offer — it links — so the start runs on a throwaway `spawn_unlinked`
+  trampoline that hands the subject back and exits normally, and the link
+  dies with it. The machine's message type wraps `Settlement` so that the
+  lingering deadline is one no sender can forge. Port gate: the two
+  teardown-ordering invariants above (`Cleared`-after-teardown cancels,
+  teardown-while-`Running` cancels) and `launch_test`'s two-`destroy`
+  race, all unchanged (`docs/design-notes/weft-adoption.md` tier 2 item 4).
 - **The wall deadline is armed on `Connected`, not on launch.** A timer
   armed up front could stop the host before the launch delivered its
   connection, leaving the node's `destroy` handle undelivered;
