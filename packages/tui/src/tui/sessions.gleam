@@ -450,6 +450,10 @@ fn render_summary(
   )
 }
 
+// Every choice owns exactly two rows, so the visible window is computed from
+// rows rather than from wrapped text. A canonical path is routinely wider
+// than the overlay, and a wrapped detail line would steal the next choice's
+// rows; each path is instead cut to its tail, which is the distinctive end.
 fn render_choices(
   buf: buffer.Buffer,
   area: Rect,
@@ -464,10 +468,16 @@ fn render_choices(
     |> list.drop(start)
     |> list.take(visible_count)
     |> list.index_map(fn(choice, offset) {
-      choice_lines(choice, start + offset, state.selected, state.current)
+      choice_lines(
+        choice,
+        start + offset,
+        state.selected,
+        state.current,
+        area.size.width,
+      )
     })
     |> list.flatten
-  paragraph.render_text(buf, area, span.text_new(rows))
+  paragraph.render_styled(buf, area, rows)
 }
 
 fn choice_lines(
@@ -475,6 +485,7 @@ fn choice_lines(
   index: Int,
   selected: Int,
   current: String,
+  width: Int,
 ) -> List(span.Line) {
   let SessionChoice(session:, workspace:, session_file:) = choice
   let #(marker, row_style) = case index == selected {
@@ -485,25 +496,58 @@ fn choice_lines(
     True -> "  ● current"
     False -> ""
   }
+
+  // The detail row shares its width between the two paths after the indent
+  // and the separator, so both tails stay visible on a narrow terminal.
+  let detail_indent = "    "
+  let separator = "  ·  "
+  let path_width =
+    int.max(
+      1,
+      { width - string.length(detail_indent) - string.length(separator) } / 2,
+    )
   [
     span.line_new([
       span.span_styled(marker, row_style),
-      span.span_styled(text_hygiene.single_line(session), row_style),
+      span.span_styled(
+        fit_tail(text_hygiene.single_line(session), width - 2),
+        row_style,
+      ),
       span.span_styled(current_badge, theme.overlay_current()),
     ]),
     span.line_new([
-      span.span_styled("    ", theme.overlay_plain()),
+      span.span_styled(detail_indent, theme.overlay_plain()),
       span.span_styled(
-        text_hygiene.single_line(workspace),
+        fit_tail(text_hygiene.single_line(workspace), path_width),
         theme.overlay_quiet(),
       ),
-      span.span_styled("  ·  ", theme.overlay_quiet()),
+      span.span_styled(separator, theme.overlay_quiet()),
       span.span_styled(
-        text_hygiene.single_line(session_file),
+        fit_tail(text_hygiene.single_line(session_file), path_width),
         theme.overlay_quiet(),
       ),
     ]),
   ]
+}
+
+/// Keeps the last `width` graphemes of a path, marking any cut with `…`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.fit_tail("/home/me/work/project", 10)
+/// // -> "…k/project"
+/// ```
+@internal
+pub fn fit_tail(text: String, width: Int) -> String {
+  let length = string.length(text)
+  case width <= 0, length <= width {
+    True, _ -> ""
+    False, True -> text
+    False, False ->
+      "…"
+      <> string.slice(text, at_index: length - { width - 1 }, length: width - 1)
+  }
 }
 
 fn render_help(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {

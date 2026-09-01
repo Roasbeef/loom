@@ -308,6 +308,14 @@ pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
   assert sessions.update(keys.Enter, wrapped) == sessions.Choose(first)
 }
 
+pub fn session_selector_paths_keep_their_tails_test() {
+  assert sessions.fit_tail("/home/me/work/project", 10) == "…k/project"
+  assert sessions.fit_tail("/short", 10) == "/short"
+  assert sessions.fit_tail("/short", 6) == "/short"
+  assert sessions.fit_tail("/short", 0) == ""
+  assert sessions.fit_tail("/short", 1) == "…"
+}
+
 pub fn session_selector_uses_database_identity_test() {
   let first =
     bootstrap.SessionChoice("review", "/work/project", "/state/review.db")
