@@ -296,6 +296,37 @@ What landed in this tree so far, per loom#159's tier 1:
 - `tui/connection.start_safely_within` — the spawn/monitor/kill scaffold
   is a one-task `weft` run with a deadline; the `StartReport` type is
   gone and the behavior-pinning tests pass unchanged.
-- `broker/exec`'s timer bookkeeping (tier 1's third item) is **not** in
-  this pass: it wants `weft/state_machine`, and restructuring a
-  1,700-line actor deserves its own change; loom#159 tracks it.
+- `broker/exec` — the helper is a `weft/state_machine` whose state is
+  its lifecycle (`AwaitingHello | Idle | Running | Cancelling | Dead`).
+  The handshake deadline is a state timeout on `AwaitingHello` and the
+  cancel escalation a state timeout on `Cancelling`, so the execution id
+  the cancel timer carried for stale-fire detection, the phase re-check
+  in the handshake handler, and the hand-cancelled `cancel_timer` field
+  are all gone. The heartbeat tick stays hand-rolled (no periodic
+  timeout kind), as do the cleanup flag and the janitor. Mutation-tested:
+  removing either state timeout fails exactly its escalation or
+  handshake test.
+- `codemode/launch` — the node-report holder is a `weft/state_machine`.
+  The hand-kept `waiting` list is `postpone` on `Ask`, replayed on the
+  transition to `Done`; the lingering bounded receive is a state timeout
+  on `Done` armed once torn down; the naked `torn_down: Bool` is a
+  two-variant type. weft has no unlinked start, so an unlinked trampoline
+  starts the machine to keep the holder alive for the janitor's second
+  `destroy`. The two-destroy race test passes unchanged.
+- `conformance/simulation/control.attempt` — a one-task run with a
+  deadline; `expired_when_silent` is deleted and its wall-clock comment
+  trail moved onto the arms that now express it. Mutation-tested against
+  the expiry test.
+- `client/mcp.start` — server bring-up fans out over a weft run bounded
+  by the catalogue length; input-ordered outcomes keep the catalogue-order
+  contract. The link-topology caution in tier 2 item 9 was measured and
+  found empty: `start_client` already severs the client actor from its
+  caller two unlinked spawns down, so no relink was needed.
+- `runtime/strand_runtime`'s reaper loop (tier 2 item 5) is deliberately
+  **not** ported to `weft/state_machine` in phase 1: phase 2c
+  re-expresses the reaper on managed tasks, and restructuring it twice
+  would be waste.
+
+Phase 1 is therefore complete except for the reaper, which phase 2 owns.
+The tree stays on weft 0.1.0 through this pass; the move to the managed
+task surface is phase 2's first commit.
