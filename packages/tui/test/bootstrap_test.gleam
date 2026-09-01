@@ -178,22 +178,30 @@ pub fn local_session_discovery_validates_launcher_records_test() {
       "not json",
     )
 
-  // A record a failed spawn abandoned in `starting` is otherwise well formed
-  // and must still stay out of the picker.
+  // A second, otherwise identical record proves the exclusion below is the
+  // status alone: it is listed while ready and vanishes once it says
+  // starting, as a record a failed spawn abandoned would.
   let pending = filepath.join(session_directory, "pending.db")
   let assert Ok(Nil) = simplifile.write(pending, "")
   let assert Ok(canonical_pending) = ffi_bootstrap.canonical_path(pending)
   let pending_key = digest_prefix(canonical_pending, 24)
+  let pending_endpoint =
+    filepath.join(endpoint_directory, pending_key <> ".json")
+  let pending_record =
+    record
+    |> string.replace(canonical_session, canonical_pending)
+    |> string.replace("\"review\"", "\"pending\"")
+    |> string.replace(key, pending_key)
+  let options = bootstrap.Options(workspace, session, "/bin/loomd", state)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(pending_endpoint, pending_record)
+  let assert Ok([_, _]) = bootstrap.discover_sessions(options)
+    as "a ready sibling record is listed"
   let assert Ok(Nil) =
     ffi_bootstrap.atomic_write_private(
-      filepath.join(endpoint_directory, pending_key <> ".json"),
-      record
-        |> string.replace("\"ready\"", "\"starting\"")
-        |> string.replace(canonical_session, canonical_pending)
-        |> string.replace("\"review\"", "\"pending\"")
-        |> string.replace(key, pending_key),
+      pending_endpoint,
+      string.replace(pending_record, "\"ready\"", "\"starting\""),
     )
-  let options = bootstrap.Options(workspace, session, "/bin/loomd", state)
   let assert Ok([choice]) = bootstrap.discover_sessions(options)
   assert choice
     == bootstrap.SessionChoice(
@@ -354,6 +362,16 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     as "the adopted inbox should deliver the replacement snapshot"
   assert snapshot_session == first.session
   connection.close(switched_socket)
+
+  // A cancelled attempt must take its unadopted socket down through the
+  // worker link; the kill is synchronous but the link's exit signal is not.
+  let cancelled = sessions.start(choice, options)
+  let assert Ok(sessions.Ready(socket: abandoned, ..)) =
+    wait_for_switch(cancelled, 40_000)
+    as "a second switch should connect"
+  let assert Ok(abandoned_pid) = connection.owner(abandoned)
+  sessions.cancel(cancelled)
+  assert_process_exits(abandoned_pid, 100)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
   let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
@@ -420,6 +438,17 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
     Error(_), _ -> {
       process.sleep(50)
       assert_process_stops(pid, attempts - 1)
+    }
+  }
+}
+
+fn assert_process_exits(pid: process.Pid, attempts: Int) -> Nil {
+  case process.is_alive(pid), attempts <= 0 {
+    False, _ -> Nil
+    True, True -> panic as "the abandoned socket actor should have exited"
+    True, False -> {
+      process.sleep(10)
+      assert_process_exits(pid, attempts - 1)
     }
   }
 }

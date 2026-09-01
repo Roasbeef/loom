@@ -224,6 +224,19 @@ pub fn adopt(connection: Connection) -> Result(Nil, String) {
   }
 }
 
+/// Names the process that owns a websocket, for lifecycle assertions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(pid) = connection.owner(socket)
+/// ```
+@internal
+pub fn owner(connection: Connection) -> Result(process.Pid, Nil) {
+  let Connection(subject) = connection
+  process.subject_owner(subject)
+}
+
 /// Receives one queued connection message, if one is ready.
 ///
 /// ## Examples
