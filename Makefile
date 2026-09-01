@@ -3,7 +3,8 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := core storage session machine prompt telemetry runtime provider broker mcp tools cap codemode events client conformance lint
+PACKAGES := core storage session machine prompt telemetry runtime provider \
+	broker mcp tools cap codemode events client conformance tui_gleam lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 

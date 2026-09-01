@@ -194,8 +194,8 @@ error instead of killing or hanging the terminal process. Once setup succeeds,
 the socket actor is linked to the client again so runtime failures keep their
 original supervision behavior.
 
-The package gate and Loom's own house-rule census run independently while this
-candidate remains outside the root release set:
+The root format, build, test, and house-rule gates include the native client,
+while focused work can still use the package-specific forms:
 
 ```sh
 make check-tui_gleam
@@ -210,10 +210,10 @@ measurements of the candidate package, not the full repository gate.
 ## What keeps it out of the release
 
 The current etui revision is pinned because the keyboard and raw-terminal
-fixes exercised here are newer than its latest tagged release. It raises the
-Gleam floor from Loom's advertised 1.11 to 1.16. Mork's Erlang path uses PCRE2
-and raises the OTP floor from 27 to 28. Keeping the package opt-in makes that
-cost visible without silently changing what the rest of Loom promises.
+fixes exercised here are newer than its latest tagged release. Loom now
+requires Gleam 1.18 and OTP 29, so the client no longer raises the repository's
+advertised toolchain floor. The package remains outside the release artifact
+until the replacement-client work removes the legacy Go frontend.
 
 Two behavioral gaps matter more than polish. Approval must show a bounded,
 sanitized action and echo the exact action plus grants required by

@@ -2,12 +2,12 @@
 
 ## Purpose
 
-The opt-in pure-Gleam terminal client used to evaluate `etui` for issue
-#114. It attaches to the frozen ClientGateway websocket, renders the durable
-conversation and live strands, and turns keyboard input into slash commands.
-It does not replace `packages/tui` or enter the release artifact yet: the
-evaluation has a higher toolchain floor and has not closed the approval and
-reconnect portions of the existing client's contract.
+The pure-Gleam terminal client built on `etui` for issue #114. It attaches to
+the frozen ClientGateway websocket, renders the durable conversation and live
+strands, and turns keyboard input into slash commands. Root format, build,
+test, and house-rule gates cover the package, but it does not replace
+`packages/tui` or enter the release artifact until the replacement-client work
+lands.
 
 ## Key Types
 
