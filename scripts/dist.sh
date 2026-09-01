@@ -49,6 +49,16 @@ cp -a "$REL" "$STAGE"
 tar -C "$ROOT/build/release" -czf "$DIST/$SERVER_STEM.tar.gz" "$SERVER_STEM"
 rm -rf "$STAGE"
 
+# The daemon archive must not carry a second `loom` command. Relx generates
+# one internally, so release assembly removes it before this archive is made.
+tar -tzf "$DIST/$SERVER_STEM.tar.gz" \
+  | grep -Fx "$SERVER_STEM/bin/loomd" >/dev/null
+if tar -tzf "$DIST/$SERVER_STEM.tar.gz" \
+  | grep -Fx "$SERVER_STEM/bin/loom" >/dev/null; then
+  echo "dist.sh: daemon archive shadows the client with bin/loom" >&2
+  exit 1
+fi
+
 echo "==> packaging the native terminal client"
 TUI_STEM="loom-$VERSION-$PLAT"
 TUI_STAGE="$ROOT/build/release/$TUI_STEM"

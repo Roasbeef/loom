@@ -99,6 +99,9 @@ jobs:
       - name: make check
         run: set -o pipefail; make check 2>&1 | tee check.log
 
+      - name: make e2e-client-bootstrap
+        run: set -o pipefail; make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
+
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
 
@@ -153,6 +156,7 @@ jobs:
             doc-check.log
             server-shipment-smoke.log
             distribution-linux.log
+            e2e-client-bootstrap.log
           retention-days: 14
 
   # --------------------------------------------------------- the second OS
@@ -207,6 +211,9 @@ jobs:
       - name: make check
         run: set -o pipefail; make check 2>&1 | tee check-macos.log
 
+      - name: make e2e-client-bootstrap
+        run: set -o pipefail; make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
+
       - name: make e2e
         run: set -o pipefail; make e2e 2>&1 | tee e2e-macos.log
 
@@ -232,6 +239,7 @@ jobs:
             selftest-macos.log
             e2e-macos.log
             e2e-codemode-macos.log
+            e2e-client-bootstrap-macos.log
           retention-days: 14
 
   # ------------------------------------------------------------- the jail
