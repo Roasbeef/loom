@@ -657,12 +657,39 @@ a real tautological-boundary bug in the "late fire" annotation before it
 shipped (fixed and pinned with pure-function tests) and, on re-verify after
 the fix round, one narrow self-correcting crash-race footnote in the
 1,000-row bound (recorded in the design note, not worth a code change: per-
-occurrence exactly-once is untouched). Two pre-existing, unrelated repo
-issues were found and filed separately while verifying this branch, not
-fixed here: #120 (`gleam format --check` fails on 4 files across 4 other
-packages, confirmed present on a clean `main`) and an identical-before-
-and-after `make doc-check` citation-drift in docs this branch never
-touches.
+occurrence exactly-once is untouched). One pre-existing, unrelated repo
+issue remains, not fixed here: an identical-before-and-after `make
+doc-check` citation-drift in docs this branch never touches. (#120,
+`gleam format --check`, turned out to be already fixed by #116's
+formatter reflow — closed.)
+
+Rebasing onto `main` after #146 turned up three things worth recording,
+all fixed on the branch. The compile break was mechanical: cancellable
+streams gave `stream.StreamHandle` a `cancel` closure and an optional
+owner pid, so the scanner test's parked provider had to move to
+`stream.immediate`. The other two were not. **`catalog.parse` owns the
+top-level key check for the whole config document, and nobody taught it
+about `schedule`** — so every `loom.toml` carrying a `[[schedule]]` was
+refused at boot with "unknown key `schedule`" and the feature was
+unreachable, its own parser correct behind a gate that ran first. The
+tests missed it by approaching from both ends and meeting in the middle:
+`schedule_test` parses schedule text directly, `serve_test` builds a
+`Settings` literal with a `Schedule` already in it, and neither goes
+through a config file, which is the only path an operator has. It was
+found by running the thing, not by reading it — worth remembering for a
+feature whose only interface is a file. The regression test now lives in
+`catalog_test`, where the gate is, and pins `[[rule]]` beside
+`[[schedule]]`. Third, `docs/examples/loom.toml` documented `[[rule]]`
+and stopped; for an operator-only feature that example *is* the
+discovery surface, so it now covers both timings and both bounds, gated
+by tests the same way the rules half already was.
+
+The live check is worth repeating on any change here: point a
+`[[schedule]]` at a scratch session and watch it fire in the TUI. An
+`every = "60s"` schedule fires at boot and again on the next boundary; a
+one-shot fires at its instant with no late annotation. `wake = true`
+opens a fresh run on an idle strand with nobody at the keyboard, which
+is the whole feature and the only part no unit test can show you.
 
 ---
 
