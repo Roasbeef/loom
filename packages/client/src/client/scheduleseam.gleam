@@ -42,18 +42,31 @@
 //// that ordering cannot fix — a replayed create silently replacing a
 //// schedule the model believes it already has.
 ////
-//// ## The read-your-writes question
+//// ## The check-then-write gap, and where it is genuinely open
 ////
 //// `create` checks for a name collision and for room under the ceiling,
-//// then writes. Two calls cannot race for that gap: both writers are
-//// `execution_mode: Exclusive`, so the strand driver never runs two of
-//// them in one batch, and a strand runs one batch at a time. Across
-//// strands the keys are disjoint by construction, since a strand may only
-//// schedule onto itself. The ceiling is the one genuinely session-wide
-//// count, and the worst a lost race there could do is admit one schedule
-//// over the limit — which the next call refuses and which no invariant
-//// rests on.
+//// then writes, and the write is a blind `put_reserved_fact` rather than
+//// a compare-and-set.
+////
+//// Through the **tool** door that gap is closed by scheduling rather than
+//// by the store: both writers are `execution_mode: Exclusive`, so the
+//// strand driver never runs two in one batch, and a strand runs one batch
+//// at a time. Across strands the keys are disjoint, since a strand may
+//// only schedule onto itself.
+////
+//// Through the **code-mode** door it is open, and this doc claimed
+//// otherwise until an adversarial review caught it. `codemode/satellite`
+//// runs every `ServedHere` plan on its own process, so a program can fan
+//// out concurrent `schedule.create` calls that all pass the checks before
+//// any of them writes: up to `max_outstanding` over the ceiling, and two
+//// same-name creates that both answer `Created` with the last body
+//// winning — which defeats "creating never silently replaces". The fix is
+//// an expect-absent reserved CAS mapped onto `NameTaken`, tracked as
+//// **issue #162**; it is new `runtime/api` surface rather than a
+//// correction here. Until it lands, do not read the tool door's
+//// serialization as a property of this module.
 
+import client/agency
 import client/schedule.{type Policy, type Schedule}
 import client/schedulescan
 import core/json.{type JsonValue}
@@ -205,6 +218,7 @@ fn create(
   request: schedule_tool.Request,
 ) -> Result(schedule_tool.Created, schedule_tool.Refusal) {
   let Wiring(policy:, operator_schedules:, scanner:, ..) = wiring
+  use Nil <- result.try(schedulable(strand))
   use timing <- result.try(requested_timing(request.timing))
 
   // The policy caps `wake`; it does not veto the call. A model under a
@@ -249,6 +263,39 @@ fn create(
     when: describe_timing(built.timing),
     wake: built.wake,
   ))
+}
+
+// A subagent may not schedule, and the reason is a lifetime mismatch
+// rather than a trust one.
+//
+// A schedule is keyed to the strand that created it and is cancellable
+// only by that strand. A subagent settles; the schedule does not. Nobody
+// can cancel it afterwards — the parent's `schedule_cancel` correctly
+// answers `NotFound`, because it is not the parent's — so it holds a
+// session-wide ceiling slot for the rest of the session, and a
+// `wake = true` one keeps re-opening runs on a driver whose task ended,
+// spending budget nobody is watching and outside the spawn budget the
+// parent was held to. A subagent inherits `schedule_create` by default:
+// `client/agency.child_tools` hands a child every tool the parent has
+// except `agent_spawn`, so this is the ordinary path, not a corner.
+//
+// Refusing outright is deliberately blunter than the problem. The right
+// answer is an ownership model where a parent's schedules can outlive a
+// child and a child's cannot outlive itself, which is what #154 and #163
+// are for. Until one exists, the door that spends money unobserved stays
+// shut, and the refusal says which issue to read.
+fn schedulable(strand: String) -> Result(Nil, schedule_tool.Refusal) {
+  case agency.is_subagent(strand) {
+    False -> Ok(Nil)
+    True ->
+      Error(schedule_tool.Invalid(
+        reason: "a subagent cannot schedule a heartbeat: a schedule is "
+        <> "cancellable only by the strand that created it, and this "
+        <> "strand will settle while the schedule outlives it. Ask the "
+        <> "strand that spawned you to schedule it instead, or do the "
+        <> "work now.",
+      ))
+  }
 }
 
 // The model writes an interval in plain seconds and a one-shot as an

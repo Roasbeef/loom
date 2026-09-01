@@ -1091,6 +1091,15 @@ pub const default_policy = ModelSchedulesWake
 /// 2^32-1 ms raises `timeout_value` inside an unlinked timer process, so
 /// the scanner would go silently deaf. Refusing here keeps the clamp a
 /// backstop rather than the only guard.
+///
+/// The bound is inclusive, which admits one interval that still fires
+/// only once: `604_800` exactly, against the default `expires_after_s` of
+/// the same value, since expiry compares `>=` and the second slot lands
+/// precisely on the boundary. That is left rather than tightened because
+/// an operator who writes a weekly heartbeat and a fortnight of expiry
+/// gets the two fires they asked for, and only the coincident pair
+/// degenerates — the bound is here to keep timer delays sane, not to
+/// prove every admitted interval recurs.
 pub const max_interval_s = 604_800
 
 /// The most schedules one session will hold on a model's behalf, across

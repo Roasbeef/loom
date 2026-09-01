@@ -154,9 +154,39 @@ pub fn a_schedule_is_private_to_the_strand_that_made_it_test() {
     rig.seam.create(ctx("main"), every("mine", 60, False))
     as "main must be able to schedule"
 
-  assert rig.seam.list(ctx("sub:main/worker-1")) == Ok([])
+  assert rig.seam.list(ctx("review")) == Ok([])
   let assert Ok([_own]) = rig.seam.list(ctx("main"))
     as "the creating strand still sees it"
+  stop(rig)
+}
+
+// --- a subagent may not schedule -------------------------------------------
+
+// The lifetime mismatch, not a trust one: a schedule is cancellable only
+// by the strand that made it, and a subagent settles while the schedule
+// outlives it. Nobody can cancel it afterwards, it holds a session-wide
+// ceiling slot for good, and a `wake = true` one keeps re-opening runs on
+// a driver whose task ended. A subagent inherits `schedule_create` by
+// default (`agency.child_tools` passes on every tool but `agent_spawn`),
+// so this is the ordinary path rather than a corner.
+pub fn a_subagent_cannot_schedule_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+
+  let assert Error(schedule_tool.Invalid(reason:)) =
+    rig.seam.create(ctx("sub:main/worker-1"), every("poll", 60, True))
+    as "a subagent must be refused"
+  assert string.contains(reason, "subagent")
+
+  // Nothing was written: the refusal is before the store, not after it.
+  let assert Ok([]) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "a refused create must leave no cell"
+
+  // And the ordinary strand is unaffected.
+  let assert Ok(_created) =
+    rig.seam.create(ctx("main"), every("poll", 60, True))
+    as "a top-level strand must still schedule"
   stop(rig)
 }
 
@@ -257,9 +287,10 @@ pub fn a_name_the_operator_already_used_is_taken_test() {
     as "a model must not shadow an operator's schedule on the same strand"
 
   // The same name on a different strand is a different fired-mark, so it
-  // is free.
+  // is free. A second top-level strand rather than a subagent, which the
+  // lifetime gate refuses for its own reasons.
   let assert Ok(_elsewhere) =
-    rig.seam.create(ctx("sub:main/worker-1"), every("nightly", 60, False))
+    rig.seam.create(ctx("review"), every("nightly", 60, False))
     as "the collision is per strand, not global"
   stop(rig)
 }
@@ -343,7 +374,7 @@ pub fn a_strand_cannot_cancel_another_strands_schedule_test() {
     rig.seam.create(ctx("main"), every("poll", 60, False))
     as "main must be able to schedule"
   let assert Error(schedule_tool.NotFound(name: "poll")) =
-    rig.seam.cancel(ctx("sub:main/worker-1"), "poll")
+    rig.seam.cancel(ctx("review"), "poll")
     as "another strand must not be able to cancel it"
   let assert Ok([_still_there]) = rig.seam.list(ctx("main"))
     as "the schedule must survive the attempt"

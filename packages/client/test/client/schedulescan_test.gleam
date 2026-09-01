@@ -601,7 +601,7 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
 // instead of re-arming. So this drains the wheel and asserts the actor is
 // back to exactly one live chain.
 pub fn pokes_leave_exactly_one_live_timer_chain_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: True)
+  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   process.sleep(300)
   let before = fake_pending(rig.fc)
@@ -622,7 +622,7 @@ pub fn pokes_leave_exactly_one_live_timer_chain_test() {
 // The other half of the same mechanism, isolated: a wake from a chain the
 // actor has replaced must die where it lands rather than re-arming.
 pub fn a_stale_tick_does_not_rearm_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: True)
+  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   process.sleep(300)
   let before = fake_pending(rig.fc)
@@ -637,6 +637,18 @@ pub fn a_stale_tick_does_not_rearm_test() {
   stop(rig)
 }
 
+// Pops one wake at a time, letting the scanner settle between pops.
+//
+// The schedule under test is deliberately `wake: False`, which is what
+// makes a plain settle sound here: a `wake: True` scan opens a run
+// through the writer and can outrun any fixed wait on a loaded box, and
+// the next pop would then take the strand driver's checkpoint poll
+// instead — jumping logical time eleven days, expiring the schedule, and
+// ending on a count that looks exactly like the leak this test exists to
+// catch. Holding on an idle strand costs one store read and returns, so
+// the scan is fast for a reason rather than by luck. Chain arithmetic is
+// the same either way; `wake` changes what a fire does, not how many
+// wakes are armed.
 fn drain(rig: Rig, remaining: Int) -> Nil {
   case remaining <= 0 {
     True -> Nil
@@ -644,9 +656,81 @@ fn drain(rig: Rig, remaining: Int) -> Nil {
       case fake_advance(rig.fc) {
         False -> Nil
         True -> {
-          process.sleep(60)
+          process.sleep(120)
           drain(rig, remaining - 1)
         }
       }
+  }
+}
+
+// --- origin travels with the store the schedule came from ------------------
+
+// The unit tests pin `injection`'s two attributions; this pins the
+// *wiring*, which is the half that can silently regress. A model-created
+// cell must reach the model framed as the model's own — telling a model
+// that text it wrote is "standing operator configuration" hands it an
+// authority nobody granted, on a schedule it set itself.
+pub fn a_model_created_schedule_fires_attributed_to_the_model_test() {
+  // No operator schedules at all: everything here comes from the store.
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+
+  let planted =
+    schedule.Schedule(
+      name: "mine",
+      target: "main",
+      timing: schedule.OneShot(at: 0),
+      wake: True,
+      body: "look at the build",
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.config_key(strand: "main", name: "mine"),
+      schedule.encode(planted),
+    )
+    as "the config cell must be writable"
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: "main", name: "mine", occurrence: 0),
+      )
+    },
+    2000,
+  )
+
+  let text = injected_text(rig, "main")
+  assert string.contains(text, "you* scheduled")
+  assert !string.contains(text, "standing operator configuration")
+  stop(rig)
+}
+
+// The strand's projected context — what the model would actually read.
+// The same door `rulescan_test` looks through.
+fn injected_text(rig: Rig, strand: String) -> String {
+  let leaf = case session.strand_leaf(rig.session, strand) {
+    Ok(Some(session.Cell(value: leaf, ..))) -> leaf
+    Ok(None) | Error(_reason) -> None
+  }
+  case session.project_context(rig.session, leaf) {
+    Ok(messages) -> messages |> list.map(text_of) |> string.join("\n")
+    Error(_reason) -> ""
+  }
+}
+
+fn text_of(item: message.AgentMessage) -> String {
+  case item {
+    message.UserMessage(content:, ..) ->
+      content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserText(text:, ..) -> Ok(text)
+          message.UserImage(..) -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    _other -> ""
   }
 }
