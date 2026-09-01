@@ -114,3 +114,58 @@ failing rows. The schema gate is not optional.
 name = "no-force-push"
 triggers = ["git push --force", "push -f"]
 body = "Never force-push a shared branch. Open a new branch instead."
+
+# Scheduled heartbeats, one [[schedule]] table per schedule. Where a rule
+# fires on something the model said, a schedule fires on a clock, with
+# nobody necessarily present to have prompted it. The injected text is
+# fenced and attributed the same way a rule's is, so it can never be
+# mistaken for a turn from the person at the keyboard.
+#
+# A schedule is EITHER recurring (`every`) or one-shot (`at`), never both
+# and never neither. `every` is a positive whole number of seconds
+# followed by a literal `s` — no five-field cron syntax — and may not go
+# below 60s, which would be a busy-loop against provider budget. `at` is
+# a quoted RFC3339 UTC timestamp; there is no timezone handling beyond
+# UTC. `target` names the strand to fire onto, defaulting to main.
+#
+# `wake` is where a schedule differs from a rule, and it is opt-in. With
+# `wake = false` (the default) a schedule steers a run already in flight
+# and holds when the strand is idle, exactly as a rule does. With `wake =
+# true` it may START a fresh run on an idle strand — which is the whole
+# point of a heartbeat that watches an unattended subagent, and is safe
+# to offer only because of the expiry below.
+#
+# A recurring schedule ALWAYS expires, whether you say so or not. Both
+# bounds are always active and the earlier one wins: `max_fires` defaults
+# to and caps at 1000, `expires_after_s` defaults to and caps at 604800
+# (7 days). That is what stops a `wake = true` schedule keeping a session
+# alive — and spending — past a bound you set and can see in this file. A
+# one-shot needs neither key and refuses both: it fires once by
+# construction.
+#
+# Each fire is durable and exactly-once: a crash between deciding to fire
+# and committing cannot double-fire on restart. A window missed because
+# the server was not running coalesces to at most ONE late fire, marked
+# as late in the injected text — never a backlog replay of everything
+# that was missed.
+#
+# Like the MCP and rule tables, these are an operator trust decision.
+# There is deliberately no model-facing tool to create, edit or silence a
+# schedule: a model that could schedule its own future wake-ups could
+# extend its own liveness and spend unsupervised. Editing this file and
+# restarting the server IS the decision.
+[[schedule]]
+name = "watch-reviewer"
+every = "300s"
+target = "sub:main/reviewer-abc123"
+wake = true
+max_fires = 24
+body = """
+Check on the review subagent. If it has stalled or is repeating itself,
+steer it back to the diff and ask for its findings so far.
+"""
+
+[[schedule]]
+name = "migration-window"
+at = "2026-09-01T09:00:00Z"
+body = "The migration window opens today. Confirm the plan is ready."

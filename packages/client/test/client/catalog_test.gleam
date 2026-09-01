@@ -126,31 +126,21 @@ pub fn empty_document_refused_test() {
 // once, every schedule parsing correctly behind a boot that never got
 // that far. These two pin both tables the other parsers own.
 pub fn a_rule_table_is_allowed_at_the_top_level_test() {
-  let assert Ok(_parsed) =
-    catalog.parse(
-      minimal
-      <> "
+  let assert Ok(_parsed) = catalog.parse(minimal <> "
 [[rule]]
 name = \"r\"
 triggers = [\"t\"]
 body = \"b\"
-",
-    )
-    as "a [[rule]] table must not be refused by the top-level key check"
+") as "a [[rule]] table must not be refused by the top-level key check"
 }
 
 pub fn a_schedule_table_is_allowed_at_the_top_level_test() {
-  let assert Ok(_parsed) =
-    catalog.parse(
-      minimal
-      <> "
+  let assert Ok(_parsed) = catalog.parse(minimal <> "
 [[schedule]]
 name = \"s\"
 every = \"60s\"
 body = \"b\"
-",
-    )
-    as "a [[schedule]] table must not be refused by the top-level key check"
+") as "a [[schedule]] table must not be refused by the top-level key check"
 }
 
 pub fn malformed_toml_reported_test() {

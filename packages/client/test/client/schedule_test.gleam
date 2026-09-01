@@ -9,6 +9,7 @@
 import client/schedule
 import gleam/list
 import gleam/string
+import simplifile
 
 // --- what parses -----------------------------------------------------------
 
@@ -560,4 +561,38 @@ pub fn a_prompt_fire_carries_no_late_annotation_test() {
 pub fn a_late_fire_says_so_test() {
   let text = schedule.injection(sched(), True)
   assert string.contains(text, "This fire is late")
+}
+
+// --- the committed example ------------------------------------------------
+
+// The worked `loom.toml` in `docs/examples` is the operator's only
+// discovery surface for a feature no model can reach for, so a documented
+// example that would refuse the boot is worse than none — the same
+// argument `rules_test` makes for its own half of the file, and the one
+// this feature already failed once by shipping a `[[schedule]]` no
+// `catalog.parse` would admit.
+pub fn the_committed_example_config_parses_its_schedules_test() {
+  let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
+    as "the committed example config must be readable"
+  let assert Ok(parsed) = schedule.parse(text)
+    as "the committed example config's schedules must parse"
+  assert list.map(parsed, fn(sched: schedule.Schedule) { sched.name })
+    == ["watch-reviewer", "migration-window"]
+}
+
+// The example shows both timings, because an operator reading one shape
+// only would have to infer the other from prose.
+pub fn the_committed_example_shows_both_timings_test() {
+  let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
+    as "the committed example config must be readable"
+  let assert Ok(parsed) = schedule.parse(text)
+    as "the committed example config's schedules must parse"
+  let timings =
+    list.map(parsed, fn(sched: schedule.Schedule) {
+      case sched.timing {
+        schedule.Interval(..) -> "interval"
+        schedule.OneShot(..) -> "one-shot"
+      }
+    })
+  assert timings == ["interval", "one-shot"]
 }
