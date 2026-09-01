@@ -21,11 +21,13 @@
 ////
 //// So the operator keeps the say, at one knob with three positions
 //// (`client/schedule.Policy`): `off` registers none of these tools at
-//// all and is the default; `steer` registers them with `wake` forced
-//// false; `wake` registers them with `wake` available. The model never
-//// sees the knob — under `steer` a request for `wake` is honoured as far
-//// as the operator allowed and the result says which it got, rather than
-//// refusing and inviting a retry loop against a wall that will not move.
+//// all; `steer` registers them with `wake` forced false; `wake`
+//// registers them with `wake` available, and **is the default** — see
+//// that type's doc for why the door ships open rather than shut. The
+//// model never sees the knob — under `steer` a request for `wake` is
+//// honoured as far as the operator allowed and the result says which it
+//// got, rather than refusing and inviting a retry loop against a wall
+//// that will not move.
 ////
 //// Two further things this door does not do, both deliberate. A
 //// model-created schedule always targets the strand that created it:
