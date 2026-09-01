@@ -1,6 +1,6 @@
 # A tour of the code
 
-Someone types `fix the flaky test in auth_test.gleam` into `loom-tui` and
+Someone types `fix the flaky test in auth_test.gleam` into `loom` and
 presses enter. Between that key press and an answer appearing on their
 screen, the request crosses a native Gleam terminal process, a websocket, a
 Gleam actor, a pure state machine, a SQLite file, an HTTP stream, a Go binary
@@ -39,7 +39,7 @@ set), plus `codemode` and `cap` for programs the model writes, and `mcp`
 for the third-party servers those programs can be handed.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
-the production wiring, and the `loom-server` entry point — and `tui` is
+the production wiring, and the `loomd` entry point — and `tui` is
 the native terminal client on the far side of the wire. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
@@ -641,7 +641,7 @@ protocol, attribution, the approval check, and the token story in depth.
 sequenceDiagram
     autonumber
     participant U as person
-    participant T as loom-tui
+    participant T as loom
     participant W as mist / client/server
     participant H as gateway hub
     participant A as runtime/api

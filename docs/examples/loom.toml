@@ -1,6 +1,6 @@
 # loom.toml — an example model catalogue for the session server.
 #
-#     bin/loom-server --session ./session.db --config loom.toml
+#     bin/loomd --session ./session.db --config loom.toml
 #
 # The catalogue names models and routes roles onto them. Each
 # [models.<name>] entry registers one provider endpoint in the gateway;

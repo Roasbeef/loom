@@ -5,7 +5,7 @@
 The shipped native terminal client. It attaches to the frozen ClientGateway
 websocket, renders the durable conversation and live strands, and turns
 keyboard input into slash commands. `make tui-shipment` exports its compiled
-BEAM closure beside a thin `bin/loom-tui` launcher, and `make dist` packages
+BEAM closure beside a thin `bin/loom` launcher, and `make dist` packages
 that tree separately from the self-contained server.
 
 ## Key Types
@@ -64,7 +64,7 @@ that tree separately from the self-contained server.
   The client host needs compatible Erlang/OTP 29; the server release still
   bundles its own runtime and has no host OTP dependency.
 - **Local launch boundary**: `tui/bootstrap` may start a separate
-  `loom-server`, but it still attaches through ClientGateway and does not move
+  `loomd`, but it still attaches through ClientGateway and does not move
   server state or authority into the terminal process.
 
 ## Traffic

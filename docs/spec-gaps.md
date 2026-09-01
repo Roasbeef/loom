@@ -837,7 +837,7 @@ the other side.
    keystroke into a call that was waiting for it — and `gateway.attached`
    itself, the value the whole behaviour now turns on, had no test at
    all. `client/tui_e2e_test` closes both: it counts the hub's
-   connections going 0 → 1 → 0 as the real `loom-tui` attaches and
+   connections going 0 → 1 → 0 as the real `loom` client attaches and
    quits, and it asserts a parked refusal reaches `Consumed`, which only
    `client/escalate`'s park loop writes — `Approved` alone would mean the
    frame arrived and nothing was waiting for it.
@@ -1104,7 +1104,7 @@ interpretation. Recorded here because the spec supplies none.
    write takes the short one. Under a short run lease the first model
    turn outlives it and any opener that arrives steals it, costing the
    run every turn it has paid for. No new lease type, no renewal timer,
-   and no background writer inside `loom-server` — which never opens the
+   and no background writer inside `loomd` — which never opens the
    memory session at all: its boot probe reads the store's header
    lease-free (`storage/sqlite.generation`), an absent store is not a
    fault, and nothing but a write ever creates one.
@@ -1276,7 +1276,7 @@ interpretation. Recorded here because the spec supplies none.
    no place in it, and giving it one would be a large change to the
    thing whose determinism everything else rests on.
 12. **`--config` is required for `client/distill`.** A run dispatches
-   two model turns, so it needs a catalogue; unlike `loom-server` there
+   two model turns, so it needs a catalogue; unlike `loomd` there
    is no zero-config posture worth preserving, because a distillation
    run nobody scheduled is not a thing that happens. The environment
    fallback `client/serve` keeps is deliberately not duplicated.

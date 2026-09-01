@@ -93,7 +93,7 @@ touches the world.
 | `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
 | `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
 | `tui` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
-| `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loom-server` entry point. |
+| `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loomd` entry point. |
 | `telemetry` | cross-cutting | Structured logs whose correlation context travels as a value, and two enforced redaction rules. A leaf over `core`, so every impure package may depend on it. |
 | `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
 | `lint` | tooling | Loom's own house-rule lint over Gleam source; four of its seven rules gate at error level. |
@@ -325,7 +325,7 @@ today is data plane and single-node: the broker's channel to the helper,
 the satellite's capability channel, and the websocket to a client. There
 is no remote executor pool, no remote satellite, and no control plane —
 the event bus is one node's `pg` scope — and the only thin client that
-exists is `loom-tui`. What the two-channel doctrine buys today is the
+exists is `loom`. What the two-channel doctrine buys today is the
 rule about what may *not* be built, which is the half worth having first.
 
 ## How it is tested
@@ -484,12 +484,12 @@ Nothing is published yet. `make dist` builds both, and the sizes below
 are what it produced on a Linux x86_64 development container:
 
 ```
-dist/loom-0.1.0-linux-x86_64.tar.gz    21 MB   the server (58 MB unpacked)
-dist/loom-tui-0.1.0-linux-x86_64.tar.gz        the terminal client shipment
+dist/loomd-0.1.0-linux-x86_64.tar.gz   21 MB   the server (58 MB unpacked)
+dist/loom-0.1.0-linux-x86_64.tar.gz            the terminal client shipment
 dist/SHA256SUMS
 ```
 
-The server tarball unpacks to a directory holding `bin/loom` (the
+The server tarball unpacks to a directory holding `bin/loomd` (the
 launcher), `bin/loom-exec` (the sandbox helper, a file beside it — Loom
 never extracts an executable at run time), the runtime system, the
 compiled applications, the code-mode toolchain (`bin/gleam` and
@@ -513,22 +513,30 @@ and every size above with how it was measured.
 
 ### Running a session
 
-The TUI never starts a server. That is the thin-client design, not an
-omission: one server owns the session file and its writer lease, and any
-number of clients — several terminals, an editor plugin, a phone —
-subscribe to the same session over the gateway protocol and catch up by
-sequence number. So a real session is two processes, typically two
-terminals:
+Install `loom` and `loomd` beside one another, change into a workspace, and
+run the client:
+
+```sh
+cd ~/src/myproj
+loom
+```
+
+The client maps the canonical workspace to private state under `~/.loom`,
+reuses a compatible authenticated loopback daemon, or starts one and waits for
+a real session snapshot. The process boundary remains: one daemon owns the
+session file and its writer lease, and any number of clients can subscribe over
+the gateway protocol. A manually managed or remote daemon uses the explicit
+form:
 
 ```
 # terminal 1 — the server owns the session
-loom-0.1.0-linux-x86_64/bin/loom \
+loomd-0.1.0-linux-x86_64/bin/loomd \
   --session ~/sessions/myproj.db --workspace ~/src/myproj
-# prints: loom-server: session myproj listening on ws://127.0.0.1:44123/v1/ws
+# prints: loomd: session myproj listening on ws://127.0.0.1:44123/v1/ws
 #         (token file ~/sessions/myproj.db.token)
 
 # terminal 2 — a client attaches
-loom-tui --addr ws://127.0.0.1:44123/v1/ws --session myproj \
+loom --addr ws://127.0.0.1:44123/v1/ws --session myproj \
   --token-file ~/sessions/myproj.db.token
 ```
 
@@ -538,8 +546,8 @@ a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
 over their own transport.
 
-With `loom-server` installed beside `loom-tui` or on `PATH`, the native client
-can perform that setup itself. Running `loom-tui` with no arguments maps the
+With `loomd` installed beside `loom` or on `PATH`, the native client
+can perform that setup itself. Running `loom` with no arguments maps the
 canonical current workspace to private session state under `~/.loom`, reuses a
 compatible authenticated loopback server, or starts one and waits for a real
 session snapshot. `--workspace`, `--session-file`, `--server`, and
@@ -549,7 +557,7 @@ or runs the server from the workspace, because neither repository content nor
 its configuration is trusted launch authority. Explicit `--addr` attachment
 continues to handle remote or manually configured servers.
 
-`loom-tui --demo` renders a self-contained preview from a canned local model —
+`loom --demo` renders a self-contained preview from a canned local model —
 no server, no network, a fine first thing to try.
 
 What the server needs beyond itself: optionally a provider key.
@@ -661,13 +669,13 @@ non-interactive variant that boots, probes the endpoints, and verifies a
 clean shutdown. `make run-server SESSION=path` runs the server from
 source through Gleam, and `make run-tui ADDR=... SESSION=...` attaches to
 it. `make server-shipment` exports the `client` package as an Erlang
-shipment into `build/erlang-shipment` behind a thin `bin/loom-server`
+shipment into `build/erlang-shipment` behind a thin `bin/loomd`
 launcher — a shipment bundles compiled BEAM files and not the runtime
 system, so it needs an Erlang/OTP installation to run, which is exactly
 the gap `make release` closes.
 
 `make tui-shipment` exports the native client into
-`build/tui-erlang-shipment` and writes `bin/loom-tui`. The launcher disables
+`build/tui-erlang-shipment` and writes `bin/loom`. The launcher disables
 the emulator's break handler so `Ctrl+C` reaches etui and shuts the client down
 cleanly. Like every Erlang shipment, this one carries BEAM files but no ERTS;
 the client host therefore needs compatible Erlang/OTP 29 on `PATH`.

@@ -13,7 +13,7 @@ describes.
 `gleam export erlang-shipment` is Gleam's only packaging verb, and what
 it produces is compiled BEAM files: 11 MB and 208 `.beam` for the
 `client` package and its dependency closure, with no runtime system in
-it. `make server-shipment` writes a `bin/loom-server` shim over that,
+it. `make server-shipment` writes a `bin/loomd` shim over that,
 and the shim `exec`s `erl`. So the shipment answers "how do I move the
 code" and not "how do I run it on a machine that has no Erlang", which
 is the question a download has to answer.
@@ -113,7 +113,7 @@ beside the binary costs nothing.
 
 What the release does instead:
 
-- `bin/loom-exec` sits next to `bin/loom` in the unpacked tree, and the
+- `bin/loom-exec` sits next to `bin/loomd` in the unpacked tree, and the
   **server finds it there itself**. The launcher used to inject
   `--helper "$here/loom-exec"`, because the server's ladder was
   `--helper`, then `PATH`, then `./bin` and an unpacked release is none
@@ -190,7 +190,7 @@ the emulator resolved for itself at boot:
 
 | how Loom was started | `code:root_dir()` |
 |---|---|
-| an unpacked release, through `bin/loom` | the release root — the directory holding `bin/`, `lib/`, `releases/` and `erts-<vsn>/` |
+| an unpacked release, through `bin/loomd` | the release root — the directory holding `bin/`, `lib/`, `releases/` and `erts-<vsn>/` |
 | `gleam run`, the erlang shipment, a dev shell | the OTP installation root the `erl` on `PATH` came from — `/usr/local/otp` on the development container |
 
 Both were checked by running them. It is absolute in both cases, it does
@@ -236,9 +236,9 @@ against the tree being worked on, and a contributor who changed the
 compile service's dependency table must build against their own rather
 than against a frozen one `seed.verify` would then reject.
 
-## The TUI is a separate download
+## The client is a separate download
 
-`loom-tui` is not in the server tarball. It is the native Gleam client over the frozen
+`loom` is not in the `loomd` tarball. It is the native Gleam client over the frozen
 gateway protocol, and three things follow from that:
 
 - The two halves belong on different machines as often as not. The
@@ -253,16 +253,16 @@ gateway protocol, and three things follow from that:
   frozen is exactly the claim that they need not.
 
 `make tui-shipment` exports the client's compiled BEAM closure and writes a
-thin `bin/loom-tui` launcher over it. `make dist` packages those together as
-`loom-tui-<version>-<platform>.tar.gz`. The archive deliberately carries no
+thin `bin/loom` launcher over it. `make dist` packages those together as
+`loom-<version>-<platform>.tar.gz`. The archive deliberately carries no
 second ERTS: the client host needs compatible Erlang/OTP 29 on `PATH`. This is
 not the server's installation contract. The server tarball remains
 self-contained and still needs no host Erlang installation.
 
-When both downloads are installed on one machine, `loom-tui` can start a local
-server as a convenience. It finds a sibling `loom-server` or release
-launcher, an explicit `--server` or `LOOM_SERVER`, or `loom-server` on `PATH`,
-then attaches over the same loopback websocket an explicit client would use. It neither
+When both downloads are installed on one machine, `loom` can start a local
+server as a convenience. It finds a sibling `loomd`, an explicit `--server` or
+`LOOM_SERVER`, or `loomd` on `PATH`, then attaches over the same loopback
+websocket an explicit client would use. It neither
 loads a workspace `loom.toml` nor uses the workspace as the server's working
 directory, because both surfaces can select host-side processes. Nothing is
 linked or bundled together: a remote
@@ -333,8 +333,8 @@ and smoke-tested by that CI runner.
 | `bin/gleam`, stripped | 22 MB | — |
 | `share/codemode-seed` | 5.9 MB | — |
 | **the release tree** | **59 MB** | **30 MB** |
-| **`dist/loom-0.1.0-linux-x86_64.tar.gz`** | **22 MB** | **11 MB** |
-| `dist/loom-tui-0.1.0-linux-x86_64.tar.gz` | native BEAM shipment; measured by the current build | same archive |
+| **`dist/loomd-0.1.0-linux-x86_64.tar.gz`** | **22 MB** | **11 MB** |
+| `dist/loom-0.1.0-linux-x86_64.tar.gz` | native BEAM shipment; measured by the current build | same archive |
 
 So code mode costs **+29 MB unpacked and +11 MB compressed**, a little
 over a doubling either way. That is close to the estimate #102 worked
@@ -452,7 +452,7 @@ missing, where it was looked for, and how to supply it — the standard
 ```
 gleam is not beside this server at /opt/loom/bin/gleam and not on PATH;
 code mode compiles the model's program with it, so put `gleam` (>= 1.18)
-on PATH, or run the `bin/loom` of a release built with the code-mode
+on PATH, or run the `bin/loomd` of a release built with the code-mode
 bundle, which ships one. No code_mode tool is registered.
 ```
 
@@ -475,7 +475,7 @@ on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
 Nothing about the helper ladder: #101 is closed above, and the launcher
 is three lines shorter for it.
 
-One thing this does not do is bundle a second ERTS for `loom-tui`. The client
+One thing this does not do is bundle a second ERTS for `loom`. The client
 archive is a host-built Erlang shipment and requires compatible Erlang/OTP 29
 on the machine where the terminal runs. Making that client archive
 self-contained would be a separate packaging decision with its own size and

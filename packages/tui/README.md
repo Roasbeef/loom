@@ -5,15 +5,15 @@ input in a real PTY,
 attaches to the frozen ClientGateway websocket, follows a live session, and
 renders Mork's CommonMark tree directly into etui spans.
 
-`make tui-shipment` exports the compiled BEAM closure behind `bin/loom-tui`;
+`make tui-shipment` exports the compiled BEAM closure behind `bin/loom`;
 `make dist` packages it separately from the server. The shipment does not
 include ERTS, so the client host needs compatible Erlang/OTP 29 on `PATH`.
 
-With `loom-server` beside the launcher or on `PATH`, local use is simply:
+With `loomd` beside the launcher or on `PATH`, local use is simply:
 
 ```sh
 cd ~/src/my-project
-loom-tui
+loom
 ```
 
 The no-argument launcher remains a client of the frozen websocket protocol. It
@@ -190,7 +190,7 @@ this package, the self-contained interaction preview is:
 gleam run -- --demo
 ```
 
-The normal local path needs `loom-server` beside the shipped launcher, named by
+The normal local path needs `loomd` beside the shipped launcher, named by
 `--server` or `LOOM_SERVER`, or available on `PATH`:
 
 ```sh

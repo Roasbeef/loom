@@ -4,7 +4,7 @@
 that speaks the Part 1.6 websocket protocol, the `mist` transport under
 it, and — because this is the tree's host package — the production
 wiring that turns `runtime/effects.Effects` into a real provider, a real
-broker, and a real tool registry, plus the `loom-server` entry point that
+broker, and a real tool registry, plus the `loomd` entry point that
 boots the whole stack over one session file. Everything a human or a
 thin client (`packages/tui`) does to a session arrives here first.
 
@@ -160,7 +160,7 @@ stderr with the usage text.
 | `client/wiring` | The production `runtime/effects.Effects`: provider, broker, tool registry, compaction hooks. |
 | `client/system_prompt` | Assembly, rendering, and the durable pin. |
 | `client/catalog` | The `loom.toml` model catalogue parser and the provider-gateway builder. |
-| `client/serve` | The `loom-server` entry point: flags, boot, shutdown, the two output channels. |
+| `client/serve` | The `loomd` entry point: flags, boot, shutdown, the two output channels. |
 
 Paths are relative to `packages/client/src/` — `client/escalate` is
 `packages/client/src/client/escalate.gleam`.
