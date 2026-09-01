@@ -9,6 +9,7 @@ import simplifile
 import tui/bootstrap
 import tui/connection
 import tui/internal/ffi_bootstrap
+import tui/protocol
 import tui/sessions
 
 pub fn workspace_names_are_stable_and_distinct_test() {
@@ -317,6 +318,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let switch = sessions.start(choice, options)
   let assert Ok(sessions.Ready(
     target: switched,
+    inbox: switched_inbox,
     socket: switched_socket,
     adopted:,
     ..,
@@ -325,6 +327,16 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert switched.session == first.session
   assert connection.adopt(switched_socket) == Ok(Nil)
   process.send(adopted, Nil)
+
+  // Adoption is only real if the replacement session's frames reach the
+  // process that adopted it: the worker's subscribe must produce a full
+  // snapshot that this process, not the worker, can drain from the inbox.
+  let assert Ok(connection.Connected) = process.receive(switched_inbox, 10_000)
+    as "the adopted inbox should report the handshake"
+  let assert Ok(protocol.FullSnapshot(session: snapshot_session, ..)) =
+    receive_snapshot(switched_inbox, 20_000)
+    as "the adopted inbox should deliver the replacement snapshot"
+  assert snapshot_session == first.session
   connection.close(switched_socket)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
@@ -393,6 +405,30 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
       process.sleep(50)
       assert_process_stops(pid, attempts - 1)
     }
+  }
+}
+
+fn receive_snapshot(
+  inbox: process.Subject(connection.Message),
+  remaining_ms: Int,
+) -> Result(protocol.Event, Nil) {
+  let started = ffi_bootstrap.monotonic_time_ms()
+  case process.receive(inbox, remaining_ms) {
+    Error(Nil) -> Error(Nil)
+    Ok(connection.Incoming(text)) ->
+      case protocol.decode_event(text) {
+        Ok(protocol.FullSnapshot(..) as event) -> Ok(event)
+        _ ->
+          receive_snapshot(
+            inbox,
+            remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
+          )
+      }
+    Ok(_) ->
+      receive_snapshot(
+        inbox,
+        remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
+      )
   }
 }
 

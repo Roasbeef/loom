@@ -1475,6 +1475,7 @@ fn handle_session_switch_message(
         Error(reason) -> {
           connection.close(socket)
           process.send(adopted, Nil)
+          sessions.discard(inbox)
           append_error(
             Model(..model, session_switch: sessions.Idle),
             "open session " <> target.session <> ": " <> reason,

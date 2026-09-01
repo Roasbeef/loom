@@ -3,6 +3,13 @@
 //// The selector reads only bootstrap records under the private launcher state
 //// root. Resolution and websocket startup run outside the terminal process;
 //// the caller adopts a successful socket before discarding its current one.
+////
+//// Ownership is split deliberately. The worker owns the replacement socket
+//// until adoption, but every mailbox the terminal will later read is created
+//// by the terminal itself: a `Subject` delivers to the process that created
+//// it, and `gleam/erlang/process.receive` refuses a subject owned by another
+//// process. A worker-created frame inbox would therefore route the new
+//// session's snapshot to the worker and panic the terminal on its next tick.
 
 import etui/buffer
 import etui/geometry.{type Rect, Fill, Length}
@@ -22,6 +29,8 @@ import tui/text_hygiene
 import tui/theme
 
 const switch_timeout_ms = 70_000
+
+const discard_limit = 4096
 
 /// The session selector's local interaction state.
 pub type State {
@@ -61,13 +70,19 @@ pub type SwitchStatus {
     /// The monitor that turns an untyped worker exit into a typed result.
     monitor: Monitor,
     /// The mailbox used only by this replacement attempt.
-    inbox: Subject(Message),
+    inbox: Subject(Outcome),
+    /// The terminal-owned frame inbox the replacement socket delivers to.
+    frames: Subject(connection.Message),
     /// The absolute monotonic deadline for this replacement attempt.
     deadline_ms: Int,
   )
 }
 
-/// One result returned by a replacement-attachment worker.
+/// One result the terminal observes for a replacement attachment.
+///
+/// `receive` builds these from the worker's `Outcome` and from its monitor,
+/// so the frame inbox a `Ready` carries is always the one the terminal
+/// created in `start`; the worker never gets to name it.
 pub type Message {
   /// A replacement websocket is ready for terminal-process adoption.
   Ready(
@@ -90,6 +105,25 @@ pub type Message {
 
   /// The replacement worker crashed before returning a typed result.
   WorkerCrashed(session: String, reason: String)
+}
+
+/// What a replacement-attachment worker sends back over its attempt mailbox.
+///
+/// It is exposed so tests can stand in for a worker; the terminal only ever
+/// sees the `Message` that `receive` derives from it.
+@internal
+pub type Outcome {
+  /// The worker resolved the session and holds an open socket for adoption.
+  Opened(
+    choice: SessionChoice,
+    options: Options,
+    target: bootstrap.Target,
+    socket: connection.Connection,
+    adopted: Subject(Nil),
+  )
+
+  /// Resolution or connection failed while the old session remained active.
+  Refused(reason: String)
 }
 
 /// Opens a selector over discovered launcher records.
@@ -161,17 +195,23 @@ pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
   let options = bootstrap.session_options(base, choice)
   let owner = process.self()
   let receiver = process.new_subject()
+
+  // Both subjects are created here so they deliver to the terminal. Frames
+  // the replacement socket emits before adoption queue in the terminal's
+  // mailbox under this attempt's tag and are drained only once it adopts.
+  let frames = connection.new_inbox()
   let worker =
     process.spawn_unlinked(fn() {
-      let answer = resolve_and_connect(choice, options, owner)
-      process.send(receiver, answer)
-      await_adoption(answer)
+      let outcome = resolve_and_connect(choice, options, frames, owner)
+      process.send(receiver, outcome)
+      await_adoption(outcome)
     })
   Resolving(
     session: choice.session,
     worker:,
     monitor: process.monitor(worker),
     inbox: receiver,
+    frames:,
     deadline_ms: ffi_bootstrap.monotonic_time_ms() + switch_timeout_ms,
   )
 }
@@ -186,19 +226,53 @@ pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
 pub fn receive(status: SwitchStatus) -> Result(Message, Nil) {
   case status {
     Idle -> Error(Nil)
-    Resolving(session:, worker:, monitor:, inbox:, deadline_ms:) ->
-      case receive_monitored(inbox, session, monitor) {
-        Ok(message) -> Ok(message)
+    Resolving(session:, worker:, monitor:, inbox:, frames:, deadline_ms:) ->
+      case receive_monitored(inbox, session, monitor, frames) {
+        Ok(Ready(..) as message) -> Ok(message)
+        Ok(message) -> {
+          discard(frames)
+          Ok(message)
+        }
         Error(Nil) ->
           case ffi_bootstrap.monotonic_time_ms() >= deadline_ms {
             True -> {
               process.kill(worker)
               process.demonitor_process(monitor)
+
+              // The worker owned any socket it opened through a link, so the
+              // kill closes it. A `Ready` that raced the deadline is dropped
+              // with the frames it already delivered, which keeps a late
+              // attempt from ever being adopted by a later switch.
+              discard(inbox)
+              discard(frames)
               Ok(Failed(session, "session startup timed out"))
             }
             False -> Error(Nil)
           }
       }
+  }
+}
+
+/// Drops every frame a replacement socket queued for the terminal.
+///
+/// The terminal calls this when a ready socket cannot be adopted. It is also
+/// how a failed attempt leaves no unread frames behind for the mailbox scan
+/// of every later selective receive. A socket that is still closing may add a
+/// final notice after this returns; that residue is bounded by one frame.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.discard(frames)
+/// ```
+pub fn discard(inbox: Subject(a)) -> Nil {
+  discard_up_to(inbox, discard_limit)
+}
+
+fn discard_up_to(inbox: Subject(a), remaining: Int) -> Nil {
+  case remaining <= 0, process.receive(inbox, 0) {
+    True, _ | _, Error(Nil) -> Nil
+    False, Ok(_) -> discard_up_to(inbox, remaining - 1)
   }
 }
 
@@ -235,13 +309,20 @@ pub fn busy(status: SwitchStatus) -> Bool {
 }
 
 fn receive_monitored(
-  inbox: Subject(Message),
+  inbox: Subject(Outcome),
   session: String,
   monitor: Monitor,
+  frames: Subject(connection.Message),
 ) -> Result(Message, Nil) {
   let selector =
     process.new_selector()
-    |> process.select(inbox)
+    |> process.select_map(inbox, fn(outcome) {
+      case outcome {
+        Opened(choice:, options:, target:, socket:, adopted:) ->
+          Ready(choice:, options:, target:, inbox: frames, socket:, adopted:)
+        Refused(reason) -> Failed(session, reason)
+      }
+    })
     |> process.select_specific_monitor(monitor, fn(down) {
       WorkerCrashed(session, string.inspect(down))
     })
@@ -296,48 +377,53 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
 fn resolve_and_connect(
   choice: SessionChoice,
   options: Options,
+  frames: Subject(connection.Message),
   owner: Pid,
-) -> Message {
+) -> Outcome {
   case bootstrap.resolve(options) {
-    Error(reason) -> Failed(choice.session, reason)
+    Error(reason) -> Refused(reason)
     Ok(target) ->
       case process.is_alive(owner) {
-        False -> Failed(choice.session, "the terminal closed during startup")
-        True -> connect_target(choice, options, target, owner)
+        False -> Refused("the terminal closed during startup")
+        True -> connect_target(choice, options, target, frames, owner)
       }
   }
 }
 
-fn await_adoption(message: Message) -> Nil {
-  case message {
-    Ready(socket:, adopted:, ..) ->
+fn await_adoption(outcome: Outcome) -> Nil {
+  case outcome {
+    Opened(socket:, adopted:, ..) ->
       case process.receive(adopted, switch_timeout_ms) {
         Ok(Nil) -> Nil
         Error(Nil) -> connection.close(socket)
       }
-    Failed(..) | WorkerCrashed(..) -> Nil
+    Refused(..) -> Nil
   }
 }
 
+// The socket actor links to this worker inside `connection.connect`, so a
+// killed or crashed worker takes an unadopted socket down with it. The
+// terminal re-links on adoption, and the worker's later normal exit does not
+// disturb an actor that traps nothing.
 fn connect_target(
   choice: SessionChoice,
   options: Options,
   target: bootstrap.Target,
+  inbox: Subject(connection.Message),
   owner: Pid,
-) -> Message {
-  let inbox = connection.new_inbox()
+) -> Outcome {
   case connection.connect(target.address, target.token, inbox) {
-    Error(reason) -> Failed(choice.session, "connect: " <> reason)
+    Error(reason) -> Refused("connect: " <> reason)
     Ok(socket) -> {
       let adopted = process.new_subject()
       connection.send(socket, protocol.subscribe(1, target.session))
       connection.send(socket, protocol.models(2))
       connection.send(socket, protocol.config(3, "main"))
       case process.is_alive(owner) {
-        True -> Ready(choice, options, target, inbox, socket, adopted)
+        True -> Opened(choice:, options:, target:, socket:, adopted:)
         False -> {
           connection.close(socket)
-          Failed(choice.session, "the terminal closed during startup")
+          Refused("the terminal closed during startup")
         }
       }
     }

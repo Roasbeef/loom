@@ -331,9 +331,10 @@ pub fn queued_session_result_wins_over_timeout_test() {
       worker:,
       monitor:,
       inbox:,
-      deadline_ms: 0,
+      frames: connection.new_inbox(),
+      deadline_ms: expired_deadline(),
     )
-  process.send(inbox, sessions.Failed("queued", "arrived before timeout"))
+  process.send(inbox, sessions.Refused("arrived before timeout"))
   assert sessions.receive(status)
     == Ok(sessions.Failed("queued", "arrived before timeout"))
   process.kill(worker)
@@ -341,7 +342,7 @@ pub fn queued_session_result_wins_over_timeout_test() {
 
 pub fn session_attempts_have_isolated_mailboxes_test() {
   let stale = process.new_subject()
-  process.send(stale, sessions.Failed("old", "stale result"))
+  process.send(stale, sessions.Refused("stale result"))
   let current = process.new_subject()
   let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
   let status =
@@ -350,10 +351,103 @@ pub fn session_attempts_have_isolated_mailboxes_test() {
       worker:,
       monitor: process.monitor(worker),
       inbox: current,
+      frames: connection.new_inbox(),
       deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
     )
   assert sessions.receive(status) == Error(Nil)
   sessions.cancel(status)
+}
+
+// A subject delivers to the process that created it, and receiving on one
+// owned by another process panics. The frame inbox a replacement socket writes
+// to must therefore belong to the terminal from the moment the attempt starts,
+// not to the worker that opens the socket.
+pub fn session_switch_frames_are_owned_by_the_terminal_test() {
+  let root = "build/tui-session-frames"
+  let choice =
+    bootstrap.SessionChoice(
+      "missing",
+      root <> "/missing-workspace",
+      root <> "/missing.db",
+    )
+  let options =
+    bootstrap.Options(
+      workspace: choice.workspace,
+      session_file: choice.session_file,
+      server: root <> "/no-such-loomd",
+      state_directory: root <> "/state",
+    )
+  let status = sessions.start(choice, options)
+  let assert sessions.Resolving(frames:, ..) = status
+    as "start should return an in-flight attempt"
+  assert process.subject_owner(frames) == Ok(process.self())
+  assert connection.receive(frames) == Error(Nil)
+  let assert Ok(sessions.Failed("missing", _)) = wait_for_switch(status, 5000)
+    as "a missing workspace should fail resolution"
+  let _ = simplifile.delete(root)
+}
+
+pub fn failed_session_attempt_discards_queued_frames_test() {
+  let inbox = process.new_subject()
+  let frames = connection.new_inbox()
+  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let status =
+    sessions.Resolving(
+      session: "failed",
+      worker:,
+      monitor: process.monitor(worker),
+      inbox:,
+      frames:,
+      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
+    )
+  process.send(frames, connection.Connected)
+  process.send(frames, connection.Incoming("{}"))
+  process.send(inbox, sessions.Refused("connect refused"))
+  assert sessions.receive(status)
+    == Ok(sessions.Failed("failed", "connect refused"))
+  assert connection.receive(frames) == Error(Nil)
+  process.kill(worker)
+}
+
+pub fn timed_out_session_attempt_discards_late_results_test() {
+  let inbox = process.new_subject()
+  let frames = connection.new_inbox()
+  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let status =
+    sessions.Resolving(
+      session: "late",
+      worker:,
+      monitor: process.monitor(worker),
+      inbox:,
+      frames:,
+      deadline_ms: expired_deadline(),
+    )
+  process.send(frames, connection.Connected)
+  assert sessions.receive(status)
+    == Ok(sessions.Failed("late", "session startup timed out"))
+  assert connection.receive(frames) == Error(Nil)
+  assert process.receive(inbox, 0) == Error(Nil)
+  assert process.is_alive(worker) == False
+}
+
+// BEAM monotonic time starts far below zero, so a literal `0` deadline is
+// decades in the future; an expired deadline must be derived from the clock.
+fn expired_deadline() -> Int {
+  ffi_bootstrap.monotonic_time_ms() - 1
+}
+
+fn wait_for_switch(
+  status: sessions.SwitchStatus,
+  remaining_ms: Int,
+) -> Result(sessions.Message, Nil) {
+  case sessions.receive(status), remaining_ms <= 0 {
+    Ok(message), _ -> Ok(message)
+    Error(Nil), True -> Error(Nil)
+    Error(Nil), False -> {
+      process.sleep(10)
+      wait_for_switch(status, remaining_ms - 10)
+    }
+  }
 }
 
 pub fn agent_inspector_selection_wraps_and_resolves_a_strand_test() {

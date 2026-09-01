@@ -230,11 +230,20 @@ that tree separately from the self-contained server.
   startup, and websocket startup run in a monitored worker with a bounded
   deadline and a mailbox unique to that attempt. A queued result wins over its
   deadline, while a timed-out worker cannot leak a result or socket into a
-  later switch. Failure leaves the old socket and model intact. Success gives
-  the replacement a fresh connection inbox, the terminal process links to its
-  socket actor, and only then does it close the prior socket and await the new
-  authoritative full snapshot. Late frames and close notices from the
-  abandoned inbox cannot mutate the replacement session.
+  later switch. Failure leaves the old socket and model intact and discards
+  any frames the attempt already queued. Success gives the replacement a fresh
+  connection inbox, the terminal process links to its socket actor, and only
+  then does it close the prior socket and await the new authoritative full
+  snapshot. Late frames and close notices from the abandoned inbox cannot
+  mutate the replacement session.
+- **Every inbox the terminal reads is created by the terminal.** A `Subject`
+  delivers to the process that created it, and receiving on one owned by
+  another process panics. `sessions.start` therefore creates the attempt
+  mailbox and the replacement frame inbox in the terminal before spawning the
+  worker; the worker returns a private outcome that names no inbox, and
+  `sessions.receive` attaches the terminal's own. The real-server lifecycle
+  test drains the full snapshot from that inbox in the adopting process, which
+  is the only check that catches a worker-created inbox.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
   this client cannot approve or deny an action. The server still enforces the
