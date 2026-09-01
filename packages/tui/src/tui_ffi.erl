@@ -17,6 +17,14 @@
          terminate_process_group/1, process_identity/1,
          current_log_tail/3]).
 
+%% Every path arriving from Gleam is a UTF-8 binary. `binary_to_list/1` would
+%% split it one codepoint per byte, so `/tmp/é` would reach `filename`, `file`
+%% and `open_port` as `/tmp/Ã©` and a `HOME` or workspace holding an accent
+%% would name a directory nobody created. Path and name conversions therefore
+%% go through `unicode:characters_to_list/1` in one direction and
+%% `unicode:characters_to_binary/1` in the other; only the ASCII hex suffix in
+%% `atomic_write_private/2` stays on the byte-wise pair.
+
 read_prefix(Path, Bytes) ->
     case file:open(Path, [read, binary, raw]) of
         {ok, Handle} ->
@@ -92,7 +100,7 @@ sha256(Bytes) ->
     crypto:hash(sha256, Bytes).
 
 getenv(Name) ->
-    case os:getenv(binary_to_list(Name)) of
+    case os:getenv(unicode:characters_to_list(Name)) of
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
@@ -124,7 +132,7 @@ canonical_directory(Path0) ->
     end.
 
 canonical_path(PathBinary) ->
-    Path = filename:absname(binary_to_list(PathBinary)),
+    Path = filename:absname(unicode:characters_to_list(PathBinary)),
     case realpath_executable() of
         {error, _} = Error -> Error;
         {ok, Realpath} ->
@@ -140,7 +148,8 @@ canonical_path(PathBinary) ->
     end.
 
 path_exists(PathBinary) ->
-    case file:read_link_info(binary_to_list(PathBinary), [{time, posix}]) of
+    case file:read_link_info(unicode:characters_to_list(PathBinary),
+                             [{time, posix}]) of
         {ok, _} -> true;
         {error, _} -> false
     end.
@@ -148,7 +157,7 @@ path_exists(PathBinary) ->
 absolute_path(Path) ->
     try
         {ok, unicode:characters_to_binary(
-            filename:absname(binary_to_list(Path))
+            filename:absname(unicode:characters_to_list(Path))
         )}
     catch
         Class:Reason -> {error, describe({Class, Reason})}
@@ -163,7 +172,7 @@ ensure_private_directory(PathBinary) ->
 
 list_directory_bounded(PathBinary, Limit)
   when is_integer(Limit), Limit >= 0 ->
-    case file:list_dir(binary_to_list(PathBinary)) of
+    case file:list_dir(unicode:characters_to_list(PathBinary)) of
         {ok, Entries} when length(Entries) =< Limit ->
             {ok, lists:filtermap(fun utf8_entry/1, Entries)};
         {ok, _Entries} ->
@@ -184,7 +193,7 @@ utf8_entry(Entry) ->
     end.
 
 ensure_private_unix(PathBinary) ->
-    Path = binary_to_list(PathBinary),
+    Path = unicode:characters_to_list(PathBinary),
     case filelib:ensure_dir(filename:join(Path, ".loom-private")) of
         ok ->
             case file:read_link_info(Path, [{time, posix}]) of
@@ -209,7 +218,7 @@ ensure_private_unix(PathBinary) ->
     end.
 
 try_launch_lock(PathBinary) ->
-    Path = binary_to_list(PathBinary),
+    Path = unicode:characters_to_list(PathBinary),
     case lock_command(Path) of
         {error, Reason} ->
             {error, describe(Reason)};
@@ -240,7 +249,7 @@ read_regular_bounded(Path, Limit) ->
     read_bounded(Path, Limit).
 
 read_private_bounded(PathBinary, Limit) ->
-    Path = binary_to_list(PathBinary),
+    Path = unicode:characters_to_list(PathBinary),
     case file:read_link_info(Path, [{time, posix}]) of
         {ok, #file_info{type = regular, uid = Uid, mode = Mode}} ->
             case current_uid() of
@@ -259,7 +268,7 @@ read_private_bounded(PathBinary, Limit) ->
     end.
 
 atomic_write_private(PathBinary, Contents) ->
-    Path = binary_to_list(PathBinary),
+    Path = unicode:characters_to_list(PathBinary),
     Directory = filename:dirname(Path),
     Suffix = binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(8))),
     Temporary = filename:join(Directory, "." ++ filename:basename(Path) ++
@@ -289,7 +298,7 @@ atomic_write_private(PathBinary, Contents) ->
     end.
 
 find_executable(CandidateBinary) ->
-    Candidate = binary_to_list(CandidateBinary),
+    Candidate = unicode:characters_to_list(CandidateBinary),
     case lists:member($/, Candidate) of
         true ->
             Absolute = filename:absname(Candidate),
@@ -305,7 +314,7 @@ find_executable(CandidateBinary) ->
     end.
 
 is_executable_file(Path) ->
-    is_executable_path(binary_to_list(Path)).
+    is_executable_path(unicode:characters_to_list(Path)).
 
 reserve_loopback_port() ->
     case gen_tcp:listen(0, [inet, {ip, {127, 0, 0, 1}},
@@ -323,10 +332,10 @@ reserve_loopback_port() ->
     end.
 
 spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
-    Executable = binary_to_list(ExecutableBinary),
-    Arguments = lists:map(fun binary_to_list/1, ArgumentBinaries),
-    Working = filename:absname(binary_to_list(WorkingBinary)),
-    Log = filename:absname(binary_to_list(LogBinary)),
+    Executable = unicode:characters_to_list(ExecutableBinary),
+    Arguments = lists:map(fun unicode:characters_to_list/1, ArgumentBinaries),
+    Working = filename:absname(unicode:characters_to_list(WorkingBinary)),
+    Log = filename:absname(unicode:characters_to_list(LogBinary)),
     Script = "IFS= read -r LOOM_RELEASE || exit 0; "
              "exec \"$@\" >> \"$LOOM_LOG\" 2>&1",
     try
@@ -376,7 +385,7 @@ process_identity(_Pid) ->
     {error, <<"invalid process id">>}.
 
 current_log_tail(PathBinary, StartedAtMs, Limit) ->
-    Path = binary_to_list(PathBinary),
+    Path = unicode:characters_to_list(PathBinary),
     case file:read_file_info(Path, [{time, posix}]) of
         {ok, #file_info{type = regular, size = Size, mtime = Modified}}
           when Modified * 1000 >= StartedAtMs - 1000 ->
@@ -403,7 +412,7 @@ path_or_cwd(<<>>) ->
         {error, Reason} -> {error, describe(Reason)}
     end;
 path_or_cwd(Path) ->
-    {ok, binary_to_list(Path)}.
+    {ok, unicode:characters_to_list(Path)}.
 
 realpath_executable() ->
     first_executable(["/usr/bin/realpath", "/bin/realpath"]).
