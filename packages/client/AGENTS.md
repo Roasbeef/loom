@@ -402,17 +402,30 @@ over one session file. WP-L.
 - `client/mcp.{Layer, Server, Refusal, Options, none, serving, start,
   stop, routing, allowed_imports, surfaces, generated, serviced_caps,
   listings, sha256_hex}` — the MCP layer (#106): the configured servers
-  this host actually reached. `start` spawns each `catalog.McpServer`
-  over `mcp/transport.PortTransport`, hand-shakes, lists its tools and
-  generates its `cap/mcp/<server>` façade, keeping the client **running**
-  for the session because dispatch is the same client; each failing step
-  refuses *that* server with a worded `Refusal` and the boot goes on
-  without it. `routing` is the capability arm: a cap under `mcp.` is
-  answered as `satellite.ServedHere` — no `CallSpec`, no jail, no policy
-  — and everything else is handed to the router beneath untouched. The
-  client actors are started from a throwaway unlinked process on purpose,
-  so a third-party server's client cannot fell the server; `Layer` is
-  then the only handle on them, and `serve.shutdown` is what stops them.
+  this host actually reached. `start` fans every `catalog.McpServer`'s
+  bring-up out over a `weft` run — one task per server, bounded by the
+  catalogue's own length — rather than folding them one at a time, so an
+  N-server boot pays one shared clock for every handshake timeout rather
+  than N consecutive ones; `weft.start` hands outcomes back sorted by
+  input position, so zipping them against the unchanged `servers` list is
+  what restores catalogue order regardless of which server answers first.
+  Each task still spawns its server over `mcp/transport.PortTransport`,
+  hand-shakes, lists its tools and generates its `cap/mcp/<server>`
+  façade, keeping the client **running** for the session because dispatch
+  is the same client; each failing step refuses *that* server with a
+  worded `Refusal` and the boot goes on without it, and a `Crashed` weft
+  worker becomes a worded `Refusal` too rather than taking the boot down.
+  `routing` is the capability arm: a cap under `mcp.` is answered as
+  `satellite.ServedHere` — no `CallSpec`, no jail, no policy — and
+  everything else is handed to the router beneath untouched. The client
+  actors are started from a throwaway unlinked process on purpose, two
+  `process.spawn_unlinked` calls below `start_one` itself, so a
+  third-party server's client cannot fell the server; that isolation does
+  not depend on which process runs `start_one` — a weft worker moves who
+  calls it, not how the actor is severed from its caller, so bring-up
+  needed no re-link back to the boot's own process and no accessor onto
+  `mcp/client.Client` to do one. `Layer` is then the only handle on the
+  clients, and `serve.shutdown` is what stops them.
 - `client/system_prompt.{Host, Rendered, Assembled, Origin, assemble,
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
@@ -594,7 +607,9 @@ over one session file. WP-L.
   `telemetry` (the JSON handler this entry point installs, and the
   logger it injects into `api.Options`),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
-  token file, the pack file, and the workspace's `CLAUDE.md`).
+  token file, the pack file, and the workspace's `CLAUDE.md`),
+  `weft` (the bounded concurrent run `client/mcp.start` fans server
+  bring-up out over).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
   edges are real and load-bearing — catch-up scans storage directly,
   compaction and navigation build `machine/acceptance` plans, the delta
