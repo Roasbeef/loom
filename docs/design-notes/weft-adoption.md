@@ -405,8 +405,8 @@ decision); `broker.clear_awaiting_helper` and `client/agency.wait_loop`
 `events/bus` on `pg`; `weft/event_manager` fits nothing in the tree.
 
 **The line count, honestly.** Source under `packages/*/src` moved by
-roughly +1,500 / −1,300 across the whole adoption before the guards, and
-the guards added more than they removed. The survey's "deletable"
++4,046 / −2,855 across the whole adoption (net +1,191 over seventeen
+files), and the three guards account for most of the growth. The survey's "deletable"
 figures counted mechanism without counting what an exhaustive port
 writes back: every `case state, message` pair, the unreachable ones
 included and commented, and the literate prose each arm carries. What

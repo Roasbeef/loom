@@ -45,8 +45,8 @@ merge on its own first; its CI red is main's own flake pattern, verified
 against four consecutive main runs.
 
 **What was measured, so nobody re-argues it.** Weft does not shrink the
-tree: the source moved by roughly +2,600 / −2,000 across the whole
-adoption, because an exhaustive `case state, message` matrix with every
+tree: the source moved by +4,046 / −2,855 (net +1,191) across the whole
+adoption, and weft itself grew by 3,300 lines of source and tests, because an exhaustive `case state, message` matrix with every
 unreachable pair written and commented is larger than the recursive
 functions it replaces. What it bought is one owner per race (the ledger,
 the timer book, the cancellation order), a lint census that dropped where
