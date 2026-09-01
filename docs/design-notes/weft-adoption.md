@@ -1,12 +1,15 @@
 # Design note: adopting weft
 
-Status: **note, not a work package.** A survey of where
-[weft](https://hex.pm/packages/weft) (`github.com/Roasbeef/weft`) could
-replace hand-rolled concurrency machinery in this tree, what it would cost,
-and the one migration that must *not* happen. Nothing here is built.
-Findings come from a full sweep of every effectful package, verified
-against the sources at the cited lines; line numbers are as of `main` at
-`dd84063`.
+Status: **in progress; loom#159 is the plan of record and checklist.** A
+survey of where [weft](https://hex.pm/packages/weft)
+(`github.com/Roasbeef/weft`) could replace hand-rolled concurrency
+machinery in this tree, what it would cost, and the one migration that
+must *not* happen. Findings come from a full sweep of every effectful
+package, verified against the sources at the cited lines; line numbers are
+as of `main` at `dd84063`. Since the survey: tier 1's first two items are
+built (the recovery gate on `weft/actor.continuing`, the TUI's guarded
+startup on a one-task run), and the phase-2 half was designed and
+implemented upstream as weft PR #6 — see the addendum at the end.
 
 ## What weft is
 
@@ -230,3 +233,69 @@ engine, `state_machine`'s state timeouts). Only after those hold under
 code-mode holder, and only after a gateway spike does tier 3 commit to
 the ~800-line provider/client guard consolidation. If only tier 1 ever
 lands, the dependency still pays for itself in retired staleness guards.
+
+## Addendum: weft#5, measured and then built
+
+Roasbeef/weft#5 (managed tasks with transitive drain proof) generalizes
+exactly the ownership protocols PR #133 shipped here by hand — the
+strongest evidence being that `protocol-change/010`'s proposed API is
+implemented verbatim in `provider/stream.gleam`, and the
+publish-parked-owner-then-begin dance appears six times across the tree
+(`provider/custodian.prepare`'s protocol, `gateway.prepare`,
+`gateway.start_request`, `gateway.register_attempt`,
+`provider_relay.guard`, `runtime/internal/provider_custodian.prepare` —
+the last is `prepared_task` almost word for word). A second census pass
+measured what an implemented weft#5 would subsume:
+
+| File | Deletable | Restructured | Untouched |
+|---|---:|---:|---:|
+| `provider/custodian.gleam` (465) | ~410 | ~55 | ~0 |
+| `provider/stream.gleam` (1282) | ~300 | ~150 | ~830 |
+| `provider/gateway.gleam` (1335) | ~370 | ~280 | ~685 |
+| `client/provider_relay.gleam` (803) | ~620 | ~140 | ~40 |
+| `runtime/strand_runtime.gleam` reaper + await | ~135 | ~120 | ~75 |
+| `runtime/internal/provider_custodian.gleam` (354) | ~100 | ~100 | ~115 |
+| `runtime/internal/drain_registry.gleam` (224) | 0 | ~15 | ~200 |
+| **Total** | **~1,935** | **~860** | **~1,945** |
+
+The deletable band is the generic witness machinery; the restructured
+band is loom's terminal-arbitration policy riding on the primitive; the
+untouched band is real domain (SSE parsing, wire vocabulary, fallback
+walking, credential scrubbing) plus the one genuinely irreducible piece:
+`drain_registry`, which sequences **across driver generations** — a chain
+of scopes for the same logical strand — where weft's model is
+single-generation by design.
+
+The census also surfaced the mismatches loom#159 lists in full: the
+grace-bounded `CancellationUnconfirmed` third outcome, the
+leaf-versus-transitive owner split, dynamic mid-run adoption, ownerless
+`immediate` streams, recursive poison propagation, the reaper's
+survive-the-caller lifetime, and push-versus-pull delivery into an actor.
+**Weft PR #6 implements the issue plus most of that list**: `prepared_task`
+/ `prepared_leaf`, `DrainProofLost` and `CancellationUnconfirmed`
+outcomes, `cancel_grace` (one window per teardown, bounding the wait at
+the price of the exit verdict), the scope's exit reason as the drain
+verdict (poison propagates by monitor, no translation code), detached
+runs whose scope survives a dead holder and drains before exiting, and
+`start_relayed` as the push adapter. Composition — a nested detached
+scope as a publishable owner — is its answer to nested ownership;
+dynamic adoption and the periodic timeout kind stay open upstream.
+Phase 2 here stays gated on that PR merging and publishing.
+
+What landed in this tree so far, per loom#159's tier 1:
+
+- `runtime/strand_runtime` — the strand driver is now a `weft/actor`; the
+  `RecoveryGate` dual-dispatch matrix and its hand-carried
+  `abort_requested` flag are deleted in favor of a guaranteed-first
+  `AwaitPredecessors` message that blocks on the ledger claim. One
+  deliberate semantic change: an abort that arrives during the barrier is
+  now handled *after* the first post-barrier drive rather than instead of
+  it — equivalent because an abort racing a dispatch is already the
+  ordinary case, at the cost of one possibly wasted dispatch in that rare
+  race.
+- `tui/connection.start_safely_within` — the spawn/monitor/kill scaffold
+  is a one-task `weft` run with a deadline; the `StartReport` type is
+  gone and the behavior-pinning tests pass unchanged.
+- `broker/exec`'s timer bookkeeping (tier 1's third item) is **not** in
+  this pass: it wants `weft/state_machine`, and restructuring a
+  1,700-line actor deserves its own change; loom#159 tracks it.
