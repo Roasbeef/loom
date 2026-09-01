@@ -10,7 +10,6 @@ import etui/keys
 import etui/span
 import etui/widgets/block
 import etui/widgets/paragraph
-import filepath
 import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -173,7 +172,7 @@ pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
     worker:,
     monitor: process.monitor(worker),
     inbox: receiver,
-    deadline_ms: ffi_bootstrap.system_time_ms() + switch_timeout_ms,
+    deadline_ms: ffi_bootstrap.monotonic_time_ms() + switch_timeout_ms,
   )
 }
 
@@ -191,7 +190,7 @@ pub fn receive(status: SwitchStatus) -> Result(Message, Nil) {
       case receive_monitored(inbox, session, monitor) {
         Ok(message) -> Ok(message)
         Error(Nil) ->
-          case ffi_bootstrap.system_time_ms() >= deadline_ms {
+          case ffi_bootstrap.monotonic_time_ms() >= deadline_ms {
             True -> {
               process.kill(worker)
               process.demonitor_process(monitor)
@@ -414,7 +413,7 @@ fn choice_lines(
       ),
       span.span_styled("  ·  ", theme.overlay_quiet()),
       span.span_styled(
-        text_hygiene.single_line(filepath.base_name(session_file)),
+        text_hygiene.single_line(session_file),
         theme.overlay_quiet(),
       ),
     ]),

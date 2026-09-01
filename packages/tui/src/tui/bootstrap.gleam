@@ -207,8 +207,16 @@ pub fn discover_sessions(
     |> dict.values
     |> list.sort(by: fn(left, right) {
       string.compare(
-        left.session <> "\u{0}" <> left.workspace,
-        right.session <> "\u{0}" <> right.workspace,
+        left.session
+          <> "\u{0}"
+          <> left.workspace
+          <> "\u{0}"
+          <> left.session_file,
+        right.session
+          <> "\u{0}"
+          <> right.workspace
+          <> "\u{0}"
+          <> right.session_file,
       )
     })
   Ok(choices)

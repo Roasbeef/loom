@@ -24,6 +24,13 @@ pub type ProcessIdentity {
 @external(erlang, "tui_ffi", "system_time_ms")
 pub fn system_time_ms() -> Int
 
+/// Returns monotonic milliseconds for process-local elapsed-time bounds.
+///
+/// Uses OTP `erlang:monotonic_time/1`; the value has no wall-clock meaning and
+/// is valid only for deadline comparisons within this VM.
+@external(erlang, "tui_ffi", "monotonic_time_ms")
+pub fn monotonic_time_ms() -> Int
+
 /// Returns a cryptographic SHA-256 digest.
 ///
 /// Uses OTP `crypto:hash/2`; a workspace digest must remain stable across

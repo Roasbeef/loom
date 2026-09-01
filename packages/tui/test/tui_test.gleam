@@ -350,7 +350,7 @@ pub fn session_attempts_have_isolated_mailboxes_test() {
       worker:,
       monitor: process.monitor(worker),
       inbox: current,
-      deadline_ms: ffi_bootstrap.system_time_ms() + 5000,
+      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
     )
   assert sessions.receive(status) == Error(Nil)
   sessions.cancel(status)

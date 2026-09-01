@@ -32,9 +32,10 @@ that tree separately from the self-contained server.
   discovery order, and lifecycle decisions remain in Gleam.
 - `tui/sessions.State` owns the `/sessions` selection cursor, while
   `tui/sessions.SwitchStatus` retains the monitored worker, per-attempt
-  mailbox, and deadline for one replacement attachment. The worker retains
-  ownership of a ready socket until the terminal acknowledges adoption, and
-  the old connection remains authoritative until that handoff completes.
+  mailbox, and monotonic deadline for one replacement attachment. The worker
+  retains ownership of a ready socket until the terminal acknowledges
+  adoption, and the old connection remains authoritative until that handoff
+  completes.
 - `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
   unavailable in pure Gleam: private and bounded file operations, process
   identity and launch, a kernel lock, loopback port reservation, time, and

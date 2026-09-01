@@ -3,7 +3,7 @@
 -include_lib("kernel/include/file.hrl").
 
 -export([read_prefix/2, read_bounded/2,
-         system_time_ms/0, sha256/1, getenv/1,
+         system_time_ms/0, monotonic_time_ms/0, sha256/1, getenv/1,
          canonical_directory/1, canonical_path/1, path_exists/1,
          absolute_path/1,
          ensure_private_directory/1,
@@ -79,6 +79,9 @@ read_bounded_loop(Handle, Limit, Total, Chunks) ->
 
 system_time_ms() ->
     erlang:system_time(millisecond).
+
+monotonic_time_ms() ->
+    erlang:monotonic_time(millisecond).
 
 sha256(Bytes) ->
     crypto:hash(sha256, Bytes).
