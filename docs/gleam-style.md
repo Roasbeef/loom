@@ -392,6 +392,73 @@ comment that restates the next line is noise, and a wrong comment is worse
 than none, so comments state what the author verified, never what they
 hoped. `//` comments go on the line before the item, never trailing.
 
+Where the prose *sits* is the next section: a comment inside a function
+body always has a blank line above it, which is a rule about layout rather
+than about wording and is the one R10 checks.
+
+### Stanzas: how code breathes
+
+A function body is prose, so give it paragraphs. Two rules, both
+mechanical, both linted.
+
+**A `//` comment inside a body has a blank line above it.** Not a
+suggestion — the blank line is what turns the comment from a footnote on
+the line above into the heading of the stanza below, and the difference is
+the whole of whether a reader scanning a four-hundred-line module can find
+the part they need. Compare:
+
+```gleam
+// Wrong: the comment is welded to the line above it, so it reads as a
+// note about `let cell` and the reader has to work out that it is not.
+let cell = Lineage(strand: name, parent: caller.strand, reaped: False)
+// Before the lineage cell, not after: the replay path keys on the lineage
+// cell and returns early when it finds one.
+use Nil <- result.try(write_result_schema(config, cell))
+
+// Right: the blank line makes it a heading, and the eye can skip between
+// headings without reading the code between them.
+let cell = Lineage(strand: name, parent: caller.strand, reaped: False)
+
+// Before the lineage cell, not after: the replay path keys on the lineage
+// cell and returns early when it finds one.
+use Nil <- result.try(write_result_schema(config, cell))
+```
+
+The one exemption is forced rather than chosen: a comment that is the
+**first line of a block** cannot have a blank line above it, because
+`gleam format` deletes a blank line at the top of a block. Open a body or
+a `case` with prose whenever the body needs it; the formatter puts it
+flush against the brace and that is correct.
+
+**A body does not run more than about eight statements without a break.**
+A blank line or a comment, either counts — a paragraph break is a
+paragraph break. The reason is not aesthetic: a body with no paragraphs
+has nowhere to put the prose the section above asks for, so density and
+silence arrive together. `runtime/supervisor.start` was ten `let`s in a
+wall and reads as three stanzas once broken — the names, the strand
+template, the factory — with one line of prose over each.
+
+Two things deliberately do **not** count as density, and both are the same
+distinction R2 makes about nesting:
+
+- **A wrapped literal is one statement.** `gleam format` gives a wide call
+  one argument per line, so a thirty-line `json.Object([..])` looks dense
+  to a line counter and is a single step. Count statements, never lines,
+  and do not break a data literal into paragraphs — a comment naming one
+  element of one belongs directly above that element, with no blank line
+  owed.
+- **A `use` chain is a table, not a paragraph.** `core/codec`'s
+  `decode_assistant_message` is nineteen `use field <- result.try(…)`
+  lines with nothing between them and it is exactly right; breaking it at
+  an arbitrary field would make it worse. `use` bindings carry a run
+  across without lengthening it, so ten `let`s threaded through a decoder
+  chain still read as ten.
+
+Likewise `case` arms are a table. Twelve one-line arms dispatching a
+message type want no blank lines at all — but a comment giving the
+*reasoning* for an arm still wants one above it, which is the first rule
+arriving in the second place.
+
 ### What the formatter decides, and what you do
 
 `gleam format` gives a call or signature exactly two layouts: everything
@@ -676,15 +743,12 @@ the thing you are claiming got slower.
   `LoggedIn(id: Int, email: String) | Guest` over
   `User(id: Option(Int), email: Option(String))`. Encode invariants in
   constructors, not in runtime checks.
-- **Replace booleans with two-variant custom types** when the meaning isn't
-  obvious at the call site: `role: Role` (`Student | Teacher`) over
-  `is_student: Bool`.
+- **No naked `Bool` in a parameter or a field.** See below; this is the
+  house rule the rest of this list used to state as a preference.
 - **Opaque types guard invariants**: anything with a validity condition
   (`Subject`, `Set`, `Decoder`) is `pub opaque type` with smart
   constructors. External types (`pub type Pid` — no constructors at all)
   name foreign values.
-- **Small private enums beat boolean parameters** internally too:
-  `type Direction { Leading Trailing }`.
 - **Dicts are second-class.** No literal syntax, no pattern matching, no
   ordering guarantees; custom types with named fields are the default for
   structured data.
@@ -695,6 +759,61 @@ the thing you are claiming got slower.
 - Descriptive type variables where the parameter is domain-relevant:
   `Request(body)`, `fn set_body(req: Request(old_body), body: new_body) ->
   Request(new_body)`; single letters (`a`, `e`, `k`, `v`, `acc`) elsewhere.
+
+### No naked `Bool`
+
+`Bool` is the one type in the language that carries no domain meaning at
+all, and it is the one this tree reached for two hundred times. The rule:
+**a `Bool` may not be a function parameter or a record field.** Model the
+question with a two-variant type named for the domain.
+
+```gleam
+// Wrong. The call site says `render(document, True)`, which names
+// nothing, and finding out what the `True` was costs a jump to the
+// signature.
+fn render(document: Document, compact: Bool) -> String
+
+// Right. The call site says `render(document, Compact)`, and the two
+// states cannot be got backwards.
+pub type Density { Compact  Expanded }
+fn render(document: Document, density: Density) -> String
+```
+
+A label helps the call site and does not settle the question: labels are
+optional at the call site in Gleam, so `f(terminate: True)` and
+`f(x, True)` are the same call, and neither the reader of the body nor the
+reader of a `case` over the value gets anything from the label at all.
+
+The argument is stronger for a **field** than for a parameter. `retry:
+Bool` in a record makes every reader carry the polarity of the name in
+their head at every construction site and every match, and it makes
+`Retry | GiveUp` — which cannot be got backwards — a change to every
+construction site rather than a change to one declaration. A field is
+read at a greater distance from its declaration than a parameter is.
+
+**Return position is deliberately outside the rule.** `is_empty(xs) ->
+Bool` is the predicate `case`, `&&` and `bool.guard` are built to consume,
+`is_*` is in the naming table above, and a function that takes a predicate
+(`list.filter(xs, is_ready)`) is passing that same legitimate shape as an
+argument. A function that answers a domain question with a domain type is
+better where it is natural; it is not a rule, and R9 does not ask.
+
+Three escapes, and they are narrow:
+
+- **Code about booleans.** `core/json`'s `Bool(value: Bool)`,
+  `core/msgpack`'s `BoolValue` and `cap/wire`'s `bool` encoder are the
+  wire's own boolean, where the type is the subject rather than a flag
+  nobody named. Four sites in the tree.
+- **A frozen contract.** `terminate: Bool` and `from_hook: Bool` are
+  fields of spec Part 1. Changing one costs a `protocol-change/NNN.md`,
+  which is a decision and not a cleanup — so the finding stands and the
+  fix waits for the proposal.
+- **Interop with a foreign or stdlib signature** that is `Bool` on the
+  other side. Convert at the boundary, and let the two-variant type live
+  on this side of it.
+
+`make lint` R9 counts them; the census is 223 and the rule warns, for the
+reasons in `finding.error_by_default`.
 
 ### Pipelines and function values
 
@@ -898,3 +1017,14 @@ tighten the ecosystem defaults:
    `erlang:system_time` or random bytes reached for directly.
 7. **Documentation**: every public function documented; every ADT
    constructor's invariants stated in its doc comment.
+8. **No naked `Bool`**: a `Bool` is not a function parameter and not a
+   record field. Model the question with a two-variant type named for the
+   domain (Part III, "No naked `Bool`", which has the three escapes and
+   why return position is outside the rule). Lint R9 counts them.
+9. **Code is written in stanzas**: a `//` comment inside a function body
+   has a blank line above it, and a body does not run more than about
+   eight statements without a break (Part II, "Stanzas: how code
+   breathes"). Statements, never lines — a wrapped literal is one
+   statement and a `use` chain is a table. Lint R10 and R11 check both.
+   This is the layout half of the literate register `CLAUDE.md` requires:
+   prose a reader cannot find is prose that was not written.

@@ -51,6 +51,15 @@ line: `// Send the message` above `process.send` adds nothing. Prefer `// The
 acknowledgement transfers restart custody before work begins`, which tells the
 reader what ordering would break if the send moved.
 
+Prose a reader cannot find is prose that was not written, so the layout is
+part of the rule. **A comment inside a function body has a blank line above
+it** — that blank line is what turns a footnote on the line above into the
+heading of the stanza below — and **a body does not run more than about
+eight statements without a break**, because a body with no paragraphs has
+nowhere to put the prose. Lint R10 and R11 check both; `docs/gleam-style.md`
+Part II, "Stanzas: how code breathes", has the exemptions the formatter
+forces and the two shapes that are tables rather than paragraphs.
+
 Treat missing explanatory prose as unfinished work when reviewing a change.
 `docs/gleam-style.md` Part III, "Doc comments" and "Plain comments: the
 literate register", gives the complete conventions and examples.
@@ -79,6 +88,15 @@ literate register", gives the complete conventions and examples.
   never the harness in a browser: `gleam_otp` has no JavaScript target, Rule
   Zero is kernel-enforced, and the two-channel doctrine needs processes on
   both sides. `docs/gleam-style.md` Part IV §5 has the whole argument.
+- **No naked `Bool`** in a function parameter or a record field. `Bool`
+  carries no domain meaning, so `render(document, True)` names nothing at
+  the call site and a field typed `Bool` makes every reader carry the
+  polarity of its name; model the question with a two-variant type named
+  for the domain. Return position is outside the rule — `is_empty(xs) ->
+  Bool` is the predicate the language is built to consume. Lint R9
+  counts them; `docs/gleam-style.md` Part III, "No naked `Bool`", has the
+  three escapes, one of which is that a frozen Part-1 field costs a
+  `protocol-change/NNN.md` rather than an edit.
 - Chain fallible steps with `use` + `result.try`, or a small `or_*`
   combinator where the two sides are not both `Result`; `case` is for
   ADT dispatch, never for stacking `Result`s — and never buy a shallower
@@ -111,15 +129,17 @@ independently of uncommitted work, add a git worktree — but **not under
 replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
-runs at the end of `make check`. Nine rules: R0 unparseable source, R1
+runs at the end of `make check`. Twelve rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
 R6 the portable subset `core`, `machine` and `prompt` are held to, R7 a
 `let assert` carrying no `as "message"`, R8 a one-caller function wide
-enough to be a moved pyramid. **R0, R2, R4 and R6 fail the build**; the
-other five warn and cost nothing. R3 and R8 are censuses and will never
-gate: both over-report by construction, which is the point of measuring
-rather than refusing.
+enough to be a moved pyramid, R9 a naked `Bool` in a parameter or field,
+R10 a comment with no blank line above it, R11 a body written as one
+undivided block. **R0, R2, R4 and R6 fail the build**; the other eight
+warn and cost nothing. R3 and R8 are censuses and will never gate: both
+over-report by construction, which is the point of measuring rather than
+refusing.
 A rule reaches the error tier by a census that is zero, decidable and
 argued — the staging lives in `finding.error_by_default`, and
 `packages/lint/CLAUDE.md` says what each rule is for. `make lint-<package>`
@@ -140,9 +160,22 @@ Gleam ships godoc-style documentation tooling of its own. Run inside a
 package, `gleam docs build` renders the `////`/`///` doc comments into
 HTML under `build/dev/docs/<package>`, and `gleam export
 package-interface --out <file>` emits the compiler's machine-readable
-account of the public API — the artifact `make gen-prelude` renders the
-`code_mode` description from. Reach for these to read an API as the
-compiler sees it rather than as a stale comment claims it.
+account of the public API as JSON — the artifact `make gen-prelude`
+renders the `code_mode` description from. (`gleam export
+package-information` is the same treatment for `gleam.toml`.) Reach for
+these to read an API as the compiler sees it rather than as a stale
+comment claims it.
+
+`gleam lsp` is the third one and it is **not** wired up here. It is a
+language server meant to be driven by an editor over stdio, so it answers
+nothing from a shell, and Claude Code's own LSP tool has no Gleam server
+configured — asking it for a hover returns "No LSP server available for
+file type: .gleam". Do not plan a task around go-to-definition or
+find-references. `ast-grep` does not know Gleam either (`gleam is not
+supported!`), so structural search over these sources is grep, or a
+throwaway `glance` walk in `packages/lint` when the question is really
+about the AST. For the public API surface, `gleam export
+package-interface` is the answer and is exact.
 
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,

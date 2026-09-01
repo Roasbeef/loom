@@ -70,6 +70,8 @@ storage, machine, provider, and broker alongside runtime and events.)*
 
 - Gleam `>= 1.18`, Erlang/OTP `>= 29`. `gleam format` enforced; no warnings.
 - Every public function documented; every ADT constructor's invariants stated in its doc comment.
+- **No naked `Bool`**: a `Bool` must not be a function parameter or a record field; model the question with a two-variant type named for the domain. Return position is outside the rule (`is_empty(xs) -> Bool` is the predicate the language consumes). Lint R9 counts them; gleam-style Part III, "No naked `Bool`", has the three escapes — code about booleans, a frozen Part-1 field awaiting a `protocol-change/NNN.md`, and conversion at a foreign boundary.
+- **Stanzas**: a `//` comment inside a function body must have a blank line above it, and a body should not run more than about eight statements without a break. Counted in statements, never lines — a wrapped literal is one statement and a `use` chain is a table. Lint R10 and R11; gleam-style Part II, "Stanzas: how code breathes". This is the layout half of the literate comment register: prose a reader cannot find is prose that was not written.
 - **Total decoders**: every durability/wire boundary uses `Decoder(t)` returning `Result(t, CorruptionReport)`. Partial decoding is a bug class, not a style choice.
 - **No `panic`/`let assert` outside tests** except for documented invariant violations that must fault the process (mirrors pi's "failed admitted commit faults the harness").
 - Erlang FFI: confined to `*/internal/ffi_*.gleam` modules; every `@external` carries a comment naming the OTP function and why no pure alternative exists. CI greps enforce confinement.
