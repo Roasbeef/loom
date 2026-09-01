@@ -128,6 +128,9 @@ that tree separately from the self-contained server.
   re-check state after taking it. A live birth-qualified process is preserved
   through transient probe failure; stale identities and abandoned starting
   records can be replaced without treating a reused pid as the old server.
+  The lock holder's privileged shell mode prevents inherited functions from
+  releasing the kernel lock after the launcher observes acquisition, and it
+  uses only shell builtins so an inherited `PATH` cannot replace its hold loop.
 - **Publication precedes execution.** A new daemon begins as a wrapper blocked
   on its launcher port. Gleam records that wrapper's stable pid and birth
   identity before releasing it to `exec` `loomd`; launcher death before release

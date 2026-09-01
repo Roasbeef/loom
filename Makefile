@@ -207,7 +207,19 @@ e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
 e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the real local server through the native TUI bootstrap
 	@cd packages/tui && \
 		LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		gleam test -- --match bootstrap_real_server_lifecycle_test
+		gleam test -- --match bootstrap_real_server_lifecycle_test && \
+		env 'BASH_FUNC_read%%=() { return 0; }' \
+		gleam test -- --match paused_server_dies_with_launcher_before_release_test && \
+		env 'BASH_FUNC_cat%%=() { return 0; }' \
+		gleam test -- --match launch_lock_is_single_winner_test && \
+		env 'BASH_FUNC_read%%=() { return 1; }' \
+		gleam test -- --match launch_lock_is_single_winner_test && \
+		hostile_bin="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/loom-lock-path.XXXXXX")" && \
+		trap 'rm -rf "$$hostile_bin"' 0 1 2 15 && \
+		printf '%s\n' '#!/bin/sh' 'exit 0' > "$$hostile_bin/cat" && \
+		chmod 0755 "$$hostile_bin/cat" && \
+		PATH="$$hostile_bin:$$PATH" \
+		gleam test -- --match launch_lock_is_single_winner_test
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)

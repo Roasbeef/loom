@@ -74,7 +74,9 @@ pub fn ensure_private_directory(path: String) -> Result(Nil, String)
 ///
 /// Uses the platform `lockf` or `flock` utility behind an Erlang port. The
 /// helper holds the kernel lock until this opaque port is closed or the VM
-/// exits, preserving crash release without a stale lockfile protocol.
+/// exits, preserving crash release without a stale lockfile protocol. Its
+/// privileged shell uses only builtins while holding the lock, so inherited
+/// functions and `PATH` entries cannot make it release early.
 @external(erlang, "tui_ffi", "try_launch_lock")
 pub fn try_launch_lock(path: String) -> Result(LaunchLock, String)
 
@@ -140,7 +142,8 @@ pub fn reserve_loopback_port() -> Result(Int, String)
 ///
 /// Uses OTP `open_port/2` with `spawn_executable`. The wrapper waits for one
 /// release byte before it replaces itself with the daemon, preserving its pid
-/// and birth identity. If the launcher dies first, port EOF makes it exit.
+/// and birth identity. Privileged shell mode ignores inherited shell functions;
+/// if the launcher dies first, port EOF makes the wrapper exit.
 @external(erlang, "tui_ffi", "spawn_server")
 pub fn spawn_server(
   executable: String,

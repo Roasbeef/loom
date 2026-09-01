@@ -304,7 +304,7 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
             [binary, exit_status, use_stdio, hide,
              {cd, Working},
              {env, [{"LOOM_LOG", Log}]},
-             {args, ["-c", Script, "loomd", Executable | Arguments]}]
+             {args, ["-p", "-c", Script, "loomd", Executable | Arguments]}]
         ),
         case erlang:port_info(Port, os_pid) of
             {os_pid, Pid} -> {ok, {Port, Pid}};
@@ -396,15 +396,16 @@ current_uid() ->
     end.
 
 lock_command(Path) ->
-    Script = "printf L; cat >/dev/null",
+    Script = "printf L; while IFS= read -r LOOM_LOCK_HOLD; do :; done",
     case os:type() of
         {unix, darwin} ->
             {ok, "/usr/bin/lockf",
-             ["-t", "0", Path, "/bin/sh", "-c", Script]};
+             ["-t", "0", Path, "/bin/sh", "-p", "-c", Script]};
         {unix, linux} ->
             case first_lock_executable(["/usr/bin/flock", "/bin/flock"]) of
                 {ok, Flock} ->
-                    {ok, Flock, ["-n", Path, "/bin/sh", "-c", Script]};
+                    {ok, Flock,
+                     ["-n", Path, "/bin/sh", "-p", "-c", Script]};
                 {error, _} = Error -> Error
             end;
         _ ->
