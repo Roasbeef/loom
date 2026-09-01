@@ -6,6 +6,7 @@ gleam = ">= 1.18.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
+weft = { path = "../../../weft" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
