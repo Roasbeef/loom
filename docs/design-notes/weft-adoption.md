@@ -1,0 +1,232 @@
+# Design note: adopting weft
+
+Status: **note, not a work package.** A survey of where
+[weft](https://hex.pm/packages/weft) (`github.com/Roasbeef/weft`) could
+replace hand-rolled concurrency machinery in this tree, what it would cost,
+and the one migration that must *not* happen. Nothing here is built.
+Findings come from a full sweep of every effectful package, verified
+against the sources at the cited lines; line numbers are as of `main` at
+`dd84063`.
+
+## What weft is
+
+Weft is a Gleam library of four modules: `weft` (owned, bounded task
+fan-out — a scope process owns every worker by link topology, with
+`limit`, `deadline`, external cancel, input-order `start` and
+completion-order `fold`), `weft/actor` (a strict superset of
+`gleam/otp/actor`: a `continuing` init message guaranteed to be handled
+before the mailbox, `then_handle`, `hibernate_after`, `idle_timeout`,
+`on_shutdown`, `trapping_exits`), `weft/state_machine` (a typed
+gen_statem: state ADTs with exhaustive dispatch, `postpone`, state /
+event / named timeouts, enter callbacks), and `weft/event_manager` (a
+typed gen_event over closure-encoded heterogeneous handlers).
+
+The fit with loom's dependency picture is exact and free: weft requires
+`gleam_otp >= 1.3.0`, which is precisely what the tree already resolves
+(`manifest.toml` pins 1.3.0), `gleam >= 1.18` matches the ground rules,
+and every weft `start`/`supervised` returns `gleam_otp`'s own
+`StartResult`/`ChildSpecification`, so a weft actor drops into an
+existing supervisor unchanged. Weft is erlang-target only, which is fine
+everywhere OTP is already allowed — and decisive where it is not, which
+is the next section. Its vendored linter is this repo's own `packages/lint`,
+so the two trees already share style DNA.
+
+## The migration that must not happen: `machine`
+
+The obvious-sounding move — port `machine/planner` onto
+`weft/state_machine` — is ruled out, and it is worth writing down why so
+nobody re-litigates it.
+
+`core`, `machine` and `prompt` are the portable subset: no `@external`,
+no `gleam_erlang`, no `gleam_otp`, gated at error level by lint R6. Two
+properties rest on that rule (`docs/gleam-style.md` Part IV §5): the
+operation state space stays property-testable without spawning processes,
+and the three packages stay compilable to JavaScript. Weft imports
+`gleam_erlang` and `gleam_otp` in every module and declares
+`target = "erlang"`; one `import weft/state_machine` in `machine` closes
+both properties at once.
+
+The rulings are also not in tension, because the two state machines are
+different kinds of thing. `machine/planner.next_action` is a *pure
+function* `State × Inputs → Action` — the state lives in durable
+registers, not in a process, and recovery is the same function over
+restored registers. `weft/state_machine` is a *process behaviour* — its
+state lives in a loop and dies with the pid. The machine is the decision;
+weft is a way to host decisions in a process. What can move onto weft is
+therefore never the machine but the **drivers**: the effectful actors that
+interpret the machine's actions, which today hand-roll exactly the
+process-level patterns weft packages (state-scoped timers, postponed
+messages, deferred init, kill-then-join teardown).
+
+## Where the wins are
+
+The survey found roughly **1,450 lines** of hand-rolled machinery whose
+pattern weft provides, across nine sites. Replacements are not zero lines
+— a realistic net deletion is on the order of 600–900 lines — but the
+deeper win is that four recurring bug-shaped patterns (stale-timer
+staleness guards, pending-message lists, dual-dispatch init gates,
+spawn/monitor/kill scaffolds) become library contracts with one owner.
+Ranked by LOC-reduction-per-risk:
+
+### Tier 1 — high confidence, self-contained
+
+1. **`runtime/strand_runtime` recovery gate → `weft/actor.continuing`**
+   (`strand_runtime.gleam:209` `RecoveryGate`, dispatch around `:433`,
+   ~60 lines). The driver starts before the reaper's predecessor-drain
+   claim resolves, so every handler opens with a
+   `case state.recovery_gate, message` matrix: pre-barrier `Nudge` is
+   dropped, pre-barrier `RequestAbort` is carried as a hand-held
+   `abort_requested: Bool` flag, and `PredecessorsResolved` flips the
+   gate. This is the deferred-init race `continuing` exists to close: a
+   guaranteed-first injected message whose handler blocks on the reaper's
+   handshake, after which the ordinary handler sees a mailbox that simply
+   queued. The `abort_requested` flag is *deleted*, not relocated — the
+   abort waits in the mailbox like any other message. The message universe
+   during the gate is provably tiny (`PollTick` is not armed until after
+   the gate clears), so the semantics match is exact. Bonus: the flag is
+   one of R9's naked-`Bool` census entries, so this retires a lint warning
+   too.
+
+2. **`tui/connection.start_safely_within` → `weft` single-task run**
+   (`connection.gleam:142-175`, ~35 lines). Hand-rolled
+   spawn-unlinked / monitor / race-reply-against-DOWN / kill-on-timeout —
+   exactly `weft.new([task]) |> weft.deadline(ms) |> weft.start` with the
+   outcome vocabulary (`Completed`/`Crashed`/deadline-`Abandoned`) the
+   surrounding comments already reason in. The load-bearing invariant —
+   a crashing initialiser must not take the terminal down — is weft's
+   core guarantee: workers link to weft's scope, never to the caller.
+
+3. **`broker/exec` timer bookkeeping → `weft/state_machine`**
+   (`exec.gleam:328-329` message variants, `:399-404` handshake arm,
+   `:693-747` cancel escalation and staleness guards, ~130 lines of the
+   ~180 the file spends on timers). The helper actor is a
+   `AwaitingHello → Ready → Dead` machine whose `CancelDeadline(exec_id)`
+   carries an id purely so the handler can detect a stale fire, and whose
+   `HandshakeDeadline` handler re-checks the phase for the same reason.
+   `with_state_timeout` makes both guards structural: the timer dies with
+   the state that armed it. **Carve-out:** the `HeartbeatTick` is a
+   periodic liveness probe, not a one-shot timeout — none of weft's three
+   timeout kinds model "fire every N ms regardless of activity", so it
+   stays hand-rolled (a self-re-arming event timeout is a forcing, not a
+   fit). The `run_cleanup` idempotency flag and the monitor-based janitor
+   at `:1674` also stay: `on_shutdown` cannot run on an untrappable kill,
+   which is the exact case the janitor defends.
+
+### Tier 2 — strong pattern match, denser invariants
+
+4. **`codemode/launch` node-report holder → `weft/state_machine`**
+   (`launch.gleam:350-448` plus the types, ~118 lines). A raw
+   `spawn_unlinked` + `receive_forever` loop over
+   `Pending | Running | Done` with a hand-kept `waiting: List(Subject)`
+   of askers to flush on settlement and a final bounded receive so the
+   janitor's second `destroy` is answered from memory. The `waiting` list
+   is `postpone` on `Ask` (redelivered on the transition to `Done`); the
+   lingering receive is a state timeout on the terminal state. Two
+   teardown-ordering invariants in the comments (`Cleared`-after-teardown
+   cancels; teardown-while-`Running` cancels) are the port's test gate —
+   the existing two-`destroy` race test must pass unchanged. Not an
+   OTP-visible process today, so the port also gains `sys` compliance.
+
+5. **`runtime/strand_runtime` effect reaper → `weft/state_machine`**
+   (`:1488-1616`, ~130 lines of loop/selector scaffolding). `reap` and
+   `await_drain` are two mutually-recursive loop bodies over the same
+   selector differing only in per-state policy — gen_statem's exact
+   shape, hand-rolled. States `Reaping`/`Draining`, adopted-effects list
+   as machine data; the synchronous `Adopt` acknowledgement stays a
+   `process.send` inside the handler. The reaper guards the drain barrier
+   that writer-lease release and recovery ordering rest on, so the
+   invariant review is the cost, not the mechanics. Note the reaper must
+   remain a *standalone* trapping process that outlives a killed driver —
+   `on_shutdown` could never play this role, which is why the target is
+   `weft/state_machine`, not an actor hook.
+
+6. **`conformance/simulation/control.attempt` → `weft` single-task run**
+   (`control.gleam:597-650`, ~55 lines). Same spawn/monitor/deadline/kill
+   shape as the TUI's; `Answered`/`Raised`/`Expired` is weft's outcome
+   taxonomy with local names. The port must preserve the comment trail
+   explaining why this one function reads the wall clock inside an
+   otherwise logical-clock package, or a future reader will "fix" it.
+   Broad blast radius across the simulation runner despite the small diff.
+
+### Tier 3 — biggest LOC, needs a spike first
+
+7. **`provider/gateway.guard_request`/`guard_cancelling` →
+   `weft/state_machine`** (`gateway.gleam:495-770`, ~276 lines) and
+8. **`client/provider_relay` four-state forward/cancel guard**
+   (`provider_relay.gleam:314-669`, ~320 lines, the same grace-timer arm
+   copied at three sites). Both are the README's `Connecting`/`Backoff`
+   example at production scale: mutually-recursive functions standing in
+   for states, one grace timer per state armed by hand. The multi-source
+   inbox (pump events, monitors, consumer-down) is *not* a blocker —
+   `weft/state_machine`'s `selecting` replaces the default selector, so
+   monitors fold into the machine's message type the same way
+   `request_selector` builds them today. Two real cautions: these
+   functions are synchronous phases inside an already-spawned worker, not
+   a long-lived server, so the port either restructures the worker as a
+   machine or accepts one more process per request; and this is PR #133's
+   freshly-landed custodian/drain-witness territory
+   (`protocol-change/010`), where the race table was written against the
+   current topology. Spike on `gateway` first; `provider_relay` follows
+   only once the pattern proves out. The same verdict covers the
+   provider-await two-phase timeout duplicated at
+   `strand_runtime.gleam:1879` and `internal/provider_custodian.gleam:192`
+   (~220 lines): textbook state-timeout shape, wrong process packaging to
+   adopt blindly.
+
+9. **`client/mcp.start` server bring-up → `weft.start` + `partition`**
+   (`mcp.gleam:299-324`, ~30 lines). Today each server handshake blocks
+   the next, so N misconfigured servers pay their timeouts serially at
+   boot. `weft.start` returns outcomes in input order, so the documented
+   "in catalogue order" contract holds; verify nothing depends on
+   *temporal* startup order of stdio subprocesses before parallelizing.
+   More a latency win than a LOC win.
+
+## Where weft deliberately does not fit
+
+Recording the rejections so the next survey does not repeat them:
+
+- **`events/bus`** — `pg`-backed cross-process group membership; its own
+  CLAUDE.md already explains why an in-process handler list (which is
+  what `weft/event_manager` is) was rejected. Different problem.
+- **`runtime/writer` subscriber fan-out** — raw `Subject`s with no
+  per-handler state and no failure to isolate; `event_manager` would add
+  a process for nothing. In fact the survey found **no** current
+  `event_manager` fit anywhere in the tree — loom's fan-outs are either
+  `pg` groups or homogeneous subject lists.
+- **`provider/custodian`** — monitor-based adoption of a *dynamically
+  growing, heterogeneous* set of already-running owners, with
+  `Leaf`/`Transitive` drain semantics and a poisoned-exit signal. Weft's
+  fan-out owns a known list of closures started together; no primitive
+  matches. At most, its raw receive loop could sit on `weft/actor` for
+  `sys` compliance — no logic would simplify.
+- **`codemode/launch` janitor, `broker/exec` janitor** — both defend
+  against untrappable kills, which `on_shutdown` structurally cannot see.
+  Keep the monitors.
+- **`mcp/client` in-flight expiry table** — N independent per-call
+  deadlines in a dict; weft's timeouts are scoped to one machine's one
+  current state, so a port would just rebuild the dict beside the machine.
+- **`broker/broker.clear_awaiting_helper`, `runtime/api.await_result`,
+  `client/agency.wait_loop`** — blocking retry/poll loops in the caller's
+  own process, deliberately (the broker one documents why moving it into
+  the actor would deadlock). Weft has no synchronous-backoff primitive.
+
+## Costs and the adoption path
+
+The costs: a new dependency at v0.1.0 whose API may still move (though
+loom would be its first serious consumer, which is influence, not just
+risk — e.g. the periodic-timer gap in finding 3 and the per-call deadline
+table in `mcp/client` are upstream feature candidates); one more thing
+`docs/gleam-style.md` Part III's actor guidance must acknowledge; and the
+usual truth that a library contract is only as good as its tests — weft's
+kill-then-join and ordering contracts are tested, but nothing here has
+run under loom's conformance simulation yet.
+
+The path that de-risks it: adopt in tier order. Tier 1 (recovery gate,
+`start_safely`, broker timers) is three small PRs, each deletable in an
+afternoon and each independently reversible, and together they exercise
+all three weft modules loom would use (`actor`'s `continuing`, the run
+engine, `state_machine`'s state timeouts). Only after those hold under
+`make check` and the e2e gates does tier 2 touch the reaper and the
+code-mode holder, and only after a gateway spike does tier 3 commit to
+the ~800-line provider/client guard consolidation. If only tier 1 ever
+lands, the dependency still pays for itself in retired staleness guards.
