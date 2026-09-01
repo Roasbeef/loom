@@ -75,6 +75,7 @@ import storage/storage
 import telemetry/context
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft
 import weft/actor
 
 /// Driver configuration.
@@ -133,12 +134,12 @@ pub type EffectToken {
 /// the rest are internal wiring exposed only through the api module's
 /// functions.
 pub opaque type Message {
-  /// The guaranteed-first message: block on the reaper's ledger claim
-  /// before anything the mailbox holds. Injected by the initialiser via
-  /// weft's `continuing`, and constructible nowhere else — the type is
-  /// opaque and the resolution subject rides inside the message, so no
-  /// later sender can re-open the barrier.
-  AwaitPredecessors(resolution: Subject(Result(Nil, String)))
+  /// The guaranteed-first message: make the reaper's ledger claim and
+  /// block on every predecessor's drain before anything the mailbox holds.
+  /// Injected by the initialiser via weft's `continuing`, and constructible
+  /// nowhere else — the type is opaque and the claim rides inside the
+  /// message as a closure, so no later sender can re-open the barrier.
+  AwaitPredecessors(resolve: fn() -> Result(Nil, String))
 
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
@@ -163,42 +164,18 @@ pub opaque type Message {
   EffectExit(down: process.Down)
 }
 
-type ReaperMessage {
-  Adopt(effect: Pid, stop: fn() -> Nil, reply_with: Subject(Bool))
-  TrackProvider(
-    effect: Pid,
-    handle: stream.StreamHandle,
-    reply_with: Subject(Bool),
-  )
-}
-
-type ReaperEvent {
-  ReaperCommand(ReaperMessage)
-  LinkedExit(process.ExitMessage)
-  OwnedStreamDown(process.Down)
-}
-
+/// This incarnation's reaper: a weft witnessed run whose scope is the drain
+/// barrier the ledger monitors, and whose ledger every effect adopts itself
+/// into at birth. See `start_reaper`.
 type Reaper {
-  Reaper(commands: Subject(ReaperMessage), pid: Pid)
-}
-
-type AdoptedEffect {
-  AdoptedEffect(
-    pid: Pid,
-    stop: fn() -> Nil,
-    provider: ProviderOwnership,
-    exited: Bool,
+  Reaper(
+    run: weft.Witnessed,
+    /// `None` only if the scope died before handing its ledger over; every
+    /// adoption is then refused, and the ledger already saw the exit.
+    ledger: Option(weft.Ledger),
+    /// The driver, whose liveness decides an ownerless publication.
+    driver: Pid,
   )
-}
-
-// Provider ownership has a publication phase because the reaper must
-// distinguish "not a provider" from "a provider with no asynchronous work".
-// A watched owner is retained even after the effect exits; only its monitor's
-// Down proves the transitive stream subtree has drained.
-type ProviderOwnership {
-  ProviderUnpublished
-  ProviderDrained
-  ProviderWatching(handle: stream.StreamHandle, monitor: process.Monitor)
 }
 
 type ProviderWaitEvent {
@@ -240,9 +217,10 @@ type State {
     /// state, which is what carries `{session, strand, op, step}` into
     /// the effect processes spawned below (see `telemetry/context`).
     logger: Logger,
-    /// This incarnation's reaper process: every effect process links to
-    /// it at birth, and it kills itself (taking the linked effects with
-    /// it) the moment this driver process dies. See `start_reaper`.
+    /// This incarnation's reaper: every effect process adopts itself into
+    /// it at birth, and the moment this driver process dies it asks every
+    /// effect to stop and stays alive until they, and every provider owner
+    /// they published, are gone. See `start_reaper`.
     reaper: Reaper,
     live: List(Live),
     observations: List(Observation),
@@ -324,12 +302,15 @@ pub fn start(
     // first claim acknowledge recovery before actor registration completes.
     let internal = process.new_subject()
 
-    // The barrier acknowledgement gets a subject of its own rather than a
-    // Message variant: the one consumer is the guaranteed-first handler
-    // below, and a dedicated channel keeps the claim result out of the
-    // mailbox the barrier exists to hold back.
-    let resolution = process.new_subject()
-    let reaper = start_reaper(options, resolution)
+    // The claim names the reaper's scope, the pid that survives this
+    // driver: it is made from the guaranteed-first handler below rather
+    // than here, so a slow predecessor drain never holds up registration.
+    let reaper = start_reaper()
+    let reaper_pid = weft.witness_pid(reaper.run)
+    let resolve = fn() {
+      options.claim_reaper(options.strand, reaper_pid)
+      |> await_previous_reapers(4000)
+    }
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -364,7 +345,7 @@ pub fn start(
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
-    |> actor.continuing(AwaitPredecessors(resolution:))
+    |> actor.continuing(AwaitPredecessors(resolve:))
     |> Ok
   })
   |> actor.named(name)
@@ -434,7 +415,7 @@ fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
   case message {
-    AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
+    AwaitPredecessors(resolve:) -> await_predecessors(state, resolve)
     Nudge -> finish(logger, drive(state))
     PollTick -> {
       let internal = state.internal
@@ -467,10 +448,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // returns, which is the invariant the old two-state gate existed to hold.
 fn await_predecessors(
   state: State,
-  resolution: Subject(Result(Nil, String)),
+  resolve: fn() -> Result(Nil, String),
 ) -> actor.Next(State, Message) {
   let logger = state.logger
-  case process.receive_forever(resolution) {
+  case resolve() {
     Ok(Nil) -> {
       // Recovery and its poll clock both begin after the ledger-authored
       // acknowledgement. Before this point, queued doorbells are harmless
@@ -1467,233 +1448,58 @@ fn with_projection(
 //
 // Linking effects to the driver directly would force the driver to trap exits,
 // entangling supervision shutdown with effect settlement. Each incarnation
-// instead owns one linked reaper. An effect must link to it *and* receive an
-// adoption acknowledgement before running user-visible work. The reaper can
-// therefore enumerate every effect that crossed the execution boundary.
+// instead owns one reaper: a weft witnessed run, linked to the driver, whose
+// ledger every effect adopts itself into before running user-visible work.
+// The scope can therefore enumerate every effect that crossed the execution
+// boundary, and its pid is the one the drain ledger monitors.
 //
 // Driver death begins a drain rather than merely broadcasting exit signals.
-// The reaper invokes every adopted effect's stop capability and stays alive
-// until every linked exit has arrived. Tool effects use a hard stop; provider
-// effects cancel cooperatively and do not exit until the public stream owner
-// has drained. The drain ledger remembers all still-live reapers for a logical
-// strand independently of the restartable name registry; a replacement driver
-// claims its own reaper, then waits for every older one to disappear before it
-// nudges recovery. This is the barrier the old timing argument lacked:
-// recovery cannot dispatch beside a predecessor that is merely scheduled to
-// die.
+// The scope traps the driver's exit, asks every adopted effect to stop
+// through its own stop capability, and stays alive until every effect — and
+// every provider owner an effect published beneath itself — has exited.
+// Tool effects use a hard stop; provider effects cancel cooperatively and do
+// not exit until the public stream owner has drained. The drain ledger
+// remembers all still-live reapers for a logical strand independently of the
+// restartable name registry; a replacement driver claims its own reaper,
+// then waits for every older one to disappear before it nudges recovery.
+// This is the barrier the old timing argument lacked: recovery cannot
+// dispatch beside a predecessor that is merely scheduled to die.
+//
+// A provider owner that exits abnormally is a lost proof, and the run is
+// configured to cancel on one: every effect is asked to stop, the scope
+// drains, and it exits with weft's lost-proof reason, which the ledger reads
+// exactly as it read the old reaper's self-kill.
 
-fn start_reaper(
-  options: Options,
-  resolution: Subject(Result(Nil, String)),
-) -> Reaper {
+fn start_reaper() -> Reaper {
   let driver = process.self()
-  let ready = process.new_subject()
-  let pid =
-    process.spawn(fn() {
-      process.trap_exits(True)
-      let commands = process.new_subject()
-      process.send(ready, commands)
+  let handoff = process.new_subject()
+  let run =
+    weft.new_prepared([
+      weft.managed(fn(ledger) {
+        process.send(handoff, ledger)
 
-      // The reaper itself makes the ledger claim. If the driver dies while the
-      // ledger is still draining an older generation, its trapped exit remains
-      // queued here and this PID stays alive until the ledger has installed its
-      // original monitor. A disposable helper could die with the driver first,
-      // leaving the ledger to observe only `noproc` and correctly poison the
-      // session because the reaper's exit reason had been lost.
-      let resolved =
-        options.claim_reaper(options.strand, process.self())
-        |> await_previous_reapers(4000)
-      process.send(resolution, resolved)
-      reap(driver, commands, [])
-    })
-  let commands = process.receive_forever(ready)
-  Reaper(commands:, pid:)
-}
+        // Parked for the life of the incarnation: the scope must stay alive
+        // while the driver does, adopting effects as they are born, and it is
+        // this worker's kill on the driver's exit that lets the scope finish
+        // once the adopted work has drained.
+        process.sleep_forever()
+        Ok(Nil)
+      }),
+    ])
+    |> weft.on_failure(weft.CancelSiblings)
+    |> weft.start_witnessed
 
-fn reap(
-  driver: Pid,
-  commands: Subject(ReaperMessage),
-  effects: List(AdoptedEffect),
-) -> Nil {
-  let event =
+  // The ledger arrives from inside the scope's worker; racing it against the
+  // scope's own death keeps this total if something destroys the scope
+  // before its first task runs.
+  let watch = process.monitor(weft.witness_pid(run))
+  let ledger =
     process.new_selector()
-    |> process.select_map(commands, ReaperCommand)
-    |> process.select_trapped_exits(LinkedExit)
-    |> process.select_monitors(OwnedStreamDown)
+    |> process.select_map(handoff, Some)
+    |> process.select_specific_monitor(watch, fn(_down) { None })
     |> process.selector_receive_forever()
-  case event {
-    ReaperCommand(Adopt(effect:, stop:, reply_with:)) -> {
-      let accepted = process.is_alive(driver) && process.is_alive(effect)
-      process.send(reply_with, accepted)
-      case accepted {
-        True ->
-          reap(driver, commands, [
-            AdoptedEffect(
-              pid: effect,
-              stop:,
-              provider: ProviderUnpublished,
-              exited: False,
-            ),
-            ..effects
-          ])
-        False -> reap(driver, commands, effects)
-      }
-    }
-    ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
-      let #(effects, accepted) = publish_provider_owner(effects, effect, handle)
-      let committed = accepted && process.is_alive(driver)
-      process.send(reply_with, committed)
-      case committed {
-        True -> reap(driver, commands, effects)
-
-        // Publication is irreversible even when driver death rejects the
-        // worker's start permit. The worker will cancel locally, while the
-        // reaper retains its independent owner monitor in case that worker
-        // dies before cleanup finishes.
-        False -> reap(driver, commands, effects)
-      }
-    }
-    LinkedExit(process.ExitMessage(pid:, reason: _)) ->
-      case pid == driver {
-        True -> drain(commands, effects)
-        False -> reap(driver, commands, effect_departed(effects, pid))
-      }
-    OwnedStreamDown(down) ->
-      case provider_owner_departed(effects, down) {
-        Ok(effects) -> reap(driver, commands, effects)
-        Error(Nil) -> process.kill(process.self())
-      }
-  }
-}
-
-fn drain(
-  commands: Subject(ReaperMessage),
-  effects: List(AdoptedEffect),
-) -> Nil {
-  list.each(effects, fn(effect) { effect.stop() })
-  await_drain(commands, effects)
-}
-
-fn await_drain(
-  commands: Subject(ReaperMessage),
-  effects: List(AdoptedEffect),
-) -> Nil {
-  case effects {
-    [] -> Nil
-    [_, ..] -> {
-      let event =
-        process.new_selector()
-        |> process.select_map(commands, ReaperCommand)
-        |> process.select_trapped_exits(LinkedExit)
-        |> process.select_monitors(OwnedStreamDown)
-        |> process.selector_receive_forever()
-      case event {
-        ReaperCommand(Adopt(effect: _, stop: _, reply_with:)) -> {
-          process.send(reply_with, False)
-          await_drain(commands, effects)
-        }
-        ReaperCommand(TrackProvider(effect:, handle:, reply_with:)) -> {
-          let #(effects, _published) =
-            publish_provider_owner(effects, effect, handle)
-
-          // Publication is irreversible even after draining begins. Rejecting
-          // the begin permit stops new work, but retaining the monitor covers
-          // the worker-death race in which only the reaper remains able to
-          // prove that the already-created owner has disappeared.
-          process.send(reply_with, False)
-          await_drain(commands, effects)
-        }
-        LinkedExit(process.ExitMessage(pid:, reason: _)) ->
-          await_drain(commands, effect_departed(effects, pid))
-        OwnedStreamDown(down) ->
-          case provider_owner_departed(effects, down) {
-            Ok(effects) -> await_drain(commands, effects)
-            Error(Nil) -> process.kill(process.self())
-          }
-      }
-    }
-  }
-}
-
-fn publish_provider_owner(
-  effects: List(AdoptedEffect),
-  published_by: Pid,
-  handle: stream.StreamHandle,
-) -> #(List(AdoptedEffect), Bool) {
-  case effects {
-    [] -> #([], False)
-    [effect, ..rest] if effect.pid == published_by ->
-      case effect.provider, effect.exited {
-        ProviderUnpublished, False -> {
-          let ownership = monitor_provider_owner(handle)
-          #([AdoptedEffect(..effect, provider: ownership), ..rest], True)
-        }
-        _, _ -> #(effects, False)
-      }
-    [effect, ..rest] -> {
-      let #(rest, accepted) = publish_provider_owner(rest, published_by, handle)
-      #([effect, ..rest], accepted)
-    }
-  }
-}
-
-fn monitor_provider_owner(handle: stream.StreamHandle) -> ProviderOwnership {
-  case handle.owner {
-    None -> ProviderDrained
-    Some(owner) -> {
-      let monitor = process.monitor(owner)
-
-      // Even an already-dead owner remains unadjudicated until this original
-      // monitor supplies its reason. An is_alive pre-filter would collapse a
-      // lost witness into the same state as a normal drain.
-      ProviderWatching(handle:, monitor:)
-    }
-  }
-}
-
-// An effect Down is not necessarily a drain. A published provider owner stays
-// in the ledger until its independent monitor fires; everything else can be
-// forgotten as soon as the worker itself is gone.
-fn effect_departed(
-  effects: List(AdoptedEffect),
-  departed: Pid,
-) -> List(AdoptedEffect) {
-  case effects {
-    [] -> []
-    [effect, ..rest] if effect.pid == departed ->
-      case effect.provider {
-        ProviderWatching(handle:, ..) -> {
-          stream.cancel(handle)
-          [AdoptedEffect(..effect, exited: True), ..rest]
-        }
-        ProviderUnpublished | ProviderDrained -> rest
-      }
-    [effect, ..rest] -> [effect, ..effect_departed(rest, departed)]
-  }
-}
-
-fn provider_owner_departed(
-  effects: List(AdoptedEffect),
-  down: process.Down,
-) -> Result(List(AdoptedEffect), Nil) {
-  case down {
-    process.PortDown(..) -> Ok(effects)
-    process.ProcessDown(reason: process.Killed, ..)
-    | process.ProcessDown(reason: process.Abnormal(_), ..) -> Error(Nil)
-    process.ProcessDown(monitor:, reason: process.Normal, ..) ->
-      Ok(
-        list.filter_map(effects, fn(effect) {
-          case effect.provider {
-            ProviderWatching(monitor: watched, ..) if watched == monitor ->
-              case effect.exited {
-                True -> Error(Nil)
-                False -> Ok(AdoptedEffect(..effect, provider: ProviderDrained))
-              }
-            _ -> Ok(effect)
-          }
-        }),
-      )
-  }
+  process.demonitor_process(watch)
+  Reaper(run:, ledger:, driver:)
 }
 
 fn await_previous_reapers(
@@ -1717,10 +1523,10 @@ fn await_previous_reapers(
   })
 }
 
-// A worker links before asking for adoption. If the reaper is already gone,
-// or starts draining before it can acknowledge, the worker exits without
-// running. Once acknowledged, the reaper has recorded the pid and cannot
-// finish its own drain until this worker is dead.
+// A worker adopts itself before running. If the reaper is already gone, or
+// is draining and refuses, the worker exits without running. Once adopted,
+// the scope has recorded the pid and cannot finish its own drain until this
+// worker is dead.
 fn spawn_effect(
   reaper: Reaper,
   logger: Logger,
@@ -1761,56 +1567,50 @@ fn adopt_and_run(
   stop: fn() -> Nil,
   body: fn() -> Nil,
 ) -> Nil {
-  let Reaper(commands:, pid: reaper_pid) = reaper
-  let reaper_monitor = process.monitor(reaper_pid)
-  case process.link(reaper_pid) {
-    False -> process.demonitor_process(reaper_monitor)
-    True -> {
-      let reply = process.new_subject()
-      process.send(commands, Adopt(process.self(), stop, reply))
-
-      // Admission is bounded by the reaper's monitor, not a scheduling guess.
-      // Timing out a live but delayed reaper would make this effect disappear
-      // without either running its body or reporting a terminal result.
-      let accepted =
-        process.new_selector()
-        |> process.select_map(reply, fn(value) { value })
-        |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
-        |> process.selector_receive_forever()
-      process.demonitor_process(reaper_monitor)
-      case accepted {
-        True -> {
+  case reaper.ledger {
+    None -> Nil
+    Some(ledger) ->
+      // Admission is bounded by the scope's monitor inside weft, not a
+      // scheduling guess: a live but delayed reaper answers late rather
+      // than making this effect disappear without a terminal. An effect is
+      // a leaf — its own exit completes it, and the provider owner it may
+      // publish is witnessed beneath it, not through it.
+      case weft.adopt_leaf(ledger, owner: process.self(), cancel: stop) {
+        weft.Adopted -> {
           // The context travels inside `body`; stamping it here also
           // correlates a crash report emitted by this worker process.
           log.adopt(logger)
           body()
         }
-        False -> process.unlink(reaper_pid)
+        weft.Refused -> Nil
       }
-    }
   }
 }
 
 // The worker publishes the stream's transitive owner before it waits for one
 // byte. This acknowledgement transfers the restart barrier to the reaper. If
 // the reaper is already draining, ownership stays here: cancel and wait before
-// this worker is allowed to exit.
+// this worker is allowed to exit — and the scope retains the owner anyway, so
+// a worker that dies before cleanup finishes still leaves a witness behind.
+// The owner is published beneath this effect, so the effect's exit is what
+// asks the stream to cancel: a crashed effect cannot orphan its request.
 fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
-  let Reaper(commands:, pid: reaper_pid) = reaper
-  let reaper_monitor = process.monitor(reaper_pid)
-  let reply = process.new_subject()
-  process.send(commands, TrackProvider(process.self(), handle, reply))
+  case handle.owner, reaper.ledger {
+    _owner, None -> False
 
-  // The reply commits an ownership transfer. Only that reply or the reaper's
-  // Down can resolve it; a wall-clock timeout cannot tell whether the reaper
-  // recorded the owner and would create an ambiguous double custodian.
-  let accepted =
-    process.new_selector()
-    |> process.select_map(reply, fn(value) { value })
-    |> process.select_specific_monitor(reaper_monitor, fn(_down) { False })
-    |> process.selector_receive_forever()
-  process.demonitor_process(reaper_monitor)
-  accepted
+    // A handle with no asynchronous work has nothing to witness; the only
+    // question is whether a driver is still there to consume the result.
+    None, Some(_ledger) -> process.is_alive(reaper.driver)
+    Some(owner), Some(ledger) ->
+      case
+        weft.adopt_under(ledger, parent: process.self(), owner:, cancel: fn() {
+          stream.cancel(handle)
+        })
+      {
+        weft.Adopted -> True
+        weft.Refused -> False
+      }
+  }
 }
 
 fn spawn_provider(

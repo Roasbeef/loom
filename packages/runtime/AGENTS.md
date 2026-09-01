@@ -226,12 +226,13 @@ extended by the M3 runtime wave.
     `Claim(strand, reaper, reply_with)` atomically publishes the new
     incarnation, snapshots its predecessors, and releases the caller only once
     the ledger's original monitors have proved that entire snapshot drained
-    normally. The reaper performs that potentially long call after handing its
-    command subject to the driver initializer, then sends
-    `PredecessorsResolved`. Claiming from the reaper itself keeps its PID alive
-    until the ledger has installed the original monitor; meanwhile the driver
-    remains able to retain `RequestAbort` while the barrier is closed. Sender:
-    `runtime/strand_runtime` through the closure the supervisor injects.
+    normally. The driver performs that potentially long call from its
+    guaranteed-first `AwaitPredecessors` handler, naming the reaper's weft
+    scope as the pid to monitor; that scope is parked for the incarnation's
+    life and survives the driver, so the ledger's original monitor lands on
+    a pid that outlives the claimant. Meanwhile an abort simply queues in
+    the mailbox behind the barrier. Sender: `runtime/strand_runtime` through
+    the closure the supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -297,19 +298,24 @@ extended by the M3 runtime wave.
   `PollTick` finds queued work anyway, and any commit racing the strand's
   own surfaces as a stale expectation, forcing a reload that sees it. The
   `_quietly` admission variants commit without ringing at all.
-- **Effect processes are monitored by the driver and linked to its
+- **Effect processes are monitored by the driver and adopted by its
   reaper.** A tool process that dies without reporting settles as a synthetic
   in-band tool error. A provider death instead faults the driver: fabricating
   a retryable transport failure could dispatch beside the stream subtree that
-  outlived it. Each driver incarnation also spawns a *reaper*: a small trapping
-  process linked to the driver. Every effect links and receives an adoption
-  acknowledgement before doing work. On driver death the reaper invokes every
-  adopted effect's stop capability and remains alive until all their exits
+  outlived it. Each driver incarnation also starts a *reaper*: a weft
+  witnessed run (`weft.managed` task parked for the incarnation's life,
+  `weft.start_witnessed`, `weft.CancelSiblings`) linked to the driver. Every
+  effect adopts itself as a leaf owner (`weft.adopt_leaf`, cancel = its stop
+  capability) and runs only on `Adopted`. On driver death the scope asks
+  every adopted effect to stop and remains alive until all their exits
   arrive. A provider effect first creates a parked request worker inside a
-  minimal custodian, publishes that custodian to the reaper, and only then
-  permits the worker to call the frozen provider surface. The reaper monitors
-  the public owner independently, cancels it when the effect exits, and cannot
-  finish until both are gone. The parked worker is linked to the provider
+  minimal custodian, publishes that custodian to the reaper beneath itself
+  (`weft.adopt_under`, cancel = `stream.cancel`), and only then permits the
+  worker to call the frozen provider surface. The scope therefore cancels
+  the public owner when the effect exits, retains it even when the
+  publication was refused, and cannot finish until both are gone; an
+  abnormal owner exit is a lost proof that cancels the run and leaves the
+  scope's exit reason abnormal. The parked worker is linked to the provider
   effect because they are one failure domain: an unexpected surface crash must
   still fault the effect and recover, not become a fabricated provider
   response. Production surfaces return a `PreparedStream`: the worker
