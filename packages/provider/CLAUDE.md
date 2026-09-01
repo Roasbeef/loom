@@ -119,7 +119,7 @@ processful shell around that sans-io core. WP-F.
   without authoring a terminal. Each therefore dies with the state that
   armed it, so no handler re-establishes its own relevance and the
   stale-fire arms the hand-rolled loop needed are gone. The machine is
-  started unlinked through a `spawn_unlinked` trampoline: a crashing guard
+  started unlinked (weft's `unlinked` builder setting): a crashing guard
   is observed by the custodian's worker adoption, never by a link into the
   consumer. A cancel or a consumer death that arrives while the pump is
   still parked is **postponed**, and weft replays it the instant

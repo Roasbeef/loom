@@ -314,31 +314,17 @@ pub fn prepare(
 ) -> stream.PreparedStream {
   let consumer = process.self()
   let events = process.new_subject()
-  let ready = process.new_subject()
   let #(now, _clock) = clock.read(gateway.clock)
 
-  // The guard is started from a throwaway trampoline rather than from here.
-  // `state_machine.start` links the machine to whoever starts it, and a
-  // crashing guard must be observed through the custodian's worker
-  // adoption, never as an exit signal arriving in the consumer.
-  let trampoline =
-    process.spawn_unlinked(fn() {
-      hand_off_guard(gateway, request, now, events, consumer, ready)
-    })
-
-  // The monitor is what turns a trampoline that died before handing the
-  // guard over into a reported failure rather than a five-second wait for
-  // an acknowledgement nobody will send.
-  let monitor = process.monitor(trampoline)
-  let started =
-    process.new_selector()
-    |> process.select(ready)
-    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(request_start_timeout_ms)
-  process.demonitor_process(monitor: monitor)
+  // The guard is started unlinked: a crashing guard must be observed
+  // through the custodian's worker adoption, never as an exit signal
+  // arriving in the consumer. The start itself is bounded by the machine's
+  // initialisation timeout, so a guard that never comes up is a reported
+  // failure rather than a wait.
+  let started = start_guard(gateway, request, now, events, consumer)
 
   case started {
-    Ok(Ok(#(owner, control, begin))) -> {
+    Ok(#(owner, control, begin)) -> {
       let custodian = custodian.start(owner, control, CancelRequest, consumer)
       stream.PreparedStream(
         handle: stream.owned(
@@ -353,7 +339,7 @@ pub fn prepare(
     // No guard came up, so nothing was adopted and nothing has to be torn
     // down: a guard which started but could not be published is parked on
     // its own consumer monitor and retires when the consumer does.
-    Ok(Error(Nil)) | Error(Nil) -> {
+    Error(Nil) -> {
       process.send(
         events,
         Failed(stream.TransportFailed(
@@ -574,28 +560,19 @@ type Event {
 type Step =
   sm.Next(Phase, Guard, Signal)
 
-// Starts the guard machine and hands its identity back over `handoff`.
-//
-// The trampoline exists only to absorb the link `state_machine.start`
-// makes: it returns the moment the guard is up, and a normal exit takes
-// that link with it without disturbing the machine.
-fn hand_off_guard(
+// Starts the guard machine, unlinked from the consumer that asked for it,
+// and returns its identity: the pid the custodian adopts and the two
+// subjects the request is driven through.
+fn start_guard(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
   consumer: process.Pid,
-  handoff: process.Subject(
-    Result(
-      #(
-        process.Pid,
-        process.Subject(RequestControl),
-        process.Subject(RequestStart),
-      ),
-      Nil,
-    ),
-  ),
-) -> Nil {
+) -> Result(
+  #(process.Pid, process.Subject(RequestControl), process.Subject(RequestStart)),
+  Nil,
+) {
   let started =
     sm.new_with_initialiser(request_start_timeout_ms, fn(_default) {
       let control = process.new_subject()
@@ -637,17 +614,18 @@ fn hand_off_guard(
     })
     |> sm.on_event(handle)
     |> sm.on_enter(entered)
+    |> sm.unlinked
     |> sm.start
 
   case started {
     Ok(machine) -> {
       let #(control, begin) = machine.data
-      process.send(handoff, Ok(#(machine.pid, control, begin)))
+      Ok(#(machine.pid, control, begin))
     }
 
     // Nothing was published, so `prepare` reports the same failure it would
     // have reported for a guard that never spawned at all.
-    Error(_error) -> process.send(handoff, Error(Nil))
+    Error(_error) -> Error(Nil)
   }
 }
 
