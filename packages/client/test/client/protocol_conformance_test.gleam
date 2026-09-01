@@ -1,18 +1,18 @@
 //// Golden-fixture conformance: the gateway must accept every command
 //// fixture and emit byte-identical encodings of every event fixture
-//// from the TUI's normative corpus
-//// (`packages/tui/internal/proto/testdata/`). Each fixture is decoded
+//// from the gateway's normative corpus (`packages/client/testdata/protocol`).
+//// Each fixture is decoded
 //// with the typed protocol codecs and re-encoded canonically; the
 //// output must equal the file byte for byte, which pins both the
 //// envelope and every nested body (entries, messages, usage in the
-//// core codec vocabulary) to the Go client's expectations.
+//// core codec vocabulary) to the frozen protocol document.
 
 import client/protocol
 import gleam/list
 import gleam/string
 import simplifile
 
-const testdata = "../tui/internal/proto/testdata"
+const testdata = "testdata/protocol"
 
 fn fixture(file: String) -> String {
   let assert Ok(text) = simplifile.read(testdata <> "/" <> file)
@@ -65,8 +65,8 @@ pub fn event_fixtures_roundtrip_test() {
   |> list.each(roundtrip_event)
 }
 
-// The corpus above must be the whole corpus: a fixture added to the
-// TUI's testdata without a roundtrip here would silently drop coverage.
+// The corpus above must be the whole corpus: a fixture added without a
+// roundtrip here would silently drop coverage.
 pub fn corpus_is_complete_test() {
   let assert Ok(files) = simplifile.read_directory(testdata)
   let json_files =

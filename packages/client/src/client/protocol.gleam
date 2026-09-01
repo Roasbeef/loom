@@ -4,7 +4,7 @@
 ////
 //// The envelope is frozen by the implementation spec (Part 1.6); the
 //// bodies are pinned by the golden fixtures under
-//// `packages/tui/internal/proto/testdata/`, which this package's
+//// `packages/client/testdata/protocol/`, which this package's
 //// conformance test decodes and re-encodes byte-for-byte. Changing
 //// either side is a protocol change (`protocol-change/NNN.md`), never
 //// silent drift.

@@ -3,14 +3,14 @@
 The envelope is frozen by the implementation spec, Part 1.6. This
 document is the normative definition of every **body** under that
 envelope, version `v: 1`. The Gleam gateway (WP-L) builds to this
-document and to the golden fixtures in `testdata/` (which double as the
+document and to the golden fixtures in `testdata/protocol/` (which double as the
 gateway's conformance fixtures). Changing anything here is a protocol
 change and follows the `protocol-change/NNN.md` process.
 
 Transport: websocket, text frames, one JSON envelope per frame.
-Endpoint: `/v1/ws`. Auth: local connections authenticate by unix-socket
-peer credentials; remote connections send `Authorization: Bearer
-<token>` on the upgrade request.
+Endpoint: `/v1/ws`. Auth: clients send `Authorization: Bearer <token>` on the
+upgrade request. The default listener is loopback and the server mints a
+mode-`0600` token file beside the session.
 
 ## Conventions
 
