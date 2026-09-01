@@ -86,16 +86,27 @@ strand roots, and can reach neither the disk, the network, nor a process.
   so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
-- `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal, routing,
+- `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
+  ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleRefusal, routing,
   ceilings, serviced_caps, max_list_entries, fs_denial,
-  kv_denial}` — the workspace seam's *harness-side* capability router
-  (issue #16). A record of eight injected closures — `fs_read`,
+  kv_denial, schedule_denial}` — the workspace seam's *harness-side*
+  capability router
+  (issue #16). A record of eleven injected closures — `fs_read`,
   `fs_list`, `fs_write`, `fs_edit`, `kv_get`, `kv_set`, `kv_delete`,
+  `schedule_create`, `schedule_list`, `schedule_cancel`,
   `emit` — wrapped in front of an inner router, the same shape
   `client/mcp.routing` has. Every plan is
   `satellite.ServedHere`: a workspace read, a process-local store write
   and a blob mint leave no VM, so there is nothing a jail could contain
-  and a composed `SandboxPolicy` would have no enforcer. It builds **no
+  and a composed `SandboxPolicy` would have no enforcer. The `schedule.*`
+  arms are the newest and the strand they act on is **bound by the host**,
+  from the code-mode request, and never travels over the cap channel: a
+  program cannot name a strand, so it cannot schedule into another one's
+  context. `schedule.create` is also the arm that most looks like it
+  should carry a `CapCeiling` and deliberately does not — it is bounded
+  store-side by a live count the host enforces on every create, the same
+  instrument `kv.*` uses, and an admission ceiling would buy nothing once
+  the store refuses the one past its limit. It builds **no
   `broker.CallSpec`** and holds **no path logic** — containment is
   `tools/fs.resolve_real`'s and the large-file guard is
   `fs.read_text_file`'s, called by the injected closures

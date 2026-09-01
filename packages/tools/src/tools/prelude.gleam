@@ -24,21 +24,22 @@
 //// Generated from these inputs; `--check` recomputes each digest and
 //// names the file that moved:
 ////
-////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
-////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
-////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
-////   37332eb8a0ad5118fdf4391729121e71ea153714d53fed8592813308e240b010  packages/cap/src/cap/kv.gleam
-////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
-////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
-////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
-////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
-////   199593ca31cce9e875b2216011aaaaa76767260dffc00eb061bf6b58b36ad2a3  packages/cap/src/cap/runtime.gleam
-////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
-////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
+////   02ab7f303e9459d9c9779837b6512df519b0e9940fdcc09e3163c6c0a89ede2a  packages/cap/src/cap/actor.gleam
+////   1a2df8a18911102bde621635396087fd8103a2dfc23b19f16578938a47c69afe  packages/cap/src/cap/fs.gleam
+////   87d4d708a7feb5e0155c7af7b67d2744c71002c324e4e07afc8e66d4cfd4e502  packages/cap/src/cap/git.gleam
+////   ef852f2a91c6bb9e8523d58c3466eb644c14f34fc1e210cb6e6dff5f00bd9fb6  packages/cap/src/cap/kv.gleam
+////   16975eb1a575e4e43a9c2892a7c40586bcab49ccb8674d4cf1e49d9aae6786cd  packages/cap/src/cap/lsp.gleam
+////   f0a42c0ff39998efb24b1961c9aaa2fad262d10c13a1736e55d1bd22ac29e076  packages/cap/src/cap/mcp.gleam
+////   4af4fb4773f4fb7281cc0361762cca202c92af24d4e191fdb17ba3f09f383e41  packages/cap/src/cap/net.gleam
+////   449f69c2ca5b09c6c2f5d12cb86ae4bc7c1e90e9ead2c6fe8aaaebbb6be9e14f  packages/cap/src/cap/proc.gleam
+////   12992a29cc389f3be764dbaa3f78c79a353b67dff3891f751fca2cc8ab8517a3  packages/cap/src/cap/report.gleam
+////   3c6837128a8a17020070e7143ebbe27e38278c84e0d74b50c4fa91eeafa243ae  packages/cap/src/cap/runtime.gleam
+////   005bc060e41ba2220466c3ee14141940977057842fb48b8de7dca4a411092e4f  packages/cap/src/cap/schedule.gleam
+////   f2c0250f8abc5f439532a886b27be22692f97fdf5ba4dfa0dae9efd62b310654  packages/cap/src/cap/strand.gleam
+////   315f655092d5bb2489def16d5de2fbe88ba320dca2ca15f3ada368372dc12173  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 7501966bef861a72aae7e85468136c241d55edf35ff2e51b6959365201e282c1
+//// Body digest (every line after the marker): 6ccf802ff0adeb3e0a406625e1548b6ae8ace48aec7524842fdc56b334ed7357
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -563,6 +564,68 @@ pub fn read_token() -> Result(BitArray, BootError)
 /// boot. On any `BootError` it returns `Nil` — the node exits and the
 /// host treats the missing outcome as a failure.
 pub fn run(fn() -> report.Outcome) -> Nil
+",
+  ),
+  #(
+    "cap/schedule",
+    "### cap/schedule
+`cap/schedule` — heartbeats a program can set for the strand it is running
+on: text injected back into that strand's own context later, on a timer,
+whether or not anyone is watching.
+
+/// What a `create` actually produced.
+pub type Created {
+  Created(name: String, when: String, wake: Bool)
+}
+/// One schedule already set on this strand.
+pub type Schedule {
+  Schedule(name: String, when: String, wake: Bool, fired: Int, body: String)
+}
+/// Why a scheduling call failed.
+pub type ScheduleError {
+  /// The broker refused the call in band. `code` distinguishes the
+  /// reasons worth branching on: `invalid_schedule` (a bound was missed),
+  /// `schedule_limit_reached`, `schedule_name_taken`,
+  /// `schedule_not_found`, `schedules_unavailable`.
+  ScheduleDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  ScheduleUnavailable(reason: String)
+}
+/// Schedules `body` to fire on this strand once, at `instant` — an
+/// RFC3339 UTC timestamp, for example `\"2026-09-01T09:00:00Z\"`.
+///
+/// An instant already past fires promptly, once, annotated as late. It is
+/// never replayed for every occurrence that was missed.
+///
+/// Capability: `schedule.create`.
+pub fn at(String, String, Bool, String) -> Result(Created, ScheduleError)
+/// Cancels one schedule on this strand by name. It will not fire again.
+///
+/// A name that is not this strand's own is denied with
+/// `schedule_not_found` rather than silently succeeding, so a program
+/// cannot believe it has tidied up when it has not.
+///
+/// Capability: `schedule.cancel`.
+pub fn cancel(String) -> Result(Nil, ScheduleError)
+/// Schedules `body` to fire on this strand every `seconds` seconds, until
+/// the schedule expires on its own.
+///
+/// `seconds` has a floor the host enforces; anything tighter is denied
+/// with `invalid_schedule` rather than quietly rounded up. `name` must be
+/// unique among this strand's schedules and among the host's own — a
+/// clash is denied with `schedule_name_taken` rather than replacing
+/// anything, so replacing one is always `cancel` then `every` again.
+///
+/// Capability: `schedule.create`.
+pub fn every(String, Int, Bool, String) -> Result(Created, ScheduleError)
+/// Lists the schedules set on this strand.
+///
+/// Only this strand's own, and only ones a program or the model created:
+/// a schedule the operator configured is not listed and cannot be
+/// cancelled here.
+///
+/// Capability: `schedule.list`.
+pub fn list() -> Result(List(Schedule), ScheduleError)
 ",
   ),
   #(

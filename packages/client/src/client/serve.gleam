@@ -1086,6 +1086,7 @@ fn code_mode_seam(
   clock: Clock,
   agency_seam: Agency,
   scratch_seam: codemode_wiring.Scratch,
+  schedule_door: Option(scheduleseam.Door),
 ) -> #(Option(codemode_tool.CodeMode), mcp_wiring.Layer) {
   case codemode_wiring.discover(settings.codemode_seed) {
     Error(reason) -> {
@@ -1128,6 +1129,11 @@ fn code_mode_seam(
           // starts under the service supervisor below. The seam is a
           // name, so it can be built here and resolved per call.
           |> codemode_wiring.over_scratch(scratch_seam)
+          // `schedule.*` is answered by the same door the `schedule_*`
+          // tools call, so a program and a tool call cannot disagree
+          // about what this session's schedules are. A shut door leaves
+          // the capabilities unrouted rather than always-refusing.
+          |> codemode_wiring.over_schedules(schedule_door)
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
@@ -1424,6 +1430,17 @@ fn assemble(
   // supervisor further down — though the knot here is only ordering,
   // since the store closes over no runtime at all.
   let scratch_name = process.new_name(prefix: "loom_scratch")
+  // The scheduling plane is decided once, here, and reached two ways:
+  // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
+  // One `Wiring` behind both is what stops a program and a tool call
+  // disagreeing about what this session's schedules are. It needs the
+  // live runtime, and the runtime does not exist until `api.open`
+  // returns the registry being built for it — so it borrows through the
+  // Agency's holder by name rather than standing up a second actor to
+  // hold one value.
+  let schedule_wiring =
+    schedule_wiring(settings, agency_config, schedulescan_name)
+  let schedule_door = option.map(schedule_wiring, scheduleseam.door)
   let #(code_mode, mcp_layer) =
     code_mode_seam(
       settings,
@@ -1432,6 +1449,7 @@ fn assemble(
       clock,
       agency_seam,
       scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
+      schedule_door,
     )
 
   // Recall, on the same two-name pattern and gated the same way: the
@@ -1453,12 +1471,9 @@ fn assemble(
   // One registry serves two masters: the effect wiring dispatches
   // through it, and the hub validates `set_config active_tools` against
   // it. They must be the same registry or the check means nothing.
-  // The scheduling door, gated on the operator's `[schedules]` policy
-  // and wired the same way the Agency is: it needs the live runtime, and
-  // the runtime does not exist until `api.open` returns the registry it
-  // is being built for. So it borrows through the Agency's holder by
-  // name, rather than standing up a second actor to hold one value.
-  let schedule_seam = schedule_door(settings, agency_config, schedulescan_name)
+  // The tool half of the scheduling plane decided above, over the same
+  // wiring the code-mode half already holds.
+  let schedule_seam = option.map(schedule_wiring, scheduleseam.seam)
   let tool_registry =
     registry(
       Some(agency_seam),
@@ -2483,28 +2498,28 @@ pub fn registry(
   )
 }
 
-// The model-facing scheduling seam, or `None` when the operator left the
-// door shut — which is the default, and which registers none of the
-// three tools rather than registering ones that always refuse. A tool
-// definition is not free: it renders into the provider's cached byte
-// prefix and is paid for on every request, which is the same argument
-// `memory_seam` and `history_seam` are gated by.
-fn schedule_door(
+// How this session reaches its schedule store, or `None` when the
+// operator shut the door — which registers none of the three tools and
+// routes none of the three capabilities, rather than offering doors that
+// always refuse. A tool definition is not free: it renders into the
+// provider's cached byte prefix and is paid for on every request, which
+// is the same argument `memory_seam` and `history_seam` are gated by,
+// and an unrouted capability is a clearer answer to a program than one
+// that exists and says no.
+fn schedule_wiring(
   settings: Settings,
   agency_config: agency.Config,
   scanner: Name(schedulescan.Message),
-) -> Option(schedule_tool.Schedules) {
+) -> Option(scheduleseam.Wiring) {
   case schedule.policy_opens_the_door(settings.schedule_policy) {
     False -> None
     True ->
-      Some(
-        scheduleseam.seam(scheduleseam.Wiring(
-          runtime: fn() { agency.borrow_runtime(agency_config) },
-          policy: settings.schedule_policy,
-          operator_schedules: settings.schedules,
-          scanner:,
-        )),
-      )
+      Some(scheduleseam.Wiring(
+        runtime: fn() { agency.borrow_runtime(agency_config) },
+        policy: settings.schedule_policy,
+        operator_schedules: settings.schedules,
+        scanner:,
+      ))
   }
 }
 

@@ -121,18 +121,62 @@ pub fn limits() -> schedule_tool.Limits {
 /// ```
 ///
 pub fn seam(wiring: Wiring) -> schedule_tool.Schedules {
+  let door = door(wiring)
   schedule_tool.Schedules(
-    create: fn(ctx, request) {
+    create: fn(ctx: Ctx, request) { door.create(ctx.strand, request) },
+    list: fn(ctx: Ctx) { door.list(ctx.strand) },
+    cancel: fn(ctx: Ctx, name) { door.cancel(ctx.strand, name) },
+  )
+}
+
+/// The same three operations keyed on a strand name rather than on a
+/// `tools/tool.Ctx`.
+///
+/// Two doors reach this store — the `schedule_*` tools and the
+/// `schedule.*` code-mode capabilities — and a code-mode call has no
+/// `Ctx` to offer, only the strand its execution belongs to. The strand
+/// is in fact all either door ever needed: a schedule targets the strand
+/// that created it and no other, which is the whole of the authority
+/// question here. So the shared implementation is keyed on that, and
+/// `seam` is the thin adapter for callers that happen to hold a `Ctx`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scheduleseam.door(wiring).list("main")
+/// ```
+///
+pub type Door {
+  Door(
+    create: fn(String, schedule_tool.Request) ->
+      Result(schedule_tool.Created, schedule_tool.Refusal),
+    list: fn(String) ->
+      Result(List(schedule_tool.Listed), schedule_tool.Refusal),
+    cancel: fn(String, String) -> Result(Nil, schedule_tool.Refusal),
+  )
+}
+
+/// The scheduling door over one runtime and one operator policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scheduleseam.door(wiring).create("main", request)
+/// ```
+///
+pub fn door(wiring: Wiring) -> Door {
+  Door(
+    create: fn(strand, request) {
       use runtime <- with_runtime(wiring)
-      create(wiring, runtime, ctx, request)
+      create(wiring, runtime, strand, request)
     },
-    list: fn(ctx) {
+    list: fn(strand) {
       use runtime <- with_runtime(wiring)
-      listing(runtime, ctx)
+      listing(runtime, strand)
     },
-    cancel: fn(ctx, name) {
+    cancel: fn(strand, name) {
       use runtime <- with_runtime(wiring)
-      cancel(wiring, runtime, ctx, name)
+      cancel(wiring, runtime, strand, name)
     },
   )
 }
@@ -157,7 +201,7 @@ fn with_runtime(
 fn create(
   wiring: Wiring,
   runtime: Runtime,
-  ctx: Ctx,
+  strand: String,
   request: schedule_tool.Request,
 ) -> Result(schedule_tool.Created, schedule_tool.Refusal) {
   let Wiring(policy:, operator_schedules:, scanner:, ..) = wiring
@@ -170,7 +214,7 @@ fn create(
   use built <- result.try(
     schedule.build(
       name: request.name,
-      target: ctx.strand,
+      target: strand,
       timing:,
       wake:,
       body: request.body,
@@ -182,13 +226,13 @@ fn create(
   use Nil <- result.try(name_is_free(
     existing,
     operator_schedules,
-    ctx.strand,
+    strand,
     built.name,
   ))
   use Nil <- result.try(
     api.put_reserved_fact(
       runtime,
-      schedule.config_key(strand: ctx.strand, name: built.name),
+      schedule.config_key(strand:, name: built.name),
       schedule.encode(built),
     )
     |> result.map_error(unavailable),
@@ -273,13 +317,13 @@ fn name_is_free(
 
 fn listing(
   runtime: Runtime,
-  ctx: Ctx,
+  strand: String,
 ) -> Result(List(schedule_tool.Listed), schedule_tool.Refusal) {
   use live <- result.try(live_schedules(runtime))
   live
   |> list.filter(fn(pair) {
     let #(_key, sched) = pair
-    sched.target == ctx.strand
+    sched.target == strand
   })
   |> list.map(fn(pair) {
     let #(_key, sched) = pair
@@ -316,10 +360,10 @@ fn fire_count(runtime: Runtime, sched: Schedule) -> Int {
 fn cancel(
   wiring: Wiring,
   runtime: Runtime,
-  ctx: Ctx,
+  strand: String,
   name: String,
 ) -> Result(Nil, schedule_tool.Refusal) {
-  let key = schedule.config_key(strand: ctx.strand, name:)
+  let key = schedule.config_key(strand:, name:)
   use live <- result.try(live_schedules(runtime))
   // Cancelling something that is not there is an error rather than a
   // no-op, because a model that misremembers a name should hear about it

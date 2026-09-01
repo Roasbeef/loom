@@ -81,6 +81,18 @@ thing to hand a model than one that cannot.
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry
   module calls; `boot` is the testable core beneath it.
+- `cap/schedule.{Schedule, Created, ScheduleError}` — heartbeats a
+  program sets for the strand it is running on, the code-mode half of the
+  door `tools/schedule` opens for a tool call. Both land on one
+  implementation (`client/scheduleseam.Door`), so either door can cancel
+  what the other created. `Created.wake` is what the host actually
+  granted and is not always what was asked for — an operator policy may
+  permit scheduling and forbid waking — so a program that needs waking to
+  be meaningful must read the field rather than assume the request.
+  Workspace seam only, not orchestration: the intersection of the two
+  seams' allowlists *is* the confinement property, and widening it from
+  one module to two was judged too expensive for a convenience nobody has
+  asked for.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services

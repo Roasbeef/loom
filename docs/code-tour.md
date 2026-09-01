@@ -1138,7 +1138,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:423`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:441`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:458`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1308,7 +1308,7 @@ provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:722`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:760`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it

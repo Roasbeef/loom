@@ -395,20 +395,35 @@ over one session file. WP-L.
   next invariant — so the ledger read happens once per strand per
   incarnation, on the pass a hold begins, and costs nothing before or
   after.
-- `client/schedule.{Schedule, Timing, Expiry, parse, fired_key,
+- `client/schedule.{Schedule, Timing, Expiry, Policy, parse, parse_policy,
+  default_policy, policy_opens_the_door, policy_permits_wake, build,
+  encode, decode, config_key, config_key_prefix, cancelled_value,
+  parse_instant, render_instant, fired_key,
   fired_key_prefix, fired_value, injection, interval_occurrence,
-  interval_late, interval_expired, max_schedules, min_interval_s,
+  interval_late, interval_expired, max_schedules, max_model_schedules,
+  min_interval_s,
   max_name_length, max_body_length, max_target_length,
   default_max_fires, max_max_fires, default_expires_after_s,
   max_expires_after_s}` — scheduled heartbeats (`docs/design-notes/
   scheduled-heartbeats.md`), the time-triggered sibling of `client/rules`:
   a `[[schedule]]` fires on a clock instead of on a literal match, parsed
-  from the same `loom.toml` by the same strict, total discipline and
-  **operator configuration only, never model-writable** — a
-  self-scheduling model would extend its own liveness and spend
-  unsupervised on a clock it set itself, a sharper problem than durable
-  prompt injection alone, and framing cannot solve it the way it solves
-  a rule's authority-confusion. A schedule is either `Interval(seconds,
+  from the same `loom.toml` by the same strict, total discipline. A
+  schedule reaches the scanner from one of **two** stores and is the same
+  value either way: the operator's `[[schedule]]` tables, and the model's
+  own `schedule/config/…` reserved cells created through
+  `tools/schedule` (`encode`/`decode`/`config_key`). `Policy` is the
+  operator's say over that second door — `off`/`steer`/`wake` from a
+  `[schedules]` table — and `default_policy` is **`ModelSchedulesWake`,
+  open**, reversing this feature's original operator-only ruling; the
+  design note's addendum has the argument, and the short form is that the
+  liveness objection is answered by a mandatory expiry no model can
+  raise, while the half-open middle position is not a feature because a
+  heartbeat that only steers an open run never fires when a heartbeat is
+  for. `build` is the constructor the model-facing door and `decode`
+  share: it enforces exactly what `parse` enforces, through the same
+  predicates and constants, so the two creation paths word refusals
+  differently and can never disagree about what is allowed. A schedule is
+  either `Interval(seconds,
   expiry)`, aligned to a fixed grid (`slot = floor(now_s / seconds)`), or
   `OneShot(at)`, a single RFC3339 UTC instant — never both, no five-field
   cron syntax, no timezones. Every `Interval` schedule carries a
@@ -421,8 +436,39 @@ over one session file. WP-L.
   factored out of the actor that drives them so a fencepost error gets a
   direct, deterministic test rather than one hidden behind a timer
   harness.
+- `client/scheduleseam.{Wiring, Door, seam, door, limits,
+  describe_timing, cell}` — the host half of the model-facing scheduling
+  door, filling `tools/schedule`'s seam the way `client/memory` fills
+  `tools/remember`'s and for the same reason (`tools` may not reach a
+  session). It is the **only** enforcer of three things: the operator's
+  `Policy` (which caps `wake` rather than vetoing the call, so the tool
+  can tell the model what it actually got), the `max_model_schedules`
+  ceiling, and the shared bounds via `client/schedule.build`. `Wiring`
+  carries `operator_schedules` for one reason worth knowing: both stores
+  feed one scanner, which derives a fired-mark from `{target, name}`
+  alone, so a model name colliding with an operator's would make two
+  schedules share a mark and suppress each other — and this is the only
+  place that check can live. `Wiring.runtime` is a **borrow closure**,
+  not a runtime: the registry this seam joins is threaded into
+  `api.open`, so it is built before a runtime exists, and it reads the
+  session's one holder through `agency.borrow_runtime` rather than
+  standing up a second actor. `Door` is the same three operations keyed
+  on a strand name, which is what `client/codemode` serves `schedule.*`
+  over — one implementation behind both doors, so a program and a tool
+  call cannot disagree about what this session's schedules are.
 - `client/schedulescan.{Options, Message, default_options, with_logger,
-  start, supervised}` — the scheduled-heartbeat scanner. Unlike
+  with_model_door_open, poke, start, supervised}` — the
+  scheduled-heartbeat scanner. Every tick unions the operator's fixed
+  list with the model's config cells read fresh from the store, never a
+  cached list: a cell can appear or be cancelled between any two ticks
+  and this actor is restartable, so a cache would be a second source of
+  truth. `poke` is what the seam rings after a write so a new schedule
+  starts on time rather than at the next armed deadline; it checks the
+  name is registered first, because a send to an unregistered name
+  raises and the caller is a tool body. `with_model_door_open` keeps a
+  slow rescan floor when the model may create schedules, so a lost poke
+  self-heals within one `min_interval_s` instead of stalling forever.
+  Unlike
   `client/rulescan` it is driven by its own injected
   `runtime/effects.Timers.after` deadline, never by a writer hint, and it
   holds no progress state across ticks: every tick re-derives which

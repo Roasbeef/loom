@@ -476,6 +476,21 @@ fn refusal_code(refusal: Refusal) -> String {
   }
 }
 
+/// The worded reason one refusal carries, for a caller rendering it
+/// somewhere other than a `ToolOutcome` — `client/codemode` maps these
+/// onto the code-mode capability vocabulary and needs the sentence
+/// without the tool-result wrapper around it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.refusal_reason(schedule.NotFound(name: "poll"))
+/// ```
+///
+pub fn refusal_reason(refusal: Refusal) -> String {
+  describe(refusal)
+}
+
 fn describe(refusal: Refusal) -> String {
   case refusal {
     Invalid(reason:) -> reason
