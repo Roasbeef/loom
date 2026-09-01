@@ -507,6 +507,19 @@ the future on BEAM, so the deadline tests now derive an expired deadline from
 the clock, and that an undecodable endpoint filename would have crashed
 `/sessions`; the Erlang listing now omits such entries.
 
+Driving the shipped client by hand through two cold-started daemons found
+three more. The selector wrapped canonical paths, so one entry's detail line
+consumed the next entry's rows; rows now render unwrapped with each path cut
+to its tail. Switching to a session whose daemon had died made bootstrap
+probe the stale endpoint from inside the running client, and Stratus's
+logged handshake refusal printed over the etui frame; `main` now sets the
+OTP logger's primary level to `none` first. And a local launch labelled the
+footer from the current directory even under an explicit `--workspace`,
+while a switch labelled it from the chosen workspace; both now derive it the
+same way. The stale-record switch itself behaved: the old session stayed on
+screen with an `opening session` notice, the worker cold-started a daemon,
+and the terminal adopted the replacement with its model catalogue loaded.
+
 The bounded limits are deliberate: automatic startup is macOS/Linux only;
 trusted `loom.toml` configuration and manually managed servers use explicit
 attachment; there is no daemon status/shutdown/upgrade protocol or automatic
