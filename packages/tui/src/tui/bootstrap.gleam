@@ -851,7 +851,10 @@ fn spawn(endpoint: Endpoint, server: String) -> Result(StartedProcess, String) {
 
 fn stop_started(started: StartedProcess) -> Nil {
   let StartedProcess(process:, pid:) = started
-  ffi_bootstrap.terminate_process_group(pid)
+  case ffi_bootstrap.server_process_owns(process, pid) {
+    True -> ffi_bootstrap.terminate_process_group(pid)
+    False -> Nil
+  }
   ffi_bootstrap.close_server_process(process)
 }
 

@@ -11,7 +11,7 @@
          read_regular_bounded/2, read_private_bounded/2,
          atomic_write_private/2, find_executable/1,
          is_executable_file/1, reserve_loopback_port/0,
-         spawn_server/4, close_server_process/1,
+         spawn_server/4, server_process_owns/2, close_server_process/1,
          terminate_process_group/1, process_identity/1,
          current_log_tail/3]).
 
@@ -318,6 +318,12 @@ spawn_server(ExecutableBinary, ArgumentBinaries, WorkingBinary, LogBinary) ->
 close_server_process(Port) ->
     _ = safe_port_close(Port),
     nil.
+
+server_process_owns(Port, Pid) ->
+    case erlang:port_info(Port, os_pid) of
+        {os_pid, Pid} -> true;
+        _ -> false
+    end.
 
 terminate_process_group(Pid) ->
     Group = "-" ++ integer_to_list(Pid),

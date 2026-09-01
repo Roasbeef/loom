@@ -143,6 +143,14 @@ pub fn spawn_server(
   log_path: String,
 ) -> Result(#(ServerProcess, Int), String)
 
+/// Reports whether a retained port still owns the expected operating-system pid.
+///
+/// The port is the launcher's unforgeable identity capability for a process it
+/// started. Cleanup checks it before signaling a process group so pid reuse can
+/// never redirect that signal.
+@external(erlang, "tui_ffi", "server_process_owns")
+pub fn server_process_owns(process: ServerProcess, pid: Int) -> Bool
+
 /// Closes the retained server port without terminating the detached process.
 ///
 /// Uses OTP `erlang:port_close/1`. The external process remains re-parented

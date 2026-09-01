@@ -131,6 +131,8 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
     ffi_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
   let process_port = started.0
   let pid = started.1
+  assert ffi_bootstrap.server_process_owns(process_port, pid)
+  assert !ffi_bootstrap.server_process_owns(process_port, pid + 1)
   let assert Ok(first) = ffi_bootstrap.process_identity(pid)
   assert ffi_bootstrap.process_identity(pid) == Ok(first)
   ffi_bootstrap.terminate_process_group(pid)
