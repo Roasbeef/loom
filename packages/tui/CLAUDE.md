@@ -5,7 +5,7 @@
 The shipped native terminal client. It attaches to the frozen ClientGateway
 websocket, renders the durable conversation and live strands, and turns
 keyboard input into slash commands. `make tui-shipment` exports its compiled
-BEAM closure beside a thin `bin/loom-tui` launcher, and `make dist` packages
+BEAM closure beside a thin `bin/loom` launcher, and `make dist` packages
 that tree separately from the self-contained server.
 
 ## Key Types
@@ -22,6 +22,14 @@ that tree separately from the self-contained server.
   etui loop drains its mailbox on ticks, keeping networking out of `view` and
   out of keyboard handling. Startup occurs in a monitored, unlinked helper
   with a bounded deadline; a successful connection restores the runtime link.
+- `tui/bootstrap.Options` describes local-launch inputs, while
+  `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
+  connection path. Bootstrap policy, record validation, retry timing,
+  executable discovery order, and lifecycle decisions remain in Gleam.
+- `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
+  unavailable in pure Gleam: private and bounded file operations, process
+  identity and launch, a kernel lock, loopback port reservation, time, and
+  SHA-256. Its Erlang implementations must not acquire bootstrap policy.
 - `tui/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
@@ -55,6 +63,9 @@ that tree separately from the self-contained server.
 - **Distribution boundary**: this shipment includes BEAM files but no ERTS.
   The client host needs compatible Erlang/OTP 29; the server release still
   bundles its own runtime and has no host OTP dependency.
+- **Local launch boundary**: `tui/bootstrap` may start a separate
+  `loomd`, but it still attaches through ClientGateway and does not move
+  server state or authority into the terminal process.
 
 ## Traffic
 
@@ -109,6 +120,37 @@ that tree separately from the self-contained server.
 
 ## Invariants
 
+- **Bootstrap records are hints, never authority.** A record must match the
+  canonical workspace, session path and name, loopback address, and protocol
+  version. Its private token must then authenticate a real `subscribe` whose
+  full snapshot names the expected session before the endpoint is reusable.
+- **A cold start is single-winner.** Launchers serialize on a kernel lock and
+  re-check state after taking it. A live birth-qualified process is preserved
+  through transient probe failure; stale identities and abandoned starting
+  records can be replaced without treating a reused pid as the old server.
+  The lock holder's privileged shell mode prevents inherited functions from
+  releasing the kernel lock after the launcher observes acquisition, and it
+  uses only shell builtins so an inherited `PATH` cannot replace its hold loop.
+- **Publication precedes execution.** A new daemon begins as a wrapper blocked
+  on its launcher port. Gleam records that wrapper's stable pid and birth
+  identity before releasing it to `exec` `loomd`. The wrapper's privileged
+  shell mode ignores inherited shell functions; launcher death before release
+  closes the port and makes the wrapper exit. Once released, bootstrap never
+  signals a numeric pid because reuse cannot be excluded atomically on every
+  supported platform. Linux reports a missing target as dead only after proving
+  procfs itself is observable.
+- **Repositories do not choose host processes.** Automatic startup neither
+  loads a workspace `loom.toml` nor uses the workspace as its working
+  directory. Implicit daemon lookup accepts only a sibling install or absolute
+  `PATH` entries, and it pins an executable sibling `loom-exec` when available.
+- **Launcher secrets stay under launcher authority.** Session and state paths
+  are canonical before their endpoint key and kernel lock are chosen. The
+  bearer token always lives under the private state root, even when an explicit
+  session database lives in the workspace.
+- **FFI stays mechanical.** The Erlang shim may expose platform primitives,
+  but branching policy and state transitions belong in readable, testable
+  Gleam. New compound behavior should first be decomposed into the smallest
+  useful fact or action.
 - **The server remains authoritative.** The client derives models, strands,
   operation phases, and entries from snapshots and events. It persists
   nothing and invents no lifecycle state.

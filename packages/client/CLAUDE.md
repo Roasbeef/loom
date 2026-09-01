@@ -16,7 +16,7 @@ repository's own history and a memory that outlives a session
 (`client/agency`, `client/codemode`, `client/history`, `client/memory`),
 the distillation pipeline that fills that memory
 (`client/distill`, a second entry point), plus the
-`loom-server` entry point (`client/serve`) that boots the whole stack
+`loomd` entry point (`client/serve`) that boots the whole stack
 over one session file. WP-L.
 
 ## Key Types
@@ -120,7 +120,7 @@ over one session file. WP-L.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
-  `loom-tui` binary against a real `serve.boot`, in a real terminal
+  `loom` binary against a real `serve.boot`, in a real terminal
   (`tmux` on a private socket, declared geometry, every wait a predicate
   over pane content with a deadline). The only test in the tree with a
   fake on *neither* side of the protocol; only the model is scripted.
@@ -531,7 +531,7 @@ over one session file. WP-L.
   here with `log.discard()` so an embedding test boots a whole server
   without a handler existing at all.
 - `client/serve.{Settings, boot, shutdown, main}` — the server entry
-  point (`gleam run -m client/serve`, `bin/loom-server` via the erlang
+  point (`gleam run -m client/serve`, `bin/loomd` via the erlang
   shipment): flags/env in, session + helper pool + broker + system
   prompt + runtime + service supervisor + websocket server up, one
   startup line out, and either `SIGTERM` or a fatal fault runs the same

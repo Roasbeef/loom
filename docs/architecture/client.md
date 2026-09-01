@@ -12,7 +12,7 @@ durable writes into a stream of events and turns client commands into
 ordinary admissions. A **websocket transport** authenticates an upgrade
 and pipes text frames between a socket and that hub. A **frozen JSON
 protocol** is what the two ends agree on, down to the byte. And
-`loom-tui` is a Go terminal client that speaks it and depends on nothing
+`loom` is a native Gleam terminal client that speaks it and depends on nothing
 else in the tree. What follows is those parts as built, in the `client`
 and `tui` packages, through to the scripted acceptance that drives a
 whole session — prompt, tools, a subagent, an escalation, fork,
@@ -279,7 +279,7 @@ that way yet.
 
 ```mermaid
 sequenceDiagram
-    participant T as loom-tui (outside the node)
+    participant T as loom (outside the node)
     participant W as websocket transport
     participant H as gateway hub
     participant A as runtime api / writer
@@ -482,7 +482,7 @@ reaches the websocket handler without passing the check.
 
 ## The terminal client
 
-`loom-tui` is the native Gleam client in `packages/tui`. Etui owns raw
+`loom` is the native Gleam client in `packages/tui`. Etui owns raw
 terminal input and frame diffs, Mork parses CommonMark into a structured tree,
 and Stratus owns the websocket actor. One immutable model keeps durable records,
 transient stream fragments, overlays, prompt state, scroll position, and the
@@ -509,11 +509,12 @@ strand's fragments and becomes the sole transcript authority. Model-authored
 terminal controls are replaced before Mork or etui sees them; source blocks
 retain their bytes and indentation without executing ANSI or HTML.
 
-`loom-tui --demo` runs a canned local model without a server or network. A live
-client requires `--addr`, `--session`, and `--token-file` or `--token`. The
-release is a separate Erlang shipment rather than part of the server archive.
-It does not carry a second ERTS, so the terminal host needs compatible
-Erlang/OTP 29 on `PATH`.
+`loom --demo` runs a canned local model without a server or network. Plain
+`loom` resolves the private session for the current workspace and starts or
+reuses `loomd`. Manual attachment instead requires `--addr`, `--session`, and
+`--token-file` or `--token`. The release is a separate Erlang shipment rather
+than part of the server archive. It does not carry a second ERTS, so the
+terminal host needs compatible Erlang/OTP 29 on `PATH`.
 
 Two protocol behaviors remain deliberately incomplete. Pending escalations are
 visible, but the native client does not yet send protocol-change/007's exact
@@ -553,7 +554,7 @@ real websocket `subscribe` returning a snapshot.
 | `client/protocol.gleam` | The Part 1.6 envelope and every body shape as total codecs; the grant wire vocabulary; `to_wire_text`. |
 | `client/gateway.gleam` | The hub actor: attach/detach/handle_text, the pull, command dispatch, snapshots and replay, `commit_forwarder` and `tap_provider`. |
 | `client/server.gleam` | The `mist` websocket transport on `/v1/ws`: routing, the bearer check, token minting, the atomic token file. |
-| `client/serve.gleam` | The `loom-server` entry point: flags, environment, boot order, `SIGTERM` shutdown. |
+| `client/serve.gleam` | The `loomd` entry point: flags, environment, boot order, `SIGTERM` shutdown. |
 | `client/catalog.gleam` | The `loom.toml` model catalogue: strict parser, role chains, the provider-gateway builder, name lookups. |
 | `client/grants.gleam` | The bridge between the runtime's stored escalation JSON and typed `broker/policy.Grant`; `first_unwanted`, the approval subset check. |
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |

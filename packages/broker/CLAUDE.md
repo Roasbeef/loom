@@ -250,7 +250,7 @@ protocol (spec Part 1.4). WP-G.
   *ever aborted*, not one per abort — repeat aborts upsert the counter,
   and code mode, the only production caller of `abort`, aborts the
   strand's own operation on every teardown. At ~110 bytes an entry, in a
-  broker that lives exactly as long as one `loom-server` process serving
+  broker that lives exactly as long as one `loomd` process serving
   one session (its death is fatal to the server and nothing restarts
   it), ten thousand such operations cost about a megabyte beside a
   conversation store holding durable rows for every one of those turns.

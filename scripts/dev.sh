@@ -8,7 +8,7 @@
 #   scripts/dev.sh --smoke    # non-interactive: boot, probe /healthz and
 #                             # the ws route, verify a clean SIGTERM close
 #   scripts/dev.sh --shipment-smoke
-#                             # the same smoke through bin/loom-server and
+#                             # the same smoke through bin/loomd and
 #                             # Gleam's exported Erlang shipment
 #
 # The server runs --best-effort because a dev kernel usually cannot give
@@ -36,9 +36,9 @@ mkdir -p "$(dirname "$SESSION")" "$WORKSPACE"
 # that line rather than guessing.
 LOG="$(mktemp -t loom-dev-server.XXXXXX.log)"
 if [ "$SHIPMENT" = 1 ]; then
-  # loom-server and the shipment entrypoint both exec their child, so this PID
+  # loomd and the shipment entrypoint both exec their child, so this PID
   # is the BEAM itself. Avoid setsid here because macOS does not ship it.
-  "$ROOT/bin/loom-server" \
+  "$ROOT/bin/loomd" \
     --session "$SESSION" --workspace "$WORKSPACE" \
     --helper "$ROOT/bin/loom-exec" --best-effort >"$LOG" 2>&1 &
   SERVER_PID=$!
@@ -58,7 +58,7 @@ teardown() {
   # Give the server's SIGTERM handler time to close the runtime and
   # release the session lease before we stop waiting on it. The witness is
   # the `server.stopped` structured log line, emitted once the listener is
-  # closed and the lease released; it replaced a plain `loom-server:
+  # closed and the lease released; it replaced a plain `loomd:
   # closed` println when the server's logging became structured (5abe62f),
   # and this script kept grepping for a line nothing printed any more.
   CLOSED=0
@@ -118,7 +118,7 @@ if [ -z "$LINE" ]; then
 fi
 
 PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v1/ws.*|\1|p')"
-SESSION_ID="$(printf '%s\n' "$LINE" | sed -n 's|^loom-server: session \([^ ]*\) .*|\1|p')"
+SESSION_ID="$(printf '%s\n' "$LINE" | sed -n 's|^loomd: session \([^ ]*\) .*|\1|p')"
 TOKEN_FILE="$(printf '%s\n' "$LINE" | sed -n 's|.*(token file \(.*\))$|\1|p')"
 echo "dev.sh: server up — session $SESSION_ID, port $PORT, log $LOG"
 
@@ -151,5 +151,5 @@ if [ "$SMOKE" = 1 ]; then
 fi
 
 # Hand the terminal to the TUI; the EXIT trap stops the server afterwards.
-./bin/loom-tui --addr "ws://127.0.0.1:$PORT/v1/ws" \
+./bin/loom --addr "ws://127.0.0.1:$PORT/v1/ws" \
   --session "$SESSION_ID" --token "$(cat "$TOKEN_FILE")"

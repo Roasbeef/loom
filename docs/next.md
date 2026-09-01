@@ -275,7 +275,7 @@ restriction that does not exist.
 ## Native TUI adoption: issue #114
 
 The issue #114 evaluation landed in `packages/tui`, and the native client
-is now the shipped `loom-tui`. The legacy Go package has been retired while the
+is now the shipped `loom` client. The legacy Go package has been retired while the
 frozen ClientGateway wire and its thirty-five fixtures moved under
 `packages/client`. The client works in a real PTY, attaches to the real gateway,
 opens searchable model and agent overlays,
@@ -365,6 +365,45 @@ exact action and grant echo, then sparse-sequence reconnect/catch-up behavior.
 The native terminal end-to-end proves prompt, durable answer, fork, and clean
 detach, but it does not claim approval until the first debt lands. Neither gap
 changes the server's frozen enforcement or replay contracts.
+
+---
+
+## Draft local client bootstrap: PR #150
+
+Branch `client/auto-bootstrap` makes the shipped `loom` client the one-command
+local entry point without merging the client and server. A canonical workspace
+maps to a private session under `~/.loom`; an authenticated protocol-v1
+snapshot reuses the recorded loopback endpoint, while an OS file lock selects
+one detached server for a cold start. A second invocation reconnects to the
+same server after the first terminal exits. Explicit `--addr` attachment and
+`--demo` are unchanged, and no frozen interface moved.
+
+The launcher treats workspace content as data, not launch authority. It does
+not load a repository `loom.toml`, runs the server from private state rather
+than the workspace, and pins a sibling installed `loom-exec` when present.
+Endpoint version 2 pairs the server pid with a Darwin or Linux process birth
+identity, so pid reuse replaces a stale record while a temporarily slow copy of
+the original server is retried and preserved. The session-name derivation is
+byte-for-byte aligned with the server's first-dot rule, including `.db` and
+multi-dot paths.
+
+`make e2e-client-bootstrap` builds the real Erlang shipment, resolves a
+`multi.part.db` session twice through the native Gleam bootstrap, and proves
+authenticated readiness, same-pid reuse, and process-group cleanup. Focused
+unit tests cover stable workspace naming, the server's first-dot session rule,
+strict loopback addresses, private bounded files, single-winner launch locks,
+and birth-qualified process identity. The final gate and review status belong
+in PR #150 rather than this handoff snapshot.
+
+The bounded limits are deliberate: automatic startup is macOS/Linux only;
+trusted `loom.toml` configuration and manually managed servers use explicit
+attachment; there is no daemon status/shutdown/upgrade protocol or automatic
+restart loop; and the port reservation-to-bind gap fails visibly rather than
+retrying an ambiguous launch. The launcher and its lifecycle policy are pure
+Gleam. A confined Erlang shim supplies only the operating-system primitives
+that Gleam does not expose directly: private filesystem operations, process
+launch and identity, a kernel lock, loopback port reservation, time, and
+SHA-256.
 
 ---
 

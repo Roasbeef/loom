@@ -8,7 +8,7 @@
 ////
 //// # It is a command, not a resident
 ////
-//// Nothing inside `loom-server` runs this. It is cron, or a post-session
+//// Nothing inside `loomd` runs this. It is cron, or a post-session
 //// hook, or a person at a terminal — "not a per-turn hook", as the
 //// design note demands — and it holds the memory session's ordinary
 //// writer lease for the length of the run. That lease *is* the
