@@ -332,7 +332,18 @@ names for `wake` — is still not possible. A strand may only schedule onto
 itself. Letting a parent schedule onto a child needs a lineage check and
 an ownership argument (the parent extends the child's liveness, which it
 already controls, not its own) that nobody has written down. It is the
-obvious next increment and it is deliberately not in this change.
+obvious next increment and it is deliberately not in this change:
+**issue #154**.
+
+Two smaller things are also owed a decision rather than a fix.
+`cap/schedule` is on the workspace seam and not the orchestration one,
+because the intersection of those two allowlists is a confinement
+property a test asserts and widening it costs a real guarantee
+(**issue #156**). And a schedule that never once fires never expires,
+because the expiry clock is measured from the earliest fired-mark and a
+schedule with no marks has none — a cost question rather than a safety
+one, but `expires_after_s` reads to an operator like something it does
+not mean (**issue #157**).
 
 ### The collision nobody would have found by reading
 

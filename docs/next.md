@@ -707,18 +707,24 @@ schedule always targets the strand that created it — there is no `target`
 argument on either door, and for code mode the strand is bound host-side
 from the request and never travels over the cap channel.
 
-Three things are deliberately still not built. **Scheduling on behalf of a
-subagent** is the obvious next increment and the case the original ruling
-named as motivating `wake`: a parent extending a child's liveness, which
-it already controls, is a defensible argument nobody has written down, and
-it needs a lineage check. **The escalation-gated grant** the original note
-proposed was dropped on measurement rather than taste — `gateway.attached`
-answers zero when nobody is watching and the seam settles as a refusal, so
-a model could only get a schedule approved while someone was present,
-which is exactly when a heartbeat is least needed. And **`cap/schedule` is
-on the workspace seam only**, because the intersection of the two seams'
-allowlists is a confinement property a test asserts, and widening it from
-one module to two costs a real guarantee.
+Three things are deliberately still not built, each with an issue.
+**Scheduling on behalf of a subagent** (#154) is the obvious next
+increment and the case the original ruling named as motivating `wake`: a
+parent extending a child's liveness, which it already controls, is a
+defensible argument nobody has written down, and it needs a lineage
+check. **`cap/schedule` on the orchestration seam** (#156) is a decision
+rather than work: the intersection of the two seams' allowlists is a
+confinement property a test asserts, and widening it from one module to
+two costs a real guarantee. **A schedule that never fires never expires**
+(#157), because the clock runs from the earliest fired-mark — no fires,
+no marks, no clock; harmless but not what `expires_after_s` reads like.
+
+One thing was considered and dropped rather than deferred, so it has no
+issue: **the escalation-gated grant** the original note proposed. It was
+dropped on measurement — `gateway.attached` answers zero when nobody is
+watching and the escalation seam settles as a refusal, so a model could
+only get a schedule approved while someone was present, which is exactly
+when a heartbeat is least needed. The design-note addendum records it.
 
 The live check is worth repeating on any change here: point a
 `[[schedule]]` at a scratch session and watch it fire in the TUI, or ask
@@ -732,7 +738,8 @@ branch, not only against the fake provider.
 
 One CI note for whoever picks this up: `soak (200 seeds)` is **red on
 `main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
-pass locally on this branch. Do not read that failure as this branch's.
+pass locally on this branch (exit 0), as does the 101..150 band CI names.
+Do not read that failure as this branch's — it is **issue #155**.
 `gate (linux)`, `gate (macos)` and `jail (linux)` all pass.
 
 ---
