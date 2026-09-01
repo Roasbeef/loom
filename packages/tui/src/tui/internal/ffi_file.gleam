@@ -10,7 +10,7 @@ type ReadReport {
   ReadCrashed(Down)
 }
 
-@external(erlang, "tui_gleam_ffi", "read_prefix")
+@external(erlang, "tui_ffi", "read_prefix")
 fn read_prefix_raw(path: String, bytes: Int) -> Result(BitArray, String)
 
 /// Reads no more than `bytes` from the beginning of one file.
@@ -22,7 +22,7 @@ pub fn read_prefix(path: String, bytes: Int) -> Result(BitArray, String) {
   read_safely_within(fn() { read_prefix_raw(path, bytes) }, read_timeout_ms)
 }
 
-@external(erlang, "tui_gleam_ffi", "read_bounded")
+@external(erlang, "tui_ffi", "read_bounded")
 fn read_bounded_raw(path: String, limit: Int) -> Result(BitArray, String)
 
 /// Reads one regular file without ever retaining more than `limit` bytes.

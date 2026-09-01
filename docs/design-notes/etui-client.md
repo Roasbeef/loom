@@ -5,7 +5,7 @@ the decision's history.
 
 ## Adoption addendum (2026-08-31)
 
-Loom now ships `packages/tui_gleam` and has retired the legacy Go client. The
+Loom now ships `packages/tui` and has retired the legacy Go client. The
 repository floor is Gleam 1.18 and OTP 29, the package participates in root
 `make check`, and `make dist` publishes it as a separate Erlang shipment. The
 client archive does not carry a second ERTS, so its host needs compatible OTP
@@ -26,7 +26,7 @@ container, but keyboard bytes never reached its Erlang backend. It also left
 the likely next step, a Mork-to-etui markdown adapter, as an estimate rather
 than running code.
 
-The client in `packages/tui_gleam` answers both questions. In a Herdr PTY on
+The client in `packages/tui` answers both questions. In a Herdr PTY on
 macOS, etui receives resize, character, arrow, Enter, Tab, Escape, and control
 key events. The same process attaches to a real `packages/client` server,
 subscribes to an existing session, decodes its durable entries, loads the live
@@ -183,7 +183,7 @@ already in progress, the first external event after quiet may wait up to the
 
 Every Mork release checked from 1.2.2 through 1.12.1 states Gleam 1.13+ and OTP
 28+ for the Erlang target because of PCRE2. Loom currently promises Gleam 1.11+
-and OTP 27+. For that reason `tui_gleam` is opt-in and absent from the root
+and OTP 27+. For that reason `tui` is opt-in and absent from the root
 package and release lists. Adoption must either raise the repository floor or
 choose a different markdown parser; this evaluation does neither silently.
 

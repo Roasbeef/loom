@@ -9,7 +9,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import simplifile
-import tui_gleam/internal/workspace_file
+import tui/internal/workspace_file
 
 /// The repository root and branch visible to the terminal process.
 pub type Context {

@@ -1,4 +1,4 @@
--module(tui_gleam_workspace_ffi).
+-module(tui_workspace_ffi).
 
 -include_lib("kernel/include/file.hrl").
 

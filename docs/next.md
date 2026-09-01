@@ -207,7 +207,7 @@ restriction that does not exist.
 
 ## Native TUI adoption: issue #114
 
-The issue #114 evaluation landed in `packages/tui_gleam`, and the native client
+The issue #114 evaluation landed in `packages/tui`, and the native client
 is now the shipped `loom-tui`. The legacy Go package has been retired while the
 frozen ClientGateway wire and its thirty-five fixtures moved under
 `packages/client`. The client works in a real PTY, attaches to the real gateway,

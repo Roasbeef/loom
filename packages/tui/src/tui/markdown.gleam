@@ -21,8 +21,8 @@ import mork/document.{
   SoftBreak, Strikethrough, Strong, THead, Table, Text, ThematicBreak,
   lookup_link,
 }
-import tui_gleam/text_hygiene
-import tui_gleam/theme
+import tui/text_hygiene
+import tui/theme
 
 type InlinePart {
   Styled(span.Span)

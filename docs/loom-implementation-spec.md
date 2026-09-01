@@ -587,7 +587,7 @@ Linux development container.
   those same hooks — it has no compaction hooks of its own, so the
   `CompactionEntry` it asserts on carries text the provider produced.
   *The native TUI leg is closed for its implemented surface* (issue #7):
-  `client/tui_e2e_test` exports the real `tui_gleam` shipment, runs it in a
+  `client/tui_e2e_test` exports the real `tui` shipment, runs it in a
   terminal under `tmux` against a real `client/serve.boot`, and drives a turn,
   a fork, and clean detach through keystrokes alone — only the model is
   scripted. The older Go-client version of this test also found sparse-seq and

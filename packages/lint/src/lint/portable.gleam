@@ -38,7 +38,7 @@
 //// which inverts the invariant the whole architecture exists to hold. The
 //// two-channel doctrine assumes both channels, and doorbells need
 //// processes. The short path to a browser client is not porting the harness
-//// at all: it is `packages/tui_gleam`'s seam, the frozen §1.6 protocol over the
+//// at all: it is `packages/tui`'s seam, the frozen §1.6 protocol over the
 //// client gateway, which gets the real harness and its real sandbox behind
 //// a web front end.
 ////

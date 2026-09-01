@@ -1,4 +1,4 @@
-name = "tui_gleam"
+name = "tui"
 version = "0.1.0"
 target = "erlang"
 gleam = ">= 1.16.0"

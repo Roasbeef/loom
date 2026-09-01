@@ -890,7 +890,7 @@ tighten the ecosystem defaults:
    but not act**: replay a conversation tree, validate a transcript with
    the same total decoders the server uses, run `next_action` over fetched
    state to show what the harness would do next. Every effect still
-   proxied. A browser *client* is a different seam entirely — `packages/tui_gleam`
+   proxied. A browser *client* is a different seam entirely — `packages/tui`
    speaks the frozen §1.6 protocol over the client gateway, and that gets
    the real harness with its real sandbox behind a web front end.
 6. **Time and identity are injected**: timestamps come from a `Clock`

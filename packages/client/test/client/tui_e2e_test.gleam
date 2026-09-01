@@ -2,14 +2,14 @@
 ////
 //// Every other end-to-end in this tree has a fake on one side. The
 //// protocol conformance suite pins the gateway to one fixture corpus;
-//// `packages/tui_gleam` has model-level tests; `client/demo` drives the
+//// `packages/tui` has model-level tests; `client/demo` drives the
 //// real gateway with a protocol client. A fake on both sides of a protocol
 //// proves the fixture, not the protocol, so this one has a fake on *neither*:
 ////
 ////  - the server is `client/serve.boot`, the same boot `gleam run -m
 ////    client/serve` performs, on an ephemeral port with a real `mist`
 ////    listener, a real SQLite session and a real minted bearer token;
-////  - the client is the native `tui_gleam` shipment, exported by this test
+////  - the client is the native `tui` shipment, exported by this test
 ////    so the artifact under test cannot be stale, running under a real
 ////    terminal in `tmux` and driven only by keystrokes;
 ////  - only the *model* is scripted, through `Settings.gateway` — a
@@ -170,11 +170,7 @@ fn build_tui(gleam: String, workdir: String) -> Result(String, String) {
   let assert Ok(Nil) = simplifile.create_directory_all(workdir <> "/" <> root)
     as "the end-to-end's build directory must exist"
   case
-    ffi_proc.run(
-      gleam,
-      ["export", "erlang-shipment"],
-      in: workdir <> "/../tui_gleam",
-    )
+    ffi_proc.run(gleam, ["export", "erlang-shipment"], in: workdir <> "/../tui")
   {
     Error(reason) -> Error("native TUI export could not be started: " <> reason)
     Ok(#(0, _output)) -> {
@@ -183,8 +179,8 @@ fn build_tui(gleam: String, workdir: String) -> Result(String, String) {
           out,
           "#!/bin/sh\nexec erl +Bd -pa '"
             <> workdir
-            <> "/../tui_gleam/build/erlang-shipment'/*/ebin "
-            <> "-eval 'tui_gleam@@main:run(tui_gleam)' -noshell -extra \"$@\"\n",
+            <> "/../tui/build/erlang-shipment'/*/ebin "
+            <> "-eval 'tui@@main:run(tui)' -noshell -extra \"$@\"\n",
         )
         |> result.replace_error(
           "the native TUI test launcher could not be written",

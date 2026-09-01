@@ -4,8 +4,8 @@ import etui/span
 import gleam/list
 import gleam/string
 import gleeunit/should
-import tui_gleam/markdown
-import tui_gleam/text_hygiene
+import tui/markdown
+import tui/text_hygiene
 
 pub fn headings_lists_and_code_keep_semantic_text_test() {
   let rendered =

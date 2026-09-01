@@ -13,20 +13,20 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import simplifile
-import tui_gleam
-import tui_gleam/agents
-import tui_gleam/command
-import tui_gleam/composer
-import tui_gleam/connection
-import tui_gleam/image_drop
-import tui_gleam/internal/ffi_file
-import tui_gleam/internal/workspace_file
-import tui_gleam/markdown
-import tui_gleam/model_selector
-import tui_gleam/protocol.{ModelInfo, Strand}
-import tui_gleam/theme
-import tui_gleam/workspace
-import tui_gleam_test/ffi_term
+import tui
+import tui/agents
+import tui/command
+import tui/composer
+import tui/connection
+import tui/image_drop
+import tui/internal/ffi_file
+import tui/internal/workspace_file
+import tui/markdown
+import tui/model_selector
+import tui/protocol.{ModelInfo, Strand}
+import tui/theme
+import tui/workspace
+import tui_test/ffi_term
 
 pub fn main() {
   gleeunit.main()
@@ -76,8 +76,7 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       cost: message.UsageCost(0.01, 0.02, 0.003, 0.004, 0.037),
     )
 
-  assert tui_gleam.usage_summary(usage)
-    == "in 12k · out 678 · cache 90k/123 · $0.037"
+  assert tui.usage_summary(usage) == "in 12k · out 678 · cache 90k/123 · $0.037"
 }
 
 pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
@@ -95,18 +94,17 @@ pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
     + span.line_width(status)
     + 1
 
-  assert tui_gleam.footer_rows(needed, project, model_name, usage, status) == 1
-  assert tui_gleam.footer_rows(needed - 1, project, model_name, usage, status)
-    == 2
-  assert tui_gleam.footer_rows(133, project, model_name, usage, status) == 2
-  assert tui_gleam.footer_rows(40, project, model_name, usage, status) == 3
-  assert tui_gleam.footer_rows(180, project, model_name, usage, status) == 1
-  assert tui_gleam.transcript_height(40, 3, 2) == 32
-  assert tui_gleam.transcript_height(40, 3, 3) == 31
-  assert tui_gleam.transcript_height(40, 3, 1) == 33
-  assert tui_gleam.viewport_height_changed(
-    tui_gleam.transcript_height(40, 3, 2),
-    tui_gleam.transcript_height(40, 3, 1),
+  assert tui.footer_rows(needed, project, model_name, usage, status) == 1
+  assert tui.footer_rows(needed - 1, project, model_name, usage, status) == 2
+  assert tui.footer_rows(133, project, model_name, usage, status) == 2
+  assert tui.footer_rows(40, project, model_name, usage, status) == 3
+  assert tui.footer_rows(180, project, model_name, usage, status) == 1
+  assert tui.transcript_height(40, 3, 2) == 32
+  assert tui.transcript_height(40, 3, 3) == 31
+  assert tui.transcript_height(40, 3, 1) == 33
+  assert tui.viewport_height_changed(
+    tui.transcript_height(40, 3, 2),
+    tui.transcript_height(40, 3, 1),
   )
 }
 
@@ -144,26 +142,26 @@ pub fn workspace_metadata_read_is_descriptor_bounded_test() {
 }
 
 pub fn footer_status_preserves_transient_operator_feedback_test() {
-  assert tui_gleam.footer_status("0 live / 3 agents", "queued after main")
+  assert tui.footer_status("0 live / 3 agents", "queued after main")
     == "0 live / 3 agents · queued after main"
 }
 
 pub fn footer_status_sanitizes_untrusted_server_text_test() {
-  assert tui_gleam.footer_status("0 live", "\u{1b}[31mhostile\nnotice")
+  assert tui.footer_status("0 live", "\u{1b}[31mhostile\nnotice")
     == "0 live · hostile notice"
 }
 
 pub fn footer_status_omits_the_dedicated_model_label_test() {
-  assert tui_gleam.footer_status("0 live / 3 agents", "model: baseten-kimi-k3")
+  assert tui.footer_status("0 live / 3 agents", "model: baseten-kimi-k3")
     == "0 live / 3 agents"
 }
 
 pub fn active_indicator_advances_at_a_readable_cadence_test() {
-  assert tui_gleam.activity_glyph(0) == "◐"
-  assert tui_gleam.activity_glyph(3) == "◓"
-  assert tui_gleam.activity_glyph(6) == "◑"
-  assert tui_gleam.activity_glyph(9) == "◒"
-  assert tui_gleam.activity_glyph(12) == "◐"
+  assert tui.activity_glyph(0) == "◐"
+  assert tui.activity_glyph(3) == "◓"
+  assert tui.activity_glyph(6) == "◑"
+  assert tui.activity_glyph(9) == "◒"
+  assert tui.activity_glyph(12) == "◐"
 }
 
 pub fn cached_frame_reuses_the_exact_buffer_term_test() {
@@ -171,7 +169,7 @@ pub fn cached_frame_reuses_the_exact_buffer_term_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Ok(Position(2, 1)))
   let #(reused, cursor) =
-    tui_gleam.cached_frame(cached, screen, 7, screen, 7, fn() {
+    tui.cached_frame(cached, screen, 7, screen, 7, fn() {
       panic as "a matching frame cache must not rebuild"
     })
 
@@ -200,7 +198,7 @@ pub fn cached_frame_rebuilds_after_visible_revisions_test() {
         style.new(style.Default, style.Default, style.none()),
       )
     let #(rebuilt, _) =
-      tui_gleam.cached_frame(cached, screen, 7, screen, 8, fn() {
+      tui.cached_frame(cached, screen, 7, screen, 8, fn() {
         #(replacement, Error(Nil))
       })
     assert ffi_term.same_term(replacement, rebuilt)
@@ -214,7 +212,7 @@ pub fn cached_frame_rebuilds_for_resize_test() {
   let cached_buffer = buffer.buffer_new(before)
   let replacement = buffer.buffer_new(after)
   let #(rebuilt, cursor) =
-    tui_gleam.cached_frame(
+    tui.cached_frame(
       #(cached_buffer, Ok(Position(1, 1))),
       before,
       4,
@@ -232,7 +230,7 @@ pub fn cached_frame_rebuilds_for_cursor_revision_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let replacement = buffer.buffer_new(screen)
   let #(rebuilt, cursor) =
-    tui_gleam.cached_frame(
+    tui.cached_frame(
       #(cached_buffer, Ok(Position(1, 1))),
       screen,
       4,
@@ -247,26 +245,26 @@ pub fn cached_frame_rebuilds_for_cursor_revision_test() {
 }
 
 pub fn adaptive_poll_enters_quiet_only_after_hysteresis_test() {
-  assert tui_gleam.poll_timeout_for(0) == 40
-  assert tui_gleam.poll_timeout_for(319) == 40
-  assert tui_gleam.poll_timeout_for(320) == 400
+  assert tui.poll_timeout_for(0) == 40
+  assert tui.poll_timeout_for(319) == 40
+  assert tui.poll_timeout_for(320) == 400
 
   let after_seven_ticks =
     [1, 2, 3, 4, 5, 6, 7]
     |> list.fold(0, fn(quiet_for, _) {
-      tui_gleam.next_quiet_for(quiet_for, 40, False)
+      tui.next_quiet_for(quiet_for, 40, False)
     })
   assert after_seven_ticks == 280
-  assert tui_gleam.poll_timeout_for(after_seven_ticks) == 40
-  let quiet = tui_gleam.next_quiet_for(after_seven_ticks, 40, False)
+  assert tui.poll_timeout_for(after_seven_ticks) == 40
+  let quiet = tui.next_quiet_for(after_seven_ticks, 40, False)
   assert quiet == 320
-  assert tui_gleam.poll_timeout_for(quiet) == 400
+  assert tui.poll_timeout_for(quiet) == 400
 }
 
 pub fn adaptive_poll_activity_immediately_restores_fast_cadence_test() {
-  let reset = tui_gleam.next_quiet_for(320, 400, True)
+  let reset = tui.next_quiet_for(320, 400, True)
   assert reset == 0
-  assert tui_gleam.poll_timeout_for(reset) == 40
+  assert tui.poll_timeout_for(reset) == 40
 }
 
 pub fn slash_command_palette_filters_and_completes_test() {
@@ -279,8 +277,8 @@ pub fn slash_command_palette_filters_and_completes_test() {
   assert command.selected(suggestions, 1) == Some("/strand ")
   assert command.suggestions("ordinary prompt") == []
   assert command.suggestions("/strand main") == []
-  assert tui_gleam.command_palette_escape(keys.Escape)
-  assert !tui_gleam.command_palette_escape(keys.Char("x"))
+  assert tui.command_palette_escape(keys.Escape)
+  assert !tui.command_palette_escape(keys.Char("x"))
 }
 
 pub fn models_test() {
@@ -379,39 +377,39 @@ pub fn model_selector_accepts_initials_test() {
 }
 
 pub fn transcript_scroll_clamps_at_the_live_tail_test() {
-  assert tui_gleam.scroll_offset(12, True, 3) == 15
-  assert tui_gleam.scroll_offset(12, False, 3) == 9
-  assert tui_gleam.scroll_offset(2, False, 3) == 0
+  assert tui.scroll_offset(12, True, 3) == 15
+  assert tui.scroll_offset(12, False, 3) == 9
+  assert tui.scroll_offset(2, False, 3) == 0
 }
 
 pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
-  assert tui_gleam.bounded_scroll_offset(80, 50, 20) == 30
-  assert tui_gleam.bounded_scroll_offset(3, 10, 20) == 0
-  assert tui_gleam.viewport_height_changed(18, 21)
-  assert !tui_gleam.viewport_height_changed(21, 21)
+  assert tui.bounded_scroll_offset(80, 50, 20) == 30
+  assert tui.bounded_scroll_offset(3, 10, 20) == 0
+  assert tui.viewport_height_changed(18, 21)
+  assert !tui.viewport_height_changed(21, 21)
 }
 
 pub fn streaming_output_preserves_the_scrollback_anchor_test() {
-  assert tui_gleam.anchored_scroll_offset(0, 20, 23) == 0
-  assert tui_gleam.anchored_scroll_offset(8, 20, 23) == 11
-  assert tui_gleam.anchored_scroll_offset(2, 20, 17) == 0
+  assert tui.anchored_scroll_offset(0, 20, 23) == 0
+  assert tui.anchored_scroll_offset(8, 20, 23) == 11
+  assert tui.anchored_scroll_offset(2, 20, 17) == 0
 }
 
 pub fn prompt_history_restores_the_unsent_draft_test() {
   let history = ["newest", "older"]
   let #(index, draft, value) =
-    tui_gleam.history_selection(history, 0, "", "unsent draft", True)
+    tui.history_selection(history, 0, "", "unsent draft", True)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
   let #(index, draft, value) =
-    tui_gleam.history_selection(history, index, draft, value, True)
+    tui.history_selection(history, index, draft, value, True)
   assert #(index, draft, value) == #(2, "unsent draft", "older")
 
   let #(index, draft, value) =
-    tui_gleam.history_selection(history, index, draft, value, False)
+    tui.history_selection(history, index, draft, value, False)
   assert #(index, draft, value) == #(1, "unsent draft", "newest")
 
-  assert tui_gleam.history_selection(history, index, draft, value, False)
+  assert tui.history_selection(history, index, draft, value, False)
     == #(0, "unsent draft", "unsent draft")
 }
 
@@ -508,7 +506,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   assert filename == "tui-golden-drop.png"
   assert mime_type == "image/png"
   assert byte_size == bit_array.byte_size(bytes)
-  let content = tui_gleam.image_prompt_content("inspect this", [image])
+  let content = tui.image_prompt_content("inspect this", [image])
   assert content
     == [
       message.UserText("inspect this", None),
@@ -562,8 +560,8 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
 }
 
 pub fn image_attachment_layout_measures_terminal_cells_test() {
-  assert tui_gleam.attachment_width("界.png", 20) == 9
-  assert tui_gleam.attachment_width("界.png", 8) == 6
+  assert tui.attachment_width("界.png", 20) == 9
+  assert tui.attachment_width("界.png", 8) == 6
 }
 
 pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
@@ -624,7 +622,7 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   assert composer.drop_last(attachments) == [composer.ImageAttachment(first)]
   assert composer.summary(attachments)
     == Some("a.png image/png 1 B · b.jpg image/jpeg 1 B")
-  assert tui_gleam.image_prompt_content("", composer.images(attachments))
+  assert tui.image_prompt_content("", composer.images(attachments))
     == [
       message.UserImage("YQ==", "image/png"),
       message.UserImage("Yg==", "image/jpeg"),
@@ -642,8 +640,8 @@ fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
 }
 
 pub fn image_submission_is_refused_while_the_strand_is_live_test() {
-  assert tui_gleam.image_prompt_allowed(False)
-  assert !tui_gleam.image_prompt_allowed(True)
+  assert tui.image_prompt_allowed(False)
+  assert !tui.image_prompt_allowed(True)
 }
 
 pub fn code_mode_program_renders_as_gleam_test() {
@@ -657,7 +655,7 @@ pub fn code_mode_program_renders_as_gleam_test() {
       ),
     ])
 
-  assert tui_gleam.code_mode_program("code_mode", arguments, False)
+  assert tui.code_mode_program("code_mode", arguments, False)
     == Some(
       "```gleam\nimport cap/report\n\npub fn main() {\n  report.text(\"live\")\n}\n```",
     )
@@ -674,9 +672,9 @@ pub fn code_mode_program_preview_is_bounded_test() {
       ),
     ])
   let assert Some(collapsed) =
-    tui_gleam.code_mode_program("code_mode", arguments, False)
+    tui.code_mode_program("code_mode", arguments, False)
   let assert Some(expanded) =
-    tui_gleam.code_mode_program("code_mode", arguments, True)
+    tui.code_mode_program("code_mode", arguments, True)
 
   assert !string.contains(collapsed, "line-13")
   assert string.contains(collapsed, "// …")
@@ -687,15 +685,14 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
   let arguments =
     json.Object([#("command", json.String("gleam test --target erlang"))])
 
-  assert tui_gleam.tool_call_summary("bash", arguments, False)
+  assert tui.tool_call_summary("bash", arguments, False)
     == "Bash(gleam test --target erlang)"
-  assert tui_gleam.tool_call_summary("bash", arguments, True)
+  assert tui.tool_call_summary("bash", arguments, True)
     == "Bash($ gleam test --target erlang)"
 }
 
 pub fn live_tool_call_hides_partial_json_arguments_test() {
-  assert tui_gleam.live_tool_call_summary("bash")
-    == "bash · preparing arguments…"
+  assert tui.live_tool_call_summary("bash") == "bash · preparing arguments…"
 }
 
 pub fn markdown_diff_lines_have_distinct_styles_test() {
@@ -728,7 +725,7 @@ pub fn injected_agent_notes_are_recognized_as_machine_context_test() {
       timestamp: 1,
     )
 
-  assert tui_gleam.agent_notes_payload(value) == Some("perf/cache = true")
+  assert tui.agent_notes_payload(value) == Some("perf/cache = true")
 }
 
 pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
@@ -738,13 +735,13 @@ pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
       timestamp: 1,
     )
 
-  assert tui_gleam.agent_notes_payload(value) == None
+  assert tui.agent_notes_payload(value) == None
 }
 
 pub fn long_prompt_wraps_without_changing_its_source_test() {
   let source = "check out the current diff and explain the remaining work"
   let state = text_area.state_from_string(source)
-  let view = tui_gleam.input_view_state(state, 12)
+  let view = tui.input_view_state(state, 12)
 
   assert text_area.value(state) == source
   assert view.lines
@@ -761,7 +758,7 @@ pub fn long_prompt_wraps_without_changing_its_source_test() {
 
 pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
   let state = text_area.state_from_string("abcdefghijkl")
-  let view = tui_gleam.input_view_state(state, 12)
+  let view = tui.input_view_state(state, 12)
 
   assert view.lines == ["abcdefghijkl", ""]
   assert view.cursor_y == 1
@@ -770,7 +767,7 @@ pub fn prompt_cursor_moves_to_the_next_visual_row_at_a_wrap_boundary_test() {
 
 pub fn prompt_wrap_uses_terminal_cells_for_wide_graphemes_test() {
   let state = text_area.state_from_string("ab界cd")
-  let view = tui_gleam.input_view_state(state, 4)
+  let view = tui.input_view_state(state, 4)
 
   assert view.lines == ["ab界", "cd"]
   assert view.cursor_y == 1

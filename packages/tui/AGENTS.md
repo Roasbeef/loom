@@ -1,4 +1,4 @@
-# tui_gleam
+# tui
 
 ## Purpose
 
@@ -10,33 +10,33 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
-- `tui_gleam.Model` is the immutable presentation state. Durable entries,
+- `tui.Model` is the immutable presentation state. Durable entries,
   transient stream fragments, local notices, overlays, and scroll position
   remain distinct so a settled entry cannot duplicate its streamed answer.
   Wrapped durable rows are cached by strand, width, and detail mode; pending
   records extend that cache without reparsing older markdown.
-- `tui_gleam/protocol.Event` is the client-owned view of the frozen
+- `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
-- `tui_gleam/connection.Connection` is a websocket-owning Stratus actor. The
+- `tui/connection.Connection` is a websocket-owning Stratus actor. The
   etui loop drains its mailbox on ticks, keeping networking out of `view` and
   out of keyboard handling. Startup occurs in a monitored, unlinked helper
   with a bounded deadline; a successful connection restores the runtime link.
-- `tui_gleam/model_selector.State` owns the searchable `/model` overlay. Its
+- `tui/model_selector.State` owns the searchable `/model` overlay. Its
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
-- `tui_gleam/markdown` walks Mork's public CommonMark tree and emits etui
+- `tui/markdown` walks Mork's public CommonMark tree and emits etui
   spans directly. Preformatted rows bypass prose wrapping so source
   indentation remains visible. It never passes model text through HTML or an
   ANSI renderer.
-- `tui_gleam/agents` projects the server's strand snapshot and `live_op`
+- `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
-- `tui_gleam/composer` separates editable prompt text from large pasted-text
+- `tui/composer` separates editable prompt text from large pasted-text
   and validated image attachments. It owns the approximate token indicator,
   expands exact pasted text only at the gateway boundary, and keeps local
   image paths out of typed prompt blocks.
-- `tui_gleam/image_drop` parses only terminal quote and backslash-space path
+- `tui/image_drop` parses only terminal quote and backslash-space path
   forms, sniffs PNG/JPEG/GIF/WebP magic, and enforces the 20 MiB limit before
   reading a whole image. Its small Erlang helper reads only the classification
   prefix or bounded body; a monitored Gleam worker limits descriptor opens and

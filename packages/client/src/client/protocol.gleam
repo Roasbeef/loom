@@ -1,6 +1,6 @@
 //// The Part 1.6 client protocol: the frozen websocket envelope plus the
-//// normative body shapes from the TUI's `protocol.md`, as plain Gleam
-//// values with total codecs over `core/json`.
+//// normative body shapes from `packages/client/protocol.md`, as plain
+//// Gleam values with total codecs over `core/json`.
 ////
 //// The envelope is frozen by the implementation spec (Part 1.6); the
 //// bodies are pinned by the golden fixtures under

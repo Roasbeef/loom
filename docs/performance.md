@@ -36,7 +36,7 @@ Identify every candidate `beam.smp` process and its process group before picking
 a PID:
 
 ```sh
-ps -axo pid=,ppid=,pgid=,%cpu=,rss=,etime=,command= | rg 'beam.smp|tui_gleam|loom'
+ps -axo pid=,ppid=,pgid=,%cpu=,rss=,etime=,command= | rg 'beam.smp|tui|loom'
 ```
 
 `RSS` is resident memory in KiB on macOS. `%CPU` is a recent average, so take a
@@ -87,9 +87,9 @@ the log and the gate's own status:
 
 ```sh
 set -o pipefail
-make check-tui_gleam 2>&1 | tee check-tui_gleam.log
+make check-tui 2>&1 | tee check-tui.log
 gate_status=${pipestatus[1]}
-printf 'CHECK_TUI_GLEAM_EXIT=%s\n' "$gate_status"
+printf 'CHECK_TUI_EXIT=%s\n' "$gate_status"
 exit "$gate_status"
 ```
 
@@ -302,7 +302,7 @@ throughput benchmark: it covers one machine, one terminal size, and the idle
 workload only.
 
 The two clients used the same server session and this launch shape from their
-respective `packages/tui_gleam` directories:
+respective `packages/tui` directories:
 
 ```sh
 stty rows 60 cols 120

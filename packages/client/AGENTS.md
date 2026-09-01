@@ -605,7 +605,7 @@ over one session file. WP-L.
   (the pure-Gleam TOML parser behind `--config`); `client/system_prompt`
   added `prompt`, whose purity is why the I/O had to live on this side.
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
-  `client/wiring` (legal — T depends on all). `packages/tui_gleam` is its
+  `client/wiring` (legal — T depends on all). `packages/tui` is its
   native client, coupled only through the protocol and the golden fixtures.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
   wall clock, unique entropy, `PATH` lookup, `code:root_dir/0` and the
@@ -1442,5 +1442,5 @@ over one session file. WP-L.
 - [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
   the pack format, the renderer, the summarization pack, and what
   `Environment` may never grow.
-- [packages/tui_gleam/CLAUDE.md](../tui_gleam/CLAUDE.md) — the other end of the wire.
+- [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

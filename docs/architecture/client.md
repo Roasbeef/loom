@@ -482,7 +482,7 @@ reaches the websocket handler without passing the check.
 
 ## The terminal client
 
-`loom-tui` is the native Gleam client in `packages/tui_gleam`. Etui owns raw
+`loom-tui` is the native Gleam client in `packages/tui`. Etui owns raw
 terminal input and frame diffs, Mork parses CommonMark into a structured tree,
 and Stratus owns the websocket actor. One immutable model keeps durable records,
 transient stream fragments, overlays, prompt state, scroll position, and the
@@ -561,9 +561,9 @@ real websocket `subscribe` returning a snapshot.
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
-| `packages/tui_gleam/src/tui_gleam.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
-| `packages/tui_gleam/src/tui_gleam/connection.gleam` | The websocket-owning actor and terminal inbox. |
-| `packages/tui_gleam/src/tui_gleam/protocol.gleam` | Total event decoding and outbound command encoding. |
+| `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
+| `packages/tui/src/tui/connection.gleam` | The websocket-owning actor and terminal inbox. |
+| `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root —
 `client/gateway.gleam` is `packages/client/src/client/gateway.gleam`. For the operation model

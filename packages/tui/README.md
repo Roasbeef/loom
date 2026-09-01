@@ -1,6 +1,6 @@
-# tui_gleam
+# tui
 
-`tui_gleam` is Loom's shipped native terminal client. It receives keyboard
+`tui` is Loom's shipped native terminal client. It receives keyboard
 input in a real PTY,
 attaches to the frozen ClientGateway websocket, follows a live session, and
 renders Mork's CommonMark tree directly into etui spans.
@@ -60,7 +60,7 @@ history.
 ```mermaid
 sequenceDiagram
     participant G as ClientGateway
-    participant T as tui_gleam Model
+    participant T as tui Model
     participant V as transcript view
 
     G-->>T: stream_delta(thinking/text/tool_call)
@@ -196,8 +196,8 @@ The package has focused gates, and root `make check` runs both as part of the
 repository-wide gate:
 
 ```sh
-make check-tui_gleam
-make lint-tui_gleam
+make check-tui
+make lint-tui
 ```
 
 On the machine used for issue #114, an already-resolved warning-free build is
@@ -232,13 +232,13 @@ opens and reads with a monitored one-second deadline.
 
 | Path | What it holds |
 |---|---|
-| `src/tui_gleam.gleam` | The model, update loop, viewport, overlays, and command dispatch. |
-| `src/tui_gleam/protocol.gleam` | Total ClientGateway event decoding and outbound command encoding. |
-| `src/tui_gleam/connection.gleam` | The websocket-owning Stratus actor and terminal inbox. |
-| `src/tui_gleam/markdown.gleam` | Mork `Document` to styled etui line rendering. |
-| `src/tui_gleam/model_selector.gleam` | Search ranking, selection state, and modal rendering. |
-| `src/tui_gleam/agents.gleam` | Strand projection, hidden rail, and topology inspector. |
-| `src/tui_gleam/text_hygiene.gleam` | The terminal-control boundary shared by every visible field. |
+| `src/tui.gleam` | The model, update loop, viewport, overlays, and command dispatch. |
+| `src/tui/protocol.gleam` | Total ClientGateway event decoding and outbound command encoding. |
+| `src/tui/connection.gleam` | The websocket-owning Stratus actor and terminal inbox. |
+| `src/tui/markdown.gleam` | Mork `Document` to styled etui line rendering. |
+| `src/tui/model_selector.gleam` | Search ranking, selection state, and modal rendering. |
+| `src/tui/agents.gleam` | Strand projection, hidden rail, and topology inspector. |
+| `src/tui/text_hygiene.gleam` | The terminal-control boundary shared by every visible field. |
 | `test/` | Command, selector, markdown, and text-hygiene regression tests. |
 
 Read [`CLAUDE.md`](CLAUDE.md) before changing the package. It names the exact

@@ -92,7 +92,7 @@ touches the world.
 | `tools` | effect | bash, hash-anchored filesystem reads and edits, grep, the `agent_*` family, and the `code_mode` door. |
 | `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
 | `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
-| `tui_gleam` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
+| `tui` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
 | `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loom-server` entry point. |
 | `telemetry` | cross-cutting | Structured logs whose correlation context travels as a value, and two enforced redaction rules. A leaf over `core`, so every impure package may depend on it. |
 | `conformance` | tests | Storage conformance, wiring, the interleave harness, the simulation runner, the jailed end-to-end. |
@@ -538,8 +538,8 @@ a `0600` file next to the session, which is the local-auth story: reading
 it proves you are the same user, and remote clients get the same header
 over their own transport.
 
-`loom-tui --demo` runs the client against an in-process fake with a
-canned session — no server, no network, a fine first thing to try.
+`loom-tui --demo` renders a self-contained preview from a canned local model —
+no server, no network, a fine first thing to try.
 
 What the server needs beyond itself: optionally a provider key.
 `ANTHROPIC_API_KEY` is read from the environment at dispatch time;

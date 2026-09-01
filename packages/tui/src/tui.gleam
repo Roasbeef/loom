@@ -33,17 +33,17 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
-import tui_gleam/agents
-import tui_gleam/command
-import tui_gleam/composer
-import tui_gleam/connection
-import tui_gleam/image_drop
-import tui_gleam/markdown
-import tui_gleam/model_selector
-import tui_gleam/protocol.{ModelInfo, Strand}
-import tui_gleam/text_hygiene
-import tui_gleam/theme
-import tui_gleam/workspace
+import tui/agents
+import tui/command
+import tui/composer
+import tui/connection
+import tui/image_drop
+import tui/markdown
+import tui/model_selector
+import tui/protocol.{ModelInfo, Strand}
+import tui/text_hygiene
+import tui/theme
+import tui/workspace
 
 type Speaker {
   System
@@ -313,7 +313,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 }
 
 fn launch_usage() -> String {
-  "usage: tui_gleam --addr <websocket-url> --session <id> "
+  "usage: tui --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
 }
 
@@ -844,7 +844,7 @@ fn input_layout(
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui_gleam.attachment_width("界.png", 20) == 9
+/// assert tui.attachment_width("界.png", 20) == 9
 /// ```
 ///
 @internal
@@ -1777,7 +1777,7 @@ fn patch_program(
 ///
 /// ```gleam
 /// let arguments = json.Object([#("program", json.String("pub fn main() {}"))])
-/// let assert Some(source) = tui_gleam.code_mode_program("code_mode", arguments, True)
+/// let assert Some(source) = tui.code_mode_program("code_mode", arguments, True)
 /// ```
 @internal
 pub fn code_mode_program(
@@ -2409,8 +2409,8 @@ fn transcript_width(model: Model) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui_gleam.scroll_offset(3, False, 10) == 0
-/// assert tui_gleam.scroll_offset(3, True, 10) == 13
+/// assert tui.scroll_offset(3, False, 10) == 0
+/// assert tui.scroll_offset(3, True, 10) == 13
 /// ```
 @internal
 pub fn scroll_offset(offset: Int, older: Bool, rows: Int) -> Int {
@@ -2438,8 +2438,8 @@ pub fn bounded_scroll_offset(
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui_gleam.anchored_scroll_offset(0, 20, 23) == 0
-/// assert tui_gleam.anchored_scroll_offset(8, 20, 23) == 11
+/// assert tui.anchored_scroll_offset(0, 20, 23) == 0
+/// assert tui.anchored_scroll_offset(8, 20, 23) == 11
 /// ```
 @internal
 pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
@@ -2745,9 +2745,9 @@ fn navigate_history(model: Model, older: Bool) -> Model {
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui_gleam.history_selection(["new", "old"], 0, "", "draft", True)
+/// assert tui.history_selection(["new", "old"], 0, "", "draft", True)
 ///   == #(1, "draft", "new")
-/// assert tui_gleam.history_selection(["new"], 1, "draft", "new", False)
+/// assert tui.history_selection(["new"], 1, "draft", "new", False)
 ///   == #(0, "draft", "draft")
 /// ```
 @internal

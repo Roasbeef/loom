@@ -15,9 +15,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import tui_gleam/protocol.{type Strand, Strand}
-import tui_gleam/text_hygiene
-import tui_gleam/theme
+import tui/protocol.{type Strand, Strand}
+import tui/text_hygiene
+import tui/theme
 
 /// Renders the always-visible agent rail on wide terminals.
 ///

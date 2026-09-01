@@ -39,7 +39,7 @@ set), plus `codemode` and `cap` for programs the model writes, and `mcp`
 for the third-party servers those programs can be handed.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
-the production wiring, and the `loom-server` entry point — and `tui_gleam` is
+the production wiring, and the `loom-server` entry point — and `tui` is
 the native terminal client on the far side of the wire. `prompt` renders the
 system prompt from a data pack, `conformance` holds the suites that
 define correct, and `cap` is compiled *into* the jail rather than linked
@@ -109,7 +109,7 @@ binds.
 ## 1. The key press
 
 Etui hands each key to `update_key` in
-`packages/tui_gleam/src/tui_gleam.gleam`. Modal keys stay with the open
+`packages/tui/src/tui.gleam`. Modal keys stay with the open
 selector or inspector; ordinary keys update the textarea; Enter passes the
 current draft to the submission reducer.
 
@@ -120,7 +120,7 @@ operation is a `steer`. Tab changes the live submission mode to a queued
 `/compact`, `/abort`, `/strand`, `/model`, `/quit`).
 
 The update loop never performs websocket I/O. It sends a typed message to the
-connection actor in `tui_gleam/connection.gleam`; that actor stamps the command
+connection actor in `tui/connection.gleam`; that actor stamps the command
 id, serializes the frozen envelope, and owns the Stratus socket. Incoming text
 returns through the terminal process's mailbox and reduces the same immutable
 model before `view` draws the next frame.
@@ -941,7 +941,7 @@ only shortened the wait.
 
 **The strand is busy, so the client sends a different command.** That decision
 was made by `update_main_key_without_palette` in
-`packages/tui_gleam/src/tui_gleam.gleam` from the strand list the client
+`packages/tui/src/tui.gleam` from the strand list the client
 already holds. A `steer` ack is not what the reply table alone
 suggests: the queue admission mints a reserved entry id and writes the
 payload to a pending register, so the ack carries that reserved id with

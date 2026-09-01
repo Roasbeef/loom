@@ -11,7 +11,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
-import tui_gleam/internal/ffi_file
+import tui/internal/ffi_file
 
 /// The largest image file admitted before a prompt frame is constructed.
 pub const max_image_bytes = 20_971_520

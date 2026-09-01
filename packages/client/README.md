@@ -6,7 +6,7 @@ it, and — because this is the tree's host package — the production
 wiring that turns `runtime/effects.Effects` into a real provider, a real
 broker, and a real tool registry, plus the `loom-server` entry point that
 boots the whole stack over one session file. Everything a human or a
-thin client (`packages/tui_gleam`) does to a session arrives here first.
+thin client (`packages/tui`) does to a session arrives here first.
 
 ## The gateway: one hub, any number of connections
 
@@ -95,7 +95,7 @@ human clicked approve. `client/demo` asserts on `Consumed` while driving the
 complete flow through the websocket protocol. The native terminal end-to-end
 does not claim this leg yet: it proves terminal input, durable output, fork,
 and clean detach against the real server, while approval remains visible but
-non-interactive in `tui_gleam`.
+non-interactive in `tui`.
 
 An approval buys exactly one re-clearance of exactly one call — the
 record's `CallScope` is checked against the call in hand before anything
@@ -172,7 +172,7 @@ Paths are relative to `packages/client/src/` — `client/escalate` is
   invariants that break things when violated. Read it before editing.
 - [`docs/architecture/orchestration.md`](../../docs/architecture/orchestration.md)
   — the runtime surface the hub dispatches onto.
-- [`packages/tui_gleam/CLAUDE.md`](../tui_gleam/CLAUDE.md) — the other end of the
+- [`packages/tui/CLAUDE.md`](../tui/CLAUDE.md) — the other end of the
   wire, and the golden fixtures both sides are pinned against.
 - [`packages/runtime/CLAUDE.md`](../runtime/CLAUDE.md) — the escalation
   register, the lineage ledger, and the drive loop this package commits
