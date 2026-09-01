@@ -127,7 +127,7 @@ jobs:
               build/release/loom/share/codemode-seed \
               build/release/loom \
               dist/loom-0.1.0-linux-x86_64.tar.gz \
-              dist/loom-tui-0.1.0-linux-x86_64
+              dist/loom-tui-0.1.0-linux-x86_64.tar.gz
           } | tee -a distribution-linux.log
           DIST_CODEMODE=0 make dist 2>&1 | tee -a distribution-linux.log
           {

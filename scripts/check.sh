@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(core storage session machine prompt telemetry runtime provider broker mcp tools cap codemode events client conformance tui_gleam lint sandbox tui)
+packages=(core storage session machine prompt telemetry runtime provider broker mcp tools cap codemode events client tui_gleam conformance lint sandbox)
 targets=("${@:-${packages[@]}}")
 
 # The `code_mode` description carries the capability prelude's public
@@ -24,7 +24,7 @@ for pkg in "${targets[@]}"; do
 done
 
 for pkg in "${targets[@]}"; do
-  if [ "$pkg" = "sandbox" ] || [ "$pkg" = "tui" ]; then
+  if [ "$pkg" = "sandbox" ]; then
     echo "==> $pkg (Go)"
     # Capture the listing directly because macOS wc pads a zero count with
     # spaces. An assignment preserves gofmt's failure status under set -e,

@@ -116,15 +116,10 @@ pub fn alive(terminal: Terminal) -> Bool {
 /// `send-keys -l` per character, so each grapheme reaches the program as
 /// its own write, the way a person's typing does.
 ///
-/// Not an affectation. A whole string written at once arrives at
-/// bubbletea as a single run of runes, and a run of runes is named by
-/// its own text: `tea.KeyMsg{Type: KeyRunes, Runes: []rune("end")}` has
-/// `String() == "end"`, which `textarea.DefaultKeyMap.LineEnd` matches —
-/// so the word is swallowed as a cursor movement instead of typed.
-/// (Verified directly against the vendored `bubbles`, not assumed.) That
-/// is a live latent bug for anything that delivers a multi-rune write —
-/// an unbracketed paste — but it is the TUI's to fix, and a harness that
-/// tripped it would be asserting on the wrong thing.
+/// The drive models typing rather than a paste. Sending a whole string in one
+/// terminal write changes the backend event shape and can exercise the
+/// bracketed-paste path instead of the ordinary editor path, so it would prove
+/// a different interaction than the test names.
 ///
 /// ## Examples
 ///

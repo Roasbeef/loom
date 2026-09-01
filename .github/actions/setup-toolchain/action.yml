@@ -21,7 +21,7 @@
 #                       because `esqlite` (under `sqlight`, ADR-002) is a
 #                       rebar3 package with a C NIF.
 #   go       1.24.7     the highest `go` directive in the tree —
-#                       packages/tui/go.mod says `go 1.24.7`,
+#                       packages/sandbox/go.mod says `go 1.24.7`,
 #                       packages/sandbox/go.mod says `go 1.24.0` — and the
 #                       development environment's Go. Under Go's toolchain
 #                       rules anything below 1.24.7 refuses to build `tui`.
@@ -91,7 +91,6 @@ runs:
         # every dependency that can change.
         cache-dependency-path: |
           packages/sandbox/go.sum
-          packages/tui/go.sum
         cache: ${{ inputs.cache }}
 
     # Hex tarballs are content-addressed and every one of them is

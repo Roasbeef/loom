@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Package the built release for download: one tarball for the server and
-# its helper, one bare binary for the terminal client, and a SHA256SUMS
-# over both.
+# Package the built release for download: one self-contained tarball for the
+# server and its helper, one Erlang shipment tarball for the terminal client,
+# and a SHA256SUMS over both.
 #
 #   scripts/dist.sh    # needs `make release` to have run
 #
@@ -9,10 +9,10 @@
 # artifact is the BEAM runtime plus the kernel-enforcement helper, and it
 # belongs where the repository and the jail are. `loom-tui` is a client
 # over the frozen gateway protocol; it belongs where the human is, which
-# is routinely a different machine, and it is a single static Go binary
-# that needs no tree around it. Fusing them would also imply the two must
-# match versions — the protocol being frozen is exactly the claim that
-# they need not.
+# is routinely a different machine. Fusing them would also imply the two
+# must match versions. The protocol being frozen is exactly the claim that
+# they need not. The native client shipment carries its BEAM dependency
+# closure, but not a second ERTS, so its host must provide compatible OTP.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -49,8 +49,23 @@ cp -a "$REL" "$STAGE"
 tar -C "$ROOT/build/release" -czf "$DIST/$STEM.tar.gz" "$STEM"
 rm -rf "$STAGE"
 
-echo "==> building the terminal client"
-scripts/go-build.sh "$ROOT/packages/tui" ./cmd/loom-tui "$DIST/loom-tui-$VERSION-$PLAT"
+echo "==> packaging the native terminal client"
+TUI_STEM="loom-tui-$VERSION-$PLAT"
+TUI_STAGE="$ROOT/build/release/$TUI_STEM"
+rm -rf "$TUI_STAGE"
+mkdir -p "$TUI_STAGE/bin" "$TUI_STAGE/build"
+cp "$ROOT/bin/loom-tui" "$TUI_STAGE/bin/loom-tui"
+cp -a "$ROOT/build/tui-erlang-shipment" "$TUI_STAGE/build/tui-erlang-shipment"
+tar -C "$ROOT/build/release" -czf "$DIST/$TUI_STEM.tar.gz" "$TUI_STEM"
+rm -rf "$TUI_STAGE"
+
+# The client is a tree, not a renamed standalone executable. Pin both halves
+# of that contract in the archive so a packaging regression cannot publish a
+# launcher whose shipment was omitted.
+tar -tzf "$DIST/$TUI_STEM.tar.gz" \
+  | grep -Fx "$TUI_STEM/bin/loom-tui" >/dev/null
+tar -tzf "$DIST/$TUI_STEM.tar.gz" \
+  | grep -Fx "$TUI_STEM/build/tui-erlang-shipment/entrypoint.sh" >/dev/null
 
 # macOS ships `shasum` rather than `sha256sum`. The temp name keeps the
 # manifest from listing itself.
