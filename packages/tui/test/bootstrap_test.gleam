@@ -131,9 +131,11 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
     ffi_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
   let process_port = started.0
   let pid = started.1
-  let assert Ok(first) = ffi_bootstrap.process_identity(pid)
+  let assert Ok(ffi_bootstrap.ProcessPresent(first)) =
+    ffi_bootstrap.process_identity(pid)
   let assert Ok(Nil) = ffi_bootstrap.release_server_process(process_port)
-  assert ffi_bootstrap.process_identity(pid) == Ok(first)
+  assert ffi_bootstrap.process_identity(pid)
+    == Ok(ffi_bootstrap.ProcessPresent(first))
   ffi_bootstrap.terminate_process_group(pid)
   ffi_bootstrap.close_server_process(process_port)
   assert_process_stops(pid, 20)
@@ -218,10 +220,18 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert preserved_pid == pid
   let assert Ok(third) = bootstrap.resolve(options)
   assert third.address == first.address
-  let assert Ok(identity) = ffi_bootstrap.process_identity(pid)
-  assert ffi_bootstrap.process_identity(pid) == Ok(identity)
+  let assert Ok(ffi_bootstrap.ProcessPresent(identity)) =
+    ffi_bootstrap.process_identity(pid)
+  assert ffi_bootstrap.process_identity(pid)
+    == Ok(ffi_bootstrap.ProcessPresent(identity))
   ffi_bootstrap.terminate_process_group(pid)
   assert_process_stops(pid, 20)
+  let assert Ok(restarted) = bootstrap.resolve(options)
+  assert restarted.session == first.session
+  let assert Ok(restarted_pid) = endpoint_pid(state)
+  assert restarted_pid != pid
+  ffi_bootstrap.terminate_process_group(restarted_pid)
+  assert_process_stops(restarted_pid, 20)
   let _ = simplifile.delete(root)
   Nil
 }
@@ -242,9 +252,15 @@ fn acquire_lock_eventually(
 
 fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
   case ffi_bootstrap.process_identity(pid), attempts {
-    Error(_), _ -> Nil
-    Ok(_), 0 -> panic as "detached server did not stop"
-    Ok(_), _ -> {
+    Ok(ffi_bootstrap.ProcessAbsent), _ -> Nil
+    Ok(ffi_bootstrap.ProcessPresent(_)), 0 ->
+      panic as "detached server did not stop"
+    Error(_), 0 -> panic as "could not establish that detached server stopped"
+    Ok(ffi_bootstrap.ProcessPresent(_)), _ -> {
+      process.sleep(50)
+      assert_process_stops(pid, attempts - 1)
+    }
+    Error(_), _ -> {
       process.sleep(50)
       assert_process_stops(pid, attempts - 1)
     }

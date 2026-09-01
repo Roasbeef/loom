@@ -441,9 +441,21 @@ is_executable_path(Path) ->
 
 linux_process_identity(Pid) ->
     StatPath = "/proc/" ++ integer_to_list(Pid) ++ "/stat",
-    case {file:read_file(StatPath),
-          file:read_file("/proc/sys/kernel/random/boot_id")} of
-        {{ok, Stat}, {ok, BootId}} ->
+    case file:read_file(StatPath) of
+        {error, enoent} ->
+            {ok, process_absent};
+        {error, Reason} ->
+            {error, describe(Reason)};
+        {ok, Stat} ->
+            linux_identity_from_stat(
+                Stat,
+                file:read_file("/proc/sys/kernel/random/boot_id")
+            )
+    end.
+
+linux_identity_from_stat(Stat, BootIdResult) ->
+    case BootIdResult of
+        {ok, BootId} ->
             case binary:matches(Stat, <<")">>) of
                 [] -> {error, <<"process stat is malformed">>};
                 Matches ->
@@ -457,28 +469,57 @@ linux_process_identity(Pid) ->
                     case length(Fields) >= 20 of
                         true ->
                             Start = lists:nth(20, Fields),
-                            {ok, <<"linux:", (string:trim(BootId))/binary,
-                                   ":", Start/binary>>};
+                            Birth = <<"linux:", (string:trim(BootId))/binary,
+                                      ":", Start/binary>>,
+                            {ok, {process_present, Birth}};
                         false -> {error, <<"process stat has no birth time">>}
                     end
             end;
-        {{error, Reason}, _} -> {error, describe(Reason)};
-        {_, {error, Reason}} -> {error, describe(Reason)}
+        {error, Reason} ->
+            {error, describe(Reason)}
     end.
 
 darwin_process_identity(Pid) ->
-    case run_capture(
+    case run_capture_status(
         "/bin/ps",
         ["-p", integer_to_list(Pid), "-o", "lstart="],
         2000
     ) of
-        {ok, Output} ->
+        {ok, 0, Output} ->
             Started = string:trim(Output),
             case Started of
                 <<>> -> {error, <<"process has no birth time">>};
-                _ -> {ok, <<"darwin:", Started/binary>>}
+                _ -> {ok, {process_present,
+                           <<"darwin:", Started/binary>>}}
             end;
+        {ok, 1, <<>>} ->
+            {ok, process_absent};
+        {ok, Status, Output} ->
+            {error, describe({exit_status, Status, Output})};
         {error, _} = Error -> Error
+    end.
+
+run_capture_status(Executable, Arguments, TimeoutMs) ->
+    try
+        Port = open_port(
+            {spawn_executable, Executable},
+            [binary, exit_status, use_stdio, stderr_to_stdout, hide,
+             {args, Arguments}]
+        ),
+        collect_port_status(Port, [], TimeoutMs)
+    catch
+        Class:Reason -> {error, describe({Class, Reason})}
+    end.
+
+collect_port_status(Port, Chunks, TimeoutMs) ->
+    receive
+        {Port, {data, Data}} ->
+            collect_port_status(Port, [Data | Chunks], TimeoutMs);
+        {Port, {exit_status, Status}} ->
+            {ok, Status, iolist_to_binary(lists:reverse(Chunks))}
+    after TimeoutMs ->
+        _ = safe_port_close(Port),
+        {error, <<"operating-system helper timed out">>}
     end.
 
 run_capture(Executable, Arguments, TimeoutMs) ->

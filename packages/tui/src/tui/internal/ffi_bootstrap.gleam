@@ -11,6 +11,12 @@ pub type LaunchLock
 /// A detached server process retained as a port while bootstrap waits.
 pub type ServerProcess
 
+/// One operating-system process identity observation.
+pub type ProcessIdentity {
+  ProcessPresent(birth: String)
+  ProcessAbsent
+}
+
 /// Returns the current Unix time in milliseconds.
 ///
 /// Uses OTP `erlang:system_time/1`; bootstrap compares only timestamps minted
@@ -165,13 +171,13 @@ pub fn close_server_process(process: ServerProcess) -> Nil
 @external(erlang, "tui_ffi", "terminate_process_group")
 pub fn terminate_process_group(pid: Int) -> Nil
 
-/// Returns a birth-qualified identity for one live process.
+/// Returns a birth-qualified identity or confirms that the process is absent.
 ///
 /// Linux reads `/proc/<pid>/stat` plus the kernel boot id; Darwin asks `ps`
-/// for the full start time. Pairing this value with the pid prevents reuse of
-/// a stale endpoint after the original server exits.
+/// for the full start time. Absence is distinct from an observation failure so
+/// stale endpoints can be replaced without treating uncertainty as death.
 @external(erlang, "tui_ffi", "process_identity")
-pub fn process_identity(pid: Int) -> Result(String, String)
+pub fn process_identity(pid: Int) -> Result(ProcessIdentity, String)
 
 /// Returns a bounded tail of a current server log.
 ///

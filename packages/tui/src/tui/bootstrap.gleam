@@ -349,7 +349,11 @@ fn start_server(
       stop_started(StartedProcess(process:, pid:))
       Error("identify loomd process: " <> reason)
     }
-    Ok(server_birth) -> {
+    Ok(ffi_bootstrap.ProcessAbsent) -> {
+      stop_started(StartedProcess(process:, pid:))
+      Error("loomd wrapper exited before its identity was published")
+    }
+    Ok(ffi_bootstrap.ProcessPresent(server_birth)) -> {
       let endpoint = Endpoint(..endpoint, server_pid: pid, server_birth:)
       case write_endpoint(paths.endpoint, endpoint) {
         Error(reason) -> {
@@ -918,8 +922,10 @@ fn match_process(pid: Int, birth: String) -> ProcessMatch {
     False -> DifferentProcess
     True ->
       case ffi_bootstrap.process_identity(pid) {
-        Ok(current) if current == birth -> SameProcess
-        Ok(_) -> DifferentProcess
+        Ok(ffi_bootstrap.ProcessPresent(current)) if current == birth ->
+          SameProcess
+        Ok(ffi_bootstrap.ProcessPresent(_)) | Ok(ffi_bootstrap.ProcessAbsent) ->
+          DifferentProcess
         Error(reason) -> ProcessUnknown(reason)
       }
   }
