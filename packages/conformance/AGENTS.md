@@ -120,11 +120,19 @@ them from their own test mains.
   that legitimately changes the outcome (a provider that refuses, a user
   who aborts) is scripted into *both* runs so it cannot be mistaken for
   damage.
-- **Starved provider owners end with their consumers.** The simulation's
-  one-shot timeout owner monitors the effect process that requested it. A
-  killed effect therefore removes both the owner and its unused terminal
-  capability instead of leaving a synthetic process behind the conformance
-  run.
+- **Starved provider owners end with their consumers.** A starved provider
+  effect is a weft witnessed run (`weft.new_prepared([weft.managed(...)])
+  |> weft.cancel_when_exits(consumer) |> weft.start_witnessed`), and its
+  scope pid is `stream.owned`'s owner. The one-shot timeout owner — the
+  racer that holds the preselected transport-failure terminal — is
+  adopted as a leaf, so cancellation asks it to stop instead of killing
+  it, and naming the consumer here is what makes a killed effect cancel
+  the run through the same path an explicit release takes. A killed
+  effect therefore removes both the scope and its unused terminal
+  capability instead of leaving a synthetic process behind the
+  conformance run; its release still reaches the racer, but the send has
+  nowhere left to land, since `events` is owned by the consumer that just
+  died.
 - **A composition-layer service is proved absent, not merely
   well-behaved.** `conformance/triggered_rules_test` is the end-to-end
   for issue #27: real wiring, real gateway, real adapter, real runtime,
