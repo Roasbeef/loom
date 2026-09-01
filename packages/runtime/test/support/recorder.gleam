@@ -14,14 +14,24 @@ import gleam/otp/actor
 pub opaque type Message {
   Bump(key: String, reply: Subject(Int))
   Read(key: String, reply: Subject(Int))
-  Arm(at: Int)
+  Arm(at: Int, skipping: Int)
   OnCommit(reply: Subject(Bool))
   CommitCount(reply: Subject(Int))
   Fired(reply: Subject(Bool))
 }
 
 type State {
-  State(counts: Dict(String, Int), armed: Bool, at: Int, seen: Int, fired: Bool)
+  State(
+    counts: Dict(String, Int),
+    armed: Bool,
+    at: Int,
+    /// Commits still to let through uncounted after arming: the test's
+    /// own admissions, which precede the run and must be neither numbered
+    /// nor exploded.
+    skip: Int,
+    seen: Int,
+    fired: Bool,
+  )
 }
 
 /// Starts a recorder.
@@ -31,6 +41,7 @@ pub fn start() -> Subject(Message) {
       counts: dict.new(),
       armed: False,
       at: 0,
+      skip: 0,
       seen: 0,
       fired: False,
     ))
@@ -59,15 +70,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       })
       actor.continue(state)
     }
-    Arm(at:) ->
-      actor.continue(State(..state, armed: True, at:, seen: 0, fired: False))
+    Arm(at:, skipping:) ->
+      actor.continue(
+        State(..state, armed: True, at:, skip: skipping, seen: 0, fired: False),
+      )
     OnCommit(reply:) ->
-      case state.armed {
-        False -> {
+      case state.armed, state.skip > 0 {
+        False, _skip -> {
           process.send(reply, False)
           actor.continue(state)
         }
-        True -> {
+
+        // An admission the test itself made: let it through without a
+        // number, so the bomb's `k` still means "the k-th commit of the
+        // run" whatever the driver does in the meantime.
+        True, True -> {
+          process.send(reply, False)
+          actor.continue(State(..state, skip: state.skip - 1))
+        }
+        True, False -> {
           let seen = state.seen + 1
           let explode = !state.fired && state.at > 0 && seen == state.at
           process.send(reply, explode)
@@ -96,9 +117,13 @@ pub fn read(recorder: Subject(Message), key: String) -> Int {
 }
 
 /// Arms the crash bomb: the `at`-th armed commit explodes (kills the
-/// writer). `at <= 0` counts commits without ever exploding.
-pub fn arm(recorder: Subject(Message), at: Int) -> Nil {
-  process.send(recorder, Arm(at))
+/// writer). `at <= 0` counts commits without ever exploding. The first
+/// `skipping` commits after arming are passed through uncounted and
+/// unexploded — they are the test's own admissions (acceptance, steer),
+/// which have to be committed *after* arming so the driver cannot slip a
+/// run-start commit into the gap between the admission and the arm.
+pub fn arm(recorder: Subject(Message), at: Int, skipping skipping: Int) -> Nil {
+  process.send(recorder, Arm(at, skipping:))
 }
 
 /// Reports one commit; `True` means the caller must crash now.
