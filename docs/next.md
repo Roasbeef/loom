@@ -271,14 +271,16 @@ ADR-006's three named gaps. Do not replace this proof with `--best-effort`; the
 supported Darwin contract is `PlatformEnforcement`.
 
 Image drop is deliberately not smuggled through the text-only command.
-`protocol-change/010-prompt-content-blocks.md` is accepted and adds the
+`protocol-change/011-prompt-content-blocks.md` is accepted and adds the
 version-skew-safe `prompt_content` command carrying the existing total
 `UserBlock` codec. The gateway preserves block order and admits exactly one
 durable user message; malformed, empty, or unknown content refuses the whole
 command. The eTUI recognizes one regular PNG, JPEG, GIF, or WebP from terminal
 paste, bounds the read at 20 MiB, keeps local paths off the wire, and leaves
-live-strand steering text-only. Package tests cover the classifier, bounded
-reader, ordered wire frame, total decoder, and durable admission. A real
+live-strand steering text-only. One prompt retains at most four images and 20
+MiB of raw image data in aggregate; a monitored one-second read deadline keeps
+a swapped FIFO from blocking the terminal. Package tests cover the classifier,
+bounded reader, ordered wire frame, total decoder, and durable admission. A real
 terminal drag event remains outside the automated harness, so do not mistake
 the protocol and transition coverage for terminal-emulator proof.
 

@@ -540,6 +540,64 @@ pub fn bounded_image_read_refuses_growth_past_the_limit_test() {
   assert result == Error("file exceeds the bounded read limit")
 }
 
+pub fn file_read_worker_has_a_bounded_wait_test() {
+  let result =
+    ffi_file.read_safely_within(
+      fn() {
+        process.sleep(20)
+        Ok(<<>>)
+      },
+      1,
+    )
+
+  assert result == Error("file read timed out")
+}
+
+pub fn image_attachment_summary_sanitizes_the_filename_test() {
+  let image =
+    test_image("\u{1b}]0;spoof\u{7}\u{1b}[31mred.png\u{1b}[0m\nnext", 1)
+
+  assert composer.summary([composer.ImageAttachment(image)])
+    == Some("red.png next · image/png · 1 B")
+}
+
+pub fn image_attachment_layout_measures_terminal_cells_test() {
+  assert tui_gleam.attachment_width("界.png", 20) == 9
+  assert tui_gleam.attachment_width("界.png", 8) == 6
+}
+
+pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
+  let assert Ok(one) =
+    composer.admit_attachment([], composer.ImageAttachment(test_image("1", 1)))
+  let assert Ok(two) =
+    composer.admit_attachment(one, composer.ImageAttachment(test_image("2", 1)))
+  let assert Ok(three) =
+    composer.admit_attachment(two, composer.ImageAttachment(test_image("3", 1)))
+  let assert Ok(four) =
+    composer.admit_attachment(
+      three,
+      composer.ImageAttachment(test_image("4", 1)),
+    )
+
+  assert composer.admit_attachment(
+      four,
+      composer.ImageAttachment(test_image("5", 1)),
+    )
+    == Error("a prompt may attach at most four images")
+
+  let full =
+    composer.ImageAttachment(test_image(
+      "full",
+      composer.max_image_attachment_bytes,
+    ))
+  let assert Ok(at_limit) = composer.admit_attachment([], full)
+  assert composer.admit_attachment(
+      at_limit,
+      composer.ImageAttachment(test_image("overflow", 1)),
+    )
+    == Error("a prompt may attach at most 20 MiB of images")
+}
+
 pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
   let first =
     image_drop.Image(
@@ -571,6 +629,16 @@ pub fn image_attachments_keep_drop_order_and_remove_the_newest_test() {
       message.UserImage("YQ==", "image/png"),
       message.UserImage("Yg==", "image/jpeg"),
     ]
+}
+
+fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
+  image_drop.Image(
+    local_path: "/tmp/" <> filename,
+    filename:,
+    mime_type: "image/png",
+    byte_size:,
+    data: "YQ==",
+  )
 }
 
 pub fn image_submission_is_refused_while_the_strand_is_live_test() {

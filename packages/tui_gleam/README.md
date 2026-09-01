@@ -222,11 +222,13 @@ semantics, overlap durable replay safely, and fail in-flight requests rather
 than leaving them suspended. Until both are exercised end to end, a screen that
 looks complete is not a replacement client.
 
-Image drag and drop is also not implemented yet. The durable core and provider
-adapters already understand `UserImage`, but frozen ClientGateway prompts carry
-text only. [`protocol-change/010`](../../protocol-change/010-prompt-content-blocks.md)
-proposes a version-skew-safe `prompt_content` command. It remains pending
-approval; local paths must not be converted into an undocumented wire shape.
+Image drag and drop uses the accepted
+[`protocol-change/011`](../../protocol-change/011-prompt-content-blocks.md)
+`prompt_content` command, so an older gateway refuses the unknown command
+instead of silently dropping image blocks. The client recognizes PNG, JPEG,
+GIF, and WebP by magic bytes, keeps local paths off the wire, retains at most
+four images and 20 MiB of raw image data per prompt, and bounds descriptor
+opens and reads with a monitored one-second deadline.
 
 ## Where to look
 

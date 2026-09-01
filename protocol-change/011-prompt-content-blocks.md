@@ -1,4 +1,4 @@
-# protocol-change/010 - ClientGateway accepts prompt content blocks
+# protocol-change/011 - ClientGateway accepts prompt content blocks
 
 **Status**: ACCEPTED 2026-08-31 · **Affects**: Part 1 ClientGateway command
 vocabulary · **Raised by**: issue #114 eTUI image drag and drop
@@ -68,12 +68,16 @@ The eTUI treats a paste as an image drop only when all of these are true:
    not trusted as the MIME authority.
 4. The file is at most 20 MiB. Oversized files are refused before a
    prompt frame is built.
+5. One unsent prompt retains at most four images and 20 MiB of raw image data
+   in aggregate. A descriptor open or read that does not settle within one
+   second is refused, so replacing an inspected path with a FIFO cannot freeze
+   the terminal process.
 
-The composer shows the filename, media type, and byte size as a removable
-attachment. The local path is presentation state only. Submission sends a
-`UserText` block when the editor is non-empty followed by each `UserImage`
-block in drop order. The durable transcript later renders the server-owned
-message, not a client-side optimistic copy.
+The composer shows a terminal-sanitized filename, media type, and byte size as
+a removable attachment. The local path is presentation state only. Submission
+sends a `UserText` block when the editor is non-empty followed by each
+`UserImage` block in drop order. The durable transcript later renders the
+server-owned message, not a client-side optimistic copy.
 
 Ordinary pasted paths, unsupported files, and multiple pasted tokens remain
 text. A read failure leaves the editor untouched and shows a local error.

@@ -830,14 +830,26 @@ fn input_layout(
   case composer.summary(attachments) {
     None -> #(geometry.rect_zero(), area)
     Some(summary) -> {
-      let width =
-        int.min(int.max(0, area.size.width - 2), string.length(summary) + 3)
+      let width = attachment_width(summary, area.size.width)
       case geometry.split_h(area, [Length(width), Fill]) {
         [paste_area, editor_area] -> #(paste_area, editor_area)
         _ -> #(area, geometry.rect_zero())
       }
     }
   }
+}
+
+/// Measures one attachment chip in terminal cells and leaves editor padding.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui_gleam.attachment_width("界.png", 20) == 9
+/// ```
+///
+@internal
+pub fn attachment_width(summary: String, available_width: Int) -> Int {
+  int.min(int.max(0, available_width - 2), text.cell_width(summary) + 3)
 }
 
 // The editor owns the unwrapped source text, while its view is wrapped to the
@@ -922,12 +934,11 @@ fn input_height(model: Model) -> Int {
 
 fn editor_content_width(model: Model) -> Int {
   let inner_width = int.max(2, model.width - 2)
-  let attachment_width = case composer.summary(model.attachments) {
+  let chip_width = case composer.summary(model.attachments) {
     None -> 0
-    Some(summary) ->
-      int.min(int.max(0, inner_width - 2), string.length(summary) + 3)
+    Some(summary) -> attachment_width(summary, inner_width)
   }
-  int.max(2, inner_width - attachment_width)
+  int.max(2, inner_width - chip_width)
 }
 
 fn input_title(model: Model) -> String {
@@ -1342,9 +1353,14 @@ fn handle_paste(model: Model, text: String) -> Model {
 }
 
 fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
-  let attachments = list.append(model.attachments, [attachment])
-  let notice = composer.summary(attachments) |> option.unwrap("pasted content")
-  Model(..model, attachments:, notice:)
+  case composer.admit_attachment(model.attachments, attachment) {
+    Error(reason) -> append_error(model, reason)
+    Ok(attachments) -> {
+      let notice =
+        composer.summary(attachments) |> option.unwrap("pasted content")
+      Model(..model, attachments:, notice:)
+    }
+  }
 }
 
 fn drain_connection(model: Model, remaining: Int) -> Model {
@@ -2683,7 +2699,7 @@ fn image_prompt_preview(
     list.map(images, fn(image) {
       let image_drop.Image(filename:, mime_type:, byte_size:, ..) = image
       "[image: "
-      <> filename
+      <> text_hygiene.single_line(filename)
       <> " · "
       <> mime_type
       <> " · "

@@ -15,6 +15,12 @@ const compact_token_threshold = 400
 
 const compact_line_threshold = 8
 
+/// The most images retained in one unsent prompt.
+pub const max_image_attachments = 4
+
+/// The aggregate raw image bytes retained in one unsent prompt.
+pub const max_image_attachment_bytes = image_drop.max_image_bytes
+
 /// One attachment retained outside the editable prompt text.
 pub type Attachment {
   /// A compact pasted-text attachment.
@@ -98,7 +104,7 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
       )),
     ] ->
       Some(
-        filename
+        text_hygiene.single_line(filename)
         <> " · "
         <> mime_type
         <> " · "
@@ -137,7 +143,12 @@ fn attachment_summary(attachment: Attachment) -> String {
     Attachment(estimated_tokens:, ..) ->
       "paste ~" <> token_count(estimated_tokens) <> " tokens"
     ImageAttachment(image_drop.Image(filename:, mime_type:, byte_size:, ..)) ->
-      filename <> " " <> mime_type <> " " <> int.to_string(byte_size) <> " B"
+      text_hygiene.single_line(filename)
+      <> " "
+      <> mime_type
+      <> " "
+      <> int.to_string(byte_size)
+      <> " B"
   }
 }
 
@@ -209,6 +220,41 @@ pub fn images(attachments: List(Attachment)) -> List(image_drop.Image) {
 ///
 pub fn has_images(attachments: List(Attachment)) -> Bool {
   images(attachments) != []
+}
+
+/// Admits one attachment without letting image memory grow without bound.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.admit_attachment([], composer.Attachment("text", 1))
+///   == Ok([composer.Attachment("text", 1)])
+/// ```
+///
+@internal
+pub fn admit_attachment(
+  attachments: List(Attachment),
+  attachment: Attachment,
+) -> Result(List(Attachment), String) {
+  case attachment {
+    Attachment(..) -> Ok(list.append(attachments, [attachment]))
+    ImageAttachment(image_drop.Image(byte_size:, ..)) -> {
+      let current_images = images(attachments)
+      let current_bytes =
+        list.fold(current_images, 0, fn(total, image) {
+          let image_drop.Image(byte_size:, ..) = image
+          total + byte_size
+        })
+      case
+        list.drop(current_images, max_image_attachments - 1) != [],
+        current_bytes + byte_size > max_image_attachment_bytes
+      {
+        True, _ -> Error("a prompt may attach at most four images")
+        _, True -> Error("a prompt may attach at most 20 MiB of images")
+        False, False -> Ok(list.append(attachments, [attachment]))
+      }
+    }
+  }
 }
 
 /// Bounds a large durable user turn until transcript detail is requested.

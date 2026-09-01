@@ -40,7 +40,8 @@ reconnect portions of the existing client's contract.
 - `tui_gleam/image_drop` parses only terminal quote and backslash-space path
   forms, sniffs PNG/JPEG/GIF/WebP magic, and enforces the 20 MiB limit before
   reading a whole image. Its small Erlang helper reads only the classification
-  prefix; it performs no path expansion or shell evaluation.
+  prefix or bounded body; a monitored Gleam worker limits descriptor opens and
+  reads to one second. It performs no path expansion or shell evaluation.
 
 ## Relationships
 
@@ -84,11 +85,12 @@ reconnect portions of the existing client's contract.
   input row; the full bytes are appended to the editable instruction only
   when the prompt is sent. A single pasted local path becomes an image
   attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
-  20 MiB; the chip shows filename, MIME, and size. Unsupported files and
-  multi-token paths stay text, while read errors preserve the editor and show
-  a local error. The backend enables bracketed-paste mode so a real terminal
-  paste arrives as one event. Backspace on an empty editor drops the newest
-  attachment.
+  20 MiB; one prompt retains at most four images and 20 MiB of raw image data
+  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size.
+  Unsupported files and multi-token paths stay text, while read errors preserve
+  the editor and show a local error. The backend enables bracketed-paste mode
+  so a real terminal paste arrives as one event. Backspace on an empty editor
+  drops the newest attachment.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
