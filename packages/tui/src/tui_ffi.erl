@@ -441,6 +441,17 @@ is_executable_path(Path) ->
     end.
 
 linux_process_identity(Pid) ->
+    case {file:read_file("/proc/sys/kernel/random/boot_id"),
+          file:read_file("/proc/self/stat")} of
+        {{ok, BootId}, {ok, _SelfStat}} ->
+            linux_target_process_identity(Pid, BootId);
+        {{error, Reason}, _} ->
+            {error, describe(Reason)};
+        {_, {error, Reason}} ->
+            {error, describe(Reason)}
+    end.
+
+linux_target_process_identity(Pid, BootId) ->
     StatPath = "/proc/" ++ integer_to_list(Pid) ++ "/stat",
     case file:read_file(StatPath) of
         {error, enoent} ->
@@ -448,36 +459,28 @@ linux_process_identity(Pid) ->
         {error, Reason} ->
             {error, describe(Reason)};
         {ok, Stat} ->
-            linux_identity_from_stat(
-                Stat,
-                file:read_file("/proc/sys/kernel/random/boot_id")
-            )
+            linux_identity_from_stat(Stat, BootId)
     end.
 
-linux_identity_from_stat(Stat, BootIdResult) ->
-    case BootIdResult of
-        {ok, BootId} ->
-            case binary:matches(Stat, <<")">>) of
-                [] -> {error, <<"process stat is malformed">>};
-                Matches ->
-                    {Closing, _} = lists:last(Matches),
-                    Suffix = binary:part(
-                        Stat,
-                        Closing + 1,
-                        byte_size(Stat) - Closing - 1
-                    ),
-                    Fields = string:lexemes(Suffix, " \t\r\n"),
-                    case length(Fields) >= 20 of
-                        true ->
-                            Start = lists:nth(20, Fields),
-                            Birth = <<"linux:", (string:trim(BootId))/binary,
-                                      ":", Start/binary>>,
-                            {ok, {process_present, Birth}};
-                        false -> {error, <<"process stat has no birth time">>}
-                    end
-            end;
-        {error, Reason} ->
-            {error, describe(Reason)}
+linux_identity_from_stat(Stat, BootId) ->
+    case binary:matches(Stat, <<")">>) of
+        [] -> {error, <<"process stat is malformed">>};
+        Matches ->
+            {Closing, _} = lists:last(Matches),
+            Suffix = binary:part(
+                Stat,
+                Closing + 1,
+                byte_size(Stat) - Closing - 1
+            ),
+            Fields = string:lexemes(Suffix, " \t\r\n"),
+            case length(Fields) >= 20 of
+                true ->
+                    Start = lists:nth(20, Fields),
+                    Birth = <<"linux:", (string:trim(BootId))/binary,
+                              ":", Start/binary>>,
+                    {ok, {process_present, Birth}};
+                false -> {error, <<"process stat has no birth time">>}
+            end
     end.
 
 darwin_process_identity(Pid) ->

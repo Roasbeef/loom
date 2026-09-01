@@ -176,9 +176,10 @@ pub fn terminate_process_group(pid: Int) -> Nil
 
 /// Returns a birth-qualified identity or confirms that the process is absent.
 ///
-/// Linux reads `/proc/<pid>/stat` plus the kernel boot id; Darwin asks `ps`
-/// for the full start time. Absence is distinct from an observation failure so
-/// stale endpoints can be replaced without treating uncertainty as death.
+/// Linux proves procfs is observable before reading `/proc/<pid>/stat` plus the
+/// kernel boot id; Darwin asks `ps` for the full start time. Absence is distinct
+/// from an observation failure so stale endpoints can be replaced without
+/// treating uncertainty as death.
 @external(erlang, "tui_ffi", "process_identity")
 pub fn process_identity(pid: Int) -> Result(ProcessIdentity, String)
 

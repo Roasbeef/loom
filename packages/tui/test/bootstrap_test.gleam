@@ -229,7 +229,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let assert Ok(restarted) = bootstrap.resolve(options)
   assert restarted.session == first.session
   let assert Ok(restarted_pid) = endpoint_pid(state)
-  assert restarted_pid != pid
+  let assert Ok(restarted_birth) = endpoint_string(state, "server_birth")
+  assert ffi_bootstrap.process_identity(restarted_pid)
+    == Ok(ffi_bootstrap.ProcessPresent(restarted_birth))
   ffi_bootstrap.terminate_process_group(restarted_pid)
   assert_process_stops(restarted_pid, 20)
   let _ = simplifile.delete(root)
