@@ -1424,6 +1424,7 @@ fn is_guarded(clause: glance.Clause) -> Bool {
 type CatchAll {
   /// `_ ->`.
   Discarded(span: glance.Span)
+
   /// `other ->`. A bare variable is a catch-all whatever it is called
   /// (gleam-style Part III), and it is the spelling R3 could not see at
   /// all until issue #73 — seventy-three arms as measured, including

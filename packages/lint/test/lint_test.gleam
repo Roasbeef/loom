@@ -1163,6 +1163,65 @@ pub fn r10_ignores_a_comment_inside_a_wrapped_literal_test() {
   |> should.be_false
 }
 
+/// The variants of a custom type are siblings too, and this is where the
+/// tree writes most of its `///` prose. `gleam format` preserves a blank
+/// line between two variants, so the rule may ask for one.
+pub fn r10_flags_a_comment_between_type_variants_test() {
+  "pub type Rule {
+  /// The first variant.
+  NakedBool
+  /// The second, welded to the line above.
+  CommentStanza
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_true
+}
+
+pub fn r10_exempts_the_first_variant_test() {
+  "pub type Rule {
+  /// The first variant, which has only the brace above it.
+  NakedBool
+
+  /// The second.
+  CommentStanza
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// The formatter decides this one, not the rule. `gleam format` **deletes**
+/// a blank line between two fields of a constructor while preserving one
+/// between two variants, so a finding here could never be acted on — the
+/// same reasoning that exempts the first statement of a body. Fields are
+/// not siblings R10 knows about, and removing that would make the linter
+/// and the formatter demand opposite things.
+pub fn r10_ignores_record_fields_test() {
+  "pub type Finding {
+  Finding(
+    /// Which rule fired.
+    rule: Rule,
+    /// Where it fired, welded to the line above.
+    path: String,
+  )
+}
+"
+  |> fired(finding.CommentStanza)
+  |> should.be_false
+}
+
+/// A variant head is an upper-case name at bracket depth zero. A field's
+/// own type is inside the variant's parentheses, so `Int` and a qualified
+/// `option.Option` are never mistaken for the next variant.
+pub fn variant_offsets_skips_field_types_test() {
+  let code = "pub type T {\n  A\n  B(x: Int)\n}\n"
+  case source.variant_offsets(code, [#(0, string.byte_size(code))]) {
+    [offsets] -> should.equal(list.length(offsets), 2)
+    _ -> should.fail()
+  }
+}
+
 /// A whole comment block moves together, so the finding points at its first
 /// line — the one a blank line has to go above — rather than at the last.
 pub fn r10_reports_the_top_of_a_comment_block_test() {

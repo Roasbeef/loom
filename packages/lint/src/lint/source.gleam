@@ -91,10 +91,12 @@ pub fn line_of(starts: List(Int), offset: Int) -> Int {
 pub type LineKind {
   /// Nothing but whitespace. The stanza break.
   Blank
+
   /// A `//`, `///` or `////` comment and nothing before it. A comment
   /// *after* code on the same line is `Code`: it annotates the line it sits
   /// on rather than opening a stanza, and the house rule forbids it anyway.
   CommentLine
+
   /// Anything else, including a line that is only a closing bracket of a
   /// literal the formatter wrapped.
   Code
@@ -262,6 +264,91 @@ fn comments(
     | [#(token.CommentModule(_), position), ..rest] ->
       comments(rest, [position.byte_offset, ..found])
     [_, ..rest] -> comments(rest, found)
+  }
+}
+
+/// Where each variant of a custom type begins, for the spans a caller
+/// names — one list per span, in source order.
+///
+/// This is lexed rather than read off the tree because `glance.Variant`
+/// carries no `Span`: it is `Variant(name, fields, attributes)` and nothing
+/// else, so there is no offset in the AST to report a finding at. The
+/// enclosing `CustomType` *does* carry one, which is what makes a token
+/// scan safe here — the caller has already decided which region is a custom
+/// type, so this walk never has to recognize one, and the `type` keyword's
+/// other meanings (a type alias, an `import x.{type T}` list) cannot
+/// confuse it.
+///
+/// A variant head is an upper-case name at bracket depth zero inside the
+/// body. Everything a field contributes — its own type, a qualified
+/// `option.Option`, a tuple — is inside the variant's parentheses and so at
+/// depth one or more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let code = "pub type T {\n  A\n  B(x: Int)\n}\n"
+/// assert source.variant_offsets(code, [#(0, 30)]) == [[15, 19]]
+/// ```
+///
+pub fn variant_offsets(
+  code: String,
+  spans: List(#(Int, Int)),
+) -> List(List(Int)) {
+  let tokens =
+    glexer.new(code)
+    |> glexer.discard_whitespace
+    |> glexer.discard_comments
+    |> glexer.lex
+  list.map(spans, fn(span) { variants_in(tokens, span) })
+}
+
+fn variants_in(
+  tokens: List(#(token.Token, glexer.Position)),
+  span: #(Int, Int),
+) -> List(Int) {
+  tokens
+  |> list.filter(fn(pair) {
+    { pair.1 }.byte_offset >= span.0 && { pair.1 }.byte_offset < span.1
+  })
+  |> skip_to_body
+  |> heads(0, [])
+}
+
+/// Drop the type's name and its parameter list. A custom type's variants
+/// begin after the one `{` that opens its body, and `pub type Option(inner)
+/// {` puts a whole parenthesized list before it.
+fn skip_to_body(
+  tokens: List(#(token.Token, glexer.Position)),
+) -> List(#(token.Token, glexer.Position)) {
+  case tokens {
+    [] -> []
+    [#(token.LeftBrace, _), ..rest] -> rest
+    [_, ..rest] -> skip_to_body(rest)
+  }
+}
+
+fn heads(
+  tokens: List(#(token.Token, glexer.Position)),
+  depth: Int,
+  found: List(Int),
+) -> List(Int) {
+  case tokens, depth {
+    [], _ -> list.reverse(found)
+    [#(token.UpperName(_), position), ..rest], 0 ->
+      heads(rest, 0, [position.byte_offset, ..found])
+    [#(token.LeftParen, _), ..rest], _
+    | [#(token.LeftSquare, _), ..rest], _
+    | [#(token.LeftBrace, _), ..rest], _
+    -> heads(rest, depth + 1, found)
+    [#(token.RightParen, _), ..rest], _
+    | [#(token.RightSquare, _), ..rest], _
+    -> heads(rest, depth - 1, found)
+
+    // The body's own closing brace, which the caller's span ends at anyway.
+    [#(token.RightBrace, _), ..], 0 -> list.reverse(found)
+    [#(token.RightBrace, _), ..rest], _ -> heads(rest, depth - 1, found)
+    [_, ..rest], _ -> heads(rest, depth, found)
   }
 }
 

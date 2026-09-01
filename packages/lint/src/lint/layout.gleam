@@ -74,8 +74,20 @@ pub type Block {
   /// definition begins, which is where R11 reports — a density finding is
   /// about the function, the way R2's is.
   Statements(function: String, at: Int, steps: List(Step))
+
   /// The arms of one `case`.
   Branches(function: String, starts: List(Int))
+
+  /// The variants of one custom type. `function` is the type's name, which
+  /// is what `Raw.function` means at module level.
+  ///
+  /// The formatter's answer differs by position here and the rule follows
+  /// it exactly: a blank line between two **variants** is preserved, and a
+  /// blank line between two **fields of a constructor** is deleted. So
+  /// variants are siblings R10 can ask about and fields are not, which is
+  /// the same reasoning that exempts the first statement of a body — a rule
+  /// must never ask for something `gleam format` takes away.
+  Variants(function: String, starts: List(Int))
 }
 
 /// One statement of a body: where it begins, and what it contributes to a
@@ -99,6 +111,7 @@ pub type Weight {
   /// A `let`, an expression, an `assert`: a step of the body's argument,
   /// and one unit of density.
   Ordinary
+
   /// A `use` binding. Worth nothing, and it does not break a run either:
   /// it carries the count across so that ten `let`s threaded through a
   /// decoder chain still read as ten.
@@ -106,10 +119,26 @@ pub type Weight {
 }
 
 /// Every block in a parsed module, in no particular order.
-pub fn blocks(module: glance.Module) -> List(Block) {
-  list.flat_map(module.functions, fn(definition) {
-    let function = definition.definition
-    in_body(function.name, function.location.start, function.body)
+///
+/// `code` is needed only for the custom types: `glance.Variant` carries no
+/// `Span`, so where a variant begins has to be lexed rather than read off
+/// the tree (`source.variant_offsets`).
+pub fn blocks(module: glance.Module, code: String) -> List(Block) {
+  let bodies =
+    list.flat_map(module.functions, fn(definition) {
+      let function = definition.definition
+      in_body(function.name, function.location.start, function.body)
+    })
+  list.append(bodies, in_custom_types(module, code))
+}
+
+/// One `Variants` block per custom type, its variant heads in source order.
+fn in_custom_types(module: glance.Module, code: String) -> List(Block) {
+  let types = list.map(module.custom_types, fn(it) { it.definition })
+  let spans =
+    list.map(types, fn(custom) { #(custom.location.start, custom.location.end) })
+  list.map2(types, source.variant_offsets(code, spans), fn(custom, starts) {
+    Variants(function: custom.name, starts:)
   })
 }
 
@@ -119,18 +148,18 @@ pub fn offsets(blocks: List(Block)) -> List(Int) {
   list.flat_map(blocks, fn(block) {
     case block {
       Statements(at:, ..) -> [at, ..siblings(block)]
-      Branches(..) -> siblings(block)
+      Branches(..) | Variants(..) -> siblings(block)
     }
   })
 }
 
 /// Where each sibling of a block begins, whichever kind of block it is.
-/// R10 asks the same question of statements and of `case` arms, so it reads
-/// them through this and never learns which it has.
+/// R10 asks the same question of statements, of `case` arms and of type
+/// variants, so it reads them through this and never learns which it has.
 fn siblings(block: Block) -> List(Int) {
   case block {
     Statements(steps:, ..) -> list.map(steps, fn(step) { step.at })
-    Branches(starts:, ..) -> starts
+    Branches(starts:, ..) | Variants(starts:, ..) -> starts
   }
 }
 
@@ -168,7 +197,9 @@ fn orphan_comments(
   at: Dict(Int, Int),
 ) -> List(Raw) {
   let function = case block {
-    Statements(function:, ..) | Branches(function:, ..) -> function
+    Statements(function:, ..)
+    | Branches(function:, ..)
+    | Variants(function:, ..) -> function
   }
 
   // The first sibling of a block is exempt and has to be: `gleam format`
@@ -243,7 +274,7 @@ fn dense_functions(
   blocks
   |> list.fold(dict.new(), fn(longest, block) {
     case block {
-      Branches(..) -> longest
+      Branches(..) | Variants(..) -> longest
       Statements(function:, at: start, steps:) -> {
         let run = longest_run(steps, lines, at)
         let seen = case dict.get(longest, start) {

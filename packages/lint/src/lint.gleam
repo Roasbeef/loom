@@ -133,7 +133,7 @@ pub fn check_with(
       // those offsets in a single merged pass is what keeps a rule about
       // blank lines from costing a walk of the file per statement.
       let lines = source.classify(code)
-      let blocks = layout.blocks(module)
+      let blocks = layout.blocks(module, code)
       let at = source.line_map(lines.starts, layout.offsets(blocks))
       let all =
         found
