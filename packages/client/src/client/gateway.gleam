@@ -90,7 +90,7 @@ import core/clock
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
-import core/message.{type AgentMessage}
+import core/message.{type AgentMessage, type UserBlock}
 import core/register
 import core/tx
 import events/bus
@@ -1312,6 +1312,8 @@ fn run_command(
     }
     protocol.Prompt(strand:, text:), True ->
       prompt(state, connection, id, strand, text)
+    protocol.PromptContent(strand:, content:), True ->
+      prompt_content(state, connection, id, strand, content)
     protocol.Steer(strand:, text:), True ->
       steer(state, connection, id, strand, text)
     protocol.FollowUp(strand:, text:), True ->
@@ -1733,11 +1735,12 @@ fn strand_exists(state: State, strand: String) -> Bool {
 }
 
 fn user_message(state: State, text: String) -> AgentMessage {
+  content_message(state, [message.UserText(text:, text_signature: None)])
+}
+
+fn content_message(state: State, content: List(UserBlock)) -> AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
-  message.UserMessage(
-    content: [message.UserText(text:, text_signature: None)],
-    timestamp: now,
-  )
+  message.UserMessage(content:, timestamp: now)
 }
 
 fn prompt(
@@ -1747,13 +1750,30 @@ fn prompt(
   strand: String,
   text: String,
 ) -> State {
+  prompt_message(state, connection, id, strand, user_message(state, text))
+}
+
+fn prompt_content(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  content: List(UserBlock),
+) -> State {
+  prompt_message(state, connection, id, strand, content_message(state, content))
+}
+
+fn prompt_message(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  prompt: AgentMessage,
+) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
   use _op <- or_reply(
-    result.map_error(
-      api.prompt(target, [user_message(state, text)]),
-      describe_api_error(_, strand),
-    ),
+    result.map_error(api.prompt(target, [prompt]), describe_api_error(_, strand)),
     state,
     connection,
     id,

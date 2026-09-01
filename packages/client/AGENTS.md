@@ -22,11 +22,11 @@ over one session file. WP-L.
 ## Key Types
 
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
-  envelope `{v, id, cmd, body}` and its fourteen commands (`Subscribe`,
-  `CatchUp`, `Prompt`, `Steer`, `FollowUp`, `Abort`, `Approve`, `Deny`,
-  `Fork`, `Navigate`, `Compact`, `CreateStrand`, `ListModels` (wire
-  name `models`), `SetConfig`) plus `UnknownCommand`, which keeps an
-  unrecognized name as data.
+  envelope `{v, id, cmd, body}` and its fifteen commands (`Subscribe`,
+  `CatchUp`, `Prompt`, `PromptContent`, `Steer`, `FollowUp`, `Abort`,
+  `Approve`, `Deny`, `Fork`, `Navigate`, `Compact`, `CreateStrand`,
+  `ListModels` (wire name `models`), `SetConfig`) plus `UnknownCommand`,
+  which keeps an unrecognized name as data.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
@@ -640,7 +640,7 @@ over one session file. WP-L.
   holder to an in-band refusal rather than to a dead caller.
 - **Commits**: the hub commits nothing of its own except through the
   session's one writer. Commands map onto `runtime/api`
-  (prompt/steer/follow-up/abort, escalation approve/deny, strand
+  (text or ordered-content prompt/steer/follow-up/abort, escalation approve/deny, strand
   creation); `compact` and `navigate`, which have no api entry point yet,
   build a `machine/acceptance` plan and commit it through
   `runtime/writer` — the same pattern the conformance simulation runner
@@ -697,6 +697,10 @@ over one session file. WP-L.
   within v1).
 - **Everything in `protocol` is pure and total.** Malformed input is a
   `ProtocolFault` value, never a crash.
+- **A content prompt is admitted atomically.** The gateway decodes every
+  block through `core/codec`, validates image base64 and non-empty MIME types,
+  and refuses an empty or partly malformed list before `runtime/api` sees it.
+  A successful command appends one `UserMessage` in the original block order.
 - **Durable JSON crosses verbatim.** Gateway-defined field names are
   `snake_case`, but values that already have a durable form in the
   harness — entries, messages, usage — are carried in `core/codec`'s

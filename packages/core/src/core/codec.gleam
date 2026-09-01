@@ -366,14 +366,37 @@ fn decode_custom_message(
 
 // --- content blocks -----------------------------------------------------
 
-fn encode_user_block(block: UserBlock) -> JsonValue {
+/// Encodes one user content block in the durable message wire shape.
+///
+/// This is the same encoder `encode_message` uses for every block in a
+/// `UserMessage`; ClientGateway reuses it when carrying rich prompt content.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let block = message.UserText("hello", None)
+/// assert codec.decode_user_block(codec.encode_user_block(block)) == Ok(block)
+/// ```
+///
+pub fn encode_user_block(block: UserBlock) -> JsonValue {
   case block {
     UserText(text:, text_signature:) -> encode_text_block(text, text_signature)
     UserImage(data:, mime_type:) -> encode_image_block(data, mime_type)
   }
 }
 
-fn decode_user_block(value: JsonValue) -> Result(UserBlock, CorruptionReport) {
+/// Decodes one user content block in the durable message wire shape. Total.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let block = message.UserText("hello", None)
+/// assert codec.decode_user_block(codec.encode_user_block(block)) == Ok(block)
+/// ```
+///
+pub fn decode_user_block(
+  value: JsonValue,
+) -> Result(UserBlock, CorruptionReport) {
   let where = "core/codec.message.user.content"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "type", where))

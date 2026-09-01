@@ -1,4 +1,4 @@
-//// Compact prompt attachments for the terminal composer.
+//// Text and image attachments for the terminal composer.
 ////
 //// A terminal paste can contain far more text than the one-row editor can
 //// usefully show. The composer keeps those bytes out of presentation state,
@@ -8,20 +8,30 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import tui_gleam/image_drop
 import tui_gleam/text_hygiene
 
 const compact_token_threshold = 400
 
 const compact_line_threshold = 8
 
-/// One pasted text attachment and its deliberately approximate token count.
+/// The most images retained in one unsent prompt.
+pub const max_image_attachments = 4
+
+/// The aggregate raw image bytes retained in one unsent prompt.
+pub const max_image_attachment_bytes = image_drop.max_image_bytes
+
+/// One attachment retained outside the editable prompt text.
 pub type Attachment {
+  /// A compact pasted-text attachment.
   Attachment(
     /// The exact pasted bytes retained until submission.
     text: String,
     /// A display-only estimate that must never replace the exact bytes.
     estimated_tokens: Int,
   )
+  /// A validated local image ready for a typed prompt-content block.
+  ImageAttachment(image: image_drop.Image)
 }
 
 /// Whether pasted text belongs inline in the editor or behind an attachment.
@@ -85,19 +95,60 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
     [] -> None
     [Attachment(estimated_tokens:, ..)] ->
       Some("pasted ~" <> token_count(estimated_tokens) <> " tokens")
-    _ -> {
-      let total =
-        list.fold(attachments, 0, fn(total, attachment) {
-          let Attachment(estimated_tokens:, ..) = attachment
-          total + estimated_tokens
-        })
+    [
+      ImageAttachment(image: image_drop.Image(
+        filename:,
+        mime_type:,
+        byte_size:,
+        ..,
+      )),
+    ] ->
       Some(
-        int.to_string(list.length(attachments))
-        <> " pastes · ~"
-        <> token_count(total)
-        <> " tokens",
+        text_hygiene.single_line(filename)
+        <> " · "
+        <> mime_type
+        <> " · "
+        <> int.to_string(byte_size)
+        <> " B",
       )
+    attachments ->
+      case has_images(attachments) {
+        False ->
+          Some(
+            int.to_string(list.length(attachments))
+            <> " pastes · ~"
+            <> token_count(text_token_total(attachments))
+            <> " tokens",
+          )
+        True ->
+          attachments
+          |> list.map(attachment_summary)
+          |> string.join(" · ")
+          |> Some
+      }
+  }
+}
+
+fn text_token_total(attachments: List(Attachment)) -> Int {
+  list.fold(attachments, 0, fn(total, attachment) {
+    case attachment {
+      Attachment(estimated_tokens:, ..) -> total + estimated_tokens
+      ImageAttachment(..) -> total
     }
+  })
+}
+
+fn attachment_summary(attachment: Attachment) -> String {
+  case attachment {
+    Attachment(estimated_tokens:, ..) ->
+      "paste ~" <> token_count(estimated_tokens) <> " tokens"
+    ImageAttachment(image_drop.Image(filename:, mime_type:, byte_size:, ..)) ->
+      text_hygiene.single_line(filename)
+      <> " "
+      <> mime_type
+      <> " "
+      <> int.to_string(byte_size)
+      <> " B"
   }
 }
 
@@ -112,9 +163,11 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
 pub fn expand(input: String, attachments: List(Attachment)) -> String {
   let pasted =
     attachments
-    |> list.map(fn(attachment) {
-      let Attachment(text:, ..) = attachment
-      text
+    |> list.filter_map(fn(attachment) {
+      case attachment {
+        Attachment(text:, ..) -> Ok(text)
+        ImageAttachment(..) -> Error(Nil)
+      }
     })
     |> string.join("\n\n")
   case input, pasted {
@@ -137,6 +190,70 @@ pub fn drop_last(attachments: List(Attachment)) -> List(Attachment) {
   case list.reverse(attachments) {
     [] -> []
     [_, ..rest] -> list.reverse(rest)
+  }
+}
+
+/// Returns validated images in the order the operator dropped them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.images([]) == []
+/// ```
+///
+pub fn images(attachments: List(Attachment)) -> List(image_drop.Image) {
+  list.filter_map(attachments, fn(attachment) {
+    case attachment {
+      Attachment(..) -> Error(Nil)
+      ImageAttachment(image:) -> Ok(image)
+    }
+  })
+}
+
+/// Reports whether the composer holds any image attachment.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !composer.has_images([])
+/// ```
+///
+pub fn has_images(attachments: List(Attachment)) -> Bool {
+  images(attachments) != []
+}
+
+/// Admits one attachment without letting image memory grow without bound.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.admit_attachment([], composer.Attachment("text", 1))
+///   == Ok([composer.Attachment("text", 1)])
+/// ```
+///
+@internal
+pub fn admit_attachment(
+  attachments: List(Attachment),
+  attachment: Attachment,
+) -> Result(List(Attachment), String) {
+  case attachment {
+    Attachment(..) -> Ok(list.append(attachments, [attachment]))
+    ImageAttachment(image_drop.Image(byte_size:, ..)) -> {
+      let current_images = images(attachments)
+      let current_bytes =
+        list.fold(current_images, 0, fn(total, image) {
+          let image_drop.Image(byte_size:, ..) = image
+          total + byte_size
+        })
+      case
+        list.drop(current_images, max_image_attachments - 1) != [],
+        current_bytes + byte_size > max_image_attachment_bytes
+      {
+        True, _ -> Error("a prompt may attach at most four images")
+        _, True -> Error("a prompt may attach at most 20 MiB of images")
+        False, False -> Ok(list.append(attachments, [attachment]))
+      }
+    }
   }
 }
 

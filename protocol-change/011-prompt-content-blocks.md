@@ -1,7 +1,7 @@
-# protocol-change/010 - ClientGateway accepts prompt content blocks
+# protocol-change/011 - ClientGateway accepts prompt content blocks
 
-**Status**: PROPOSED - **Affects**: Part 1 ClientGateway command vocabulary -
-**Raised by**: issue #114 eTUI image drag and drop
+**Status**: ACCEPTED 2026-08-31 · **Affects**: Part 1 ClientGateway command
+vocabulary · **Raised by**: issue #114 eTUI image drag and drop
 
 ## Problem
 
@@ -43,17 +43,19 @@ PromptContent(strand: String, content: List(message.UserBlock))
 The command has these laws:
 
 - `content` must be non-empty.
-- Every item is decoded by the total `core/codec` user-block decoder. Unknown
-  block types, invalid base64, empty MIME types, and fields of the wrong type
-  refuse the whole command as `bad_request`.
+- Every item is decoded by the total `core/codec` user-block decoder. The
+  gateway then checks image-block base64 and MIME invariants. Unknown block
+  types, invalid base64, empty MIME types, and fields of the wrong type refuse
+  the whole command as `bad_request`.
 - The gateway preserves block order and admits exactly one `UserMessage`.
 - The existing `prompt {strand, text}` command is unchanged. Text-only clients
   keep their byte-for-byte wire form.
 - `steer` and `follow_up` remain text-only in this change. An image submission
   while a strand is live is refused by the client with a local explanation;
   broadening live-operation semantics belongs in a separate proposal.
-- An older gateway returns `unknown_command` for `prompt_content`. It never
-  reports success after dropping the image.
+- An older gateway treats `prompt_content` as an unknown command and returns
+  the frozen `unsupported` error. It never reports success after dropping the
+  image.
 
 ## Terminal client behavior
 
@@ -64,14 +66,18 @@ The eTUI treats a paste as an image drop only when all of these are true:
 2. The target is a regular file.
 3. Its magic bytes identify PNG, JPEG, GIF, or WebP. The filename extension is
    not trusted as the MIME authority.
-4. The encoded file is at most 20 MiB. Oversized files are refused before a
+4. The file is at most 20 MiB. Oversized files are refused before a
    prompt frame is built.
+5. One unsent prompt retains at most four images and 20 MiB of raw image data
+   in aggregate. A descriptor open or read that does not settle within one
+   second is refused, so replacing an inspected path with a FIFO cannot freeze
+   the terminal process.
 
-The composer shows the filename, media type, and byte size as a removable
-attachment. The local path is presentation state only. Submission sends a
-`UserText` block when the editor is non-empty followed by each `UserImage`
-block in drop order. The durable transcript later renders the server-owned
-message, not a client-side optimistic copy.
+The composer shows a terminal-sanitized filename, media type, and byte size as
+a removable attachment. The local path is presentation state only. Submission
+sends a `UserText` block when the editor is non-empty followed by each
+`UserImage` block in drop order. The durable transcript later renders the
+server-owned message, not a client-side optimistic copy.
 
 Ordinary pasted paths, unsupported files, and multiple pasted tokens remain
 text. A read failure leaves the editor untouched and shows a local error.
@@ -81,16 +87,20 @@ text. A read failure leaves the editor untouched and shows a local error.
 - `client/protocol` gains one additive command constructor and total decoder.
 - `client/gateway` admits the decoded blocks through the same operation path
   as `prompt` instead of constructing a text block itself.
-- Golden protocol fixtures cover text-only stability, content-block round
-  trip, malformed blocks, an empty list, and old-command refusal behavior.
+- Golden fixtures and protocol tests cover text-only stability, content-block
+  round trip, malformed blocks, an empty list, and generic unknown-command
+  refusal behavior.
 - `tui_gleam` gains image attachments, bounded file reads, MIME sniffing,
   base64 encoding, and a `prompt_content` encoder.
 - Provider and durable entry formats do not change.
 
 ## Decision
 
-Pending approval. The alternatives are to add optional images to `prompt`,
-which can silently lose data against an older gateway, or to embed a data URL
-in text, which changes the model-visible prompt and bypasses the typed image
-path the rest of Loom already implements. A separate additive command is the
-smallest version-skew-safe extension.
+Accepted on 2026-08-31. Add the separate command and leave `prompt`, `steer`,
+and `follow_up` unchanged. The alternatives were to add optional images to
+`prompt`, which can silently lose data against an older gateway, or to embed a
+data URL in text, which changes the model-visible prompt and bypasses the typed
+image path the rest of Loom already implements. The accepted cost is one more
+command name and an explicit client-side refusal while a strand is live; that
+cost buys version-skew-safe failure and keeps rich content on the existing
+typed message path.

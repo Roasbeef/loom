@@ -11,6 +11,7 @@
 import broker/policy
 import client/protocol
 import core/json
+import core/message
 import gleam/list
 import gleam/option.{None, Some}
 
@@ -113,6 +114,18 @@ pub fn approve_round_trips_its_echo_test() {
     protocol.encode_command(protocol.CommandEnvelope(id: 6, command:))
   assert protocol.decode_command(encoded)
     == Ok(protocol.CommandEnvelope(id: 6, command:))
+}
+
+pub fn prompt_content_round_trips_ordered_blocks_test() {
+  let command =
+    protocol.PromptContent(strand: "main", content: [
+      message.UserText("look here", None),
+      message.UserImage("iVBORw0KGgo=", "image/png"),
+    ])
+  let encoded =
+    protocol.encode_command(protocol.CommandEnvelope(id: 18, command:))
+  assert protocol.decode_command(encoded)
+    == Ok(protocol.CommandEnvelope(id: 18, command:))
 }
 
 // --- the escalation body: additive, and tolerated by absence ---------------

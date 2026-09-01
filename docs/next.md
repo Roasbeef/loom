@@ -258,11 +258,12 @@ ordinary transcript text after them.
 Websocket startup now runs in a monitored, unlinked helper with a five-second
 deadline. A dependency initialiser panic or silent dial becomes a client error
 instead of killing or hanging the terminal; success restores the socket actor's
-link to the caller. The focused package gate passes with 47 tests. Its expected
+link to the caller. The focused package gate passes with 75 tests. Its expected
 panic regression prints an Erlang crash report while proving that the parent
-survives. The measured compatibility cost remains: etui needs Gleam 1.16+, and
-Mork's Erlang path needs OTP 28+, above Loom's advertised OTP 27 floor. The
-package therefore remains outside the root package and release lists.
+survives. Etui needs Gleam 1.16+ and Mork's Erlang path needs OTP 28+, both
+below Loom's current Gleam 1.18 and OTP 29 floors. Root format, build, test, and
+house-rule gates now cover the native client; release replacement remains a
+separate change.
 
 A fresh default-policy session completed the combined eTUI-to-code-mode path on
 Darwin. Both the hermetic build and satellite reported enforced Seatbelt
@@ -271,11 +272,18 @@ ADR-006's three named gaps. Do not replace this proof with `--best-effort`; the
 supported Darwin contract is `PlatformEnforcement`.
 
 Image drop is deliberately not smuggled through the text-only command.
-`protocol-change/010-prompt-content-blocks.md` proposes an additive
-`prompt_content` command carrying the existing total `UserBlock` codec. The new
-name makes an old gateway refuse rather than claim success after silently
-dropping an unknown image field. It remains **PROPOSED**; do not implement the
-wire or claim drag-and-drop support before approval.
+`protocol-change/011-prompt-content-blocks.md` is accepted and adds the
+version-skew-safe `prompt_content` command carrying the existing total
+`UserBlock` codec. The gateway preserves block order and admits exactly one
+durable user message; malformed, empty, or unknown content refuses the whole
+command. The eTUI recognizes one regular PNG, JPEG, GIF, or WebP from terminal
+paste, bounds the read at 20 MiB, keeps local paths off the wire, and leaves
+live-strand steering text-only. One prompt retains at most four images and 20
+MiB of raw image data in aggregate; a monitored one-second read deadline keeps
+a swapped FIFO from blocking the terminal. Package tests cover the classifier,
+bounded reader, ordered wire frame, total decoder, and durable admission. A real
+terminal drag event remains outside the automated harness, so do not mistake
+the protocol and transition coverage for terminal-emulator proof.
 
 Escape still exposes a server-side cancellation boundary beyond this client
 wave. Admission can now send an abort during the prompt-to-live transition, but
@@ -284,11 +292,10 @@ the runtime kills. Late deltas also lack operation identity at the TUI boundary.
 Treat "the request stopped billing and cannot contaminate its successor" as
 unproved until that runtime lifecycle is repaired and tested.
 
-Before adoption, implement protocol-change/007 approval with exact action and
-grant echo, then sparse-sequence reconnect/catch-up behavior. After those gates
-pass, decide the toolchain floor and release replacement explicitly; do not
-silently add this package to `PACKAGES` or replace `bin/loom-tui` before that
-decision.
+Before release replacement, implement protocol-change/007 approval with exact
+action and grant echo, then sparse-sequence reconnect/catch-up behavior. The
+toolchain floor no longer blocks adoption; replacing `bin/loom-tui` remains an
+explicit, separately reviewed change.
 
 ---
 

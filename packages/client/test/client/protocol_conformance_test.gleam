@@ -43,9 +43,9 @@ pub fn command_fixtures_roundtrip_test() {
     "cmd_abort.json", "cmd_approve.json", "cmd_approve_all.json",
     "cmd_catch_up.json", "cmd_compact.json", "cmd_create_strand.json",
     "cmd_deny.json", "cmd_follow_up.json", "cmd_fork.json", "cmd_models.json",
-    "cmd_navigate.json", "cmd_prompt.json", "cmd_set_config.json",
-    "cmd_set_config_model.json", "cmd_steer.json", "cmd_subscribe.json",
-    "cmd_subscribe_resume.json",
+    "cmd_navigate.json", "cmd_prompt.json", "cmd_prompt_content.json",
+    "cmd_set_config.json", "cmd_set_config_model.json", "cmd_steer.json",
+    "cmd_subscribe.json", "cmd_subscribe_resume.json",
   ]
   |> list.each(roundtrip_command)
 }
@@ -73,7 +73,7 @@ pub fn corpus_is_complete_test() {
     files
     |> list.filter(string.ends_with(_, ".json"))
     |> list.sort(string.compare)
-  assert list.length(json_files) == 35
+  assert list.length(json_files) == 36
 }
 
 // --- strictness and tolerance ----------------------------------------------
@@ -128,5 +128,68 @@ pub fn bad_body_names_command_test() {
   let assert Error(protocol.BadBody(id: 7, cmd: "prompt", ..)) =
     protocol.decode_command(
       "{\"v\":1,\"id\":7,\"cmd\":\"prompt\",\"body\":{\"strand\":\"main\"}}",
+    )
+}
+
+pub fn prompt_content_empty_list_is_refused_test() {
+  let assert Error(protocol.BadBody(
+    id: 8,
+    cmd: "prompt_content",
+    reason: "content must be a non-empty array",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":8,\"cmd\":\"prompt_content\","
+      <> "\"body\":{\"strand\":\"main\",\"content\":[]}}",
+    )
+}
+
+pub fn prompt_content_malformed_block_refuses_whole_command_test() {
+  let assert Error(protocol.BadBody(
+    id: 9,
+    cmd: "prompt_content",
+    reason: "valid base64 image bytes",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":9,\"cmd\":\"prompt_content\",\"body\":{"
+      <> "\"strand\":\"main\",\"content\":["
+      <> "{\"type\":\"text\",\"text\":\"keep me\"},"
+      <> "{\"type\":\"image\",\"data\":\"not base64\","
+      <> "\"mimeType\":\"image/png\"}]}}",
+    )
+}
+
+pub fn prompt_content_refuses_empty_image_media_type_test() {
+  let assert Error(protocol.BadBody(
+    id: 10,
+    cmd: "prompt_content",
+    reason: "a non-empty media type",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":10,\"cmd\":\"prompt_content\",\"body\":{"
+      <> "\"strand\":\"main\",\"content\":["
+      <> "{\"type\":\"image\",\"data\":\"iVBORw0KGgo=\","
+      <> "\"mimeType\":\"  \"}]}}",
+    )
+}
+
+pub fn prompt_content_refuses_unknown_and_wrong_typed_blocks_test() {
+  let assert Error(protocol.BadBody(
+    id: 11,
+    cmd: "prompt_content",
+    reason: "text or image",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":11,\"cmd\":\"prompt_content\",\"body\":{"
+      <> "\"strand\":\"main\",\"content\":[{\"type\":\"audio\"}]}}",
+    )
+  let assert Error(protocol.BadBody(
+    id: 12,
+    cmd: "prompt_content",
+    reason: "a string",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":12,\"cmd\":\"prompt_content\",\"body\":{"
+      <> "\"strand\":\"main\",\"content\":["
+      <> "{\"type\":\"image\",\"data\":7,\"mimeType\":\"image/png\"}]}}",
     )
 }

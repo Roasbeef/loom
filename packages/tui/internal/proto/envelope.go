@@ -26,20 +26,21 @@ const Version = 1
 
 // Command names, frozen by spec Part 1.6.
 const (
-	CmdPrompt       = "prompt"
-	CmdSteer        = "steer"
-	CmdFollowUp     = "follow_up"
-	CmdAbort        = "abort"
-	CmdApprove      = "approve"
-	CmdDeny         = "deny"
-	CmdFork         = "fork"
-	CmdNavigate     = "navigate"
-	CmdCompact      = "compact"
-	CmdCreateStrand = "create_strand"
-	CmdModels       = "models"
-	CmdSetConfig    = "set_config"
-	CmdSubscribe    = "subscribe"
-	CmdCatchUp      = "catch_up"
+	CmdPrompt        = "prompt"
+	CmdPromptContent = "prompt_content"
+	CmdSteer         = "steer"
+	CmdFollowUp      = "follow_up"
+	CmdAbort         = "abort"
+	CmdApprove       = "approve"
+	CmdDeny          = "deny"
+	CmdFork          = "fork"
+	CmdNavigate      = "navigate"
+	CmdCompact       = "compact"
+	CmdCreateStrand  = "create_strand"
+	CmdModels        = "models"
+	CmdSetConfig     = "set_config"
+	CmdSubscribe     = "subscribe"
+	CmdCatchUp       = "catch_up"
 )
 
 // Event names, frozen by spec Part 1.6.
