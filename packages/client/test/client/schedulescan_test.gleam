@@ -298,9 +298,15 @@ fn replay_tick(rig: Rig) -> Nil {
   process.send(process.named_subject(rig.scanner), schedulescan.Tick)
 }
 
+// A provider whose every request parks forever: the returned handle
+// carries a subject nothing ever sends a terminal on, so a run this
+// opens stays open for as long as the test needs one to steer onto.
+// `immediate` rather than `owned` because the fixture spawns nothing —
+// the hang is the absence of a producer, not a producer that is slow —
+// so cancellation has no process, port, or socket to tear down.
 fn hanging_provider() -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 30_000, request: fn(_spec) {
-    stream.StreamHandle(events: process.new_subject())
+    stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
   })
 }
 
