@@ -4,6 +4,7 @@
 
 -export([read_prefix/2, read_bounded/2,
          system_time_ms/0, monotonic_time_ms/0, sha256/1, getenv/1,
+         silence_logger/0,
          canonical_directory/1, canonical_path/1, path_exists/1,
          absolute_path/1,
          ensure_private_directory/1,
@@ -82,6 +83,10 @@ system_time_ms() ->
 
 monotonic_time_ms() ->
     erlang:monotonic_time(millisecond).
+
+silence_logger() ->
+    ok = logger:set_primary_config(level, none),
+    nil.
 
 sha256(Bytes) ->
     crypto:hash(sha256, Bytes).

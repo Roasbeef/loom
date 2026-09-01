@@ -39,6 +39,7 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/image_drop
+import tui/internal/ffi_bootstrap
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
@@ -178,6 +179,8 @@ type Model {
 /// loom --addr ws://127.0.0.1:8080/v1/ws --session demo
 /// ```
 pub fn main() {
+  // Nothing but the rendered frame may write to this terminal from here on.
+  ffi_bootstrap.silence_logger()
   let inbox = connection.new_inbox()
   let project = workspace.discover()
   let strands = demo_strands()

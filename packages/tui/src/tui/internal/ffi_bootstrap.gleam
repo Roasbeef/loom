@@ -24,6 +24,17 @@ pub type ProcessIdentity {
 @external(erlang, "tui_ffi", "system_time_ms")
 pub fn system_time_ms() -> Int
 
+/// Stops every OTP logger handler from writing to the terminal.
+///
+/// Uses OTP `logger:set_primary_config/2` with level `none`. Once etui owns
+/// the alternate screen, a dependency's error report or a crash report has
+/// nowhere to go except over the rendered frame, where it stays until those
+/// cells repaint; a stale endpoint probe during a session switch is one
+/// producer. Failures the operator must see already reach the transcript as
+/// typed errors.
+@external(erlang, "tui_ffi", "silence_logger")
+pub fn silence_logger() -> Nil
+
 /// Returns monotonic milliseconds for process-local elapsed-time bounds.
 ///
 /// Uses OTP `erlang:monotonic_time/1`; the value has no wall-clock meaning and

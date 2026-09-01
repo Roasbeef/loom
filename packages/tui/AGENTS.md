@@ -131,6 +131,10 @@ that tree separately from the self-contained server.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.
+  `main` also sets the OTP logger's primary level to `none` before anything
+  else runs, because once etui owns the alternate screen a dependency's error
+  report, such as a websocket refusal while `/sessions` probes a stale
+  record, would print over the frame and stay until those cells repaint.
 
 ## Invariants
 
