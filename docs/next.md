@@ -470,7 +470,7 @@ Branch `client/session-switcher` adds the interactive half. `/sessions` lists
 statically validated endpoint records from the active private state root, then
 resolves the selected workspace and database through the complete bootstrap
 path. Resolution, optional daemon startup, and replacement websocket startup
-run in a monitored worker with a 70-second monotonic outer deadline. The terminal
+run in a monitored worker with a 90-second monotonic outer deadline, enough for the launch lock, daemon start, and probes resolve can run in sequence. The terminal
 keeps the old session usable until it adopts the new socket, acknowledges the
 worker that retained it, swaps to a fresh mailbox, and closes the prior
 connection. Each attempt has its own result mailbox, so an expired attempt
