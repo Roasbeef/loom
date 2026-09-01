@@ -70,6 +70,7 @@ import runtime/writer
 import session/session.{type Session}
 import storage/storage
 import telemetry/log.{type Logger}
+import weft/poll
 
 /// One blackboard cell as a compare-and-set caller sees it: the stored
 /// value and the seq of the write that put it there, which is what
@@ -753,22 +754,42 @@ pub fn await_result(
   operation: OpId,
   within_ms timeout_ms: Int,
 ) -> Result(LastResult, Nil) {
-  case operation_result(runtime, operation) {
-    Some(last) -> Ok(last)
+  // A bounded poll in the caller's own process: the result is durable
+  // state, not a message, so there is nothing to select on. The first
+  // attempt is immediate and a last one is made at the deadline, so a
+  // result that lands exactly as the budget runs out is still found.
+  let outcome =
+    poll.until(within: timeout_ms, every: 10, attempt: fn() {
+      case settled_result(runtime, operation) {
+        Some(last) -> poll.Done(last)
+        None -> poll.Retry
+      }
+    })
+  case outcome {
+    poll.Answered(last) -> Ok(last)
+    poll.Expired -> Error(Nil)
 
-    // The store read is a fallback, not a substitute — an eager unwrap
-    // here would run it even when the operation-keyed fact already
-    // answered, so this stays a `case` rather than an `option.unwrap`.
+    // The probe never fails outright; the arm is exhaustiveness.
+    poll.Failed(Nil) -> Error(Nil)
+  }
+}
+
+// The operation's terminal record, if it has landed: the operation-keyed
+// fact first, then the strand's last-result cell as a fallback, and only
+// when that cell names this very operation. The fallback is not a
+// substitute — an eager read would run it even when the operation-keyed
+// fact already answered — so it stays behind the first miss.
+fn settled_result(runtime: Runtime, operation: OpId) -> Option(LastResult) {
+  case operation_result(runtime, operation) {
+    Some(last) -> Some(last)
     None ->
       case session.last_result(runtime.session, runtime.strand) {
-        Ok(Some(session.Cell(value: last, ..))) -> {
-          use <- bool.guard(
-            when: result_operation(last) == operation,
-            return: Ok(last),
-          )
-          await_result_wait(runtime, operation, timeout_ms)
-        }
-        _ -> await_result_wait(runtime, operation, timeout_ms)
+        Ok(Some(session.Cell(value: last, ..))) ->
+          case result_operation(last) == operation {
+            True -> Some(last)
+            False -> None
+          }
+        _ -> None
       }
   }
 }
@@ -787,20 +808,6 @@ fn operation_result(runtime: Runtime, op: OpId) -> Option(LastResult) {
         Error(_report) -> None
       }
     _ -> None
-  }
-}
-
-fn await_result_wait(
-  runtime: Runtime,
-  operation: OpId,
-  timeout_ms: Int,
-) -> Result(LastResult, Nil) {
-  case timeout_ms <= 0 {
-    True -> Error(Nil)
-    False -> {
-      process.sleep(10)
-      await_result(runtime, operation, within_ms: timeout_ms - 10)
-    }
   }
 }
 
