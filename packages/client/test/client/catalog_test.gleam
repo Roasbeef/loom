@@ -118,6 +118,41 @@ pub fn empty_document_refused_test() {
     == Error("the catalogue needs a [models.<name>] table")
 }
 
+// The top-level allow-list is the whole config file's gate, not just this
+// module's: `serve.load_config` hands the same text to three parsers, but
+// only this one decides which tables may appear at all. A table whose own
+// parser understands it perfectly is still refused outright if it is
+// missing here — which is exactly how `[[schedule]]` shipped unreachable
+// once, every schedule parsing correctly behind a boot that never got
+// that far. These two pin both tables the other parsers own.
+pub fn a_rule_table_is_allowed_at_the_top_level_test() {
+  let assert Ok(_parsed) =
+    catalog.parse(
+      minimal
+      <> "
+[[rule]]
+name = \"r\"
+triggers = [\"t\"]
+body = \"b\"
+",
+    )
+    as "a [[rule]] table must not be refused by the top-level key check"
+}
+
+pub fn a_schedule_table_is_allowed_at_the_top_level_test() {
+  let assert Ok(_parsed) =
+    catalog.parse(
+      minimal
+      <> "
+[[schedule]]
+name = \"s\"
+every = \"60s\"
+body = \"b\"
+",
+    )
+    as "a [[schedule]] table must not be refused by the top-level key check"
+}
+
 pub fn malformed_toml_reported_test() {
   let assert Error("not valid toml: " <> _detail) =
     catalog.parse("[models.broken\ndialect =")
