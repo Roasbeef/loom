@@ -28,7 +28,7 @@ complete copy of the retained tail (`core/entry.gleam:53`). Nothing is
 deleted. Every summarized message stays in the tree, navigable,
 forkable, and indexable; what changes is only the *projection*, because
 a context scan stops inclusively at the first compaction it meets
-(`project`, `session/session.gleam:759`). Recovery therefore replays the
+(`project`, `session/session.gleam:769`). Recovery therefore replays the
 same context it had before the crash, since the compaction entry is in
 the log like everything else.
 
@@ -101,12 +101,12 @@ declared figures (`compaction_hooks`, `client/wiring.gleam:303`;
 `docs/architecture/models.md` has the routing side). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:668` (`default_reserve_tokens`) and
+once in `client/serve.gleam:677` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:635`).
+(`compaction_settings`, `client/serve.gleam:644`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
@@ -133,7 +133,7 @@ messages committed after it (`context_tokens`,
 toward the estimate — text, thinking, serialized tool-call arguments,
 tool-result text — and an image counts as a flat 6,000 characters,
 because its base64 payload is an order of magnitude larger than what a
-provider bills for it (`estimate_message`, `runtime/hooks.gleam:368`).
+provider bills for it (`estimate_message`, `runtime/hooks.gleam:375`).
 
 Synthetic settlements report zero and are skipped: an abort or a
 transport failure never described a real request, and an errored
@@ -355,14 +355,14 @@ as a faulted driver or a crashed effect.
 
 Each nested request settles its own ledger row and clears the in-flight
 marker in one transaction, so the next pass is unambiguously "between
-requests" (`settle_summary_request`, `machine/planner.gleam:2981`). Those
+requests" (`settle_summary_request`, `machine/planner.gleam:3031`). Those
 rows carry no entry id, because they commit before the result entry
 exists. When progress finally reports `SummaryProduced`, the publication
 is a single transaction: the compaction entry parented on the current
 leaf, carrying the summary, the complete retained tail from the frozen
 preparation, the `tokens_before` the preparation recorded, a `from_hook`
 of `False`, and the summarizer's display usage — plus the leaf move
-(`compaction_publication`, `machine/planner.gleam:3448`). No extra usage
+(`compaction_publication`, `machine/planner.gleam:3437`). No extra usage
 row is written on this path; the hook-supplied path writes one because
 nothing else billed it, and the generated path already paid per request.
 
@@ -378,8 +378,8 @@ finishes, with the new entry as its result leaf.
 Decline and failure both end an in-run compaction with nothing published,
 and for both the first question is the `CompactionReason` — not the error
 and not how far the retry ladder got. That is one rule read at two sites,
-`decide_structural` for a decline (`machine/planner.gleam:2803`) and
-`structural_failure` for a failure (`machine/planner.gleam:3302`).
+`decide_structural` for a decline (`machine/planner.gleam:2812`) and
+`structural_failure` for a failure (`machine/planner.gleam:3370`).
 
 **A threshold compaction is Loom's own clamp**, applied because the
 context crossed an inequality the harness chose. Failing to apply it
@@ -412,10 +412,10 @@ against the same dead route — on every turn for the rest of the run.
 So abandoning a threshold compaction also **switches threshold compaction
 off for the remainder of that run**, by clearing `enabled` in the run's
 own captured `CompactionSettings`
-(`abandon_threshold_compaction`, `machine/planner.gleam:3249`). That is
+(`abandon_threshold_compaction`, `machine/planner.gleam:3317`). That is
 the durable record of the attempt the backoff needs, and it needs no new
 state: `enabled` is already the single gate step 3 reads
-(`after_inbox`, `machine/planner.gleam:748`), already inside `op.state`,
+(`after_inbox`, `machine/planner.gleam:794`), already inside `op.state`,
 and therefore already survives a crash-restore rather than re-opening the
 gate on recovery.
 
@@ -428,7 +428,7 @@ ability to compact.
 The run then continues unclamped, which is survivable because the clamp
 was never the only guard. Overflow recovery does not consult these
 settings at all — a request that does not fit still diverts into a
-compaction task (`settle_overflow`, `machine/planner.gleam:1209`) — so
+compaction task (`settle_overflow`, `machine/planner.gleam:1224`) — so
 the provider's own limit remains the backstop. If the summarizer is
 still down when it fires, that compaction drains the run, and by then
 draining is the honest outcome.
@@ -437,7 +437,7 @@ draining is the honest outcome.
 
 Not every structural error is about the summarizer, so the threshold path
 consults one predicate before it decides to survive
-(`fatal_to_the_context`, `machine/planner.gleam:3210`). It asks what the
+(`fatal_to_the_context`, `machine/planner.gleam:3278`). It asks what the
 error is a statement *about*. An unresolvable route, a provider that
 would not answer, a summarizer that replied with a tool call instead of
 a summary, a settlement lost with its process, an attempt orphaned at the
@@ -471,7 +471,7 @@ inclusively at the first compaction. The compaction is therefore the
 oldest entry the scan returns, and the projection opens with its summary
 rendered as a **user** message — the summary is injected context, not
 model output — followed by its retained tail, and nothing earlier is read
-(`project_entry`, `session/session.gleam:920-719`). The ordinary rules then
+(`project_entry`, `session/session.gleam:930-719`). The ordinary rules then
 apply to the tail: errored, aborted, and deferred responses drop, and a
 retained tool call whose result was severed by the cut heals with a
 synthetic error result. On a settled history that healing is a no-op,
@@ -501,7 +501,7 @@ response, its leaf move, its usage row, the preparation and the new state
 as one transaction — so the compaction task can never exist without the
 response that caused it — and resumes the same trigger with the one-shot
 recovery marked spent, so a retried request cannot loop on overflow
-(`enter_overflow_compaction`, `machine/planner.gleam:1248`). An empty
+(`enter_overflow_compaction`, `machine/planner.gleam:1289`). An empty
 preparation, or a second overflow on the same step, drains the run as
 `context_overflow`; so does a compaction that was declined or that failed
 against its summarizer, which is where this path parts company with the
@@ -512,7 +512,7 @@ always empty, which is why an overflowing production run simply died.
 standalone compaction operation, and it goes through the same builder:
 the client hub reads the strand's durable projection, prepares it with
 the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2552`). An
+(`compaction_preparation`, `client/gateway.gleam:2566`). An
 operator-requested compaction therefore cuts where an automatic one cuts,
 keeps what an automatic one keeps, and carries a previous summary forward
 the same way; a change to the cut rule cannot apply to only some of the
@@ -572,7 +572,7 @@ the whole loop.
 
 **The simulation never fails a summarizer.** Its `summary_progress` hook
 answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:1198`), so no seed drives
+(`hooks`, `conformance/simulation/surface.gleam:1207`), so no seed drives
 a structural failure and the seeded soak proves the survival rule only by
 *not* regressing around it. Adding a refusing summarizer means a new
 `script.Structural` variant, and drawing it would reshuffle every seed's
