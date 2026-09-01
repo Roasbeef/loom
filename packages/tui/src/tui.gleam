@@ -1505,6 +1505,11 @@ fn adopt_session(
     Some(previous) -> connection.close(previous)
     None -> Nil
   }
+
+  // Frames the old socket already delivered would otherwise sit unread in
+  // the terminal mailbox for every later selective receive to scan past. The
+  // close notice it sends after this point is the only residue, one frame.
+  sessions.discard(model.inbox)
   Model(
     ..model,
     help_open: False,
