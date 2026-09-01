@@ -160,7 +160,7 @@ list_directory_bounded(PathBinary, Limit)
   when is_integer(Limit), Limit >= 0 ->
     case file:list_dir(binary_to_list(PathBinary)) of
         {ok, Entries} when length(Entries) =< Limit ->
-            {ok, lists:map(fun unicode:characters_to_binary/1, Entries)};
+            {ok, lists:filtermap(fun utf8_entry/1, Entries)};
         {ok, _Entries} ->
             {error, <<"directory exceeds the entry limit">>};
         {error, Reason} ->
@@ -168,6 +168,15 @@ list_directory_bounded(PathBinary, Limit)
     end;
 list_directory_bounded(_PathBinary, _Limit) ->
     {error, <<"directory entry limit must be non-negative">>}.
+
+%% A directory entry that is not valid Unicode has no launcher record name
+%% Gleam could match, so it is omitted rather than handed over as the error
+%% tuple `unicode:characters_to_binary/1` would otherwise return.
+utf8_entry(Entry) ->
+    case unicode:characters_to_binary(Entry) of
+        Binary when is_binary(Binary) -> {true, Binary};
+        _ -> false
+    end.
 
 ensure_private_unix(PathBinary) ->
     Path = binary_to_list(PathBinary),
