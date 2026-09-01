@@ -10,12 +10,19 @@ whether `panic` belongs in `src/`. Those rules were enforced by review
 alone until the de-nesting wave violated one of them and shipped a
 quadratic JSON parser whose every unit test passed (`08cdbce`).
 
-A pure analysis over `glance`'s AST, plus two `glexer` token scans for
-the rules where a parser miss would be a policy hole rather than a missed
-suggestion, plus one line scan of a `gleam.toml`. Four of the nine rules
-gate — R0, R2, R4 and R6 — and each of their censuses must stay zero; the
-other five report. See **Staging** below before wiring anything else to
-the exit code.
+A pure analysis over `glance`'s AST, plus three `glexer` token scans for
+the questions where a parser miss would be a policy hole rather than a
+missed suggestion, plus one line scan of a `gleam.toml` and one line
+classification of every source. Four of the twelve rules gate — R0, R2, R4
+and R6 — and each of their censuses must stay zero; the other eight
+report. See **Staging** below before wiring anything else to the exit
+code.
+
+Three of the twelve are not questions about the AST at all. R10 and R11
+ask how the source was *laid out* — where the blank lines and comments
+are — which `glance` throws away entirely, so `lint/layout` reads the tree
+for where each sibling begins and the file's own line table for what was
+written between them.
 
 A run is two passes over the sources, not one: R1's structural half needs
 every `use`-compatible combinator the run can see before it can judge any
@@ -48,7 +55,8 @@ wrote ourselves. Nothing here is a security control.
   error_by_default}` — the vocabulary. `Rule` is `Unparseable |
   EagerFallback | NestingDepth | CatchAll | PanicInSource |
   BoundedLength | PortablePurity | AssertWithoutMessage |
-  LoneCallerArity`, printed as `R0`..`R8`.
+  LoneCallerArity | NakedBool | CommentStanza | DenseStanza`, printed as
+  `R0`..`R11`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   NestingDepth, PanicInSource, PortablePurity]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
@@ -73,8 +81,9 @@ wrote ourselves. Nothing here is a security control.
   applies from the path), and whether R3 looks at multi-subject `case`s
   (it does not). `assert_message` (R7, off for tests
   alongside `allow_panic` — `for_tests_like` is the one place that decides
-  what a test source is exempt from) and `lone_caller_arity` (R8's
-  threshold, 7). `counted_calls` is R5's table: the two counting calls it
+  what a test source is exempt from), `lone_caller_arity` (R8's
+  threshold, 7) and `dense_stanza_run` (R11's, 8 statements).
+  `counted_calls` is R5's table: the two counting calls it
   watches and, per call, the bounded question to suggest instead, because
   the advice for a string is not `list.drop`. `eager_combinators` is R1's
   hand-curated table — module, function, the *label* of the eagerly
@@ -94,9 +103,23 @@ wrote ourselves. Nothing here is a security control.
   (`exported_eager_rows`, public functions only), and drops any keyed
   under its own path so a combinator called where it is defined is one
   finding rather than two.
+- `lint/layout.{Block, Step, Weight, blocks, offsets, findings}` — R10 and
+  R11, which are the only rules about how a file was *written* rather than
+  what it parses to. `blocks` walks the tree for every list of
+  siblings — the statements of a body, the arms of a `case` — and reports
+  where each one begins, in offsets; `offsets` is what
+  `source.line_map` resolves in one merged pass; `findings` then judges in
+  line numbers against `source.classify`'s table. `Weight` is the R11
+  narrowing as a type: a `use` binding carries a run across without
+  lengthening it, because a `use`-chained decoder is a table of fields and
+  not a paragraph of steps.
 - `lint/source.{line_starts, lines_of, line_of, keyword_offsets,
-  Keywords, external_offsets}` — byte offsets to lines, and the two
-  token scans: R4's backstop and R6's `@external` half.
+  Keywords, external_offsets, LineKind, Lines, classify, kind_of,
+  offset_of, line_map}` — byte offsets to lines, the three token scans
+  (R4's backstop, R6's `@external` half, and the comment scan `classify`
+  rests on), and the line classification the layout rules index.
+  `classify` reads comments from `glexer`'s tokens rather than from the
+  text, so a line of a multi-line string beginning `//` is code.
 - `lint/cli.main` — argument parsing, file discovery, the report and the
   census. The only module here that does I/O.
 
@@ -125,7 +148,10 @@ No actors, no registers, no wire messages. `lint/cli` reads files with
 Each source is read once and parsed twice: once by
 `lint.exported_combinators` to collect R1's cross-module table, once by
 `lint.check_with` to lint it against the whole table. Over sixteen
-packages the second parse costs about a second.
+packages the second parse costs about a second. Each source is also
+*classified* once — `source.classify` lexes it for comment tokens and
+indexes its lines — which is what R10 and R11 read; a whole run is under
+two seconds.
 It reads `gleam.toml` as well as `.gleam`: the manifests are *derived*
 from the sources a run touched (the package root above each `/src/` or
 `/test/`) rather than named, because `make lint` points at
@@ -287,12 +313,58 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   does not see a reference from a constant. It would have named
   `reconcile_orphaned_poll` — thirteen parameters, one caller — on the
   commit that introduced it.
+- **R9 `naked-bool`** — a `Bool` in a function parameter or a record
+  field. `Bool` is the one type in the language carrying no domain
+  meaning: `render(document, True)` names nothing at the call site, and a
+  field declared `retry: Bool` makes every reader carry the polarity of
+  the name and makes `Retry | GiveUp` a change to every construction site
+  rather than to one declaration. gleam-style has said "replace booleans
+  with two-variant custom types" since it was written; nothing enforced
+  it, and the tree holds 223. **Return position is deliberately outside
+  the rule**: `is_empty(xs) -> Bool` is the predicate `case`, `&&` and
+  `bool.guard` are built to consume, and flagging those would flag the
+  language. The search descends through type parameters and tuples —
+  `Option(Bool)` in a field is the same hazard with a third state on it —
+  and stops at a `fn(…)`, because a predicate *passed* to a function is
+  that same legitimate `is_*` arriving as an argument. That boundary is
+  the rule's one narrowing and it is decidable from the annotation alone.
+  Type aliases and constants are not searched.
+- **R10 `comment-stanza`** — a `//` comment between two siblings, with
+  code on the line directly above it. A comment welded to the line above
+  reads as that line's footnote; the blank line is what makes it the
+  heading of the stanza below, and that is the difference between prose a
+  reader can find and prose they cannot (`CLAUDE.md`, "Literate code").
+  Siblings are the statements of a body **and the arms of a `case`** —
+  the reasoning for an arm is the commonest place this repo writes prose
+  inside a function. Two exemptions, both forced rather than chosen: a
+  comment that is the **first line of a block** is exempt because `gleam
+  format` deletes a blank line at the top of a block, so a finding there
+  could never be acted on; and a comment **inside a wrapped literal** is
+  invisible, because it annotates an element of a data structure rather
+  than opening a stanza. The second is R2's "a wrapped literal is not
+  depth" in the layout register, and without it the rule would flood
+  every encoder in the tree.
+- **R11 `dense-stanza`** — a function whose longest run of statements with
+  nothing between any two of them exceeds `dense_stanza_run` (8). A body
+  with no paragraphs has nowhere to put the prose R10 is about, so density
+  and silence arrive together; `runtime/supervisor.start` was ten `let`s
+  in a wall and reads as three stanzas once broken. Counted in
+  **statements, never lines**, for R2's reason: a thirty-line
+  `json.Object([…])` the formatter wrapped is one step. And a `use`
+  binding is weightless — it carries a run across without lengthening it —
+  because a `use`-chained decoder is a table of fields written down the
+  page and not a paragraph of steps. That narrowing is what took the
+  census from 57 to 17; `core/codec.decode_assistant_message` is nineteen
+  `use field <- result.try(…)` lines and is exactly right. One finding per
+  function, at the function, the way R2's is: what a reader does about it
+  is re-read the body and decide where its paragraphs are.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
-**R0, R2, R4 and R6 gate; R1, R3, R5, R7 and R8 warn.** `make lint` and
+**R0, R2, R4 and R6 gate; R1, R3, R5, R7, R8, R9, R10 and R11 warn.**
+`make lint` and
 `make check` fail on any of the four. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
@@ -359,6 +431,9 @@ for the censuses this superseded):
 | R6 portable-purity | 0 | **error level**; zero is the invariant, not the starting point |
 | R7 assert-without-message | 84, all in `conformance/src` | Part IV rule 3 at nothing per cent; a rule cannot gate on a census it has never been at zero for |
 | R8 lone-caller-arity | 3, and moving | **stays a warning**; a shape, never a verdict |
+| R9 naked-bool | 223 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
+| R10 comment-stanza | 404, and 0 in `lint` itself | decidable, fix is one blank line; the promotion this set is aiming at |
+| R11 dense-stanza | 17 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
 
 R1's twenty are what the triage left after the body check removed nine
 false positives: every one is a real eager argument, none of them
@@ -392,6 +467,37 @@ it was written to measure, which is the rule working rather than the rule
 failing. Do not tune the threshold to make the number look better; 7 is
 where the tree's own signatures stop being readable at a glance.
 
+R9, R10 and R11 are the literate-style rules and all three warn on
+arrival, which is the ordinary staging. Two of them are decidable enough
+that the question of promotion is worth answering rather than deferring.
+
+R9's 223 are every one decidable — an annotation says `Bool` or it does
+not — and what stops promotion is that they are not *fixable* in one
+change. Two hundred declarations is a sweep in its own right, and some are
+not this repository's to make: `terminate: Bool` and `from_hook: Bool` are
+fields of frozen Part-1 contracts, so replacing them costs a
+`protocol-change/NNN.md` rather than an edit. Four more are irreducible
+and always will be — `core/json`'s `Bool(value: Bool)`, `core/msgpack`'s
+`BoolValue`, `cap/wire`'s `bool` encoder and `core/codec`'s
+`encode_default_false` are code *about* booleans. A rule with four
+permanent exceptions can still gate, the way R4 gates with a whole package
+exempted, but only once the exceptions are the census rather than 2% of
+it.
+
+R10's 404 are the promotion this set is actually aiming at: decidable
+without types, one blank line per finding, never a change to what the code
+does, and a property lost exactly the way R2's is — one comment at a time,
+each reasonable on the day it lands. `packages/lint` has already been
+swept to zero, which is what a promotion has to look like everywhere
+before it can be one.
+
+R11's 17 are precise, but its *threshold* is a judgement rather than a
+fact. Eight statements is where this tree's own bodies stop having
+paragraphs, measured — but "eight" is not decidable the way "blank or not"
+is, and a rule whose census moves when somebody argues about a number
+should not be able to fail a build. Do not tune it to make the number look
+better, and read it as R8's kind of measurement.
+
 R3 is the doc-check `symbol absent from file` case: deciding whether an
 arm *could* have been exhaustive needs the subject's type, and `glance`
 resolves no types. The three narrowings above remove the classes that are
@@ -418,6 +524,12 @@ that a rule *fires* is not a test that it gates.
   wording without a `rescue` at the boundary to back it.
 - **No `panic`, no `let assert` in `src/`.** The tool passes its own R4;
   `make lint` says so.
+- **The tool passes its own R10 and R11.** `make lint-lint` reports zero
+  of each, and it did not on the day they were written — sixteen blank
+  lines went in, this package's own included. A layout rule whose own
+  package violates it is advice nobody has to take. Its R9 census is 13
+  and is part of the tree-wide sweep the rule schedules, which is a
+  different change from the one that counts them.
 - **Every gating rule's census is zero and stays zero.** R0, R2, R4 and
   R6 are wired to the exit code by default. If a finding appears the
   answer is to fix the source, not to demote the rule: an exception needs
@@ -457,6 +569,13 @@ that a rule *fires* is not a test that it gates.
   `gleam/erlangish/thing` import (proving a prefix is a path segment),
   and a commented-out dependency line (proving the manifest scan keys on
   the key rather than on the substring).
+  The layout rules' negative cases are the narrowings: R10's are the
+  formatter-forced exemptions (a comment opening a body, a comment above
+  the first `case` arm) and the wrapped-literal case, and R11's are the
+  `use` chain, the wrapped literal, and the same body broken by a blank
+  line and by a comment. Each of those is a class the rule would flood on
+  if the narrowing were removed, so removing one fails a test rather than
+  quietly costing the census its meaning.
 - **A finding is reported once.** R1's table now reaches a file from two
   directions — its own rows and the run's collected ones — and a
   combinator called in the file that defines it is in both. `scan.module`
@@ -483,7 +602,12 @@ that a rule *fires* is not a test that it gates.
 - `lint/portable` module doc — R6 in full: the two properties, what
   portable does not mean, why the rule names no target, and why each half
   looks where it does.
+- `lint/layout` module doc — R10 and R11 in full: why a rule about blank
+  lines exists, why layout cannot live in `lint/scan`, why the walk emits
+  offsets and asks about lines afterwards, and what the two rules
+  deliberately do not look at. `Weight`'s doc comment is where the `use`
+  narrowing is argued.
 - `lint/source` module doc — why the R4 backstop scans tokens rather
-  than text.
+  than text, and why the line classification lives beside the offsets.
 - `scripts/lint.sh` — the wrapper, the `# <errors> <warnings>` contract,
   and how to promote a rule.

@@ -9,6 +9,49 @@ worth more than any status comment.
 
 ---
 
+## Literate style: R9, R10, R11 (branch `style/literate-gleam`)
+
+Three house rules that were prose in `docs/gleam-style.md` and enforced by
+nobody are now lint rules, and the guide states them as rules rather than as
+preferences.
+
+- **R9 `naked-bool`** — a `Bool` in a function parameter or a record field.
+  Return position is deliberately outside the rule: `is_empty(xs) -> Bool` is
+  the predicate `case`, `&&` and `bool.guard` are built to consume, and
+  flagging it would flag the language. Census **223**.
+- **R10 `comment-stanza`** — a `//` comment between two siblings (statements
+  of a body, or arms of a `case`) with code on the line directly above it.
+  Census **404**, and **0 in `packages/lint` itself**, which was swept as
+  part of this change.
+- **R11 `dense-stanza`** — a function whose longest run of statements with
+  no blank line and no comment between any two of them exceeds 8. Census
+  **17**.
+
+All three warn. `finding.error_by_default`'s doc comment carries the census
+and the argument for each; `packages/lint/CLAUDE.md` has the rules in full.
+The whole run is now `0 errors, 980 warnings` and takes under two seconds.
+
+**What is next, in order of how ready it is.** R10 is the promotion this set
+is aiming at: 404 findings, one blank line each, no behaviour change, and
+`packages/lint` already proves the shape of the fix. R11's 17 are a small,
+genuinely interesting sweep — `runtime/supervisor.start` is ten `let`s in a
+wall that reads as three stanzas once broken. R9's 223 are the largest and
+the least mechanical: some of them are frozen Part-1 fields (`terminate:
+Bool`, `from_hook: Bool`) which cost a `protocol-change/NNN.md` rather than
+an edit, and four are irreducible (`core/json`'s `Bool(value: Bool)`,
+`core/msgpack`'s `BoolValue`, `cap/wire`'s `bool`, `core/codec`'s
+`encode_default_false`).
+
+**Two narrowings were forced by the first census and must not be removed.**
+R11 counted `use` chains and reported 57, of which the worst was
+`core/codec.decode_assistant_message` — nineteen `use field <-
+result.try(…)` lines, which is a table of fields and exactly right. A `use`
+binding is now weightless: it carries a run across without lengthening it,
+and the census fell to 17. R10 ignores a comment inside a wrapped literal
+for the same family of reason R2 measures depth on the AST — a comment
+naming one element of a `json.Object([…])` opens no stanza. Both have tests
+from both sides.
+
 ## Provider stream ownership (#131)
 
 PR #133 (`provider/cancellable-streams`) is rebased on `main` at `9849b3f`.
@@ -570,10 +613,11 @@ filing's self-assessment, including when the filing sounds alarming.**
 
 - **CI has never completed a run** (#99) — all jobs die in under four seconds.
   This is owner-action; local `make check` is the real gate today.
-- **`make lint` reports ~322 warnings at 0 errors.** That is the designed
-  state. R5's promotion is five one-line fixes away (#73 names the files);
-  the growth over the old ~306 is the mcp work's R3 census entries, the
-  same `_ ->`-over-`JsonValue` shape `client/protocol` carries.
+- **`make lint` reports 980 warnings at 0 errors.** That is the designed
+  state. R5's promotion is five one-line fixes away (#73 names the files).
+  644 of the 980 are the three literate-style rules added on
+  `style/literate-gleam` (R9 223, R10 404, R11 17) and are a baseline for
+  the sweeps that section schedules, not a regression.
 - **Jail and sandbox tests degrade in this container** — no cgroup v2, no
   Landlock. `make selftest` says what the host actually enforces. Failures
   there are environmental until run on a real host; #62 is that nobody has
