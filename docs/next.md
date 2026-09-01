@@ -9,6 +9,74 @@ worth more than any status comment.
 
 ---
 
+## Weft adoption: issue #159, phases 1 and 2 (branch `weft/managed-adoption`)
+
+The hand-rolled process machinery is on [weft](https://github.com/Roasbeef/weft)
+now, and `docs/weft.md` is the standing guide: which of the five shapes
+maps to which primitive, the rules a port is held to, the rejections that
+stand, and how to extend the library. The survey and the per-site record
+are `docs/design-notes/weft-adoption.md` (status: built through phase 2);
+the checklist is loom#159.
+
+What is on the branch, in commit order: phase 1 (the strand driver's
+recovery gate on `continuing`, the TUI's guarded startup, the exec helper
+and the code-mode holder on `weft/state_machine`, the conformance
+`attempt` and MCP bring-up on the run engine); phase 2a (`provider/
+custodian` as a witnessed run behind an unchanged API); 2c (the effect
+reaper as a witnessed run, the ledger claim in the driver's continuing
+handler); 2b (the gateway, relay and runtime-custodian guards as state
+machines); the census tail (bounded reads and calls, `postpone` for the
+exec ready-waiters, `weft/poll` for the launcher's waits, `api.
+await_result` and the satellite accept loop, the simulation's starved
+owner); and `loom --config <loom.toml>` for the local launcher, which the
+real-drive verification needed.
+
+**Two things a merger must do.** The branch develops against the sibling
+weft checkout as a *path dependency* in seven packages (`weft = { path =
+"../../../weft" }`) plus relocked manifests, so it does not resolve on a
+machine without that checkout, and CI cannot run it. Once weft 0.4.0 is on
+hex — everything on weft `main` since 0.3.1 is that release — switch the
+seven `gleam.toml` files back to `weft = ">= 0.4.0 and < 1.0.0"`, relock
+every manifest (`gleam deps download` per package, then hand-patch the
+requirement lists of local packages in dependents' manifests and add the
+entry to `tools`, which reaches weft only through broker — the resolver
+does neither), and run the full gate. Phase 1 (PR #160, hex 0.1.0) can
+merge on its own first; its CI red is main's own flake pattern, verified
+against four consecutive main runs.
+
+**What was measured, so nobody re-argues it.** Weft does not shrink the
+tree: the source moved by roughly +2,600 / −2,000 across the whole
+adoption, because an exhaustive `case state, message` matrix with every
+unreachable pair written and commented is larger than the recursive
+functions it replaces. What it bought is one owner per race (the ledger,
+the timer book, the cancellation order), a lint census that dropped where
+the ports landed, and 131 library tests for contracts loom kept by hand;
+each port's mutation results are in its commit. Two behaviour changes
+were accepted and are recorded in the design note: owners may hear their
+cancel twice (idempotent by protocol-change/010), and the poisoned
+witness exits with weft's named reason rather than a kill.
+
+**Verification that ran.** Every package gate per slice with mutation
+tests; full `make check` at 2a; a 200-seed soak on the 2c tree; a real
+session driven through the terminal against the Baseten catalogue with a
+plain prompt, a sub-agent spawn-and-wait, and a code-mode program in a
+jailed satellite. Re-run the soak and the drive after the hex switch.
+
+**Left open, deliberately.** `cap/task` is a clean fit for the run engine
+but `cap` is the satellite-side prelude with no weft dependency; adding
+one puts weft into the offline build seed and is a distribution decision
+(`docs/distribution.md`). A periodic timeout kind for the machine (the
+broker heartbeat, the writer's lease renewal, the driver's poll tick all
+re-arm by hand), a monitored non-panicking call against a pre-existing
+pid, and an injectable clock for `weft/poll` are the three extensions the
+census still wants. Two coverage gaps the ports exposed and did not
+close, because closing them needs a worker pid the API deliberately hides:
+the runtime custodian's consumer-death-withholds-terminal and
+lost-proof-exits-abnormally paths survive mutation on the old code and the
+new alike.
+
+---
+
 ## Literate style: R9, R10, R11 (branch `style/literate-gleam`)
 
 Three house rules that were prose in `docs/gleam-style.md` and enforced by

@@ -1,6 +1,7 @@
 # Design note: adopting weft
 
-Status: **in progress; loom#159 is the plan of record and checklist.** A
+Status: **built through phase 2; loom#159 is the plan of record and
+checklist, and `docs/weft.md` is the standing guide.** A
 survey of where [weft](https://hex.pm/packages/weft)
 (`github.com/Roasbeef/weft`) could replace hand-rolled concurrency
 machinery in this tree, what it would cost, and the one migration that
@@ -330,3 +331,106 @@ What landed in this tree so far, per loom#159's tier 1:
 Phase 1 is therefore complete except for the reaper, which phase 2 owns.
 The tree stays on weft 0.1.0 through this pass; the move to the managed
 task surface is phase 2's first commit.
+
+## Addendum: phase 2, built
+
+Phase 2 landed on branch `weft/managed-adoption`, developed against the
+sibling weft checkout as a path dependency and to be switched to the hex
+range once 0.4.0 is published. What weft had to grow first, and what each
+loom site became:
+
+**Weft additions, all additive** (weft `main`, 0.3.0 through the working
+version): `managed` tasks whose `begin` receives a `Ledger` and publishes
+owners while the run is live (`adopt`, `adopt_leaf`), many owners per
+task with an aggregate proof and a single seal; `adopt_under` /
+`adopt_leaf_under`, which stage a child beneath a parent owner so it is
+asked to stop only once the parent has exited; `start_witnessed` (a run
+with no consumer, its scope's exit the whole report, behind a `Witnessed`
+handle with `witness_pid` / `cancel_witnessed`); `cancel_when_exits`; a
+pid that is both watched and adopted answering both watches; `unlinked`
+start on the actor and machine builders; `with_selector` on a machine
+step; and `weft/poll` for bounded foreground waits. Two review fixes rode
+into 0.2.0 before merge: a cancel helper that was never dismissed when
+its owner exited, and a dead-on-arrival leaf owner that vanished from the
+account.
+
+**2a — the custodian is a facade over a witnessed run** (`provider/
+custodian.gleam`, 465 → 296 lines, public API unchanged). The worker is a
+leaf owner whose cancel is its stop message; its exit and the consumer's
+exit are cancel causes; every child is published beneath the worker;
+ownerless adoption is a permit check against a leaf that exits at once;
+a lost proof cancels the run (`CancelSiblings`). Two behaviour changes
+were measured and accepted: the witness asks owners itself at teardown,
+so an owner may hear its cancel twice (cancel capabilities are idempotent
+by protocol-change/010; the gateway test that pinned exactly-once now
+pins "every cancel names the primary and no fallback starts"), and the
+poisoned exit reason is weft's `weft_drain_proof_lost` rather than a
+kill (every judgement in the tree treated the two alike already).
+
+**2c — the effect reaper is a witnessed run** (`runtime/strand_runtime`,
+351 lines of ledger and loop deleted, 151 added). Effects adopt
+themselves as leaf owners with their stop capability; a provider effect
+publishes its stream owner beneath itself so the effect's exit cancels
+the stream; the drain ledger monitors the scope pid; the claim moved into
+the driver's `continuing` handler naming the scope. A lost proof cancels
+the run and exits abnormally, which the ledger reads as it read the
+self-kill.
+
+**2b — the guards are state machines.** `provider/gateway`'s request
+guard (nine phases, three state timeouts, 593 lines of loop deleted and
+983 written back, most of it the matrix and its prose; one pre-existing
+coverage gap closed by a new test), `client/provider_relay`'s guard (the
+grace as a state timeout, the request deadline as an event timeout, the
+observer queue as data, +229 net), and `runtime/internal/
+provider_custodian`'s parked worker (four states, `Parked` real, the
+selector widened on the permit with `with_selector`, +336 net). The
+prepare/publish/begin dances survive at the three sites as the
+machines' `Parked` state rather than as a shared helper: each site's
+permit carries something different (a custodian, a custodian plus an
+acknowledgement, a bare permit), and the census found the shared helper
+would net nothing.
+
+**The rest of the census** (a fifteen-package sweep, one reader per
+package, spot-checked): the tui image read and the code-mode served call
+became one-task runs with a deadline; the exec helper's ready-waiter list
+became `postpone`; the launcher's four waits, `api.await_result` and the
+satellite accept loop became `weft/poll`; the simulation's starved owner
+became a witnessed run. Kept, as named rejections: `cap/task` (a clean
+fit, but `cap` is the satellite-side prelude with no weft dependency, and
+adding one puts weft into the offline build seed — a distribution
+decision); `broker.clear_awaiting_helper` and `client/agency.wait_loop`
+(they charge attempts against the injected logical clock, which
+`weft/poll` cannot run on); `client/escalate.park` (injected sleep);
+`mcp/client`'s per-call expiry table; the two untrappable-kill janitors;
+`events/bus` on `pg`; `weft/event_manager` fits nothing in the tree.
+
+**The line count, honestly.** Source under `packages/*/src` moved by
+roughly +1,500 / −1,300 across the whole adoption before the guards, and
+the guards added more than they removed. The survey's "deletable"
+figures counted mechanism without counting what an exhaustive port
+writes back: every `case state, message` pair, the unreachable ones
+included and commented, and the literate prose each arm carries. What
+shrank is the number of places a race is decided (one ledger, one timer
+book, one cancellation order), the lint census (R8 moved-pyramid 7 → 5 in
+the gateway, R11 dense-stanza 2 → 0, R9 naked-bool retired at four
+sites), and the test surface (weft carries 131 tests for the contracts
+loom used to keep by hand, and the mutation results above are the
+evidence that loom's own tests still watch the seams).
+
+**Mismatches from loom#159, resolved:** grace-bounded acknowledgement —
+kept as a loom seam: no `cancel_grace`, each layer's report timer stays,
+the witness keeps waiting; leaf vs transitive — upstream; dynamic
+adoption — upstream (`managed`/`adopt`); ownerless work — loom seam (the
+immediate leaf); recursive proof loss — upstream (the scope's exit
+reason); scope lifetime — upstream (a scope survives its holder's death
+and drains); push consumption — upstream (`start_relayed`), unused
+because the witnessed shape fit better; periodic timeout kind — still
+open upstream, three sites re-arm by hand; per-key deadline tables — a
+standing rejection.
+
+**Verification** ran at each step: every package gate, the full
+`make check`, a 200-seed soak on the 2c tree, and a real session driven
+through the terminal against a Baseten catalogue — a plain prompt, a
+sub-agent spawn and wait, and a code-mode program in a jailed satellite —
+with no lost-proof or unconfirmed event in any server log.
+
