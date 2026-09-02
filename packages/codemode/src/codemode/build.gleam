@@ -442,7 +442,7 @@ fn products(root: String) -> Result(BuildProducts, CompileError) {
         "the build produced no " <> entry <> " in " <> beam_dir,
       ))
     True -> {
-      use manifest_hash <- result.try(fingerprint(beam_dir, gathered))
+      use manifest_hash <- result.try(fingerprint_directory(beam_dir))
       Ok(compile.BuildProducts(beam_dir:, manifest_hash:))
     }
   }
@@ -460,7 +460,7 @@ fn gather(
     Error(_) -> Ok(taken)
     Ok(entries) ->
       list.try_fold(entries, taken, fn(acc, name) {
-        case string.ends_with(name, ".beam") || string.ends_with(name, ".app") {
+        case compiled_module(name) {
           False -> Ok(acc)
           True -> {
             use _ <- result.try(
@@ -477,10 +477,40 @@ fn gather(
   }
 }
 
-// A content address over the whole compiled set: every file's name and the
-// hash of its bytes, sorted, hashed again. Two builds of the same source
-// against the same seed produce the same value; one changed byte anywhere
-// in the artifact changes it.
+/// A content address over a whole compiled set: every file's name and the
+/// hash of its bytes, sorted, hashed again. Two builds of the same source
+/// against the same seed produce the same value; one changed byte anywhere
+/// in the artifact changes it.
+///
+/// Public and reading the directory itself, because the address has to be
+/// recomputable *later*, over a copy, by something that never saw the
+/// build. That is what lets an extension install record its artifact's
+/// address and every later load check the beam set on disk against it —
+/// and it is the same function over the same directory in both places, so
+/// the two cannot drift into disagreeing about what the address is.
+///
+/// Only `.beam` and `.app` files count, because those are the only ones
+/// `gather` puts there: a stray file dropped into the directory afterwards
+/// is not part of what the build produced and must not change its
+/// address.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // build.fingerprint_directory(artifact.beam_dir) == artifact.manifest_hash
+/// ```
+///
+pub fn fingerprint_directory(beam_dir: String) -> Result(String, CompileError) {
+  use entries <- result.try(
+    simplifile.read_directory(beam_dir) |> file_error("read " <> beam_dir),
+  )
+  fingerprint(beam_dir, list.filter(entries, compiled_module))
+}
+
+fn compiled_module(name: String) -> Bool {
+  string.ends_with(name, ".beam") || string.ends_with(name, ".app")
+}
+
 fn fingerprint(
   beam_dir: String,
   names: List(String),

@@ -15,6 +15,15 @@ that tree separately from the self-contained server.
   remain distinct so a settled entry cannot duplicate its streamed answer.
   Wrapped durable rows are cached by strand, width, and detail mode; pending
   records extend that cache without reparsing older markdown.
+- `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
+  `Invalid` — and `Forward`, which is not a terminal application at all.
+  `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
+  answers it before it builds a model, so nothing draws a frame and no
+  terminal state is installed on the way past. The daemon is located by
+  `tui/bootstrap.server_executable`, the same ladder an implicit local
+  session uses — two ladders would mean installing an extension into one
+  server's world and then starting another — and the launcher exits with
+  the child's own status.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
@@ -280,6 +289,15 @@ that tree separately from the self-contained server.
   waits for the new full snapshot. A dropped websocket still ends the current
   native connection. Automatic reconnect and sequence-based catch-up remain
   follow-up work; the client never pretends a disconnected view is current.
+
+- **A passthrough forwards output, it does not interpret it.**
+  `ffi_bootstrap.run_forwarding` opens a port with `exit_status` and
+  `stderr_to_stdout` and writes every chunk to this process's stdout as
+  it arrives. It is a new FFI rather than a reuse of `spawn_server`,
+  which exists to start a *detached, paused* daemon and hand back its
+  birth identity: nothing about a passthrough wants any of that.
+  `stderr_to_stdout` because a passthrough that reordered the two streams
+  would be worse than one that interleaves them as the child did.
 
 ## Toolchain Boundary
 

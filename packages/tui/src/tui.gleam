@@ -28,6 +28,7 @@ import etui/widgets/textarea as text_area
 import gleam/erlang/process.{type Subject}
 import gleam/float
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -83,6 +84,12 @@ type Launch {
   Local(bootstrap.Options)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
+
+  // `loom ext …` is not a terminal application at all: it is a
+  // passthrough to `loomd`, whose own `ext` subcommand owns every verb.
+  // Forwarding rather than reimplementing is what stops the launcher and
+  // the server disagreeing about what an install did.
+  Forward(arguments: List(String))
 }
 
 type SubmissionMode {
@@ -181,6 +188,51 @@ type Model {
 pub fn main() {
   // Nothing but the rendered frame may write to this terminal from here on.
   ffi_bootstrap.silence_logger()
+  let launch = parse_launch(argv.load().arguments)
+  case launch {
+    // The passthrough runs before a single line of terminal setup: this
+    // process is a pipe for the duration and then it is gone.
+    Forward(arguments:) -> forward(arguments)
+    Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch)
+  }
+}
+
+// Runs `loomd` with the arguments this launcher was given, streaming its
+// output through and exiting with its status. The daemon is located by the
+// same ladder an implicit local launch uses, so `loom ext` and an
+// auto-started session cannot end up talking to two different binaries.
+fn forward(arguments: List(String)) -> Nil {
+  case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
+    Error(reason) -> {
+      io.println_error("loom ext: " <> reason)
+      ffi_bootstrap.halt(1)
+      Nil
+    }
+    Ok(server) ->
+      case ffi_bootstrap.run_forwarding(server, ["ext", ..arguments]) {
+        Ok(status) -> {
+          ffi_bootstrap.halt(status)
+          Nil
+        }
+        Error(reason) -> {
+          io.println_error(
+            "loom ext: could not run " <> server <> ": " <> reason,
+          )
+          ffi_bootstrap.halt(1)
+          Nil
+        }
+      }
+  }
+}
+
+fn flag_or_empty(arguments: List(String), flag: String) -> String {
+  case flag_value(arguments, flag) {
+    Ok(value) -> value
+    Error(Nil) -> ""
+  }
+}
+
+fn interactive(launch: Launch) -> Nil {
   let inbox = connection.new_inbox()
   let project = workspace.discover()
   let strands = demo_strands()
@@ -249,8 +301,9 @@ pub fn main() {
       activity_revision: 0,
       quiet_for_ms: quiet_after_ms,
     )
-  let initial = case parse_launch(argv.load().arguments) {
-    Demo -> base
+  let initial = case launch {
+    // Unreachable: `main` answers this one before it builds a model.
+    Forward(..) | Demo -> base
     Local(options) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -292,6 +345,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Local(default_bootstrap_options())
     ["--demo"] -> Demo
+    ["ext", ..rest] -> Forward(arguments: rest)
     _ ->
       case flag_value(arguments, "--addr"), flag_value(arguments, "--session") {
         Ok(address), Ok(session) ->

@@ -41,15 +41,27 @@
 //// point and the value the corpus tests exercise. See `default` for the
 //// per-module justification.
 ////
-//// # Two seams over one mechanism
+//// # Three seams over one mechanism
 ////
-//// There are two allowlists, not one, and a submission is judged against
+//// There are three allowlists, not one, and a submission is judged against
 //// exactly one of them (`Seam`, `for_seam`):
 ////
 //// - the **workspace** seam — `cap/{fs, proc, net, git, lsp, report, task,
 ////   actor, kv}` — a program that orchestrates *effects*;
 //// - the **orchestration** seam — `cap/strand` and `cap/report`, and
-////   nothing else — a program that orchestrates *agents*.
+////   nothing else — a program that orchestrates *agents*;
+//// - the **extension** seam — the workspace seam plus `ext`, `cap/ext`
+////   and the decoding half of the standard library — an installed
+////   extension's tool, compiled once and run per call.
+////
+//// The first two are disjoint by construction and the third is
+//// deliberately *not*: an extension is a workspace program with a
+//// different entry point, so its allowlist is the workspace seam's
+//// widened rather than a fourth set of capabilities that travel together.
+//// The property that holds it is a superset claim rather than an
+//// intersection (`extension_cap_modules`), and it is asserted for the
+//// same reason the intersection is: so the relationship between the seams
+//// is checked rather than assumed.
 ////
 //// The separation is a rule about which capabilities travel together. An
 //// orchestrator that could also write files, run a process, or reach the
@@ -90,6 +102,10 @@ pub type Seam {
 
   /// The orchestration seam: a program that orchestrates agents.
   OrchestrationSeam
+
+  /// The extension seam: an installed extension's own source, judged at
+  /// install and again at every load.
+  ExtensionSeam
 }
 
 /// The allowlist a seam judges a submission against.
@@ -110,6 +126,7 @@ pub fn for_seam(seam: Seam) -> VetPolicy {
   case seam {
     WorkspaceSeam -> default()
     OrchestrationSeam -> orchestration()
+    ExtensionSeam -> extension()
   }
 }
 
@@ -333,6 +350,33 @@ pub fn orchestration() -> VetPolicy {
   new(list.append(orchestration_cap_modules(), default_stdlib_modules()))
 }
 
+/// The extension seam's allowlist: the workspace seam's capabilities plus
+/// the `ext` prelude, and the workspace seam's standard-library subset
+/// plus the modules an extension needs to speak JSON.
+///
+/// A superset of the workspace seam, on purpose. An extension tool *is* a
+/// workspace program — it reads files, runs processes, and (under
+/// Decision 2 of the extension ruling) makes brokered HTTP requests — so
+/// carving it a fourth, narrower capability set would buy nothing and
+/// would have to be kept in step by hand. What it additionally needs is
+/// the vocabulary its entry point is typed against (`ext`), the client
+/// that fetches the call (`cap/ext`), and enough of the standard library
+/// to decode arguments and encode a reply.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.contains(policy.extension(), "ext")
+/// ```
+///
+/// ```gleam
+/// assert !policy.contains(policy.extension(), "cap/strand")
+/// ```
+///
+pub fn extension() -> VetPolicy {
+  new(list.append(extension_cap_modules(), extension_stdlib_modules()))
+}
+
 /// The capability-prelude modules in the default allowlist. The union of the
 /// sets named in design §6.2 (`fs proc net git lsp task actor report`) and
 /// spec WP-J (`fs proc git lsp report task actor kv`).
@@ -381,6 +425,63 @@ pub fn default_cap_modules() -> List(String) {
 ///
 pub fn orchestration_cap_modules() -> List(String) {
   ["cap/strand", "cap/report"]
+}
+
+/// The capability-prelude and prelude-package modules on the extension
+/// seam: every workspace capability, plus `cap/ext` and `ext`.
+///
+/// Written as `default_cap_modules()` widened rather than as a list of
+/// its own, so the superset relation is a fact about the code and not a
+/// promise two literals have to keep. Add a capability to the workspace
+/// seam and the extension seam gets it; that is the intended coupling,
+/// because an extension tool is a workspace program with a different
+/// entry point.
+///
+/// `ext` is not a `cap/*` module and carries no authority: it is the
+/// vocabulary an extension's tools are typed against (`packages/ext`),
+/// vendored into the build beside the prelude. `cap/ext` is the one
+/// capability only an extension makes — "which call am I serving?" — and
+/// it is on this seam and no other for the same reason `cap/strand` is on
+/// exactly one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.extension_cap_modules(), "cap/ext")
+/// ```
+///
+pub fn extension_cap_modules() -> List(String) {
+  list.append(default_cap_modules(), ["cap/ext", "ext"])
+}
+
+/// The standard-library modules on the extension seam: the shared pure
+/// subset, plus the five an extension needs and a code-mode program does
+/// not.
+///
+/// `gleam/dynamic` and `gleam/dynamic/decode` are here because an
+/// extension tool's arguments arrive as a `Dynamic` — the manifest's JSON
+/// schema is the only thing that knows their shape, so the decode has to
+/// happen in the extension. `gleam/json` is how a reply is built and how
+/// those arguments are parsed; `gleam/bit_array` and `gleam/uri` are what
+/// a tool needs to read a brokered HTTP response and build the URL it
+/// asked for. All five are pure: none exposes I/O, processes, or an
+/// FFI-declaring surface to its caller, which is the same bar
+/// `default_stdlib_modules` is held to.
+///
+/// This list is *not* shared with the other two seams, which is the point
+/// of it being a separate function: widening it widens exactly one seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.extension_stdlib_modules(), "gleam/json")
+/// ```
+///
+pub fn extension_stdlib_modules() -> List(String) {
+  list.append(default_stdlib_modules(), [
+    "gleam/dynamic", "gleam/dynamic/decode", "gleam/bit_array", "gleam/uri",
+    "gleam/json",
+  ])
 }
 
 // `cap/schedule` is on the workspace seam and not this one, which is a

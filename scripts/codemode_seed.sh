@@ -22,12 +22,32 @@ case "$output" in
   *) echo "codemode seed: layout did not complete" >&2; exit 1 ;;
 esac
 
-# Built twice on purpose. Gleam writes a local dependency's config
-# fingerprint into build/packages during resolution, and a seed missing it
-# is treated as stale by the *next* build — which then re-resolves, which
-# needs the network. The second build settles it, so a clone of the seed
-# builds offline. `make e2e-codemode` proves that in a network-off jail.
-(cd "$seed" && gleam build && gleam build)
+# Built until it stops resolving. Gleam writes *one* local dependency's
+# config fingerprint into build/packages per resolution pass, and a seed
+# missing any of them is treated as stale by the next build — which then
+# re-resolves, which needs the network. So a seed vendoring two packages
+# needs three passes before a clone of it builds offline, and a hard-coded
+# count would silently break the next time something is vendored. Loop on
+# the observable condition instead: build until Gleam stops announcing a
+# resolution. The bound is a guard against an infinite loop, not an
+# expectation. `make e2e-codemode` proves the result in a network-off jail.
+settled=0
+for _attempt in 1 2 3 4 5 6; do
+  if ! log=$(cd "$seed" && gleam build 2>&1); then
+    printf '%s\n' "$log" >&2
+    echo "codemode seed: the seed project did not build" >&2
+    exit 1
+  fi
+  case "$log" in
+    *"Resolving versions"*) ;;
+    *) settled=1; break ;;
+  esac
+done
+if [ "$settled" -ne 1 ]; then
+  echo "codemode seed: still re-resolving after six builds; a clone of this" >&2
+  echo "codemode seed: seed would reach Hex, so it is not usable offline" >&2
+  exit 1
+fi
 
 # Prove it offline, here, rather than discovering it in a jail later. A
 # clone of the seed is what every build root actually is, so a clone that

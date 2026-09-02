@@ -801,6 +801,67 @@ here is total.
 The exact path subset, and why the space and the invisible formatting
 code points are outside it, is stated in `archive`'s module doc.
 
+The rest of the path is phase 1's own, and each module is one question:
+
+- `client/extension/manifest` — the total `extension.toml` decoder.
+  `Manifest` carries `[extension]`, the `[[tool]]` list (name,
+  description, `prompt_snippet`, `parameters`, `entry`, `timeout_ms`),
+  the `[[hook]]` list, and `[net]` with its `[[net.secret]]` bindings.
+  Unknown keys are errors in *every* table, which is what refuses the
+  `[client]` table the design note reserves for a later ruling without a
+  special case for it. `tier` decodes only `"jailed"`. Three rules need
+  the tree beside the manifest, so `decode` takes a `Surroundings`: a
+  tool's `parameters` must be a path under `schema/` that exists and
+  parses as JSON, its `entry` must name a module `src/` ships, and a
+  secret's `host` must be one of `[net].hosts`. A secret carries the
+  *name* of an environment variable and never a value, the rule
+  `api_key_env` set one layer out.
+- `client/extension/record` — the install record, JSON with a total
+  decoder, and the `Root` value that says where installs live.
+  `root_for(home)` is `<home>/.loom/extensions`; the root is a value
+  resolved from `Settings.home` (or `--home`) rather than an environment
+  read inside the pipeline. The record stores the *terms* of the
+  approval — the tree digest, the manifest hash, the allowlist and the
+  net policy, with secret names only — because recomputing them at load
+  would mean an operator's yes silently followed the harness's current
+  idea of the seam.
+- `client/extension/install` — the pipeline, as six steps each returning
+  a `Failure` naming its layer: `Fetch`, `Extract`, `Manifest`,
+  `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
+  both injected (`Fetcher`, `Build`), so the module holds no HTTP client
+  and no broker, and a test drives the whole thing with a fetcher that
+  was never called. `entry_source` generates the `loom_satellite` module
+  that imports each tool's entry module and calls `ext/runtime.serve`;
+  its aliases are positional and per distinct module, because two tools
+  may share an entry module and importing one twice is a compile error
+  in generated code.
+- `client/extension/installed` — `discover(root)` and `one(root, name)`,
+  each returning `Ready` or `Refused`. Four things are re-derived from
+  disk and compared with the record: the tree digest, the manifest, the
+  vetting, and the allowlist. A refusal is a *value* rather than a
+  shorter list, because an operator who installed something and sees
+  nothing cannot tell "it is broken" from "I imagined it".
+- `client/extension/cli` — `install`, `list`, `remove`, `verify`, the
+  first subcommand surface in the tree. The verb is the first argument
+  and the rest is the flat-recursion flag parse `client/serve` uses.
+  `build_for` is the install's build seam over a started `BuildPlane`.
+
+**The verb split lives in `client.gleam`, not `serve.main`.** The
+installer needs the boot's own effect plane, so `extension/cli` imports
+`client/serve`; putting the dispatch in `serve` would be an import cycle.
+`client.gleam`'s module doc says so, so the next reader does not move it
+back.
+
+**`serve.start_effect_plane` and `serve.start_build_plane` are the boot's
+own, factored out.** An install runs the same jailed, network-off `gleam
+build` a code-mode program is built by, against the same seed, under the
+same base policy, found by the same helper and seed ladders. Two
+implementations would be two answers to "may this build run". The
+`writable` and `workspace` arguments are separate questions and a boot
+only ever asks them of one directory: the seed ladder looks in the
+checkout, and the jail may write only where the build root is, which for
+an install is under the extensions root.
+
 ## Relationships
 
 - **Depends on**: `core` (json, codec, entries, messages), `session`,

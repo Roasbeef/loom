@@ -965,6 +965,23 @@ fn required_int(
   }
 }
 
+/// The `loomd` an implicit local launch would start: `--server` when
+/// given, then `LOOM_SERVER`, then beside this launcher, then `PATH`.
+///
+/// Public because `loom ext` is a passthrough to the same daemon and must
+/// find the same one — two ladders would mean a launcher that installed
+/// an extension into one server's world and then started another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.server_executable("") == Ok("/usr/local/bin/loomd")
+/// ```
+///
+pub fn server_executable(explicit: String) -> Result(String, String) {
+  find_server(explicit)
+}
+
 fn find_server(explicit: String) -> Result(String, String) {
   case explicit {
     "" -> find_configured_server()

@@ -20,7 +20,7 @@
 //// no network at all: `make e2e-codemode` proves that by running the build
 //// in a network-off jail.
 ////
-//// # Why the prelude is vendored rather than pointed at
+//// # Why the preludes are vendored rather than pointed at
 ////
 //// Gleam records a local dependency's path in `manifest.toml` *relative to
 //// the project root*, and treats an absolute or mismatched path as a stale
@@ -34,9 +34,10 @@
 ////
 //// # Staleness
 ////
-//// A seed is a snapshot of the prelude. Change `packages/cap` and the seed
-//// is stale until it is rebuilt, and programs will compile against the old
-//// prelude. `make codemode-seed` rebuilds it from scratch; `make
+//// A seed is a snapshot of the preludes. Change `packages/cap` or
+//// `packages/ext` and the seed is stale until it is rebuilt, and programs
+//// will compile against the old one. `make codemode-seed` rebuilds it
+//// from scratch; `make
 //// e2e-codemode` always does so first. `verify` checks the one thing that
 //// silently changes the *meaning* of a build — that the seed's dependency
 //// table is byte-identical to the one the compile service generates — and
@@ -53,11 +54,13 @@ import simplifile
 pub const default_root = "../../build/codemode-seed"
 
 /// The packages `main` vendors into the seed, as `#(name, source)` pairs
-/// relative to the `codemode` package directory. `cap` is the prelude;
-/// `core` is there because `cap`'s own `gleam.toml` names it as
-/// `../core`, which resolves inside `vendor/` once both are there.
+/// relative to the `codemode` package directory. `cap` is the capability
+/// prelude and `ext` the extension prelude; `core` is there because
+/// `cap`'s own `gleam.toml` names it as `../core`, which resolves inside
+/// `vendor/` once both are there — and `ext` names `../cap` for the same
+/// reason.
 pub fn default_vendored() -> List(#(String, String)) {
-  [#("cap", "../cap"), #("core", "../core")]
+  [#("cap", "../cap"), #("core", "../core"), #("ext", "../ext")]
 }
 
 /// The marker `main` prints on success, so a shell script can tell a

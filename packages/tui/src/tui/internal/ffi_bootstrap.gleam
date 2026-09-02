@@ -221,3 +221,22 @@ pub fn current_log_tail(
   started_at_ms: Int,
   limit: Int,
 ) -> Result(String, Nil)
+
+/// Runs one executable to completion, forwarding its output to this
+/// process's stdout as it arrives, and answers with its exit status.
+///
+/// Uses OTP `open_port/2` with `exit_status` and `stderr_to_stdout`. The
+/// passthrough `loom ext` needs: nothing draws a frame, so the child's
+/// output is the output, and the child's status is the launcher's.
+@external(erlang, "tui_ffi", "run_forwarding")
+pub fn run_forwarding(
+  executable: String,
+  arguments: List(String),
+) -> Result(Int, String)
+
+/// Exits the VM with a status.
+///
+/// Uses OTP `erlang:halt/1`. Only the passthrough path calls it: the
+/// interactive launcher returns from `main` so the terminal is restored.
+@external(erlang, "tui_ffi", "halt")
+pub fn halt(code: Int) -> anything

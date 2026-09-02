@@ -505,6 +505,181 @@ fn announce(booted: Booted) -> Nil {
   )
 }
 
+// --- the effect plane, on its own -------------------------------------------
+//
+// `loom ext install` runs a jailed, network-off `gleam build` and needs
+// exactly what a boot needs to do that: a helper it can find, a pool of
+// them, the broker over the pool, and a verified toolchain and seed. It
+// needs none of the rest of a boot — no session, no runtime, no listener
+// — and it must not grow a second copy of any of it, because a divergence
+// between the two would mean an extension built under a policy no session
+// would have granted.
+
+/// A pool of jailed helpers and the one broker over them.
+///
+/// Factored out of `assemble` because the extension installer wants this
+/// and nothing else. The boot's own call is the only reason this is a
+/// function rather than eight lines inline, and it is enough of one: the
+/// two paths must compose the same policy from the same helper, or a
+/// build that passes at install could fail at run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.start_effect_plane(helper:, base_policy:, tmp_dir:, size:, clock:)
+/// ```
+///
+pub fn start_effect_plane(
+  helper helper: String,
+  base_policy base_policy: policy.SandboxPolicy,
+  tmp_dir tmp_dir: String,
+  size size: Int,
+  clock clock: Clock,
+) -> Result(#(Pool, Broker), String) {
+  let spawn_config =
+    exec.SpawnConfig(
+      helper_path: helper,
+      shell_path:,
+      base_policy:,
+      // Never an opt-out of enforcement on the caller's behalf: on a
+      // platform with no jail the helper refuses to serve, which is the
+      // refusal `--allow-unenforced` exists to make deliberate.
+      helper_args: [],
+      tmp_dir:,
+      handshake_timeout_ms: 5000,
+      cancel_grace_ms: 3000,
+      heartbeat_interval_ms: 0,
+    )
+  use pool <- result.try(
+    exec.start_pool(size:, spawn: fn() { exec.spawn_helper(spawn_config) })
+    |> result.map_error(fn(error) {
+      "the helper pool did not start: " <> string.inspect(error)
+    }),
+  )
+  use broker_actor <- result.try(
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock:,
+        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+      ),
+    )
+    |> result.map_error(fn(error) {
+      "the broker did not start: " <> string.inspect(error)
+    }),
+  )
+  Ok(#(pool, broker_actor))
+}
+
+/// Everything a jailed offline build needs, and nothing a session does.
+pub type BuildPlane {
+  BuildPlane(
+    /// The broker every clearance goes through.
+    broker: Broker,
+    /// The pool behind it, held so the plane can be stopped.
+    pool: Pool,
+    /// The verified `gleam`, `erl` and build seed.
+    toolchain: codemode_wiring.Toolchain,
+    /// The policy a build's requirements are met against.
+    base_policy: policy.SandboxPolicy,
+  )
+}
+
+/// Runs the helper ladder, starts the effect plane, discovers the
+/// toolchain and verifies the seed — the four steps a boot takes before
+/// it can build anything, in the order it takes them.
+///
+/// The one caller besides the boot is `loom ext install`, which is why
+/// this exists: an extension is compiled by the same jailed build a
+/// code-mode program is, against the same seed, under the same base
+/// policy, found by the same ladders. A second implementation would be a
+/// second answer to "may this build run", and the whole point of the
+/// hermetic build is that there is one.
+///
+/// The caller owns the returned plane and must `stop_build_plane` it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.start_build_plane(helper: None, seed: None, workspace: ".",
+/// //   writable: staging, tmp_dir: staging, clock:)
+/// ```
+///
+pub fn start_build_plane(
+  helper helper: Option(String),
+  seed seed: Option(String),
+  workspace workspace: String,
+  writable writable: String,
+  tmp_dir tmp_dir: String,
+  clock clock: Clock,
+) -> Result(BuildPlane, String) {
+  use helper_path <- result.try(find_helper(helper))
+
+  // `workspace` and `writable` are two different questions and a boot
+  // only ever asks them of one directory, which is why they were one
+  // parameter until now. The seed ladder looks in the *checkout* a
+  // contributor ran `make codemode-seed` in; the jail may write only
+  // where the build root is, which for an install is under the
+  // extensions root and nowhere near the checkout.
+  let base = base_policy(writable)
+
+  // The same refusal the boot makes, in the same place in the order: a
+  // base policy the sandbox cannot enforce is a failure now, not a
+  // surprise inside the build.
+  use Nil <- result.try(base_policy_fault(base))
+  use #(pool, broker_actor) <- result.try(start_effect_plane(
+    helper: helper_path,
+    base_policy: base,
+    tmp_dir:,
+    size: exec.min_pool_size,
+    clock:,
+  ))
+  case codemode_wiring.discover(seed_root(seed, workspace)) {
+    Ok(toolchain) ->
+      Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
+
+    // A toolchain this host does not have is not a reason to leave a
+    // pool of jails running: tear the plane down before saying so.
+    Error(reason) -> {
+      broker.stop(broker_actor)
+      exec.stop_pool(pool)
+      Error(reason)
+    }
+  }
+}
+
+/// The `PATH` a build plane's jailed compiler runs with: exactly the two
+/// toolchain directories plus the system ones.
+///
+/// Here rather than at the call site because `BuildPlane` is what holds
+/// the toolchain, and a caller assembling its own `PATH` would be a
+/// second answer to which `gleam` a build uses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.toolchain_path_of(plane) == "/usr/local/bin:/usr/bin:/bin"
+/// ```
+///
+pub fn toolchain_path_of(plane: BuildPlane) -> String {
+  codemode_wiring.toolchain_path(plane.toolchain)
+}
+
+/// Tears a build plane down. Idempotent enough to sit on every path out
+/// of an install, which is where it is called from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.stop_build_plane(plane)
+/// ```
+///
+pub fn stop_build_plane(plane: BuildPlane) -> Nil {
+  broker.stop(plane.broker)
+  exec.stop_pool(plane.pool)
+}
+
 // --- the command line ------------------------------------------------------
 
 // The raw flag values, before defaults. Absence is data here so that
@@ -1320,41 +1495,13 @@ fn assemble(
   )
 
   // The effect plane: a pool of jailed helpers behind the one broker.
-  let spawn_config =
-    exec.SpawnConfig(
-      helper_path: settings.helper_path,
-      shell_path:,
-      base_policy:,
-      // The server never opts out of enforcement on the caller's behalf:
-      // on a platform with no jail the helper refuses to serve, which is
-      // the refusal `--allow-unenforced` exists to make deliberate.
-      helper_args: [],
-      tmp_dir:,
-      handshake_timeout_ms: 5000,
-      cancel_grace_ms: 3000,
-      heartbeat_interval_ms: 0,
-    )
-  use pool <- result.try(
-    exec.start_pool(size: settings.helper_pool_size, spawn: fn() {
-      exec.spawn_helper(spawn_config)
-    })
-    |> result.map_error(fn(error) {
-      "the helper pool did not start: " <> string.inspect(error)
-    }),
-  )
-  use broker_actor <- result.try(
-    broker.start(
-      broker.BrokerConfig(
-        entropy: token.production_entropy(),
-        clock:,
-        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-        checkin: fn(helper) { exec.checkin(pool, helper) },
-      ),
-    )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
+  use #(pool, broker_actor) <- result.try(start_effect_plane(
+    helper: settings.helper_path,
+    base_policy:,
+    tmp_dir:,
+    size: settings.helper_pool_size,
+    clock:,
+  ))
 
   // The orchestration plane: runtime over the production wiring, with
   // the hub's two composition seams — commit hints in, provider deltas
