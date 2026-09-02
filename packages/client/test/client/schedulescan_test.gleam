@@ -379,7 +379,7 @@ fn idle(rig: Rig, strand: String) -> Bool {
 fn interval_schedule(
   name name: String,
   seconds seconds: Int,
-  wake wake: Bool,
+  wake wake: schedule.Wake,
 ) -> schedule.Schedule {
   schedule.Schedule(
     name:,
@@ -398,7 +398,7 @@ fn one_shot_schedule(name name: String, at at: Int) -> schedule.Schedule {
     name:,
     target: "main",
     timing: schedule.OneShot(at:),
-    wake: True,
+    wake: schedule.WakesIdle,
     body: "reminder",
   )
 }
@@ -406,7 +406,8 @@ fn one_shot_schedule(name name: String, at at: Int) -> schedule.Schedule {
 // --- 1. wake = false: steers an open run, holds on an idle strand ----------
 
 pub fn a_wake_false_schedule_steers_an_already_open_run_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
+  let sched =
+    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   let assert Ok(_op) = api.prompt(rig.runtime, [user("hello")])
     as "the prompt must open a run on main"
@@ -426,7 +427,8 @@ pub fn a_wake_false_schedule_steers_an_already_open_run_test() {
 }
 
 pub fn a_wake_false_schedule_holds_on_an_idle_strand_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
+  let sched =
+    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   let key = schedule.fired_key(strand: "main", name: "hb", occurrence: 0)
   assert fake_advance(rig.fc) as "the first tick must be pending"
@@ -442,7 +444,8 @@ pub fn a_wake_false_schedule_holds_on_an_idle_strand_test() {
 // --- 2. wake = true: starts a fresh run on an idle strand, exactly once ----
 
 pub fn a_wake_true_schedule_starts_a_fresh_run_exactly_once_test() {
-  let sched = interval_schedule(name: "wk", seconds: 60, wake: True)
+  let sched =
+    interval_schedule(name: "wk", seconds: 60, wake: schedule.WakesIdle)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   assert idle(rig, "main") as "the strand must start idle"
   let key = schedule.fired_key(strand: "main", name: "wk", occurrence: 0)
@@ -494,7 +497,7 @@ pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
       name: "stuck",
       target: "main",
       timing: schedule.OneShot(at: 100),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "reminder",
     )
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
@@ -523,7 +526,8 @@ pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
 // --- 4. a skipped window still produces exactly one, late, fire -----------
 
 pub fn a_skipped_window_produces_exactly_one_late_fire_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
+  let sched =
+    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   let assert Ok(_op) = api.prompt(rig.runtime, [user("hello")])
     as "the prompt must open a run on main"
@@ -560,7 +564,7 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
         seconds: 60,
         expiry: schedule.Expiry(max_fires: 1, expires_after_s: 604_800),
       ),
-      wake: True,
+      wake: schedule.WakesIdle,
       body: "heartbeat",
     )
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
@@ -601,7 +605,8 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
 // instead of re-arming. So this drains the wheel and asserts the actor is
 // back to exactly one live chain.
 pub fn pokes_leave_exactly_one_live_timer_chain_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
+  let sched =
+    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   process.sleep(300)
   let before = fake_pending(rig.fc)
@@ -622,7 +627,8 @@ pub fn pokes_leave_exactly_one_live_timer_chain_test() {
 // The other half of the same mechanism, isolated: a wake from a chain the
 // actor has replaced must die where it lands rather than re-arming.
 pub fn a_stale_tick_does_not_rearm_test() {
-  let sched = interval_schedule(name: "hb", seconds: 60, wake: False)
+  let sched =
+    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
   process.sleep(300)
   let before = fake_pending(rig.fc)
@@ -679,7 +685,7 @@ pub fn a_model_created_schedule_fires_attributed_to_the_model_test() {
       name: "mine",
       target: "main",
       timing: schedule.OneShot(at: 0),
-      wake: True,
+      wake: schedule.WakesIdle,
       body: "look at the build",
     )
   let assert Ok(Nil) =

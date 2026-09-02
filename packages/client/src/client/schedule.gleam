@@ -154,10 +154,9 @@ pub type Schedule {
     target: String,
     /// The fixed interval or the one-shot instant this schedule fires on.
     timing: Timing,
-    /// Whether this schedule may start a fresh run on an idle strand.
-    /// `False` (the default) steers an open run and holds when idle,
-    /// exactly like a triggered project rule.
-    wake: Bool,
+    /// Whether this schedule may start a fresh run on an idle strand,
+    /// or may only steer one already open.
+    wake: Wake,
     /// The text injected, once per due occurrence.
     body: String,
   )
@@ -179,6 +178,26 @@ pub type Timing {
 /// wins."
 pub type Expiry {
   Expiry(max_fires: Int, expires_after_s: Int)
+}
+
+/// What a schedule is allowed to do to a strand that is idle when it
+/// fires.
+///
+/// This is the whole of what an operator decides by writing
+/// `wake = true`, and the whole of what `Policy` caps a model-created
+/// schedule to, so it travels as a value both ends can read. The TOML
+/// key and the stored cell stay booleans; the type is what the Gleam on
+/// either side of those boundaries works in.
+pub type Wake {
+  /// The fire may start a fresh run on an idle strand. The mandatory
+  /// expiry above is what makes that safe: a waking schedule cannot
+  /// keep a session alive past a bound the operator set and can see.
+  WakesIdle
+
+  /// The fire steers a run that is already open and holds when the
+  /// strand is idle, exactly as a triggered project rule does. This is
+  /// the default, and what a `steer` policy caps every schedule to.
+  SteersOnly
 }
 
 /// The most `[[schedule]]` entries one configuration may define. Each is
@@ -580,13 +599,18 @@ fn parse_at(text: String, place: String) -> Result(Int, String) {
   }
 }
 
+// The TOML surface stays a boolean, because that is what an operator
+// has already been shown in the worked example and in every comment
+// above. The key is optional and its absence is the milder of the two
+// states, so a config that never mentions waking never gets it.
 fn schedule_wake(
   fields: Dict(String, tom.Toml),
   place: String,
-) -> Result(Bool, String) {
+) -> Result(Wake, String) {
   case dict.get(fields, "wake") {
-    Error(Nil) -> Ok(False)
-    Ok(tom.Bool(value)) -> Ok(value)
+    Error(Nil) -> Ok(SteersOnly)
+    Ok(tom.Bool(True)) -> Ok(WakesIdle)
+    Ok(tom.Bool(False)) -> Ok(SteersOnly)
     Ok(_other) -> Error(place <> ".wake must be a boolean")
   }
 }
@@ -1189,11 +1213,24 @@ pub fn encode(schedule: Schedule) -> JsonValue {
     [
       #("name", json.String(schedule.name)),
       #("target", json.String(schedule.target)),
-      #("wake", json.Bool(schedule.wake)),
+      #("wake", json.Bool(stored_wake(schedule.wake))),
       #("body", json.String(schedule.body)),
     ],
     timing_fields(schedule.timing),
   ))
+}
+
+// The stored cell keeps `wake` a JSON boolean rather than following the
+// type across. Cells written by earlier builds of this feature are
+// already out there, and a config cell that no longer decodes is a
+// schedule that silently stops firing — so the type stops at this line,
+// and `wake_field` is the only other place the wire's polarity is
+// written down.
+fn stored_wake(wake: Wake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
+  }
 }
 
 fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
@@ -1232,7 +1269,7 @@ pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {
   use fields <- result.try(object_fields(value))
   use name <- result.try(string_field(fields, "name"))
   use target <- result.try(string_field(fields, "target"))
-  use wake <- result.try(bool_field(fields, "wake"))
+  use wake <- result.try(wake_field(fields, "wake"))
   use body <- result.try(string_field(fields, "body"))
   use timing <- result.try(decode_timing(fields))
   build(name:, target:, timing:, wake:, body:)
@@ -1293,12 +1330,13 @@ fn int_field(
   }
 }
 
-fn bool_field(
+fn wake_field(
   fields: List(#(String, JsonValue)),
   key: String,
-) -> Result(Bool, Nil) {
+) -> Result(Wake, Nil) {
   case field(fields, key) {
-    Ok(json.Bool(value:)) -> Ok(value)
+    Ok(json.Bool(value: True)) -> Ok(WakesIdle)
+    Ok(json.Bool(value: False)) -> Ok(SteersOnly)
     Ok(_other) | Error(Nil) -> Error(Nil)
   }
 }
@@ -1317,14 +1355,15 @@ fn bool_field(
 ///
 /// ```gleam
 /// // schedule.build(name: "poll", target: "main",
-/// //   timing: schedule.OneShot(at: 0), wake: False, body: "look")
+/// //   timing: schedule.OneShot(at: 0), wake: schedule.SteersOnly,
+/// //   body: "look")
 /// ```
 ///
 pub fn build(
   name name: String,
   target target: String,
   timing timing: Timing,
-  wake wake: Bool,
+  wake wake: Wake,
   body body: String,
 ) -> Result(Schedule, String) {
   use Nil <- result.try(checked_name(name))
@@ -1499,22 +1538,35 @@ pub fn policy_opens_the_door(policy: Policy) -> Bool {
   }
 }
 
-/// Whether this policy permits a model-created schedule to wake an idle
-/// strand. The seam applies this rather than trusting the tool argument,
-/// so a model asking for `wake` under `ModelSchedulesSteer` gets a
-/// schedule that steers rather than a refusal — the request is honoured
-/// as far as the operator allowed, and the result says which it was.
+/// What a model-created schedule's `wake` actually becomes: what was
+/// asked for, capped by what this policy allows.
+///
+/// The policy caps rather than vetoes, and the seam applies it rather
+/// than trusting the tool argument. A model asking to wake under
+/// `ModelSchedulesSteer` gets a schedule that steers and a result that
+/// says so, because refusing instead would teach it to retry against a
+/// wall that will not move for anything it can do.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !schedule.policy_permits_wake(schedule.ModelSchedulesSteer)
+/// assert schedule.wake_under(
+///     schedule.ModelSchedulesSteer,
+///     requested: schedule.WakesIdle,
+///   )
+///   == schedule.SteersOnly
 /// ```
 ///
-pub fn policy_permits_wake(policy: Policy) -> Bool {
-  case policy {
-    ModelSchedulesOff | ModelSchedulesSteer -> False
-    ModelSchedulesWake -> True
+pub fn wake_under(policy: Policy, requested requested: Wake) -> Wake {
+  case policy, requested {
+    ModelSchedulesWake, WakesIdle -> WakesIdle
+
+    ModelSchedulesWake, SteersOnly
+    | ModelSchedulesSteer, WakesIdle
+    | ModelSchedulesSteer, SteersOnly
+    | ModelSchedulesOff, WakesIdle
+    | ModelSchedulesOff, SteersOnly
+    -> SteersOnly
   }
 }
 

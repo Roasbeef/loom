@@ -33,7 +33,7 @@ body = \"Check on things.\"
     as "a well-formed interval schedule must parse"
   assert sched.name == "heartbeat"
   assert sched.target == "main"
-  assert sched.wake == False
+  assert sched.wake == schedule.SteersOnly
   assert sched.body == "Check on things."
   assert sched.timing
     == schedule.Interval(
@@ -74,7 +74,7 @@ body = \"Watch the subagent.\"
     )
     as "a fully specified interval schedule must parse"
   assert sched.target == "sub:main/reviewer-abc"
-  assert sched.wake == True
+  assert sched.wake == schedule.WakesIdle
   assert sched.timing
     == schedule.Interval(
       seconds: 120,
@@ -544,7 +544,7 @@ fn sched() -> schedule.Schedule {
       seconds: 300,
       expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
     ),
-    wake: False,
+    wake: schedule.SteersOnly,
     body: "the body",
   )
 }
@@ -663,7 +663,11 @@ pub fn a_document_with_no_schedules_table_takes_the_default_test() {
 pub fn the_default_is_open_and_permits_waking_test() {
   assert schedule.default_policy == schedule.ModelSchedulesWake
   assert schedule.policy_opens_the_door(schedule.default_policy)
-  assert schedule.policy_permits_wake(schedule.default_policy)
+  assert schedule.wake_under(
+      schedule.default_policy,
+      requested: schedule.WakesIdle,
+    )
+    == schedule.WakesIdle
 }
 
 // Closing the door is still possible, and is still the only position
@@ -708,9 +712,29 @@ pub fn the_policy_predicates_agree_with_their_positions_test() {
   assert schedule.policy_opens_the_door(schedule.ModelSchedulesSteer)
   assert schedule.policy_opens_the_door(schedule.ModelSchedulesWake)
 
-  assert !schedule.policy_permits_wake(schedule.ModelSchedulesOff)
-  assert !schedule.policy_permits_wake(schedule.ModelSchedulesSteer)
-  assert schedule.policy_permits_wake(schedule.ModelSchedulesWake)
+  assert schedule.wake_under(
+      schedule.ModelSchedulesOff,
+      requested: schedule.WakesIdle,
+    )
+    == schedule.SteersOnly
+  assert schedule.wake_under(
+      schedule.ModelSchedulesSteer,
+      requested: schedule.WakesIdle,
+    )
+    == schedule.SteersOnly
+  assert schedule.wake_under(
+      schedule.ModelSchedulesWake,
+      requested: schedule.WakesIdle,
+    )
+    == schedule.WakesIdle
+
+  // A request that never asked to wake is never granted it, whatever
+  // the policy allows: the cap is a ceiling and not a floor.
+  assert schedule.wake_under(
+      schedule.ModelSchedulesWake,
+      requested: schedule.SteersOnly,
+    )
+    == schedule.SteersOnly
 }
 
 // --- the config cell round trip --------------------------------------------
@@ -724,7 +748,7 @@ pub fn a_schedule_survives_the_round_trip_test() {
         seconds: 300,
         expiry: schedule.Expiry(max_fires: 12, expires_after_s: 3600),
       ),
-      wake: True,
+      wake: schedule.WakesIdle,
       body: "look at the build",
     )
   assert schedule.decode(schedule.encode(interval)) == Ok(interval)
@@ -734,7 +758,7 @@ pub fn a_schedule_survives_the_round_trip_test() {
       name: "remind",
       target: "sub:main/worker-1",
       timing: schedule.OneShot(at: 1_800_000_000),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "check the migration",
     )
   assert schedule.decode(schedule.encode(one_shot)) == Ok(one_shot)
@@ -755,7 +779,7 @@ pub fn a_stored_cell_outside_todays_bounds_is_dropped_test() {
         seconds: 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
       ),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "spin",
     )
   assert schedule.decode(schedule.encode(too_tight)) == Error(Nil)
@@ -786,7 +810,7 @@ fn built(name: String, body: String) -> Result(schedule.Schedule, String) {
     name:,
     target: "main",
     timing: schedule.OneShot(at: 0),
-    wake: False,
+    wake: schedule.SteersOnly,
     body:,
   )
 }
@@ -816,7 +840,7 @@ pub fn build_refuses_a_busy_loop_interval_test() {
         seconds: schedule.min_interval_s - 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
       ),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "spin",
     )
   let assert Error(reason) = hot
@@ -830,7 +854,7 @@ pub fn build_refuses_an_expiry_outside_its_caps_test() {
       name: "x",
       target: "main",
       timing: schedule.Interval(seconds: 60, expiry:),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "b",
     )
   }
@@ -933,7 +957,7 @@ pub fn build_refuses_an_interval_above_the_expiry_window_test() {
         seconds: schedule.max_interval_s + 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
       ),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "b",
     )
   let assert Error(reason) = over
@@ -949,7 +973,7 @@ pub fn build_refuses_an_interval_above_the_expiry_window_test() {
         seconds: schedule.max_interval_s,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
       ),
-      wake: False,
+      wake: schedule.SteersOnly,
       body: "b",
     )
     as "the maximum interval itself must build"

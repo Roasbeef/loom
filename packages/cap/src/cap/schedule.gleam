@@ -26,7 +26,7 @@
 //// Whether `wake` is honoured is the operator's, not the program's. A
 //// host may run this session under a policy that permits scheduling but
 //// forbids waking; a `create` asking to wake then succeeds with
-//// `Created.wake` false, rather than failing. **Read the field rather
+//// `Created.wake` as `SteersOnly`, rather than failing. **Read the field rather
 //// than assuming the request**: a program that needs waking to be
 //// meaningful should check and say so in its report, not silently rely
 //// on it. A host may also disable the capability entirely, in which case
@@ -64,6 +64,22 @@ pub type ScheduleError {
   ScheduleUnavailable(reason: String)
 }
 
+/// What a schedule is allowed to do to this strand when it is idle at
+/// the moment the schedule fires.
+///
+/// A program asks for one of these and reads back what it was actually
+/// granted, which is not always the same — see the module doc on who
+/// owns that decision. The capability wire carries a boolean either way;
+/// this type is what a program writes and reads on this side of it.
+pub type Wake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+
+  /// The schedule steers a run already open, and holds when the strand
+  /// is idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
+
 /// One schedule already set on this strand.
 pub type Schedule {
   Schedule(
@@ -73,7 +89,7 @@ pub type Schedule {
     /// UTC instant.
     when: String,
     /// Whether it may start a fresh run on an idle strand.
-    wake: Bool,
+    wake: Wake,
     /// How many times it has fired so far.
     fired: Int,
     /// The text it injects.
@@ -88,7 +104,7 @@ pub type Created {
     when: String,
     /// What `wake` ended up being, which is not always what was asked
     /// for — see the module doc.
-    wake: Bool,
+    wake: Wake,
   )
 }
 
@@ -107,19 +123,24 @@ pub type Created {
 ///
 /// ```gleam
 /// let assert Ok(made) =
-///   schedule.every("poll", 300, True, "Check whether the build finished.")
+///   schedule.every(
+///     "poll",
+///     300,
+///     schedule.WakesIdle,
+///     "Check whether the build finished.",
+///   )
 /// ```
 ///
 pub fn every(
   name: String,
   seconds: Int,
-  wake: Bool,
+  wake: Wake,
   body: String,
 ) -> Result(Created, ScheduleError) {
   create([
     #("name", wire.string(name)),
     #("body", wire.string(body)),
-    #("wake", wire.bool(wake)),
+    #("wake", wire.bool(wake_flag(wake))),
     #("every_seconds", wire.int(seconds)),
   ])
 }
@@ -136,19 +157,24 @@ pub fn every(
 ///
 /// ```gleam
 /// let assert Ok(made) =
-///   schedule.at("window", "2026-09-01T09:00:00Z", True, "The window opened.")
+///   schedule.at(
+///     "window",
+///     "2026-09-01T09:00:00Z",
+///     schedule.WakesIdle,
+///     "The window opened.",
+///   )
 /// ```
 ///
 pub fn at(
   name: String,
   instant: String,
-  wake: Bool,
+  wake: Wake,
   body: String,
 ) -> Result(Created, ScheduleError) {
   create([
     #("name", wire.string(name)),
     #("body", wire.string(body)),
-    #("wake", wire.bool(wake)),
+    #("wake", wire.bool(wake_flag(wake))),
     #("at", wire.string(instant)),
   ])
 }
@@ -162,9 +188,7 @@ fn create(
   )
   use name <- result.try(field(value, "name"))
   use when <- result.try(field(value, "when"))
-  use wake <- result.try(
-    wire.bool_field(value, "wake") |> result.map_error(bad_result),
-  )
+  use wake <- result.try(wake_field(value, "wake"))
   Ok(Created(name:, when:, wake:))
 }
 
@@ -197,9 +221,7 @@ fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
   use name <- result.try(field(row, "name"))
   use when <- result.try(field(row, "when"))
   use body <- result.try(field(row, "body"))
-  use wake <- result.try(
-    wire.bool_field(row, "wake") |> result.map_error(bad_result),
-  )
+  use wake <- result.try(wake_field(row, "wake"))
   use fired <- result.try(
     wire.int_field(row, "fired") |> result.map_error(bad_result),
   )
@@ -228,6 +250,25 @@ pub fn cancel(name: String) -> Result(Nil, ScheduleError) {
 
 fn field(value: MsgPackValue, key: String) -> Result(String, ScheduleError) {
   wire.string_field(value, key) |> result.map_error(bad_result)
+}
+
+// The capability wire carries `wake` as a boolean in both directions,
+// which is the shape the host's own tool result already uses. These two
+// functions are the whole of the translation, so the polarity is written
+// down once per direction and nowhere else.
+fn wake_flag(wake: Wake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
+  }
+}
+
+fn wake_field(value: MsgPackValue, key: String) -> Result(Wake, ScheduleError) {
+  case wire.bool_field(value, key) {
+    Error(reason) -> Error(bad_result(reason))
+    Ok(True) -> Ok(WakesIdle)
+    Ok(False) -> Ok(SteersOnly)
+  }
 }
 
 fn bad_result(reason: String) -> ScheduleError {

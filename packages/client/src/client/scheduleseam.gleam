@@ -225,7 +225,8 @@ fn create(
   // `steer` policy that asked to wake gets a schedule that steers, and
   // the tool says so — refusing instead would teach it to retry against
   // a wall that will not move for anything it can do.
-  let wake = request.wake && schedule.policy_permits_wake(policy)
+  let wake =
+    schedule.wake_under(policy, requested: requested_wake(request.wake))
   use built <- result.try(
     schedule.build(
       name: request.name,
@@ -261,8 +262,28 @@ fn create(
   Ok(schedule_tool.Created(
     name: built.name,
     when: describe_timing(built.timing),
-    wake: built.wake,
+    wake: granted_wake(built.wake),
   ))
+}
+
+// `tools` may not depend on `client`, so the door states the two wake
+// postures in its own type and this seam translates, exactly as it does
+// for a refusal. Two functions rather than one reversible pair, because
+// the directions are read by different sides: `requested_wake` carries
+// what the model asked into the store's vocabulary, and `granted_wake`
+// carries what the store settled on back out.
+fn requested_wake(wake: schedule_tool.Wake) -> schedule.Wake {
+  case wake {
+    schedule_tool.WakesIdle -> schedule.WakesIdle
+    schedule_tool.SteersOnly -> schedule.SteersOnly
+  }
+}
+
+fn granted_wake(wake: schedule.Wake) -> schedule_tool.Wake {
+  case wake {
+    schedule.WakesIdle -> schedule_tool.WakesIdle
+    schedule.SteersOnly -> schedule_tool.SteersOnly
+  }
 }
 
 // A subagent may not schedule, and the reason is a lifetime mismatch
@@ -385,7 +406,7 @@ fn listed(runtime: Runtime, sched: Schedule) -> schedule_tool.Listed {
   schedule_tool.Listed(
     name: sched.name,
     when: describe_timing(sched.timing),
-    wake: sched.wake,
+    wake: granted_wake(sched.wake),
     fired: fire_count(runtime, sched),
     body: sched.body,
   )

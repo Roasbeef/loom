@@ -1673,7 +1673,7 @@ fn schedule_create_in(
     schedule_tool.Request(
       name: request.name,
       timing:,
-      wake: request.wake,
+      wake: requested_wake(request.wake),
       body: request.body,
     ),
   )
@@ -1681,7 +1681,7 @@ fn schedule_create_in(
     workspace.ScheduleCreated(
       name: created.name,
       when: created.when,
-      wake: created.wake,
+      wake: granted_wake(created.wake),
     )
   })
   |> result.map_error(schedule_refusal)
@@ -1690,6 +1690,25 @@ fn schedule_create_in(
 // The router has already refused both-or-neither, so this only has to
 // name which one arrived. The remaining arms are unreachable and say so
 // in the one vocabulary the caller can read.
+// `codemode` may not depend on `tools` either, so a wake crossing this
+// seam is translated the same way a refusal is. The two directions get a
+// function each because different sides read them: `requested_wake`
+// carries what the program asked into the door's vocabulary, and
+// `granted_wake` carries what the host granted back out.
+fn requested_wake(wake: workspace.ScheduleWake) -> schedule_tool.Wake {
+  case wake {
+    workspace.WakesIdle -> schedule_tool.WakesIdle
+    workspace.SteersOnly -> schedule_tool.SteersOnly
+  }
+}
+
+fn granted_wake(wake: schedule_tool.Wake) -> workspace.ScheduleWake {
+  case wake {
+    schedule_tool.WakesIdle -> workspace.WakesIdle
+    schedule_tool.SteersOnly -> workspace.SteersOnly
+  }
+}
+
 fn schedule_timing(
   request: workspace.ScheduleRequest,
 ) -> Result(schedule_tool.RequestedTiming, workspace.ScheduleRefusal) {
@@ -1714,7 +1733,7 @@ fn schedule_list_in(
       workspace.ScheduleRow(
         name: row.name,
         when: row.when,
-        wake: row.wake,
+        wake: granted_wake(row.wake),
         fired: row.fired,
         body: row.body,
       )

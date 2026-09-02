@@ -106,7 +106,11 @@ fn ctx(strand: String) -> tool.Ctx {
   )
 }
 
-fn every(name: String, seconds: Int, wake: Bool) -> schedule_tool.Request {
+fn every(
+  name: String,
+  seconds: Int,
+  wake: schedule_tool.Wake,
+) -> schedule_tool.Request {
   schedule_tool.Request(
     name:,
     timing: schedule_tool.Every(seconds:),
@@ -121,10 +125,10 @@ pub fn a_created_schedule_is_durable_and_listed_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
   let assert Ok(created) =
-    rig.seam.create(ctx("main"), every("poll", 300, True))
+    rig.seam.create(ctx("main"), every("poll", 300, schedule_tool.WakesIdle))
     as "an ordinary schedule must be created"
   assert created.name == "poll"
-  assert created.wake
+  assert created.wake == schedule_tool.WakesIdle
 
   // Durable: the reserved cell is there, under the config prefix, and
   // decodes back to a schedule targeting the creating strand.
@@ -151,7 +155,7 @@ pub fn a_schedule_is_private_to_the_strand_that_made_it_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesSteer, [])
     as "the harness must boot"
   let assert Ok(_created) =
-    rig.seam.create(ctx("main"), every("mine", 60, False))
+    rig.seam.create(ctx("main"), every("mine", 60, schedule_tool.SteersOnly))
     as "main must be able to schedule"
 
   assert rig.seam.list(ctx("review")) == Ok([])
@@ -174,7 +178,10 @@ pub fn a_subagent_cannot_schedule_test() {
     as "the harness must boot"
 
   let assert Error(schedule_tool.Invalid(reason:)) =
-    rig.seam.create(ctx("sub:main/worker-1"), every("poll", 60, True))
+    rig.seam.create(
+      ctx("sub:main/worker-1"),
+      every("poll", 60, schedule_tool.WakesIdle),
+    )
     as "a subagent must be refused"
   assert string.contains(reason, "subagent")
 
@@ -185,7 +192,7 @@ pub fn a_subagent_cannot_schedule_test() {
 
   // And the ordinary strand is unaffected.
   let assert Ok(_created) =
-    rig.seam.create(ctx("main"), every("poll", 60, True))
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.WakesIdle))
     as "a top-level strand must still schedule"
   stop(rig)
 }
@@ -198,9 +205,10 @@ pub fn a_subagent_cannot_schedule_test() {
 pub fn a_steer_policy_grants_the_schedule_but_not_the_waking_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesSteer, [])
     as "the harness must boot"
-  let assert Ok(created) = rig.seam.create(ctx("main"), every("poll", 60, True))
+  let assert Ok(created) =
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.WakesIdle))
     as "asking to wake under a steer policy must not refuse the call"
-  assert !created.wake
+  assert created.wake == schedule_tool.SteersOnly
 
   let assert Ok(cells) =
     api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
@@ -209,16 +217,17 @@ pub fn a_steer_policy_grants_the_schedule_but_not_the_waking_test() {
   let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
   // The durable cell, not merely the reply, carries the capped answer:
   // the scanner reads the cell and would otherwise wake anyway.
-  assert !stored.wake
+  assert stored.wake == schedule.SteersOnly
   stop(rig)
 }
 
 pub fn a_wake_policy_grants_the_waking_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
-  let assert Ok(created) = rig.seam.create(ctx("main"), every("poll", 60, True))
+  let assert Ok(created) =
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.WakesIdle))
     as "asking to wake under a wake policy must be granted"
-  assert created.wake
+  assert created.wake == schedule_tool.WakesIdle
   stop(rig)
 }
 
@@ -228,12 +237,12 @@ pub fn the_door_enforces_the_shared_bounds_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
   let assert Error(schedule_tool.Invalid(..)) =
-    rig.seam.create(ctx("main"), every("a/b", 60, False))
+    rig.seam.create(ctx("main"), every("a/b", 60, schedule_tool.SteersOnly))
     as "a name that breaks the fired-mark key must be refused at the door"
   let assert Error(schedule_tool.Invalid(..)) =
     rig.seam.create(
       ctx("main"),
-      every("hot", schedule.min_interval_s - 1, False),
+      every("hot", schedule.min_interval_s - 1, schedule_tool.SteersOnly),
     )
     as "an interval under the floor must be refused at the door"
   let assert Error(schedule_tool.Invalid(..)) =
@@ -242,7 +251,7 @@ pub fn the_door_enforces_the_shared_bounds_test() {
       schedule_tool.Request(
         name: "when",
         timing: schedule_tool.At(instant: "tomorrow"),
-        wake: False,
+        wake: schedule_tool.SteersOnly,
         body: "b",
       ),
     )
@@ -253,10 +262,11 @@ pub fn the_door_enforces_the_shared_bounds_test() {
 pub fn creating_never_silently_replaces_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
-  let assert Ok(_first) = rig.seam.create(ctx("main"), every("poll", 60, False))
+  let assert Ok(_first) =
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
     as "the first must be created"
   let assert Error(schedule_tool.NameTaken(name: "poll")) =
-    rig.seam.create(ctx("main"), every("poll", 120, False))
+    rig.seam.create(ctx("main"), every("poll", 120, schedule_tool.SteersOnly))
     as "reusing a name must refuse rather than overwrite"
 
   // The original survives untouched.
@@ -277,20 +287,23 @@ pub fn a_name_the_operator_already_used_is_taken_test() {
         seconds: 3600,
         expiry: schedule.Expiry(max_fires: 24, expires_after_s: 604_800),
       ),
-      wake: True,
+      wake: schedule.WakesIdle,
       body: "operator's own",
     )
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [operator])
     as "the harness must boot"
   let assert Error(schedule_tool.NameTaken(name: "nightly")) =
-    rig.seam.create(ctx("main"), every("nightly", 60, False))
+    rig.seam.create(ctx("main"), every("nightly", 60, schedule_tool.SteersOnly))
     as "a model must not shadow an operator's schedule on the same strand"
 
   // The same name on a different strand is a different fired-mark, so it
   // is free. A second top-level strand rather than a subagent, which the
   // lifetime gate refuses for its own reasons.
   let assert Ok(_elsewhere) =
-    rig.seam.create(ctx("review"), every("nightly", 60, False))
+    rig.seam.create(
+      ctx("review"),
+      every("nightly", 60, schedule_tool.SteersOnly),
+    )
     as "the collision is per strand, not global"
   stop(rig)
 }
@@ -303,12 +316,15 @@ pub fn the_ceiling_refuses_the_one_past_it_test() {
     let assert Ok(_created) =
       rig.seam.create(
         ctx("main"),
-        every("poll-" <> int_to_string(n), 60, False),
+        every("poll-" <> int_to_string(n), 60, schedule_tool.SteersOnly),
       )
       as "every schedule up to the ceiling must be created"
   })
   let assert Error(schedule_tool.CeilingReached(limit:)) =
-    rig.seam.create(ctx("main"), every("one-too-many", 60, False))
+    rig.seam.create(
+      ctx("main"),
+      every("one-too-many", 60, schedule_tool.SteersOnly),
+    )
     as "the schedule past the ceiling must be refused"
   assert limit == schedule.max_model_schedules
 
@@ -317,7 +333,10 @@ pub fn the_ceiling_refuses_the_one_past_it_test() {
   let assert Ok(Nil) = rig.seam.cancel(ctx("main"), "poll-1")
     as "cancelling must succeed"
   let assert Ok(_now_fits) =
-    rig.seam.create(ctx("main"), every("one-too-many", 60, False))
+    rig.seam.create(
+      ctx("main"),
+      every("one-too-many", 60, schedule_tool.SteersOnly),
+    )
     as "a cancelled schedule must free its slot"
   stop(rig)
 }
@@ -328,7 +347,7 @@ pub fn cancelling_removes_it_from_the_listing_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
   let assert Ok(_created) =
-    rig.seam.create(ctx("main"), every("poll", 60, False))
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
     as "the schedule must be created"
   let assert Ok(Nil) = rig.seam.cancel(ctx("main"), "poll")
     as "cancelling must succeed"
@@ -354,7 +373,7 @@ pub fn a_model_cannot_cancel_an_operators_schedule_test() {
       name: "nightly",
       target: "main",
       timing: schedule.OneShot(at: 100),
-      wake: True,
+      wake: schedule.WakesIdle,
       body: "operator's own",
     )
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [operator])
@@ -371,7 +390,7 @@ pub fn a_strand_cannot_cancel_another_strands_schedule_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
   let assert Ok(_created) =
-    rig.seam.create(ctx("main"), every("poll", 60, False))
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
     as "main must be able to schedule"
   let assert Error(schedule_tool.NotFound(name: "poll")) =
     rig.seam.cancel(ctx("review"), "poll")
@@ -395,7 +414,7 @@ pub fn an_unavailable_runtime_refuses_in_band_test() {
       scanner: process.new_name(prefix: "loom_scheduleseam_absent"),
     ))
   let assert Error(schedule_tool.Unavailable(..)) =
-    seam.create(ctx("main"), every("poll", 60, False))
+    seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
     as "a create with no runtime must refuse rather than crash"
   let assert Error(schedule_tool.Unavailable(..)) = seam.list(ctx("main"))
     as "a list with no runtime must refuse rather than crash"

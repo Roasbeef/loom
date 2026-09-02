@@ -135,7 +135,7 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
         workspace.ScheduleRow(
           name: "poll",
           when: "every 60s, at most 1000 times",
-          wake: True,
+          wake: workspace.WakesIdle,
           fired: 2,
           body: "look",
         ),

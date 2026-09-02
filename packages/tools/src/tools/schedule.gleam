@@ -105,6 +105,26 @@ pub const list_tool_name = "schedule_list"
 /// The cancellation tool's name.
 pub const cancel_tool_name = "schedule_cancel"
 
+/// What a schedule is allowed to do to a strand that is idle when it
+/// fires.
+///
+/// `tools` depends on `core` and `broker` and nothing else, so this is
+/// the door's own name for the distinction rather than a shared one.
+/// `client/schedule` holds the same two states on the durable side and
+/// `client/scheduleseam` translates between them, exactly as it already
+/// does for `Refusal`. The model still writes `wake: true` and still
+/// reads a JSON boolean back; the type is what the Gleam on this side of
+/// that wire works in.
+pub type Wake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+
+  /// The schedule steers a run that is already open and holds when the
+  /// strand is idle. This is what an operator's `steer` policy caps
+  /// every request to, however the model asked.
+  SteersOnly
+}
+
 /// One schedule as the model sees it: enough to decide whether to cancel
 /// it, and nothing about the durable machinery underneath.
 pub type Listed {
@@ -115,7 +135,7 @@ pub type Listed {
     /// instant — built by the seam, which owns the timing vocabulary.
     when: String,
     /// Whether this schedule may start a fresh run on an idle strand.
-    wake: Bool,
+    wake: Wake,
     /// How many times it has fired so far.
     fired: Int,
     /// The text it injects.
@@ -171,7 +191,7 @@ pub type Request {
     /// tool refuses to build a `Request` that names neither or both, so
     /// the seam never sees that case.
     timing: RequestedTiming,
-    wake: Bool,
+    wake: Wake,
     body: String,
   )
 }
@@ -192,9 +212,10 @@ pub type Created {
   Created(
     name: String,
     when: String,
-    /// What `wake` ended up being. Under a `steer` policy this is false
-    /// however the model asked, and the tool says so in the result.
-    wake: Bool,
+    /// What `wake` ended up being. Under a `steer` policy this is
+    /// `SteersOnly` however the model asked, and the tool says so in the
+    /// result.
+    wake: Wake,
   )
 }
 
@@ -294,14 +315,27 @@ fn run_create(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use body <- tool.with_arg(tool.required_string(args, "body"))
   use every <- tool.with_arg(tool.optional_int(args, "every_seconds"))
   use at <- tool.with_arg(tool.optional_string(args, "at"))
-  use wake <- tool.with_arg(tool.optional_bool(args, "wake"))
+  use wanted <- tool.with_arg(requested_wake(args))
   use timing <- tool.with_arg(requested_timing(every, at))
-  let wanted = option.unwrap(wake, False)
   use created <- tool.or_outcome(
     schedules.create(ctx, Request(name:, timing:, wake: wanted, body:)),
     refusal_outcome,
   )
   created_outcome(created, asked_for_wake: wanted)
+}
+
+// The model writes an ordinary JSON boolean and may leave the argument
+// out entirely. Absent reads as the milder of the two states, so a model
+// that never considered waking never gets it — the same default the
+// description states and the operator's TOML uses. The argument is read
+// here rather than converted from an already-decoded `Option`, so the
+// JSON spelling and the state it names stay in one place.
+fn requested_wake(args: JsonValue) -> Result(Wake, String) {
+  case tool.optional_bool(args, "wake") {
+    Error(reason) -> Error(reason)
+    Ok(Some(True)) -> Ok(WakesIdle)
+    Ok(Some(False)) | Ok(None) -> Ok(SteersOnly)
+  }
 }
 
 // Exactly one of the two timing arguments, decided here rather than at
@@ -329,17 +363,18 @@ fn requested_timing(
 
 fn created_outcome(
   created: Created,
-  asked_for_wake wanted: Bool,
+  asked_for_wake wanted: Wake,
 ) -> ToolOutcome {
   // The one case where what happened differs from what was asked: the
   // operator's policy allows steering only. Saying so plainly, once, is
   // what stops a model retrying the same call expecting a different
   // answer.
   let note = case wanted, created.wake {
-    True, False ->
+    WakesIdle, SteersOnly ->
       " This session's operator has not enabled waking, so it will steer a "
       <> "run that is already open and hold when the strand is idle."
-    True, True | False, _ -> ""
+
+    WakesIdle, WakesIdle | SteersOnly, WakesIdle | SteersOnly, SteersOnly -> ""
   }
   tool.success(
     "scheduled \""
@@ -353,7 +388,7 @@ fn created_outcome(
     json.Object([
       #("name", json.String(created.name)),
       #("when", json.String(created.when)),
-      #("wake", json.Bool(created.wake)),
+      #("wake", json.Bool(wake_flag(created.wake))),
     ]),
   )
 }
@@ -393,10 +428,20 @@ fn run_list(schedules: Schedules, ctx: Ctx) -> ToolOutcome {
   }
 }
 
+// The result JSON keeps `wake` a boolean on both tools, because that is
+// the shape the model has already been shown and the shape a code-mode
+// program's `cap/schedule` decoder already reads. The type stops here.
+fn wake_flag(wake: Wake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
+  }
+}
+
 fn describe_listed(listed: Listed) -> String {
   let waking = case listed.wake {
-    True -> ", wakes an idle strand"
-    False -> ", steers an open run only"
+    WakesIdle -> ", wakes an idle strand"
+    SteersOnly -> ", steers an open run only"
   }
   "\""
   <> listed.name
@@ -413,7 +458,7 @@ fn listed_json(listed: Listed) -> JsonValue {
   json.Object([
     #("name", json.String(listed.name)),
     #("when", json.String(listed.when)),
-    #("wake", json.Bool(listed.wake)),
+    #("wake", json.Bool(wake_flag(listed.wake))),
     #("fired", json.Int(listed.fired)),
     #("body", json.String(listed.body)),
   ])

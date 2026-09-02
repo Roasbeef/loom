@@ -353,6 +353,23 @@ pub type KvRefusal {
   StoreUnavailable(reason: String)
 }
 
+/// What a schedule is allowed to do to the strand when it is idle at
+/// the moment the schedule fires.
+///
+/// `codemode` may depend on neither `client` nor `tools`, so this
+/// restates the host's distinction in this module's own vocabulary,
+/// exactly as `ScheduleRefusal` restates `tools/schedule.Refusal`. The
+/// capability wire on both sides of the router stays a msgpack boolean;
+/// this is what the router and the host seam read between them.
+pub type ScheduleWake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+
+  /// The schedule steers a run already open, and holds when the strand
+  /// is idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
+
 /// One heartbeat a program asked for. `every_seconds` and `at` are the
 /// two shapes a schedule takes, and exactly one is present — the router
 /// refuses a request naming both or neither before the host sees it, so
@@ -362,7 +379,7 @@ pub type ScheduleRequest {
     name: String,
     every_seconds: Option(Int),
     at: Option(String),
-    wake: Bool,
+    wake: ScheduleWake,
     body: String,
   )
 }
@@ -371,12 +388,18 @@ pub type ScheduleRequest {
 /// granted, which is not always what was asked for: an operator policy
 /// may permit scheduling and forbid waking.
 pub type ScheduleCreated {
-  ScheduleCreated(name: String, when: String, wake: Bool)
+  ScheduleCreated(name: String, when: String, wake: ScheduleWake)
 }
 
 /// One heartbeat, as `cap/schedule.list` reads it.
 pub type ScheduleRow {
-  ScheduleRow(name: String, when: String, wake: Bool, fired: Int, body: String)
+  ScheduleRow(
+    name: String,
+    when: String,
+    wake: ScheduleWake,
+    fired: Int,
+    body: String,
+  )
 }
 
 /// Why a scheduling call was refused, structurally rather than as a
@@ -919,7 +942,7 @@ fn schedule_create_plan(
 ) -> Result(CapPlan, CapDenial) {
   use name <- result.try(args.string(request.args, "name"))
   use body <- result.try(args.string(request.args, "body"))
-  use wake <- result.try(optional_bool(request.args, "wake"))
+  use wake <- result.try(requested_wake(request.args))
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
 
@@ -946,7 +969,7 @@ fn schedule_create_plan(
           name:,
           every_seconds:,
           at:,
-          wake: option.unwrap(wake, False),
+          wake:,
           body:,
         ))
       {
@@ -955,11 +978,33 @@ fn schedule_create_plan(
           answered([
             #("name", msgpack.StringValue(name)),
             #("when", msgpack.StringValue(when)),
-            #("wake", msgpack.BoolValue(wake)),
+            #("wake", msgpack.BoolValue(wake_flag(wake))),
           ])
       }
     }),
   )
+}
+
+// A program may leave `wake` out entirely, and absent reads as the
+// milder of the two states — the same default the tool door and the
+// operator's TOML use, so a program that never considered waking never
+// gets it whichever door it came through.
+fn requested_wake(args: MsgPackValue) -> Result(ScheduleWake, CapDenial) {
+  case optional_bool(args, "wake") {
+    Error(denial) -> Error(denial)
+    Ok(Some(True)) -> Ok(WakesIdle)
+    Ok(Some(False)) | Ok(None) -> Ok(SteersOnly)
+  }
+}
+
+// The capability wire carries `wake` as a msgpack boolean in both
+// directions, which is what `cap/schedule` decodes on the far side. The
+// type stops at this line.
+fn wake_flag(wake: ScheduleWake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
+  }
 }
 
 fn schedule_list_plan(
@@ -983,7 +1028,7 @@ fn schedule_row(row: ScheduleRow) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
     #(msgpack.StringValue("when"), msgpack.StringValue(row.when)),
-    #(msgpack.StringValue("wake"), msgpack.BoolValue(row.wake)),
+    #(msgpack.StringValue("wake"), msgpack.BoolValue(wake_flag(row.wake))),
     #(msgpack.StringValue("fired"), msgpack.IntValue(row.fired)),
     #(msgpack.StringValue("body"), msgpack.StringValue(row.body)),
   ])

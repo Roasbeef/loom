@@ -707,11 +707,12 @@ fn fire(
   let mark = api.Mark(key:, value: schedule.fired_value(due.schedule))
   let text = injected_message(state, due, late)
   let verdict = case due.schedule.wake {
-    False -> {
+    schedule.SteersOnly -> {
       let target = api.on_strand(state.runtime, due.schedule.target)
       classify_steer(api.steer_marking(target, text, mark:))
     }
-    True ->
+
+    schedule.WakesIdle ->
       classify_send(api.send_to_strand_marking(
         state.runtime,
         to: due.schedule.target,
