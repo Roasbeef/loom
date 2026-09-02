@@ -565,6 +565,19 @@ over one session file. WP-L.
   the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
   two ends of the reserved `prompt/` cell. Nothing here is called per
   turn — the whole module runs once, at boot.
+- `client/system_prompt.{GuidanceFile, GuidanceOrigin, discover, guidance,
+  render_file, origin_name, agents_file, claude_file,
+  user_default_directories, max_guidance_file_bytes}` — the session's
+  instruction files and the fence they reach the model behind. `discover`
+  fills two slots: the `AGENTS.md` instructions (the workspace's own, else
+  the operator's global one under `~/.agents` then `~/.loom`) and the
+  workspace's `CLAUDE.md`. `guidance` joins them into the one string
+  `Host.guidance` carries, each file inside an `<instructions>` fence
+  naming its path and its `origin_name` — `workspace` or `user-default` —
+  which is the vocabulary the pack's framing prose is written against.
+  The home directory is a parameter rather than a `HOME` read, so the
+  whole lookup is testable without a process environment; `serve` reads
+  `HOME` and passes it in.
 - `client/wiring.{request_target, resolved_target, strand_thinking_level,
   thinking_level}` — the model-routing half of the seam: which role (if
   any) a captured identity is on and therefore whether the dispatch walks
@@ -720,6 +733,12 @@ over one session file. WP-L.
   with `base_policy(workspace)`. Under the default nothing can park (see
   Invariants), which is what made the escalation plane unreachable from
   an end-to-end until `client/tui_e2e_test`.
+- `client/serve.Settings.home` — the operator's home directory, where the
+  global `AGENTS.md` default is looked for when the workspace has none.
+  `resolve` fills it from `HOME` and `None` records that `HOME` was
+  unset. A field for the same reason `base_policy` is one: a boot that
+  reached into the process environment for it would make every test that
+  stands a server up read the developer's own `~/.agents/AGENTS.md`.
 
 ## Relationships
 
@@ -739,7 +758,7 @@ over one session file. WP-L.
   `telemetry` (the JSON handler this entry point installs, and the
   logger it injects into `api.Options`),
   `mist` + `gleam_http` (the websocket transport), `simplifile` (the
-  token file, the pack file, and the workspace's `CLAUDE.md`),
+  token file, the pack file, and the session's instruction files),
   `weft` (the bounded concurrent run `client/mcp.start` fans server
   bring-up out over).
 - The spec DAG (§0.1) writes `L → A,C,E,K`. The `B`, `D`, `F`, and `G`
@@ -934,6 +953,27 @@ over one session file. WP-L.
   pack that merely trips `pack.problems` (a dropped section, a misspelled
   placeholder) warns on stderr and serves: `decode` accepts more than
   `problems` approves by design, and a thin prompt beats a dead server.
+- **The workspace's instruction files outrank the operator's, and only a
+  file that is not there lets the lookup move on.** Slot one is
+  `AGENTS.md` — the cross-tool convention — taken from the workspace when
+  it has one and otherwise from `~/.agents/AGENTS.md`, then
+  `~/.loom/AGENTS.md`; slot two is the workspace's `CLAUDE.md`, which has
+  no global fallback. A workspace `AGENTS.md` that exists but is oversize
+  or unreadable warns and leaves its slot empty rather than falling
+  through to the operator's defaults: serving standing operator
+  instructions in place of a project file that happened to be unreadable
+  would swap one set of instructions for another behind everyone's back.
+  Every one of these reads warns and continues; none of them can stop a
+  boot. `HOME` unset is the launcher's hard failure degraded to a
+  warning, because a missing instruction file must never cost a session.
+- **The fence around an instruction file is the harness's, and its
+  `origin` attribute is a claim only the harness can make truthfully.**
+  At most one `user-default` block exists and it is always the first,
+  which is what the pack's prose tells the model to check; the bytes
+  inside a block are otherwise verbatim, and framing a hostile file does
+  not make it safe — it stops it speaking with the operator's voice, and
+  the residual risk is accepted and named, exactly as it was for the
+  single-file case.
 - **The Agency is reached through a name, never through a captured
   runtime.** `api.open` takes the `Effects` record and returns the
   `Runtime`, and `Runtime` *contains* `effects` — so a closure reachable

@@ -9,6 +9,37 @@ worth more than any status comment.
 
 ---
 
+## `AGENTS.md` instruction files (branch `client/agents-md`)
+
+The system prompt now carries the cross-tool
+[`AGENTS.md`](https://agents.md/) alongside the `CLAUDE.md` it always
+read. `client/system_prompt.discover` fills two slots: the `AGENTS.md`
+instructions — the workspace's own, else the operator's global one under
+`~/.agents` then `~/.loom` — and then the workspace's `CLAUDE.md`. A
+workspace file beats both globals; `AGENTS.md` renders first because it
+is the file every other harness reads and `CLAUDE.md` is the additions to
+it. Each file arrives inside an `<instructions>` fence naming its path
+and an origin of `workspace` or `user-default`, and the default pack's
+`_repository_guidance` fragment (now `loom-default-3`) is written against
+those two words: it tells the model that at most one `user-default` block
+exists and that it is always the first, which is the one claim a project
+file cannot forge by position. Every read warns and continues, per file,
+under the same `max_guidance_file_bytes` bound as before — including
+`HOME` unset, which is the launcher's hard failure degraded to a warning.
+
+**Left open, deliberately.** Nested `AGENTS.md` files in subdirectories
+are not read. The convention's precedence rule is "the closest file to
+the edited file wins", and Loom's prompt assembly has no notion of *the
+files under a path* at all: `Host.guidance` is one string, fixed at
+session open and pinned for the life of the session, and per-edit
+precedence needs a per-tool-call channel instead — a run-start injection
+or a `fs_*` seam, landing after the cached prefix rather than inside it.
+That is a design question about where in the two-channel doctrine
+directory-scoped instructions belong, not a missing `simplifile.read`,
+and it should be answered before anything is built.
+
+---
+
 ## Weft adoption: issue #159, phases 1 and 2 (branch `weft/managed-adoption`)
 
 The hand-rolled process machinery is on [weft](https://github.com/Roasbeef/weft)

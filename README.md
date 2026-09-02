@@ -463,6 +463,19 @@ the file — each entry's `api_key_env` names the variable read at dispatch,
 and serves; generation requests then fail in band. The TUI lists the
 catalogue with `/model` and switches the active strand's model by name.
 
+**Instruction files.** The system prompt carries the workspace's own
+instructions verbatim, framed as project-authored data. Two files, in
+this order: `AGENTS.md` — the [cross-tool convention](https://agents.md/)
+every agent harness now reads — and then `CLAUDE.md`, which may add to
+it. A workspace with no `AGENTS.md` of its own falls back to the
+operator's global one, `~/.agents/AGENTS.md` then `~/.loom/AGENTS.md`;
+a workspace file always wins over both, and nested `AGENTS.md` files in
+subdirectories are not read. Each file reaches the model inside an
+`<instructions>` fence naming its path and whether it came from the
+workspace or the operator, so standing operator instructions are
+distinguishable from a project's. Every one of these reads warns and
+continues — an oversize, unreadable or absent file never stops a boot.
+
 **Code mode** is registered only when the host has a Gleam compiler, an
 emulator, and a build seed whose dependency table matches the compile
 service's. A release carries all three; a checkout registers it once
