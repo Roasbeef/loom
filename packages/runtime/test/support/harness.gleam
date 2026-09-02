@@ -86,7 +86,18 @@ pub fn configuration() -> strand.StrandConfiguration {
 /// Runs a scenario over a fresh memory session, killing the tree after
 /// armed commit `kill_at` (0 = never). Panics if the scenario does not
 /// converge — non-convergence is the failure the harness exists to catch.
+///
+/// A run whose numbering drifted is discarded and started over on a fresh
+/// session; `attempts` bounds that. See `attempt_run`.
 pub fn run(scenario: Scenario, kill_at: Int) -> Report {
+  attempt_run(scenario, kill_at, attempts: 5)
+}
+
+fn attempt_run(
+  scenario: Scenario,
+  kill_at: Int,
+  attempts attempts: Int,
+) -> Report {
   let rec = recorder.start()
   let assert Ok(sess) =
     session.open_memory(clock.stepping(from: 1_000_000, by: 7))
@@ -121,28 +132,106 @@ pub fn run(scenario: Scenario, kill_at: Int) -> Report {
   let assert Ok(rt) = api.open(sess, eff, options)
     as "the session tree must boot"
 
-  // Armed before the admissions, not after. The driver's first drive runs
-  // as soon as the recovery barrier clears, and "quietly" only withholds
-  // the doorbell — a drive that lands between acceptance and a later arm
-  // would commit the run's opening boundaries unnumbered, and the
-  // scenario's `C` would come up short. Skipping the admissions keeps the
-  // numbering where the scenarios pin it: `k = 1` is the run-start
-  // checkpoint, whatever the driver does meanwhile.
+  case open_run(rt, scenario, rec, kill_at) {
+    Ready(op:) -> drive_run(rt, sess, op, scenario, rec, kill_at)
+
+    // This session's opening is not the scenario's, and no arithmetic can
+    // put it back: the boundaries the crash is counted from are already
+    // spent, or the run is already past the point the steer belongs at.
+    // Drop the tree and start over on a fresh one.
+    Spoiled(why:) -> {
+      process.kill(rt.tree.supervisor)
+      case attempts > 1 {
+        True -> attempt_run(scenario, kill_at, attempts: attempts - 1)
+        False ->
+          panic as {
+            "the " <> scenario.name <> " opening kept drifting: " <> why
+          }
+      }
+    }
+  }
+}
+
+/// Whether an attempt's opening is the one its scenario describes.
+type Opening {
+  /// The admissions landed with nothing of the run committed beside them,
+  /// so the next commit is boundary one and the run may proceed.
+  Ready(
+    /// The accepted run's operation.
+    op: ids.OpId,
+  )
+
+  /// A drive got in among the admissions. Not an error in the runtime and
+  /// not something to crash on — just a session this scenario can no
+  /// longer be told from.
+  Spoiled(
+    /// What the harness saw, for the message it gives up with.
+    why: String,
+  )
+}
+
+// The admissions go first and the bomb is armed behind them, which is what
+// keeps the test's own writes out of the run. Arming ahead of them and
+// skipping a count could not: the recorder saw commits, not committers, so
+// a drive that landed between acceptance and steer ate a skip, the steer
+// became boundary one, and the bomb went off inside the very call that was
+// admitting it. That is both macOS reds this harness has produced — a
+// steer admission that failed, and a projection that diverged because the
+// crash landed on the wrong side of the steer.
+//
+// Acceptance itself cannot be spoiled: the strand is idle and has no
+// operation, so there is nothing for a drive to commit before it.
+fn open_run(
+  rt: api.Runtime,
+  scenario: Scenario,
+  rec: Subject(recorder.Message),
+  kill_at: Int,
+) -> Opening {
+  let assert Ok(op) = api.accept_quietly(rt, scenario.prompt)
+    as "acceptance must succeed on an idle strand"
   let admissions = case scenario.steer {
     Some(_) -> 2
     None -> 1
   }
-  recorder.arm(rec, kill_at, skipping: admissions)
-  let assert Ok(op) = api.accept_quietly(rt, scenario.prompt)
-    as "acceptance must succeed on an idle strand"
-  case scenario.steer {
-    Some(message) -> {
-      let assert Ok(_) = api.steer_quietly(rt, message)
-        as "steer admission must succeed on the open run"
-      Nil
-    }
-    None -> Nil
+  case admit_steer(rt, scenario) {
+    Error(why) -> Spoiled(why:)
+    Ok(Nil) ->
+      case recorder.arm(rec, at: kill_at, after: admissions) {
+        recorder.Clean -> Ready(op:)
+        recorder.Drifted(boundaries:) ->
+          Spoiled(
+            why: int.to_string(boundaries)
+            <> " boundaries were committed during the admissions",
+          )
+      }
   }
+}
+
+// A steer is admitted onto an *open* run, so a drive that got ahead of this
+// call can close the window by finishing the turn the scenario steers into.
+// The refusal is the runtime behaving correctly about a run that is no
+// longer the scenario's.
+fn admit_steer(rt: api.Runtime, scenario: Scenario) -> Result(Nil, String) {
+  case scenario.steer {
+    None -> Ok(Nil)
+    Some(message) ->
+      case api.steer_quietly(rt, message) {
+        Ok(_entry) -> Ok(Nil)
+        Error(_reason) -> Error("the run closed before the steer was admitted")
+      }
+  }
+}
+
+// The run proper, once its numbering is known to start where the scenario
+// says it does.
+fn drive_run(
+  rt: api.Runtime,
+  sess: Session,
+  op: ids.OpId,
+  scenario: Scenario,
+  rec: Subject(recorder.Message),
+  kill_at: Int,
+) -> Report {
   api.nudge(rt)
 
   // The pump is started before the wait and stopped before the tree, so no
