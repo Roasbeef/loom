@@ -146,7 +146,7 @@ type ProcessMatch {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.resolve(bootstrap.Options("", "", "", ""))
+/// bootstrap.resolve(bootstrap.Options("", "", "", "", ""))
 /// // -> Ok(bootstrap.Target(..))
 /// ```
 pub fn resolve(options: Options) -> Result(Target, String) {
@@ -172,7 +172,7 @@ pub fn resolve(options: Options) -> Result(Target, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.discover_sessions(bootstrap.Options("", "", "", ""))
+/// bootstrap.discover_sessions(bootstrap.Options("", "", "", "", ""))
 /// ```
 pub fn discover_sessions(
   options: Options,
@@ -223,6 +223,11 @@ pub fn discover_sessions(
 
 /// Rebuilds local-launch inputs for one discovered session.
 ///
+/// The server, state root and catalogue file carry over from the launch
+/// the terminal was started with: a switch that has to cold-start the
+/// chosen session boots it the way the operator asked this terminal to
+/// boot its own.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -234,6 +239,7 @@ pub fn session_options(base: Options, choice: SessionChoice) -> Options {
     session_file: choice.session_file,
     server: base.server,
     state_directory: base.state_directory,
+    config: base.config,
   )
 }
 
@@ -242,7 +248,7 @@ pub fn session_options(base: Options, choice: SessionChoice) -> Options {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.session_file(bootstrap.Options("", "", "", ""))
+/// bootstrap.session_file(bootstrap.Options("", "", "", "", ""))
 /// ```
 @internal
 pub fn session_file(options: Options) -> Result(String, String) {
@@ -268,6 +274,7 @@ fn discover_session(
           session_file: endpoint.session_file,
           server: base.server,
           state_directory: state,
+          config: base.config,
         )
       use workspace <- result.try(
         discard_reason(canonical_workspace(endpoint.workspace)),

@@ -192,7 +192,7 @@ pub fn local_session_discovery_validates_launcher_records_test() {
     |> string.replace(canonical_session, canonical_pending)
     |> string.replace("\"review\"", "\"pending\"")
     |> string.replace(key, pending_key)
-  let options = bootstrap.Options(workspace, session, "/bin/loomd", state)
+  let options = bootstrap.Options(workspace, session, "/bin/loomd", state, "")
   let assert Ok(Nil) =
     ffi_bootstrap.atomic_write_private(pending_endpoint, pending_record)
   let assert Ok([_, _]) = bootstrap.discover_sessions(options)
@@ -215,6 +215,7 @@ pub fn local_session_discovery_validates_launcher_records_test() {
       session_file: canonical_session,
       server: "/bin/loomd",
       state_directory: state,
+      config: "",
     )
   let _ = simplifile.delete(root)
 }
