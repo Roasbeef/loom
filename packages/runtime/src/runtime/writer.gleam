@@ -16,13 +16,22 @@
 //// never saw it succeed" — a crash between adjacent commits, scriptable
 //// for every boundary. Production wiring passes a no-op.
 ////
-//// For SQLite sessions the writer renews the writer lease on an idle
-//// timer (`Session.lease_interval_ms`, a third of the TTL); a lost lease
-//// stops the writer abnormally so the supervisor reboots the tree, whose
-//// reopen path re-acquires or fails loudly. Renewal timers target a private
-//// subject bound to this writer PID. The public registered name is for
-//// callers; letting a predecessor timer resolve it to a replacement would
-//// add another permanent renewal cadence after every restart.
+//// For SQLite sessions the writer renews the writer lease on a periodic
+//// timeout (`Session.lease_interval_ms`, a third of the TTL); a lost
+//// lease stops the writer abnormally so the supervisor reboots the tree,
+//// whose reopen path re-acquires or fails loudly.
+////
+//// The tick is `weft/actor`'s, which is what deletes the hazard this
+//// paragraph used to describe. An Erlang timer addressed through a
+//// registered name outlives the process that armed it and reaches
+//// whatever replacement later claims that name, so a restarted writer
+//// would inherit a second permanent renewal cadence for every incarnation
+//// before it. The writer defended against that by holding a private
+//// subject bound to its own pid and arming every `send_after` at that
+//// instead. A weft periodic timeout fires into a subject weft creates
+//// inside the actor's own process and never registers under a name, so
+//// there is no address a successor could inherit and nothing left to
+//// defend: the writer selects only on its registered subject again.
 
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type Seq}
@@ -32,11 +41,11 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import runtime/internal/ffi_sup
 import session/session.{type Session}
 import storage/storage.{type StorageError}
+import weft/actor
 
 /// A committed-transaction event published to subscribers post-commit.
 /// Events are hints; pulls are truth (design §3.6) — a subscriber that
@@ -101,9 +110,6 @@ type State {
     ordinal: Int,
     subscribers: List(Subject(Event)),
     after_commit: fn(Int) -> Nil,
-    // Renewal is incarnation-local bookkeeping, so this is the direct
-    // subject rather than the stable address callers retain.
-    renewal: Subject(Message),
   )
 }
 
@@ -121,43 +127,42 @@ pub fn start(
   name: Name(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let renewal = renewal_subject()
-    schedule_renew(options.session, renewal)
     actor.initialised(State(
       session: options.session,
       ordinal: 0,
       subscribers: options.subscribers,
       after_commit: options.after_commit,
-      renewal:,
     ))
-    |> actor.selecting(
-      process.new_selector()
-      |> process.select(subject)
-      |> process.select(renewal),
-    )
     |> actor.returning(subject)
     |> Ok
   })
   |> actor.named(name)
   |> actor.on_message(handle)
+  |> renewing(options.session)
   |> actor.start
 }
 
-/// Creates the direct subject used only for one writer incarnation's renewal
-/// timers. This is an internal structural test seam: callers must use the
-/// registered subject returned by `start`, while the writer retains this one
-/// so predecessor timers cannot resolve into a replacement process.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let subject = writer.renewal_subject()
-/// assert process.subject_name(subject) == Error(Nil)
-/// ```
-///
-@internal
-pub fn renewal_subject() -> Subject(Message) {
-  process.new_subject()
+// Arms the lease renewal, for a session that has a lease to renew.
+//
+// `lease_interval_ms` is `Some` exactly when a lease exists — a memory
+// session renews nothing — so the option is the switch and no interval
+// has to stand for "off".
+//
+// The cadence is weft's fixed delay: the next tick is armed once this
+// one's handler has returned, so a renewal that blocks on a slow file
+// slows the ticks down rather than queueing a backlog of them behind
+// itself. That is the right reading for a lease, whose TTL is three
+// intervals: falling behind should cost promptness, never a burst of
+// renewals racing each other through the same store.
+fn renewing(
+  builder: actor.Builder(State, Message, Subject(Message)),
+  session: Session,
+) -> actor.Builder(State, Message, Subject(Message)) {
+  case session.lease_interval_ms {
+    Some(interval) ->
+      actor.periodic(builder, every: interval, sending: RenewTick)
+    None -> builder
+  }
 }
 
 /// The writer as a supervision child.
@@ -207,16 +212,6 @@ fn publish(subscriber: Subject(Event), event: Event) -> Nil {
         Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, event))
         Error(Nil) -> Nil
       }
-  }
-}
-
-fn schedule_renew(session: Session, subject: Subject(Message)) -> Nil {
-  case session.lease_interval_ms {
-    Some(interval) -> {
-      let _timer = process.send_after(subject, interval, RenewTick)
-      Nil
-    }
-    None -> Nil
   }
 }
 
@@ -270,12 +265,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(
         State(..state, subscribers: [subscriber, ..state.subscribers]),
       )
+
+    // The next tick is weft's to arm: a periodic timeout re-arms itself
+    // once this handler has returned, so the renewal that fails does not
+    // have to remember to stop the cadence it is about to die out of.
     RenewTick ->
       case state.session.renew_lease() {
-        Ok(Nil) -> {
-          schedule_renew(state.session, state.renewal)
-          actor.continue(state)
-        }
+        Ok(Nil) -> actor.continue(state)
 
         // A lost lease means another writer owns the file: this tree
         // must not keep committing. Stop abnormally; the supervisor's
