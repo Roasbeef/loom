@@ -85,6 +85,8 @@ import client/protocol.{
   EntryRecord, EventEnvelope, LiveOp, Strand,
 }
 import client/provider_relay
+import client/schedule
+import client/scheduleadmin
 import client/wiring
 import core/clock
 import core/entry.{type Entry, type UsageRow}
@@ -140,7 +142,10 @@ pub type Gateway {
 /// effect wiring dispatches through, and backs `set_config`'s
 /// `active_tools` key (without one, changes to the active set are
 /// refused in-band — the hub will not write a tool name it cannot
-/// check).
+/// check); `schedules`, when present, backs the `schedules` listing and
+/// `schedule_cancel` (without one the listing is empty and a
+/// cancellation is refused as unsupported, because a host with no
+/// scheduling plane has nothing to cancel).
 pub type Options {
   Options(
     session_id: String,
@@ -157,11 +162,12 @@ pub type Options {
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
+    schedules: Option(scheduleadmin.Admin),
   )
 }
 
 /// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue,
-/// no tool registry.
+/// no tool registry, and no scheduling plane.
 ///
 /// ## Examples
 ///
@@ -177,6 +183,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     bus: None,
     catalog: None,
     registry: None,
+    schedules: None,
   )
 }
 
@@ -206,6 +213,23 @@ pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
 ///
 pub fn with_registry(options: Options, registry: Registry) -> Options {
   Options(..options, registry: Some(registry))
+}
+
+/// Supplies the operator-facing scheduling door the `schedules` and
+/// `schedule_cancel` commands answer from. Pass the admin built over
+/// the very `scheduleseam.Wiring` the model's door uses: two doors onto
+/// one store is the point, and two stores would let a listing disagree
+/// with what actually fires.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_schedules(scheduleadmin.admin(wiring))
+/// ```
+///
+pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
+  Options(..options, schedules: Some(admin))
 }
 
 /// Messages understood by the hub. Opaque in spirit: callers use the
@@ -241,6 +265,8 @@ type State {
     catalog: Option(catalog.Catalog),
     // The tool registry, when the host configured one.
     registry: Option(Registry),
+    // The operator's scheduling door, when this host has one.
+    schedules: Option(scheduleadmin.Admin),
   )
 }
 
@@ -303,6 +329,7 @@ pub fn start(
         entry_strand: dict.new(),
         catalog: options.catalog,
         registry: options.registry,
+        schedules: options.schedules,
       )
 
     // Prime: advance past everything already in the store, and learn
@@ -1344,6 +1371,9 @@ fn run_command(
     protocol.ListModels, True -> list_models(state, connection, id)
     protocol.SetConfig(strand:, config:), True ->
       set_config(state, connection, id, strand, config)
+    protocol.ListSchedules, True -> list_schedules(state, connection, id)
+    protocol.CancelSchedule(target:, name:), True ->
+      cancel_schedule(state, connection, id, target, name)
   }
 }
 
@@ -2667,6 +2697,129 @@ fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
       active: catalog.active_roles(catalogue, entry.name),
     )
   })
+}
+
+// --- the schedule listing --------------------------------------------------
+
+// `schedules`: every schedule this session holds, as a `schedules`
+// snapshot. A hub with no scheduling plane answers an empty listing on
+// the `models` posture — "there is nothing here" is the honest shape and
+// the same reply either way, so a client needs no special case. A plane
+// that is present but cannot be read is a different answer: that is a
+// failure to report, not an absence.
+fn list_schedules(state: State, connection: Int, id: Int) -> State {
+  case state.schedules {
+    None -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.SchedulesSnapshot(schedules: [])),
+      )
+      state
+    }
+    Some(admin) ->
+      case admin.list() {
+        Error(reason) -> {
+          reply_error(state, connection, id, protocol.code_internal, reason)
+          state
+        }
+        Ok(rows) -> {
+          reply(
+            state,
+            connection,
+            id,
+            protocol.SnapshotEvent(
+              protocol.SchedulesSnapshot(schedules: list.map(rows, schedule_row)),
+            ),
+          )
+          state
+        }
+      }
+  }
+}
+
+// `schedule_cancel`: retire one model-created schedule and answer with
+// the listing that remains, so a client re-renders from the one reply
+// rather than following a success with a second round trip. Unsupported
+// rather than an empty success when the host has no scheduling plane: a
+// cancellation that cancelled nothing must not read as one that worked.
+fn cancel_schedule(
+  state: State,
+  connection: Int,
+  id: Int,
+  target: String,
+  name: String,
+) -> State {
+  case state.schedules {
+    None -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_unsupported,
+        "this server has no scheduling plane",
+      )
+      state
+    }
+    Some(admin) ->
+      case admin.cancel(target, name) {
+        Ok(Nil) -> list_schedules(state, connection, id)
+        Error(scheduleadmin.NotFound) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_bad_request,
+            "no schedule named "
+              <> name
+              <> " fires onto "
+              <> target
+              <> "; only a schedule a strand created can be cancelled here",
+          )
+          state
+        }
+
+        // A conflict rather than a refusal about authority: the operator
+        // may certainly end this schedule, and the file is where they do
+        // it.
+        Error(scheduleadmin.OperatorConfigured) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_conflict,
+            name
+              <> " is an operator [[schedule]]: operator schedules are"
+              <> " edited in the configuration file and take effect on"
+              <> " restart",
+          )
+          state
+        }
+        Error(scheduleadmin.Unavailable(reason:)) -> {
+          reply_error(state, connection, id, protocol.code_internal, reason)
+          state
+        }
+      }
+  }
+}
+
+// One wire row per schedule. The wake question crosses here as the
+// protocol's own two variants; the boolean the wire carries is minted
+// inside `client/protocol`'s codec and nowhere else.
+fn schedule_row(row: scheduleadmin.Row) -> protocol.ScheduleInfo {
+  protocol.ScheduleInfo(
+    name: row.name,
+    target: row.target,
+    owner: row.owner,
+    when: row.when,
+    wake: case row.wake {
+      schedule.WakesIdle -> protocol.WakesIdle
+      schedule.SteersOnly -> protocol.SteersOnly
+    },
+    fired: row.fired,
+    body: row.body,
+  )
 }
 
 // --- set_config ------------------------------------------------------------

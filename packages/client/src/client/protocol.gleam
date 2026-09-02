@@ -151,6 +151,20 @@ pub type Command {
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
+  /// List every schedule this session holds — the operator's
+  /// `[[schedule]]` tables and the strands' own — answered by a
+  /// `schedules` snapshot. Read-only, and deliberately empty-bodied:
+  /// there is nothing to scope, because an operator watching a session
+  /// is watching all of it (`protocol-change/012`).
+  ListSchedules
+
+  /// Retire one model-created schedule, named by the strand it fires
+  /// onto and its own name — the pair that *is* a schedule's identity
+  /// in every durable key. An operator's `[[schedule]]` is refused
+  /// (`code_conflict`): a table is configuration, edited in the file
+  /// and picked up on restart.
+  CancelSchedule(target: String, name: String)
+
   /// A well-formed envelope with an unknown command name, kept as data.
   UnknownCommand(cmd: String, body: JsonValue)
 }
@@ -191,6 +205,61 @@ pub type Snapshot {
 
   /// The model catalogue (the `models` command's reply).
   ModelsSnapshot(models: List(ModelInfo))
+
+  /// Every schedule the session holds (the reply to both `schedules`
+  /// and a successful `schedule_cancel`, so one reply re-renders a
+  /// listing after a cancellation rather than two).
+  SchedulesSnapshot(schedules: List(ScheduleInfo))
+}
+
+/// One schedule as the protocol lists it.
+///
+/// Constructor invariants: `name` and `target` are the pair a
+/// `schedule_cancel` names, and together they are the schedule's
+/// durable identity; `owner` is the wire string a client renders —
+/// `"operator"` for a `[[schedule]]` table, otherwise the owning
+/// strand's name — and is deliberately *not* a two-variant type,
+/// because "operator" and a strand called `operator` are told apart by
+/// the host and never by a client; `when` is the host's own rendering
+/// of the timing, an open string a client prints verbatim; `fired`
+/// counts the occurrences already spent; `body` is the text each fire
+/// injects.
+///
+/// `wake` says whether a fire may start a fresh run on an idle strand
+/// (`WakesIdle`) or may only steer one already open (`SteersOnly`).
+/// The wire carries it as a JSON boolean — the shape the model-facing
+/// tool result already uses — and the boolean lives only in this
+/// module's codec: a two-variant type here rather than a `Bool` field
+/// keeps the polarity of the name out of every reader's head, which is
+/// the rule `docs/gleam-style.md` Part III ("No naked `Bool`") states.
+/// Its "frozen contract" escape would have permitted the `Bool`, since
+/// this is a Part-1 field and changing it now costs a
+/// `protocol-change/NNN.md`; `protocol-change/012` declined the escape
+/// while the field was still being minted, which is the one moment the
+/// choice is free.
+pub type ScheduleInfo {
+  ScheduleInfo(
+    name: String,
+    target: String,
+    owner: String,
+    when: String,
+    wake: ScheduleWake,
+    fired: Int,
+    body: String,
+  )
+}
+
+/// What a schedule's fire may do to a target that is idle when it
+/// arrives. Mirrors `client/schedule.Wake`, kept separate because this
+/// module decodes wire bodies from any client and must not depend on
+/// the host's scheduling domain to do it.
+pub type ScheduleWake {
+  /// The fire may start a fresh run on an idle strand (wire `true`).
+  WakesIdle
+
+  /// The fire steers a run already open and holds when the strand is
+  /// idle (wire `false`).
+  SteersOnly
 }
 
 /// One catalogue entry as the protocol lists it.
@@ -491,6 +560,14 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("config", Some(config)),
       ]),
     )
+    ListSchedules -> #("schedules", json.Object([]))
+    CancelSchedule(target:, name:) -> #(
+      "schedule_cancel",
+      json.Object([
+        #("target", json.String(target)),
+        #("name", json.String(name)),
+      ]),
+    )
     UnknownCommand(cmd:, body:) -> #(cmd, body)
   }
 }
@@ -656,6 +733,15 @@ fn decode_command_body(
       })
       Ok(SetConfig(strand:, config:))
     }
+
+    // Empty-bodied for the same reason `models` is: it scopes nothing.
+    "schedules" -> Ok(ListSchedules)
+    "schedule_cancel" -> {
+      use fields <- result.try(body_fields(body))
+      use target <- result.try(required_string(fields, "target"))
+      use name <- result.try(required_string(fields, "name"))
+      Ok(CancelSchedule(target:, name:))
+    }
     other -> Ok(UnknownCommand(cmd: other, body:))
   }
 }
@@ -818,6 +904,34 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("mode", json.String("models")),
         #("models", json.Array(list.map(models, encode_model_info))),
       ])
+    SchedulesSnapshot(schedules:) ->
+      json.Object([
+        #("mode", json.String("schedules")),
+        #("schedules", json.Array(list.map(schedules, encode_schedule_info))),
+      ])
+  }
+}
+
+// Every field is always present: a listing is a table an operator reads
+// row by row, and a row that omits its `fired` count or its `wake` makes
+// the reader guess which default it was written under.
+fn encode_schedule_info(info: ScheduleInfo) -> JsonValue {
+  json.Object([
+    #("name", json.String(info.name)),
+    #("target", json.String(info.target)),
+    #("owner", json.String(info.owner)),
+    #("when", json.String(info.when)),
+    #("wake", json.Bool(wake_to_wire(info.wake))),
+    #("fired", json.Int(info.fired)),
+    #("body", json.String(info.body)),
+  ])
+}
+
+// The one place the wake question is a boolean at all.
+fn wake_to_wire(wake: ScheduleWake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
   }
 }
 
@@ -1116,8 +1230,36 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       })
       Ok(SnapshotEvent(ModelsSnapshot(models:)))
     }
+    "schedules" -> {
+      use schedules <- result.try(case list.key_find(fields, "schedules") {
+        Error(Nil) -> Ok([])
+        Ok(json.Array(items)) -> list.try_map(items, decode_schedule_info)
+        Ok(_) -> Error("schedules must be an array")
+      })
+      Ok(SnapshotEvent(SchedulesSnapshot(schedules:)))
+    }
     other -> Error("unknown snapshot mode: " <> other)
   }
+}
+
+fn decode_schedule_info(value: JsonValue) -> Result(ScheduleInfo, String) {
+  use fields <- result.try(body_fields(value))
+  use name <- result.try(required_string(fields, "name"))
+  use target <- result.try(required_string(fields, "target"))
+  use owner <- result.try(required_string(fields, "owner"))
+  use when <- result.try(required_string(fields, "when"))
+
+  // The wire's boolean becomes the domain's two variants here and
+  // nowhere else, so nothing above this line carries the polarity.
+  use wake <- result.try(case list.key_find(fields, "wake") {
+    Ok(json.Bool(True)) -> Ok(WakesIdle)
+    Ok(json.Bool(False)) -> Ok(SteersOnly)
+    Ok(_) -> Error("wake must be a boolean")
+    Error(Nil) -> Error("wake is required")
+  })
+  use fired <- result.try(required_int(fields, "fired"))
+  use body <- result.try(required_string(fields, "body"))
+  Ok(ScheduleInfo(name:, target:, owner:, when:, wake:, fired:, body:))
 }
 
 fn decode_model_info(value: JsonValue) -> Result(ModelInfo, String) {

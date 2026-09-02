@@ -199,3 +199,143 @@ pub fn stale_approval_details_carry_the_record_test() {
   assert list.key_find(body, "action") == Ok(json.String("d-600"))
   assert list.key_find(body, "strand") == Ok(json.String("main"))
 }
+
+// --- the schedule commands and the listing they answer with ----------------
+
+fn schedule_rows() -> List(protocol.ScheduleInfo) {
+  [
+    protocol.ScheduleInfo(
+      name: "nightly",
+      target: "main",
+      owner: "operator",
+      when: "every 3600s, at most 24 times",
+      wake: protocol.WakesIdle,
+      fired: 7,
+      body: "summarize what changed today",
+    ),
+    protocol.ScheduleInfo(
+      name: "heartbeat",
+      target: "sub:main/reviewer-abc123",
+      owner: "main",
+      when: "every 300s, at most 20 times",
+      wake: protocol.SteersOnly,
+      fired: 2,
+      body: "report where the review has got to",
+    ),
+  ]
+}
+
+pub fn schedules_command_round_trips_test() {
+  let encoded =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 19,
+      command: protocol.ListSchedules,
+    ))
+  assert encoded == "{\"v\":1,\"id\":19,\"cmd\":\"schedules\",\"body\":{}}"
+  assert protocol.decode_command(encoded)
+    == Ok(protocol.CommandEnvelope(id: 19, command: protocol.ListSchedules))
+}
+
+pub fn schedule_cancel_round_trips_its_pair_test() {
+  let command =
+    protocol.CancelSchedule(
+      target: "sub:main/reviewer-abc123",
+      name: "heartbeat",
+    )
+  let encoded =
+    protocol.encode_command(protocol.CommandEnvelope(id: 20, command:))
+  assert protocol.decode_command(encoded)
+    == Ok(protocol.CommandEnvelope(id: 20, command:))
+}
+
+/// Both halves of the pair are required, because `{target, name}` *is*
+/// a schedule's durable identity: a cancel that guessed a missing
+/// target would delete a different session's clock under the same name.
+pub fn schedule_cancel_needs_both_halves_of_the_pair_test() {
+  let assert Error(protocol.BadBody(id: 21, cmd: "schedule_cancel", reason:)) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":21,\"cmd\":\"schedule_cancel\","
+      <> "\"body\":{\"target\":\"main\"}}",
+    )
+    as "a cancel with no name must not decode"
+  assert reason == "name is required"
+
+  let assert Error(protocol.BadBody(
+    id: 22,
+    cmd: "schedule_cancel",
+    reason: "target is required",
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":22,\"cmd\":\"schedule_cancel\","
+      <> "\"body\":{\"name\":\"heartbeat\"}}",
+    )
+    as "a cancel with no target must not decode"
+}
+
+/// Forward compatibility within v1 on the commands too: a client that
+/// learns a new optional field must not break this build.
+pub fn the_schedule_commands_ignore_unknown_fields_test() {
+  let assert Ok(protocol.CommandEnvelope(
+    id: 23,
+    command: protocol.ListSchedules,
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":23,\"cmd\":\"schedules\","
+      <> "\"body\":{\"only_wakers\":true}}",
+    )
+  let assert Ok(protocol.CommandEnvelope(
+    id: 24,
+    command: protocol.CancelSchedule(target: "main", name: "poll"),
+  )) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":24,\"cmd\":\"schedule_cancel\",\"body\":{"
+      <> "\"target\":\"main\",\"name\":\"poll\",\"because\":\"tidying\"}}",
+    )
+}
+
+pub fn a_schedules_snapshot_round_trips_every_row_test() {
+  let event =
+    protocol.SnapshotEvent(
+      protocol.SchedulesSnapshot(schedules: schedule_rows()),
+    )
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(19),
+      seq: None,
+      event:,
+    ))
+  assert protocol.decode_event(encoded)
+    == Ok(protocol.EventEnvelope(reply_to: Some(19), seq: None, event:))
+}
+
+/// The wake question is a boolean on the wire and a two-variant type in
+/// the harness, so the mapping is worth pinning in both directions: a
+/// polarity flip here would tell an operator a waking heartbeat merely
+/// steers.
+pub fn the_wake_flag_is_the_wires_only_boolean_test() {
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(19),
+      seq: None,
+      event: protocol.SnapshotEvent(
+        protocol.SchedulesSnapshot(schedules: schedule_rows()),
+      ),
+    ))
+  let assert Ok(json.Object(envelope)) = json.parse(encoded)
+  let assert Ok(json.Object(body)) = list.key_find(envelope, "body")
+  let assert Ok(json.Array([json.Object(first), json.Object(second)])) =
+    list.key_find(body, "schedules")
+  assert list.key_find(first, "wake") == Ok(json.Bool(True))
+  assert list.key_find(second, "wake") == Ok(json.Bool(False))
+
+  // And a `wake` of the wrong type is a refused body rather than a
+  // silently defaulted one.
+  let assert Error(protocol.BadEnvelope(reason:, id: None)) =
+    protocol.decode_event(
+      "{\"v\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"schedules\","
+      <> "\"schedules\":[{\"name\":\"n\",\"target\":\"main\",\"owner\":\"main\","
+      <> "\"when\":\"once\",\"wake\":\"yes\",\"fired\":0,\"body\":\"b\"}]}}",
+    )
+    as "a non-boolean wake must not decode"
+  assert reason == "snapshot body: wake must be a boolean"
+}

@@ -203,6 +203,7 @@ import client/notes
 import client/rules
 import client/rulescan
 import client/schedule
+import client/scheduleadmin
 import client/schedulescan
 import client/scheduleseam
 import client/scratch
@@ -1976,6 +1977,12 @@ fn assemble(
     schedule_wiring(settings, agency_config, schedulescan_name)
   let schedule_door = option.map(schedule_wiring, scheduleseam.door)
 
+  // The operator's half of the same plane, over the same wiring: the hub
+  // lists what the tables and the strands hold and cancels what the
+  // strands wrote. A host with no scheduling plane gets no admin, and
+  // the hub then answers an empty listing and an unsupported cancel.
+  let schedule_admin = option.map(schedule_wiring, scheduleadmin.admin)
+
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2325,7 +2332,8 @@ fn assemble(
         hub.start(
           hub.default_options(settings.session_id, runtime)
             |> hub.with_catalog(settings.catalog)
-            |> hub.with_registry(tool_registry),
+            |> hub.with_registry(tool_registry)
+            |> with_schedule_admin(schedule_admin),
           name,
         )
       }),
@@ -3337,6 +3345,21 @@ fn schedule_wiring(
         operator_schedules: settings.schedules,
         scanner:,
       ))
+  }
+}
+
+// The operator's scheduling door, applied only when this session has a
+// scheduling plane at all. `Option.map` over the options would answer an
+// `Option(Options)` the pipeline above would have to unwrap, which is the
+// shape this small function exists to keep out of it — the same reason
+// `schedule_reaping` below is a function rather than a `case` inline.
+fn with_schedule_admin(
+  options: hub.Options,
+  admin: Option(scheduleadmin.Admin),
+) -> hub.Options {
+  case admin {
+    None -> options
+    Some(admin) -> hub.with_schedules(options, admin)
   }
 }
 
