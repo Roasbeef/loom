@@ -166,6 +166,7 @@
 
 import argv
 import broker/broker.{type Broker}
+import broker/egress
 import broker/exec.{type EnforcementDemand, type Pool}
 import broker/policy
 import broker/token
@@ -174,6 +175,10 @@ import client/catalog
 import client/codemode as codemode_wiring
 import client/contributions
 import client/escalate
+import client/extension/dispatch as extension_dispatch
+import client/extension/installed
+import client/extension/manifest as extension_manifest
+import client/extension/record as extension_record
 import client/gateway as hub
 import client/history
 import client/host
@@ -221,7 +226,6 @@ import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
 import tools/agent.{type Agency}
-import tools/codemode as codemode_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -1269,7 +1273,7 @@ fn code_mode_seam(
   agency_seam: Agency,
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
-) -> #(Option(codemode_tool.CodeMode), mcp_wiring.Layer) {
+) -> #(Option(codemode_wiring.Config), mcp_wiring.Layer) {
   case codemode_wiring.discover(settings.codemode_seed) {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
@@ -1319,14 +1323,145 @@ fn code_mode_seam(
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
-          |> codemode_wiring.over_mcp(layer)
-          |> codemode_wiring.seam,
+          |> codemode_wiring.over_mcp(layer),
         ),
         layer,
       )
     }
   }
 }
+
+// --- installed extensions ---------------------------------------------------
+//
+// Discovery is read-only and happens once, here, before the registry is
+// built. `installed.discover` re-derives the tree digest, the artifact's
+// content address, the manifest and the vetting from what is actually on
+// disk and refuses anything that no longer matches what an operator
+// approved, so what reaches this function is already the answer to "is
+// this still the thing that was installed".
+//
+// What is left to decide is what to do with each answer, and there are
+// three. A `Refused` is *logged*, never silently dropped: an operator who
+// installed something and then sees nothing has no way to tell "it is
+// broken" from "I imagined installing it". A `Ready` on a host with no
+// toolchain is logged too and registers nothing, because an extension
+// tool with no `erl` to boot a satellite with is a definition in the
+// provider's cached byte prefix that can only ever fail — the same
+// argument that gates `code_mode` itself. Everything else becomes one
+// `Contribution` per extension, and a name two contributions both claim
+// refuses the boot in `contributions.registry`.
+
+fn extension_contributions(
+  settings: Settings,
+  logger: Logger,
+  host: Option(codemode_wiring.Config),
+) -> List(contributions.Contribution) {
+  case settings.home {
+    // No home is no extensions root, which is the same fact to a booting
+    // server as an empty one: there is nothing installed and nothing to
+    // warn about.
+    None -> []
+
+    Some(home) -> {
+      let root = extension_record.root_for(home)
+      list.filter_map(installed.discover(root), fn(found) {
+        extension_contribution(root, found, logger, host)
+      })
+    }
+  }
+}
+
+fn extension_contribution(
+  root: extension_record.Root,
+  found: installed.Discovered,
+  logger: Logger,
+  host: Option(codemode_wiring.Config),
+) -> Result(contributions.Contribution, Nil) {
+  case found {
+    installed.Refused(name:, reason:) -> {
+      log.warn(logger, "extension.refused", [
+        field.text(key: "name", value: name),
+        field.text(key: "reason", value: reason),
+      ])
+      Error(Nil)
+    }
+
+    installed.Ready(record: written, manifest: decoded, artifact:) ->
+      extension_registered(root, written, decoded, artifact, logger, host)
+  }
+}
+
+fn extension_registered(
+  root: extension_record.Root,
+  written: extension_record.Record,
+  decoded: extension_manifest.Manifest,
+  artifact: String,
+  logger: Logger,
+  host: Option(codemode_wiring.Config),
+) -> Result(contributions.Contribution, Nil) {
+  case host {
+    None -> {
+      log.warn(logger, "extension.unavailable", [
+        field.text(key: "name", value: written.name),
+        field.text(
+          key: "reason",
+          value: "this host registers no code_mode tool, so it has no "
+            <> "toolchain to boot an extension satellite with",
+        ),
+      ])
+      Error(Nil)
+    }
+
+    Some(config) ->
+      case
+        extension_dispatch.tools(
+          extension_dispatch.Config(
+            host: config,
+            // The process environment, the same store `api_key_env`
+            // reads. The value never reaches a `Tool`, a frame or a log:
+            // this function is handed to `broker/egress`, which reads it
+            // after the origin and method are judged and puts the result
+            // straight on the wire.
+            secrets: env_text,
+            // The platform trust store. A pinned root is a test-only
+            // shape, and there is no operator surface for one.
+            trust: egress.SystemRoots,
+            launch: extension_dispatch.jailed_node,
+          ),
+          written,
+          decoded,
+          sources: extension_record.sources(root, written.name),
+          artifact:,
+        )
+      {
+        Error(reason) -> {
+          log.warn(logger, "extension.refused", [
+            field.text(key: "name", value: written.name),
+            field.text(key: "reason", value: reason),
+          ])
+          Error(Nil)
+        }
+
+        Ok(tools) -> {
+          // What was registered and what it may reach, in one line, so
+          // that an operator reading a boot log can see an extension's
+          // egress policy without opening its manifest. The secret
+          // bindings are counted, never named with a value.
+          log.info(logger, "extension.registered", [
+            field.text(
+              key: "detail",
+              value: extension_dispatch.summary(written, decoded),
+            ),
+          ])
+          Ok(contributions.Contribution(
+            origin: contributions.Extension(name: written.name),
+            tools:,
+          ))
+        }
+      }
+  }
+}
+
 
 /// Whether the seams this server offers can reach an MCP server at all.
 ///
@@ -1596,7 +1731,11 @@ fn assemble(
   let schedule_wiring =
     schedule_wiring(settings, agency_config, schedulescan_name)
   let schedule_door = option.map(schedule_wiring, scheduleseam.door)
-  let #(code_mode, mcp_layer) =
+  // The host configuration, not the tool seam: an extension dispatch
+  // stands up a satellite under exactly this configuration, so the boot
+  // holds the value both readers derive from rather than one reader's
+  // view of it.
+  let #(code_mode_host, mcp_layer) =
     code_mode_seam(
       settings,
       logger,
@@ -1606,6 +1745,7 @@ fn assemble(
       scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
       schedule_door,
     )
+  let code_mode = option.map(code_mode_host, codemode_wiring.seam)
 
   // Recall, on the same two-name pattern and gated the same way: the
   // holder that owns the index cannot exist until the runtime has been
@@ -1635,12 +1775,20 @@ fn assemble(
   // no built-in host can produce one, and an extension that would is
   // exactly the install an operator has to be told about.
   use tool_registry <- result.try(
-    contributions.built_in(
-      Some(agency_seam),
-      code_mode,
-      history_seam,
-      memory_seam,
-      schedule_seam,
+    list.append(
+      contributions.built_in(
+        Some(agency_seam),
+        code_mode,
+        history_seam,
+        memory_seam,
+        schedule_seam,
+      ),
+      // After the built-ins, always. `contributions.registry` refuses a
+      // repeated name whichever order it meets one in, so the order is
+      // not what makes an extension unable to shadow `bash` — but the
+      // collision message names the *second* claimant as the thing to
+      // remove, and the newcomer is the extension.
+      extension_contributions(settings, logger, code_mode_host),
     )
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
