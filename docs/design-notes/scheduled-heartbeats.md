@@ -554,3 +554,83 @@ settles. The cap sits at the model door; the settled-target check bounds
 the operator case. And the ceiling stays session-wide and inexact under a
 code-mode fan-out, as before.
 
+---
+
+## Addendum: the timing surface, and the parity it was measured against
+
+The first ruling cut five-field cron ("a swamp neither prior-art use
+case needs") and shipped a fixed interval plus an RFC3339 one-shot. Two
+of the cuts turned out to cost more than they saved, and both were
+reversed once the ownership model existed to reverse them onto.
+
+**Cron, UTC, from a pure core.** `client/cron` is the standard five
+fields — `*`, values, ranges, steps, lists; Sunday as 0 or 7; no names
+and none of `L`/`W`/`?` — with the one rule reimplementations get wrong
+written out and tested: when both day fields are restricted a date
+matches if *either* does. It is pure and imports nothing but the stdlib.
+`Timing.Cron` carries the same mandatory `Expiry` an interval does. Its
+due occurrence is the last match at or before now **that falls after the
+schedule's observation instant**: a cron expression names wall-clock
+moments, so a moment that passed before anyone asked was never asked
+for, and a daily 09:00 created at 15:00 waits for tomorrow rather than
+firing the one it missed. That is deliberately not how `Interval`
+behaves — an interval fires the slot it is created inside, because a
+grid has no wall-clock meaning — and the difference is documented where
+both live. Lateness reads the preceding occurrence's mark, as the
+interval path reads the preceding slot's, so there is one lateness rule.
+Every occurrence id in a fired-mark is a UTC epoch second, whatever the
+schedule's spelling.
+
+**A relative one-shot, because the model has no clock.** The system
+prompt deliberately carries no date or time, so a model could never
+compute the RFC3339 `at` the one-shot took; `in_seconds` is resolved by
+the seam against the session clock into an ordinary `OneShot`, and it is
+the one place the seam reads a clock. This is the counterpart of Claude
+Code's `ScheduleWakeup(delaySeconds)`, bounded `1..=604800`.
+
+**Bounds a model may narrow.** `max_fires` and `expires_after_s` are
+optional on the two recurring shapes and held to the caps the operator's
+table is held to, through the same `build`. A model can ask for less;
+nothing lets it ask for more.
+
+**Every door speaks the same four timings**: the `[[schedule]]` table
+(`every`, `at`, `cron`), the `schedule_create` tool, `cap/schedule`
+(`cron`, `cron_on`, `after`, `after_on`, `every_within`, `cron_within`)
+and the code-mode plan, each refusing anything but exactly one timing by
+name. The capability prelude was regenerated with them.
+
+### What was compared, and what was deliberately not matched
+
+The comparison was Claude Code's `CronCreate`/`CronList`/`CronDelete`
+and its `/loop` skill, read from its documentation and from the
+`sdk-tools.d.ts` snapshots in the sibling Go SDK repository, which show
+the interface's history (a `durable: true` that once wrote
+`.claude/scheduled_tasks.json` and is now documented as having no
+effect). Where loom now matches or exceeds it: five-field cron, a
+relative one-shot, a 7-day expiry, per-fire exactly-once durability
+(which Claude Code has never had), an operator surface that lists every
+schedule and cancels what the model wrote. Where loom differs on
+purpose:
+
+- **Local time.** Claude Code interprets cron in the machine's local
+  zone. Loom is UTC with, at most, a fixed offset (`utc_offset =
+  "+02:00"`, not DST-aware, written where it is used). A zone database is
+  a swamp the first ruling was right about.
+- **Jitter.** Claude Code smears fires by up to half a period to protect
+  its fleet from synchronised requests. Loom is one session against one
+  provider account; there is no herd to smear, and jitter would only make
+  the fired-mark's occurrence id lie about when the fire landed. Not
+  built, and not owed.
+- **Fires only when idle.** Claude Code fires between turns. Loom's
+  default steers an open run and holds when idle, with waking an
+  operator's opt-in per schedule and per policy; the ownership addendum
+  has the argument, and it is a posture the priority order chose rather
+  than a gap.
+- **Cross-session routines, webhooks and completion notifications**
+  (a push or an email when a routine's run ends) are infrastructure that
+  only makes sense with nobody attached and a service to hold the
+  schedule; loom has no daemon and none of these is in scope.
+- **`session_crons` on stop hooks.** Claude Code tells a stop hook which
+  crons will wake the session again. Loom's equivalent is the
+  `schedules` command, which any client can ask at any time.
+
