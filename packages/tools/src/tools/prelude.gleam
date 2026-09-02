@@ -34,12 +34,12 @@
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
 ////   e598c08fecc9068f608dd85f7ed334435fa47a1e68ab6cce1ac98ed92eecab68  packages/cap/src/cap/runtime.gleam
-////   25eb4efd48f17c523a587e8e02a0c5d9c31a12f71601c48276f9c28d1e2f696d  packages/cap/src/cap/schedule.gleam
+////   8f9cc5c11864e564f7a9562fd4ca997f431daf505e8300d0616ffa5b83fe8b8c  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): c10f6644f7fdafbad8a649aa894a8065eefe5e357f22ff55cb917167ab22f704
+//// Body digest (every line after the marker): 48486e783b8c232b9697d3fb85cccbe38194b628016d64430374ac82ddbaad36
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -626,11 +626,11 @@ whether or not anyone is watching.
 
 /// What a `create` actually produced.
 pub type Created {
-  Created(name: String, when: String, wake: Wake)
+  Created(name: String, target: String, when: String, wake: Wake)
 }
-/// One schedule already set on this strand.
+/// One schedule this strand owns.
 pub type Schedule {
-  Schedule(name: String, when: String, wake: Wake, fired: Int, body: String)
+  Schedule(name: String, target: String, when: String, wake: Wake, fired: Int, body: String)
 }
 /// Why a scheduling call failed.
 pub type ScheduleError {
@@ -664,14 +664,32 @@ pub type Wake {
 ///
 /// Capability: `schedule.create`.
 pub fn at(String, String, Wake, String) -> Result(Created, ScheduleError)
-/// Cancels one schedule on this strand by name. It will not fire again.
+/// `at`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
 ///
-/// A name that is not this strand's own is denied with
-/// `schedule_not_found` rather than silently succeeding, so a program
-/// cannot believe it has tidied up when it has not.
+/// Capability: `schedule.create`.
+pub fn at_on(String, String, String, Wake, String) -> Result(Created, ScheduleError)
+/// Cancels one schedule this strand set on itself, by name. It will not
+/// fire again, and its record of past fires goes with it, so the name is
+/// free to use again.
+///
+/// A name this strand does not own is denied with `schedule_not_found`
+/// rather than silently succeeding, so a program cannot believe it has
+/// tidied up when it has not — and a schedule that fires onto another
+/// strand is not found by this call at all: it wants `cancel_on`.
 ///
 /// Capability: `schedule.cancel`.
 pub fn cancel(String) -> Result(Nil, ScheduleError)
+/// Cancels one schedule this strand set onto another strand — the
+/// counterpart to `every_on` and `at_on`, addressed by the same target.
+///
+/// A schedule is named by the pair `{target, name}`, so this is not a
+/// convenience over `cancel`: the same name may be in use on this strand
+/// and on a subagent's, and `cancel` means this strand's own. `list`
+/// shows which target each schedule fires onto.
+///
+/// Capability: `schedule.cancel`.
+pub fn cancel_on(String, String) -> Result(Nil, ScheduleError)
 /// Schedules `body` to fire on this strand every `seconds` seconds, until
 /// the schedule expires on its own.
 ///
@@ -683,11 +701,27 @@ pub fn cancel(String) -> Result(Nil, ScheduleError)
 ///
 /// Capability: `schedule.create`.
 pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
-/// Lists the schedules set on this strand.
+/// `every`, onto a strand this one spawned rather than onto itself.
 ///
-/// Only this strand's own, and only ones a program or the model created:
-/// a schedule the operator configured is not listed and cannot be
-/// cancelled here.
+/// `target` is that strand's name — the one its handle carries. Anything
+/// else is denied with `invalid_schedule`: the host checks the target
+/// against its own record of who spawned whom, so a sibling's or a
+/// parent's name is refused however it was obtained.
+///
+/// The schedule is **this** strand's: it appears in `list` with `target`
+/// set, and `cancel_on` retires it. It is also always steer-only —
+/// `Created.wake` says so — and it ends when the target's work does,
+/// which is what a heartbeat watching a subagent wants: it steers the
+/// child while there is something to steer and stops when there is not.
+///
+/// Capability: `schedule.create`.
+pub fn every_on(String, String, Int, Wake, String) -> Result(Created, ScheduleError)
+/// Lists the schedules this strand owns, wherever each fires.
+///
+/// Only ones this strand created — its own heartbeats and any it set onto
+/// a strand it spawned, each row naming its `target` — and only ones a
+/// program or the model created: a schedule the operator configured is
+/// not listed and cannot be cancelled here.
 ///
 /// Capability: `schedule.list`.
 pub fn list() -> Result(List(Schedule), ScheduleError)
