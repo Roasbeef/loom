@@ -20,6 +20,7 @@
 //// strand name to newly replayed work.
 
 import core/clock
+import core/json
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
@@ -30,11 +31,13 @@ import machine/operation.{
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/strand_runtime
 import runtime/supervisor
 import session/session
 import support/fake
 import support/harness
 import support/recorder
+import telemetry/log
 
 pub fn strand_restart_reaps_the_live_tool_effect_test() {
   let rec = recorder.start()
@@ -1013,4 +1016,52 @@ fn release_first_drain(log: DrainGateLog) -> Nil {
   let assert [first, ..] = process.call_forever(log, DrainGates)
     as "the first provider drain gate must remain recorded"
   process.send(first, Nil)
+}
+
+/// The drain ledger installs its monitor when it handles a claim, so the
+/// pid a claim names must still be alive at that moment whatever happens to
+/// the driver in between: a reaper the ledger first sees as `noproc` reads
+/// as a lost reaper and fails the session closed. This test stands in for
+/// the ledger with a claim that takes its time, kills the driver while the
+/// claim is in flight, and asks whether the claimed pid was still alive when
+/// the claim was answered.
+pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
+  let rec = recorder.start()
+  let effects =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Hang },
+      fn(_run) { fake.ToolHang },
+    )
+  let observed = process.new_subject()
+  let options =
+    strand_runtime.Options(
+      writer: process.new_name(prefix: "loom_writer_unused"),
+      strand: "main",
+      effects:,
+      stream_options: json.Object([]),
+      retry_policy: NormalizedRetryPolicy(max_attempts: 1, base_delay_ms: 10),
+      poll_interval_ms: 1000,
+      claim_reaper: fn(_strand, reaper) {
+        // A slow ledger: the driver dies before this returns, and the pid
+        // it named must still be there for the monitor the ledger installs.
+        process.sleep(300)
+        process.send(observed, process.is_alive(reaper))
+        []
+      },
+      logger: log.discard(),
+    )
+  let assert Ok(started) =
+    strand_runtime.start(options, process.new_name(prefix: "loom_strand_test"))
+    as "the driver must start"
+
+  // The driver is linked to whoever started it; the kill below must reach
+  // it alone, not this test.
+  process.unlink(started.pid)
+  process.sleep(50)
+  process.kill(started.pid)
+  assert process.receive(observed, within: 2000) == Ok(True)
+    as "the claimed pid must outlive the driver until the claim is answered"
 }

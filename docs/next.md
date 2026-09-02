@@ -61,6 +61,18 @@ session driven through the terminal against the Baseten catalogue with a
 plain prompt, a sub-agent spawn-and-wait, and a code-mode program in a
 jailed satellite. Re-run the soak and the drive after the hex switch.
 
+**One rule the first CI run of the branch taught.** The drain ledger
+installs its monitor when it *handles* a claim, so the pid a claim names
+must still be alive at that moment whatever the driver does in between; a
+pid the ledger first meets as `noproc` reads as a lost reaper, kills the
+ledger, and — it being a significant child — shuts the session tree down,
+which the interleave harness then reports as a run that never converged.
+The old reaper claimed from inside itself; the weft reaper makes the claim
+from a leaf owner the scope adopts before releasing it
+(`strand_runtime.claim_through`), and
+`restart_reap_test.reaper_claim_outlives_a_driver_killed_mid_claim_test`
+pins it. Two-core runners hit the window; a workstation never did.
+
 **Left open, deliberately.** `cap/task` is a clean fit for the run engine
 but `cap` is the satellite-side prelude with no weft dependency; adding
 one puts weft into the offline build seed and is a distribution decision

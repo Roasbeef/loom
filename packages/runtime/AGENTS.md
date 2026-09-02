@@ -239,13 +239,17 @@ extended by the M3 runtime wave.
     `Claim(strand, reaper, reply_with)` atomically publishes the new
     incarnation, snapshots its predecessors, and releases the caller only once
     the ledger's original monitors have proved that entire snapshot drained
-    normally. The driver performs that potentially long call from its
-    guaranteed-first `AwaitPredecessors` handler, naming the reaper's weft
-    scope as the pid to monitor; that scope is parked for the incarnation's
-    life and survives the driver, so the ledger's original monitor lands on
-    a pid that outlives the claimant. Meanwhile an abort simply queues in
-    the mailbox behind the barrier. Sender: `runtime/strand_runtime` through
-    the closure the supervisor injects.
+    normally. The call is made by a *claimant* the reaper's scope adopts as
+    a leaf owner before releasing it, naming the scope as the pid to monitor
+    (`strand_runtime.claim_through`); the scope cannot settle while the
+    claimant is inside the call, so the ledger's monitor always lands on a
+    live pid — a claim made from the driver instead let a driver killed
+    mid-claim leave the ledger monitoring a scope that had already drained,
+    which reads as `noproc` and fails the session closed. The driver blocks
+    on the claimant's verdict in its guaranteed-first `AwaitPredecessors`
+    handler; meanwhile an abort simply queues in the mailbox behind the
+    barrier. Sender: `runtime/strand_runtime` through the closure the
+    supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -317,7 +321,9 @@ extended by the M3 runtime wave.
   a retryable transport failure could dispatch beside the stream subtree that
   outlived it. Each driver incarnation also starts a *reaper*: a weft
   witnessed run (`weft.managed` task parked for the incarnation's life,
-  `weft.start_witnessed`, `weft.CancelSiblings`) linked to the driver. Every
+  `weft.start_witnessed`, `weft.CancelSiblings`) linked to the driver, whose
+  ledger claim is made by an adopted claimant so the scope outlives the
+  claim. Every
   effect adopts itself as a leaf owner (`weft.adopt_leaf`, cancel = its stop
   capability) and runs only on `Adopted`. On driver death the scope asks
   every adopted effect to stop and remains alive until all their exits

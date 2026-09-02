@@ -134,12 +134,12 @@ pub type EffectToken {
 /// the rest are internal wiring exposed only through the api module's
 /// functions.
 pub opaque type Message {
-  /// The guaranteed-first message: make the reaper's ledger claim and
-  /// block on every predecessor's drain before anything the mailbox holds.
-  /// Injected by the initialiser via weft's `continuing`, and constructible
-  /// nowhere else — the type is opaque and the claim rides inside the
-  /// message as a closure, so no later sender can re-open the barrier.
-  AwaitPredecessors(resolve: fn() -> Result(Nil, String))
+  /// The guaranteed-first message: block on the reaper's ledger claim
+  /// before anything the mailbox holds. Injected by the initialiser via
+  /// weft's `continuing`, and constructible nowhere else — the type is
+  /// opaque and the resolution subject rides inside the message, so no
+  /// later sender can re-open the barrier.
+  AwaitPredecessors(resolution: Subject(Result(Nil, String)))
 
   /// Re-plan now. Loss is harmless: the poll tick finds queued work.
   Nudge
@@ -302,15 +302,12 @@ pub fn start(
     // first claim acknowledge recovery before actor registration completes.
     let internal = process.new_subject()
 
-    // The claim names the reaper's scope, the pid that survives this
-    // driver: it is made from the guaranteed-first handler below rather
-    // than here, so a slow predecessor drain never holds up registration.
-    let reaper = start_reaper()
-    let reaper_pid = weft.witness_pid(reaper.run)
-    let resolve = fn() {
-      options.claim_reaper(options.strand, reaper_pid)
-      |> await_previous_reapers(4000)
-    }
+    // The barrier acknowledgement gets a subject of its own rather than a
+    // Message variant: the one consumer is the guaranteed-first handler
+    // below, and a dedicated channel keeps the claim result out of the
+    // mailbox the barrier exists to hold back.
+    let resolution = process.new_subject()
+    let reaper = start_reaper(options, resolution)
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -345,7 +342,7 @@ pub fn start(
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
-    |> actor.continuing(AwaitPredecessors(resolve:))
+    |> actor.continuing(AwaitPredecessors(resolution:))
     |> Ok
   })
   |> actor.named(name)
@@ -415,7 +412,7 @@ fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
   case message {
-    AwaitPredecessors(resolve:) -> await_predecessors(state, resolve)
+    AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
     Nudge -> finish(logger, drive(state))
     PollTick -> {
       let internal = state.internal
@@ -448,10 +445,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // returns, which is the invariant the old two-state gate existed to hold.
 fn await_predecessors(
   state: State,
-  resolve: fn() -> Result(Nil, String),
+  resolution: Subject(Result(Nil, String)),
 ) -> actor.Next(State, Message) {
   let logger = state.logger
-  case resolve() {
+  case process.receive_forever(resolution) {
     Ok(Nil) -> {
       // Recovery and its poll clock both begin after the ledger-authored
       // acknowledgement. Before this point, queued doorbells are harmless
@@ -1469,8 +1466,20 @@ fn with_projection(
 // configured to cancel on one: every effect is asked to stop, the scope
 // drains, and it exits with weft's lost-proof reason, which the ledger reads
 // exactly as it read the old reaper's self-kill.
+//
+// The ledger claim is made by an *owner* of the scope, never by the driver.
+// The ledger installs its monitor when it handles the claim, and a scope
+// that had already drained and exited by then would be seen only as
+// `noproc` — an abnormal reason, which the ledger correctly reads as a lost
+// reaper and fails the session closed on. The old reaper claimed from inside
+// itself so its pid could not exit before the monitor existed; here the
+// claimant is a leaf owner the scope must wait for, which holds the scope's
+// pid alive until the ledger has replied, whatever the driver does meanwhile.
 
-fn start_reaper() -> Reaper {
+fn start_reaper(
+  options: Options,
+  resolution: Subject(Result(Nil, String)),
+) -> Reaper {
   let driver = process.self()
   let handoff = process.new_subject()
   let run =
@@ -1492,14 +1501,72 @@ fn start_reaper() -> Reaper {
   // The ledger arrives from inside the scope's worker; racing it against the
   // scope's own death keeps this total if something destroys the scope
   // before its first task runs.
-  let watch = process.monitor(weft.witness_pid(run))
+  let scope = weft.witness_pid(run)
+  let watch = process.monitor(scope)
   let ledger =
     process.new_selector()
     |> process.select_map(handoff, Some)
     |> process.select_specific_monitor(watch, fn(_down) { None })
     |> process.selector_receive_forever()
   process.demonitor_process(watch)
+
+  case ledger {
+    Some(ledger) -> claim_through(ledger, scope, options, resolution)
+
+    // A scope that died before handing its ledger over made no claim and
+    // adopted nothing; the driver is told so and halts rather than waiting.
+    None -> process.send(resolution, Error("the effect reaper did not start"))
+  }
   Reaper(run:, ledger:, driver:)
+}
+
+/// What the parked claimant is told.
+type ClaimOrder {
+  /// Adopted; make the claim and report the barrier's verdict.
+  MakeClaim
+
+  /// The run is cancelling before the claim was made; exit without one.
+  ForgoClaim
+}
+
+// Spawns the claimant parked, adopts it, and only then releases it to claim.
+// Adoption before release is what makes the ordering safe in both
+// directions: a driver that dies before the release leaves a claimant the
+// scope asks to stand down rather than one that would monitor a corpse
+// into the ledger, and a driver that dies during the claim leaves the scope
+// waiting on the claimant, whose exit comes only after the ledger's reply.
+fn claim_through(
+  ledger: weft.Ledger,
+  scope: Pid,
+  options: Options,
+  resolution: Subject(Result(Nil, String)),
+) -> Nil {
+  let ready = process.new_subject()
+  let claimant =
+    process.spawn_unlinked(fn() {
+      let orders = process.new_subject()
+      process.send(ready, orders)
+      case process.receive_forever(orders) {
+        ForgoClaim -> Nil
+        MakeClaim -> {
+          let resolved =
+            options.claim_reaper(options.strand, scope)
+            |> await_previous_reapers(4000)
+          process.send(resolution, resolved)
+        }
+      }
+    })
+  let orders = process.receive_forever(ready)
+  let stand_down = fn() { process.send(orders, ForgoClaim) }
+
+  // A claimant the scope refused is one the run no longer wants a claim
+  // from: the scope has already asked it to stand down through the cancel
+  // above, and the driver learns the barrier never opened.
+  case weft.adopt_leaf(ledger, owner: claimant, cancel: stand_down) {
+    weft.Adopted -> process.send(orders, MakeClaim)
+    weft.Refused ->
+      process.send(resolution, Error("the effect reaper was already draining"))
+  }
 }
 
 fn await_previous_reapers(
