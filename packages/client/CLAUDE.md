@@ -395,8 +395,9 @@ over one session file. WP-L.
   next invariant — so the ledger read happens once per strand per
   incarnation, on the pass a hold begins, and costs nothing before or
   after.
-- `client/schedule.{Schedule, Timing, Expiry, Policy, parse, parse_policy,
-  default_policy, policy_opens_the_door, policy_permits_wake, build,
+- `client/schedule.{Schedule, Timing, Expiry, Wake, Lateness, Policy,
+  parse, parse_policy,
+  default_policy, policy_opens_the_door, wake_under, build,
   encode, decode, config_key, config_key_prefix, cancelled_value,
   parse_instant, render_instant, fired_key,
   fired_key_prefix, fired_value, injection, interval_occurrence,
@@ -430,8 +431,14 @@ over one session file. WP-L.
   mandatory `Expiry`: `max_fires` and `expires_after_s` are both always
   active, defaulted when unset, and whichever is reached first ends the
   schedule — the guardrail that caps one schedule's durable fire-mark
-  footprint at exactly 1,000 rows and makes `wake = true` (below) safe to
-  offer at all. `interval_occurrence`/`interval_late`/`interval_expired`
+  footprint at exactly 1,000 rows and makes `WakesIdle` (below) safe to
+  offer at all. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
+  `OnTime | Late`: both are two-variant types rather than the `Bool`s
+  they were, because each is read at one end and written at another and
+  neither name carries its own polarity. The TOML `wake` key, the stored
+  config cell and the tool result all stay booleans on the wire, and
+  each boundary writes that translation down once.
+  `interval_occurrence`/`interval_late`/`interval_expired`
   are pure functions over the occurrence arithmetic — deliberately
   factored out of the actor that drives them so a fencepost error gets a
   direct, deterministic test rather than one hidden behind a timer
@@ -441,8 +448,9 @@ over one session file. WP-L.
   door, filling `tools/schedule`'s seam the way `client/memory` fills
   `tools/remember`'s and for the same reason (`tools` may not reach a
   session). It is the **only** enforcer of three things: the operator's
-  `Policy` (which caps `wake` rather than vetoing the call, so the tool
-  can tell the model what it actually got), the `max_model_schedules`
+  `Policy` (applied through `schedule.wake_under`, which caps `wake`
+  rather than vetoing the call, so the tool can tell the model what it
+  actually got), the `max_model_schedules`
   ceiling, and the shared bounds via `client/schedule.build`. `Wiring`
   carries `operator_schedules` for one reason worth knowing: both stores
   feed one scanner, which derives a fired-mark from `{target, name}`
@@ -456,8 +464,8 @@ over one session file. WP-L.
   on a strand name, which is what `client/codemode` serves `schedule.*`
   over — one implementation behind both doors, so a program and a tool
   call cannot disagree about what this session's schedules are.
-- `client/schedulescan.{Options, Message, default_options, with_logger,
-  with_model_door_open, poke, start, supervised}` — the
+- `client/schedulescan.{Options, ModelDoor, Message, default_options,
+  with_logger, with_model_door_open, poke, start, supervised}` — the
   scheduled-heartbeat scanner. Every tick unions the operator's fixed
   list with the model's config cells read fresh from the store, never a
   cached list: a cell can appear or be cancelled between any two ticks
@@ -465,9 +473,10 @@ over one session file. WP-L.
   truth. `poke` is what the seam rings after a write so a new schedule
   starts on time rather than at the next armed deadline; it checks the
   name is registered first, because a send to an unregistered name
-  raises and the caller is a tool body. `with_model_door_open` keeps a
-  slow rescan floor when the model may create schedules, so a lost poke
-  self-heals within one `min_interval_s` instead of stalling forever.
+  raises and the caller is a tool body. `with_model_door_open` sets
+  `Options.model_door` to `DoorOpen`, which keeps a slow rescan floor
+  when the model may create schedules, so a lost poke self-heals within
+  one `min_interval_s` instead of stalling forever.
   Unlike
   `client/rulescan` it is driven by its own injected
   `runtime/effects.Timers.after` deadline, never by a writer hint, and it
@@ -480,10 +489,10 @@ over one session file. WP-L.
   settlement. The same "durable-derived beats durable-stored" argument
   keeps `client/rulescan`'s cursor a checkpoint rather than a source of
   truth.
-  A fire is one `api.steer_marking` when `Schedule.wake` is `False` — the
-  injection and the occurrence's write-once fired-mark in one
+  A fire is one `api.steer_marking` when `Schedule.wake` is `SteersOnly`
+  — the injection and the occurrence's write-once fired-mark in one
   transaction, exactly `client/rulescan`'s at-most-once argument, held on
-  an idle strand rather than dropped or started. `wake = True` opts into
+  an idle strand rather than dropped or started. `WakesIdle` opts into
   `api.send_to_strand_marking` instead, which may start a fresh run on an
   idle strand: the one behavior a triggered rule is never allowed, safe
   here only because a schedule's mandatory expiry bounds how long it can

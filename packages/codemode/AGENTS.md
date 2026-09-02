@@ -87,7 +87,8 @@ strand roots, and can reach neither the disk, the network, nor a process.
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
-  ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleRefusal, routing,
+  ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,
+  ScheduleRefusal, routing,
   ceilings, serviced_caps, max_list_entries, fs_denial,
   kv_denial, schedule_denial}` — the workspace seam's *harness-side*
   capability router
@@ -102,7 +103,11 @@ strand roots, and can reach neither the disk, the network, nor a process.
   arms are the newest and the strand they act on is **bound by the host**,
   from the code-mode request, and never travels over the cap channel: a
   program cannot name a strand, so it cannot schedule into another one's
-  context. `schedule.create` is also the arm that most looks like it
+  context. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
+  name for what a schedule may do to an idle strand, restated here the
+  way `ScheduleRefusal` restates the host's refusal vocabulary, since
+  `codemode` may depend on neither `client` nor `tools`; the cap wire
+  stays a msgpack boolean in both directions. `schedule.create` is also the arm that most looks like it
   should carry a `CapCeiling` and deliberately does not — it is bounded
   store-side by a live count the host enforces on every create, the same
   instrument `kv.*` uses, and an admission ceiling would buy nothing once
