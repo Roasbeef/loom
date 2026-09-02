@@ -49,7 +49,7 @@ packages = [
   { name = "telemetry", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.1.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_stdlib", "simplifile"], source = "local", path = "../tools" },
-  { name = "weft", version = "0.4.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "F7E4DBB015122463BFD92135D28D7D905F9DB2057C79B6AF4C8EE86BCC2606E2" },
+  { name = "weft", version = "0.4.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "local", path = "../../../weft" },
 ]
 
 [requirements]
@@ -68,4 +68,4 @@ session = { path = "../session" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 storage = { path = "../storage" }
 tools = { path = "../tools" }
-weft = { version = ">= 0.4.1 and < 1.0.0" }
+weft = { path = "../../../weft" }
