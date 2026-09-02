@@ -104,9 +104,19 @@ protocol (spec Part 1.4). WP-G.
     `CancelDeadline` carries no execution id and neither handler
     re-checks whether it is still relevant — reaching `Idle` or `Dead`
     *is* the cancellation, and a fire that raced the move is dropped by
-    weft's timer book. `HeartbeatTick` stays a hand-rolled
-    `process.send_after`: it must fire every N ms regardless of activity,
-    which none of weft's three timeout kinds says.
+    weft's timer book. `HeartbeatTick` is the third kind, a **periodic
+    timeout**: it fires every `heartbeat_interval_ms` regardless of
+    activity, which is what a liveness probe means and what neither a
+    state timeout (dies with its state) nor an event timeout (measures
+    quiet, so a chatty helper is never probed) says. It is armed in
+    `entered` on the way out of `AwaitingHello` and only there — arming
+    on every entry to `Idle` would make a helper that settles executions
+    faster than the interval push its own probe out for ever — and
+    cancelled on the way into `Dead`. That is why the `AwaitingHello,
+    HeartbeatTick` and `Dead(..), HeartbeatTick` arms are unreachable by
+    construction: a tick in flight at either boundary carries a stale
+    generation stamp and dies in the timer book. An interval of `0`
+    disables the probe, so nothing is armed at all.
     An `AwaitReady` asked during `AwaitingHello` is parked with weft's
     `postpone` rather than a hand-rolled list: the `AwaitingHello,
     AwaitReady` arm answers `keep(data) |> postpone`, and weft replays

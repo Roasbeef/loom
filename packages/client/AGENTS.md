@@ -778,6 +778,17 @@ over one session file. WP-L.
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
   `client/wiring` (legal — T depends on all). `packages/tui` is its
   native client, coupled only through the protocol and the golden fixtures.
+- **`client/internal/timebase`** is the one non-FFI module under
+  `internal/`: it adapts a `core/clock.Clock` and a seam's injected `rest`
+  into the `weft/poll.Clock` the two foreground waits run on
+  (`escalate.park`, `agency.wait_loop`). Its module doc carries the ruling
+  a reader will otherwise re-derive — the successor clock `clock.read`
+  hands back is discarded, because `from_function` returns itself and
+  re-calls the injected function on every read, and `clock.stepping`
+  cannot serve a loop that holds one clock value across many reads. A wait
+  built on a clock whose `now` does not move never expires; every fixture
+  in this tree that drives one of these waits is a `from_function` over a
+  counter actor for that reason.
 - **FFI**: `client/internal/ffi_os` over `client_ffi.erl`, serve-only:
   wall clock, unique entropy, `PATH` lookup, `code:root_dir/0` and the
   running ERTS version (the anchor `client/install` builds every
@@ -1317,11 +1328,23 @@ over one session file. WP-L.
   `Pending`, so `Config.max_asks` (3) caps the questions one row may put
   and the claim comes back `Exhausted` past it: nothing written, nobody
   asked, the call settled in band (#66).
-- **A claim's checks and its commit are the same read.** The park loop
+- **A claim's checks and its commit are the same read.** The park's probe
   reads an `api.EscalationCell` and spends through
   `api.consume_escalation_at`, which CASes at that seq, so a claim
   landing between the scope-and-action checks and the consume loses the
-  commit instead of passing unseen (#68).
+  commit instead of passing unseen (#68). The cell travels through the
+  `weft/poll` loop as the probe's own value, so moving the loop onto the
+  primitive did not put a re-read between the decision and the CAS.
+- **Both foreground waits make a first attempt immediately and a last one
+  at the deadline.** That is `weft/poll`'s contract, not this package's,
+  and it changed one behaviour worth knowing: `park` used to check its
+  deadline *before* reading the record, so a window already shut settled
+  without a read. It now costs one read, and an approval landing exactly
+  on the deadline is honoured rather than missed. `agency.wait_loop` folds
+  the map of already-settled handles from one attempt to the next, so a
+  slice never re-asks the store about a child that answered on the first
+  pass, and expiry hands that map back (`poll.RanOut`) so the settled
+  children are still reported `Ready`.
 - **And so is an approval's.** `approve` carries the diff and the action
   digest the client *rendered*; `gateway.approve` reads one
   `api.EscalationCell`, checks the echo against that value, and commits

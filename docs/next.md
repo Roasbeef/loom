@@ -107,15 +107,72 @@ pins it. Two-core runners hit the window; a workstation never did.
 **Left open, deliberately.** `cap/task` is a clean fit for the run engine
 but `cap` is the satellite-side prelude with no weft dependency; adding
 one puts weft into the offline build seed and is a distribution decision
-(`docs/distribution.md`). A periodic timeout kind for the machine (the
-broker heartbeat, the writer's lease renewal, the driver's poll tick all
-re-arm by hand), a monitored non-panicking call against a pre-existing
-pid, and an injectable clock for `weft/poll` are the three extensions the
-census still wants. Two coverage gaps the ports exposed and did not
+(`docs/distribution.md`). Two coverage gaps the ports exposed and did not
 close, because closing them needs a worker pid the API deliberately hides:
 the runtime custodian's consumer-death-withholds-terminal and
 lost-proof-exits-abnormally paths survive mutation on the old code and the
 new alike.
+
+---
+
+## Weft adoption: phase 3, the two extensions (branch `weft/periodic-and-clock`)
+
+Two of the three gaps phase 2's census named are closed upstream in weft
+`0.4.1`, and the sites that asked for them have moved. The per-site
+record with the measured line deltas is the phase-3 addendum in
+`docs/design-notes/weft-adoption.md`; `docs/weft.md` is still the
+standing guide and now carries the two new "reach for it" bullets, the
+two sharper rejections, and rule 8.
+
+**What landed upstream.** `sm.with_periodic_timeout(name:, every:,
+sending:)` and `actor.periodic(every:, sending:)` — a named timeout that
+arms itself again, fixed delay rather than fixed rate, cancelled by name
+with the same generation-stamped flush every other kind gets (weft PR
+Roasbeef/weft#7). And `poll.Clock(now:, sleep:)`, `poll.until_on`,
+`poll.fold_until` and `poll.Interval` — the bounded wait on the caller's
+own time base, with a state threaded through the probe and handed back on
+expiry (weft PR Roasbeef/weft#8, stacked on the first). `until` keeps its
+exact signature; every addition is additive.
+
+**What moved here.** `broker/exec`'s idle heartbeat and
+`runtime/writer`'s lease renewal are periodic timeouts, and both lost the
+subject they carried purely to have somewhere to `send_after` to.
+`client/escalate.park` and `client/agency.wait_loop` are `weft/poll` on
+the session's clock, adapted by the new `client/internal/timebase`, which
+is where the successor-clock ruling now lives: the successor `core/clock.
+read` hands back is discarded, because `from_function` returns itself and
+re-calls the injected function, and `clock.stepping` cannot serve a loop
+that holds one clock value across many reads.
+
+**What did not move, and why it will not.** The strand driver's
+`PollTick` stays on `runtime/effects.Timers` — that is the injection seam
+a simulated session's poll clock runs on, and a periodic timeout is
+`send_after` underneath. `broker.clear_awaiting_helper` stays hand-rolled
+because it charges its budget by subtracting its own nap (so it
+terminates on the `clock.fixed` five of its seven tests wire), stops on a
+retry-admission floor rather than on the deadline, and never clips its
+nap. Both are written up as standing rejections in `docs/weft.md` rather
+than left as unfinished work.
+
+**The one gap still open upstream:** a monitored, non-panicking call
+against a pre-existing pid (`broker/internal/call.try_call` and its
+siblings). Nothing else in the census wants a primitive weft lacks.
+
+**Dependencies, and the CI colour.** The branch develops against the
+sibling weft checkout as a path dependency and switches the seven
+`gleam.toml` files back to `>= 0.4.1 and < 1.0.0` in its last commit.
+weft `0.4.1` is not on hex until the two weft PRs merge and it is
+published, so the loom PR's CI is red until then — that is expected, not
+a failure to chase. The manifest hand-patching phase 2 documented applies
+again: local packages' requirement lists are not refreshed by the
+resolver, and `packages/tools` reaches weft only through `broker` and
+gets no entry of its own.
+
+**Verification.** Every touched package gate green, the full `make check`
+green, and each port mutation-tested per `docs/weft.md` rule 7 with the
+failing tests named in its commit body. The soak and the real Baseten
+drive have **not** been re-run for phase 3; do that before merging if the
+heartbeat or the lease renewal is load-bearing for the release.
 
 ---
 
