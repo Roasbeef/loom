@@ -83,7 +83,10 @@ pub fn abnormal_child_exit_poisoned_witness_test() {
     process.new_selector()
     |> process.select_specific_monitor(owner_monitor, fn(down) { down })
     |> process.selector_receive(1000)
-  assert reason == process.Killed
+  // The witness is a weft scope, and a lost proof leaves it with a named
+  // abnormal reason rather than a kill; what the invariant demands is
+  // only that the exit is not `Normal`.
+  assert reason != process.Normal
     as "lost child ownership must never look like a clean drain"
 }
 
@@ -116,7 +119,7 @@ pub fn cancel_then_abnormal_transitive_exit_poisoned_witness_test() {
     process.new_selector()
     |> process.select_specific_monitor(owner_monitor, fn(down) { down })
     |> process.selector_receive(1000)
-  assert reason == process.Killed
+  assert reason != process.Normal
     as "cancellation cannot replace a transitive child's normal proof"
 }
 

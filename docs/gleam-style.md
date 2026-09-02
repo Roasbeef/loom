@@ -955,6 +955,22 @@ pub type Message(element) {
   crashed caller under supervision beats a process in an invalid state.
   Timeouts are plain `Int` milliseconds with a labelled argument; "forever"
   is a separate function, not a magic value.
+- **Process machinery is built on weft, not hand-rolled.** The idioms above
+  are `gleam_otp`'s and still hold, but the process you are about to write
+  is almost always one of five shapes weft already provides, and a copy of
+  that shape is a review finding. A deadline-bounded spawn is a one-task
+  `weft` run; an actor whose first work must run before any request uses
+  `weft/actor`'s `continuing`; a process written as mutually recursive
+  phase functions with a timer whose handler checks for a stale fire is a
+  `weft/state_machine` (the phases are the state ADT, the timer a state
+  timeout, the "not ready yet" list a `postpone`); a process that owns
+  work outliving itself is a managed task whose scope is the drain
+  witness; a foreground wait on a synchronous probe is `weft/poll`. The
+  rules a port is held to — payloads immutable within a state, every
+  `case state, message` pair written, `unlinked` when the starter must not
+  share fate, children published beneath their parent — and the standing
+  rejections are in `docs/weft.md`. `core`, `machine` and `prompt` never
+  import it (Part IV §5).
 
 ### FFI
 

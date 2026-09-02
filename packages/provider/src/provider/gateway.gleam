@@ -32,7 +32,6 @@ import core/clock.{type Clock}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/openai
 import provider/custodian
@@ -50,30 +49,39 @@ import provider/stream.{
   AttemptTerminal, Cancel, ConsumerGone, Delta, Failed, NoIdentity, NoSecret,
   ProviderCancelled, Settled, UnknownProvider,
 }
+import weft/state_machine as sm
 
 const request_start_timeout_ms = 5000
 
 const request_cancel_grace_ms = 1500
 
+/// The public cancel capability, as the guard hears it.
+///
+/// One variant, because the only deadline the guard ever armed by hand —
+/// the cancellation grace — is now a state timeout on the `Cancelling`
+/// state and arrives on weft's own timer subject instead. This is the
+/// subject `custodian.start` is handed as the worker's cooperative stop.
 type RequestControl {
   CancelRequest
-  CancelDeadline
 }
 
+/// The begin permit: the custodian which has already adopted this guard.
+///
+/// Adoption and the permit are separate messages from separate processes,
+/// which is why the custodian travels with the permit rather than being
+/// known at spawn time.
 type RequestStart {
   BeginRequest(custodian.Custodian)
 }
 
-type ParkedRequestEvent {
-  StartRequest(custodian.Custodian)
-  StopBeforeRequest
-}
-
+/// The two ways a parked pump leaves its begin gate.
 type ParkedPumpEvent {
   StartPump
   StopBeforePump
 }
 
+/// One transport the pump has prepared but not yet begun, published to the
+/// guard for adoption together with the permit subject the pump blocks on.
 type AttemptRegistration {
   AttemptRegistration(
     running: RunningRequest,
@@ -81,25 +89,10 @@ type AttemptRegistration {
   )
 }
 
+/// The guard's answer to a registration: begin the transport, or do not.
 type AttemptPermit {
   BeginAttempt
   RejectAttempt
-}
-
-// The guard keeps the monitor created before it publishes an attempt permit.
-// Carrying the monitor with the capability prevents a later pump failure from
-// collapsing normal drain, abnormal exit, and a late `noproc` into one Boolean.
-type ActiveAttempt {
-  ActiveAttempt(running: RunningRequest, monitor: process.Monitor)
-}
-
-type RequestEvent {
-  PumpEvent(StreamEvent)
-  AttemptStarted(AttemptRegistration)
-  ConsumerDown(process.Down)
-  PumpDown(process.Down)
-  CancelRequested
-  CancelExpired
 }
 
 /// One configured provider endpoint. The variant selects the adapter
@@ -321,52 +314,17 @@ pub fn prepare(
 ) -> stream.PreparedStream {
   let consumer = process.self()
   let events = process.new_subject()
-  let ready = process.new_subject()
   let #(now, _clock) = clock.read(gateway.clock)
-  let owner =
-    process.spawn_unlinked(fn() {
-      let control = process.new_subject()
-      let begin = process.new_subject()
-      let creator_monitor = process.monitor(consumer)
-      process.send(ready, #(control, begin))
-      let parked =
-        process.new_selector()
-        |> process.select_map(begin, fn(message) {
-          let BeginRequest(owner) = message
-          StartRequest(owner)
-        })
-        |> process.select_map(control, fn(_cancel) { StopBeforeRequest })
-        |> process.select_specific_monitor(creator_monitor, fn(_down) {
-          StopBeforeRequest
-        })
-        |> process.selector_receive_forever()
-      case parked {
-        StopBeforeRequest -> process.demonitor_process(creator_monitor)
-        StartRequest(custodian) -> {
-          // The public custodian monitors the consumer after publication, so
-          // this temporary edge is needed only across prepare's return gap.
-          process.demonitor_process(creator_monitor)
-          start_request(
-            gateway,
-            request,
-            now,
-            events,
-            control,
-            consumer,
-            custodian,
-          )
-        }
-      }
-    })
-  let monitor = process.monitor(owner)
-  let started =
-    process.new_selector()
-    |> process.select_map(ready, Ok)
-    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(request_start_timeout_ms)
-  process.demonitor_process(monitor: monitor)
+
+  // The guard is started unlinked: a crashing guard must be observed
+  // through the custodian's worker adoption, never as an exit signal
+  // arriving in the consumer. The start itself is bounded by the machine's
+  // initialisation timeout, so a guard that never comes up is a reported
+  // failure rather than a wait.
+  let started = start_guard(gateway, request, now, events, consumer)
+
   case started {
-    Ok(Ok(#(control, begin))) -> {
+    Ok(#(owner, control, begin)) -> {
       let custodian = custodian.start(owner, control, CancelRequest, consumer)
       stream.PreparedStream(
         handle: stream.owned(
@@ -377,8 +335,11 @@ pub fn prepare(
         begin: fn() { process.send(begin, BeginRequest(custodian)) },
       )
     }
-    Ok(Error(Nil)) | Error(Nil) -> {
-      process.kill(owner)
+
+    // No guard came up, so nothing was adopted and nothing has to be torn
+    // down: a guard which started but could not be published is parked on
+    // its own consumer monitor and retires when the consumer does.
+    Error(Nil) -> {
       process.send(
         events,
         Failed(stream.TransportFailed(
@@ -393,605 +354,1012 @@ pub fn prepare(
   }
 }
 
-fn start_request(
+// --- the request guard -----------------------------------------------------
+
+/// The phase the guard is in — the machine's *state*, in weft's sense.
+///
+/// The public request owner is a guard rather than the process doing the
+/// route walk. That extra process has one job: preserve the stream law if
+/// the pump crashes after startup. It also makes cancellation bounded
+/// without asking the caller to understand the pump's monitor or the active
+/// fallback attempt.
+///
+/// Every deadline the guard owns belongs to one of these states and is
+/// armed by `entered`, so it is cancelled by the move out of the state
+/// that armed it. Nothing here re-establishes its own relevance, and a fire
+/// that raced a transition is dropped by weft's timer book before it
+/// reaches the handler — which is why the stale-deadline arms below can say
+/// they are unreachable and mean it.
+///
+/// Nothing in a payload changes while the machine is in that state: a
+/// transition to an equal value is not a state change, so a payload that
+/// moved would restart or void the deadline the state exists to hold.
+/// Everything that moves per event lives in `Guard`.
+type Phase {
+  /// Nothing has resolved a route, read a secret, or opened a socket. The
+  /// guard is waiting for the begin permit which publishes its custodian.
+  Parked
+
+  /// The pump has been spawned parked and its ready handshake is
+  /// outstanding. Entering this state arms the start deadline.
+  Starting
+
+  /// The route walk is running and the public response window is open.
+  Requesting
+
+  /// Cancellation has been selected and the pump asked to stop. Entering
+  /// this state arms the fixed grace; the terminal is the guard's to author
+  /// when the grace expires.
+  Cancelling
+
+  /// The pump authored `terminal`, but the active transport's owner has not
+  /// yet retired. Its exit reason decides whether that terminal survives or
+  /// becomes `DrainProofLost`.
+  Settling(terminal: StreamEvent)
+
+  /// The pump died without authoring a terminal. Entering this state arms
+  /// the same fixed grace for the active transport to acknowledge its own
+  /// cancellation; `cause` is what a clean acknowledgement means.
+  Reaping(cause: ReapCause)
+
+  /// The public terminal has been published and the pump's ownership
+  /// frontier is still open.
+  ClosingPump
+
+  /// The direct consumer died. Nothing more will be published; the frontier
+  /// stays open and every late transport is cancelled as well as refused.
+  Abandoning
+
+  /// Nothing remains but the active transport owner's `Down`.
+  ClosingActive
+}
+
+/// What a clean transport acknowledgement means when the pump died without
+/// authoring a terminal of its own.
+type ReapCause {
+  /// The pump stopped mid-walk. The consumer is owed an in-band transport
+  /// failure, which is retryable at the layer above.
+  PumpStoppedEarly
+
+  /// The pump died after cancellation was selected. Only the guard may say
+  /// cancellation won its race, and a dead pump proves nothing about it.
+  PumpGoneAfterCancel
+}
+
+/// The pump as the guard knows it.
+///
+/// The guard keeps the monitor it created before the pump was released,
+/// because a later failure must not collapse a normal exit, an abnormal
+/// one, and a late `noproc` into one answer.
+type Pump {
+  /// No pump: the begin permit has not arrived.
+  NoPump
+
+  /// Spawned and parked behind its own begin gate. This process still owns
+  /// its teardown, because nothing has been adopted yet.
+  PumpParked(owner: process.Pid, monitor: process.Monitor)
+
+  /// Released into the route walk, with the control subject its
+  /// cancellation travels on.
+  PumpRunning(monitor: process.Monitor, control: process.Subject(Control))
+
+  /// Its `Down` has been seen.
+  PumpGone
+}
+
+/// The transport attempt the pump most recently published.
+///
+/// The guard keeps the monitor created before it publishes an attempt
+/// permit. Carrying the monitor with the capability prevents a later pump
+/// failure from collapsing normal drain, abnormal exit, and a late `noproc`
+/// into one Boolean.
+type Attempt {
+  /// No transport has been registered, or the last one was superseded.
+  NoAttempt
+
+  /// One transport whose owner the guard is still watching.
+  LiveAttempt(running: RunningRequest, monitor: process.Monitor)
+
+  /// The owner's `Down` has arrived. It is recorded rather than acted on,
+  /// because the phase which was going to wait for it may not have been
+  /// reached yet — an exit seen early must mean exactly what an exit seen
+  /// late would have meant.
+  ExitedAttempt(outcome: ActiveExit)
+}
+
+/// What an attempt owner's exit proved.
+///
+/// Only a normal exit acknowledges that the native work beneath the owner
+/// stopped; any other reason means the proof was lost, whatever the pump
+/// had computed.
+type ActiveExit {
+  ActiveDrained
+  ActiveProofLost
+}
+
+/// Everything the guard carries *across* phases.
+///
+/// The split from `Phase` is weft's and it is load-bearing: data may change
+/// on any event without disturbing a state timeout, while a change of state
+/// cancels one. So the custodian, the pump, the active attempt and the
+/// consumer monitor live here — putting the attempt in the state would make
+/// an ordinary registration cancel the cancellation grace.
+type Guard {
+  Guard(
+    gateway: Gateway,
+    request: ProviderRequest,
+    now: Int,
+    events: process.Subject(StreamEvent),
+    pump_ready: process.Subject(
+      #(process.Subject(Control), process.Subject(Nil)),
+    ),
+    pump_events: process.Subject(StreamEvent),
+    pump_attempts: process.Subject(AttemptRegistration),
+    /// `None` once the consumer's death has stopped mattering, so a later
+    /// `Down` cannot be mistaken for one of the guard's live monitors.
+    consumer_watch: Option(process.Monitor),
+    /// `None` only while parked: the custodian arrives with the permit.
+    custodian: Option(custodian.Custodian),
+    pump: Pump,
+    attempt: Attempt,
+  )
+}
+
+/// What the guard's selector delivers.
+///
+/// The selector is fixed when the machine starts, before the consumer,
+/// pump, or attempt monitors exist, so a `Down` cannot be given a meaning
+/// at selection time. `Watched` carries it raw and `classify` asks which of
+/// the guard's monitors fired; everything else already knows what it means.
+type Signal {
+  Told(event: Event)
+  Watched(down: process.Down)
+}
+
+/// One thing that happened, in the guard's own vocabulary.
+type Event {
+  /// The begin permit, carrying the custodian which has adopted the guard.
+  Begin(custodian: custodian.Custodian)
+
+  /// The parked pump answered its ready handshake.
+  PumpAdmitted(control: process.Subject(Control), begin: process.Subject(Nil))
+
+  /// The start deadline on `Starting` expired.
+  PumpStartExpired
+
+  /// The pump published a stream event.
+  FromPump(streamed: StreamEvent)
+
+  /// The pump published a prepared transport and is blocked on its permit.
+  Registered(registration: AttemptRegistration)
+
+  /// The direct consumer exited.
+  ConsumerExited
+
+  /// The pump exited.
+  PumpExited
+
+  /// The active attempt's transport owner exited.
+  AttemptExited(exit: ActiveExit)
+
+  /// A `Down` matching none of the guard's monitors. Unreachable in
+  /// practice — `demonitor_process` flushes — and total by construction.
+  StrayExited
+
+  /// The public cancel capability was invoked.
+  CancelAsked
+
+  /// The cancellation grace on `Cancelling` expired.
+  CancelExpired
+
+  /// The reap grace on `Reaping` expired.
+  ReapExpired
+}
+
+/// What every handler in this machine returns.
+type Step =
+  sm.Next(Phase, Guard, Signal)
+
+// Starts the guard machine, unlinked from the consumer that asked for it,
+// and returns its identity: the pid the custodian adopts and the two
+// subjects the request is driven through.
+fn start_guard(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
   events: process.Subject(StreamEvent),
-  control: process.Subject(RequestControl),
   consumer: process.Pid,
-  custodian: custodian.Custodian,
-) -> Nil {
-  let pump_ready = process.new_subject()
-  let pump_events = process.new_subject()
-  let pump_attempts = process.new_subject()
-  let self = process.self()
-  let pump_owner =
-    process.spawn_unlinked(fn() {
-      let pump_control = process.new_subject()
-      let pump_begin = process.new_subject()
-      let creator_monitor = process.monitor(self)
-      process.send(pump_ready, #(pump_control, pump_begin))
+) -> Result(
+  #(process.Pid, process.Subject(RequestControl), process.Subject(RequestStart)),
+  Nil,
+) {
+  let started =
+    sm.new_with_initialiser(request_start_timeout_ms, fn(_default) {
+      let control = process.new_subject()
+      let begin = process.new_subject()
+      let pump_ready = process.new_subject()
+      let pump_events = process.new_subject()
+      let pump_attempts = process.new_subject()
 
-      // Adoption and begin are separate messages from separate processes. If
-      // the guard dies between them, its custodian cancels this parked pump.
-      // Selecting both gates keeps that cancellation from becoming an
-      // unconsumed mailbox message which would pin the whole drain chain.
-      let parked =
-        process.new_selector()
-        |> process.select_map(pump_begin, fn(_nil) { StartPump })
-        |> process.select_map(pump_control, fn(_control) { StopBeforePump })
-        |> process.select_specific_monitor(creator_monitor, fn(_down) {
-          StopBeforePump
-        })
-        |> process.selector_receive_forever()
-      case parked {
-        StopBeforePump -> process.demonitor_process(creator_monitor)
-        StartPump -> {
-          // Custody has crossed to the guard's custodian before this permit;
-          // the creator monitor must not compete with that durable edge.
-          process.demonitor_process(creator_monitor)
-          pump(
-            gateway,
-            request,
-            now,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            self,
-          )
-        }
-      }
+      // The consumer is watched from here rather than from the begin
+      // permit, which is what closes `prepare`'s return gap: the public
+      // custodian starts watching the consumer only once `prepare` has
+      // published it, and a consumer that dies inside that gap must still
+      // retire the parked request.
+      let consumer_watch = process.monitor(consumer)
+      let guard =
+        Guard(
+          gateway:,
+          request:,
+          now:,
+          events:,
+          pump_ready:,
+          pump_events:,
+          pump_attempts:,
+          consumer_watch: Some(consumer_watch),
+          custodian: None,
+          pump: NoPump,
+          attempt: NoAttempt,
+        )
+      sm.initialised(Parked, guard)
+      |> sm.selecting(guard_selector(
+        control,
+        begin,
+        pump_ready,
+        pump_events,
+        pump_attempts,
+      ))
+      |> sm.returning(#(control, begin))
+      |> Ok
     })
-  let consumer_monitor = process.monitor(consumer)
-  let pump_monitor = process.monitor(pump_owner)
-  let pump_started =
-    process.new_selector()
-    |> process.select_map(pump_ready, Ok)
-    |> process.select_specific_monitor(pump_monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(request_start_timeout_ms)
-  case pump_started {
-    Ok(Ok(#(pump_control, pump_begin))) -> {
-      let adopted =
-        custodian.adopt_leaf(custodian, pump_owner, fn() {
-          process.send(pump_control, Cancel)
-        })
-      case adopted {
-        True -> {
-          process.send(pump_begin, Nil)
-          guard_request(
-            custodian,
-            events,
-            control,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            consumer_monitor,
-            pump_owner,
-            pump_monitor,
-            None,
-          )
-        }
-        False -> {
-          // The pump has not crossed its begin gate. Rejection means this
-          // process retains teardown responsibility if the custodian died, so
-          // kill the parked pump instead of starting secret lookup.
-          process.kill(pump_owner)
-          forget_request(consumer_monitor, pump_monitor)
-        }
-      }
+    |> sm.on_event(handle)
+    |> sm.on_enter(entered)
+    |> sm.unlinked
+    |> sm.start
+
+  case started {
+    Ok(machine) -> {
+      let #(control, begin) = machine.data
+      Ok(#(machine.pid, control, begin))
     }
-    Ok(Error(Nil)) | Error(Nil) -> {
-      process.kill(pump_owner)
-      forget_request(consumer_monitor, pump_monitor)
-    }
+
+    // Nothing was published, so `prepare` reports the same failure it would
+    // have reported for a guard that never spawned at all.
+    Error(_error) -> Error(Nil)
   }
 }
 
-// The public request owner is a guard rather than the process doing the route
-// walk. That extra process has one job: preserve the stream law if the pump
-// crashes after startup. It also makes cancellation bounded without asking the
-// caller to understand the pump's monitor or the active fallback attempt.
-fn guard_request(
-  custodian: custodian.Custodian,
-  events: process.Subject(StreamEvent),
+// The guard's whole mailbox in one selector.
+//
+// It replaces weft's default, which selects only the machine's own subject;
+// the guard never sends to itself, so nothing is lost by leaving it out.
+// Monitors go on as a single arm because the three the guard installs do
+// not exist yet when this is built.
+fn guard_selector(
   control: process.Subject(RequestControl),
+  begin: process.Subject(RequestStart),
+  pump_ready: process.Subject(#(process.Subject(Control), process.Subject(Nil))),
   pump_events: process.Subject(StreamEvent),
   pump_attempts: process.Subject(AttemptRegistration),
-  pump_control: process.Subject(Control),
-  consumer_monitor: process.Monitor,
-  pump_owner: process.Pid,
-  pump_monitor: process.Monitor,
-  active: Option(ActiveAttempt),
-) -> Nil {
-  let selector =
-    request_selector(
-      control,
-      pump_events,
-      pump_attempts,
-      consumer_monitor,
-      pump_monitor,
-    )
-  case process.selector_receive_forever(selector) {
-    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
-      release_active(active)
-      let active =
-        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
-      let accepted =
-        custodian.adopt_owner(custodian, http.owner(running), fn() {
-          http.cancel(running)
-        })
-      process.send(permit, case accepted {
-        True -> BeginAttempt
-        False -> RejectAttempt
-      })
-      guard_request(
-        custodian,
-        events,
-        control,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        consumer_monitor,
-        pump_owner,
-        pump_monitor,
-        Some(active),
-      )
-    }
-    PumpEvent(event) -> {
-      case event {
-        Delta(..) -> {
-          process.send(events, event)
-          guard_request(
-            custodian,
-            events,
-            control,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            consumer_monitor,
-            pump_owner,
-            pump_monitor,
-            active,
-          )
-        }
-        Settled(..) | Failed(..) -> {
-          let terminal = case await_active_forever(active) {
-            stream.Drained -> event
-            stream.TimedOut | stream.ProofLost -> Failed(stream.DrainProofLost)
-          }
-          process.send(events, terminal)
-          await_pump_down_forever(pump_owner, pump_monitor)
-          forget_request(consumer_monitor, pump_monitor)
-        }
-      }
-    }
-    ConsumerDown(_down) ->
-      stop_for_dead_consumer(
-        custodian,
-        pump_control,
-        pump_attempts,
-        consumer_monitor,
-        pump_monitor,
-        active,
-      )
-    PumpDown(_down) -> {
-      process.demonitor_process(consumer_monitor)
-      case stop_active(active, request_cancel_grace_ms) {
-        stream.Drained ->
-          process.send(
-            events,
-            Failed(stream.TransportFailed(
-              reason: "provider request pump stopped before a terminal response",
-            )),
-          )
-        stream.TimedOut -> {
-          process.send(events, Failed(stream.CancellationUnconfirmed))
-          let _drained = await_active_forever(active)
-          Nil
-        }
-        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
-      }
-    }
-    CancelRequested -> {
-      process.send(pump_control, Cancel)
-      let _timer =
-        process.send_after(control, request_cancel_grace_ms, CancelDeadline)
-      guard_cancelling(
-        custodian,
-        events,
-        control,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        consumer_monitor,
-        pump_owner,
-        pump_monitor,
-        active,
-      )
-    }
-    CancelExpired ->
-      guard_request(
-        custodian,
-        events,
-        control,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        consumer_monitor,
-        pump_owner,
-        pump_monitor,
-        active,
-      )
-  }
-}
-
-// Cancellation remains an owner-authored terminal. The guard forwards a real
-// pump terminal if one arrives; pump death or expiry only proves that the
-// request could not confirm which side of the race won.
-fn guard_cancelling(
-  custodian: custodian.Custodian,
-  events: process.Subject(StreamEvent),
-  control: process.Subject(RequestControl),
-  pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(AttemptRegistration),
-  pump_control: process.Subject(Control),
-  consumer_monitor: process.Monitor,
-  pump_owner: process.Pid,
-  pump_monitor: process.Monitor,
-  active: Option(ActiveAttempt),
-) -> Nil {
-  let selector =
-    request_selector(
-      control,
-      pump_events,
-      pump_attempts,
-      consumer_monitor,
-      pump_monitor,
-    )
-  case process.selector_receive_forever(selector) {
-    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
-      release_active(active)
-      let active =
-        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
-      let _accepted =
-        custodian.adopt_owner(custodian, http.owner(running), fn() {
-          http.cancel(running)
-        })
-      process.send(permit, RejectAttempt)
-      guard_cancelling(
-        custodian,
-        events,
-        control,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        consumer_monitor,
-        pump_owner,
-        pump_monitor,
-        Some(active),
-      )
-    }
-    PumpEvent(event) ->
-      case event {
-        Delta(..) ->
-          guard_cancelling(
-            custodian,
-            events,
-            control,
-            pump_events,
-            pump_attempts,
-            pump_control,
-            consumer_monitor,
-            pump_owner,
-            pump_monitor,
-            active,
-          )
-        Settled(..) | Failed(stream.CancellationUnconfirmed) -> {
-          // CancellationUnconfirmed is deliberately bounded for the public
-          // caller. The guard remains alive behind that terminal until the
-          // retained witness eventually adjudicates the real owner exit.
-          process.send(events, event)
-          let _drained = await_active_forever(active)
-          await_pump_down_forever(pump_owner, pump_monitor)
-          forget_request(consumer_monitor, pump_monitor)
-        }
-        Failed(..) -> {
-          let terminal = case await_active_forever(active) {
-            stream.Drained -> event
-            stream.TimedOut | stream.ProofLost -> Failed(stream.DrainProofLost)
-          }
-          process.send(events, terminal)
-          await_pump_down_forever(pump_owner, pump_monitor)
-          forget_request(consumer_monitor, pump_monitor)
-        }
-      }
-    ConsumerDown(_down) ->
-      stop_for_dead_consumer(
-        custodian,
-        pump_control,
-        pump_attempts,
-        consumer_monitor,
-        pump_monitor,
-        active,
-      )
-    PumpDown(_down) -> {
-      process.demonitor_process(consumer_monitor)
-      case stop_active(active, request_cancel_grace_ms) {
-        stream.Drained ->
-          process.send(events, Failed(stream.CancellationUnconfirmed))
-        stream.TimedOut -> {
-          process.send(events, Failed(stream.CancellationUnconfirmed))
-          let _drained = await_active_forever(active)
-          Nil
-        }
-        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
-      }
-    }
-    CancelExpired -> {
-      process.send(pump_control, Cancel)
-      http_cancel(active)
-      let outcome = await_active(active, within: 0)
-      case outcome {
-        stream.ProofLost -> process.send(events, Failed(stream.DrainProofLost))
-        stream.Drained | stream.TimedOut ->
-          process.send(events, Failed(stream.CancellationUnconfirmed))
-      }
-      case outcome {
-        stream.TimedOut -> {
-          let _drained = await_active_forever(active)
-          Nil
-        }
-        stream.Drained | stream.ProofLost -> Nil
-      }
-      await_pump_down_rejecting_attempts(
-        custodian,
-        pump_attempts,
-        pump_monitor,
-        None,
-      )
-      forget_request(consumer_monitor, pump_monitor)
-    }
-    CancelRequested ->
-      guard_cancelling(
-        custodian,
-        events,
-        control,
-        pump_events,
-        pump_attempts,
-        pump_control,
-        consumer_monitor,
-        pump_owner,
-        pump_monitor,
-        active,
-      )
-  }
-}
-
-fn request_selector(
-  control: process.Subject(RequestControl),
-  pump_events: process.Subject(StreamEvent),
-  pump_attempts: process.Subject(AttemptRegistration),
-  consumer_monitor: process.Monitor,
-  pump_monitor: process.Monitor,
-) -> process.Selector(RequestEvent) {
+) -> process.Selector(Signal) {
   process.new_selector()
-  |> process.select_map(pump_events, PumpEvent)
-  |> process.select_map(pump_attempts, AttemptStarted)
+  |> process.select_map(begin, fn(message) {
+    let BeginRequest(custodian) = message
+    Told(Begin(custodian:))
+  })
   |> process.select_map(control, fn(message) {
     case message {
-      CancelRequest -> CancelRequested
-      CancelDeadline -> CancelExpired
+      CancelRequest -> Told(CancelAsked)
     }
   })
-  |> process.select_specific_monitor(consumer_monitor, ConsumerDown)
-  |> process.select_specific_monitor(pump_monitor, PumpDown)
+  |> process.select_map(pump_ready, fn(admitted) {
+    let #(control, begin) = admitted
+    Told(PumpAdmitted(control:, begin:))
+  })
+  |> process.select_map(pump_events, fn(streamed) { Told(FromPump(streamed:)) })
+  |> process.select_map(pump_attempts, fn(registration) {
+    Told(Registered(registration:))
+  })
+  |> process.select_monitors(Watched)
 }
 
-// A dead public consumer needs no terminal, but the pump still gets one grace
-// interval to run its ordinary cancellation path. Killing it immediately would
-// bypass an injected transport's cancel capability and would make the test
-// seam weaker than the production custodian.
-fn stop_for_dead_consumer(
-  custodian: custodian.Custodian,
-  pump_control: process.Subject(Control),
-  pump_attempts: process.Subject(AttemptRegistration),
-  consumer_monitor: process.Monitor,
-  pump_monitor: process.Monitor,
-  active: Option(ActiveAttempt),
-) -> Nil {
-  process.send(pump_control, Cancel)
-  http_cancel(active)
-  abandon_request(
-    custodian,
-    pump_attempts,
-    consumer_monitor,
-    pump_monitor,
-    active,
-  )
-}
-
-// The pump may be blocked handing a freshly prepared attempt to the guard when
-// the public consumer dies. Keep accepting and refusing those handoffs until
-// the pump exits; otherwise both processes could wait forever before the
-// underlying transport had even been allowed to start.
-fn abandon_request(
-  custodian: custodian.Custodian,
-  pump_attempts: process.Subject(AttemptRegistration),
-  consumer_monitor: process.Monitor,
-  pump_monitor: process.Monitor,
-  active: Option(ActiveAttempt),
-) -> Nil {
-  let event =
-    process.new_selector()
-    |> process.select_map(pump_attempts, AttemptStarted)
-    |> process.select_specific_monitor(pump_monitor, PumpDown)
-    |> process.selector_receive_forever()
-  case event {
-    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
-      release_active(active)
-      let active =
-        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
-      let _accepted =
-        custodian.adopt_owner(custodian, http.owner(running), fn() {
-          http.cancel(running)
-        })
-      process.send(permit, RejectAttempt)
-      http.cancel(running)
-      abandon_request(
-        custodian,
-        pump_attempts,
-        consumer_monitor,
-        pump_monitor,
-        Some(active),
-      )
-    }
-    PumpDown(_down) -> {
-      let _drained = await_active_forever(active)
-      forget_request(consumer_monitor, pump_monitor)
-    }
-    PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
-      abandon_request(
-        custodian,
-        pump_attempts,
-        consumer_monitor,
-        pump_monitor,
-        active,
-      )
+// One event, in one phase.
+fn handle(phase: Phase, guard: Guard, signal: Signal) -> Step {
+  case signal {
+    Told(event:) -> step(phase, guard, event)
+    Watched(down:) -> step(phase, guard, classify(guard, down))
   }
 }
 
-fn http_cancel(active: Option(ActiveAttempt)) -> Nil {
-  case active {
-    None -> Nil
-    Some(ActiveAttempt(running:, ..)) -> http.cancel(running)
+// Which of the guard's monitors fired.
+//
+// The selector cannot answer this, so it is asked here, against the
+// monitors the guard is holding at the moment the `Down` is handled. A
+// superseded attempt was demonitored with a flush, so its exit never
+// arrives and never has to be told apart from the live one's.
+fn classify(guard: Guard, down: process.Down) -> Event {
+  case guard.consumer_watch == Some(down.monitor) {
+    True -> ConsumerExited
+    False -> classify_worker(guard, down)
   }
 }
 
-fn stop_active(
-  active: Option(ActiveAttempt),
-  within timeout: Int,
-) -> stream.DrainOutcome {
-  http_cancel(active)
-  await_active(active, within: timeout)
-}
-
-fn await_active(
-  active: Option(ActiveAttempt),
-  within timeout: Int,
-) -> stream.DrainOutcome {
-  case active {
-    None -> stream.Drained
-    Some(ActiveAttempt(monitor:, ..)) -> {
-      let outcome =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, active_drain_outcome)
-        |> process.selector_receive(timeout)
-        |> result.unwrap(stream.TimedOut)
-      case outcome {
-        stream.TimedOut -> Nil
-        stream.Drained | stream.ProofLost -> process.demonitor_process(monitor)
-      }
-      outcome
-    }
+fn classify_worker(guard: Guard, down: process.Down) -> Event {
+  case pump_watch(guard.pump) == Some(down.monitor) {
+    True -> PumpExited
+    False -> classify_attempt(guard, down)
   }
 }
 
-fn await_active_forever(active: Option(ActiveAttempt)) -> stream.DrainOutcome {
-  case active {
-    None -> stream.Drained
-    Some(ActiveAttempt(monitor:, ..)) -> {
-      let outcome =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, active_drain_outcome)
-        |> process.selector_receive_forever()
-      process.demonitor_process(monitor)
-      outcome
-    }
+fn classify_attempt(guard: Guard, down: process.Down) -> Event {
+  case attempt_watch(guard.attempt) == Some(down.monitor) {
+    True -> AttemptExited(exit: active_exit(down))
+    False -> StrayExited
   }
 }
 
-fn active_drain_outcome(down: process.Down) -> stream.DrainOutcome {
+fn pump_watch(pump: Pump) -> Option(process.Monitor) {
+  case pump {
+    PumpParked(monitor:, ..) | PumpRunning(monitor:, ..) -> Some(monitor)
+    NoPump | PumpGone -> None
+  }
+}
+
+fn attempt_watch(attempt: Attempt) -> Option(process.Monitor) {
+  case attempt {
+    LiveAttempt(monitor:, ..) -> Some(monitor)
+    NoAttempt | ExitedAttempt(..) -> None
+  }
+}
+
+// Only a normal exit acknowledges that native work stopped. Death alone is
+// not enough: the owner may have abandoned a process or a socket beneath it.
+fn active_exit(down: process.Down) -> ActiveExit {
   case down {
     process.ProcessDown(reason:, ..) ->
       case reason {
-        process.Normal -> stream.Drained
-        process.Killed | process.Abnormal(_) -> stream.ProofLost
+        process.Normal -> ActiveDrained
+        process.Killed | process.Abnormal(_) -> ActiveProofLost
       }
-    process.PortDown(..) -> stream.ProofLost
+    process.PortDown(..) -> ActiveProofLost
   }
 }
 
-fn release_active(active: Option(ActiveAttempt)) -> Nil {
-  case active {
-    None -> Nil
-    Some(ActiveAttempt(monitor:, ..)) -> process.demonitor_process(monitor)
+// The deadline each state owns, armed by every path into it.
+//
+// Arming here rather than at the transition site is what makes each
+// deadline die with its state: `Cancelling`'s grace does not refresh when a
+// second cancel arrives, because `keep` is not a state change, and it is
+// gone the moment a terminal moves the machine on.
+fn entered(
+  _from: Phase,
+  to: Phase,
+  guard: Guard,
+) -> sm.Enter(Phase, Guard, Signal) {
+  case to {
+    Starting ->
+      sm.keep(guard)
+      |> sm.with_state_timeout(
+        after: request_start_timeout_ms,
+        sending: Told(PumpStartExpired),
+      )
+
+    Cancelling ->
+      sm.keep(guard)
+      |> sm.with_state_timeout(
+        after: request_cancel_grace_ms,
+        sending: Told(CancelExpired),
+      )
+
+    Reaping(..) ->
+      sm.keep(guard)
+      |> sm.with_state_timeout(
+        after: request_cancel_grace_ms,
+        sending: Told(ReapExpired),
+      )
+
+    Parked
+    | Requesting
+    | Settling(..)
+    | ClosingPump
+    | Abandoning
+    | ClosingActive -> sm.keep(guard)
   }
 }
 
-fn await_pump_down_forever(
+// The exhaustive matrix: every phase against every event.
+//
+// Adding a phase or an event makes the compiler name each combination
+// nobody has thought about, which is where the hand-rolled guard used to
+// carry a stale-deadline arm and a re-read of its own phase.
+fn step(phase: Phase, guard: Guard, event: Event) -> Step {
+  case phase, event {
+    // The permit publishes the custodian, so the pump can be spawned,
+    // adopted, and only then released.
+    Parked, Begin(custodian:) -> begin_request(guard, custodian)
+
+    // Cancellation before the permit retires the parked request without
+    // reading a secret or opening a socket, and a consumer nobody can
+    // deliver to is the same fact arriving from the other side.
+    Parked, CancelAsked | Parked, ConsumerExited -> sm.stop()
+
+    Starting, PumpAdmitted(control:, begin:) ->
+      release_pump(guard, control, begin)
+
+    // The pump never crossed its ready gate, so nothing was adopted and
+    // this process still owns its teardown.
+    Starting, PumpStartExpired | Starting, PumpExited -> {
+      kill_parked_pump(guard.pump)
+      sm.stop()
+    }
+
+    // Neither can be acted on until the pump has been adopted and released:
+    // cancelling a pump the custodian does not yet know about would leave
+    // it parked behind a dead guard. weft replays them in arrival order the
+    // instant `Requesting` is entered, which is where the hand-rolled guard
+    // used to find them still waiting in its mailbox.
+    Starting, CancelAsked | Starting, ConsumerExited ->
+      sm.keep(guard) |> sm.postpone
+
+    Requesting, Registered(registration:) -> admit_attempt(guard, registration)
+
+    Requesting, FromPump(streamed:) -> forward_or_settle(guard, streamed)
+
+    // Cancellation is an owner-authored terminal. The pump is asked to stop
+    // and the grace begins; nothing is published until it answers or the
+    // deadline says it cannot be confirmed.
+    Requesting, CancelAsked -> {
+      cancel_pump(guard)
+      sm.transition(to: Cancelling, data: guard)
+    }
+
+    Requesting, ConsumerExited -> abandon(guard)
+
+    Requesting, PumpExited -> reap(guard, PumpStoppedEarly)
+
+    // A late registration during cancellation is adopted, so the custodian
+    // still accounts for it, and refused, so the transport never starts.
+    Cancelling, Registered(registration:) ->
+      sm.keep(refuse_attempt(guard, registration))
+
+    Cancelling, FromPump(streamed:) -> forward_cancelled(guard, streamed)
+
+    // The grace belongs to the state, so a second cancel does not refresh
+    // it: `keep` is not a state change, and the deadline the first one
+    // armed keeps running.
+    Cancelling, CancelAsked -> sm.keep(guard)
+
+    Cancelling, CancelExpired -> expire_cancellation(guard)
+
+    Cancelling, ConsumerExited -> abandon(guard)
+
+    Cancelling, PumpExited -> reap(guard, PumpGoneAfterCancel)
+
+    Settling(terminal:), AttemptExited(exit:) ->
+      publish_settled(record_exit(guard, exit), terminal, exit)
+
+    Reaping(cause:), AttemptExited(exit:) ->
+      publish_reaped(record_exit(guard, exit), cause, exit)
+
+    // The transport owner did not answer within the grace. It is not killed
+    // from above — that would erase the only acknowledgement that its
+    // native descendant stopped — so the public terminal says exactly that
+    // and the guard stays alive behind it until the owner retires.
+    Reaping(..), ReapExpired -> {
+      emit(guard, Failed(stream.CancellationUnconfirmed))
+      close_attempt(guard)
+    }
+
+    ClosingPump, Registered(registration:) ->
+      sm.keep(refuse_attempt(guard, registration))
+
+    ClosingPump, PumpExited -> close_attempt(pump_gone(guard))
+
+    // A dead consumer is owed no terminal, but a transport it left behind
+    // is still cancelled rather than merely refused.
+    Abandoning, Registered(registration:) -> {
+      let guard = refuse_attempt(guard, registration)
+      cancel_attempt(guard.attempt)
+      sm.keep(guard)
+    }
+
+    Abandoning, PumpExited -> close_attempt(pump_gone(guard))
+
+    ClosingActive, AttemptExited(..) -> sm.stop()
+
+    // An attempt owner's exit is recorded wherever it lands. The phase that
+    // was going to wait for it may not have been reached yet, and an exit
+    // seen early must mean what an exit seen late would have meant.
+    Parked, AttemptExited(exit:)
+    | Starting, AttemptExited(exit:)
+    | Requesting, AttemptExited(exit:)
+    | Cancelling, AttemptExited(exit:)
+    | ClosingPump, AttemptExited(exit:)
+    | Abandoning, AttemptExited(exit:)
+    -> sm.keep(record_exit(guard, exit))
+
+    // The pump's own exit after the public terminal is bookkeeping: it is
+    // what lets `ClosingPump` know the frontier is already closed.
+    Settling(..), PumpExited | ClosingActive, PumpExited ->
+      sm.keep(pump_gone(guard))
+
+    // The begin permit is granted once. A second one names a custodian the
+    // guard already has.
+    Starting, Begin(..)
+    | Requesting, Begin(..)
+    | Cancelling, Begin(..)
+    | Settling(..), Begin(..)
+    | Reaping(..), Begin(..)
+    | ClosingPump, Begin(..)
+    | Abandoning, Begin(..)
+    | ClosingActive, Begin(..)
+    -> sm.keep(guard)
+
+    // The ready handshake and its deadline belong to `Starting` alone; the
+    // deadline is a state timeout, so a fire that raced the move out of
+    // `Starting` is dropped by weft's timer book before it arrives here.
+    Parked, PumpAdmitted(..)
+    | Requesting, PumpAdmitted(..)
+    | Cancelling, PumpAdmitted(..)
+    | Settling(..), PumpAdmitted(..)
+    | Reaping(..), PumpAdmitted(..)
+    | ClosingPump, PumpAdmitted(..)
+    | Abandoning, PumpAdmitted(..)
+    | ClosingActive, PumpAdmitted(..)
+    | Parked, PumpStartExpired
+    | Requesting, PumpStartExpired
+    | Cancelling, PumpStartExpired
+    | Settling(..), PumpStartExpired
+    | Reaping(..), PumpStartExpired
+    | ClosingPump, PumpStartExpired
+    | Abandoning, PumpStartExpired
+    | ClosingActive, PumpStartExpired
+    -> sm.keep(guard)
+
+    // Outside the response window nothing the pump streams can be
+    // published: before the permit it has not begun, and after the terminal
+    // the stream law forbids a second one.
+    Parked, FromPump(..)
+    | Starting, FromPump(..)
+    | Settling(..), FromPump(..)
+    | Reaping(..), FromPump(..)
+    | ClosingPump, FromPump(..)
+    | Abandoning, FromPump(..)
+    | ClosingActive, FromPump(..)
+    -> sm.keep(guard)
+
+    // A registration in one of these phases has no permit to be given: the
+    // pump has not begun, or it has already authored its terminal, or it is
+    // gone and nothing is blocked behind an answer.
+    Parked, Registered(..)
+    | Starting, Registered(..)
+    | Settling(..), Registered(..)
+    | Reaping(..), Registered(..)
+    | ClosingActive, Registered(..)
+    -> sm.keep(guard)
+
+    // The consumer's death stops mattering once a terminal has been
+    // decided; in `Reaping` the monitor has been released outright.
+    Settling(..), ConsumerExited
+    | Reaping(..), ConsumerExited
+    | ClosingPump, ConsumerExited
+    | Abandoning, ConsumerExited
+    | ClosingActive, ConsumerExited
+    -> sm.keep(guard)
+
+    // No pump has been spawned, or its exit is what put the machine in this
+    // phase to begin with.
+    Parked, PumpExited | Reaping(..), PumpExited -> sm.keep(guard)
+
+    // Cancellation after a terminal has been decided is a no-op: the first
+    // terminal-class event already won the race.
+    Settling(..), CancelAsked
+    | Reaping(..), CancelAsked
+    | ClosingPump, CancelAsked
+    | Abandoning, CancelAsked
+    | ClosingActive, CancelAsked
+    -> sm.keep(guard)
+
+    // Both graces are state timeouts, so a fire that raced the move out of
+    // the state that armed it is stale and weft's timer book has already
+    // dropped it. These arms exist because the matrix is exhaustive, not
+    // because the case can arise.
+    Parked, CancelExpired
+    | Starting, CancelExpired
+    | Requesting, CancelExpired
+    | Settling(..), CancelExpired
+    | Reaping(..), CancelExpired
+    | ClosingPump, CancelExpired
+    | Abandoning, CancelExpired
+    | ClosingActive, CancelExpired
+    | Parked, ReapExpired
+    | Starting, ReapExpired
+    | Requesting, ReapExpired
+    | Cancelling, ReapExpired
+    | Settling(..), ReapExpired
+    | ClosingPump, ReapExpired
+    | Abandoning, ReapExpired
+    | ClosingActive, ReapExpired
+    -> sm.keep(guard)
+
+    // A `Down` from none of the guard's three monitors. Demonitoring
+    // flushes, so a superseded attempt's exit never arrives at all.
+    Parked, StrayExited
+    | Starting, StrayExited
+    | Requesting, StrayExited
+    | Cancelling, StrayExited
+    | Settling(..), StrayExited
+    | Reaping(..), StrayExited
+    | ClosingPump, StrayExited
+    | Abandoning, StrayExited
+    | ClosingActive, StrayExited
+    -> sm.keep(guard)
+  }
+}
+
+// --- phase transitions -----------------------------------------------------
+
+// Spawns the route-walk pump, parked behind its own begin gate.
+//
+// The pump is not the guard: a crash in the route walk must not erase the
+// guard's ability to author a terminal, which is the whole reason there are
+// two processes here.
+fn begin_request(guard: Guard, custodian: custodian.Custodian) -> Step {
+  let self = process.self()
+  let owner =
+    process.spawn_unlinked(fn() {
+      parked_pump(
+        guard.gateway,
+        guard.request,
+        guard.now,
+        guard.pump_ready,
+        guard.pump_events,
+        guard.pump_attempts,
+        self,
+      )
+    })
+  let monitor = process.monitor(owner)
+  sm.transition(
+    to: Starting,
+    data: Guard(
+      ..guard,
+      custodian: Some(custodian),
+      pump: PumpParked(owner:, monitor:),
+    ),
+  )
+}
+
+// The pump before its first effect: it publishes its own control and begin
+// subjects and then waits to be told which of the two happened.
+fn parked_pump(
+  gateway: Gateway,
+  request: ProviderRequest,
+  now: Int,
+  ready: process.Subject(#(process.Subject(Control), process.Subject(Nil))),
+  events: process.Subject(StreamEvent),
+  attempts: process.Subject(AttemptRegistration),
+  guard: process.Pid,
+) -> Nil {
+  let pump_control = process.new_subject()
+  let pump_begin = process.new_subject()
+  let creator_monitor = process.monitor(guard)
+  process.send(ready, #(pump_control, pump_begin))
+
+  // Adoption and begin are separate messages from separate processes. If
+  // the guard dies between them, its custodian cancels this parked pump.
+  // Selecting both gates keeps that cancellation from becoming an
+  // unconsumed mailbox message which would pin the whole drain chain.
+  let parked =
+    process.new_selector()
+    |> process.select_map(pump_begin, fn(_nil) { StartPump })
+    |> process.select_map(pump_control, fn(_control) { StopBeforePump })
+    |> process.select_specific_monitor(creator_monitor, fn(_down) {
+      StopBeforePump
+    })
+    |> process.selector_receive_forever()
+  case parked {
+    StopBeforePump -> process.demonitor_process(creator_monitor)
+    StartPump -> {
+      // Custody has crossed to the guard's custodian before this permit;
+      // the creator monitor must not compete with that durable edge.
+      process.demonitor_process(creator_monitor)
+      pump(gateway, request, now, events, attempts, pump_control, guard)
+    }
+  }
+}
+
+// Adopts the parked pump and, only then, releases it.
+fn release_pump(
+  guard: Guard,
+  control: process.Subject(Control),
+  begin: process.Subject(Nil),
+) -> Step {
+  case guard.pump {
+    PumpParked(owner:, monitor:) ->
+      permit_pump(guard, owner, monitor, control, begin)
+
+    // Unreachable: `Starting` is entered only with a parked pump, and the
+    // ready handshake is answered exactly once.
+    NoPump | PumpRunning(..) | PumpGone -> sm.keep(guard)
+  }
+}
+
+fn permit_pump(
+  guard: Guard,
   owner: process.Pid,
   monitor: process.Monitor,
-) -> Nil {
-  case process.is_alive(owner) {
-    False -> Nil
+  control: process.Subject(Control),
+  begin: process.Subject(Nil),
+) -> Step {
+  case adopt_pump(guard, owner, control) {
     True -> {
-      let _down =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-        |> process.selector_receive_forever()
-      Nil
-    }
-  }
-}
-
-// Expiry closes the public response window, not the pump's ownership frontier.
-// A transport preparation already in progress can still publish after that
-// terminal. Reject registrations until PumpDown so each parked owner receives
-// a permit decision and the pump cannot remain blocked behind a dead guard loop.
-fn await_pump_down_rejecting_attempts(
-  custodian: custodian.Custodian,
-  attempts: process.Subject(AttemptRegistration),
-  monitor: process.Monitor,
-  active: Option(ActiveAttempt),
-) -> Nil {
-  let event =
-    process.new_selector()
-    |> process.select_map(attempts, AttemptStarted)
-    |> process.select_specific_monitor(monitor, PumpDown)
-    |> process.selector_receive_forever()
-  case event {
-    AttemptStarted(AttemptRegistration(running:, permit:)) -> {
-      release_active(active)
-      let active =
-        ActiveAttempt(running:, monitor: process.monitor(http.owner(running)))
-      let _accepted =
-        custodian.adopt_owner(custodian, http.owner(running), fn() {
-          http.cancel(running)
-        })
-      process.send(permit, RejectAttempt)
-      await_pump_down_rejecting_attempts(
-        custodian,
-        attempts,
-        monitor,
-        Some(active),
+      process.send(begin, Nil)
+      sm.transition(
+        to: Requesting,
+        data: Guard(..guard, pump: PumpRunning(monitor:, control:)),
       )
     }
-    PumpDown(_down) -> {
-      let _drained = await_active_forever(active)
-      Nil
+
+    // The pump has not crossed its begin gate. Rejection means this process
+    // retains teardown responsibility if the custodian died, so kill the
+    // parked pump instead of starting secret lookup.
+    False -> {
+      process.kill(owner)
+      sm.stop()
     }
-    PumpEvent(_) | ConsumerDown(_) | CancelRequested | CancelExpired ->
-      await_pump_down_rejecting_attempts(custodian, attempts, monitor, active)
   }
 }
 
-fn forget_request(
-  consumer_monitor: process.Monitor,
-  pump_monitor: process.Monitor,
-) -> Nil {
-  process.demonitor_process(consumer_monitor)
-  process.demonitor_process(pump_monitor)
+fn adopt_pump(
+  guard: Guard,
+  owner: process.Pid,
+  control: process.Subject(Control),
+) -> Bool {
+  case guard.custodian {
+    Some(custodian) ->
+      custodian.adopt_leaf(custodian, owner, fn() {
+        process.send(control, Cancel)
+      })
+
+    // Unreachable: the custodian arrives with the permit that spawns the
+    // pump. A guard with no custodian has nothing to transfer custody to,
+    // which is the answer a dead witness gives.
+    None -> False
+  }
+}
+
+// A delta is display data on the open response window; a terminal closes it.
+fn forward_or_settle(guard: Guard, streamed: StreamEvent) -> Step {
+  case streamed {
+    Delta(..) -> {
+      emit(guard, streamed)
+      sm.keep(guard)
+    }
+    Settled(..) | Failed(..) -> settle(guard, streamed)
+  }
+}
+
+// Cancellation remains an owner-authored terminal. The guard forwards a
+// real pump terminal if one arrives; pump death or expiry only proves that
+// the request could not confirm which side of the race won.
+fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
+  case streamed {
+    // The response window closed when cancellation was selected.
+    Delta(..) -> sm.keep(guard)
+
+    // CancellationUnconfirmed is deliberately bounded for the public
+    // caller. The guard remains alive behind that terminal until the
+    // retained witness eventually adjudicates the real owner exit.
+    Settled(..) | Failed(stream.CancellationUnconfirmed) -> {
+      emit(guard, streamed)
+      close_pump(guard)
+    }
+
+    Failed(..) -> settle(guard, streamed)
+  }
+}
+
+// The pump authored a terminal, but the guard may publish it only once the
+// active transport's owner has retired: an abnormal exit under a terminal
+// is a lost drain proof, not the terminal the pump computed.
+fn settle(guard: Guard, terminal: StreamEvent) -> Step {
+  case guard.attempt {
+    LiveAttempt(..) -> sm.transition(to: Settling(terminal:), data: guard)
+    NoAttempt -> publish_settled(guard, terminal, ActiveDrained)
+    ExitedAttempt(outcome:) -> publish_settled(guard, terminal, outcome)
+  }
+}
+
+fn publish_settled(
+  guard: Guard,
+  terminal: StreamEvent,
+  exit: ActiveExit,
+) -> Step {
+  emit(guard, case exit {
+    ActiveDrained -> terminal
+    ActiveProofLost -> Failed(stream.DrainProofLost)
+  })
+  close_pump(guard)
+}
+
+// The pump died without authoring a terminal. The active transport is asked
+// to stop and given the same fixed grace to acknowledge it.
+fn reap(guard: Guard, cause: ReapCause) -> Step {
+  let guard = pump_gone(forget_consumer(guard))
+  cancel_attempt(guard.attempt)
+  case guard.attempt {
+    LiveAttempt(..) -> sm.transition(to: Reaping(cause:), data: guard)
+    NoAttempt -> publish_reaped(guard, cause, ActiveDrained)
+    ExitedAttempt(outcome:) -> publish_reaped(guard, cause, outcome)
+  }
+}
+
+fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
+  emit(guard, case exit {
+    ActiveProofLost -> Failed(stream.DrainProofLost)
+    ActiveDrained ->
+      case cause {
+        PumpStoppedEarly ->
+          Failed(stream.TransportFailed(
+            reason: "provider request pump stopped before a terminal response",
+          ))
+        PumpGoneAfterCancel -> Failed(stream.CancellationUnconfirmed)
+      }
+  })
+  sm.stop()
+}
+
+// The public grace is over. Cancellation is re-sent to both the pump and
+// the active transport, and the guard authors the one terminal it is
+// entitled to: only an owner may claim that cancellation won its race, so
+// an owner that has not answered leaves the result unconfirmed.
+fn expire_cancellation(guard: Guard) -> Step {
+  cancel_pump(guard)
+  cancel_attempt(guard.attempt)
+  emit(guard, case guard.attempt {
+    ExitedAttempt(outcome: ActiveProofLost) -> Failed(stream.DrainProofLost)
+    ExitedAttempt(outcome: ActiveDrained) | NoAttempt | LiveAttempt(..) ->
+      Failed(stream.CancellationUnconfirmed)
+  })
+  close_pump(guard)
+}
+
+// A dead public consumer needs no terminal, but the pump still gets one
+// grace interval to run its ordinary cancellation path. Killing it
+// immediately would bypass an injected transport's cancel capability and
+// would make the test seam weaker than the production custodian.
+fn abandon(guard: Guard) -> Step {
+  cancel_pump(guard)
+  cancel_attempt(guard.attempt)
+  case guard.pump {
+    PumpParked(..) | PumpRunning(..) ->
+      sm.transition(to: Abandoning, data: guard)
+    NoPump | PumpGone -> close_attempt(guard)
+  }
+}
+
+// Expiry closes the public response window, not the pump's ownership
+// frontier. A transport preparation already in progress can still publish
+// after that terminal, so registrations are adopted and refused until the
+// pump exits: each parked owner then receives a permit decision, and the
+// pump cannot remain blocked behind a guard that has stopped answering.
+fn close_pump(guard: Guard) -> Step {
+  case guard.pump {
+    PumpParked(..) | PumpRunning(..) ->
+      sm.transition(to: ClosingPump, data: guard)
+    NoPump | PumpGone -> close_attempt(guard)
+  }
+}
+
+// Nothing is left but the last transport owner's acknowledgement.
+fn close_attempt(guard: Guard) -> Step {
+  case guard.attempt {
+    LiveAttempt(..) -> sm.transition(to: ClosingActive, data: guard)
+    NoAttempt | ExitedAttempt(..) -> sm.stop()
+  }
+}
+
+// --- bookkeeping -----------------------------------------------------------
+
+// Adopts a freshly registered transport and permits it, unless the
+// custodian has already begun teardown.
+fn admit_attempt(guard: Guard, registration: AttemptRegistration) -> Step {
+  let AttemptRegistration(running:, permit:) = registration
+  let guard = hold_attempt(guard, running)
+  let accepted = adopt_running(guard, running)
+  process.send(permit, case accepted {
+    True -> BeginAttempt
+    False -> RejectAttempt
+  })
+  sm.keep(guard)
+}
+
+// Adopts a registration and refuses it. Adoption still happens, because a
+// transport the custodian does not know about is one it cannot wait for.
+fn refuse_attempt(guard: Guard, registration: AttemptRegistration) -> Guard {
+  let AttemptRegistration(running:, permit:) = registration
+  let guard = hold_attempt(guard, running)
+  let _accepted = adopt_running(guard, running)
+  process.send(permit, RejectAttempt)
+  guard
+}
+
+fn adopt_running(guard: Guard, running: RunningRequest) -> Bool {
+  case guard.custodian {
+    Some(custodian) ->
+      custodian.adopt_owner(custodian, http.owner(running), fn() {
+        http.cancel(running)
+      })
+
+    // Unreachable: no attempt can be registered before the permit that
+    // publishes the custodian releases the pump.
+    None -> False
+  }
+}
+
+// Takes custody of a new attempt, releasing the monitor on the one it
+// supersedes so that a superseded owner's exit never has to be told apart
+// from the live one's.
+fn hold_attempt(guard: Guard, running: RunningRequest) -> Guard {
+  release_attempt(guard.attempt)
+  Guard(
+    ..guard,
+    attempt: LiveAttempt(
+      running:,
+      monitor: process.monitor(http.owner(running)),
+    ),
+  )
+}
+
+fn release_attempt(attempt: Attempt) -> Nil {
+  case attempt {
+    LiveAttempt(monitor:, ..) -> process.demonitor_process(monitor)
+    NoAttempt | ExitedAttempt(..) -> Nil
+  }
+}
+
+fn record_exit(guard: Guard, exit: ActiveExit) -> Guard {
+  Guard(..guard, attempt: ExitedAttempt(outcome: exit))
+}
+
+fn pump_gone(guard: Guard) -> Guard {
+  Guard(..guard, pump: PumpGone)
+}
+
+// Releases the consumer monitor once its death has stopped mattering, so a
+// `Down` already in flight cannot be mistaken for a live monitor's.
+fn forget_consumer(guard: Guard) -> Guard {
+  case guard.consumer_watch {
+    Some(monitor) -> process.demonitor_process(monitor)
+    None -> Nil
+  }
+  Guard(..guard, consumer_watch: None)
+}
+
+fn cancel_pump(guard: Guard) -> Nil {
+  case guard.pump {
+    PumpRunning(control:, ..) -> process.send(control, Cancel)
+    NoPump | PumpParked(..) | PumpGone -> Nil
+  }
+}
+
+fn cancel_attempt(attempt: Attempt) -> Nil {
+  case attempt {
+    LiveAttempt(running:, ..) -> http.cancel(running)
+    NoAttempt | ExitedAttempt(..) -> Nil
+  }
+}
+
+fn kill_parked_pump(pump: Pump) -> Nil {
+  case pump {
+    PumpParked(owner:, ..) -> process.kill(owner)
+    NoPump | PumpRunning(..) | PumpGone -> Nil
+  }
+}
+
+// The guard is the sole terminal sender on the public subject.
+fn emit(guard: Guard, event: StreamEvent) -> Nil {
+  process.send(guard.events, event)
 }
 
 fn pump(

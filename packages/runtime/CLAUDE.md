@@ -71,6 +71,17 @@ extended by the M3 runtime wave.
   restartable registry and is a significant temporary child: only a normal
   reaper `Down` retires a generation, while an abnormal `Down` kills the ledger
   and stops the session instead of inventing an empty ownership history.
+- `runtime/internal/provider_custodian.Prepared` — one provider request as a
+  parked owner plus the one-way `begin` permit that releases it. The worker
+  behind it is a `weft/state_machine`, `Parked → Forwarding → Cancelling →
+  Draining` over data that is `Awaiting` before the permit and `Serving`
+  after it. `Parked` selects only the permit and the custodian's stop; the
+  step that grants the permit installs the real selector with
+  `sm.with_selector`, because the inner stream's events subject is created
+  by that handler and must be delivered to this process. Its cancellation
+  grace is the `Cancelling` state's **state timeout**, so it is armed by the
+  move in, cancelled by the move out, and never re-armed by the `keep` that
+  every late delta produces.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
@@ -178,7 +189,9 @@ extended by the M3 runtime wave.
   `E → A,B,C,D`, so this provider edge is a divergence worth knowing
   about), `gleam_erlang`, `gleam_otp`, `weft` (the strand driver is a
   `weft/actor`, adopted for `continuing` — the recovery barrier as a
-  guaranteed-first message; see loom#159 for the adoption plan).
+  guaranteed-first message; the parked provider request worker is a
+  `weft/state_machine`, adopted for the state timeout that *is* the
+  cancellation grace; see loom#159 for the adoption plan).
 - **Depended on by**: `client` (the gateway dispatches protocol commands
   onto `runtime/api`), `conformance` (the simulation runner drives sessions
   through `runtime/api`).
@@ -226,12 +239,17 @@ extended by the M3 runtime wave.
     `Claim(strand, reaper, reply_with)` atomically publishes the new
     incarnation, snapshots its predecessors, and releases the caller only once
     the ledger's original monitors have proved that entire snapshot drained
-    normally. The reaper performs that potentially long call after handing its
-    command subject to the driver initializer, then sends
-    `PredecessorsResolved`. Claiming from the reaper itself keeps its PID alive
-    until the ledger has installed the original monitor; meanwhile the driver
-    remains able to retain `RequestAbort` while the barrier is closed. Sender:
-    `runtime/strand_runtime` through the closure the supervisor injects.
+    normally. The call is made by a *claimant* the reaper's scope adopts as
+    a leaf owner before releasing it, naming the scope as the pid to monitor
+    (`strand_runtime.claim_through`); the scope cannot settle while the
+    claimant is inside the call, so the ledger's monitor always lands on a
+    live pid — a claim made from the driver instead let a driver killed
+    mid-claim leave the ledger monitoring a scope that had already drained,
+    which reads as `noproc` and fails the session closed. The driver blocks
+    on the claimant's verdict in its guaranteed-first `AwaitPredecessors`
+    handler; meanwhile an abort simply queues in the mailbox behind the
+    barrier. Sender: `runtime/strand_runtime` through the closure the
+    supervisor injects.
   - `writer.Event.Committed` fan-out to subscribers — a simple typed
     pub/sub over process subjects, which `events/bus.bridge` and
     `client/gateway.commit_forwarder` adopt as their hint source.
@@ -297,22 +315,31 @@ extended by the M3 runtime wave.
   `PollTick` finds queued work anyway, and any commit racing the strand's
   own surfaces as a stale expectation, forcing a reload that sees it. The
   `_quietly` admission variants commit without ringing at all.
-- **Effect processes are monitored by the driver and linked to its
+- **Effect processes are monitored by the driver and adopted by its
   reaper.** A tool process that dies without reporting settles as a synthetic
   in-band tool error. A provider death instead faults the driver: fabricating
   a retryable transport failure could dispatch beside the stream subtree that
-  outlived it. Each driver incarnation also spawns a *reaper*: a small trapping
-  process linked to the driver. Every effect links and receives an adoption
-  acknowledgement before doing work. On driver death the reaper invokes every
-  adopted effect's stop capability and remains alive until all their exits
+  outlived it. Each driver incarnation also starts a *reaper*: a weft
+  witnessed run (`weft.managed` task parked for the incarnation's life,
+  `weft.start_witnessed`, `weft.CancelSiblings`) linked to the driver, whose
+  ledger claim is made by an adopted claimant so the scope outlives the
+  claim. Every
+  effect adopts itself as a leaf owner (`weft.adopt_leaf`, cancel = its stop
+  capability) and runs only on `Adopted`. On driver death the scope asks
+  every adopted effect to stop and remains alive until all their exits
   arrive. A provider effect first creates a parked request worker inside a
-  minimal custodian, publishes that custodian to the reaper, and only then
-  permits the worker to call the frozen provider surface. The reaper monitors
-  the public owner independently, cancels it when the effect exits, and cannot
-  finish until both are gone. The parked worker is linked to the provider
+  minimal custodian, publishes that custodian to the reaper beneath itself
+  (`weft.adopt_under`, cancel = `stream.cancel`), and only then permits the
+  worker to call the frozen provider surface. The scope therefore cancels
+  the public owner when the effect exits, retains it even when the
+  publication was refused, and cannot finish until both are gone; an
+  abnormal owner exit is a lost proof that cancels the run and leaves the
+  scope's exit reason abnormal. The parked worker is linked to the provider
   effect because they are one failure domain: an unexpected surface crash must
   still fault the effect and recover, not become a fabricated provider
-  response. Production surfaces return a `PreparedStream`: the worker
+  response. That worker is a `weft/state_machine`, started with a plain linked
+  `sm.start` from the effect, so the link is weft's rather than something this
+  module arranges. Production surfaces return a `PreparedStream`: the worker
   publishes its parked owner to the reaper before granting the begin permit,
   so a rejected publication cannot leave unowned provider work. Immediate
   `ProviderSurface` values remain only for in-memory fakes with no external

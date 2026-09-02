@@ -1500,6 +1500,98 @@ fn flood_relay_deltas(
   }
 }
 
+/// The guard hands the observer one event at a time and queues whatever
+/// arrives behind it, so a stream that outruns the callback is still observed
+/// in arrival order and nothing is dropped on the way past. The burst is
+/// already in the guard's mailbox before its first acknowledgement, which is
+/// the interleaving that a queue kept in the machine's data exists for.
+pub fn provider_relay_observes_a_burst_in_order_test() {
+  let seen = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      list.each([1, 2, 3, 4, 5], fn(index) {
+        process.send(events, stream.Delta(stream.TextDelta(index:, text: "d")))
+      })
+      process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      stream.immediate(events:, cancel: fn() { Nil })
+    })
+  let handle =
+    provider_relay.wrap(surface, cancellation_spec(), fn(event) {
+      process.sleep(5)
+      process.send(seen, event)
+    })
+
+  assert burst_indices(fn() { process.receive(seen, within: 1000) }, 5)
+    == [1, 2, 3, 4, 5]
+    as "the observer must see every delta of the burst, in arrival order"
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    process.receive(seen, within: 1000)
+    as "the terminal must reach the observer behind the deltas it followed"
+
+  assert burst_indices(fn() { stream.next(handle, within: 1000) }, 5)
+    == [1, 2, 3, 4, 5]
+    as "the consumer must be forwarded the same deltas, in the same order"
+  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
+    stream.next(handle, within: 1000)
+    as "the terminal is forwarded once the observer has seen it"
+}
+
+fn burst_indices(
+  next: fn() -> Result(stream.StreamEvent, Nil),
+  remaining: Int,
+) -> List(Int) {
+  case remaining <= 0 {
+    True -> []
+    False -> {
+      let assert Ok(stream.Delta(stream.TextDelta(index:, ..))) = next()
+        as "every delta of the burst must arrive"
+      [index, ..burst_indices(next, remaining - 1)]
+    }
+  }
+}
+
+/// Consumer death closes the observation boundary: the relay cancels inward
+/// and stops, and the terminal that cancellation produces is never handed to
+/// the observer. The sink is read only once the custodian has drained, so the
+/// answer cannot be "not yet" — the guard and its observer are both gone by
+/// then, and anything either of them would have said has been said.
+pub fn provider_relay_consumer_death_observes_nothing_test() {
+  let cancelled = process.new_subject()
+  let seen = process.new_subject()
+  let handles = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
+      let events = process.new_subject()
+      stream.immediate(events:, cancel: fn() {
+        process.send(cancelled, Nil)
+        process.send(events, stream.Failed(error: stream.ProviderCancelled))
+      })
+    })
+  let consumer =
+    process.spawn_unlinked(fn() {
+      let handle =
+        provider_relay.wrap(surface, cancellation_spec(), fn(event) {
+          process.send(seen, event)
+        })
+      process.send(handles, handle)
+      let _ = stream.next(handle, within: 5000)
+      Nil
+    })
+  let assert Ok(handle) = process.receive(handles, within: 1000)
+    as "the relay must be running before its consumer is killed"
+  let drain_witness = stream.watch_drain(handle)
+
+  process.kill(consumer)
+
+  let assert Ok(Nil) = process.receive(cancelled, within: 1000)
+    as "consumer death must cancel the inner stream"
+  assert stream.await_drain_forever(drain_witness) == stream.Drained
+    as "the custodian retires once the guard and observer are gone"
+  assert process.receive(seen, within: 0) == Error(Nil)
+    as "a terminal produced by consumer death must never reach the observer"
+}
+
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
   let cancelled = process.new_subject()
   let surface =

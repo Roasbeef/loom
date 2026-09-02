@@ -27,7 +27,7 @@ packages = [
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "splitter", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "3DFD6B6C49E61EDAF6F7B27A42054A17CFF6CA2135FF553D0CB61C234D281DD0" },
   { name = "stratus", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "gramps", "logging"], otp_app = "stratus", source = "hex", outer_checksum = "21C93D657E4E7964E36EACDE83609459F259289DF403B5FEBD3C60612594BE24" },
-  { name = "weft", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "C9AAFA0AA51F4C4E2591E1961A4E70943452D477BBECC5BDE59C4EF34CFAFFC8" },
+  { name = "weft", version = "0.4.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "FA74C33CD6D7E9E09732744EDD86E4A75F18A7922C72751B521B92031542C264" },
 ]
 
 [requirements]
@@ -42,4 +42,4 @@ gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 mork = { version = ">= 1.12.1 and < 1.13.0" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 stratus = { version = ">= 3.0.0 and < 4.0.0" }
-weft = { version = ">= 0.1.0 and < 1.0.0" }
+weft = { version = ">= 0.4.0 and < 1.0.0" }

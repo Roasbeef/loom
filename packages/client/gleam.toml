@@ -19,7 +19,7 @@ mcp = { path = "../mcp" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = ">= 0.1.0 and < 1.0.0"
+weft = ">= 0.4.0 and < 1.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 mist = ">= 6.0.3 and < 7.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"

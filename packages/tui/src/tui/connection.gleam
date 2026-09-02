@@ -168,6 +168,11 @@ pub fn start_safely_within(
       Error("websocket startup crashed: " <> string.inspect(reason))
     [weft.Abandoned(..)] -> Error("websocket startup timed out")
     [weft.NeverStarted(..)] -> Error("websocket startup timed out")
+
+    // Only a managed task can lose or leave unconfirmed a drain proof,
+    // and this run carries none; the arms are exhaustiveness, not cases.
+    [weft.DrainProofLost(..)] | [weft.CancellationUnconfirmed(..)] ->
+      Error("websocket startup produced no account")
     [] | [_, _, ..] -> Error("websocket startup produced no account")
   }
 }

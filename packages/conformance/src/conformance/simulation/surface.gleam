@@ -53,6 +53,7 @@ import runtime/hooks
 import runtime/supervisor
 import session/session.{type Session}
 import storage/storage
+import weft
 
 /// The api name every simulated response carries; a deferred handle must
 /// match it to be structurally valid.
@@ -76,6 +77,9 @@ pub const sub_model_id = "loom-sub"
 /// subagent, not main.
 pub const sub_strand = "sub:1"
 
+// The one message a starved provider effect's control subject ever
+// carries: the racer's own `weft.adopt_leaf` cancel closure sends it, and
+// the racer's whole body is the one-arm `case` that receives it.
 type SimulatedCancel {
   ReleaseStarved
 }
@@ -171,9 +175,11 @@ fn request(
       // The scripted provider timeout has already won before the runtime's
       // outer deadline asks the handle to stop. Releasing that preselected
       // transport failure on cancel preserves the fault's retry semantics;
-      // it is not a cancellation terminal and owns no external process. A
-      // one-shot owner supplies the mutable edge: repeated cancellation sends
-      // to a dead subject instead of fabricating a second terminal event.
+      // it is not a cancellation terminal and owns no external process.
+      // `weft.cancel_witnessed` is idempotent at the scope itself (a second
+      // `CancelRun` finds `scope.cancelling` already set and does nothing),
+      // so a repeated cancel costs nothing rather than fabricating a second
+      // terminal event.
       starved_handle(events, consumer)
     Ran -> {
       mark_request(ctl, spec)
@@ -194,32 +200,66 @@ fn starved_handle(
   events: process.Subject(stream.StreamEvent),
   consumer: process.Pid,
 ) -> stream.StreamHandle {
-  let ready = process.new_subject()
-  let owner =
-    process.spawn_unlinked(fn() {
-      let control = process.new_subject()
-      process.send(ready, control)
-      let event =
-        process.new_selector()
-        |> process.select_map(control, fn(_release) { True })
-        |> process.select_specific_monitor(process.monitor(consumer), fn(_down) {
-          False
-        })
-        |> process.selector_receive_forever()
-      case event {
-        False -> Nil
-        True ->
-          process.send(
-            events,
-            stream.Failed(error: stream.TransportFailed(
-              reason: "simulated provider effect timeout",
-            )),
-          )
-      }
-    })
-  let control = process.receive_forever(ready)
-  stream.owned(events:, owner:, cancel: fn() {
-    process.send(control, ReleaseStarved)
+  let witnessed =
+    weft.new_prepared([
+      weft.managed(fn(ledger) {
+        // The racer is the only process that ever blocks. `begin` itself
+        // parks it under the ledger and returns at once, so weft's
+        // cancellation — which kills every worker unconditionally — costs
+        // this task nothing it still needs; only the racer, adopted as an
+        // owner, is asked to stop rather than killed. `adopt_leaf` names it
+        // a leaf: the racer owns no descendants of its own, so any exit of
+        // it, not only a normal one, completes the drain, and a stray kill
+        // of the racer cannot manufacture a false `DrainProofLost` for
+        // work that never had any.
+        //
+        // `control` must be minted *inside* the racer, not out here: a
+        // `Subject` only ever receives on the process that created it
+        // (`gleam_erlang`'s `owner` field), so a subject built on `begin`'s
+        // own worker would route every send to a process that has already
+        // returned by the time `cancel` fires, and the racer's receive
+        // would wait on an empty mailbox forever. The `ready` handoff below
+        // is the parked-work pattern once more, one level in: the racer
+        // publishes its own subject back before `begin` may adopt it.
+        let ready = process.new_subject()
+        let racer =
+          process.spawn_unlinked(fn() {
+            let control = process.new_subject()
+            process.send(ready, control)
+            case process.receive_forever(control) {
+              ReleaseStarved ->
+                process.send(
+                  events,
+                  stream.Failed(error: stream.TransportFailed(
+                    reason: "simulated provider effect timeout",
+                  )),
+                )
+            }
+          })
+        let control = process.receive_forever(ready)
+        let _adoption =
+          weft.adopt_leaf(ledger, owner: racer, cancel: fn() {
+            process.send(control, ReleaseStarved)
+          })
+        Ok(Nil)
+      }),
+    ])
+    // This is the exact handshake the old code hand-rolled inside the
+    // racer: a monitor on `consumer`, raced against the release message.
+    // Naming the consumer here instead fires the very `cancel` closure
+    // weft already calls for an explicit release, so the racer no longer
+    // carries a second selector branch of its own — a killed effect and a
+    // released handle both arrive as one `ReleaseStarved` send. Only the
+    // explicit release's send has anyone left to read it: `events` is
+    // owned by `consumer`, so the send a killed effect triggers lands on a
+    // subject nobody owns anymore and is silently dropped, which is what
+    // keeps "explicit release settles a transport failure, a killed
+    // effect settles nothing" true without the racer testing which one
+    // happened.
+    |> weft.cancel_when_exits(consumer)
+    |> weft.start_witnessed
+  stream.owned(events:, owner: weft.witness_pid(witnessed), cancel: fn() {
+    weft.cancel_witnessed(witnessed)
   })
 }
 

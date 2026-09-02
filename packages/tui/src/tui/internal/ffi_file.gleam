@@ -1,14 +1,9 @@
 //// Narrow file reads that the terminal image classifier needs.
 
-import gleam/erlang/process.{type Down}
 import gleam/string
+import weft
 
 const read_timeout_ms = 1000
-
-type ReadReport {
-  ReadReturned(Result(BitArray, String))
-  ReadCrashed(Down)
-}
 
 @external(erlang, "tui_ffi", "read_prefix")
 fn read_prefix_raw(path: String, bytes: Int) -> Result(BitArray, String)
@@ -37,33 +32,40 @@ pub fn read_bounded(path: String, limit: Int) -> Result(BitArray, String) {
 
 /// Runs one descriptor-level read outside the terminal process.
 ///
-/// The worker bounds a blocking `file:open` as well as the subsequent read.
-/// This closes the race where a regular path is replaced by a FIFO after the
-/// metadata check but before the descriptor is opened.
+/// This is a one-task weft run with a deadline: the worker belongs to
+/// weft's scope rather than to this process, and bounds a blocking
+/// `file:open` as well as the subsequent read. That closes the race where a
+/// regular path is replaced by a FIFO after the metadata check but before
+/// the descriptor is opened, and the caller must never block on such a
+/// hostile path. Weft's deadline cancellation kills and joins the worker
+/// before `start` returns, which is stronger than the fire-and-forget kill
+/// this once hand-rolled: the descriptor is provably closed, not merely
+/// signalled, before the caller ever sees the timeout.
 @internal
 pub fn read_safely_within(
   read: fn() -> Result(BitArray, String),
   within_ms: Int,
 ) -> Result(BitArray, String) {
-  let replies = process.new_subject()
-  let worker =
-    process.spawn_unlinked(fn() { process.send(replies, ReadReturned(read())) })
-  let monitor = process.monitor(worker)
-  let selector =
-    process.new_selector()
-    |> process.select(replies)
-    |> process.select_specific_monitor(monitor, ReadCrashed)
-  case process.selector_receive(from: selector, within: within_ms) {
-    Ok(ReadReturned(result)) -> {
-      process.demonitor_process(monitor)
-      result
-    }
-    Ok(ReadCrashed(down)) ->
-      Error("file read worker crashed: " <> string.inspect(down))
-    Error(Nil) -> {
-      process.kill(worker)
-      process.demonitor_process(monitor)
-      Error("file read timed out")
-    }
+  let outcomes =
+    weft.new([read])
+    |> weft.deadline(within_ms)
+    |> weft.start
+
+  // A one-task run yields exactly one outcome; the impossible shapes are
+  // still answered rather than asserted away, because a wrong account from
+  // the engine should refuse the read, not take the terminal down.
+  case outcomes {
+    [weft.Completed(value:, ..)] -> Ok(value)
+    [weft.Failed(error:, ..)] -> Error(error)
+    [weft.Crashed(reason:, ..)] ->
+      Error("file read worker crashed: " <> string.inspect(reason))
+    [weft.Abandoned(..)] -> Error("file read timed out")
+    [weft.NeverStarted(..)] -> Error("file read timed out")
+
+    // Only a managed task can lose or leave unconfirmed a drain proof, and
+    // this run carries none; the arms are exhaustiveness, not cases.
+    [weft.DrainProofLost(..)] | [weft.CancellationUnconfirmed(..)] ->
+      Error("file read produced no account")
+    [] | [_, _, ..] -> Error("file read produced no account")
   }
 }

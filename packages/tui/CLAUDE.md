@@ -49,8 +49,10 @@ that tree separately from the self-contained server.
 - `tui/image_drop` parses only terminal quote and backslash-space path
   forms, sniffs PNG/JPEG/GIF/WebP magic, and enforces the 20 MiB limit before
   reading a whole image. Its small Erlang helper reads only the classification
-  prefix or bounded body; a monitored Gleam worker limits descriptor opens and
-  reads to one second. It performs no path expansion or shell evaluation.
+  prefix or bounded body; a one-task `weft` run with a deadline bounds
+  descriptor opens and reads to one second, and its cancellation kills and
+  joins the worker before the caller sees the timeout. It performs no path
+  expansion or shell evaluation.
 
 ## Relationships
 

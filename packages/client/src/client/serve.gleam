@@ -224,6 +224,7 @@ import tools/grep
 import tools/history as history_tool
 import tools/remember
 import tools/tool.{type Registry}
+import weft/poll
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
@@ -1792,17 +1793,23 @@ fn stop_services(services: Pid) -> Nil {
   }
 }
 
+// A foreground poll on liveness, bounded by the grace: nothing may hold up
+// releasing the writer lease, so a supervisor still alive when the grace
+// runs out is killed rather than waited for any longer.
 fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
-  case process.is_alive(pid) {
-    False -> Nil
-    True ->
-      case remaining_ms <= 0 {
-        True -> process.kill(pid)
-        False -> {
-          process.sleep(5)
-          await_death(pid, remaining_ms - 5)
-        }
+  let outcome: poll.Outcome(Nil, Nil) =
+    poll.until(within: remaining_ms, every: 5, attempt: fn() {
+      case process.is_alive(pid) {
+        False -> poll.Done(Nil)
+        True -> poll.Retry
       }
+    })
+  case outcome {
+    poll.Answered(Nil) -> Nil
+    poll.Expired -> process.kill(pid)
+
+    // The probe never fails outright; the arm is exhaustiveness.
+    poll.Failed(Nil) -> Nil
   }
 }
 

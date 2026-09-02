@@ -62,14 +62,35 @@ over one session file. WP-L.
   facade. The
   guard remains the inner surface's direct consumer, and a separately
   monitored observer runs the synchronous callback before each event is
-  forwarded. The guard registers an original `DrainWitness`, and the custodian
+  forwarded. The guard installs its drain monitor on the inner owner before
+  `begin`, and the custodian
   adopts the guard, leaf observer, and transitive inner stream owner before
-  each begins work. A terminal is not forwarded until that original witness
-  reports `Drained`. Cancel travels inward, an unacknowledged cancel
+  each begins work. A terminal is not forwarded until that original monitor
+  reports a normal exit. Cancel travels inward, an unacknowledged cancel
   becomes terminal `CancellationUnconfirmed` after one fixed grace, and the
   custodian remains alive until the registered subtree drains. Guard or
   observer death becomes a prompt in-band transport failure only after that
   drain is proved.
+  The guard itself is a **`weft/state_machine`**, started `sm.unlinked` by the
+  consumer it serves so a guard crash reaches the custodian's worker adoption
+  rather than the consumer's link. Its state ADT is `Phase` — `Parked` (the
+  wait for the begin permit), `Forwarding`, `Cancelling`, and the three ways
+  this relay ends (`ProvingTerminal` holding the terminal the observer has
+  already seen, `ProvingFailure` bounding the drain wait after the relay's own
+  worker failed, `Proving` waiting out an answer already sent or deliberately
+  withheld). Its data is `Awaiting` before the permit and `Relaying` after it,
+  which is where everything that moves per event lives: the outstanding
+  observation, the events queued behind it, and the inner owner's drain proof.
+  Both deadlines are therefore structural rather than scheduled: the
+  cancellation grace is a **state timeout** on `Cancelling`, which is what
+  makes it one fixed proof deadline a flood of late deltas cannot renew, and
+  the request deadline is an **event timeout** re-armed by each forwarding
+  step that leaves the guard waiting on the inner stream. A parked guard
+  selects three things — the permit, the control subject, its consumer's
+  monitor — because the stream's own channels are created by the work the
+  permit authorises, in that process; the same step that grants the permit and
+  transitions to `Forwarding` or `Cancelling` widens the mailbox with
+  `sm.with_selector`.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
   into a `0600` file, `BearerAuth(token)` is the caller-supplied one.

@@ -646,6 +646,10 @@ pub fn attempt(
     [weft.Abandoned(..)] -> Expired
     [weft.NeverStarted(..)] -> Expired
 
+    // Only a managed task can lose or leave unconfirmed a drain proof, and
+    // an attempt's carrier owns nothing; both arms are exhaustiveness.
+    [weft.DrainProofLost(..)] | [weft.CancellationUnconfirmed(..)] -> Raised
+
     // A one-task run yields exactly one outcome — `weft.start`'s own
     // contract. Any other shape means the account weft handed back does
     // not match the run it was given: a defect in the engine, not in

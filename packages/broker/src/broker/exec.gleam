@@ -438,7 +438,6 @@ type Data {
     commands: Subject(Msg),
     deframer: framing.Deframer,
     next_id: Int,
-    ready_waiters: List(Subject(Result(List(String), ExecFailure))),
     pending_heartbeats: List(#(Int, Subject(Result(Nil, ExecFailure)))),
     tick_outstanding: Bool,
     cleaned: Bool,
@@ -493,7 +492,6 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
         commands:,
         deframer: framing.deframer(),
         next_id: 1,
-        ready_waiters: [],
         pending_heartbeats: [],
         tick_outstanding: False,
         cleaned: False,
@@ -747,13 +745,15 @@ fn handle(
     // instead of watching its events subject go quiet.
     phase, Shutdown -> handle_shutdown(Machine(phase:, data:))
 
-    // The handshake has not settled, so the asker is parked. Both ways
-    // out of `AwaitingHello` flush this list: the hello answers it, and
-    // every death path answers it with the failure.
-    AwaitingHello, AwaitReady(reply:) ->
-      state_machine.keep(
-        Data(..data, ready_waiters: [reply, ..data.ready_waiters]),
-      )
+    // The handshake has not settled, so the asker is parked. `postpone`
+    // re-queues this exact event; weft replays it, in arrival order,
+    // exactly once, on the next change of state — the hello's move to
+    // `Idle` or a death's move to `Dead` — where the arms below answer
+    // it with that state's outcome. Invariant: every `AwaitReady` asked
+    // during the handshake is answered exactly once with the outcome of
+    // the next state.
+    AwaitingHello, AwaitReady(..) ->
+      state_machine.keep(data) |> state_machine.postpone
 
     Idle(features:), AwaitReady(reply:)
     | Running(features:, ..), AwaitReady(reply:)
@@ -1456,15 +1456,17 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   // waiter and closed the transport. Promoting that to `Idle` would
   // resurrect a helper with no channel behind it, and the pool would
   // lend it out.
+  //
+  // Any `AwaitReady` postponed during the handshake replays against this
+  // move to `Idle` — weft delivers it ahead of the mailbox, after this
+  // function returns — and the `Idle(..), AwaitReady` arm in `handle`
+  // answers it with `features`. Nothing here has to flush a queue.
   case machine.phase {
     Dead(_) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
       let data = run_cleanup(machine.data)
-      list.each(list.reverse(data.ready_waiters), fn(waiter) {
-        process.send(waiter, Ok(features))
-      })
       schedule_tick(data)
-      Machine(phase: Idle(features:), data: Data(..data, ready_waiters: []))
+      Machine(phase: Idle(features:), data:)
     }
   }
 }
@@ -1723,19 +1725,21 @@ fn die(
 // The execution in flight needs no timer cancelled on its way out. It
 // lives in the state, and the caller's move to `Dead` is what takes a
 // pending cancel escalation with it — the deletion this port is for.
+//
+// An `AwaitReady` postponed during the handshake needs no flush here
+// either: this move to `Dead` is exactly the state change weft replays
+// it against, and the `Dead(..), AwaitReady` arm in `handle` answers it
+// with `failure`.
 fn notify_death(machine: Machine, failure: ExecFailure) -> Data {
   case machine.phase {
     Running(exec:, ..) | Cancelling(exec:, ..) ->
       process.send(exec.events, Failed(failure:))
     AwaitingHello | Idle(..) | Dead(..) -> Nil
   }
-  list.each(machine.data.ready_waiters, fn(waiter) {
-    process.send(waiter, Error(failure))
-  })
   list.each(machine.data.pending_heartbeats, fn(pending) {
     process.send(pending.1, Error(failure))
   })
-  Data(..machine.data, ready_waiters: [], pending_heartbeats: [])
+  Data(..machine.data, pending_heartbeats: [])
 }
 
 // --- what this host's helper can be asked to do --------------------------

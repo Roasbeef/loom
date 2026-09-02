@@ -328,7 +328,21 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
   assert process.receive(cancelled, within: 1000)
     == Ok("https://primary.test/v1/messages")
   assert process.receive(started, within: 100) == Error(Nil)
-  assert process.receive(cancelled, within: 100) == Error(Nil)
+
+  // The witness asks every adopted owner to stop the moment teardown
+  // begins, and the pump cancels its active transport as well, so the
+  // primary may hear its cancel more than once; a cancel capability is
+  // idempotent by contract (protocol-change/010). What must never happen
+  // is a cancel addressed to a transport that was never started.
+  assert only_primary_cancelled(cancelled)
+}
+
+fn only_primary_cancelled(cancelled: process.Subject(String)) -> Bool {
+  case process.receive(cancelled, within: 100) {
+    Error(Nil) -> True
+    Ok("https://primary.test/v1/messages") -> only_primary_cancelled(cancelled)
+    Ok(_other) -> False
+  }
 }
 
 pub fn cancellation_before_begin_starts_no_provider_work_test() {
@@ -526,6 +540,42 @@ pub fn abnormal_transport_owner_reports_lost_drain_proof_test() {
   let handle = gateway.request(two_provider_gateway(transport), main_request())
   let assert Ok(#([], stream.Failed(stream.DrainProofLost))) =
     stream.await_terminal(handle, within: 1000)
+}
+
+/// Only the guard classifies the active attempt when the pump dies without
+/// authoring a terminal of its own. A transport owner that exited abnormally
+/// destroyed the proof that its native work stopped, so the request must
+/// surface `DrainProofLost` rather than the retryable transport failure a
+/// clean drain would have earned.
+pub fn abnormal_attempt_owner_outlives_a_dead_pump_test() {
+  let registered = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, _events) {
+      // The owner is dead before it is ever published, so the guard's own
+      // monitor reports the abnormal exit rather than a completion.
+      let owner = process.spawn_unlinked(fn() { process.kill(process.self()) })
+      let gone = process.monitor(owner)
+      let _down =
+        process.new_selector()
+        |> process.select_specific_monitor(gone, fn(_down) { Nil })
+        |> process.selector_receive(1000)
+      process.demonitor_process(gone)
+      Ok(http.PreparedRequest(
+        running: http.RunningRequest(owner:, cancel: fn() { Nil }),
+        // Crashing here rather than in `prepare_streaming` is what makes
+        // this test different from the one above: the attempt has already
+        // been registered and adopted, so the guard holds a monitor whose
+        // verdict nothing else can supply once the pump is gone.
+        begin: fn() {
+          process.send(registered, Nil)
+          panic as "transport begin crashed after registration"
+        },
+      ))
+    })
+  let handle = gateway.request(two_provider_gateway(transport), main_request())
+  assert process.receive(registered, within: 1000) == Ok(Nil)
+  let assert Ok(#([], stream.Failed(stream.DrainProofLost))) =
+    stream.await_terminal(handle, within: 2500)
 }
 
 pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
