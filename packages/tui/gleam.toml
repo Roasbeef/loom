@@ -14,7 +14,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 mork = ">= 1.12.1 and < 1.13.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 stratus = ">= 3.0.0 and < 4.0.0"
-weft = { path = "../../../weft" }
+weft = ">= 0.4.2 and < 1.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
