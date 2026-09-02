@@ -310,14 +310,30 @@ an install policy rather than by a git binary.
   entry-count cap. Extraction writes into staging, never into the
   extension directory, and the digest is computed over the extracted
   tree, not the archive bytes.
+- **A repository is not an installed extension.** What is installed is
+  the extension's own tree — `src/**/*.gleam`, `schema/**`, `skills/**`,
+  `extension.toml`, `gleam.toml`, `README*`, `LICENSE*` — and
+  everything else the archive carries is **pruned before anything else
+  happens**: `test/`, `.gitignore`, `.github/`, documentation, a
+  `build/` directory, and Gleam's own resolved `manifest.toml`, which
+  is regenerated rather than read. Pruned rather than refused, because
+  every real Gleam repository has all of those and refusing one for
+  having a test would refuse them all; the precedent is the `.git`
+  directory a local install already walks past. The digest is taken
+  over what survives, so it describes the *installed* tree and a later
+  load compares like with like. One shape stays a refusal: a
+  non-`.gleam` file under `src/`, which Gleam would compile and link —
+  `@external` with the declaration moved out of the source the lint
+  reads — and which pruning would silently drop.
 - **The compile is offline and jailed.** The toolchain runs inside the
   same sandbox code mode builds in, with the network namespace empty:
   a `gleam.toml` that names any dependency beyond `loom_ext` and the
   standard library is refused before the build starts, the shipped
-  cache is the only package source, `manifest.toml` in the archive is
-  ignored and regenerated, and a build that tries to reach out finds
-  nothing to reach. Vetting runs on the source before the compiler sees
-  it, so the compiler is never the first thing to touch a hostile file.
+  cache is the only package source, the `gleam.toml` the build sees is
+  generated rather than the author's, and a build that tries to reach
+  out finds nothing to reach. Vetting runs on the source before the
+  compiler sees it, so the compiler is never the first thing to touch a
+  hostile file.
 
 ## Tool registration and dispatch
 

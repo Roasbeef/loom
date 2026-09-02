@@ -344,6 +344,8 @@ pub fn a_failed_fetch_names_the_fetch_layer_test() {
 pub fn a_hostile_fixture_is_refused_by_its_own_layer_test() {
   assert layer_of(extensions.hostile_ffi(), "ffi") == "vetting"
   assert layer_of(extensions.hostile_import(), "import") == "vetting"
+  // Still a refusal rather than a prune: Gleam compiles a native module
+  // found under `src/` and links it into the artifact.
   assert layer_of(extensions.hostile_erl(), "erl") == "vetting"
   assert layer_of(extensions.hostile_dep(), "dep") == "vetting"
   assert layer_of(extensions.hostile_tier(), "tier") == "manifest"
@@ -567,6 +569,53 @@ pub fn a_missing_entry_beam_is_refused_test() {
   assert string.contains(reason, compile.entry_module)
 }
 
+/// A real Gleam repository installs. It carries tests, a `.gitignore`, a
+/// CI workflow, `manifest.toml`, docs and a `build/` directory, and none
+/// of that is part of what an operator approves — so all of it is pruned
+/// before anything else happens, rather than refusing every repository
+/// there is.
+pub fn a_repository_installs_and_only_its_extension_is_kept_test() {
+  let root = fresh_root("repository")
+  let tree =
+    extensions.materialise(
+      extensions.repository(),
+      extensions.scratch("repository-src"),
+    )
+
+  // A binary under `docs/` is pruned, not refused: the UTF-8 rule applies
+  // to installed files, and a screenshot in a repository is not one.
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: tree <> "/docs/screenshot.png", bits: <<0xFF>>)
+    as "the test must be able to plant a binary outside the installed tree"
+
+  let assert Ok(done) =
+    install.run(
+      config(root, never_fetch),
+      source.LocalPath(path: tree),
+      rev: None,
+    )
+    as "a real repository must install"
+
+  // Exactly the extension's own tree is on disk, and nothing else.
+  let assert Ok(staged) =
+    archive.from_directory(
+      record.sources(root, "hello"),
+      archive.default_caps(),
+    )
+    as "the staged source must be readable"
+  assert list.sort(
+      list.map(staged.files, fn(file) { file.path }),
+      string.compare,
+    )
+    == extensions.installed_paths()
+
+  // And the recorded digest describes that tree, so a re-verify compares
+  // like with like rather than re-deriving the prune and hoping.
+  assert done.record.tree_digest == archive.digest(staged)
+  let assert [installed.Ready(..)] = installed.discover(root)
+    as "a pruned install must verify against its own digest"
+}
+
 /// A file that is not text is refused rather than dropped. Dropped, it
 /// would be staged under the installed extension's `src/` having passed
 /// no rule at all — neither vetted nor refused.
@@ -575,9 +624,11 @@ pub fn a_binary_file_refuses_the_install_test() {
   let tree =
     extensions.materialise(extensions.hello(), extensions.scratch("binary-src"))
 
-  // A lone 0xFF byte is not valid UTF-8 in any position.
+  // A lone 0xFF byte is not valid UTF-8 in any position. Under `schema/`,
+  // which *is* installed — a non-`.gleam` file under `src/` is refused a
+  // step earlier, by the rule that it would be compiled.
   let assert Ok(Nil) =
-    simplifile.write_bits(to: tree <> "/src/hello/nif.so", bits: <<0xFF>>)
+    simplifile.write_bits(to: tree <> "/schema/blob.json", bits: <<0xFF>>)
     as "the test must be able to plant a non-text file"
   let assert Error(failure) =
     install.run(
@@ -587,7 +638,7 @@ pub fn a_binary_file_refuses_the_install_test() {
     )
     as "a non-text file must refuse the install"
   assert string.starts_with(install.describe(failure), "extract:")
-  assert string.contains(install.describe(failure), "src/hello/nif.so")
+  assert string.contains(install.describe(failure), "schema/blob.json")
   assert !exists(record.directory(root, "hello"))
 }
 

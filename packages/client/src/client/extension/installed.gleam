@@ -24,6 +24,16 @@
 ////   shows up as a record that no longer matches, and an operator is
 ////   asked rather than quietly given more.
 ////
+//// # Nothing is pruned here, and that is the point
+////
+//// The install prunes a repository down to the extension's own tree
+//// (`codemode/vet/package.installed_subset`) and writes exactly that. So
+//// what sits under `<name>/src/` *is* the installed tree, and this side
+//// reads all of it: a file dropped in afterwards changes the digest and
+//// refuses the extension, which is the whole guarantee. Pruning again at
+//// load would quietly forgive exactly the tampering the digest exists to
+//// catch.
+////
 //// # Refused is a value, not an absence
 ////
 //// `discover` returns a `Refused` for an extension it will not load, not

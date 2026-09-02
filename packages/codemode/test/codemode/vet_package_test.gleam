@@ -84,21 +84,56 @@ pub fn a_native_file_under_src_is_refused_test() {
   assert reason_for(refusals, "src/weather/nif.erl") |> string.contains("src/")
 }
 
-pub fn a_test_directory_is_refused_test() {
-  let files = [
+/// A repository is not an installed extension. Everything a real Gleam
+/// repository carries and an install does not keep is *pruned*, not
+/// refused — refusing it would refuse every repository there is, which is
+/// exactly what the acceptance test found.
+pub fn a_repository_is_pruned_to_its_extension_test() {
+  let repository = [
     #("test/weather_test.gleam", "pub fn main() { 1 }\n"),
+    #(".gitignore", "build\n"),
+    #(".github/workflows/ci.yml", "on: push\n"),
+    #("manifest.toml", "packages = []\n"),
+    #("docs/design.md", "# design\n"),
+    #("build/dev/erlang/x.beam", "FOR1"),
+    #("Makefile", "all:\n"),
     ..good_files()
   ]
-  let assert Error(refusals) = package.vet_package(files, policy.extension())
-    as "test/ must refuse the package"
-  assert names_file(refusals, "test/weather_test.gleam")
+  assert is_ok(package.vet_package(repository, policy.extension()))
+
+  // And the prune is the same set, whichever door asks for it.
+  let assert Ok(kept) = package.installed_subset(repository)
+    as "a repository with no native module under src/ must prune cleanly"
+  assert list.map(kept, fn(file) { file.0 }) |> list.sort(string.compare)
+    == list.sort(list.map(good_files(), fn(file) { file.0 }), string.compare)
 }
 
-pub fn a_file_outside_the_layout_is_refused_test() {
-  let files = [#("Makefile", "all:\n"), ..good_files()]
-  let assert Error(refusals) = package.vet_package(files, policy.extension())
-    as "an unexpected file must refuse the package"
-  assert names_file(refusals, "Makefile")
+/// A `.gleam` file under `test/` is pruned rather than compiled, which is
+/// the half that matters: its imports were never vetted and its
+/// dependencies are not in the jail.
+pub fn a_pruned_module_is_not_a_module_test() {
+  let files = [
+    #("test/weather_test.gleam", "import simplifile\npub fn main() { 1 }\n"),
+    ..good_files()
+  ]
+  let assert Ok(vetted) = package.vet_package(files, policy.extension())
+    as "a test importing a package the jail lacks must be pruned, not vetted"
+  assert package.module_names(vetted) == ["weather/forecast", "weather/units"]
+}
+
+pub fn the_installed_predicate_agrees_with_the_prune_test() {
+  assert package.is_installed("src/w/f.gleam")
+  assert package.is_installed("schema/x.json")
+  assert package.is_installed("skills/w/SKILL.md")
+  assert package.is_installed("extension.toml")
+  assert package.is_installed("gleam.toml")
+  assert package.is_installed("README.md")
+  assert package.is_installed("LICENSE")
+  assert !package.is_installed("test/x_test.gleam")
+  assert !package.is_installed(".gitignore")
+  assert !package.is_installed("manifest.toml")
+  assert !package.is_installed("docs/README.md")
+  assert !package.is_installed("build/dev/erlang/x.beam")
 }
 
 pub fn schema_and_skills_are_admitted_test() {

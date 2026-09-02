@@ -88,10 +88,15 @@ phase 1 installs and compiles an extension, and phase 2 dispatches one.
 - `codemode/vet/package.{VettedPackage, Rejection, vet_package}` —
   vetting a whole *package* rather than one program, which is what an
   installed extension is. Three questions a single file does not ask:
-  which files may be here at all (Gleam compiles a native module found
-  under `src/` and links it into the artifact, which is `@external` with
-  the declaration moved out of the source the lint reads, so `src/`
-  admits `.gleam` and nothing else and `test/` is refused outright);
+  which files are installed at all (`installed_subset` keeps
+  `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
+  `gleam.toml`, `README*` and `LICENSE*`, and **prunes** everything else
+  a repository carries — `test/`, `.gitignore`, `.github/`, `docs/`,
+  `build/`, Gleam's resolved `manifest.toml` — because refusing a
+  repository for having a test would refuse every repository there is;
+  the one shape still refused is a non-`.gleam` file under `src/`, which
+  Gleam compiles and links into the artifact, `@external` with the
+  declaration moved out of the source the lint reads);
   what the project file may name (`allowed_dependencies` is
   `gleam_stdlib`, `gleam_json`, `cap`, `ext`, and an unknown top-level
   key is an error); and which imports are intra-package (each file is
