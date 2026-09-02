@@ -295,6 +295,9 @@ exactly the call approved.
 | An EventBus hint | best-effort `pg` send | subscriber catches up on the next hint or sync |
 | Progress ticks, liveness pings | process message | harmless by construction |
 | A scheduled heartbeat's fire | commit: a marked steer or fresh-run admission + its occurrence's fired-mark | never lost; a crash before the commit re-derives the same due occurrence and tries again |
+| A model-created schedule | commit: a `schedule/config/…` cell claimed on its absence | never lost; a second claim of the name is told `NameTaken` rather than overwriting |
+| A schedule's observation instant | commit: a `schedule/seen/…` cell claimed once by the scanner | never lost; the expiry clock a restart re-derives is the one every incarnation agreed on |
+| A schedule's retirement | commit: its marks, then its seen cell, then its config cell deleted | a fault mid-way leaves a live schedule with a reset count, never an orphan clock for a reused name |
 
 The rule reads straight down the table: if a row is a commit, a crash
 cannot lose it; if a row is a process message, losing it costs latency or
@@ -304,10 +307,11 @@ Two rows share the word "heartbeat" for unrelated things, and the
 distinction matters: a **liveness ping** is the ephemeral pacing signal
 §4.6 already licenses to ride a bare process message, because losing one
 costs nothing but a moment's staleness in a display. A **scheduled
-heartbeat** (`client/schedule`/`client/schedulescan`) is an
-operator-configured, time-triggered admission — a `[[schedule]]` firing
-onto a strand on a clock instead of on a human's or a sibling strand's
-say-so — and it changes what the model sees, so it commits like every
+heartbeat** (`client/schedule`/`client/schedulescan`) is a
+time-triggered admission — an operator's `[[schedule]]` table or a
+strand's own schedule, firing onto a strand on a clock instead of on a
+human's or a sibling strand's say-so — and it changes what the model
+sees, so it commits like every
 other durable payload in this doctrine: the injected text and its
 write-once fired-mark land in one transaction, exactly the
 `steer_marking` argument this document already makes for triggered
@@ -327,8 +331,11 @@ a rule, may start a fresh run on an idle strand.
 | `runtime/escalation.gleam` | The durable escalation record, its `CallScope`, and its status transitions. |
 | `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
-| `client/schedule.gleam` | The scheduled-heartbeat config store, its bounds, and the occurrence arithmetic (`interval_late`, `interval_expired`). |
-| `client/schedulescan.gleam` | The timer-driven scanner: one marked admission per due occurrence, `steer_marking` or `send_to_strand_marking` depending on `wake`. |
+| `client/schedule.gleam` | The scheduled-heartbeat store — three timings, owner and target, the bounds — and the occurrence arithmetic (`interval_late`, `cron_late`, `recurring_expired`). |
+| `client/cron.gleam` | The pure five-field cron core the `Cron` timing searches with; no clock, no I/O. |
+| `client/schedulescan.gleam` | The timer-driven scanner: one marked admission per due occurrence, `steer_marking` or `send_to_strand_marking` depending on `wake`, and the settled-target check that ends a schedule with the strand it fires onto. |
+| `client/scheduleseam.gleam` | The model's door: the claim on a config cell's absence, the lineage-checked target, `retire`, and the `run_end` reaper. |
+| `client/scheduleadmin.gleam` | The operator's door over the protocol: list everything, cancel what a strand wrote, through the same `retire`. |
 
 Each path is relative to its package's source root:
 `runtime/api.gleam` is `packages/runtime/src/runtime/api.gleam`. For the
