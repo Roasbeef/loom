@@ -553,9 +553,11 @@ restart-to-change posture `client/catalog` takes toward `loom.toml`, with
 the one difference the extension ruling names, that here the approval is
 *recorded* rather than implied by an edit.
 
-The pipeline is six steps and every failure names the layer it came from:
-resolve the source, fetch it (or copy a local directory), extract it,
-decode the manifest, vet the package, compile it, write the record.
+Every failure names the layer it came from, and there are six of them —
+fetch, extract, manifest, vetting, compile, record — over a pipeline that
+resolves the source, fetches it (or copies a local directory), extracts
+it, prunes it to the extension's own tree, decodes the manifest, vets the
+package, compiles it, and writes the record.
 Naming the layer is the point of the type rather than a nicety. An
 extension is somebody else's repository, and the person reading the
 refusal is usually not the person who can fix it, so "vetting:
@@ -575,9 +577,10 @@ remove-then-install, so nobody loses a working extension to a failed
 reinstall.
 
 **The install is content-addressed from the moment it is recorded.** The
-record carries the digest of the extracted tree, the manifest hash, the
-allowlist and the net policy the source was vetted against, and the
-resolved revision. `client/extension/installed` re-derives all four from
+record carries the digest of the *installed* tree — what survives the
+prune, not what the archive carried — the manifest hash, the allowlist
+and the net policy the source was vetted against, and the resolved
+revision. `client/extension/installed` re-derives each of them from
 disk on every read and refuses the extension when any disagrees — so one
 edited byte under `src/` refuses it until it is reinstalled, whatever the
 remote did afterwards. The allowlist is *stored* rather than recomputed
@@ -601,6 +604,10 @@ locates `loomd` by the same ladder an implicit local session uses, runs
 it, streams its output through and exits with its status. Two ladders
 would mean installing an extension into one server's world and then
 starting another.
+
+`docs/architecture/extensions.md` is the whole of it from the extension's
+side: the two tiers, the seam, the manifest, brokered egress and the
+secret bindings, and what stands built against what is still in flight.
 
 ## What the acceptance actually proves
 
@@ -640,7 +647,7 @@ real websocket `subscribe` returning a snapshot.
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions, and the collision that refuses a boot. |
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: tools, hooks, the net policy and its secret *names*. |
 | `client/extension/record.gleam` | The install record and the `Root` value that says where installs live. |
-| `client/extension/install.gleam` | The six-step pipeline, the staging discipline, and the generated satellite entry. |
+| `client/extension/install.gleam` | The pipeline and its six named layers, the prune that runs first, the staging discipline, and the generated satellite entry. |
 | `client/extension/installed.gleam` | Discovery: the four re-derivations that decide whether an install is still what was approved. |
 | `client/extension/cli.gleam` | `loom ext install|list|remove|verify`, and the build seam over a started plane. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
