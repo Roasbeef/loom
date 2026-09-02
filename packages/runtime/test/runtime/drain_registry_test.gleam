@@ -20,11 +20,7 @@ pub fn abnormal_reaper_exit_poisoned_ledger_test() {
   // alive long enough to inspect that same abnormal exit.
   process.unlink(ledger_pid)
   let ledger_monitor = process.monitor(ledger_pid)
-  let reaper =
-    process.spawn_unlinked(fn() {
-      process.receive_forever(process.new_subject())
-    })
-  let previous = drain_registry.claim(ledger, "main", reaper)
+  let #(reaper, previous) = watched_reaper(ledger, "main")
   assert previous == []
 
   process.kill(reaper)
@@ -109,6 +105,36 @@ fn departed_reaper() -> process.Pid {
     |> process.selector_receive(1000)
     as "the reaper must be gone before the claim names it"
   pid
+}
+
+// A reaper the ledger is provably watching by the time the pid is handed
+// back, so that killing it can only be answered `killed`.
+//
+// A monitor is a signal rather than a fact. The ledger's monitor request
+// is still in flight when it answers the claim, and a reaper killed from
+// a third process before that request lands is reported as `noproc` — a
+// departure, which retires the generation and leaves the ledger alive. A
+// test that killed a merely-claimed reaper would then wait out its whole
+// timeout for a death that was never coming, roughly one run in twenty
+// thousand.
+//
+// Claiming from inside the reaper closes that window with the one
+// ordering the runtime does guarantee. The ledger's reply travels from the
+// ledger to this same process, behind the monitor request it sent a
+// statement earlier, so a reaper whose own claim has been answered has
+// already handled the request that watches it.
+fn watched_reaper(
+  ledger: process.Subject(drain_registry.Message),
+  strand: String,
+) -> #(process.Pid, List(process.Pid)) {
+  let claimed = process.new_subject()
+  let pid =
+    process.spawn_unlinked(fn() {
+      let previous = drain_registry.claim(ledger, strand, process.self())
+      process.send(claimed, previous)
+      process.receive_forever(process.new_subject())
+    })
+  #(pid, process.receive_forever(claimed))
 }
 
 fn parked_reaper() -> #(process.Pid, process.Subject(Nil)) {
