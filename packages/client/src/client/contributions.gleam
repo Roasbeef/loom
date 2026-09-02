@@ -33,6 +33,19 @@
 //// where a tool came from; it does not need one, because dispatch is by
 //// name. The origin exists so that the refusal above can say *whose*
 //// tool lost, which is the only sentence an operator can act on.
+////
+//// ## What a session sees, and when
+////
+//// A registry built here reaches a session exactly once. The system
+//// prompt is rendered at session creation and pinned, and the strand's
+//// durable `active_tool_names` is seeded from the same registry at the
+//// same moment, so a session created before an extension was installed
+//// keeps the tool array and the prompt index it was created with for its
+//// whole life. Installing an extension changes what the *next* session
+//// sees. That is the pinning contract rather than a gap in it: the
+//// prompt sits inside a one-hour cache breakpoint, and a registry that
+//// could grow under a live session would move bytes every strand had
+//// already paid for.
 
 import client/scheduleseam
 import gleam/dict.{type Dict}
@@ -51,17 +64,16 @@ import tools/tool.{type Registry, type Tool}
 
 /// Where a registered tool came from.
 ///
-/// Three variants and no fourth: a tool is either compiled into this
-/// harness, produced by the code-mode pipeline, or contributed by an
-/// installed extension. The closed set is what makes the collision
-/// message decidable — every name has exactly one of these behind it.
+/// Two variants and no third: a tool is either compiled into this
+/// harness or contributed by an installed extension. `code_mode` belongs
+/// to the first even though it only exists on a host with a toolchain,
+/// because gating on a plane is what `history_search`, `remember` and
+/// the `schedule_*` tools already do and none of them is a separate
+/// origin either. The closed set is what makes the collision message
+/// decidable — every name has exactly one of these behind it.
 pub type Origin {
   /// A tool compiled into the harness itself.
   BuiltIn
-
-  /// A tool the code-mode pipeline offers, which exists only on a host
-  /// that wired one.
-  CodeModeTools
 
   /// A tool an installed extension contributed, under the extension's
   /// own manifest name.
@@ -93,10 +105,10 @@ pub type Collision {
   Collision(name: String, first: Origin, second: Origin)
 }
 
-/// The contributions a host's own planes make, in the order the registry
-/// has always been built in: the five core tools, the six `agent_*`
-/// tools, `code_mode`, `history_search`, `remember`, and the three
-/// `schedule_*` tools.
+/// The one contribution a host's own planes make, in the order the
+/// registry has always been built in: the five core tools, the six
+/// `agent_*` tools, `code_mode`, `history_search`, `remember`, and the
+/// three `schedule_*` tools.
 ///
 /// Each `Option` is a plane that decided its own presence from the host
 /// it found, and the gating is arithmetic rather than tidiness: the wire
@@ -105,13 +117,6 @@ pub type Collision {
 /// permanently-refusing definition would be paid for on every request of
 /// every strand for the life of the session. A host with none of the
 /// planes offers five tools.
-///
-/// `BuiltIn` appears more than once in the returned list, and that is
-/// intended. The origin answers *who* contributed a tool rather than
-/// when; code mode's tools have always sat between the messaging plane's
-/// and the search index's, and reordering them to make the origins
-/// contiguous would move the prompt's tool index for no reason anyone
-/// could read.
 ///
 /// ## Examples
 ///
@@ -133,52 +138,41 @@ pub fn built_in(
   memory: Option(remember.Memory),
   schedules: Option(schedule_tool.Schedules),
 ) -> List(Contribution) {
-  let core =
-    list.flatten([
-      [
-        bash.tool(),
-        grep.tool(),
-        fs.read_tool(),
-        fs.write_tool(),
-        fs.edit_tool(),
-      ],
-      case agency {
-        None -> []
-        Some(agency) -> agent.tools(agency)
-      },
-    ])
-
-  let pipeline = case code_mode {
-    None -> []
-    Some(code_mode) -> codemode_tool.tools(code_mode)
-  }
-
-  // The durable planes: a search index, a memory session, a schedule
-  // store. Each is absent on a host whose store would not open, and each
-  // registers nothing at all in that case rather than a tool that
-  // refuses at call time.
-  let durable =
-    list.flatten([
-      case history {
-        None -> []
-        Some(history) -> [history_tool.tool(history)]
-      },
-      case memory {
-        None -> []
-        Some(memory) -> [remember.tool(memory)]
-      },
-      case schedules {
-        None -> []
-        Some(schedules) -> schedule_tool.tools(schedules, scheduleseam.limits())
-      },
-    ])
-
   [
-    Contribution(origin: BuiltIn, tools: core),
-    Contribution(origin: CodeModeTools, tools: pipeline),
-    Contribution(origin: BuiltIn, tools: durable),
+    Contribution(
+      origin: BuiltIn,
+      tools: list.flatten([
+        [
+          bash.tool(),
+          grep.tool(),
+          fs.read_tool(),
+          fs.write_tool(),
+          fs.edit_tool(),
+        ],
+        case agency {
+          None -> []
+          Some(agency) -> agent.tools(agency)
+        },
+        case code_mode {
+          None -> []
+          Some(code_mode) -> codemode_tool.tools(code_mode)
+        },
+        case history {
+          None -> []
+          Some(history) -> [history_tool.tool(history)]
+        },
+        case memory {
+          None -> []
+          Some(memory) -> [remember.tool(memory)]
+        },
+        case schedules {
+          None -> []
+          Some(schedules) ->
+            schedule_tool.tools(schedules, scheduleseam.limits())
+        },
+      ]),
+    ),
   ]
-  |> list.filter(fn(contribution) { contribution.tools != [] })
 }
 
 /// Builds the registry from an ordered list of contributions, refusing a
@@ -197,20 +191,13 @@ pub fn built_in(
 pub fn registry(
   contributions: List(Contribution),
 ) -> Result(Registry, Collision) {
-  // Each contribution is identified by its position rather than by its
-  // origin, because `BuiltIn` legitimately appears twice and two
-  // separate built-in groups claiming one name is still a collision.
-  let indexed =
-    list.index_map(contributions, fn(contribution, index) {
-      #(index, contribution)
-    })
-
-  use #(_claimed, reversed) <- result.map(list.try_fold(
-    indexed,
-    #(dict.new(), []),
-    claim_contribution,
-  ))
-  tool.registry(list.reverse(reversed))
+  // The check and the build are separate passes because they answer
+  // different questions. The fold below only decides whether any name
+  // crosses a contribution boundary; what actually goes into the table,
+  // and in what order, is the flattened list, where "the order is the
+  // contributions in order" is visible at a glance.
+  use _claimed <- result.map(list.try_fold(contributions, dict.new(), claim))
+  tool.registry(list.flat_map(contributions, fn(each) { each.tools }))
 }
 
 /// The refusal an operator reads when two contributions claim one name.
@@ -244,56 +231,49 @@ pub fn collision_message(collision: Collision) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert contributions.origin_text(contributions.CodeModeTools)
-///   == "the code-mode pipeline"
+/// assert contributions.origin_text(contributions.BuiltIn)
+///   == "a built-in tool"
 /// ```
 ///
 pub fn origin_text(origin: Origin) -> String {
   case origin {
     BuiltIn -> "a built-in tool"
-    CodeModeTools -> "the code-mode pipeline"
     Extension(name:) -> "the extension `" <> name <> "`"
   }
 }
 
-// The state threaded through the fold: which contribution has claimed
-// each name so far, and the tools collected in reverse registration
-// order.
-type Claiming =
-  #(Dict(String, #(Int, Origin)), List(Tool))
+// One contribution's claim on the names earlier contributions have not
+// taken. Its own repeats are de-duplicated first, so a single author
+// restating a name never collides with themselves — that is the
+// override `tool.registry` settles by last-registration-wins.
+fn claim(
+  claimed: Dict(String, Origin),
+  contribution: Contribution,
+) -> Result(Dict(String, Origin), Collision) {
+  let names = list.unique(list.map(contribution.tools, fn(each) { each.name }))
 
-// Folds one contribution's tools into the claim table, failing on the
-// first name another contribution already holds.
-fn claim_contribution(
-  state: Claiming,
-  entry: #(Int, Contribution),
-) -> Result(Claiming, Collision) {
-  let #(index, contribution) = entry
-  list.try_fold(contribution.tools, state, fn(state, tool) {
-    claim_tool(state, index, contribution.origin, tool)
-  })
-}
-
-// One tool's claim. A name already held by *this* contribution is the
-// author overriding themselves and is kept, so that `tool.registry`'s
-// last-registration-wins settles it; a name held by any other
-// contribution is the refusal this module exists for.
-fn claim_tool(
-  state: Claiming,
-  index: Int,
-  origin: Origin,
-  tool: Tool,
-) -> Result(Claiming, Collision) {
-  let #(claimed, _collected) = state
-  case dict.get(claimed, tool.name) {
-    Ok(#(claimer, first)) if claimer != index ->
-      Error(Collision(name: tool.name, first:, second: origin))
-    Ok(#(_claimer, _first)) -> Ok(claim(state, index, origin, tool))
-    Error(Nil) -> Ok(claim(state, index, origin, tool))
+  case first_taken(names, claimed, contribution.origin) {
+    Ok(collision) -> Error(collision)
+    Error(Nil) ->
+      Ok(
+        list.fold(names, claimed, fn(claimed, name) {
+          dict.insert(claimed, name, contribution.origin)
+        }),
+      )
   }
 }
 
-fn claim(state: Claiming, index: Int, origin: Origin, tool: Tool) -> Claiming {
-  let #(claimed, collected) = state
-  #(dict.insert(claimed, tool.name, #(index, origin)), [tool, ..collected])
+// The first of these names an earlier contribution already holds, as the
+// collision it would be. `Error(Nil)` is the clear path.
+fn first_taken(
+  names: List(String),
+  claimed: Dict(String, Origin),
+  origin: Origin,
+) -> Result(Collision, Nil) {
+  list.find_map(names, fn(name) {
+    case dict.get(claimed, name) {
+      Ok(first) -> Ok(Collision(name:, first:, second: origin))
+      Error(Nil) -> Error(Nil)
+    }
+  })
 }

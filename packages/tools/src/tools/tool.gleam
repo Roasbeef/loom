@@ -276,9 +276,11 @@ pub type Terminate {
   /// The run proceeds: the model sees the reply and plans its next step.
   ContinueRun
 
-  /// The run reaches a terminal state once this batch settles. Reserved
-  /// for a tool whose whole purpose is to end the operation; every
-  /// built-in answers `ContinueRun`.
+  /// The run reaches a terminal state once this batch settles, if every
+  /// call in it did — the planner's rule, not this tool's alone, so one
+  /// terminating call beside a continuing one ends nothing. Reserved for
+  /// a tool whose whole purpose is to end the operation; every built-in
+  /// answers `ContinueRun`.
   TerminateRun
 }
 

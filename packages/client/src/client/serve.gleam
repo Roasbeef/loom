@@ -1499,13 +1499,10 @@ fn assemble(
     |> result.map_error(contributions.collision_message),
   )
 
-  // The registry itself, once, at boot. Four planes decide their own
-  // presence from the host they found — a messaging plane, a code-mode
-  // pipeline, a search index, a memory session — so "which tools does
-  // this server actually offer" is not derivable from the flags, and it is the same sorted
-  // list that renders into the provider's cached byte prefix. Naming it
-  // here is what lets a release smoke assert on registration rather than
-  // on a proxy for it.
+  // Naming the registered tools here is what lets a release smoke assert
+  // on registration rather than on a proxy for it: which tools this
+  // server actually offers is decided by the planes above rather than by
+  // the flags, so no flag dump answers the question.
   log.info(logger, "server.tools", [
     field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
   ])

@@ -297,10 +297,3 @@ pub fn the_index_says_the_schema_is_what_binds_test() {
   assert string.contains(rendered, "not a specification")
   assert string.contains(rendered, "callable all the same")
 }
-
-pub fn rendering_the_same_index_twice_gives_the_same_bytes_test() {
-  // The prompt sits behind a one-hour cache breakpoint whose economics
-  // rest on the head not moving.
-  let snippets = ["`bash` runs.", "`grep` searches."]
-  assert with_snippets(snippets) == with_snippets(snippets)
-}

@@ -64,12 +64,14 @@ pub fn an_unwired_host_contributes_the_five_core_tools_test() {
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
 }
 
-pub fn an_unwired_host_makes_one_built_in_contribution_test() {
-  // An absent plane contributes nothing at all rather than an empty
-  // contribution, so the list an operator reads has no blank entries.
+pub fn the_host_makes_exactly_one_contribution_test() {
+  // Every plane the harness compiles in is one origin, `code_mode`
+  // included: gating on a plane is what `history_search`, `remember` and
+  // the `schedule_*` tools already do, and none of them is a separate
+  // origin either. An absent plane contributes nothing at all.
   let assert [contributions.Contribution(origin:, tools:)] =
     contributions.built_in(None, None, None, None, None)
-    as "an unwired host has exactly one contribution"
+    as "a host makes exactly one built-in contribution"
   assert origin == contributions.BuiltIn
   assert list.length(tools) == 5
 }

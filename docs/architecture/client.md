@@ -224,8 +224,7 @@ the command.
 which is why the registry the hub holds must be the one the effect wiring
 dispatches through. That registry is built at boot from an ordered list
 of **contributions** (`client/contributions.gleam`), each naming its
-origin: the harness's own built-ins, the code-mode pipeline, or an
-installed extension. Within one contribution a repeated name is the
+origin: the harness's own built-ins, or an installed extension. Within one contribution a repeated name is the
 author overriding themselves and the later tool wins; *between*
 contributions a repeated name is refused outright and takes the boot down
 with it, naming both origins. That asymmetry is the seam's whole security
@@ -235,7 +234,11 @@ the tree would be about the wrong function. Each tool may also carry a
 one-line `prompt_snippet`; the registry's snippets, in registration
 order, are the available-tools index in the system prompt, and a tool
 without one is absent from the index while staying perfectly callable
-through the wire tool array.
+through the wire tool array. Like the tool array itself, that index is
+fixed at session creation: the prompt is rendered once and pinned, and
+`active_tool_names` is seeded from the same registry at the same moment,
+so installing an extension changes what the *next* session sees rather
+than growing the one already running.
 
 Error codes are `bad_request`, `unknown_session`, `unknown_strand`,
 `unknown_escalation`, `not_pending`, `conflict`, `unsupported`, and

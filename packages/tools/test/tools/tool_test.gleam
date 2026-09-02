@@ -6,9 +6,14 @@ import gleam/option.{None, Some}
 import gleam/string
 import support/fake_broker
 import support/memory_fs
+import tools/agent
 import tools/bash
+import tools/codemode
 import tools/fs
 import tools/grep
+import tools/history
+import tools/remember
+import tools/schedule
 import tools/tool
 
 fn ctx() -> tool.Ctx {
@@ -97,20 +102,32 @@ pub fn snippets_follow_registration_order_and_omit_the_silent_test() {
   let assert Ok(_) = tool.lookup(registry, "fs_read")
 }
 
-pub fn every_core_tool_carries_a_snippet_test() {
+pub fn every_built_in_tool_carries_a_snippet_test() {
   // A built-in with no snippet would be invisible in the prompt's index
   // while still being on the wire, which is the one inconsistency the
-  // omission rule must not be used to create by accident.
-  list.each(tool.registered(full_registry()), fn(each) {
+  // omission rule must not be used to create by accident. Every
+  // constructor in the package is listed, not just the five a bare host
+  // registers, because the twelve behind a plane are the ones nothing
+  // else here would notice losing their line.
+  let every =
+    list.flatten([
+      [
+        bash.tool(),
+        grep.tool(),
+        fs.read_tool(),
+        fs.write_tool(),
+        fs.edit_tool(),
+        history.tool(unused_history()),
+        remember.tool(unused_memory()),
+        codemode.tool_for(unused_code_mode()),
+      ],
+      agent.tools(unused_agency()),
+      schedule.tools(unused_schedules(), unused_limits()),
+    ])
+  assert list.length(every) == 17
+  list.each(every, fn(each) {
     assert each.prompt_snippet != None
   })
-}
-
-pub fn snippet_rendering_is_deterministic_test() {
-  // The tool bytes are the provider cache's prefix and the prompt is
-  // pinned behind a one-hour breakpoint, so two renders of one registry
-  // must be the same string, not merely the same set.
-  assert tool.snippets(full_registry()) == tool.snippets(full_registry())
 }
 
 // --- terminate -----------------------------------------------------------
@@ -192,4 +209,75 @@ pub fn failure_outcome_maps_to_is_error_message_test() {
       timestamp: 0,
     )
   let assert message.ToolResultMessage(is_error: True, ..) = result
+}
+
+// --- seams the snippet census needs ----------------------------------------
+//
+// Every plane-gated tool is built from a seam record, and the census
+// above wants all seventeen constructors rather than the five a bare
+// host registers. None of these seams is ever called: a `prompt_snippet`
+// is decided when the tool is constructed.
+
+fn unused_refusal() -> String {
+  "this seam is never called"
+}
+
+fn unused_agency() -> agent.Agency {
+  agent.Agency(
+    spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
+    note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
+    notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    roster: fn(_caller) { Error(agent.AgencyUnavailable) },
+    max_wait_ms: 1000,
+  )
+}
+
+fn unused_code_mode() -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(_request) { panic as "the census never runs a program" },
+    seams: codemode.one_seam(
+      codemode.SeamOffer(
+        seam: codemode.WorkspaceSeam,
+        allowed_imports: ["cap/report"],
+        serviced_caps: ["proc.run"],
+        extra_surfaces: [],
+      ),
+    ),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+fn unused_history() -> history.History {
+  history.History(search: fn(_text, _limit, _scope) {
+    Error(history.IndexUnavailable(reason: unused_refusal()))
+  })
+}
+
+fn unused_memory() -> remember.Memory {
+  remember.Memory(remember: fn(_note) {
+    Error(remember.MemoryUnavailable(reason: unused_refusal()))
+  })
+}
+
+fn unused_schedules() -> schedule.Schedules {
+  schedule.Schedules(
+    create: fn(_ctx, _request) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+    list: fn(_ctx) { Error(schedule.Unavailable(reason: unused_refusal())) },
+    cancel: fn(_ctx, _name) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+  )
+}
+
+fn unused_limits() -> schedule.Limits {
+  schedule.Limits(
+    min_interval_seconds: 60,
+    default_max_fires: 10,
+    max_schedules: 10,
+  )
 }

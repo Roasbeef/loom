@@ -772,10 +772,9 @@ pub fn a_continuing_outcome_reaches_the_effect_as_false_test() {
     as "a ContinueRun outcome must commit with terminate: False"
 }
 
-pub fn every_built_in_tool_continues_the_run_test() {
-  // No built-in ends a run, and none should acquire the power by
-  // accident: the field exists for a contributed tool whose purpose is
-  // to end the operation.
+pub fn terminates_maps_the_two_answers_test() {
+  // The conversion itself, both ways: this is the only place the tool
+  // vocabulary's polarity is written down.
   assert wiring.terminates(tool.ContinueRun) == False
   assert wiring.terminates(tool.TerminateRun)
 }

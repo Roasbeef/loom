@@ -634,25 +634,28 @@ over one session file. WP-L.
   describe a working compaction disable it rather than firing a
   threshold that prepares nothing.
 - `client/contributions.{Origin, Contribution, Collision}` — who
-  contributed a tool (`BuiltIn` | `CodeModeTools` | `Extension(name)`),
-  one origin's ordered tool list, and the refusal when two contributions
-  claim one name.
+  contributed a tool (`BuiltIn` | `Extension(name)`), one origin's
+  ordered tool list, and the refusal when two contributions claim one
+  name. `code_mode` is `BuiltIn` and gated on its plane, exactly as
+  `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
   Option(History), Option(Memory), Option(Schedules))` — the host's own
-  contributions: five core tools, plus the six `agent_*` tools only when
+  single contribution: five core tools, plus the six `agent_*` tools only when
   a messaging plane exists, plus `code_mode` only when this host wired a
   code-mode pipeline, plus `history_search` only when its search index
   opened, plus `remember` only when the memory session beside the session
   file opened, plus the three `schedule_*` tools only when the schedule
-  store did. A plane that is absent contributes nothing, never an empty
-  contribution.
+  store did. A plane that is absent contributes nothing at all.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
   contribution; a name two contributions both claim is refused, so an
   extension can shadow neither a built-in nor a peer. `serve.boot`
   turns a `Collision` into a boot refusal through
-  `contributions.collision_message`, which names both origins.
+  `contributions.collision_message`, which names both origins. What a
+  registry produces reaches a session once: the prompt index and
+  `active_tool_names` are both fixed at session creation, so an
+  extension installed later is seen by the next session, not this one.
 - `client/serve.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*

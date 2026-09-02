@@ -92,7 +92,7 @@ here rather than at call time: the `agent_*` family when a messaging
 plane was wired, and `code_mode` only if this host has the toolchain and
 the build seed code mode needs (§15). It arrives as a *list of
 contributions* (`client/contributions.gleam`), each naming who it came
-from — a built-in, the code-mode pipeline, or a named extension — and
+from — a built-in or a named extension — and
 `contributions.registry` refuses a name two contributions both claim
 rather than letting the later one win, so nothing installed out of tree
 can redefine what `bash` means. A collision refuses the boot, naming both
