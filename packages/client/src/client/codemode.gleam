@@ -199,7 +199,7 @@ import codemode/vet
 import codemode/vet/policy as vet_policy
 import codemode/workspace
 import core/clock.{type Clock}
-import core/ids
+import core/ids.{type OpId}
 import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Subject}
@@ -1326,10 +1326,24 @@ fn unserved(
   )
 }
 
-// A fresh directory per execution. `delete` first because a directory left
-// by a previous execution under the same coordinates — a replayed step, an
-// interrupted run — must not have its stale contents join this build.
-fn prepare_root(root: String) -> Result(Nil, String) {
+/// A fresh directory per execution. `delete` first because a directory
+/// left by a previous execution under the same coordinates — a replayed
+/// step, an interrupted run — must not have its stale contents join this
+/// build.
+///
+/// Public because an extension dispatch stands up a satellite under the
+/// same work root without compiling anything first
+/// (`client/extension/dispatch`), and a second implementation of "make me
+/// a clean execution directory" is a second answer to what a stale one
+/// means.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.prepare_root("/w/.codemode/9f2b") == Ok(Nil)
+/// ```
+///
+pub fn prepare_root(root: String) -> Result(Nil, String) {
   let _cleared = simplifile.delete(root)
   simplifile.create_directory_all(root)
   |> result.map_error(fn(error) {
@@ -1340,10 +1354,21 @@ fn prepare_root(root: String) -> Result(Nil, String) {
   })
 }
 
-// An AF_UNIX socket the kernel will not bind is worth catching here,
-// where the workspace can be named in the answer, rather than as an
-// `einval` from `listen` three stages later.
-fn check_socket_path(root: String) -> Result(Nil, String) {
+/// An AF_UNIX socket the kernel will not bind is worth catching before a
+/// directory exists, where the workspace can be named in the answer,
+/// rather than as an `einval` from `listen` three stages later.
+///
+/// Public for the reason `prepare_root` is: the extension dispatch binds a
+/// socket under the same root and must ask the same question in the same
+/// place in the order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.check_socket_path("/w/.codemode/9f2b") == Ok(Nil)
+/// ```
+///
+pub fn check_socket_path(root: String) -> Result(Nil, String) {
   let path = socket_path(root)
   case bit_array.byte_size(<<path:utf8>>) > max_socket_path_bytes {
     False -> Ok(Nil)
@@ -1403,14 +1428,44 @@ fn check_socket_path(root: String) -> Result(Nil, String) {
 /// ```
 ///
 pub fn exec_root(config: Config, request: codemode_tool.Request) -> String {
+  work_root(
+    config,
+    op_id: request.op_id,
+    step_id: request.step_id,
+    source_index: request.source_index,
+  )
+}
+
+/// The same directory, named from the three coordinates directly.
+///
+/// Public and separate from `exec_root` because an extension dispatch has
+/// a `tool.Ctx` rather than a `codemode_tool.Request` and needs the very
+/// same digest: an extension tool call and a `code_mode` call in one
+/// assistant message are two executions at two source indices, and it is
+/// this one keying rule that stops them sharing a directory, a socket and
+/// a token file. Two implementations of it would be two chances to
+/// collide.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.work_root(config, op_id:, step_id: "turn-4", source_index: 0)
+/// ```
+///
+pub fn work_root(
+  config: Config,
+  op_id op_id: OpId,
+  step_id step_id: String,
+  source_index source_index: Int,
+) -> String {
   config.work_root
   <> "/"
   <> digest(
-    ids.op_id_to_string(request.op_id)
+    ids.op_id_to_string(op_id)
     <> "\n"
-    <> request.step_id
+    <> step_id
     <> "\n"
-    <> int.to_string(request.source_index),
+    <> int.to_string(source_index),
   )
 }
 
@@ -1648,14 +1703,43 @@ pub fn workspace_seam(
   config: Config,
   request: codemode_tool.Request,
 ) -> workspace.Workspace {
-  let filesystem = fs.real_filesystem()
-  let root = request.workspace
-  let request_strand = request.strand
+  workspace_seam_for(
+    config,
+    workspace: request.workspace,
+    strand: request.strand,
+    // The protected list rides the request's own base policy — the same
+    // value the launch composes against — so the bridge's write boundary
+    // and the jail's mask are fed from one source.
+    protected: request.base_policy.protected,
+  )
+}
 
-  // The protected list rides the request's own base policy — the same
-  // value the launch composes against — so the bridge's write boundary
-  // and the jail's mask are fed from one source.
-  let protected = request.base_policy.protected
+/// The same bridge, built from the three values it actually reads.
+///
+/// Separate from `workspace_seam` because an extension dispatch has a
+/// `tool.Ctx` and no `codemode_tool.Request`, and an extension satellite
+/// reaches `fs.*`, `kv.*`, `schedule.*` and `report.emit` through exactly
+/// this bridge (`client/extension/dispatch`). A second construction of
+/// these closures would be a second answer to what a jailed program may
+/// touch on the host, which is the one question this seam exists to
+/// answer once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.workspace_seam_for(config, workspace: "/w", strand: "main",
+/// //   protected: []).fs_read("src/main.gleam")
+/// ```
+///
+pub fn workspace_seam_for(
+  config: Config,
+  workspace workspace_root: String,
+  strand strand: String,
+  protected protected: List(String),
+) -> workspace.Workspace {
+  let filesystem = fs.real_filesystem()
+  let root = workspace_root
+  let request_strand = strand
   workspace.Workspace(
     fs_read: fn(path) { read_in(filesystem, root, path) },
     fs_list: fn(path) { list_in(filesystem, root, path) },
