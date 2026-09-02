@@ -25,6 +25,19 @@ pub type Command {
   /// Show the strand list.
   Strands
 
+  /// List every schedule the session holds — the operator's own tables
+  /// and the ones its strands created.
+  Schedules
+
+  /// Retire one schedule a strand created.
+  Unschedule(
+    /// The schedule's name, as the listing prints it.
+    name: String,
+    /// The strand it fires onto; `None` means the active strand, which
+    /// is the row an operator is usually looking at.
+    target: Option(String),
+  )
+
   /// Inspect the session's agents and sub-agents.
   Agents
 
@@ -196,6 +209,8 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/strands", "list session strands", False),
     Suggestion("/strand", "switch the active strand", True),
+    Suggestion("/schedules", "list session schedules", False),
+    Suggestion("/unschedule", "retire one schedule", True),
     Suggestion("/fork", "fork the active strand", True),
     Suggestion("/compact", "compact the active strand", False),
     Suggestion("/abort", "abort the live operation", False),
@@ -243,6 +258,8 @@ pub fn parse(input: String) -> Command {
     "/models" -> Models
     "/model" -> Models
     "/strands" -> Strands
+    "/schedules" -> Schedules
+    "/unschedule" -> MissingArgument("unschedule")
     "/agents" -> Agents
     "/sessions" -> Sessions
     "/notes" -> Notes
@@ -262,9 +279,29 @@ pub fn parse(input: String) -> Command {
     "/effort " <> rest -> required_argument("effort", rest, Effort)
     "/steer " <> rest -> required_argument("steer", rest, Steer)
     "/queue " <> rest -> required_argument("queue", rest, Queue)
+    "/unschedule " <> rest -> unschedule(rest)
     "/" <> rest -> Unknown(command_name(rest))
     text -> Prompt(text)
   }
+}
+
+// `/unschedule <name> [target]`. The target is optional because the
+// common case is a schedule on the strand the operator is already
+// watching; a second word names another one, which is how a heartbeat a
+// parent set onto a subagent is reached.
+fn unschedule(raw: String) -> Command {
+  case words(raw) {
+    [] -> MissingArgument("unschedule")
+    [name] -> Unschedule(name:, target: None)
+    [name, target, ..] -> Unschedule(name:, target: Some(target))
+  }
+}
+
+fn words(raw: String) -> List(String) {
+  raw
+  |> string.trim
+  |> string.split(" ")
+  |> list.filter(fn(word) { word != "" })
 }
 
 fn required_argument(
@@ -309,6 +346,8 @@ pub fn help_text() -> String {
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"
+  <> "/schedules        list session schedules\n"
+  <> "/unschedule <name> [target]  retire one schedule\n"
   <> "/strand <name>    switch the active strand\n"
   <> "/fork <name>      fork the active strand\n"
   <> "/compact          compact the active strand\n"

@@ -375,6 +375,78 @@ pub fn agents_test() {
   assert command.parse("/agents") == command.Agents
 }
 
+/// The operator's schedule surface: a listing with no argument, and a
+/// cancellation whose target defaults to the strand being watched.
+pub fn schedule_commands_test() {
+  assert command.parse("/schedules") == command.Schedules
+  assert command.parse("/unschedule poll")
+    == command.Unschedule(name: "poll", target: None)
+  assert command.parse("/unschedule poll sub:main/x")
+    == command.Unschedule(name: "poll", target: Some("sub:main/x"))
+  assert command.parse("/unschedule") == command.MissingArgument("unschedule")
+  assert command.suggestions("/unsch")
+    == [command.Suggestion("/unschedule", "retire one schedule", True)]
+}
+
+pub fn schedule_frames_test() {
+  assert protocol.schedules(10)
+    == "{\"v\":1,\"id\":10,\"cmd\":\"schedules\",\"body\":{}}"
+  assert protocol.schedule_cancel(11, "main", "heartbeat")
+    == "{\"v\":1,\"id\":11,\"cmd\":\"schedule_cancel\",\"body\":"
+    <> "{\"target\":\"main\",\"name\":\"heartbeat\"}}"
+}
+
+/// The fixture the server's own conformance corpus pins, decoded by the
+/// client's total decoder: the two implementations are kept compatible
+/// by these bytes rather than by discipline. The wake flag is the wire's
+/// one boolean and becomes two variants here, so a polarity flip would
+/// fail this rather than mislead an operator.
+pub fn schedules_snapshot_decodes_the_pinned_fixture_test() {
+  let frame =
+    "{\"v\":1,\"reply_to\":19,\"event\":\"snapshot\",\"body\":"
+    <> "{\"mode\":\"schedules\",\"schedules\":["
+    <> "{\"name\":\"nightly\",\"target\":\"main\",\"owner\":\"operator\","
+    <> "\"when\":\"every 3600s, at most 24 times\",\"wake\":true,"
+    <> "\"fired\":7,\"body\":\"summarize what changed today\"},"
+    <> "{\"name\":\"heartbeat\",\"target\":\"sub:main/reviewer-abc123\","
+    <> "\"owner\":\"main\",\"when\":\"every 300s, at most 20 times\","
+    <> "\"wake\":false,\"fired\":2,"
+    <> "\"body\":\"report where the review has got to\"}]}}"
+  assert protocol.decode_event(frame)
+    == Ok(
+      protocol.SchedulesSnapshot(schedules: [
+        protocol.ScheduleRow(
+          name: "nightly",
+          target: "main",
+          owner: "operator",
+          when: "every 3600s, at most 24 times",
+          wake: protocol.WakesIdle,
+          fired: 7,
+          body: "summarize what changed today",
+        ),
+        protocol.ScheduleRow(
+          name: "heartbeat",
+          target: "sub:main/reviewer-abc123",
+          owner: "main",
+          when: "every 300s, at most 20 times",
+          wake: protocol.SteersOnly,
+          fired: 2,
+          body: "report where the review has got to",
+        ),
+      ]),
+    )
+
+  // A `wake` of the wrong type is a refused body, not a defaulted one.
+  let assert Error(reason) =
+    protocol.decode_event(
+      "{\"v\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"schedules\","
+      <> "\"schedules\":[{\"name\":\"n\",\"target\":\"main\","
+      <> "\"owner\":\"main\",\"when\":\"once\",\"wake\":1,"
+      <> "\"fired\":0,\"body\":\"b\"}]}}",
+    )
+  assert reason == "wake must be a boolean"
+}
+
 pub fn sessions_command_opens_a_selectable_local_catalogue_test() {
   assert command.parse("/sessions") == command.Sessions
   assert command.suggestions("/sess")

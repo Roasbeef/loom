@@ -2011,6 +2011,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         notice: int.to_string(list.length(models)) <> " models loaded",
       )
     }
+    protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:) ->
       case model_name {
         Some(name) ->
@@ -2113,6 +2114,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
+    | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.StreamDelta(..)
@@ -2124,6 +2126,40 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> mark_activity
       |> invalidate_frame
   }
+}
+
+// One line per schedule, in the listing's own order — the operator's
+// standing tables first, then what the session grew. `owner` is printed
+// rather than derived: "operator" and a strand that happens to be called
+// something similar are told apart by the server and never here.
+fn append_schedules(model: Model, rows: List(protocol.ScheduleRow)) -> Model {
+  case rows {
+    [] -> append_system(model, "no schedules")
+    rows -> {
+      let listed =
+        list.fold(rows, model, fn(model, row) {
+          append_system(model, schedule_line(row))
+        })
+      Model(..listed, notice: int.to_string(list.length(rows)) <> " schedules")
+    }
+  }
+}
+
+fn schedule_line(row: protocol.ScheduleRow) -> String {
+  string.join(
+    [
+      row.name,
+      row.target,
+      row.owner,
+      row.when,
+      int.to_string(row.fired) <> " fired",
+      case row.wake {
+        protocol.WakesIdle -> "wakes"
+        protocol.SteersOnly -> "steers"
+      },
+    ],
+    "  ",
+  )
 }
 
 fn set_strand_phase(
@@ -3290,6 +3326,21 @@ fn submit_text(model: Model) -> Model {
         repaint_phase: !cleared.repaint_phase,
         notice: "agent inspector",
       )
+    command.Schedules ->
+      send_frame(cleared, protocol.schedules(cleared.next_id))
+    command.Unschedule(name:, target:) -> {
+      // An absent target means the strand the operator is looking at,
+      // which is the row the listing above the prompt just printed. A
+      // schedule a parent set onto a subagent needs the second word.
+      let target = option.unwrap(target, cleared.active_strand)
+      send_frame(
+        append_system(
+          cleared,
+          "cancelling schedule " <> name <> " on " <> target,
+        ),
+        protocol.schedule_cancel(cleared.next_id, target, name),
+      )
+    }
     command.Sessions -> open_session_selector(cleared)
     command.Notes ->
       Model(
@@ -3364,6 +3415,8 @@ fn submit_with_images(model: Model) -> Model {
         | command.Models
         | command.Model(_)
         | command.Strands
+        | command.Schedules
+        | command.Unschedule(..)
         | command.Agents
         | command.Sessions
         | command.Notes

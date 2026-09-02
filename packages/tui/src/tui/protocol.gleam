@@ -41,6 +41,38 @@ pub type ModelInfo {
   )
 }
 
+/// One schedule row from a `schedules` snapshot.
+pub type ScheduleRow {
+  ScheduleRow(
+    /// The schedule's name, and half of the pair a cancel names.
+    name: String,
+    /// The strand each fire lands on, and the other half of that pair.
+    target: String,
+    /// Who the schedule belongs to: `operator` for a configured table,
+    /// otherwise the name of the strand that created it.
+    owner: String,
+    /// The server's own rendering of the timing, printed verbatim.
+    when: String,
+    /// What a fire may do to a target that is idle when it arrives.
+    wake: ScheduleWake,
+    /// How many occurrences have already been spent.
+    fired: Int,
+    /// The text one fire injects.
+    body: String,
+  )
+}
+
+/// What one schedule's fire may do to an idle target. The wire carries
+/// this as a boolean; the boolean stops at the decoder below so no
+/// renderer has to remember which way round it was.
+pub type ScheduleWake {
+  /// The fire may start a fresh run (wire `true`).
+  WakesIdle
+
+  /// The fire only steers a run already open (wire `false`).
+  SteersOnly
+}
+
 /// One entry attributed to its strand.
 pub type EntryRecord {
   EntryRecord(
@@ -75,6 +107,13 @@ pub type Event {
   ModelsSnapshot(
     /// Every model the server exposes to this session.
     models: List(ModelInfo),
+  )
+
+  /// An authoritative replacement for the schedule listing — the reply
+  /// to `/schedules` and to a successful cancel alike.
+  SchedulesSnapshot(
+    /// Every schedule the session holds, configuration first.
+    schedules: List(ScheduleRow),
   )
 
   /// The active strand's effective model selection.
@@ -219,6 +258,32 @@ pub fn follow_up(id: Int, strand: String, text: String) -> String {
 /// ```
 pub fn models(id: Int) -> String {
   command(id, "models", [])
+}
+
+/// Encodes a request for the session's schedule listing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.schedules(10)
+/// ```
+pub fn schedules(id: Int) -> String {
+  command(id, "schedules", [])
+}
+
+/// Encodes a cancellation of one schedule, named by the strand it fires
+/// onto and its own name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.schedule_cancel(11, "main", "heartbeat")
+/// ```
+pub fn schedule_cancel(id: Int, target: String, name: String) -> String {
+  command(id, "schedule_cancel", [
+    #("target", json.String(target)),
+    #("name", json.String(name)),
+  ])
 }
 
 /// Requests one strand's effective configuration without changing it.
@@ -373,6 +438,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     }
     "strands" -> result.map(decode_strands(fields), StrandsSnapshot)
     "models" -> result.map(decode_models(fields), ModelsSnapshot)
+    "schedules" -> result.map(decode_schedules(fields), SchedulesSnapshot)
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
       use model_name <- result.try(optional_string(config, "model_name"))
@@ -447,6 +513,36 @@ fn decode_model(value: JsonValue) -> Result(ModelInfo, String) {
   use roles <- result.try(string_array(fields, "roles"))
   use active <- result.try(string_array(fields, "active"))
   Ok(ModelInfo(name:, dialect:, model_id:, roles:, active:))
+}
+
+fn decode_schedules(
+  fields: List(#(String, JsonValue)),
+) -> Result(List(ScheduleRow), String) {
+  case list.key_find(fields, "schedules") {
+    Error(Nil) -> Ok([])
+    Ok(json.Array(items)) -> list.try_map(items, decode_schedule)
+    Ok(_) -> Error("schedules must be an array")
+  }
+}
+
+fn decode_schedule(value: JsonValue) -> Result(ScheduleRow, String) {
+  use fields <- result.try(object_fields(value, "schedule"))
+  use name <- result.try(required_string(fields, "name"))
+  use target <- result.try(required_string(fields, "target"))
+  use owner <- result.try(required_string(fields, "owner"))
+  use when <- result.try(required_string(fields, "when"))
+
+  // The wire's one boolean, turned into the two variants a renderer can
+  // print without carrying the polarity of the field's name.
+  use wake <- result.try(case list.key_find(fields, "wake") {
+    Ok(json.Bool(True)) -> Ok(WakesIdle)
+    Ok(json.Bool(False)) -> Ok(SteersOnly)
+    Ok(_) -> Error("wake must be a boolean")
+    Error(Nil) -> Error("wake is required")
+  })
+  use fired <- result.try(required_int(fields, "fired"))
+  use body <- result.try(required_string(fields, "body"))
+  Ok(ScheduleRow(name:, target:, owner:, when:, wake:, fired:, body:))
 }
 
 fn decode_delta(body: JsonValue) -> Result(Event, String) {
@@ -541,6 +637,17 @@ fn required_string(
   case list.key_find(fields, key) {
     Ok(json.String(value)) -> Ok(value)
     Ok(_) -> Error(key <> " must be a string")
+    Error(Nil) -> Error(key <> " is required")
+  }
+}
+
+fn required_int(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(Int, String) {
+  case list.key_find(fields, key) {
+    Ok(json.Int(value)) -> Ok(value)
+    Ok(_) -> Error(key <> " must be an integer")
     Error(Nil) -> Error(key <> " is required")
   }
 }
