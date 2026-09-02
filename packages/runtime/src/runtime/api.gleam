@@ -1107,22 +1107,23 @@ pub fn send_to_strand(
   to target: String,
   message message: AgentMessage,
 ) -> Result(Delivery, ApiError) {
-  send_attempts(on_strand(runtime, target), message, 4)
+  send_attempts(on_strand(runtime, target), message, None, 4)
 }
 
 fn send_attempts(
   target: Runtime,
   message: AgentMessage,
+  mark: Option(Mark),
   attempts: Int,
 ) -> Result(Delivery, ApiError) {
   use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
-  case steer_quietly(target, message) {
+  case enqueue(target, message, queue.enqueue_steer, mark) {
     Ok(entry) -> {
       nudge(target)
       Ok(Steered(entry:))
     }
     Error(QueueRejected(reason: queue.NoActiveRun)) ->
-      case accept_quietly(target, [message]) {
+      case accept_request(target, AcceptRun(prompts: [message]), mark) {
         Ok(operation) -> {
           nudge(target)
           Ok(Started(operation:))
@@ -1131,7 +1132,7 @@ fn send_attempts(
         // A run opened between the steer refusal and the accept: try
         // the steer again.
         Error(AcceptRejected(reason: StrandBusy)) ->
-          send_attempts(target, message, attempts - 1)
+          send_attempts(target, message, mark, attempts - 1)
         Error(error) -> Error(error)
       }
     Error(error) -> Error(error)
@@ -1141,11 +1142,12 @@ fn send_attempts(
 /// Sends a message to another strand carrying one write-once claim, so
 /// whichever admission door it lands through — a steer onto an open run
 /// or a fresh run on an idle strand — the mark spends atomically with
-/// it. Same door as `send_to_strand`, same reconciliation between a
-/// concurrent steer and a concurrent accept; the difference is entirely
-/// in *why* a caller reaches for it — see `steer_marking`'s doc comment
-/// for the write-once argument this applies to whichever path the
-/// message actually takes.
+/// it. The same `send_attempts` as `send_to_strand`, with the mark
+/// threaded into both doors it tries, so the steer-versus-accept
+/// reconciliation exists once; the difference is entirely in *why* a
+/// caller reaches for it — see `steer_marking`'s doc comment for the
+/// write-once argument this applies to whichever path the message
+/// actually takes.
 ///
 /// ## Examples
 ///
@@ -1164,36 +1166,7 @@ pub fn send_to_strand_marking(
     when: !reserved_fact_key(mark.key),
     return: Error(UnreservedFactKey(key: mark.key)),
   )
-  send_attempts_marking(on_strand(runtime, target), message, mark, 4)
-}
-
-fn send_attempts_marking(
-  target: Runtime,
-  message: AgentMessage,
-  mark: Mark,
-  attempts: Int,
-) -> Result(Delivery, ApiError) {
-  use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
-  case steer_marking(target, message, mark:) {
-    Ok(entry) -> {
-      nudge(target)
-      Ok(Steered(entry:))
-    }
-    Error(QueueRejected(reason: queue.NoActiveRun)) ->
-      case accept_quietly_marking(target, [message], mark) {
-        Ok(operation) -> {
-          nudge(target)
-          Ok(Started(operation:))
-        }
-
-        // A run opened between the steer refusal and the accept: try
-        // the steer again.
-        Error(AcceptRejected(reason: StrandBusy)) ->
-          send_attempts_marking(target, message, mark, attempts - 1)
-        Error(error) -> Error(error)
-      }
-    Error(error) -> Error(error)
-  }
+  send_attempts(on_strand(runtime, target), message, Some(mark), 4)
 }
 
 /// Awaits another strand's terminal result for `operation` — the parent
@@ -1453,12 +1426,15 @@ pub const session_fact_prefix = "session/"
 pub const rule_fact_prefix = "rule/"
 
 /// The reserved `fact.custom` key prefix scheduled heartbeats keep their
-/// durable state under: one write-once fired-mark per
-/// `{strand, schedule, occurrence}` (`client/schedule` builds the key).
-/// The schedule *config* is never here — schedules are operator
-/// configuration read from `loom.toml`, exactly as rules are — and the
-/// only thing that has to survive a crash or a restart is which
-/// occurrences have already fired.
+/// durable state under. Two corners of it, disjoint by a second path
+/// segment (`client/schedule` builds both keys): `schedule/fired/…`, one
+/// write-once fired-mark per `{strand, schedule, occurrence}`, which is
+/// the only thing an operator's `[[schedule]]` needs to survive a crash
+/// or a restart; and `schedule/config/…`, one cell per schedule the
+/// model created for itself through the tool seam, overwritten with a
+/// tombstone when it is cancelled. An operator's schedules are never
+/// stored — they are read from `loom.toml` at boot, exactly as rules
+/// are.
 ///
 /// Disjoint from `rule_fact_prefix` on purpose, per the same reasoning
 /// that keeps `lineage/` two letters from the model-writable `agent/`
