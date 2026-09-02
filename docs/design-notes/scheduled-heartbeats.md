@@ -441,3 +441,63 @@ silently suppress each other's fires. Neither parser can catch it —
 they are indistinguishable — so the check lives in the seam, which is the
 one place that holds both lists at once (`client/scheduleseam`'s
 `Wiring.operator_schedules` exists for exactly this and nothing else).
+
+---
+
+## Addendum: what the review's filings became
+
+The eight issues the adversarial review left behind were triaged by what
+breaks if each is left alone, and the first wave closed the four that
+were correctness or a written decision. Each is recorded here because
+the section above says they were filed, and a reader who stops there
+would believe them open.
+
+**#162 and #164 closed together, and they interlock.** A model-created
+config cell is now claimed with `runtime/api.put_reserved_fact_expecting`
+on its absence — a reserved compare-and-set that did not exist and was
+added for this — so a name belongs to whichever writer commits first
+and the loser is answered `NameTaken`. The property "creating never
+silently replaces" therefore rests on the commit, on both doors, rather
+than on the tool door's `Exclusive` serialization, which never covered
+the satellite's per-plan processes. Cancellation deletes the cell
+through `runtime/api.delete_reserved_fact`, the blackboard's one delete
+door and reserved-only, instead of writing a tombstone over it. The two
+had to move together: once `create` commits on absence, a tombstone
+would hold a cancelled name for the life of the session, and `decode`
+refusing the value is no help because the claim never looks at it. What
+stays open is the ceiling, which N concurrent code-mode creates can
+still over-admit by up to `max_outstanding`; nothing rests on the exact
+count, so that is documented in `client/scheduleseam` rather than fixed.
+
+**#157 closed by moving the clock.** `expires_after_s` now counts from
+the instant the scanner first observes a schedule, recorded once under
+`schedule/seen/{strand}/{name}` with the same expect-absent claim, and
+`max_fires` alone still counts fired-marks. A schedule that never fires
+now ends when its window does. The scanner is the one writer, because
+`create` pokes it at once and a lost poke is bounded by the door-open
+rescan floor to under a minute of a seven-day window, late and never
+early. The seen cell is not yet reaped on cancel, so a *reused* name
+inherits the old clock; that is deliberately left for the ownership
+model below, which reaps marks and seen cells together.
+
+**#156 ruled: no.** `cap/schedule` stays off the orchestration seam. The
+bar the one shared entry meets is `cap/report`'s — `report.emit` mints
+nothing durable and causes no later effect — and `schedule.create`
+mints a durable cell whose purpose is to admit a turn later, with nobody
+present, which is authority however it is spelled. The intersection test
+pinning `["cap/report"]` is the ruling's checkable form.
+
+**#165 landed on the weft side.** weft 0.4.2 adds `weft/timer.Source`
+(`WallClock | Injected(after:)`) and `with_timer_source` on both the
+actor and the machine builder, the injected shape being exactly
+`runtime/effects.Timers.after`. The scanner's hand-rolled generation tag
+is ported onto a `weft/state_machine` named timeout once the ownership
+changes below have settled its shape, so the port is a refactor of a
+finished module rather than of a moving one.
+
+**#163 and #154 are the next wave, together**, because they are one
+question: who owns a schedule and how long it lives. The ruling is
+recorded there when it lands. **#161** stays closed as ruled; the
+default remains `steer`, and the facts it rests on are revisited after
+the ownership model exists rather than before.
+

@@ -408,13 +408,31 @@ The comment above the claim site in `strand_runtime.gleam` said the
 opposite until this change; the test was right and the comment was stale.
 
 **A model-created schedule may steer, but may not wake.**
-`ModelSchedulesSteer` is the default; the addendum in
-`docs/design-notes/scheduled-heartbeats.md` carries the argument, and
-**#161** is the evidence. None wakes an idle strand unless the operator
-writes `[schedules] model_created = "wake"`. A schedule always targets the
-strand that created it, and the schedule seam's private `create`, reached
-through `door`, refuses a subagent outright until the ownership model in
-#154 and #163 exists.
+`ModelSchedulesSteer` is the default; the addenda in
+`docs/design-notes/scheduled-heartbeats.md` carry the argument, and
+**#161** is the evidence: a fresh name is a fresh clock, so a woken model
+can create the next schedule before this one expires, and the priority
+order puts isolation before capability. None wakes an idle strand unless
+the operator writes `[schedules] model_created = "wake"`.
+
+**A schedule has an owner and a target, and lives no longer than its
+target** (#163, #154). The owner is the strand that created it or the
+operator; the target is the strand it fires onto and, with the name, its
+identity. A strand may target itself or a strand it spawned, decided from
+the lineage ledger and failing closed. Waking is for roots only whatever
+the policy says: a subagent has one run, so a schedule onto any `sub:`
+strand steers and holds. The scanner treats a reaped or settled target as
+expired, a `run_end` reaper removes a settled child's cells, and cancel
+retires marks, then the observation instant, then the config cell, so a
+reused name inherits nothing.
+
+**Expiry counts from first observation, not first fire** (#157), recorded
+once under `schedule/seen/`. **Cron is UTC with at most a fixed offset**,
+never a zone database; its first fire is its first match after the
+schedule was seen, unlike an interval, which fires the slot it is created
+inside. **No jitter**: one session is not a fleet. **`cap/schedule` stays
+off the orchestration seam** (#156): minting a future turn is authority
+`report.emit` does not carry.
 
 **`AGENTS.md` and `CLAUDE.md` are both read, in that order** (#169).
 `client/system_prompt.discover` fills two slots, a workspace file beats
@@ -528,9 +546,20 @@ somebody forgot.
   part of the installed subset, so the storage half exists; what does not
   is the server surfacing name, description and location in the system
   prompt. Track it on the extension route rather than building it twice.
-- **Scheduling follow-ups**: on behalf of a subagent (#154), `cap/schedule`
-  on the orchestration seam (#156), a schedule that never fires never
-  expires (#157), and #162 through #165.
+- **Scheduling**: the review's eight filings are answered (#162, #164,
+  #157, #163, #154 fixed; #156 ruled; #165 landed on both sides; #161
+  stays closed as ruled), cron and a relative one-shot are on every door,
+  and the `schedules`/`schedule_cancel` commands give the operator a live
+  surface. Still open, and named where it lives: an operator table with
+  `wake = true` onto a *live* subagent can wake it until the brief
+  settles; the model ceiling can over-admit by up to `max_outstanding`
+  under a code-mode fan-out; the scanner's settled-target check reads the
+  strand result through the writer, one round trip per subagent-targeted
+  schedule per tick. **weft 0.4.2 is not on hex**: the eight consumers
+  point at `../weft` (path dependency, as the phase-3 branch did) and the
+  last commit before merge switches them back to `>= 0.4.2 and < 1.0.0`;
+  until the release is published that resolution step is red, which is
+  expected.
 - **Compaction stages C1/C2 and memory stage M3** are out of the release
   by design and have no issue.
 
