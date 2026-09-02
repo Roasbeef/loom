@@ -534,7 +534,13 @@ pub fn seam_allowlist(
 fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
   case seam {
     vet_policy.WorkspaceSeam -> config.mcp
-    vet_policy.OrchestrationSeam -> mcp_wiring.none()
+
+    // The extension seam sees none of it either, and for a different
+    // reason than the orchestration seam's: an extension's allowlist is
+    // fixed at install and recorded, and a per-host widening applied
+    // afterwards would make an installed extension's reach depend on
+    // configuration the record never saw.
+    vet_policy.ExtensionSeam | vet_policy.OrchestrationSeam -> mcp_wiring.none()
   }
 }
 
@@ -596,6 +602,13 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
     vet_policy.WorkspaceSeam ->
       list.append(serviced_caps, workspace.serviced_caps)
     vet_policy.OrchestrationSeam -> orchestration.serviced_caps
+
+    // Phase 1 installs and compiles an extension; nothing dispatches one
+    // yet, so no router services this seam and advertising a capability
+    // would be a claim about a door that is not there. Written as its own
+    // arm rather than folded into the workspace one, so phase 2 has to
+    // change it deliberately.
+    vet_policy.ExtensionSeam -> []
   }
 }
 
@@ -891,8 +904,18 @@ pub fn seam(config: Config) -> codemode_tool.CodeMode {
 // because a `code_mode` that vanished would be a worse answer to a bug
 // than one that serves the narrower of the two.
 fn offered_seams(config: Config) -> codemode_tool.Seams {
-  case list.map(surface_seams(config.surface), seam_offer(config, _)) {
-    [] -> codemode_tool.one_seam(seam_offer(config, vet_policy.WorkspaceSeam))
+  let offers =
+    list.filter_map(surface_seams(config.surface), fn(seam) {
+      use named <- result.map(tool_seam(seam))
+      seam_offer(config, seam, named)
+    })
+  case offers {
+    [] ->
+      codemode_tool.one_seam(seam_offer(
+        config,
+        vet_policy.WorkspaceSeam,
+        codemode_tool.WorkspaceSeam,
+      ))
     [default, ..alternates] -> codemode_tool.Seams(default:, alternates:)
   }
 }
@@ -904,9 +927,10 @@ fn offered_seams(config: Config) -> codemode_tool.Seams {
 fn seam_offer(
   config: Config,
   seam: vet_policy.Seam,
+  named: codemode_tool.Seam,
 ) -> codemode_tool.SeamOffer {
   codemode_tool.SeamOffer(
-    seam: tool_seam(seam),
+    seam: named,
     allowed_imports: vet_policy.allowed_imports(seam_allowlist(config, seam)),
     serviced_caps: seam_caps_on(config, seam),
     extra_surfaces: mcp_wiring.surfaces(seam_mcp(config, seam)),
@@ -921,13 +945,25 @@ fn seam_offer(
 ///
 /// ```gleam
 /// assert codemode.tool_seam(vet_policy.WorkspaceSeam)
-///   == codemode_tool.WorkspaceSeam
+///   == Ok(codemode_tool.WorkspaceSeam)
 /// ```
 ///
-pub fn tool_seam(seam: vet_policy.Seam) -> codemode_tool.Seam {
+/// ```gleam
+/// assert codemode.tool_seam(vet_policy.ExtensionSeam) == Error(Nil)
+/// ```
+///
+pub fn tool_seam(seam: vet_policy.Seam) -> Result(codemode_tool.Seam, Nil) {
   case seam {
-    vet_policy.WorkspaceSeam -> codemode_tool.WorkspaceSeam
-    vet_policy.OrchestrationSeam -> codemode_tool.OrchestrationSeam
+    vet_policy.WorkspaceSeam -> Ok(codemode_tool.WorkspaceSeam)
+    vet_policy.OrchestrationSeam -> Ok(codemode_tool.OrchestrationSeam)
+
+    // The `code_mode` tool has no name for the extension seam, and the
+    // absence is the point rather than a gap: an extension is dispatched
+    // by the harness from an install record, never named by a model in a
+    // `code_mode` call, so there is no seam here for a model to select.
+    // A `Result` rather than a third mirrored variant keeps that fact in
+    // the type, where a caller has to answer it.
+    vet_policy.ExtensionSeam -> Error(Nil)
   }
 }
 
@@ -1272,7 +1308,8 @@ fn unserved(
 ) -> codemode_tool.Execution {
   let served =
     surface_seams(surface)
-    |> list.map(fn(one) { codemode_tool.seam_name(tool_seam(one)) })
+    |> list.filter_map(tool_seam)
+    |> list.map(codemode_tool.seam_name)
     |> string.join(", ")
   codemode_tool.Execution(
     result: codemode_tool.RunFailed(codemode_tool.StartFailed(
