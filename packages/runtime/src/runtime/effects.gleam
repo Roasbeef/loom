@@ -304,6 +304,20 @@ pub type Hooks {
     /// Whether a captured identity currently resolves (deferred polls,
     /// summary requests).
     resolution: fn(StrandConfiguration) -> ModelResolution,
+    /// `context`: the projected provider context for one generation
+    /// attempt, transformed before the request is dispatched.
+    ///
+    /// The list handed in is the *transient* projection the driver just
+    /// read, never a durable entry, so a transform here changes what one
+    /// request sees and nothing that was committed. That is what makes
+    /// the slot safe under the replay rule above: a crash before the
+    /// consuming commit re-projects and re-runs the transform, and the
+    /// second answer is as good as the first because neither was
+    /// written down.
+    ///
+    /// `default_hooks` supplies identity, so a host that installs
+    /// nothing here dispatches exactly the projection it read.
+    context: fn(OpId, List(AgentMessage)) -> List(AgentMessage),
   )
 }
 
@@ -387,6 +401,7 @@ pub fn default_hooks() -> Hooks {
     structural_decision: fn(_, _) { VerdictDeclined },
     summary_progress: fn(_, _, _) { SummaryProduced(summary: "", usage: None) },
     resolution: fn(_) { ModelResolved },
+    context: fn(_operation, context) { context },
   )
 }
 
