@@ -259,12 +259,13 @@ pub fn extract(gzipped: BitArray, caps: Caps) -> Result(Tree, ArchiveError) {
 /// even express, so the rules are the archive's plus three. A symlink
 /// is refused rather than followed, because following one is exactly
 /// the escape the archive reader refuses to admit. Anything that is not
-/// a regular file or a directory is refused. And any component
-/// beginning with `.git` is refused rather than skipped — a source
-/// directory is expected to be an export, not a working checkout, and
-/// refusing says so where a silent skip would let an operator install a
-/// tree whose digest does not describe what they pointed at. Note that
-/// this reaches `.github` too.
+/// a regular file or a directory is refused. And a directory named
+/// exactly `.git` is skipped, never opened, so that an operator can
+/// point the install at a working checkout and get the same tree an
+/// archive of that checkout would carry: the digest describes the
+/// export, which is what the extension is, and the object store is not
+/// part of it. Only that one name is special; `.github` and
+/// `.gitignore` are ordinary entries.
 ///
 /// `path` must name the directory rather than `.` or `..`, because the
 /// last component becomes `Tree.root` and has to be a legal path
@@ -1139,14 +1140,10 @@ fn walk_entry(
   name: String,
   state: Collecting,
 ) -> Result(Collecting, ArchiveError) {
-  // `.git` goes before the stat, so a repository's object store is
-  // never even opened.
-  use <- bool.lazy_guard(when: string.starts_with(name, ".git"), return: fn() {
-    Error(IllegalPath(
-      path: relative,
-      reason: "a component beginning with .git; an install takes an export, not a working checkout",
-    ))
-  })
+  // `.git` is skipped before the stat, so a repository's object store is
+  // never even opened; the export is the tree, and the checkout's history
+  // is not part of what the operator is approving.
+  use <- bool.guard(when: name == ".git", return: Ok(state))
 
   // `link_info` is lstat: it describes the link itself, so a symlink is
   // seen as a symlink rather than as whatever it points at.

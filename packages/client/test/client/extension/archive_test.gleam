@@ -576,19 +576,25 @@ pub fn from_directory_refuses_symlink_test() {
     ))
 }
 
-pub fn from_directory_refuses_git_test() {
+pub fn from_directory_skips_git_test() {
   let root = scratch("checkout")
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/.git")
     as "the fixture looks like a working checkout"
 
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/.github")
+    as "the fixture carries a .github directory too"
+
   write(root <> "/.git/HEAD", "ref: refs/heads/main\n")
+  write(root <> "/.github/workflow.yml", "on: push\n")
   write(root <> "/gleam.toml", "name = \"hello\"")
 
-  let assert Error(archive.IllegalPath(path: "checkout/.git", reason:)) =
-    archive.from_directory(root, archive.default_caps())
-    as "a working checkout is refused rather than silently pruned"
+  let assert Ok(tree) = archive.from_directory(root, archive.default_caps())
+    as "a working checkout reads as its export"
 
-  assert string.contains(reason, ".git")
+  // The object store is pruned and nothing else is: `.github` is an
+  // ordinary directory to the reader.
+  assert list.map(tree.files, fn(file) { file.path })
+    == [".github/workflow.yml", "gleam.toml"]
 }
 
 pub fn from_directory_missing_test() {
