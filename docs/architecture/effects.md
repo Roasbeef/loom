@@ -73,6 +73,64 @@ registry.npmjs.org"). `RefuseNarrowed` turns any shortfall into a
 structured denial before anything runs; `ProceedNarrowed` runs under the
 narrowed policy and lets the sandbox denial speak for itself.
 
+### Egress: a request made, not a socket opened
+
+The `Proxy` rung of that lattice has never been enforceable. `policy.
+narrow_unenforceable` turns every `NetworkProxy` into `NetworkOff` and
+records a `NarrowedNetwork`, because the egress proxy sidecar the design
+described was never built and the jail's own layers refuse a socket
+either way. ADR-007 does not build it. It observes that the programs
+Loom needs to give the network to — a jailed extension serving
+`net.request`, and `loom ext install` fetching an archive — do not want a
+socket, they want a request made and the response handed back. So
+`broker/egress` makes it, in the harness VM, and the jail's network
+namespace stays empty. That is the property the proxy was meant to
+preserve, reached without the sidecar.
+
+An `egress.Policy` is the whole permission: exact origins, no wildcards;
+the permitted methods; a response size cap; one deadline covering
+connect, every redirect hop and the body; which certificate roots the
+handshake may chain to; and the credential bindings. A binding names an
+*environment variable*, a header and an origin — `api_key_env` one layer
+down — and the broker reads the value at request time and injects it
+only on a hop to that origin. The extension's source never sees the key,
+no frame on the capability channel carries it, and no `Refusal` variant
+has a field one could occupy, so a rendered refusal cannot leak it
+either. `https` only; a caller header that would shadow a bound
+credential, or that the client owns (`Host`, `Content-Length`,
+`Transfer-Encoding`, `Connection`), is refused before a socket exists —
+as is any header, the injected credential's included, carrying a CR, LF
+or NUL, since `httpc` type-checks a header without scanning it and those
+bytes on the wire would let the sender append headers of its own. A
+character above latin-1 is refused for the mirror-image reason: `httpc`
+rejects the header itself and puts the offending *value* into the error
+term, so a credential holding one would print itself into a refusal.
+
+A redirect is treated as a new request rather than as a continuation:
+scheme, origin and method are re-judged on every hop, a 3xx is followed
+only under `SameHost(n)` and only within the origin, and a 303 becomes a
+bodyless `GET` that must itself be a permitted method. The size cap is
+enforced while the body streams — the request is cancelled the moment
+the accumulated body passes it, and a declared `Content-Length` over the
+cap is refused before any body is read. TLS is always `verify_peer` with
+hostname verification, in tests included: the suite runs a real loopback
+TLS origin whose chain is generated at test time and pins its root, so
+the client's verification path runs for real and the
+untrusted-certificate case is a second, unrelated root rather than a
+disabled check. TLS session resumption is off, because `ssl`'s client
+session cache is node-global and keyed on host and port alone and a
+resumed TLS 1.2 handshake carries no certificate — a session established
+under other roots, by another policy or by the provider's own client,
+would otherwise carry a request past the roots it was held to. That is
+also why "no path to `verify_none`" is a claim about every request
+rather than about the first one.
+
+What it does not do is bound *what* comes back. A permitted host can
+hand a jailed extension any bytes it likes; the allowlist is the trust
+decision and the cap is only a resource bound. The install path uses the
+same client under `egress.one_host`, on purpose, so a cap raised for one
+is raised for both.
+
 **Tokens bind and are spent once.** A token is 32 bytes from an injected
 entropy source, carrying a `Binding` of `{op_id, step_id, policy,
 deadline_ms}`. It travels only over the channel it authorizes and is
@@ -734,6 +792,7 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `broker/policy.gleam` | `SandboxPolicyV1` as a typed value; composition, grants, narrowings; the canonical codec. |
 | `broker/token.gleam`, `broker/budget.gleam` | Capability tokens — minting, binding, constant-time check, revocation — and pooled per-execution ledgers. |
 | `broker/escalation.gleam` | The denial → approval → single-consume machine and its events. |
+| `broker/egress.gleam` | Outbound HTTPS under a per-caller policy: the origin allowlist, the reserved headers, credential injection, the redirect walk, the streamed size cap. `broker/internal/ffi_egress` performs one hop on a broker-private `httpc` profile. |
 | `broker/framing.gleam`, `broker/exec.gleam` | The protocol broker-side with its pure deframer; the helper actor, fd-3 spawn, cancel ladder, and pool. |
 | `sandbox/cmd/loom-exec/main.go` | Role selection by first argument: server mode, `--exec` (stage 2), `--self-test`, `--probe-socket`, and `--allow-unenforced`, which serves on a platform Loom has no jail for. |
 | `sandbox/internal/jail/platform.go` | Whether this *build* has a jail for its OS at all — a different question from what the running kernel provides, and kept apart from it everywhere it surfaces. |
