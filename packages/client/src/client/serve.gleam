@@ -1880,7 +1880,7 @@ fn with_schedule_scanner(
         builder,
         schedulescan.supervised(
           schedulescan.default_options(configured)
-            |> with_model_door(door_open)
+            |> with_model_door(settings.schedule_policy)
             |> schedulescan.with_logger(logger),
           runtime,
           name,
@@ -1890,11 +1890,16 @@ fn with_schedule_scanner(
   }
 }
 
+// The scanner has to keep rescanning exactly when a schedule may appear
+// without anything in its own state changing, which is the policy's own
+// question rather than a second one. Asking the policy here rather than
+// threading the answer down as a flag keeps that decision and the
+// decision to start the scanner at all reading off one source.
 fn with_model_door(
   options: schedulescan.Options,
-  open: Bool,
+  policy: schedule.Policy,
 ) -> schedulescan.Options {
-  case open {
+  case schedule.policy_opens_the_door(policy) {
     True -> schedulescan.with_model_door_open(options)
     False -> options
   }

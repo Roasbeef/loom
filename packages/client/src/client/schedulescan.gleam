@@ -144,22 +144,38 @@ const late_grace_s = 5
 /// the next boot actually looks right away.
 const first_tick_delay_ms = 0
 
+/// Whether the model may create schedules of its own this session
+/// (`client/schedule.policy_opens_the_door`), as the scanner needs to
+/// know it.
+///
+/// It changes exactly one thing here, which is what the two names have
+/// to carry: whether a scan that finds nothing active may let the actor
+/// go quiet. Nothing else in this module branches on it.
+pub type ModelDoor {
+  /// The model may create a schedule at any moment, so a scan finding
+  /// nothing active keeps a slow rescan timer rather than going quiet —
+  /// a schedule can arrive without anything in this actor's own state
+  /// changing, and an actor that had gone quiet would never find out.
+  DoorOpen
+
+  /// The operator's list is the whole story. A scan finding nothing
+  /// active re-arms nothing, and the actor goes quiet for good.
+  DoorShut
+}
+
 /// What the scanner watches and how loudly it works.
 ///
 /// Constructor invariants: `schedules` is the parsed, validated operator
-/// schedule list (`client/schedule.parse`); with `model_door_open` false
+/// schedule list (`client/schedule.parse`); with `model_door` `DoorShut`
 /// an empty list makes every tick a no-op and the actor re-arms nothing,
 /// so it goes quiet after its first tick.
 pub type Options {
   Options(
     /// The operator's `[[schedule]]` tables, fixed for this boot.
     schedules: List(Schedule),
-    /// Whether the model may create schedules of its own this session
-    /// (`client/schedule.policy_opens_the_door`). It changes exactly one
-    /// thing here: a scanner with nothing active keeps a slow rescan
-    /// timer instead of going quiet, because a schedule may arrive
-    /// without anything in this actor's own state changing.
-    model_door_open: Bool,
+    /// Whether a schedule may appear between two ticks without this
+    /// actor being told through its own state.
+    model_door: ModelDoor,
     logger: Logger,
   )
 }
@@ -209,7 +225,7 @@ pub type Message {
 /// ```
 ///
 pub fn default_options(schedules: List(Schedule)) -> Options {
-  Options(schedules:, model_door_open: False, logger: log.discard())
+  Options(schedules:, model_door: DoorShut, logger: log.discard())
 }
 
 /// Declares that the model may create schedules this session, which keeps
@@ -223,7 +239,7 @@ pub fn default_options(schedules: List(Schedule)) -> Options {
 /// ```
 ///
 pub fn with_model_door_open(options: Options) -> Options {
-  Options(..options, model_door_open: True)
+  Options(..options, model_door: DoorOpen)
 }
 
 /// Sets the logger the scanner reports fires and refusals on.
@@ -419,10 +435,10 @@ fn rearm(state: State, statuses: List(ScheduleStatus)) -> Nil {
         Active(next_delay_ms:) -> Ok(next_delay_ms)
       }
     })
-  case delays, state.options.model_door_open {
-    [], False -> Nil
-    [], True -> arm(state, idle_rescan_ms())
-    [first, ..rest], _ -> arm(state, list.fold(rest, first, int.min))
+  case delays, state.options.model_door {
+    [], DoorShut -> Nil
+    [], DoorOpen -> arm(state, idle_rescan_ms())
+    [first, ..rest], _door -> arm(state, list.fold(rest, first, int.min))
   }
 }
 
