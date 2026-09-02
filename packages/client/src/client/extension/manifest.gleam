@@ -56,6 +56,16 @@ pub const schema_directory = "schema/"
 /// The only tier phase 1 installs.
 pub const jailed_tier = "jailed"
 
+/// The HTTP methods `[net].methods` may name.
+///
+/// A closed list checked at install rather than at dispatch, because
+/// `broker/egress.Method` is a closed type: a name outside this list has
+/// no value to become, so a manifest carrying one would translate to a
+/// policy permitting *nothing* while still reading as though it permitted
+/// something. `methods = ["get"]` is the case that matters — it installs
+/// clean and then refuses every request the extension makes.
+pub const http_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
+
 /// The hook events the ruling fixes. Decoded now, refused at install
 /// until phase 3 gives the harness a way to call into a satellite.
 pub const hook_events = [
@@ -437,6 +447,7 @@ fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
   use hosts <- result.try(string_list(fields, "[net]", "hosts"))
   use Nil <- result.try(unique(hosts, "[net].hosts entry"))
   use methods <- result.try(string_list(fields, "[net]", "methods"))
+  use Nil <- result.try(known_methods(methods))
   use max_response_bytes <- result.try(positive_int(
     fields,
     "[net]",
@@ -449,6 +460,23 @@ fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
   ))
   use secrets <- result.try(secrets_of(fields, hosts))
   Ok(Net(hosts:, methods:, max_response_bytes:, requests_per_call:, secrets:))
+}
+
+// A method `broker/egress` cannot name is refused here rather than
+// dropped later. Dropping narrows, which is the safe direction, but it
+// narrows *silently*: the policy would permit nothing while the record
+// and the boot log both went on quoting the list the author wrote.
+fn known_methods(methods: List(String)) -> Result(Nil, String) {
+  case list.filter(methods, fn(name) { !list.contains(http_methods, name) }) {
+    [] -> Ok(Nil)
+    unknown ->
+      Error(
+        "[net].methods names "
+        <> string.join(list.sort(unknown, string.compare), ", ")
+        <> ", which is not an HTTP method this client can send; it sends "
+        <> string.join(http_methods, ", "),
+      )
+  }
 }
 
 fn secrets_of(

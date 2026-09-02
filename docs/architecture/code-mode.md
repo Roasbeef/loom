@@ -381,6 +381,66 @@ extension's reach depend on configuration the record never saw. And
 returns a `Result`, because an extension is dispatched by the harness
 from an install record and never named by a model in a `code_mode` call.
 
+### Dispatching an extension: the router and the launch
+
+An extension seam is not only an allowlist. A call to an installed
+extension's tool is **one satellite execution of the artifact the install
+compiled**, driven from `client/extension/dispatch`, and the router that
+execution runs behind has one layer the code-mode path does not.
+
+```
+client/extension/seam.routing        ext.call, net.request
+  codemode/workspace.routing         fs.*, kv.*, schedule.*, report.emit
+    codemode/satellite.default_router  proc.run, then unsupported_cap
+```
+
+The bridge in the middle is the very one a code-mode program on this host
+gets — `client/codemode.workspace_seam_for`, which `workspace_seam`
+delegates to — so an extension reads and writes exactly what a program
+reads and writes, under the same containment. The MCP arm is absent by
+construction: `cap/mcp` is a harness-only capability on no seam, so an
+extension cannot name it and an arm for it would be a claim about reach
+the allowlist has already denied.
+
+**`ext.call` is how a node learns what it is for.** The artifact is
+compiled once and run many times, so the call is what varies. It is
+handed over on the capability channel rather than through the node's
+environment — where it would be untyped, size-limited and readable by
+every process in the jail — and the shape is pinned in `cap/ext`'s module
+doc: `{tool, args, strand, deadline_ms}`, `args` as JSON *text*, because
+`gleam_json`'s parser is the only route from bytes to a `Dynamic` the
+extension seam admits. `deadline_ms` is what is *left* when the node
+asks, which is why the harness side holds a thunk rather than a value.
+
+**`net.request` is finally served.** `cap/net` has declared it since the
+beginning and nothing has ever answered it: `broker/policy` narrows
+`NetworkProxy` to `NetworkOff` on every call because the egress proxy
+sidecar it was written for does not exist. ADR-007's observation is that
+a jailed extension does not want a socket, it wants a request made and
+the response handed back — so the arm is a `ServedHere` plan that calls
+`broker/egress` in the harness VM under a policy composed from the
+manifest, and the node's network namespace stays empty. That is the
+property every sandbox layer already enforces and the property the proxy
+was meant to preserve.
+
+The policy is `client/extension/policy.egress_for`: the manifest's
+`hosts`, `methods`, `max_response_bytes` and `[[net.secret]]` bindings
+verbatim, and `SameHost(2)` redirects, a fixed request timeout and
+`SystemRoots` fixed by the harness — because an author who could set
+`trust` could pin a root of their own choosing. `requests_per_call`
+becomes a `satellite.CapCeiling` on `net.request` for the reason that
+type argues at length: a program's loop pays nothing, so an implicit
+throttle removed has to be replaced by an explicit one. An extension that
+named no `[net]` table meets a standing `network_off` refusal on every
+request, before anything is decoded.
+
+**The credential never enters the jail.** A binding names an environment
+variable, a host and a header; `broker/egress` reads the value through an
+injected lookup after the origin and the method are judged, and puts it on
+the matching hop. It is in no capability frame, no `LaunchSpec`
+environment and no `env_allow` — `client/extension_e2e_test` reads the
+spec and taps every byte in both directions to say so.
+
 Vetting an extension is also vetting a *package* rather than a program,
 which `codemode/vet/package` owns. Three rules a single file does not
 need.

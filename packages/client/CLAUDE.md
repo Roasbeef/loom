@@ -765,12 +765,14 @@ over one session file. WP-L.
 
 ## Extensions
 
-`client/extension/*` is the install half of the extension design
-(`docs/design-notes/extension-architecture.md`, "Hardening the
-install"). Two rulings shape it: an install fetches a **tree, not a git
-session**, so there is no git client anywhere in the path; and the tree
-it fetches is **untrusted input read outside any jail**, so every reader
-here is total.
+`client/extension/*` is the install *and dispatch* halves of the
+extension design (`docs/design-notes/extension-architecture.md`,
+"Hardening the install" and "Tool registration and dispatch"). Three
+rulings shape it: an install fetches a **tree, not a git session**, so
+there is no git client anywhere in the path; the tree it fetches is
+**untrusted input read outside any jail**, so every reader here is
+total; and a tool call is **one jailed satellite execution**, so nothing
+an extension ships ever runs in the harness VM.
 
 - `client/extension/source` — the grammar of what an operator may type.
   `Source` is `LocalPath | ArchiveUrl | GitHub`; `parse` refuses
@@ -862,6 +864,77 @@ The rest of the path is phase 1's own, and each module is one question:
   first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
+
+Phase 2 adds the dispatch half, as three modules with no shared state:
+
+- `client/extension/policy` — pure. `egress_for(net, trust:)` turns the
+  manifest's `[net]` table into `Egress`: `Reaches(egress.Policy)` or
+  `ReachesNothing` for a manifest that named no table. `hosts`,
+  `methods`, `max_response_bytes` and the `[[net.secret]]` bindings are
+  the manifest's verbatim; `redirects` (`SameHost(2)`), `timeout_ms` and
+  `trust` are this module's, because none of the three is something an
+  extension author should be able to state about themselves.
+  `ceilings(net)` is `requests_per_call` on `net.request` plus one
+  `ext.call`. `denial(refusal)` sorts every `egress.Refusal` onto the
+  side of `cap/net.map_error`'s split it belongs on — a request the
+  policy would never have permitted carries a `NetDenied` code
+  (`not_allowed`, or `network_off` for no `[net]` at all, or `policy`
+  for the ceiling), and a permitted request that failed on the wire
+  carries `net_failed`, which is `NetFailed`. Filing one on the wrong
+  side is the difference between an author retrying and an author
+  reinstalling.
+- `client/extension/seam` — the router arms, msgpack in and msgpack out,
+  holding no policy at all. `routing(extension, over: inner)` answers
+  `ext.call` (`Extension.call` is a *thunk*: `deadline_ms` is what is
+  left, which is not known until the node has booted and asked) and
+  `net.request` (through `Egress.perform`, an injected function with the
+  policy, the credential lookup and the refusal mapping closed over), and
+  hands every other name down. `Ask`/`Answer` restate `cap/net`'s
+  `Request`/`Response` rather than naming `broker/egress`'s, so a test
+  drives the whole arm with a function and no socket. Every inbound field
+  is decoded totally; a malformed request is refused by the *plan*, so it
+  consumes no ordinal and no admission.
+- `client/extension/dispatch` — `tools(config, record, manifest,
+  sources:, artifact:)` turns one `installed.Ready` into `tool.Tool`
+  values (`prompt_snippet` from the manifest, schema read from the
+  installed `schema/` file, `replay: tool.Never`, `execution_mode:
+  tool.Exclusive` — neither declared by the manifest, because both are
+  judgements about what the harness may do with a call). Each `run`
+  prepares a work directory keyed by `codemode.work_root`, runs
+  `satellite.run` on the install's `artifact/` beam set under the
+  three-layer router — `seam.routing` over
+  `codemode.workspace_seam_for`'s bridge over `satellite.default_router`
+  — and settles the `outcome` frame with `settle`, which is public
+  because it is the one part of a dispatch a test can hold still. A
+  call's wall budget is `within`, the manifest's `timeout_ms` clamped to
+  the operator's `max_within_ms` — an extension tool is `Exclusive`, so
+  the call holds the strand's exclusive slot for the whole of it, and an
+  install is not a way to raise a host's ceiling. There
+  is no MCP arm: `cap/mcp` is on no seam, so an extension cannot name it.
+  `Ctx.grants` are **not** composed onto the run phase — an extension
+  runs at exactly what its install approved, where a `code_mode` call is
+  the model's own program in this turn and does compose them.
+
+**The credential path, stated once.** A `[[net.secret]]` names an
+environment variable, a host and a header. The *name* travels into
+`egress.Policy`; the value is read by `broker/egress` through the
+`secrets` function `serve` injects (`env_text`, the same store
+`api_key_env` reads), after the origin and the method are judged, and
+goes straight on the matching hop. It is in no `Tool`, no `seam.Answer`,
+no `egress.Refusal` (no variant has a field for one), no `node_env` and
+no `env_allow`, and `policy.summary` counts bindings rather than naming
+values. `client/extension_e2e_test` reads the `LaunchSpec` and taps every
+frame in both directions and asserts the value appears in neither.
+
+**Boot registration is in `serve.assemble`.** `extension_contributions`
+reads `installed.discover(record.root_for(Settings.home))`, logs each
+`Refused` under `extension.refused` (an operator who sees nothing cannot
+tell "broken" from "I imagined it"), logs `extension.unavailable` for a
+`Ready` on a host with no toolchain — no `erl` means no satellite, and
+registering tools that can only fail would put them in the provider's
+cached byte prefix — and appends one `contributions.Contribution` per
+extension after the built-ins. A repeated name refuses the boot in
+`contributions.registry`.
 
 **The verb split lives in `client.gleam`, not `serve.main`.** The
 installer needs the boot's own effect plane, so `extension/cli` imports
