@@ -41,6 +41,14 @@
 %% message.
 -define(EGRESS_REASON_LIMIT, 400).
 
+%% How deep a transport error term is printed before the rest is elided.
+%% Measured rather than guessed: 16 is where the shapes that carry the
+%% diagnosis survive whole — {failed_connect,[{to_address,_},{inet,_,
+%% {tls_alert,{unknown_ca,"..."}}}]} — while a forwarded handler crash
+%% carrying an #request{} in a stacktrace argument still elides its
+%% header list well before any value in it.
+-define(EGRESS_REASON_DEPTH, 16).
+
 %% crypto:strong_rand_bytes/1 — a cryptographically strong entropy
 %% source for capability token minting.
 strong_rand_bytes(Count) when is_integer(Count), Count >= 0 ->
@@ -199,8 +207,13 @@ egress_fetch(Method, Url, Headers, Body, MaxBytes, TimeoutMs, Roots) ->
         {'DOWN', Monitor, process, Worker, Reason} ->
             {fetch_failed, egress_reason(Reason)}
     after TimeoutMs + ?EGRESS_GRACE_MS ->
+        %% exit/2 is asynchronous, so the worker may still be between
+        %% sending its result and dying. Waiting for the DOWN makes the
+        %% flush conclusive: after it, no {Ref, _} can still arrive.
         erlang:exit(Worker, kill),
-        erlang:demonitor(Monitor, [flush]),
+        receive
+            {'DOWN', Monitor, process, Worker, _Killed} -> ok
+        end,
         egress_flush(Ref),
         fetch_timed_out
     end.
@@ -322,9 +335,18 @@ egress_sni(UrlList) ->
 %% policy named. There is deliberately no path here that reaches
 %% verify_none: an unverifiable peer is a TransportFailed, never a
 %% quieter success.
+%%
+%% reuse_sessions is off because ssl's client session cache is
+%% node-global and keyed on {host, port} alone. A resumed TLS 1.2
+%% handshake carries no Certificate message, so without this a session
+%% cached by any other policy — or by the provider's own client, which
+%% shares the node — would let a request skip the verification its roots
+%% were supposed to force. The policy's roots have to be applied to a
+%% full handshake every time or they are not applied at all.
 egress_ssl_options(Host, Roots) ->
     [{verify, verify_peer},
      {depth, 10},
+     {reuse_sessions, false},
      {server_name_indication, Host},
      {customize_hostname_check,
       [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]},
@@ -355,12 +377,20 @@ egress_await(RequestId, Deadline, MaxBytes) ->
                                     Body}}} ->
                     egress_whole(Status, Headers, Body, MaxBytes);
                 {http, {RequestId, {error, Reason}}} ->
-                    {fetch_failed, egress_reason(Reason)}
+                    egress_transport_error(Reason)
             after Left ->
                 egress_cancel(RequestId),
                 fetch_timed_out
             end
     end.
+
+%% httpc reports its own expiry as an ordinary error. It is the same
+%% event as the deadline above, so it answers the same way rather than as
+%% an opaque transport failure the caller would have to parse.
+egress_transport_error(timeout) ->
+    fetch_timed_out;
+egress_transport_error(Reason) ->
+    {fetch_failed, egress_reason(Reason)}.
 
 egress_begin(RequestId, Handler, Headers, Deadline, MaxBytes) ->
     Lowered = egress_headers(Headers),
@@ -400,7 +430,7 @@ egress_stream(RequestId, Handler, Deadline, MaxBytes, Acc, Size) ->
                     {fetched, egress_streamed_status(Lowered), Lowered,
                      iolist_to_binary(lists:reverse(Acc))};
                 {http, {RequestId, {error, Reason}}} ->
-                    {fetch_failed, egress_reason(Reason)}
+                    egress_transport_error(Reason)
             after Left ->
                 egress_cancel(RequestId),
                 fetch_timed_out
@@ -456,7 +486,14 @@ egress_cancel(RequestId) ->
         _Class:_Error -> ok
     end.
 
+%% ~0P rather than ~0p: a handler crash forwarded as {error, {Error,
+%% Stacktrace}} can carry an #request{} argument with the outgoing
+%% headers in it, and an unbounded print would put an injected credential
+%% into a refusal message. Depth 8 elides that while leaving the shapes
+%% that actually matter — {failed_connect,[{to_address,_},{inet,_,
+%% {tls_alert,{unknown_ca,_}}}]} — intact.
 egress_reason(Reason) ->
     Rendered = unicode:characters_to_binary(
-                 io_lib:format("~0p", [Reason]), unicode, utf8),
+                 io_lib:format("~0P", [Reason, ?EGRESS_REASON_DEPTH]),
+                 unicode, utf8),
     string:slice(Rendered, 0, ?EGRESS_REASON_LIMIT).

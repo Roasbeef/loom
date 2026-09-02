@@ -29,10 +29,12 @@
 //// policy, it is not returned, and no `Refusal` variant has a field it
 //// could occupy — which is why `describe` cannot leak one however it is
 //// called. A caller that tries to observe the key by naming its header
-//// itself is refused with `HeaderReserved` before a socket exists, and a
-//// binding whose variable is unset is `SecretMissing` before one exists
-//// either, so a missing key never degrades into an unauthenticated
-//// request that a hostile server gets to answer.
+//// itself is refused with `HeaderReserved` before a socket exists, a
+//// caller that tries to *append* one by ending a header early is refused
+//// with `HeaderMalformed` in the same pass, and a binding whose variable
+//// is unset is `SecretMissing` before a socket exists either, so a
+//// missing key never degrades into an unauthenticated request that a
+//// hostile server gets to answer.
 ////
 //// The URL is attacker-influenced too, so every hop re-runs the whole
 //// judgement — scheme, origin, method — rather than trusting that the
@@ -59,11 +61,31 @@
 ////   header. A caller-supplied `Host` would let the allowlist check and
 ////   the request the server actually sees disagree, so it is refused
 ////   rather than silently dropped.
-//// - **Connections are not reused.** Every request carries
-////   `Connection: close`, because `httpc` keys a pooled session on
-////   host and port and not on the TLS options that opened it — a pinned-
-////   root connection could otherwise serve a system-roots request to the
-////   same origin.
+//// - **Connections are not reused, and neither are TLS sessions.**
+////   Every request carries `Connection: close`, because `httpc` keys a
+////   pooled session on host and port and not on the TLS options that
+////   opened it — a pinned-root connection could otherwise serve a
+////   system-roots request to the same origin. `reuse_sessions` is off
+////   for the sharper version of the same problem: `ssl`'s client
+////   session cache is *node-global* and keyed on host and port alone,
+////   and a resumed TLS 1.2 handshake carries no certificate at all, so
+////   a session established by any other policy — or by the provider's
+////   own client, which shares this node — would let a request skip the
+////   verification its roots were supposed to force. A policy's roots
+////   have to be applied to a full handshake every time, or they are not
+////   applied at all.
+//// - **A header that could end early never reaches the socket.**
+////   `httpc` type-checks a header and does not scan it, so a CR, LF or
+////   NUL in a name or a value would reach the wire verbatim and let the
+////   caller append headers of its own — a second credential ahead of the
+////   injected one, a different `Host`, or a whole second request with a
+////   method this policy never permitted. Every header this module sends,
+////   the caller's and the injected credential's alike, is scanned for
+////   those code points first, and `HeaderMalformed` names the header
+////   with them escaped. The scan is over code points rather than
+////   substrings on purpose: `string.contains` works on grapheme
+////   clusters and CRLF is one cluster, so a substring scan for `"\r"`
+////   misses the exact sequence an injection uses.
 //// - **The size cap is enforced while the body streams**, but `httpc`
 ////   only streams a 200 or 206; for any other status it buffers the
 ////   whole body before the broker sees a byte. A declared
@@ -226,6 +248,11 @@ pub type Refusal {
   /// secret's header, or one of the client-owned transport headers.
   HeaderReserved(header: String)
 
+  /// A header name or value carries a byte that would end the header
+  /// early on the wire: CR, LF or NUL. The name is reported with those
+  /// bytes escaped, because this text is logged.
+  HeaderMalformed(header: String)
+
   /// A secret binding names an environment variable that is not set.
   /// The name is diagnostic; the value never existed to leak.
   SecretMissing(env: String)
@@ -261,6 +288,16 @@ const client_owned_headers = [
   "connection", "content-length", "host", "transfer-encoding",
 ]
 
+/// The code points that end a header early on the wire, each paired with
+/// how it is rendered when a refusal has to name it.
+///
+/// `httpc` type-checks a header but does not scan it, so any of these
+/// reaching the socket verbatim would let the sender append headers of
+/// its own — a second credential ahead of the injected one, a different
+/// `Host`, or an entire second request. One table rather than two lists
+/// so that a point cannot be refused without also being printable.
+const line_ending_escapes = [#(13, "\\r"), #(10, "\\n"), #(0, "\\0")]
+
 /// The scheme's default port, normalized away so that
 /// `https://example.com` and `https://example.com:443` compare equal.
 const default_https_port = 443
@@ -287,6 +324,15 @@ type Hop {
     body: BitArray,
     count: Int,
   )
+}
+
+/// A hop together with the origin it was already judged against.
+///
+/// The origin is carried rather than re-derived because `hop` has
+/// already parsed the URL to get it; a second parse on the redirect path
+/// would be a second chance to disagree with the first.
+type Walk {
+  Walk(attempt: Hop, origin: Origin)
 }
 
 /// Performs `request` under `policy`, reading any bound credential
@@ -394,6 +440,11 @@ pub fn describe(refusal: Refusal) -> String {
     HeaderReserved(header:) ->
       "header " <> header <> " is reserved and may not be set by the caller"
 
+    HeaderMalformed(header:) ->
+      "header "
+      <> header
+      <> " carries a line break or NUL and cannot be placed on the wire"
+
     SecretMissing(env:) ->
       "secret binding names "
       <> env
@@ -452,7 +503,7 @@ fn hop(
       roots(policy.trust),
     )
 
-  settle(policy, bound, deadline, attempt, outcome)
+  settle(policy, bound, deadline, Walk(attempt:, origin:), outcome)
 }
 
 /// Turns one hop's outcome into a response, a refusal, or another hop.
@@ -460,7 +511,7 @@ fn settle(
   policy: Policy,
   bound: List(#(Secret, String)),
   deadline: Int,
-  attempt: Hop,
+  walk: Walk,
   outcome: ffi_egress.FetchOutcome,
 ) -> Result(Response, Refusal) {
   case outcome {
@@ -469,7 +520,7 @@ fn settle(
     ffi_egress.Fetched(status:, headers:, body:) ->
       case location_of(status, headers) {
         Some(location) ->
-          redirect(policy, bound, deadline, attempt, status, location)
+          redirect(policy, bound, deadline, walk, status, location)
         None -> Ok(Response(status:, headers:, body:))
       }
 
@@ -490,15 +541,15 @@ fn redirect(
   policy: Policy,
   bound: List(#(Secret, String)),
   deadline: Int,
-  attempt: Hop,
+  walk: Walk,
   status: Int,
   location: String,
 ) -> Result(Response, Refusal) {
   use limit <- result.try(redirect_limit(policy, location))
-  use next <- result.try(redirect_target(attempt, location))
-  use _ <- result.try(within_hops(attempt, limit, next))
+  use next <- result.try(redirect_target(walk, location))
+  use _ <- result.try(within_hops(walk.attempt, limit, next))
 
-  hop(policy, bound, deadline, advance(attempt, status, next))
+  hop(policy, bound, deadline, advance(walk.attempt, status, next))
 }
 
 /// How many hops this policy permits, or the refusal for permitting
@@ -518,16 +569,19 @@ fn redirect_limit(policy: Policy, location: String) -> Result(Int, Refusal) {
 /// Resolution runs first so that a relative `Location` — which cannot
 /// leave the origin by construction — and an absolute one are judged by
 /// the same equality rather than by two different rules.
-fn redirect_target(attempt: Hop, location: String) -> Result(String, Refusal) {
+fn redirect_target(walk: Walk, location: String) -> Result(String, Refusal) {
   use next <- result.try(
-    resolve_location(attempt.url, location)
+    resolve_location(walk.attempt.url, location)
     |> result.replace_error(RedirectRefused(
       location,
       "the Location header is not a URL this client can resolve",
     )),
   )
 
-  case same_origin(attempt.url, next) {
+  // `parse_target` carries the scheme check, so a Location that
+  // downgrades to http:// is not this origin and is refused as a
+  // redirect rather than reaching `SchemeNotHttps` on the next hop.
+  case parse_target(next) == Ok(walk.origin) {
     True -> Ok(next)
     False ->
       Error(RedirectRefused(
@@ -600,18 +654,6 @@ fn resolve_location(base: String, location: String) -> Result(String, Nil) {
 
     None -> uri.merge(here, there) |> result.map(uri.to_string)
   }
-}
-
-/// Whether two URLs name the same permitted origin.
-///
-/// `parse_target` carries the scheme check, so a `Location` that
-/// downgrades to `http://` is not the same origin and is refused as a
-/// redirect rather than reaching `SchemeNotHttps` on the next hop.
-fn same_origin(base: String, next: String) -> Bool {
-  let here = parse_target(base)
-  let there = parse_target(next)
-
-  result.is_ok(here) && here == there
 }
 
 /// The origin a URL names, or why it cannot be requested at all.
@@ -707,10 +749,12 @@ fn check_method(policy: Policy, method: Method) -> Result(Nil, Refusal) {
   }
 }
 
-/// Refuses a caller header this module owns.
+/// Refuses a caller header this module owns or cannot safely send.
 ///
 /// This runs before anything is resolved or connected, so a caller
-/// cannot use a collision to learn whether a credential exists.
+/// cannot use a collision to learn whether a credential exists. The
+/// shape check comes first because a name carrying a line break would
+/// not match the reserved name it is trying to smuggle past.
 fn check_headers(
   policy: Policy,
   headers: List(#(String, String)),
@@ -721,13 +765,54 @@ fn check_headers(
     |> list.append(client_owned_headers)
 
   list.try_each(headers, fn(header) {
-    let #(name, _value) = header
+    let #(name, value) = header
+
+    use _ <- result.try(check_header_shape(name, value))
 
     case list.contains(reserved, string.lowercase(name)) {
       True -> Error(HeaderReserved(name))
       False -> Ok(Nil)
     }
   })
+}
+
+/// Refuses a header whose name or value could end the header early.
+fn check_header_shape(name: String, value: String) -> Result(Nil, Refusal) {
+  case ends_a_header(name) || ends_a_header(value) {
+    True -> Error(HeaderMalformed(escape_line_endings(name)))
+    False -> Ok(Nil)
+  }
+}
+
+/// How one code point is rendered, if it is one that ends a header.
+fn line_ending_escape(point: UtfCodepoint) -> Result(String, Nil) {
+  list.key_find(line_ending_escapes, string.utf_codepoint_to_int(point))
+}
+
+/// Whether a string carries a code point that ends a header on the wire.
+///
+/// Code points, not substrings, because Gleam's `string.contains` and
+/// `string.replace` work on grapheme clusters and **CRLF is a single
+/// cluster** — `string.contains("a\r\nb", "\r")` is `False`. A substring
+/// scan would therefore miss the one sequence a smuggled header actually
+/// uses, which is the whole point of the check.
+fn ends_a_header(text: String) -> Bool {
+  text
+  |> string.to_utf_codepoints
+  |> list.any(fn(point) { result.is_ok(line_ending_escape(point)) })
+}
+
+/// Renders the offending code points visibly, so a refusal that reaches
+/// a log cannot forge a line there the way the header would have forged
+/// one on the wire.
+fn escape_line_endings(text: String) -> String {
+  text
+  |> string.to_utf_codepoints
+  |> list.map(fn(point) {
+    line_ending_escape(point)
+    |> result.lazy_unwrap(fn() { string.from_utf_codepoints([point]) })
+  })
+  |> string.concat
 }
 
 /// Reads every bound credential before the first connection.
@@ -741,9 +826,18 @@ fn resolve_secrets(
   secrets: fn(String) -> Result(String, Nil),
 ) -> Result(List(#(Secret, String)), Refusal) {
   list.try_map(policy.secrets, fn(secret) {
-    secrets(secret.env)
-    |> result.map(fn(value) { #(secret, value) })
-    |> result.replace_error(SecretMissing(secret.env))
+    use value <- result.try(
+      secrets(secret.env) |> result.replace_error(SecretMissing(secret.env)),
+    )
+
+    // The value is operator-supplied rather than caller-supplied, so this
+    // is a configuration error and not an attack — but checking it here
+    // is what makes "no header this module sends can end early" a
+    // property of every header rather than of the caller's half. The
+    // refusal names the header, never the value.
+    use _ <- result.try(check_header_shape(secret.header, value))
+
+    Ok(#(secret, value))
   })
 }
 
