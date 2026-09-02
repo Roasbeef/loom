@@ -452,8 +452,8 @@ pub fn a_departed_host_says_it_is_gone_for_the_session_test() {
 
 pub fn an_invocation_that_outran_its_deadline_says_so_test() {
   // The deadline costs the extension its satellite, and the reply says
-  // both halves: this call did not finish, and a later one starts a new
-  // node rather than finding the old one.
+  // both halves: this call did not finish, and the extension is out for
+  // the rest of the session, so a model that reads it stops trying.
   let outcome =
     dispatch.settle(a_ctx(), a_record(), a_tool(), Error(hosts.Deadline))
   assert outcome.is_error == True
@@ -462,7 +462,7 @@ pub fn an_invocation_that_outran_its_deadline_says_so_test() {
     outcome.content
     as "one text block carries the failure"
   assert string.contains(text, "timeout")
-  assert string.contains(text, "new one")
+  assert string.contains(text, "rest of this session")
 }
 
 pub fn a_malformed_outcome_renders_rather_than_vanishing_test() {
