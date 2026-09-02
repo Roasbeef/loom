@@ -34,12 +34,12 @@
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
 ////   e598c08fecc9068f608dd85f7ed334435fa47a1e68ab6cce1ac98ed92eecab68  packages/cap/src/cap/runtime.gleam
-////   e5a4e778ae22b5c484126cb4644f651a2d4893f23c7f53ca8772f8f42d69a09d  packages/cap/src/cap/schedule.gleam
+////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 09abdb1a36a8ca73b5c9e9db9afa8170f1cbe04927f693c1780bcdc95253b45f
+//// Body digest (every line after the marker): dedd03589bf1905ab90fae2913c6c68228cc1aba8a1b65d59640b39c35f4fede
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -749,6 +749,28 @@ pub fn cancel_on(String, String) -> Result(Nil, ScheduleError)
 ///
 /// Capability: `schedule.create`.
 pub fn cron(String, String, Wake, String) -> Result(Created, ScheduleError)
+/// `cron`, with the expression's fields read against a clock a fixed
+/// offset from UTC — `\"+02:00\"`, `\"-05:30\"` — rather than against UTC
+/// itself.
+///
+/// Reach for this when somebody named a time in their own clock:
+/// `cron_at_offset(\"standup\", \"0 9 * * 1-5\", \"+02:00\", …)` is 09:00 in a
+/// UTC+02:00 country, which is 07:00 UTC. Everything else is `cron`'s:
+/// the grammar, the ORed day fields, the first fire being the first match
+/// after the host loaded the schedule.
+///
+/// It is a **fixed offset and not a timezone**. Loom carries no timezone
+/// database and has ruled that it will not, so nothing here follows a
+/// daylight-saving change: an offset written in summer fires an hour out
+/// all winter, and one written in winter fires an hour out all summer.
+/// Write the offset in force now, and say in the body which clock the
+/// schedule was set for, so whoever reads the fire can tell.
+///
+/// The offset is between `\"-14:00\"` and `\"+14:00\"`; anything outside
+/// that, or written any other way, is denied with `invalid_schedule`.
+///
+/// Capability: `schedule.create`.
+pub fn cron_at_offset(String, String, String, Wake, String) -> Result(Created, ScheduleError)
 /// `cron`, onto a strand this one spawned rather than onto itself. The
 /// target rule and the ownership rule are `every_on`'s exactly.
 ///
