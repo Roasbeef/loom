@@ -312,10 +312,14 @@ pub type RequestedTiming {
   /// seam parses it, because the seam owns the one RFC3339 parser.
   At(instant: String)
 
-  /// Fire on this five-field cron expression, UTC, as the model wrote
-  /// it. The seam parses it, for the reason it parses `At`: one grammar,
-  /// one parser, one set of refusals.
-  Cron(expression: String)
+  /// Fire on this five-field cron expression as the model wrote it,
+  /// read against a clock `utc_offset` hours and minutes from UTC.
+  ///
+  /// The seam parses both, for the reason it parses `At`: one grammar,
+  /// one parser, one set of refusals. `utc_offset` is `None` for plain
+  /// UTC, which is what a request that names no offset means and what
+  /// every request meant before the argument existed.
+  Cron(expression: String, utc_offset: Option(String))
 
   /// Fire once, `seconds` from now. The seam resolves it against the
   /// session's own clock, which is the whole point — see the type doc.
@@ -375,7 +379,9 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
       <> "one. Use `cron` when the time of day matters — `every_seconds` "
       <> "is a grid aligned to the epoch, so a daily interval always "
       <> "lands at 00:00 UTC and only `cron` can ask for 09:00 on "
-      <> "weekdays. A recurring schedule always expires on its own — "
+      <> "weekdays. `cron` is read in UTC unless `utc_offset` gives it a "
+      <> "fixed offset — that is an offset and not a timezone, so it does "
+      <> "not follow daylight saving. A recurring schedule always expires on its own — "
       <> "after "
       <> int.to_string(limits.default_max_fires)
       <> " fires or a week, whichever comes first — so it cannot run "
@@ -442,14 +448,34 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
             <> "on weekdays. Every field takes `*`, a number, a range "
             <> "`a-b`, a step `*/n` or `a-b/n`, or a comma-separated list "
             <> "of those; day-of-week is 0-7 with 0 and 7 both Sunday. "
-            <> "**All times are UTC** — there is no timezone or offset "
-            <> "handling anywhere. There is no seconds field, month and "
+            <> "The fields are read in **UTC** unless `utc_offset` says "
+            <> "otherwise, and that offset is a fixed number of hours and "
+            <> "minutes rather than a zone: nothing here follows "
+            <> "daylight-saving changes. There is no seconds field, month and "
             <> "day names such as JAN or MON are not understood, and "
             <> "neither are the extensions L, W, ? and #. When both day "
             <> "fields are restricted they are ORed, not ANDed, which is "
             <> "standard cron and surprising: \"0 9 1 * 1\" fires on the "
             <> "first of the month AND on every Monday. Give exactly one "
             <> "timing",
+          ),
+        ),
+        #(
+          "utc_offset",
+          tool.string_property(
+            "beside `cron` only: read the expression's fields against a "
+            <> "clock this far from UTC, written `[+-]HH:MM` — "
+            <> "\"+02:00\", \"-05:30\". Use it when somebody asked for a "
+            <> "time in their own clock: `cron` \"0 9 * * 1-5\" with "
+            <> "`utc_offset` \"+02:00\" is 09:00 in a UTC+02:00 country, "
+            <> "which is 07:00 UTC. Omit it and the expression is plain "
+            <> "UTC. It is a **fixed offset and not a timezone**: Loom "
+            <> "carries no timezone database, nothing here follows "
+            <> "daylight-saving changes, and a schedule written with the "
+            <> "summer offset will fire an hour out all winter. Write the "
+            <> "offset in force now, and say in the body which clock the "
+            <> "schedule was set for. Refused beside `every_seconds`, `at` "
+            <> "or `in_seconds`",
           ),
         ),
         #(
@@ -571,18 +597,19 @@ fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
   use at <- result.try(tool.optional_string(args, "at"))
   use expression <- result.try(tool.optional_string(args, "cron"))
   use in_seconds <- result.try(tool.optional_int(args, "in_seconds"))
+  use utc_offset <- result.try(tool.optional_string(args, "utc_offset"))
 
   let named =
     [
       option.map(in_seconds, In),
       option.map(every, Every),
-      option.map(expression, Cron),
+      option.map(expression, fn(text) { Cron(expression: text, utc_offset:) }),
       option.map(at, At),
     ]
     |> option.values
 
   case named {
-    [only] -> Ok(only)
+    [only] -> licensed_offset(only, utc_offset)
 
     [] ->
       Error(
@@ -598,6 +625,33 @@ fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
         <> "gave "
         <> string.join(list.map(named, timing_argument), " and ")
         <> ": a schedule fires on one timing, never two",
+      )
+  }
+}
+
+// `utc_offset` shifts the clock a calendar expression's fields are read
+// against, so beside any other timing it is a mistake about what the
+// argument does rather than a redundancy to drop.
+//
+// It is refused here rather than at the seam for the reason the timing
+// count is: the seam sees a `Timing` that has already forgotten which
+// spellings arrived, and a model told "utc_offset does not apply" needs
+// to know that what it applied the offset to was its own `every_seconds`.
+fn licensed_offset(
+  timing: RequestedTiming,
+  utc_offset: Option(String),
+) -> Result(RequestedTiming, String) {
+  case timing, utc_offset {
+    Cron(..), _offset | Every(..), None | At(..), None | In(..), None ->
+      Ok(timing)
+
+    Every(..), Some(_offset) | At(..), Some(_offset) | In(..), Some(_offset) ->
+      Error(
+        "utc_offset is only valid beside cron: it shifts the clock a "
+        <> "calendar expression's fields are read against, and "
+        <> timing_argument(timing)
+        <> " names no fields. An every_seconds grid is aligned to the "
+        <> "epoch, and an at instant already carries its own offset.",
       )
   }
 }

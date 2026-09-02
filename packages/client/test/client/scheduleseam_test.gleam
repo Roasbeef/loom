@@ -915,7 +915,7 @@ pub fn a_cron_schedule_is_created_and_listed_with_its_rendering_test() {
       ctx("main"),
       request(
         "standup",
-        schedule_tool.Cron(expression: "0 9 * * 1-5"),
+        schedule_tool.Cron(expression: "0 9 * * 1-5", utc_offset: None),
         schedule_tool.SteersOnly,
       ),
     )
@@ -938,6 +938,59 @@ pub fn a_cron_schedule_is_created_and_listed_with_its_rendering_test() {
   stop(rig)
 }
 
+// A `utc_offset` beside a cron argument is parsed by
+// `client/schedule`'s one `[+-]HH:MM` parser, stored in the cell, and
+// said out loud in the rendering — because a caller reading `0 9 * * 1-5`
+// back has no other way to know which 09:00 it got.
+pub fn a_cron_schedule_accepts_a_utc_offset_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Ok(created) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "standup",
+        schedule_tool.Cron(
+          expression: "0 9 * * 1-5",
+          utc_offset: Some("+02:00"),
+        ),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "a cron schedule with an offset must be created"
+  assert created.when == "cron \"0 9 * * 1-5\" UTC+02:00, at most 1000 times"
+
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "the config prefix must be readable"
+  let assert [#(_key, value)] = cells as "exactly one cell must be written"
+  let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
+  let assert schedule.Cron(offset_s:, ..) = stored.timing
+    as "the stored timing must be a Cron"
+  assert offset_s == 7200
+  stop(rig)
+}
+
+// The refusal is `client/schedule.parse_utc_offset`'s own, so an
+// operator's TOML key and a model's argument cannot disagree about what
+// `+15:00` means.
+pub fn a_cron_offset_the_grammar_refuses_is_refused_at_the_door_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Error(schedule_tool.Invalid(reason:)) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "standup",
+        schedule_tool.Cron(expression: "0 9 * * *", utc_offset: Some("+15:00")),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "an out-of-range offset must be refused at the door"
+  assert string.contains(reason, "utc_offset")
+  stop(rig)
+}
+
 pub fn a_cron_expression_the_grammar_refuses_is_refused_at_the_door_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"
@@ -946,7 +999,7 @@ pub fn a_cron_expression_the_grammar_refuses_is_refused_at_the_door_test() {
       ctx("main"),
       request(
         "monday",
-        schedule_tool.Cron(expression: "0 9 * * MON"),
+        schedule_tool.Cron(expression: "0 9 * * MON", utc_offset: None),
         schedule_tool.SteersOnly,
       ),
     )
@@ -1024,7 +1077,7 @@ pub fn a_cron_schedule_narrows_and_cannot_widen_its_bounds_test() {
     schedule_tool.Request(
       ..request(
         name,
-        schedule_tool.Cron(expression: "0 9 * * *"),
+        schedule_tool.Cron(expression: "0 9 * * *", utc_offset: None),
         schedule_tool.SteersOnly,
       ),
       max_fires:,

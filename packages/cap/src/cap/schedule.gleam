@@ -61,13 +61,22 @@
 //// `cron` exists because an interval cannot express a *phase*. The
 //// interval grid is aligned to the epoch, so `every(…, 86_400, …)` is
 //// always 00:00 UTC and no argument moves it. `cron("standup", "0 9 * *
-//// 1-5", …)` is 09:00 on weekdays. Everything is **UTC** — there is no
-//// timezone or offset handling anywhere in Loom — and the grammar is
-//// the standard five fields and nothing more: no seconds field, no
-//// month or day names (`JAN`, `MON`), and none of `L`, `W`, `?` or `#`.
-//// When *both* day fields are restricted they are ORed rather than
-//// ANDed, which is standard cron and catches everybody out: `"0 9 1 *
-//// 1"` fires on the first of the month *and* on every Monday.
+//// 1-5", …)` is 09:00 on weekdays. The grammar is the standard five
+//// fields and nothing more: no seconds field, no month or day names
+//// (`JAN`, `MON`), and none of `L`, `W`, `?` or `#`. When *both* day
+//// fields are restricted they are ORed rather than ANDed, which is
+//// standard cron and catches everybody out: `"0 9 1 * 1"` fires on the
+//// first of the month *and* on every Monday.
+////
+//// `cron`'s fields are read in **UTC**. `cron_at_offset` is the one way
+//// to move that, and what it takes is a **fixed offset** —
+//// `"+02:00"`, `"-05:30"` — and not a timezone: Loom carries no
+//// timezone database and has ruled that it will not, so nothing here
+//// follows a daylight-saving change and an offset written in summer
+//// fires an hour out all winter. Write the offset in force now, and say
+//// in the body which clock the schedule was set for. Every other
+//// function here is UTC, and an offset is refused beside any timing but
+//// `cron`, which names no fields for it to shift.
 ////
 //// `every_within` and `cron_within` are the same two recurring shapes
 //// with the expiry bounds stated rather than defaulted. They can only
@@ -382,6 +391,61 @@ pub fn cron(
     "cron",
     wire.string(expression),
   ))
+}
+
+/// `cron`, with the expression's fields read against a clock a fixed
+/// offset from UTC — `"+02:00"`, `"-05:30"` — rather than against UTC
+/// itself.
+///
+/// Reach for this when somebody named a time in their own clock:
+/// `cron_at_offset("standup", "0 9 * * 1-5", "+02:00", …)` is 09:00 in a
+/// UTC+02:00 country, which is 07:00 UTC. Everything else is `cron`'s:
+/// the grammar, the ORed day fields, the first fire being the first
+/// match after the host loaded the schedule.
+///
+/// It is a **fixed offset and not a timezone**. Loom carries no timezone
+/// database and has ruled that it will not, so nothing here follows a
+/// daylight-saving change: an offset written in summer fires an hour out
+/// all winter, and one written in winter fires an hour out all summer.
+/// Write the offset in force now, and say in the body which clock the
+/// schedule was set for, so whoever reads the fire can tell.
+///
+/// The offset is between `"-14:00"` and `"+14:00"`; anything outside
+/// that, or written any other way, is denied with `invalid_schedule`.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.cron_at_offset(
+///     "standup",
+///     "0 9 * * 1-5",
+///     "+02:00",
+///     schedule.WakesIdle,
+///     "Summarise what is in flight, as a standup note. 09:00 UTC+02:00.",
+///   )
+/// ```
+///
+pub fn cron_at_offset(
+  name: String,
+  expression: String,
+  offset: String,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create([
+    #("utc_offset", wire.string(offset)),
+    ..schedule_fields(
+      name,
+      body,
+      wake,
+      DefaultBounds,
+      "cron",
+      wire.string(expression),
+    )
+  ])
 }
 
 /// `cron`, onto a strand this one spawned rather than onto itself. The

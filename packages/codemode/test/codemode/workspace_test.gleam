@@ -59,6 +59,13 @@ type Seen {
   WriteAsked(path: String, contents: String)
   EditAsked(path: String, edits: Int)
   ScheduleCreateAsked(name: String)
+
+  // Recorded only when a request actually carried an offset, so every
+  // fixture that sends none reads exactly as it did before the field
+  // existed — and a request that carries one has to say so here rather
+  // than being invisible.
+  ScheduleOffsetAsked(offset: String)
+
   ScheduleListAsked
   ScheduleCancelAsked(name: String)
 }
@@ -123,6 +130,10 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
     },
     schedule_create: fn(request: workspace.ScheduleRequest) {
       process.send(seen, ScheduleCreateAsked(request.name))
+      case request.utc_offset {
+        None -> Nil
+        Some(offset) -> process.send(seen, ScheduleOffsetAsked(offset))
+      }
       Ok(workspace.ScheduleCreated(
         name: request.name,
         // The host resolves an absent target to the execution's own
@@ -1067,6 +1078,58 @@ pub fn the_expiry_bounds_reach_the_host_test() {
 
   assert drain(seen) == [ScheduleCreateAsked("poll")]
   assert field(value, "name") == Ok(text("poll"))
+}
+
+// `utc_offset` crosses the router untouched beside a cron expression:
+// the host owns the one `[+-]HH:MM` grammar, so this package parses
+// nothing and states no bound of its own.
+pub fn a_utc_offset_reaches_the_host_beside_cron_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("standup")),
+        #("body", text("look")),
+        #("cron", text("0 9 * * 1-5")),
+        #("utc_offset", text("+02:00")),
+      ]),
+    )
+    as "an offset beside cron must be serviced"
+
+  assert drain(seen)
+    == [ScheduleCreateAsked("standup"), ScheduleOffsetAsked("+02:00")]
+  assert field(value, "name") == Ok(text("standup"))
+}
+
+// An offset shifts a calendar expression's fields, and the other three
+// timings name none — so an offset without `cron` is refused here rather
+// than handed on for the host to invent a meaning for.
+pub fn an_offset_without_cron_is_refused_test() {
+  let timings = [
+    #("every_seconds", int(300)),
+    #("at", text("2026-09-01T09:00:00Z")),
+    #("in_seconds", int(600)),
+  ]
+  list.each(timings, fn(timing) {
+    let seen = recorder()
+    let denial =
+      refused(
+        answering(seen),
+        "schedule.create",
+        map([
+          #("name", text("poll")),
+          #("body", text("look")),
+          #("utc_offset", text("+02:00")),
+          timing,
+        ]),
+      )
+
+    assert denial.code == args.invalid_argument_code
+    assert string.contains(denial.message, "only valid beside `cron`")
+    assert drain(seen) == []
+  })
 }
 
 pub fn a_mistyped_expiry_bound_is_refused_test() {

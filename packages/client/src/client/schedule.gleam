@@ -55,6 +55,7 @@
 //// [[schedule]]
 //// name = "weekday-standup"
 //// cron = "0 9 * * 1-5"
+//// utc_offset = "+02:00"
 //// body = "Summarise what is in flight, as a standup note."
 ////
 //// [[schedule]]
@@ -108,6 +109,48 @@
 //// "86400s"` is a grid aligned to the epoch, so a daily heartbeat is
 //// always at 00:00 UTC, and `0 9 * * 1-5` is the only way to ask for
 //// 09:00 on weekdays.
+////
+//// ## A fixed offset, and deliberately not a timezone
+////
+//// A `Cron` carries an `offset_s` — seconds east of UTC, written
+//// `utc_offset = "+02:00"` in TOML and `utc_offset` at both
+//// model-facing doors — and zero, plain UTC, is what every schedule
+//// that does not name one gets. It exists because "09:00 my time" is
+//// the most common thing anybody actually wants from a calendar
+//// expression, and a five-field expression read in UTC cannot say it.
+////
+//// It is a **fixed offset**, and the distance between that and a
+//// timezone is the whole of what this feature costs. A zone is a
+//// *function from an instant to an offset*: Berlin is +01:00 in
+//// January and +02:00 in July, and answering which requires the IANA
+//// database and a plan for updating it twice a year. Loom carries no
+//// such database and has ruled that it will not. So a schedule written
+//// `+02:00` in summer keeps firing at that offset through the winter,
+//// an hour off the wall clock of whoever wrote it, and every
+//// description a model or an operator reads says so in those words: a
+//// fixed offset, no daylight-saving changes, write the offset in force
+//// now.
+////
+//// **The shift is a reading of the clock, never a change to an
+//// occurrence's identity.** An occurrence at UTC epoch second `t`
+//// matches when `client/cron.matches(expression, at_s: t + offset_s)`,
+//// and the three search functions below shift into that reading and
+//// shift straight back out — so every value they return, and therefore
+//// every occurrence id in a fired-mark key, is a **UTC** epoch second
+//// exactly as it was before offsets existed. That direction is what
+//// makes the feature additive rather than a migration: `fired_key`,
+//// `seen_key` and `config_key` are untouched, a cell written before the
+//// offset existed decodes with `offset_s` of zero (`utc_offset_s`
+//// absent), and changing a schedule's offset renames not one durable
+//// row. Had the ids been stored in shifted time instead, an offset
+//// edited later would have made the whole fire history unreadable and a
+//// schedule re-fire everything it had already done.
+////
+//// The bound is `min_utc_offset_s`..`max_utc_offset_s`, ±14 hours,
+//// which spans every offset any inhabited place uses. The key is
+//// admitted only beside `cron`: an `every` grid is aligned to the epoch
+//// and has no fields to read, and an `at` instant is RFC3339, which
+//// already carries its own offset in the text.
 ////
 //// ## The due occurrence, and where `Interval` and `Cron` differ
 ////
@@ -299,14 +342,24 @@ pub type Timing {
   /// was already under way when the schedule was created.
   Interval(seconds: Int, expiry: Expiry)
 
-  /// A five-field cron expression, UTC (`client/cron`). Unlike
+  /// A five-field cron expression, read against a UTC clock shifted by
+  /// `offset_s` (`client/cron`). Unlike
   /// `Interval` this can express a phase and a calendar shape —
   /// "09:00 on weekdays", "the first of the month" — and unlike
   /// `Interval` it never fires an occurrence that passed before the
   /// schedule was first observed, because a cron occurrence is an
   /// instant somebody named rather than a slot on a grid. See
   /// `cron_occurrence`.
-  Cron(expression: Expression, expiry: Expiry)
+  Cron(
+    expression: Expression,
+    /// Seconds east of UTC the expression's fields are read in, between
+    /// `min_utc_offset_s` and `max_utc_offset_s`, and `0` for plain UTC.
+    /// A **fixed** offset and not a timezone: see the module doc's
+    /// "A fixed offset, and deliberately not a timezone" section for
+    /// what that costs and why the alternative is not on offer.
+    offset_s: Int,
+    expiry: Expiry,
+  )
 
   /// One occurrence, at or after `at` (epoch seconds, UTC).
   OneShot(at: Int)
@@ -379,6 +432,21 @@ pub const default_expires_after_s = 604_800
 /// for the same reason `max_max_fires` is: the default already sits at
 /// the cap.
 pub const max_expires_after_s = 604_800
+
+/// The furthest east a `cron` schedule's `utc_offset` may sit, in
+/// seconds: 14 hours, which is the largest offset any inhabited place
+/// uses (Kiritimati, UTC+14). Wider than every real zone and narrow
+/// enough that an offset written by mistake — milliseconds, a bare hour
+/// count in the wrong unit — is refused rather than silently shifting a
+/// schedule by months.
+pub const max_utc_offset_s = 50_400
+
+/// The furthest west a `cron` schedule's `utc_offset` may sit, in
+/// seconds: 14 hours behind UTC. Symmetric with `max_utc_offset_s`
+/// rather than stopping at the real western extreme (UTC-12), because a
+/// symmetric bound is one rule a reader can hold and the asymmetry would
+/// buy nothing.
+pub const min_utc_offset_s = -50_400
 
 // The strand a schedule addresses when the operator names none.
 const default_target = "main"
@@ -462,8 +530,8 @@ fn parse_schedule(
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     [
-      "name", "target", "every", "cron", "at", "max_fires", "expires_after_s",
-      "wake", "body",
+      "name", "target", "every", "cron", "utc_offset", "at", "max_fires",
+      "expires_after_s", "wake", "body",
     ],
     place,
   ))
@@ -561,6 +629,7 @@ fn schedule_timing(
 
   case named {
     EveryKey -> {
+      use Nil <- result.try(refuse_cron_only_keys(fields, place, "every"))
       use seconds <- result.try(interval_seconds(fields, place))
       use expiry <- result.try(recurring_expiry(fields, place))
       Ok(Interval(seconds:, expiry:))
@@ -568,15 +637,70 @@ fn schedule_timing(
 
     CronKey -> {
       use expression <- result.try(cron_expression(fields, place))
+      use offset_s <- result.try(cron_utc_offset(fields, place))
       use expiry <- result.try(recurring_expiry(fields, place))
-      Ok(Cron(expression:, expiry:))
+      Ok(Cron(expression:, offset_s:, expiry:))
     }
 
     AtKey -> {
+      use Nil <- result.try(refuse_cron_only_keys(fields, place, "at"))
       use Nil <- result.try(refuse_recurring_only_keys(fields, place))
       use at <- result.try(one_shot_at(fields, place))
       Ok(OneShot(at:))
     }
+  }
+}
+
+// The one key that only means something beside `cron`.
+//
+// An offset shifts the clock a calendar expression's fields are read
+// against, and the other two timings have no fields to read: an `every`
+// grid is aligned to the epoch and an `at` is already an absolute
+// instant with its own offset written into the RFC3339 text. So
+// `utc_offset` beside either is a mistake about what the key does, and
+// silently ignoring it would leave an operator believing a schedule
+// fires at a local time it will not.
+fn refuse_cron_only_keys(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  timing: String,
+) -> Result(Nil, String) {
+  case dict.has_key(fields, "utc_offset") {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        place
+        <> ".utc_offset is only valid alongside .cron: it shifts the clock "
+        <> "a calendar expression's fields are read against, and ."
+        <> timing
+        <> " names no fields. An `every` grid is aligned to the epoch, and "
+        <> "an `at` instant already carries its own offset.",
+      )
+  }
+}
+
+// `utc_offset` is `[+-]HH:MM`, absent meaning UTC.
+//
+// Written as `+02:00` rather than as a number of hours or seconds
+// because that is the spelling every operator already knows from
+// RFC3339 and from the offsets a clock displays, and because a signed
+// number of hours cannot say `+05:30` at all — which India, Iran and
+// Nepal all need.
+fn cron_utc_offset(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Int, String) {
+  case dict.get(fields, "utc_offset") {
+    Error(Nil) -> Ok(0)
+    Ok(tom.String(text)) ->
+      parse_utc_offset(text)
+      |> result.map_error(fn(reason) { place <> ".utc_offset: " <> reason })
+    Ok(_other) ->
+      Error(
+        place
+        <> ".utc_offset must be a quoted offset of the form \"+02:00\" or "
+        <> "\"-05:30\"",
+      )
   }
 }
 
@@ -1404,10 +1528,16 @@ pub fn recurring_expired(
 ///
 pub fn cron_occurrence(
   expression expression: Expression,
+  offset_s offset_s: Int,
   now_s now_s: Int,
   since_s since_s: Int,
 ) -> Option(Int) {
-  case cron.previous_occurrence(expression, before_s: now_s + 1) {
+  // The search runs in shifted time and the answer is shifted back, so
+  // every instant that leaves this function is a UTC epoch second — the
+  // occurrence id a fired-mark is keyed on, unchanged by the offset. See
+  // the module doc's "A fixed offset" section for why that direction is
+  // load-bearing rather than tidy.
+  case cron.previous_occurrence(expression, before_s: now_s + offset_s + 1) {
     // No match within the search horizon looking backwards, which for
     // any expression that recurs means the schedule is younger than its
     // first occurrence.
@@ -1415,9 +1545,9 @@ pub fn cron_occurrence(
 
     // The match is real but predates the observation instant: it was
     // never asked for, so nothing is owed and nothing is recorded.
-    Some(occurrence) if occurrence < since_s -> None
+    Some(shifted) if shifted - offset_s < since_s -> None
 
-    Some(occurrence) -> Some(occurrence)
+    Some(shifted) -> Some(shifted - offset_s)
   }
 }
 
@@ -1470,16 +1600,21 @@ pub fn cron_occurrence(
 ///
 pub fn cron_late(
   expression expression: Expression,
+  offset_s offset_s: Int,
   occurrences occurrences: List(Int),
   occurrence occurrence: Int,
   since_s since_s: Int,
 ) -> Lateness {
-  case cron.previous_occurrence(expression, before_s: occurrence) {
+  // Shifted in, shifted out, exactly as `cron_occurrence` does it: the
+  // preceding occurrence is compared against `occurrences`, which holds
+  // UTC epoch seconds read off the fired-marks.
+  case cron.previous_occurrence(expression, before_s: occurrence + offset_s) {
     // Nothing precedes this occurrence within the horizon, so there is
     // no earlier window its absence could stand for.
     None -> OnTime
 
-    Some(preceding) -> preceding_lateness(occurrences, preceding, since_s)
+    Some(shifted) ->
+      preceding_lateness(occurrences, shifted - offset_s, since_s)
   }
 }
 
@@ -1531,11 +1666,17 @@ fn preceding_lateness(
 ///
 pub fn cron_next_delay_ms(
   expression expression: Expression,
+  offset_s offset_s: Int,
   now_s now_s: Int,
   now_ms now_ms: Int,
 ) -> Option(Int) {
-  cron.next_occurrence(expression, after_s: now_s)
-  |> option.map(fn(next) { int.max(next * 1000 - now_ms, 1000) })
+  // The search is in shifted time and the wait is in real time, so the
+  // match is shifted back before it meets `now_ms`. Shifting only one of
+  // the two would arm a delay wrong by the whole offset.
+  cron.next_occurrence(expression, after_s: now_s + offset_s)
+  |> option.map(fn(shifted) {
+    int.max({ shifted - offset_s } * 1000 - now_ms, 1000)
+  })
 }
 
 // --- the injected text ---------------------------------------------------
@@ -1906,8 +2047,9 @@ fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
       ..expiry_fields(expiry)
     ]
 
-    Cron(expression:, expiry:) -> [
+    Cron(expression:, offset_s:, expiry:) -> [
       #("cron", json.String(cron.source(expression))),
+      #("utc_offset_s", json.Int(offset_s)),
       ..expiry_fields(expiry)
     ]
 
@@ -2034,9 +2176,26 @@ fn stored_timing(
       use expression <- result.try(
         cron.parse(text) |> result.replace_error(Nil),
       )
+      use offset_s <- result.try(stored_utc_offset(fields))
       use expiry <- result.try(stored_expiry(fields))
-      Ok(Cron(expression:, expiry:))
+      Ok(Cron(expression:, offset_s:, expiry:))
     }
+  }
+}
+
+// The offset a stored cell names, defaulting to UTC.
+//
+// **Absent means zero**, and that is what keeps every cell written
+// before the offset existed decoding unchanged: such a cell described a
+// schedule read against plain UTC, which is exactly what an offset of
+// zero says. A field that is present but not an integer is refused
+// rather than defaulted, because a cell nothing in this build could have
+// written is not a schedule that runs today.
+fn stored_utc_offset(fields: List(#(String, JsonValue))) -> Result(Int, Nil) {
+  case field(fields, "utc_offset_s") {
+    Error(Nil) -> Ok(0)
+    Ok(json.Int(value: offset_s)) -> Ok(offset_s)
+    Ok(_other) -> Error(Nil)
   }
 }
 
@@ -2220,9 +2379,14 @@ fn checked_timing(timing: Timing) -> Result(Nil, String) {
     // Nothing to check about the expression itself: an `Expression`
     // exists only because `cron.parse` accepted it, and cron's own
     // minute granularity means the tightest thing the grammar can say is
-    // already at `min_interval_s`. So the expiry is the whole of the
-    // bound, and it is the same one an interval owes.
-    Cron(expiry:, ..) -> checked_expiry(expiry)
+    // already at `min_interval_s`. The offset is the one number a stored
+    // cell or a model argument can put out of range, so it is checked
+    // here where `decode` reaches it too, and the expiry is the same
+    // bound an interval owes.
+    Cron(offset_s:, expiry:, ..) -> {
+      use Nil <- result.try(checked_utc_offset(offset_s))
+      checked_expiry(expiry)
+    }
   }
 }
 
@@ -2244,6 +2408,28 @@ fn checked_interval(seconds: Int) -> Result(Nil, String) {
         <> "hard way — use `at`",
       )
     False, False -> Ok(Nil)
+  }
+}
+
+// The offset bound, held here rather than only in `parse_utc_offset`
+// because `decode` and the model-facing door both reach this
+// constructor with a number that never passed through that parser — a
+// cell an older build wrote, a bound a later build narrowed.
+fn checked_utc_offset(offset_s: Int) -> Result(Nil, String) {
+  case offset_s < min_utc_offset_s || offset_s > max_utc_offset_s {
+    True ->
+      Error(
+        "utc_offset_s must be between "
+        <> int.to_string(min_utc_offset_s)
+        <> " and "
+        <> int.to_string(max_utc_offset_s)
+        <> " seconds ("
+        <> render_utc_offset(min_utc_offset_s)
+        <> " to "
+        <> render_utc_offset(max_utc_offset_s)
+        <> ")",
+      )
+    False -> Ok(Nil)
   }
 }
 
@@ -2471,4 +2657,158 @@ pub fn relative_instant(
 pub fn render_instant(seconds: Int) -> String {
   timestamp.from_unix_seconds(seconds)
   |> timestamp.to_rfc3339(duration.seconds(0))
+}
+
+/// Parses a `[+-]HH:MM` clock offset into seconds east of UTC.
+///
+/// The one parser for the spelling every door uses — the `utc_offset`
+/// TOML key, the `utc_offset` tool argument, and the `utc_offset`
+/// capability field — because three grammars for one field is three ways
+/// to be slightly different about `+05:30`.
+///
+/// It is strict on purpose. The sign is mandatory (a bare `02:00` names
+/// no direction), both fields are exactly two digits, the minutes must
+/// be under 60, and the result is held to
+/// `min_utc_offset_s`..`max_utc_offset_s`. Every refusal is prose,
+/// because the only thing a caller does with it is show it to whoever
+/// wrote the offset.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.parse_utc_offset("+02:00") == Ok(7200)
+/// ```
+///
+/// ```gleam
+/// assert schedule.parse_utc_offset("-05:30") == Ok(-19_800)
+/// ```
+///
+pub fn parse_utc_offset(text: String) -> Result(Int, String) {
+  use sign <- result.try(offset_sign(text))
+  use #(hours, minutes) <- result.try(offset_digits(text))
+  let seconds = sign * { hours * 3600 + minutes * 60 }
+  case seconds < min_utc_offset_s || seconds > max_utc_offset_s {
+    True ->
+      Error(
+        "an offset must be between "
+        <> render_utc_offset(min_utc_offset_s)
+        <> " and "
+        <> render_utc_offset(max_utc_offset_s)
+        <> ", which spans every offset any inhabited place uses",
+      )
+    False -> Ok(seconds)
+  }
+}
+
+// Which direction the offset runs, refusing a spelling that names none.
+//
+// A bare `02:00` is the mistake worth wording rather than guessing at:
+// half the world would read it as east and half as "the local time is
+// two hours", and a schedule shifted the wrong way by four hours is a
+// heartbeat that fires in the middle of the night.
+fn offset_sign(text: String) -> Result(Int, String) {
+  case string.starts_with(text, "+"), string.starts_with(text, "-") {
+    True, _west -> Ok(1)
+    _east, True -> Ok(-1)
+    False, False ->
+      Error(
+        "an offset must start with `+` or `-`, for example \"+02:00\" or "
+        <> "\"-05:30\": an unsigned offset names no direction",
+      )
+  }
+}
+
+// The `HH:MM` after the sign, as a pair of numbers.
+//
+// Exactly two digits each and a literal colon, so the length check
+// carries most of the grammar and the digit scan below it is bounded.
+// `24:00` is admitted by these rules and refused by the range check in
+// `parse_utc_offset`, which is the honest division: this function knows
+// the shape, that one knows what a clock offset may be.
+fn offset_digits(text: String) -> Result(#(Int, Int), String) {
+  use #(hours, minutes) <- result.try(offset_halves(text))
+  use hour <- result.try(clock_field(hours))
+  use minute <- result.try(clock_field(minutes))
+  case minute < 60 {
+    True -> Ok(#(hour, minute))
+    False -> Error(malformed_offset())
+  }
+}
+
+// The two halves either side of the colon, and nothing else: no colon,
+// or more than one, is a shape this grammar does not have.
+fn offset_halves(text: String) -> Result(#(String, String), String) {
+  case string.split(string.drop_start(text, 1), ":") {
+    [hours, minutes] -> Ok(#(hours, minutes))
+    [] | [_only] | [_first, _second, _third, ..] -> Error(malformed_offset())
+  }
+}
+
+// One two-digit clock field. The length check is what refuses `+2:00`
+// and `+02:5`, which `int.parse` alone would happily accept.
+fn clock_field(text: String) -> Result(Int, String) {
+  case string.length(text) == 2, int.parse(text) {
+    True, Ok(value) -> Ok(value)
+
+    True, Error(Nil) | False, Ok(_value) | False, Error(Nil) ->
+      Error(malformed_offset())
+  }
+}
+
+// The one wording every shape failure gets. A function rather than a
+// `const` because a Gleam constant must be a single literal and this is
+// two joined.
+fn malformed_offset() -> String {
+  "an offset must be written as `[+-]HH:MM` — two digits, a colon, "
+  <> "two digits — for example \"+02:00\" or \"-05:30\""
+}
+
+/// Renders seconds east of UTC as the clock an operator or a model
+/// reads: `"UTC"` at zero, and `"UTC+02:00"` or `"UTC-05:30"` otherwise.
+///
+/// Zero renders as bare `UTC` rather than as `UTC+00:00` because the
+/// overwhelming majority of schedules carry no offset at all, and a
+/// rendering that spelled one out on every row would train a reader to
+/// skip the part that matters on the rare schedule that has one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.render_utc_offset(0) == "UTC"
+/// ```
+///
+/// ```gleam
+/// assert schedule.render_utc_offset(-19_800) == "UTC-05:30"
+/// ```
+///
+pub fn render_utc_offset(offset_s: Int) -> String {
+  case offset_s == 0 {
+    True -> "UTC"
+    False -> {
+      let magnitude = int.absolute_value(offset_s)
+      "UTC"
+      <> offset_direction(offset_s)
+      <> two_digits(magnitude / 3600)
+      <> ":"
+      <> two_digits(magnitude % 3600 / 60)
+    }
+  }
+}
+
+// Which side of UTC an offset sits on, as the character a reader expects
+// in front of it.
+fn offset_direction(offset_s: Int) -> String {
+  case offset_s > 0 {
+    True -> "+"
+    False -> "-"
+  }
+}
+
+// A clock field, zero-padded, which is what makes `+02:00` read as an
+// offset rather than as arithmetic.
+fn two_digits(value: Int) -> String {
+  case value < 10 {
+    True -> "0" <> int.to_string(value)
+    False -> int.to_string(value)
+  }
 }

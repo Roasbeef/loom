@@ -394,9 +394,17 @@ pub type ScheduleRequest {
     /// A one-shot at an RFC3339 UTC instant, as the program wrote it.
     /// The host parses it: it owns the one parser.
     at: Option(String),
-    /// A recurring five-field cron expression, UTC, as the program wrote
-    /// it. The host parses it, for the reason it parses `at`.
+    /// A recurring five-field cron expression, as the program wrote it.
+    /// The host parses it, for the reason it parses `at`.
     cron: Option(String),
+    /// The clock `cron`'s fields are read against, as a `[+-]HH:MM`
+    /// offset from UTC, or `None` for plain UTC. The host parses it — it
+    /// owns the one offset grammar — and refuses it beside any other
+    /// timing, because an offset shifts a calendar expression's fields
+    /// and the other three timings have no fields. A **fixed** offset
+    /// and not a timezone: nothing in Loom follows daylight-saving
+    /// changes.
+    utc_offset: Option(String),
     /// A one-shot this many seconds from now. The host resolves it
     /// against the session's own clock, which is the point of the field:
     /// this package has no clock and neither does the program.
@@ -995,6 +1003,7 @@ fn schedule_create_plan(
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
   use cron <- result.try(optional_string(request.args, "cron"))
+  use utc_offset <- result.try(optional_string(request.args, "utc_offset"))
   use in_seconds <- result.try(optional_int(request.args, "in_seconds"))
   use max_fires <- result.try(optional_int(request.args, "max_fires"))
   use expires_after_s <- result.try(optional_int(
@@ -1006,6 +1015,7 @@ fn schedule_create_plan(
   // contradictory request costs one denial instead of a round trip into
   // a store that would have had to invent an answer.
   use Nil <- result.try(one_timing(every_seconds, at, cron, in_seconds))
+  use Nil <- result.try(licensed_offset(cron, utc_offset))
   Ok(
     ServedHere(fn() {
       case
@@ -1015,6 +1025,7 @@ fn schedule_create_plan(
           every_seconds:,
           at:,
           cron:,
+          utc_offset:,
           in_seconds:,
           max_fires:,
           expires_after_s:,
@@ -1074,6 +1085,30 @@ fn one_timing(
         <> "— this request gave "
         <> string.join(named, " and ")
         <> ": a schedule fires on one timing, never two",
+      ))
+  }
+}
+
+// `utc_offset` shifts the clock a calendar expression's fields are read
+// against, so it only means anything beside `cron`.
+//
+// Refused here rather than at the host for the reason `one_timing` is:
+// the denial a program reads names the argument it actually sent, and a
+// request that reached the host with an offset and no expression would
+// leave the host inventing what it meant.
+fn licensed_offset(
+  cron: Option(String),
+  utc_offset: Option(String),
+) -> Result(Nil, CapDenial) {
+  case cron, utc_offset {
+    Some(_expression), _offset | None, None -> Ok(Nil)
+
+    None, Some(_offset) ->
+      Error(args.invalid(
+        "`utc_offset` is only valid beside `cron`: it shifts the clock a "
+        <> "calendar expression's fields are read against, and no other "
+        <> "timing names fields. An `every_seconds` grid is aligned to the "
+        <> "epoch, and an `at` instant already carries its own offset.",
       ))
   }
 }

@@ -61,7 +61,9 @@ fn accepting() -> schedule.Schedules {
 fn describe(request: schedule.Request) -> String {
   let timing = case request.timing {
     schedule.Every(seconds:) -> "every " <> to_text(Some(seconds))
-    schedule.Cron(expression:) -> "cron " <> expression
+    schedule.Cron(expression:, utc_offset: None) -> "cron " <> expression
+    schedule.Cron(expression:, utc_offset: Some(offset)) ->
+      "cron " <> expression <> " offset " <> offset
     schedule.At(instant:) -> "at " <> instant
     schedule.In(seconds:) -> "in " <> to_text(Some(seconds))
   }
@@ -179,12 +181,12 @@ pub fn only_the_name_and_body_are_required_test() {
 }
 
 // The three facts a model cannot work out for itself and would get
-// wrong: that `in_seconds` exists because it has no clock, that cron is
-// UTC, and that the day fields are ORed.
+// wrong: that `in_seconds` exists because it has no clock, which clock
+// cron is read against, and that the day fields are ORed.
 pub fn the_descriptions_say_what_a_model_cannot_infer_test() {
   let schema = schema_text()
   assert string.contains(schema, "you have no clock")
-  assert string.contains(schema, "All times are UTC")
+  assert string.contains(schema, "read in **UTC** unless `utc_offset`")
   assert string.contains(schema, "ORed, not ANDed")
   assert string.contains(schema, "no seconds field")
 }
@@ -235,6 +237,74 @@ pub fn two_timings_are_refused_naming_both_test() {
     ])
   assert outcome.is_error as "two timings must be refused"
   assert string.contains(text_of(outcome), "in_seconds and cron")
+}
+
+// --- the offset is licensed by a cron timing -------------------------------
+
+// The offset reaches the seam beside the expression it shifts, and the
+// stub renders it back, so what the seam is handed is what the model
+// wrote and not a default this door invented.
+pub fn a_utc_offset_reaches_the_seam_beside_cron_test() {
+  let outcome =
+    run([
+      #("name", json.String("standup")),
+      #("body", json.String("look")),
+      #("cron", json.String("0 9 * * 1-5")),
+      #("utc_offset", json.String("+02:00")),
+    ])
+  assert !outcome.is_error as "an offset beside cron must succeed"
+  assert string.contains(text_of(outcome), "offset +02:00")
+}
+
+// The door does not parse the offset — the host owns the one grammar —
+// so a malformed one passes through here and is refused there. What this
+// pins is that no second grammar grew at this door.
+pub fn a_cron_with_no_offset_reaches_the_seam_as_utc_test() {
+  let outcome =
+    run([
+      #("name", json.String("standup")),
+      #("body", json.String("look")),
+      #("cron", json.String("0 9 * * 1-5")),
+    ])
+  assert !outcome.is_error as "a cron with no offset must succeed"
+  assert !string.contains(text_of(outcome), "offset")
+    as "an absent offset must reach the seam as absent, not as a default"
+}
+
+// An offset shifts a calendar expression's fields, and the other three
+// timings name no fields — so an offset beside one of them is a mistake
+// about what the argument does, refused in words naming the timing the
+// model actually wrote.
+pub fn an_offset_beside_another_timing_is_refused_test() {
+  let cases = [
+    #(#("every_seconds", json.Int(300)), "every_seconds"),
+    #(#("at", json.String("2026-09-01T09:00:00Z")), "at"),
+    #(#("in_seconds", json.Int(600)), "in_seconds"),
+  ]
+  list.each(cases, fn(one) {
+    let #(argument, named) = one
+    let outcome =
+      run([
+        #("name", json.String("poll")),
+        #("body", json.String("look")),
+        #("utc_offset", json.String("+02:00")),
+        argument,
+      ])
+    assert outcome.is_error as "an offset beside another timing must be refused"
+    assert string.contains(text_of(outcome), "only valid beside cron")
+    assert string.contains(text_of(outcome), named)
+  })
+}
+
+// The description has to say the two things a model will otherwise get
+// wrong: that the offset is fixed rather than a zone, and that nothing
+// here follows daylight saving.
+pub fn the_offset_description_says_it_is_not_a_timezone_test() {
+  let schema = schema_text()
+  assert string.contains(schema, "utc_offset")
+  assert string.contains(schema, "[+-]HH:MM")
+  assert string.contains(schema, "daylight-saving")
+  assert string.contains(schema, "fixed offset")
 }
 
 // --- the expiry bounds are licensed by a recurring timing ------------------

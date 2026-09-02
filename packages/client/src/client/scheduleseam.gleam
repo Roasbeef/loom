@@ -171,7 +171,7 @@ import gleam/bool
 import gleam/erlang/process.{type Name}
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
@@ -529,7 +529,7 @@ fn requested_timing(
       Ok(schedule.Interval(seconds:, expiry:))
     }
 
-    schedule_tool.Cron(expression:) -> {
+    schedule_tool.Cron(expression:, utc_offset:) -> {
       use expiry <- result.try(requested_expiry(request))
       use parsed <- result.try(
         cron.parse(expression)
@@ -537,7 +537,18 @@ fn requested_timing(
           schedule_tool.Invalid(reason: "cron: " <> reason)
         }),
       )
-      Ok(schedule.Cron(expression: parsed, expiry:))
+
+      // The offset goes through `client/schedule`'s one `[+-]HH:MM`
+      // parser, the same one the operator's `utc_offset` TOML key uses,
+      // so a model and an operator cannot disagree about what `+05:30`
+      // means. An absent argument is plain UTC.
+      use offset_s <- result.try(
+        requested_offset(utc_offset)
+        |> result.map_error(fn(reason) {
+          schedule_tool.Invalid(reason: "utc_offset: " <> reason)
+        }),
+      )
+      Ok(schedule.Cron(expression: parsed, offset_s:, expiry:))
     }
 
     schedule_tool.At(instant:) ->
@@ -551,6 +562,19 @@ fn requested_timing(
       |> result.map(fn(at) { schedule.OneShot(at:) })
       |> result.map_error(fn(reason) { schedule_tool.Invalid(reason:) })
     }
+  }
+}
+
+// The offset a request named, or plain UTC when it named none.
+//
+// Absent means zero rather than "unspecified", and that is the whole of
+// what makes the argument additive: every request written before the
+// offset existed asked for a UTC expression, which is exactly what an
+// offset of zero says.
+fn requested_offset(utc_offset: Option(String)) -> Result(Int, String) {
+  case utc_offset {
+    None -> Ok(0)
+    Some(text) -> schedule.parse_utc_offset(text)
   }
 }
 
@@ -955,7 +979,7 @@ fn unavailable(error: api.ApiError) -> schedule_tool.Refusal {
 /// // scheduleseam.describe_timing(schedule.OneShot(at: 0))
 /// //   == "once at 1970-01-01T00:00:00Z"
 /// // scheduleseam.describe_timing(cron_timing)
-/// //   == "cron \"0 9 * * 1-5\" UTC, at most 1000 times"
+/// //   == "cron \"0 9 * * 1-5\" UTC+02:00, at most 1000 times"
 /// ```
 ///
 pub fn describe_timing(timing: schedule.Timing) -> String {
@@ -967,14 +991,20 @@ pub fn describe_timing(timing: schedule.Timing) -> String {
       <> int.to_string(expiry.max_fires)
       <> " times"
 
-    // The expression as it was written, quoted, and `UTC` said out loud:
-    // a caller reading `0 9 * * 1-5` back has no other way to know which
-    // 09:00 it got, and this module is the last place that can say so
-    // before the string reaches a model.
-    schedule.Cron(expression:, expiry:) ->
+    // The expression as it was written, quoted, and the clock it is read
+    // against said out loud: a caller reading `0 9 * * 1-5` back has no
+    // other way to know which 09:00 it got, and this module is the last
+    // place that can say so before the string reaches a model. A
+    // schedule with no offset still reads `UTC`, and one with an offset
+    // reads `UTC+02:00` — a *fixed* offset, which is why the tool's own
+    // description says at length that it does not follow daylight
+    // saving.
+    schedule.Cron(expression:, offset_s:, expiry:) ->
       "cron \""
       <> cron.source(expression)
-      <> "\" UTC, at most "
+      <> "\" "
+      <> schedule.render_utc_offset(offset_s)
+      <> ", at most "
       <> int.to_string(expiry.max_fires)
       <> " times"
 

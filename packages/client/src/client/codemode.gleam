@@ -1871,7 +1871,9 @@ fn schedule_timing(
     [
       option.map(request.in_seconds, schedule_tool.In),
       option.map(request.every_seconds, schedule_tool.Every),
-      option.map(request.cron, schedule_tool.Cron),
+      option.map(request.cron, fn(expression) {
+        schedule_tool.Cron(expression:, utc_offset: request.utc_offset)
+      }),
       option.map(request.at, schedule_tool.At),
     ]
     |> option.values

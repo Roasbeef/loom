@@ -159,10 +159,27 @@ body = "Never force-push a shared branch. Open a new branch instead."
 #
 # `at` is a quoted RFC3339 UTC timestamp.
 #
-# EVERY TIME HERE IS UTC. Loom carries no timezone database and has ruled
-# that it will not, so `cron = "0 9 * * 1-5"` is 09:00 UTC on weekdays
-# and a scheduler on your machine that speaks local time will disagree
-# with this file by its own offset.
+# EVERY TIME HERE IS UTC unless a `cron` table says otherwise. Loom
+# carries no timezone database and has ruled that it will not, so `cron =
+# "0 9 * * 1-5"` on its own is 09:00 UTC on weekdays and a scheduler on
+# your machine that speaks local time will disagree with this file by its
+# own offset.
+#
+# `utc_offset` is how you write the local time you actually meant: a
+# fixed offset from UTC, `[+-]HH:MM`, between "-14:00" and "+14:00" and
+# valid ONLY beside `cron`. `cron = "0 9 * * 1-5"` with `utc_offset =
+# "+02:00"` is 09:00 in a UTC+02:00 country, which is 07:00 UTC.
+#
+# IT IS AN OFFSET AND NOT A TIMEZONE, and the difference will bite you
+# twice a year. A zone is a function from an instant to an offset —
+# Berlin is +01:00 in January and +02:00 in July — and answering which
+# needs the database Loom does not carry. A schedule you write "+02:00"
+# in summer keeps firing at that offset all winter, an hour off your own
+# clock. Write the offset in force now, say in the body which clock the
+# schedule was set for, and edit the table when the offset changes. What
+# the offset never touches is the fire history: an occurrence is recorded
+# under the UTC second it fell on, so adding or changing an offset
+# renames nothing and re-fires nothing.
 #
 # A cron schedule's first fire is its first match AFTER a running server
 # loaded it. A match earlier the same day, before the server came up, was
@@ -223,10 +240,11 @@ steer it back to the diff and ask for its findings so far.
 [[schedule]]
 name = "weekday-standup"
 cron = "0 9 * * 1-5"
+utc_offset = "+02:00"
 max_fires = 20
 body = """
 Summarise what is in flight and what is blocked, as a standup note. Keep
-it to five lines.
+it to five lines. This heartbeat was set for 09:00 on a UTC+02:00 clock.
 """
 
 [[schedule]]
