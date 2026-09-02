@@ -21,7 +21,7 @@ relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-Nineteen packages, eighteen Gleam and one Go, split across three planes.
+Twenty packages, nineteen Gleam and one Go, split across three planes.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -35,8 +35,9 @@ tree that carries out what that function returns.
 
 **The effect plane** touches the world: `provider` (the model SDK),
 `broker` (the one door), `sandbox` (the Go jailer), `tools` (the tool
-set), plus `codemode` and `cap` for programs the model writes, and `mcp`
-for the third-party servers those programs can be handed.
+set), plus `codemode` and `cap` for programs the model writes, `mcp`
+for the third-party servers those programs can be handed, and `ext` for
+the tools somebody else's repository contributes.
 
 `client` hosts all of it — the protocol, the hub, the websocket server,
 the production wiring, and the `loomd` entry point — and `tui` is
@@ -1368,7 +1369,7 @@ run inside the satellite and compose whatever the router does service.
 
 ### MCP servers, which are more modules
 
-The router's other arm is the nineteenth package. An MCP server — a
+The router's other arm is a package of its own. An MCP server — a
 third-party program speaking JSON-RPC 2.0 down a pipe — reaches a model
 through code mode and nowhere else: one `[mcp.<name>]` table in
 `loom.toml` becomes one generated Gleam module, and a program calls its
@@ -1394,6 +1395,76 @@ by the pooled effect cap, the wall deadline and one call timeout.
 `docs/architecture/mcp.md` is the depth, including the worked program a
 model would write and the decision about jailing a server, which is open
 rather than merely unbuilt.
+
+### Extensions, which are packages somebody else wrote
+
+The last way a capability reaches a model is the one that does not need a
+Loom release. An **extension** is a Gleam package in its own repository,
+installed by an operator, and it reaches the model as an ordinary
+registered tool — but its code never enters the harness VM. It is
+compiled by the harness at install and executed in the same satellite
+jail a code-mode program is executed in.
+
+`loom ext install <source>` is the whole operator surface, dispatched one
+module out of `client/serve` so that the installer can reach the boot's
+own build plane without an import cycle (`extension/cli.gleam:106`). The
+pipeline behind it is seven steps and every failure names the layer it
+came from (`extension/install.gleam:188`). The source is a local path, an
+`https://` tarball, or a GitHub repository that resolves to codeload's
+archive URL — **no git client anywhere**, because a hostile remote
+choosing the pack, the refs and the submodules is a large attack surface
+for something that only ever wanted a tree. The fetch is one `GET` under
+a `broker/egress` policy naming exactly one host, and the archive is read
+by a total tar reader that refuses links, devices, absolute paths, `..`
+and anything outside a printable path alphabet.
+
+Then the tree is *pruned*, and this is the step that reads oddly until
+you see what it prevents. `installed_subset` (`vet/package.gleam:201`)
+keeps `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
+`gleam.toml`, `README*` and `LICENSE*` and drops everything else — the
+tests, the `.gitignore`, the CI workflow, `build/`. A repository is not
+an installed extension, and the first attempt to install a real one was
+refused for having a test. It prunes first, ahead of the manifest, the
+vetting and the digest, so the digest the record stores describes the
+*installed* tree; a later load re-derives it and compares like with like
+rather than re-running the prune and hoping it lands the same way twice.
+
+What survives is vetted the way a code-mode program is, against a third
+allowlist: `extension_cap_modules` is the workspace seam widened by
+exactly `cap/ext` and `ext` (`vet/policy.gleam:453`). Then it is compiled
+by the same jailed, network-off `gleam build` code mode uses, against the
+same offline seed, and the install record is written last and the tree
+renamed into place after it — so a directory under `~/.loom/extensions`
+is either a complete install or absent. `check`
+(`extension/installed.gleam:197`) re-derives five things from disk on
+every read: the tree digest, the manifest, the vetting, the recorded
+allowlist, and the compiled artifact's own content address.
+
+Inside the jail the extension is an ordinary satellite with one extra
+question to ask. A code-mode program is submitted source with a `main`,
+so the harness knows its arguments at launch; an extension is compiled
+once and run many times, so *the call* is what varies. `serve`
+(`ext/runtime.gleam:84`) is the single line the generated entry module
+contains: it asks the harness which tool this execution is for through
+`call` (`cap/ext.gleam:77`), dispatches on the name, and returns one
+outcome frame. One satellite serves exactly one call.
+
+Registration is where an extension meets the harness, and the seam that
+lets it is `registry` (`client/contributions.gleam:191`): the tool table
+is an ordered list of contributions, each naming its origin. Within one
+contribution a repeated name is the author overriding themselves; between
+two it takes the boot down naming both, because an extension that could
+register `bash` would silently redefine what the model's `bash` call
+does.
+
+The credential is the part worth carrying away. An extension's manifest
+names an *environment variable* and the header it belongs in for one
+host; `request` (`broker/egress.gleam:374`) reads the value through an
+injected resolver at request time and puts it on the request the harness
+makes. The extension's source never sees it, no file holds it, and the
+`Refusal` type has no field one could occupy — so the renderer has
+nothing to redact. `docs/architecture/extensions.md` is the depth,
+including which phases are built and which are in flight.
 
 ## 16. Where the BEAM earns its place
 
@@ -1557,6 +1628,7 @@ that costs the least backtracking.
 | `broker/broker.gleam`, `broker/policy.gleam` | The one door and the composition lattice. |
 | `internal/jail/stage2.go` (in `sandbox`) | The security model, in one function. |
 | `client/gateway.gleam` | The outward face. `pull` (`:484`) and `run_command` (`:1078`) are the two halves. |
+| `client/extension/install.gleam` | How a capability arrives from outside the tree without entering it. `run` is the whole pipeline in five lines. |
 | `conformance/src/conformance/` | What "correct" means, executably. |
 
 Each package also carries a `README.md` — what it is for, and where in it
@@ -1568,7 +1640,8 @@ for the package you are about to change.
 
 For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `messaging.md`,
-`events.md`, `models.md`, `code-mode.md`, `mcp.md`, `simulation.md`. For
+`events.md`, `models.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
+`simulation.md`. For
 intent,
 `docs/loom-design.md`; for the frozen interfaces and normative
 conventions, `docs/loom-implementation-spec.md`; and for every place the
