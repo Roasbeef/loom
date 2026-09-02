@@ -148,6 +148,28 @@ pub fn vet_package(
   }
 }
 
+/// The module names a file list ships, e.g. `weather/forecast` for
+/// `src/weather/forecast.gleam`.
+///
+/// One definition, exported, because three callers need the same answer:
+/// this module's own widening, the manifest decoder deciding whether a
+/// tool's `entry` names a module the package holds, and discovery
+/// re-deriving both at load. Three copies of a two-line path transform is
+/// three chances for a package to vet against one set of names and be
+/// judged against another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert package.module_names_of([#("src/w/f.gleam", "")]) == ["w/f"]
+/// ```
+///
+pub fn module_names_of(files: List(#(String, String))) -> List(String) {
+  files
+  |> list.filter(fn(file) { is_module(file.0) })
+  |> list.map(fn(file) { module_of(file.0) })
+}
+
 /// Renders one rejection for an operator, without the path — the caller
 /// holds that and decides how to print it.
 ///

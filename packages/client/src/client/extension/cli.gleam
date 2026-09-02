@@ -183,6 +183,19 @@ fn word_or_flag(
   }
 }
 
+// The positional argument of a verb that names an *extension*, checked
+// against the grammar an install accepted it under. It is a delete that
+// makes this load-bearing: an extension's directory is the root joined
+// with its name, so an unchecked `..` would name the `.loom` directory
+// itself. Refusing here as well as in `client/extension/installed` is
+// deliberate — the CLI's refusal reads like a usage error, which is what
+// a typo is.
+fn named(flags: Flags) -> Result(String, String) {
+  use name <- result.try(required(flags, "an extension name"))
+  use Nil <- result.try(installed.named_extension(name))
+  Ok(name)
+}
+
 fn required(flags: Flags, what: String) -> Result(String, String) {
   case flags.positional {
     Some(value) -> Ok(value)
@@ -195,7 +208,12 @@ fn required(flags: Flags, what: String) -> Result(String, String) {
 // `/tmp/x/.loom/extensions` and a test needs no environment at all.
 fn root_of(flags: Flags) -> Result(record.Root, String) {
   case flags.home {
-    Some(home) -> Ok(record.root_for(home))
+    // Resolved rather than taken as typed. `install` runs its build from
+    // the working directory and the other three verbs do not, so a
+    // relative `--home` would name one directory to the installer and
+    // another to `list` a moment later — an extension installed and then
+    // invisible.
+    Some(home) -> result.map(absolute(home), record.root_for)
     None ->
       secret.lookup(secret.env(), "HOME")
       |> result.map(record.root_for)
@@ -203,6 +221,28 @@ fn root_of(flags: Flags) -> Result(record.Root, String) {
         "HOME is unset, so there is no ~/.loom to install into; pass --home",
       )
   }
+}
+
+fn absolute(path: String) -> Result(String, String) {
+  case string.starts_with(path, "/") {
+    True -> Ok(path)
+    False ->
+      use_working_directory(path)
+      |> result.replace_error(
+        "--home "
+        <> path
+        <> " is relative and the working directory is "
+        <> "unreadable, so it cannot be resolved",
+      )
+  }
+}
+
+fn use_working_directory(path: String) -> Result(String, Nil) {
+  use here <- result.map(result.replace_error(
+    simplifile.current_directory(),
+    Nil,
+  ))
+  here <> "/" <> path
 }
 
 // --- install ---------------------------------------------------------------
@@ -247,6 +287,10 @@ fn reported(
         "  tools:  " <> string.join(done.record.tools, ", "),
         "  digest: " <> done.record.tree_digest,
         "  where:  " <> done.directory,
+        // An operator installing third-party code is entitled to know
+        // whether the compile was actually jailed, and to be told in the
+        // same breath as they are told it worked.
+        "  jail:   " <> install.enforcement_line(done.enforcement),
       ])
   }
 }
@@ -378,7 +422,7 @@ fn list_command(arguments: List(String)) -> Result(List(String), String) {
 
 fn remove_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
-  use name <- result.try(required(flags, "an extension name"))
+  use name <- result.try(named(flags))
   use root <- result.try(root_of(flags))
   use Nil <- result.try(installed.remove(root, name))
   Ok(["removed " <> name])
@@ -386,7 +430,7 @@ fn remove_command(arguments: List(String)) -> Result(List(String), String) {
 
 fn verify_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
-  use name <- result.try(required(flags, "an extension name"))
+  use name <- result.try(named(flags))
   use root <- result.try(root_of(flags))
   case installed.one(root, name) {
     installed.Ready(record: written, manifest: decoded, artifact:) ->

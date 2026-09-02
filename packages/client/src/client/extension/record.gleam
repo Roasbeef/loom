@@ -203,6 +203,22 @@ pub fn file(root: Root, name: String) -> String {
   directory(root, name) <> "/" <> record_file
 }
 
+/// Where one extension's compiled beam set lives.
+///
+/// A function rather than a field read off the record, because the record
+/// stores the directory's *name* and a caller needs its path — and the
+/// path is a fact about the root, which the record does not carry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert record.artifact_at(record.root_at("/x"), "w") == "/x/w/artifact"
+/// ```
+///
+pub fn artifact_at(root: Root, name: String) -> String {
+  directory(root, name) <> "/" <> artifact_directory
+}
+
 /// Where one extension's vetted source lives.
 ///
 /// ## Examples

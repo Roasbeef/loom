@@ -24,6 +24,7 @@ import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
 import client/serve
+import codemode/build
 import codemode/compile
 import codemode/enforcement
 import codemode/vet/package
@@ -496,6 +497,133 @@ pub fn a_record_naming_another_extension_is_refused_test() {
   assert string.contains(reason, "other")
 }
 
+/// The one that could have deleted a home directory. `record.directory`
+/// joins the operator's word to the root, so an unchecked `..` names the
+/// `.loom` directory itself and `simplifile.delete` takes it. The gate is
+/// the manifest's own name grammar, which admits no `.` and no `/`.
+pub fn a_traversing_name_is_refused_test() {
+  let #(root, _done) = installed_hello("traversal")
+  let home = home_of(root)
+  let dotloom = home <> "/.loom"
+
+  list.each(["..", ".staging", "a/b", ".", "hello/../.."], fn(name) {
+    let assert Error(reason) = installed.remove(root, name)
+      as "a name outside the grammar must never reach a delete"
+    assert string.contains(reason, "not an extension name")
+
+    let assert installed.Refused(reason: verified, ..) =
+      installed.one(root, name)
+      as "and must never reach a read either"
+    assert string.contains(verified, "not an extension name")
+
+    let assert Error(from_cli) = cli.dispatch(["remove", name, "--home", home])
+      as "the CLI refuses it as a usage error"
+    assert string.contains(from_cli, "not an extension name")
+  })
+
+  // The point of all of that, asserted directly.
+  assert exists(dotloom)
+  assert exists(record.directory(root, "hello"))
+}
+
+/// A staging directory left by a crash is not an extension, and listing
+/// must not report it as a refused one.
+pub fn discovery_ignores_the_staging_directory_test() {
+  let #(root, _done) = installed_hello("staging-listed")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      record.path(root) <> "/" <> record.staging_directory <> "/abc",
+    )
+    as "the test must be able to leave staging behind"
+  let assert [installed.Ready(..)] = installed.discover(root)
+    as "only the installed extension is an extension"
+}
+
+/// Re-vetting the source says nothing about the bytes that run. A
+/// dispatch loads the artifact, so the artifact is checked too.
+pub fn a_tampered_artifact_is_refused_test() {
+  let #(root, _done) = installed_hello("artifact-swap")
+  let beam =
+    record.artifact_at(root, "hello") <> "/" <> compile.entry_module <> ".beam"
+  let assert Ok(Nil) = simplifile.write(to: beam, contents: "FOR2")
+    as "the test must be able to swap a beam"
+  let assert installed.Refused(reason:, ..) = installed.one(root, "hello")
+    as "a swapped artifact must refuse the extension"
+  assert string.contains(reason, "artifact no longer matches")
+}
+
+pub fn a_missing_entry_beam_is_refused_test() {
+  let #(root, _done) = installed_hello("artifact-gone")
+  let assert Ok(Nil) =
+    simplifile.delete(
+      record.artifact_at(root, "hello")
+      <> "/"
+      <> compile.entry_module
+      <> ".beam",
+    )
+    as "the test must be able to delete a beam"
+  let assert installed.Refused(reason:, ..) = installed.one(root, "hello")
+    as "an artifact with nothing to run must refuse the extension"
+  assert string.contains(reason, compile.entry_module)
+}
+
+/// A file that is not text is refused rather than dropped. Dropped, it
+/// would be staged under the installed extension's `src/` having passed
+/// no rule at all — neither vetted nor refused.
+pub fn a_binary_file_refuses_the_install_test() {
+  let root = fresh_root("binary-file")
+  let tree =
+    extensions.materialise(extensions.hello(), extensions.scratch("binary-src"))
+
+  // A lone 0xFF byte is not valid UTF-8 in any position.
+  let assert Ok(Nil) =
+    simplifile.write_bits(to: tree <> "/src/hello/nif.so", bits: <<0xFF>>)
+    as "the test must be able to plant a non-text file"
+  let assert Error(failure) =
+    install.run(
+      config(root, never_fetch),
+      source.LocalPath(path: tree),
+      rev: None,
+    )
+    as "a non-text file must refuse the install"
+  assert string.starts_with(install.describe(failure), "extract:")
+  assert string.contains(install.describe(failure), "src/hello/nif.so")
+  assert !exists(record.directory(root, "hello"))
+}
+
+/// The install says what the kernel enforced on the jail that built the
+/// artifact, and a build that reported nothing says so.
+pub fn an_install_carries_its_enforcement_report_test() {
+  let #(_root, done) = installed_hello("enforcement")
+  assert done.enforcement == enforcement.Unreported("the build was faked")
+  assert string.contains(
+    install.enforcement_line(done.enforcement),
+    "NO enforcement report",
+  )
+}
+
+/// A relative `--home` is resolved, because `install` runs from the
+/// working directory and the other verbs do not: taken as typed, an
+/// extension would install into one directory and be invisible from
+/// another a moment later.
+pub fn a_relative_home_resolves_test() {
+  let #(root, _done) = installed_hello("relative-home")
+  let assert Ok(here) = simplifile.current_directory()
+    as "the working directory must be readable"
+  let relative = relative_to(here, home_of(root))
+  let assert Ok(listed) = cli.dispatch(["list", "--home", relative])
+    as "a relative --home must find the same root"
+  assert list.any(listed, fn(line) { string.contains(line, "hello") })
+}
+
+// `..`-hopping from `here` to `there`, which is what a shell would have
+// done had the operator typed a relative path.
+fn relative_to(here: String, there: String) -> String {
+  let depth =
+    list.length(list.filter(string.split(here, "/"), fn(p) { p != "" }))
+  string.join(list.repeat("..", depth), "/") <> there
+}
+
 pub fn remove_takes_the_whole_install_test() {
   let #(root, _done) = installed_hello("removal")
   assert installed.remove(root, "hello") == Ok(Nil)
@@ -656,6 +784,15 @@ fn real_jailed_build() -> Nil {
       )
       let assert [installed.Ready(..)] = installed.discover(root)
         as "a really-built install must discover"
+
+      // Announce what the kernel actually enforced, the way the code-mode
+      // end-to-end does: a green test that says nothing about enforcement
+      // invites the reader to assume the strongest thing.
+      io.println(
+        "extension install e2e: " <> install.enforcement_line(done.enforcement),
+      )
+      let assert enforcement.Reported(..) = done.enforcement
+        as "a build that really ran in a jail must report what it enforced"
       Nil
     }
   }
@@ -679,17 +816,8 @@ fn decode(files: List(#(String, String))) -> Result(manifest.Manifest, String) {
     as "a fixture carries a manifest"
   manifest.decode(
     text,
-    manifest.Surroundings(files:, modules: module_names(files)),
+    manifest.Surroundings(files:, modules: package.module_names_of(files)),
   )
-}
-
-fn module_names(files: List(#(String, String))) -> List(String) {
-  files
-  |> list.map(fn(file) { file.0 })
-  |> list.filter(fn(path) {
-    string.starts_with(path, "src/") && string.ends_with(path, ".gleam")
-  })
-  |> list.map(fn(path) { path |> string.drop_start(4) |> string.drop_end(6) })
 }
 
 fn vets(files: List(#(String, String))) -> Bool {
@@ -819,6 +947,11 @@ fn never_fetch(_url: String, _max: Int) -> Result(BitArray, String) {
 
 // The build seam, faked: a beam directory with one file in it, so the
 // pipeline's own discipline is proved without a jail.
+//
+// The content address is computed the way a real build computes it,
+// rather than made up. A fake that reported an address its own output
+// does not have would install something discovery then refuses, and the
+// whole suite would be exercising a state no real install can reach.
 fn fake_build(root: String) -> compile.Built {
   let beam_dir = root <> "/ebin"
   let _made = simplifile.create_directory_all(beam_dir)
@@ -827,8 +960,10 @@ fn fake_build(root: String) -> compile.Built {
       to: beam_dir <> "/" <> compile.entry_module <> ".beam",
       contents: "FOR1",
     )
+  let assert Ok(manifest_hash) = build.fingerprint_directory(beam_dir)
+    as "the faked beam directory must have a content address"
   compile.Built(
-    result: Ok(compile.BuildProducts(beam_dir:, manifest_hash: "sha256-fake")),
+    result: Ok(compile.BuildProducts(beam_dir:, manifest_hash:)),
     enforcement: enforcement.Unreported("the build was faked"),
   )
 }

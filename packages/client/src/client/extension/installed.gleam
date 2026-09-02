@@ -9,6 +9,11 @@
 ////
 //// - the **tree digest**, so a byte edited under `src/` refuses the
 ////   extension rather than being compiled into the next dispatch;
+//// - the **artifact's content address**, recomputed over the beam set on
+////   disk with the very function the build used, so a swapped or deleted
+////   `.beam` refuses the extension too. Re-vetting the source proves
+////   nothing about the bytes that actually run, and the artifact is the
+////   half a dispatch loads;
 //// - the **manifest**, so an `extension.toml` that stopped decoding —
 ////   or started naming a schema that is not there — is caught before a
 ////   tool is registered from it;
@@ -31,6 +36,8 @@ import client/extension/archive
 import client/extension/install
 import client/extension/manifest.{type Manifest}
 import client/extension/record.{type Record, type Root}
+import codemode/build
+import codemode/compile
 import codemode/vet/package
 import codemode/vet/policy as vet_policy
 import gleam/bit_array
@@ -67,7 +74,7 @@ pub fn discover(root: Root) -> List(Discovered) {
     Error(_absent) -> []
     Ok(entries) ->
       entries
-      |> list.filter(fn(name) { name != record.staging_directory })
+      |> list.filter(manifest.is_legal_name)
       |> list.sort(string.compare)
       |> list.map(fn(name) { one(root, name) })
   }
@@ -83,9 +90,13 @@ pub fn discover(root: Root) -> List(Discovered) {
 /// ```
 ///
 pub fn one(root: Root, name: String) -> Discovered {
-  case check(root, name) {
-    Ok(ready) -> ready
+  case named_extension(name) {
     Error(reason) -> Refused(name:, reason:)
+    Ok(Nil) ->
+      case check(root, name) {
+        Ok(ready) -> ready
+        Error(reason) -> Refused(name:, reason:)
+      }
   }
 }
 
@@ -98,6 +109,7 @@ pub fn one(root: Root, name: String) -> Discovered {
 /// ```
 ///
 pub fn remove(root: Root, name: String) -> Result(Nil, String) {
+  use Nil <- result.try(named_extension(name))
   let directory = record.directory(root, name)
   case simplifile.is_directory(directory) {
     Ok(True) ->
@@ -108,7 +120,42 @@ pub fn remove(root: Root, name: String) -> Result(Nil, String) {
         <> ": "
         <> simplifile.describe_error(error)
       })
-    _ -> Error(name <> " is not installed")
+
+    // Not there, or there and not a directory. Either way there is
+    // nothing here this verb owns.
+    Ok(False) | Error(_absent) -> Error(name <> " is not installed")
+  }
+}
+
+/// Whether a name may be joined to the root as a directory component.
+///
+/// Every verb that takes a name from an operator goes through this, and
+/// the reason is a delete: `record.directory` is string concatenation, so
+/// `remove ..` would name the `.loom` directory itself and
+/// `simplifile.delete` would take it. The manifest's own grammar
+/// (`[a-z][a-z0-9_]*`) admits no `.`, no `/` and no `..`, so gating on it
+/// makes a traversal unrepresentable rather than something the joiner has
+/// to defend against — and it is the same grammar the install accepted
+/// the name under, so a name this refuses is a name nothing could have
+/// installed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Error(_) = installed.named_extension("..")
+/// assert installed.named_extension("weather") == Ok(Nil)
+/// ```
+///
+pub fn named_extension(name: String) -> Result(Nil, String) {
+  case manifest.is_legal_name(name) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "`"
+        <> name
+        <> "` is not an extension name; a name is [a-z][a-z0-9_]*, which is "
+        <> "what an install accepted it under",
+      )
   }
 }
 
@@ -148,15 +195,49 @@ fn check(root: Root, name: String) -> Result(Discovered, String) {
   use Nil <- result.try(named(written, name))
   use tree <- result.try(read_tree(root, name))
   use Nil <- result.try(digest_matches(tree, written))
-  let files = text_of(tree)
+  use files <- result.try(text_of(tree))
   use decoded <- result.try(remanifest(files))
   use Nil <- result.try(revet(files))
   use Nil <- result.try(allowlist_matches(written))
-  Ok(Ready(
-    record: written,
-    manifest: decoded,
-    artifact: record.directory(root, name) <> "/" <> record.artifact_directory,
-  ))
+  let artifact = record.artifact_at(root, name)
+  use Nil <- result.try(artifact_matches(artifact, written))
+  Ok(Ready(record: written, manifest: decoded, artifact:))
+}
+
+// The bytes that actually run. Re-vetting the source says nothing about
+// them: an artifact is copied into place beside the source and a dispatch
+// loads the artifact, so a swapped `.beam` would sail past every other
+// check here. Recomputed with `build.fingerprint_directory`, the same
+// function the build used, so the two cannot drift into disagreeing about
+// what the address is.
+fn artifact_matches(artifact: String, written: Record) -> Result(Nil, String) {
+  use Nil <- result.try(
+    case
+      simplifile.is_file(artifact <> "/" <> compile.entry_module <> ".beam")
+    {
+      Ok(True) -> Ok(Nil)
+      Ok(False) | Error(_absent) ->
+        Error(
+          "the installed artifact holds no "
+          <> compile.entry_module
+          <> ".beam, so there is nothing to run",
+        )
+    },
+  )
+  use address <- result.try(
+    build.fingerprint_directory(artifact)
+    |> result.map_error(fn(_error) {
+      "the installed artifact is unreadable at " <> artifact
+    }),
+  )
+  case address == written.manifest_hash {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "the installed artifact no longer matches the install record; "
+        <> "reinstall it to approve what is there now",
+      )
+  }
 }
 
 // The directory name is the extension's identity on disk, so a record
@@ -181,14 +262,22 @@ fn read_tree(root: Root, name: String) -> Result(archive.Tree, String) {
   })
 }
 
-// A file whose bytes are not UTF-8 is dropped rather than refused here,
-// for the reason the install drops one: it cannot be a module, a manifest
-// or a schema, and the layout rule in `vet_package` is what decides
-// whether it may be in the tree at all.
-fn text_of(tree: archive.Tree) -> List(#(String, String)) {
-  list.filter_map(tree.files, fn(file) {
-    use text <- result.map(bit_array.to_string(file.bytes))
-    #(file.path, text)
+// Every file, or a refusal naming the one that is not text. Dropping a
+// file here would mean it reached the tree without being vetted and
+// without being refused — the exact hole the install's own reader closes,
+// and it has to be closed identically on both sides or a tree that
+// installed would refuse itself at the next load.
+fn text_of(tree: archive.Tree) -> Result(List(#(String, String)), String) {
+  list.try_map(tree.files, fn(file) {
+    case bit_array.to_string(file.bytes) {
+      Ok(text) -> Ok(#(file.path, text))
+      Error(Nil) ->
+        Error(
+          "the installed source holds "
+          <> file.path
+          <> ", which is not UTF-8 text",
+        )
+    }
   })
 }
 
@@ -210,21 +299,10 @@ fn remanifest(files: List(#(String, String))) -> Result(Manifest, String) {
       "the installed source holds no extension.toml"
     }),
   )
-  manifest.decode(text, manifest.Surroundings(files:, modules: modules(files)))
-}
-
-fn modules(files: List(#(String, String))) -> List(String) {
-  files
-  |> list.map(fn(file) { file.0 })
-  |> list.filter(fn(path) {
-    string.starts_with(path, package.source_directory)
-    && string.ends_with(path, ".gleam")
-  })
-  |> list.map(fn(path) {
-    path
-    |> string.drop_start(string.length(package.source_directory))
-    |> string.drop_end(string.length(".gleam"))
-  })
+  manifest.decode(
+    text,
+    manifest.Surroundings(files:, modules: package.module_names_of(files)),
+  )
 }
 
 fn revet(files: List(#(String, String))) -> Result(Nil, String) {

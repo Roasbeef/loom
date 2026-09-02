@@ -69,6 +69,7 @@ import client/extension/manifest.{type Manifest}
 import client/extension/record.{type Record, type Root}
 import client/extension/source.{type Source}
 import codemode/compile
+import codemode/enforcement.{type Report}
 import codemode/vet
 import codemode/vet/package.{type VettedPackage}
 import codemode/vet/policy as vet_policy
@@ -152,7 +153,23 @@ pub type Failure {
 
 /// What an install produced.
 pub type Installed {
-  Installed(record: Record, manifest: Manifest, directory: String)
+  Installed(
+    /// The record written into the extension's directory.
+    record: Record,
+    /// The manifest it was built from.
+    manifest: Manifest,
+    /// Where it landed.
+    directory: String,
+    /// What the kernel enforced on the jail the artifact was built in.
+    ///
+    /// A field rather than something the pipeline swallowed, for the
+    /// reason `codemode/enforcement` gives: a caller holding the products
+    /// holds what the kernel enforced on the jail that made them. An
+    /// operator installing third-party code is entitled to know whether
+    /// the compile was actually jailed, and an install that reported
+    /// nothing says so rather than saying nothing.
+    enforcement: Report,
+  )
 }
 
 /// Installs `from`, at `rev` when the source names one.
@@ -198,6 +215,43 @@ pub fn describe(failure: Failure) -> String {
       "vetting: " <> string.join(refusal_lines(refusals), "; ")
     Compile(reason:) -> "compile: " <> reason
     Record(reason:) -> "record: " <> reason
+  }
+}
+
+/// What the kernel enforced on the jail the artifact was built in,
+/// rendered for an operator.
+///
+/// One renderer rather than one per caller, for the reason the code-mode
+/// end-to-end announces the same facts: a green install that says nothing
+/// about enforcement invites the reader to assume the strongest thing,
+/// and a build that ran with a layer missing has to say so in the same
+/// breath as it says it succeeded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// install.enforcement_line(enforcement.Unreported("it never ran"))
+/// // -> "the jailed build made NO enforcement report: it never ran"
+/// ```
+///
+pub fn enforcement_line(report: Report) -> String {
+  case report {
+    enforcement.Unreported(reason:) ->
+      "the jailed build made NO enforcement report: " <> reason
+    enforcement.Reported(entries: _, degraded:) -> {
+      let #(applied, skipped) = enforcement.layers(report)
+      "the jailed build enforced ["
+      <> string.join(applied, ", ")
+      <> "]"
+      <> case skipped {
+        [] -> ""
+        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
+      }
+      <> case degraded {
+        True -> " (DEGRADED)"
+        False -> ""
+      }
+    }
   }
 }
 
@@ -263,17 +317,25 @@ fn fetched(
   |> result.map_error(fn(error) { Extract(archive.describe(error)) })
 }
 
-// The tree as text. A file whose bytes are not UTF-8 is dropped rather
-// than refused: it cannot be a Gleam module, a manifest or a schema, and
-// the layout check in `vet_package` is what decides whether a file that
-// is none of those may be here at all.
+// The tree as text, or a refusal naming the file that is not.
+//
+// Dropping one was the wrong direction. A file the reader drops is never
+// vetted and never refused, yet `write_tree` stages the whole tree — so a
+// `src/nif.so` or a `priv/agent` would land under the installed
+// extension's `src/` having passed no rule at all. Refusing it here means
+// every file that reaches the staged tree is one `vet_package` judged.
 fn text_files(tree: Tree) -> Result(List(#(String, String)), Failure) {
-  Ok(
-    list.filter_map(tree.files, fn(file) {
-      use text <- result.map(bit_array.to_string(file.bytes))
-      #(file.path, text)
-    }),
-  )
+  list.try_map(tree.files, fn(file) {
+    case bit_array.to_string(file.bytes) {
+      Ok(text) -> Ok(#(file.path, text))
+      Error(Nil) ->
+        Error(Extract(
+          file.path
+          <> " is not UTF-8 text; an installed extension carries source, "
+          <> "schemas and documentation, all of which are",
+        ))
+    }
+  })
 }
 
 // --- step 2: the manifest -------------------------------------------------
@@ -306,23 +368,7 @@ fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
 const manifest_file = "extension.toml"
 
 fn surroundings(files: List(#(String, String))) -> manifest.Surroundings {
-  manifest.Surroundings(files:, modules: module_names(files))
-}
-
-fn module_names(files: List(#(String, String))) -> List(String) {
-  files
-  |> list.map(fn(file) { file.0 })
-  |> list.filter(fn(path) {
-    string.starts_with(path, package.source_directory)
-    && string.ends_with(path, ".gleam")
-  })
-  |> list.map(module_of)
-}
-
-fn module_of(path: String) -> String {
-  path
-  |> string.drop_start(string.length(package.source_directory))
-  |> string.drop_end(string.length(".gleam"))
+  manifest.Surroundings(files:, modules: package.module_names_of(files))
 }
 
 // --- step 3: vetting ------------------------------------------------------
@@ -346,6 +392,11 @@ fn stage(
   decoded: Manifest,
   vetted: VettedPackage,
 ) -> Result(Installed, Failure) {
+  // Asked before the build, because the build is the expensive step and
+  // "you already have this installed" is knowable without it. `promote`
+  // asks again for the case this one cannot answer: two installs of the
+  // same name racing, where both pass here and the rename decides.
+  use Nil <- result.try(untaken(config.root, decoded.name))
   let staging = record.staging(config.root, token(config))
   case build_and_record(config, from, rev, tree, decoded, vetted, staging) {
     Ok(installed) -> Ok(installed)
@@ -370,14 +421,19 @@ fn build_and_record(
     staging <> "/" <> record.source_directory,
     tree,
   ))
-  use artifact <- result.try(compiled(config, decoded, vetted, staging))
+  use Compiled(manifest_hash:, enforcement:) <- result.try(compiled(
+    config,
+    decoded,
+    vetted,
+    staging,
+  ))
   let written =
     record.for_install(
       decoded,
       from:,
       revision: revision(from, tree, rev),
       tree_digest: archive.digest(tree),
-      manifest_hash: artifact.manifest_hash,
+      manifest_hash:,
       allowlist: allowlist(),
       approved_at: now(config),
       approved_by: config.approved_by,
@@ -385,7 +441,7 @@ fn build_and_record(
     )
   use Nil <- result.try(write_record(staging, written))
   use directory <- result.try(promote(config.root, decoded.name, staging))
-  Ok(Installed(record: written, manifest: decoded, directory:))
+  Ok(Installed(record: written, manifest: decoded, directory:, enforcement:))
 }
 
 // The revision the record pins. An archive that carried one wins — a
@@ -404,15 +460,25 @@ fn revision(from: Source, tree: Tree, rev: Option(String)) -> String {
   }
 }
 
+// What the compile produced that the record needs: the artifact's content
+// address, and what the kernel enforced on the jail that made it.
+//
+// Not a `compile.Artifact`: that type's `build_root` and `beam_dir` name
+// directories this function has just deleted and moved, so filling it in
+// would be four fields of which three are lies to carry one that is not.
+type Compiled {
+  Compiled(manifest_hash: String, enforcement: Report)
+}
+
 fn compiled(
   config: Config,
   decoded: Manifest,
   vetted: VettedPackage,
   staging: String,
-) -> Result(compile.Artifact, Failure) {
+) -> Result(Compiled, Failure) {
   let build_root = staging <> "/build"
   use Nil <- result.try(prepare_build(build_root, decoded, vetted))
-  let compile.Built(result: built, enforcement: _) = config.build(build_root)
+  let compile.Built(result: built, enforcement:) = config.build(build_root)
   use products <- result.try(
     result.map_error(built, fn(error) { Compile(compile_reason(error)) }),
   )
@@ -427,12 +493,7 @@ fn compiled(
   // extension's directory and sit there for its lifetime. What is kept is
   // what the record describes: the source, the artifact, and the record.
   let _cleared = simplifile.delete_all([build_root])
-  Ok(compile.Artifact(
-    build_root:,
-    beam_dir: staging <> "/" <> record.artifact_directory,
-    entry_module: compile.entry_module,
-    manifest_hash: products.manifest_hash,
-  ))
+  Ok(Compiled(manifest_hash: products.manifest_hash, enforcement:))
 }
 
 // The build root: the vetted modules under their own names, the generated
@@ -567,21 +628,27 @@ fn promote(
   name: String,
   staging: String,
 ) -> Result(String, Failure) {
-  let destination = record.directory(root, name)
-  case simplifile.is_directory(destination) {
+  use Nil <- result.try(untaken(root, name))
+  simplifile.rename(at: staging, to: record.directory(root, name))
+  |> result.replace(record.directory(root, name))
+  |> result.map_error(fn(error) {
+    Record(
+      "could not move the staged install into place: "
+      <> simplifile.describe_error(error),
+    )
+  })
+}
+
+// A name already taken is a refusal rather than an overwrite: replacing
+// an install is `remove` then `install`, so an operator never loses a
+// working extension to a failed reinstall.
+fn untaken(root: Root, name: String) -> Result(Nil, Failure) {
+  case simplifile.is_directory(record.directory(root, name)) {
+    Ok(False) | Error(_absent) -> Ok(Nil)
     Ok(True) ->
       Error(Record(
         name <> " is already installed; `loom ext remove " <> name <> "` first",
       ))
-    _ ->
-      simplifile.rename(at: staging, to: destination)
-      |> result.replace(destination)
-      |> result.map_error(fn(error) {
-        Record(
-          "could not move the staged install into place: "
-          <> simplifile.describe_error(error),
-        )
-      })
   }
 }
 
