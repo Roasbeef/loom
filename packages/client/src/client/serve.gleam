@@ -2181,6 +2181,13 @@ fn assemble(
         // digest wraps the result rather than replacing a slot, so the
         // two compose instead of one silently dropping the other.
         hooks: agency.reaping_hooks(built.hooks, agency_config)
+        // A second reap on the same hook, and the two are independent:
+        // the Agency's ends a run's undetached children, this one ends
+        // the schedules keyed to a strand whose own run just finished.
+        // Both wrap rather than replace, so composing them keeps both.
+        // A host that shut the scheduling door has no wiring and adds
+        // no hook at all.
+        |> schedule_reaping(schedule_wiring)
         |> notes.digest_hooks(opened, clock)
         // The memory digest is read at every run start rather than once
         // here, because this server runs the producer as well: the pass
@@ -3330,6 +3337,21 @@ fn schedule_wiring(
         operator_schedules: settings.schedules,
         scanner:,
       ))
+  }
+}
+
+// The schedule reap, added to a hook record only when this session has a
+// scheduling plane at all. `Option.map` would answer an `Option(Hooks)`
+// and every caller would then have to unwrap it back to the hooks it
+// started with, which is the shape this small function exists to keep out
+// of the composition pipeline above.
+fn schedule_reaping(
+  hooks: effects.Hooks,
+  wiring: Option(scheduleseam.Wiring),
+) -> effects.Hooks {
+  case wiring {
+    None -> hooks
+    Some(wiring) -> scheduleseam.reaping_hooks(hooks, wiring)
   }
 }
 

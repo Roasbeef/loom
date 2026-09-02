@@ -618,6 +618,7 @@ fn sched() -> schedule.Schedule {
   schedule.Schedule(
     name: "heartbeat",
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.Interval(
       seconds: 300,
       expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
@@ -830,6 +831,7 @@ pub fn a_schedule_survives_the_round_trip_test() {
     schedule.Schedule(
       name: "poll",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(
         seconds: 300,
         expiry: schedule.Expiry(max_fires: 12, expires_after_s: 3600),
@@ -843,6 +845,7 @@ pub fn a_schedule_survives_the_round_trip_test() {
     schedule.Schedule(
       name: "remind",
       target: "sub:main/worker-1",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.OneShot(at: 1_800_000_000),
       wake: schedule.SteersOnly,
       body: "check the migration",
@@ -865,6 +868,7 @@ pub fn a_stored_cell_outside_todays_bounds_is_dropped_test() {
     schedule.Schedule(
       name: "hot",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(
         seconds: 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
@@ -899,6 +903,7 @@ fn built(name: String, body: String) -> Result(schedule.Schedule, String) {
   schedule.build(
     name:,
     target: "main",
+    owner: schedule.StrandOwned(strand: "main"),
     timing: schedule.OneShot(at: 0),
     wake: schedule.SteersOnly,
     body:,
@@ -926,6 +931,7 @@ pub fn build_refuses_a_busy_loop_interval_test() {
     schedule.build(
       name: "hot",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(
         seconds: schedule.min_interval_s - 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
@@ -943,6 +949,7 @@ pub fn build_refuses_an_expiry_outside_its_caps_test() {
     schedule.build(
       name: "x",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(seconds: 60, expiry:),
       wake: schedule.SteersOnly,
       body: "b",
@@ -997,7 +1004,8 @@ pub fn the_committed_example_configs_policy_parses_test() {
 // reading "standing operator configuration" above a body it wrote itself
 // has been handed an authority nobody granted, on a schedule it set.
 pub fn a_model_created_fire_does_not_claim_to_be_operator_configuration_test() {
-  let text = schedule.injection(sched(), schedule.OnTime, schedule.ModelCreated)
+  let text =
+    schedule.injection(sched(), schedule.OnTime, schedule.SelfScheduled)
 
   assert !string.contains(text, "standing operator configuration")
   assert !string.contains(text, "operator")
@@ -1016,7 +1024,11 @@ pub fn an_operator_fire_still_says_it_is_operator_configuration_test() {
 // whatever else differs: it is not the user talking, and no reply is
 // wanted.
 pub fn both_origins_disclaim_the_user_and_a_reply_test() {
-  [schedule.OperatorConfigured, schedule.ModelCreated]
+  [
+    schedule.OperatorConfigured,
+    schedule.SelfScheduled,
+    schedule.OwnerScheduled(owner: "main"),
+  ]
   |> list.each(fn(origin) {
     let text = schedule.injection(sched(), schedule.OnTime, origin)
     // Lowercased: one origin opens the clause mid-sentence, the other
@@ -1043,6 +1055,7 @@ pub fn build_refuses_an_interval_above_the_expiry_window_test() {
     schedule.build(
       name: "slow",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(
         seconds: schedule.max_interval_s + 1,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),
@@ -1059,6 +1072,7 @@ pub fn build_refuses_an_interval_above_the_expiry_window_test() {
     schedule.build(
       name: "slow",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.Interval(
         seconds: schedule.max_interval_s,
         expiry: schedule.Expiry(max_fires: 10, expires_after_s: 3600),

@@ -11,10 +11,24 @@
 ////
 //// ## What a schedule can and cannot do
 ////
-//// It fires onto **the strand this program is running on**, and no
-//// other. There is no target argument, here or in the tool, so a program
-//// cannot schedule work into another strand's context — not a sibling's,
-//// and not a subagent's it spawned.
+//// It fires onto **the strand this program is running on** unless a
+//// target is named, and the only other strand it may name is one this
+//// strand *spawned* — `every_on`, `at_on` and `cancel_on` are the
+//// functions that take one. The host decides that from its own durable
+//// record of who spawned whom, so a sibling, a parent, or an unrelated
+//// strand is denied with `invalid_schedule`; there is no argument a
+//// program can write that reaches another agent's context.
+////
+//// A schedule belongs to the strand that **created** it, wherever it
+//// fires. `list` and `cancel` are keyed on that, so a program sees and
+//// retires what this strand made — including schedules onto its
+//// subagents, which is what makes them cancellable at all once the
+//// subagent has finished — and never another strand's.
+////
+//// A schedule onto a subagent is always steer-only, whatever `wake` asks
+//// for: a subagent has one run, and it also ends the schedule, so
+//// everything set onto one stops when its work does. Read `Created.wake`
+//// rather than assuming the request.
 ////
 //// A recurring schedule always expires, and a program cannot choose when:
 //// both a fire count and a wall-clock window are applied, whichever is
@@ -80,11 +94,15 @@ pub type Wake {
   SteersOnly
 }
 
-/// One schedule already set on this strand.
+/// One schedule this strand owns.
 pub type Schedule {
   Schedule(
     /// The handle it was created under, and the handle `cancel` takes.
     name: String,
+    /// The strand it fires onto: this one, or one this strand spawned.
+    /// `cancel` takes the name alone and means this strand's own, so a
+    /// row naming another target is cancelled with `cancel_on`.
+    target: String,
     /// When it fires, rendered — `"every 300s, at most 1000 times"` or a
     /// UTC instant.
     when: String,
@@ -101,6 +119,9 @@ pub type Schedule {
 pub type Created {
   Created(
     name: String,
+    /// The strand it will fire onto, resolved by the host: this one when
+    /// no target was named.
+    target: String,
     when: String,
     /// What `wake` ended up being, which is not always what was asked
     /// for — see the module doc.
@@ -145,6 +166,51 @@ pub fn every(
   ])
 }
 
+/// `every`, onto a strand this one spawned rather than onto itself.
+///
+/// `target` is that strand's name — the one its handle carries. Anything
+/// else is denied with `invalid_schedule`: the host checks the target
+/// against its own record of who spawned whom, so a sibling's or a
+/// parent's name is refused however it was obtained.
+///
+/// The schedule is **this** strand's: it appears in `list` with `target`
+/// set, and `cancel_on` retires it. It is also always steer-only —
+/// `Created.wake` says so — and it ends when the target's work does,
+/// which is what a heartbeat watching a subagent wants: it steers the
+/// child while there is something to steer and stops when there is not.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(spawned) = strand.start(assignment)
+/// let assert Ok(made) =
+///   schedule.every_on(
+///     spawned.strand,
+///     "watch",
+///     300,
+///     schedule.SteersOnly,
+///     "Say where the review has got to.",
+///   )
+/// ```
+///
+pub fn every_on(
+  target: String,
+  name: String,
+  seconds: Int,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create([
+    #("name", wire.string(name)),
+    #("body", wire.string(body)),
+    #("wake", wire.bool(wake_flag(wake))),
+    #("every_seconds", wire.int(seconds)),
+    #("target", wire.string(target)),
+  ])
+}
+
 /// Schedules `body` to fire on this strand once, at `instant` — an
 /// RFC3339 UTC timestamp, for example `"2026-09-01T09:00:00Z"`.
 ///
@@ -179,6 +245,40 @@ pub fn at(
   ])
 }
 
+/// `at`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.at_on(
+///     spawned.strand,
+///     "deadline",
+///     "2026-09-01T09:00:00Z",
+///     schedule.SteersOnly,
+///     "Wrap up and report what you have.",
+///   )
+/// ```
+///
+pub fn at_on(
+  target: String,
+  name: String,
+  instant: String,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create([
+    #("name", wire.string(name)),
+    #("body", wire.string(body)),
+    #("wake", wire.bool(wake_flag(wake))),
+    #("at", wire.string(instant)),
+    #("target", wire.string(target)),
+  ])
+}
+
 fn create(
   fields: List(#(String, MsgPackValue)),
 ) -> Result(Created, ScheduleError) {
@@ -187,16 +287,18 @@ fn create(
     |> result.map_error(map_error),
   )
   use name <- result.try(field(value, "name"))
+  use target <- result.try(field(value, "target"))
   use when <- result.try(field(value, "when"))
   use wake <- result.try(wake_field(value, "wake"))
-  Ok(Created(name:, when:, wake:))
+  Ok(Created(name:, target:, when:, wake:))
 }
 
-/// Lists the schedules set on this strand.
+/// Lists the schedules this strand owns, wherever each fires.
 ///
-/// Only this strand's own, and only ones a program or the model created:
-/// a schedule the operator configured is not listed and cannot be
-/// cancelled here.
+/// Only ones this strand created — its own heartbeats and any it set onto
+/// a strand it spawned, each row naming its `target` — and only ones a
+/// program or the model created: a schedule the operator configured is
+/// not listed and cannot be cancelled here.
 ///
 /// Capability: `schedule.list`.
 ///
@@ -219,20 +321,24 @@ pub fn list() -> Result(List(Schedule), ScheduleError) {
 
 fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
   use name <- result.try(field(row, "name"))
+  use target <- result.try(field(row, "target"))
   use when <- result.try(field(row, "when"))
   use body <- result.try(field(row, "body"))
   use wake <- result.try(wake_field(row, "wake"))
   use fired <- result.try(
     wire.int_field(row, "fired") |> result.map_error(bad_result),
   )
-  Ok(Schedule(name:, when:, wake:, fired:, body:))
+  Ok(Schedule(name:, target:, when:, wake:, fired:, body:))
 }
 
-/// Cancels one schedule on this strand by name. It will not fire again.
+/// Cancels one schedule this strand set on itself, by name. It will not
+/// fire again, and its record of past fires goes with it, so the name is
+/// free to use again.
 ///
-/// A name that is not this strand's own is denied with
-/// `schedule_not_found` rather than silently succeeding, so a program
-/// cannot believe it has tidied up when it has not.
+/// A name this strand does not own is denied with `schedule_not_found`
+/// rather than silently succeeding, so a program cannot believe it has
+/// tidied up when it has not — and a schedule that fires onto another
+/// strand is not found by this call at all: it wants `cancel_on`.
 ///
 /// Capability: `schedule.cancel`.
 ///
@@ -244,6 +350,34 @@ fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
 ///
 pub fn cancel(name: String) -> Result(Nil, ScheduleError) {
   dispatch.call("schedule.cancel", wire.args([#("name", wire.string(name))]))
+  |> result.replace(Nil)
+  |> result.map_error(map_error)
+}
+
+/// Cancels one schedule this strand set onto another strand — the
+/// counterpart to `every_on` and `at_on`, addressed by the same target.
+///
+/// A schedule is named by the pair `{target, name}`, so this is not a
+/// convenience over `cancel`: the same name may be in use on this strand
+/// and on a subagent's, and `cancel` means this strand's own. `list`
+/// shows which target each schedule fires onto.
+///
+/// Capability: `schedule.cancel`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(Nil) = schedule.cancel_on(spawned.strand, "watch")
+/// ```
+///
+pub fn cancel_on(target: String, name: String) -> Result(Nil, ScheduleError) {
+  dispatch.call(
+    "schedule.cancel",
+    wire.args([
+      #("name", wire.string(name)),
+      #("target", wire.string(target)),
+    ]),
+  )
   |> result.replace(Nil)
   |> result.map_error(map_error)
 }

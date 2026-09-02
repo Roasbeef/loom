@@ -377,6 +377,12 @@ pub type ScheduleWake {
 pub type ScheduleRequest {
   ScheduleRequest(
     name: String,
+    /// Which strand the heartbeat should fire onto, as the program named
+    /// it, or `None` for the strand the execution belongs to. The host
+    /// resolves and *authorizes* it — only the execution's own strand or
+    /// one it spawned is admitted — because the lineage ledger that
+    /// decides is on the other side of this seam.
+    target: Option(String),
     every_seconds: Option(Int),
     at: Option(String),
     wake: ScheduleWake,
@@ -388,13 +394,24 @@ pub type ScheduleRequest {
 /// granted, which is not always what was asked for: an operator policy
 /// may permit scheduling and forbid waking.
 pub type ScheduleCreated {
-  ScheduleCreated(name: String, when: String, wake: ScheduleWake)
+  ScheduleCreated(
+    name: String,
+    /// The strand it fires onto, resolved by the host: the execution's
+    /// own when the request named none.
+    target: String,
+    when: String,
+    wake: ScheduleWake,
+  )
 }
 
 /// One heartbeat, as `cap/schedule.list` reads it.
 pub type ScheduleRow {
   ScheduleRow(
     name: String,
+    /// The strand this one fires onto. A listing is keyed on who *owns* a
+    /// schedule rather than on where it fires, so it can hold rows for
+    /// more than one strand and a row without this would be ambiguous.
+    target: String,
     when: String,
     wake: ScheduleWake,
     fired: Int,
@@ -416,10 +433,12 @@ pub type ScheduleRefusal {
   /// This session already holds all the schedules it will.
   ScheduleLimitReached(reason: String)
 
-  /// A schedule of this name already exists on this strand.
+  /// A schedule of this name already fires onto the target.
   ScheduleNameTaken(reason: String)
 
-  /// No schedule of this name exists on this strand.
+  /// The calling strand owns no schedule of this name on that target —
+  /// which is also the answer for one another strand owns, so a program
+  /// learns what is its own to cancel and nothing about anyone else's.
   ScheduleNotFound(reason: String)
 
   /// The schedule store could not be reached.
@@ -456,16 +475,21 @@ pub type Workspace {
     kv_set: fn(String, BitArray) -> Result(Nil, KvRefusal),
     /// Removes a scratch key. Removing an absent key succeeds.
     kv_delete: fn(String) -> Result(Nil, KvRefusal),
-    /// Sets one heartbeat on the strand this execution belongs to. The
-    /// host binds the strand — this package never learns it, exactly as
-    /// it never learns a workspace root — so nothing a program sends can
-    /// redirect a schedule onto another strand.
+    /// Sets one heartbeat, by default on the strand this execution
+    /// belongs to. The host binds *that* strand — this package never
+    /// learns it, exactly as it never learns a workspace root — so a
+    /// program cannot redirect a schedule by naming a caller. A
+    /// `ScheduleRequest.target` is a request rather than an
+    /// instruction: the host admits only the execution's own strand or
+    /// one it spawned, and refuses anything else as
+    /// `ScheduleInvalid`.
     schedule_create: fn(ScheduleRequest) ->
       Result(ScheduleCreated, ScheduleRefusal),
-    /// Lists that strand's heartbeats.
+    /// Lists the heartbeats that strand owns, wherever each fires.
     schedule_list: fn() -> Result(List(ScheduleRow), ScheduleRefusal),
-    /// Cancels one of that strand's heartbeats by name.
-    schedule_cancel: fn(String) -> Result(Nil, ScheduleRefusal),
+    /// Cancels one heartbeat that strand owns, by name and by the strand
+    /// it fires onto (`None` for the execution's own).
+    schedule_cancel: fn(String, Option(String)) -> Result(Nil, ScheduleRefusal),
     /// Writes one artifact and answers its content address.
     emit: Emit,
     /// How many artifacts one execution may mint.
@@ -943,6 +967,7 @@ fn schedule_create_plan(
   use name <- result.try(args.string(request.args, "name"))
   use body <- result.try(args.string(request.args, "body"))
   use wake <- result.try(requested_wake(request.args))
+  use target <- result.try(optional_string(request.args, "target"))
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
 
@@ -967,6 +992,7 @@ fn schedule_create_plan(
       case
         seam.schedule_create(ScheduleRequest(
           name:,
+          target:,
           every_seconds:,
           at:,
           wake:,
@@ -974,9 +1000,10 @@ fn schedule_create_plan(
         ))
       {
         Error(refusal) -> schedule_refused(refusal)
-        Ok(ScheduleCreated(name:, when:, wake:)) ->
+        Ok(ScheduleCreated(name:, target:, when:, wake:)) ->
           answered([
             #("name", msgpack.StringValue(name)),
+            #("target", msgpack.StringValue(target)),
             #("when", msgpack.StringValue(when)),
             #("wake", msgpack.BoolValue(wake_flag(wake))),
           ])
@@ -1027,6 +1054,7 @@ fn schedule_list_plan(
 fn schedule_row(row: ScheduleRow) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
+    #(msgpack.StringValue("target"), msgpack.StringValue(row.target)),
     #(msgpack.StringValue("when"), msgpack.StringValue(row.when)),
     #(msgpack.StringValue("wake"), msgpack.BoolValue(wake_flag(row.wake))),
     #(msgpack.StringValue("fired"), msgpack.IntValue(row.fired)),
@@ -1039,9 +1067,10 @@ fn schedule_cancel_plan(
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
   use name <- result.try(args.string(request.args, "name"))
+  use target <- result.try(optional_string(request.args, "target"))
   Ok(
     ServedHere(fn() {
-      case seam.schedule_cancel(name) {
+      case seam.schedule_cancel(name, target) {
         Error(refusal) -> schedule_refused(refusal)
         Ok(Nil) -> answered([#("cancelled", msgpack.BoolValue(True))])
       }

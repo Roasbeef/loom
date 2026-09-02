@@ -95,6 +95,32 @@
 //// `expires_after_s` named a week to the operator that would never
 //// begin.
 ////
+//// ## A settled target ends the schedule
+////
+//// A schedule is checked against the strand it fires onto before any
+//// timing arithmetic happens, and for a subagent target the answer can
+//// be "this strand has stopped". A subagent exists to run one brief:
+//// once that brief has settled, or the Agency has marked the strand
+//// reaped, its timeline is over, and a fire onto it would inject text
+//// nobody will read — or, for a `WakesIdle` schedule, open a run on a
+//// driver whose task ended, which is a child's life extended past its
+//// work and outside its parent's spawn budget (issue #163). Such a
+//// schedule is `Expired` for the tick: no fire, no re-arm, and no wake
+//// whoever configured it, operator or model.
+////
+//// The two facts read are exactly the two `client/agency.is_live` and
+//// `client/agency.reap` decide from — the durable `reaped` mark on the
+//// lineage cell and the brief's own terminal result — so the scanner and
+//// the Agency cannot disagree about whether a child is finished. It
+//// **fails closed**: a `sub:` target with no lineage cell, or one whose
+//// cell will not decode, reads as finished. That is the opposite
+//// direction from `client/rulescan`'s hold on an unreadable strand, and
+//// deliberately so: a held rule costs a tick, while a fired schedule may
+//// open a run. A root strand answers `False` without any read at all,
+//// which is both the hot path and the honest one — `main` is idle
+//// between runs rather than finished, so a terminal result there says
+//// the last prompt ended and nothing about whether the next will arrive.
+////
 //// ## Isolation
 ////
 //// Every read here goes straight to the session store
@@ -119,6 +145,7 @@
 //// `effects.real_timers()` never drops one in production; the risk is
 //// confined to a host supplying its own, lossier `Timers`.
 
+import client/agency
 import client/schedule.{type Schedule}
 import core/clock
 import core/ids.{type EntryId}
@@ -135,6 +162,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
+import runtime/lineage
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
@@ -357,7 +385,7 @@ fn scan(state: State) -> actor.Next(State, Message) {
   let #(now_ms, _clock) = clock.read(scanned.runtime.effects.clock)
   let now_s = now_ms / 1000
   due_schedules(scanned)
-  |> list.map(fn(due) { process_schedule(scanned, due, now_ms, now_s) })
+  |> list.map(fn(sched) { process_schedule(scanned, sched, now_ms, now_s) })
   |> rearm(scanned, _)
   actor.continue(scanned)
 }
@@ -379,26 +407,16 @@ fn scan(state: State) -> actor.Next(State, Message) {
 // empty list: a transient store fault must not look like "the model
 // cancelled everything", which would silently stop firing the very
 // schedules a model may be relying on.
-fn due_schedules(state: State) -> List(Due) {
-  let operator =
-    list.map(state.options.schedules, fn(sched) {
-      Due(schedule: sched, origin: schedule.OperatorConfigured)
-    })
-  let model =
-    list.map(model_schedules(state), fn(sched) {
-      Due(schedule: sched, origin: schedule.ModelCreated)
-    })
-  list.append(operator, model)
-}
-
-// A schedule paired with where it came from. The origin is not carried on
-// `Schedule` itself because it is not a property of the schedule — it is a
-// property of the store it was read out of, and this is the one place both
-// stores are in scope. It exists so a fire can say whose text it is: a
-// model reading "standing operator configuration" above a body it wrote
-// itself has been handed an authority nobody granted.
-type Due {
-  Due(schedule: Schedule, origin: schedule.Origin)
+//
+// The two lists are appended and nothing else: a schedule carries its
+// own `client/schedule.Owner`, so whose text a fire is
+// (`schedule.origin_of`) is a property of the value rather than of the
+// list it arrived in, and this function used to pair each schedule with
+// an origin only because the value could not say. An operator's table
+// parses to `OperatorOwned` and a config cell can never decode to it,
+// which is what keeps that derivation as trustworthy as the pairing was.
+fn due_schedules(state: State) -> List(Schedule) {
+  list.append(state.options.schedules, model_schedules(state))
 }
 
 // Every model-created schedule this session currently holds, decoded
@@ -425,15 +443,74 @@ fn model_schedules(state: State) -> List(Schedule) {
 
 fn process_schedule(
   state: State,
-  due: Due,
+  sched: Schedule,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
-  case due.schedule.timing {
+  // A target that has stopped ends the schedule before any timing
+  // arithmetic is done, because there is no occurrence left worth
+  // computing: nothing will read the injection and no later tick will
+  // find the strand alive again.
+  use <- bool.guard(when: finished(state, sched.target), return: Expired)
+  case sched.timing {
     schedule.Interval(seconds:, expiry:) ->
-      process_interval(state, due, seconds, expiry, now_ms, now_s)
-    schedule.OneShot(at:) -> process_one_shot(state, due, at, now_ms, now_s)
+      process_interval(state, sched, seconds, expiry, now_ms, now_s)
+    schedule.OneShot(at:) -> process_one_shot(state, sched, at, now_ms, now_s)
   }
+}
+
+// Whether the strand a schedule fires onto has stopped for good.
+//
+// **Only a subagent can answer yes**, and the check costs nothing for
+// anyone else: a root strand is idle between runs rather than finished,
+// so a terminal result on `main` says the last prompt ended and nothing
+// about whether the next one will arrive. A subagent is the opposite. It
+// exists to run one brief; when that brief has settled, or the Agency
+// has marked the strand reaped, its timeline is over. Firing onto it
+// then would inject text nobody will read, and — for a `WakesIdle`
+// schedule planted before this build capped it, or one an operator
+// configured — would re-open a run on a driver whose task had ended,
+// which is the security-shaped half of issue #163.
+//
+// The two facts are exactly the two `client/agency.reap` and
+// `client/agency.is_live` decide from, read the same way: the durable
+// `reaped` mark on the lineage cell, and the brief's own terminal
+// result. Both are store reads on this process — `is_live`'s
+// `api.await_strand_result` with a zero budget is one immediate read of
+// the operation-keyed result fact — so this stays off the writer's
+// mailbox like every other read here.
+//
+// It fails **closed**: a `sub:` strand with no lineage cell, or one
+// whose cell will not decode, reads as finished. That is the opposite
+// direction from `client/rulescan`'s hold, and deliberately so — a rule
+// held on an unreadable strand is retried and costs a tick, while a
+// schedule fired onto one may open a run. The Agency writes a lineage
+// cell before the brief is accepted, so a `sub:` name with no cell is
+// not a strand this session started.
+fn finished(state: State, target: String) -> Bool {
+  use <- bool.guard(when: !agency.is_subagent(target), return: False)
+  case read_fact(state, lineage.register_key(target)) {
+    None -> True
+    Some(payload) ->
+      case lineage.decode(payload) {
+        Error(_corrupt) -> True
+        Ok(cell) -> cell.reaped || settled(state, cell)
+      }
+  }
+}
+
+// Whether the brief a subagent was spawned to run has already settled.
+// Read second, and only when the reap mark says nothing, because it is
+// the more expensive of the two facts and the cheaper one is decisive
+// when it answers.
+fn settled(state: State, cell: lineage.Lineage) -> Bool {
+  api.await_strand_result(
+    state.runtime,
+    strand: cell.strand,
+    operation: cell.brief,
+    within_ms: 0,
+  )
+  |> result.is_ok
 }
 
 // Re-arms one timer for the soonest boundary any still-`Active` schedule
@@ -541,41 +618,33 @@ pub fn poke(name: Name(Message)) -> Nil {
 
 fn process_interval(
   state: State,
-  due: Due,
+  sched: Schedule,
   seconds: Int,
   expiry: schedule.Expiry,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
-  let prefix =
-    schedule.fired_key_prefix(
-      strand: due.schedule.target,
-      name: due.schedule.name,
-    )
+  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
   case read_prefix(state, prefix) {
     // A store read that fails is not worth stopping for: retry on the
     // schedule's own cadence, which is already bounded well above a
     // busy loop (`schedule.min_interval_s`).
     Error(Nil) -> Active(next_delay_ms: seconds * 1000)
     Ok(marks) ->
-      interval_with_marks(state, due, seconds, expiry, now_ms, now_s, marks)
+      interval_with_marks(state, sched, seconds, expiry, now_ms, now_s, marks)
   }
 }
 
 fn interval_with_marks(
   state: State,
-  due: Due,
+  sched: Schedule,
   seconds: Int,
   expiry: schedule.Expiry,
   now_ms: Int,
   now_s: Int,
   marks: List(#(String, JsonValue)),
 ) -> ScheduleStatus {
-  let prefix =
-    schedule.fired_key_prefix(
-      strand: due.schedule.target,
-      name: due.schedule.name,
-    )
+  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
   let occurrences =
     list.filter_map(marks, fn(pair) {
       let #(key, _value) = pair
@@ -588,13 +657,13 @@ fn interval_with_marks(
   // expiry test because the test needs it, so a schedule that expires on
   // `max_fires` at the very first tick that sees it does leave one seen
   // cell behind: one row, and no further ticks to write another.
-  let since_s = observed_since(state, due, now_s)
+  let since_s = observed_since(state, sched, now_s)
 
   case schedule.interval_expired(occurrences:, expiry:, now_s:, since_s:) {
     True -> Expired
     False -> {
       let occurrence = schedule.interval_occurrence(seconds:, now_s:)
-      maybe_fire_interval(state, due, occurrence, seconds, occurrences)
+      maybe_fire_interval(state, sched, occurrence, seconds, occurrences)
       Active(next_delay_ms: next_interval_delay_ms(occurrence, seconds, now_ms))
     }
   }
@@ -615,9 +684,8 @@ fn interval_with_marks(
 // writes the cell a second time, which is why an operator's schedule and
 // a model's need no separate treatment: whichever store the schedule
 // came from, its clock started when this scanner first saw it.
-fn observed_since(state: State, due: Due, now_s: Int) -> Int {
-  let key =
-    schedule.seen_key(strand: due.schedule.target, name: due.schedule.name)
+fn observed_since(state: State, sched: Schedule, now_s: Int) -> Int {
+  let key = schedule.seen_key(strand: sched.target, name: sched.name)
   case read_fact(state, key) {
     Some(recorded) -> recorded_since(state, key, recorded, now_s)
     None -> claim_since(state, key, now_s)
@@ -726,20 +794,16 @@ fn unrecorded(state: State, key: String, reason: String, now_s: Int) -> Int {
 // attempt is a debt carried forward.
 fn maybe_fire_interval(
   state: State,
-  due: Due,
+  sched: Schedule,
   occurrence: Int,
   seconds: Int,
   occurrences: List(Int),
 ) -> Nil {
   use <- bool.guard(when: list.contains(occurrences, occurrence), return: Nil)
   let key =
-    schedule.fired_key(
-      strand: due.schedule.target,
-      name: due.schedule.name,
-      occurrence:,
-    )
+    schedule.fired_key(strand: sched.target, name: sched.name, occurrence:)
   let late = schedule.interval_late(occurrences:, seconds:, occurrence:)
-  let _verdict = fire(state, due, key, late:)
+  let _verdict = fire(state, sched, key, late:)
   Nil
 }
 
@@ -755,22 +819,18 @@ fn next_interval_delay_ms(occurrence: Int, seconds: Int, now_ms: Int) -> Int {
 
 fn process_one_shot(
   state: State,
-  due: Due,
+  sched: Schedule,
   at: Int,
   now_ms: Int,
   now_s: Int,
 ) -> ScheduleStatus {
   let key =
-    schedule.fired_key(
-      strand: due.schedule.target,
-      name: due.schedule.name,
-      occurrence: at,
-    )
+    schedule.fired_key(strand: sched.target, name: sched.name, occurrence: at)
   case read_fact(state, key) {
     // Fired forever: a one-shot's occurrence count is 1 by construction,
     // and its mark existing is the whole of that fact.
     Some(_already_fired) -> Expired
-    None -> due_one_shot(state, due, key, at, now_ms, now_s)
+    None -> due_one_shot(state, sched, key, at, now_ms, now_s)
   }
 }
 
@@ -807,7 +867,7 @@ fn one_shot_lateness(at at: Int, now_s now_s: Int) -> schedule.Lateness {
 // genuinely not-yet-due wait uses.
 fn due_one_shot(
   state: State,
-  due: Due,
+  sched: Schedule,
   key: String,
   at: Int,
   now_ms: Int,
@@ -816,7 +876,7 @@ fn due_one_shot(
   case now_s >= at {
     False -> Active(next_delay_ms: int.max(at * 1000 - now_ms, 1000))
     True ->
-      case fire(state, due, key, late: one_shot_lateness(at:, now_s:)) {
+      case fire(state, sched, key, late: one_shot_lateness(at:, now_s:)) {
         Fired | AlreadyFired -> Expired
         Held | Failed(..) -> Active(next_delay_ms: held_or_failed_retry_ms())
       }
@@ -846,27 +906,27 @@ type Fire {
 
 fn fire(
   state: State,
-  due: Due,
+  sched: Schedule,
   key: String,
   late late: schedule.Lateness,
 ) -> Fire {
-  let mark = api.Mark(key:, value: schedule.fired_value(due.schedule))
-  let text = injected_message(state, due, late)
-  let verdict = case due.schedule.wake {
+  let mark = api.Mark(key:, value: schedule.fired_value(sched))
+  let text = injected_message(state, sched, late)
+  let verdict = case sched.wake {
     schedule.SteersOnly -> {
-      let target = api.on_strand(state.runtime, due.schedule.target)
+      let target = api.on_strand(state.runtime, sched.target)
       classify_steer(api.steer_marking(target, text, mark:))
     }
 
     schedule.WakesIdle ->
       classify_send(api.send_to_strand_marking(
         state.runtime,
-        to: due.schedule.target,
+        to: sched.target,
         message: text,
         mark:,
       ))
   }
-  report(state, due.schedule, verdict)
+  report(state, sched, verdict)
   verdict
 }
 
@@ -876,14 +936,14 @@ fn fire(
 // job.
 fn injected_message(
   state: State,
-  due: Due,
+  sched: Schedule,
   late: schedule.Lateness,
 ) -> message.AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
   message.UserMessage(
     content: [
       message.UserText(
-        text: schedule.injection(due.schedule, late, due.origin),
+        text: schedule.injection(sched, late, schedule.origin_of(sched)),
         text_signature: None,
       ),
     ],

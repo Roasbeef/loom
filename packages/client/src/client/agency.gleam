@@ -424,6 +424,42 @@ fn read_ledger(runtime: api.Runtime) -> Result(Dict(String, Lineage), Refusal) {
   }
 }
 
+/// Whether `ancestor` spawned `strand`, directly or through a chain of
+/// spawns, according to the durable lineage ledger.
+///
+/// The addressing rule this package enforces on every `agent_*` call,
+/// exposed for a seam outside the messaging plane that has to answer the
+/// same question. `client/scheduleseam` is the caller: a strand may
+/// schedule a heartbeat onto itself or onto a strand it spawned, and
+/// nothing else, so the seam needs the ledger's answer rather than a
+/// guess from the shape of a name (`is_subagent` says a name was minted
+/// by *an* Agency, not by whom).
+///
+/// **Fails closed at every step**, which is what makes it safe to ask
+/// from outside: a ledger that cannot be read is `False`, a strand with
+/// no cell is a root and nobody's descendant, a cell that will not
+/// decode is dropped by the read and therefore also `False`, and
+/// `ancestor == strand` is `False` because the relation is strict — a
+/// caller that means "itself or a descendant" says so at its own door,
+/// where the difference is a decision rather than an accident.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.owns(runtime, ancestor: "main", strand: "sub:main/x-1")
+/// ```
+///
+pub fn owns(
+  runtime: api.Runtime,
+  ancestor ancestor: String,
+  strand strand: String,
+) -> Bool {
+  case read_ledger(runtime) {
+    Error(_unreadable) -> False
+    Ok(ledger) -> is_descendant(ledger, ancestor, strand)
+  }
+}
+
 fn cell_of(ledger: Dict(String, Lineage), strand: String) -> Option(Lineage) {
   option.from_result(dict.get(ledger, strand))
 }

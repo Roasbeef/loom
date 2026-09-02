@@ -1782,15 +1782,18 @@ pub fn workspace_seam_for(
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
     kv_delete: config.scratch.delete,
-    // The strand is bound here, from the request, and never travels over
-    // the cap channel: a program cannot name a strand, so it cannot
-    // schedule into another one's context.
+    // The *caller* is bound here, from the request, and never travels
+    // over the cap channel: a program cannot name the strand its own
+    // authority comes from. A `target` it does name is checked against
+    // that caller by the door, which reads the lineage ledger — so a
+    // program reaches its own strand and strands it spawned, and
+    // nothing else.
     schedule_create: fn(request) {
       schedule_create_in(config.schedules, request, on: request_strand)
     },
     schedule_list: fn() { schedule_list_in(config.schedules, request_strand) },
-    schedule_cancel: fn(name) {
-      schedule_cancel_in(config.schedules, name, on: request_strand)
+    schedule_cancel: fn(name, target) {
+      schedule_cancel_in(config.schedules, name, target, on: request_strand)
     },
     emit: emitting(filesystem, config.blob_root, config.entropy),
     emit_ceiling: artifact.default_emit_ceiling,
@@ -1823,6 +1826,7 @@ fn schedule_create_in(
     strand,
     schedule_tool.Request(
       name: request.name,
+      target: request.target,
       timing:,
       wake: requested_wake(request.wake),
       body: request.body,
@@ -1831,6 +1835,7 @@ fn schedule_create_in(
   |> result.map(fn(created: schedule_tool.Created) {
     workspace.ScheduleCreated(
       name: created.name,
+      target: created.target,
       when: created.when,
       wake: granted_wake(created.wake),
     )
@@ -1883,6 +1888,7 @@ fn schedule_list_in(
     list.map(rows, fn(row: schedule_tool.Listed) {
       workspace.ScheduleRow(
         name: row.name,
+        target: row.target,
         when: row.when,
         wake: granted_wake(row.wake),
         fired: row.fired,
@@ -1896,10 +1902,11 @@ fn schedule_list_in(
 fn schedule_cancel_in(
   door: Option(scheduleseam.Door),
   name: String,
+  target: Option(String),
   on strand: String,
 ) -> Result(Nil, workspace.ScheduleRefusal) {
   use door <- with_door(door)
-  door.cancel(strand, name) |> result.map_error(schedule_refusal)
+  door.cancel(strand, name, target) |> result.map_error(schedule_refusal)
 }
 
 fn with_door(

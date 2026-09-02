@@ -851,6 +851,7 @@ pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
         schedule.Schedule(
           name: "heartbeat",
           target: "main",
+          owner: schedule.OperatorOwned,
           timing: schedule.Interval(
             seconds: 300,
             expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),

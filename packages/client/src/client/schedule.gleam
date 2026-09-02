@@ -58,6 +58,34 @@
 //// body = "The migration window opens today. Confirm the plan is ready."
 //// ```
 ////
+//// ## Owner and target: two questions, and the answer to both bounds a
+//// schedule's life
+////
+//// A schedule names the strand it fires onto (`target`) and the party it
+//// belongs to (`owner`, see `Owner`). They are the same strand for the
+//// ordinary case — a strand asking for its own heartbeat — and they
+//// differ in exactly one admitted shape: a strand scheduling onto a
+//// strand it spawned, which the seam admits only against the lineage
+//// ledger (`client/scheduleseam`, issue #154).
+////
+//// Keying *cancellation* on the owner is what closes the hole issue #163
+//// named. A schedule used to be cancellable only by the strand it fired
+//// onto, so a subagent's own heartbeat became uncancellable the moment
+//// that subagent settled: it held a ceiling slot for the rest of the
+//// session and, with `wake = true`, kept re-opening runs on a driver
+//// whose task had ended. With an owner, a parent's schedule onto a child
+//// outlives the child's turn and is still the parent's to retire, and a
+//// child's own schedules die when the child does — `client/scheduleseam`
+//// reaps them on the run end, and `client/schedulescan` treats a settled
+//// or reaped target as the end of the schedule.
+////
+//// What ownership deliberately does *not* touch is a schedule's
+//// **identity**, which stays `{target, name}`: the config cell, the
+//// observation instant and every fired-mark are keyed on it, and name
+//// uniqueness is still per target across both stores. An occurrence is a
+//// fact about a strand's timeline, and two schedules sharing that pair
+//// would share a mark whoever owned them.
+////
 //// ## Interval and one-shot, and nothing else
 ////
 //// A schedule is either a fixed interval (`every = "300s"`, a positive
@@ -157,7 +185,7 @@ import tom
 /// `max_name_length` characters, and contains no `/`, no `"` and no
 /// newline; `target` is non-empty and at most `max_target_length`
 /// characters; `body` is non-empty and at most `max_body_length`
-/// characters.
+/// characters; a `StrandOwned` `owner` is bounded exactly as `target` is.
 pub type Schedule {
   Schedule(
     /// The operator's handle for the schedule: the durable fired-mark's
@@ -166,6 +194,11 @@ pub type Schedule {
     /// The strand this schedule addresses, by name — `"main"` unless the
     /// operator names a specific one (a subagent strand, say).
     target: String,
+    /// Who the schedule belongs to: the operator, or the strand that
+    /// asked for it. `target` and `owner` are the same strand for the
+    /// ordinary model-created schedule and differ when a parent
+    /// schedules onto a child it spawned.
+    owner: Owner,
     /// The fixed interval or the one-shot instant this schedule fires on.
     timing: Timing,
     /// Whether this schedule may start a fresh run on an idle strand,
@@ -174,6 +207,38 @@ pub type Schedule {
     /// The text injected, once per due occurrence.
     body: String,
   )
+}
+
+/// Who a schedule belongs to — which is a different question from which
+/// strand it fires onto, and the two answers together are what bound a
+/// schedule's life.
+///
+/// Ownership decides who may `list` and `cancel` a schedule; `target`
+/// decides whose context a fire lands in. Keying cancellation on the
+/// *creator* rather than on the target is what fixes the hole issue #163
+/// names: a schedule created by a subagent onto itself was cancellable
+/// only through a strand that had already settled, so nobody could
+/// retire it and it held a session-wide ceiling slot for good. With an
+/// owner, a parent can schedule onto a child and still cancel it, and
+/// the child's own schedules are reaped when the child's run ends.
+///
+/// The identity of a schedule stays `{target, name}` — the config, seen
+/// and fired keys are unchanged by this type, and name uniqueness is
+/// still per target — because those keys are what the scanner derives an
+/// occurrence from, and two schedules sharing them would share a mark
+/// whoever owned them.
+pub type Owner {
+  /// A `[[schedule]]` table in `loom.toml`. Not the model's to list or
+  /// cancel through any door, and attributed as standing configuration
+  /// when it fires. A stored config cell can never decode to this — see
+  /// `decode` — so nothing a model creates can claim the operator's
+  /// voice.
+  OperatorOwned
+
+  /// The strand that asked for the schedule. It is the only strand that
+  /// may list or cancel it, and — when it is not also the target — the
+  /// strand a fire attributes itself to.
+  StrandOwned(strand: String)
 }
 
 /// When a schedule fires.
@@ -351,7 +416,11 @@ fn parse_schedule(
   use timing <- result.try(schedule_timing(fields, place))
   use wake <- result.try(schedule_wake(fields, place))
   use body <- result.try(bounded_string(fields, place, "body", max_body_length))
-  Ok(Schedule(name:, target:, timing:, wake:, body:))
+
+  // An operator's table is the operator's, whatever it targets: a
+  // `[[schedule]]` naming a subagent is standing configuration about
+  // that subagent, not something the subagent may cancel.
+  Ok(Schedule(name:, target:, owner: OperatorOwned, timing:, wake:, body:))
 }
 
 // The name is a durable key segment (`fired_key`) and it is quoted
@@ -912,6 +981,41 @@ pub fn decode_seen(value: JsonValue) -> Result(Int, Nil) {
   }
 }
 
+/// Every reserved prefix one strand's schedules occupy: the config
+/// cells, the observation instants, and the fired-marks, in that order.
+///
+/// The one place the *durable footprint of a strand's schedules* is
+/// written down, so retiring them is one list rather than three call
+/// sites that can each forget a corner. `client/scheduleseam` reads it
+/// twice: when a strand's own run ends and its schedules are reaped, and
+/// as the shape a single cancellation deletes a narrower slice of.
+///
+/// Each prefix ends in `/`, which is what keeps a strand from reaping a
+/// differently-named neighbour: `sub:main/worker` and
+/// `sub:main/worker-2` share a string prefix and not a path one. A
+/// spawned strand's own children are safe for the same reason from the
+/// other side — a child's name is `sub:{parent}/…`, so its keys sit
+/// under `schedule/config/sub:sub:main/…` and no ancestor's prefix
+/// reaches them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.strand_prefixes(strand: "main")
+///   == [
+///     "schedule/config/main/", "schedule/seen/main/",
+///     "schedule/fired/main/",
+///   ]
+/// ```
+///
+pub fn strand_prefixes(strand strand: String) -> List(String) {
+  [
+    config_key_prefix <> strand <> "/",
+    api.schedule_fact_prefix <> "seen/" <> strand <> "/",
+    api.schedule_fact_prefix <> "fired/" <> strand <> "/",
+  ]
+}
+
 // --- interval occurrence arithmetic --------------------------------------
 //
 // Pure and exported so `client/schedulescan`'s tick handler stays a thin
@@ -1080,25 +1184,77 @@ pub fn interval_expired(
 
 /// Whose text a fire is injecting, which is the one question the fence
 /// around it exists to answer.
+///
+/// Three answers rather than two, because "the model wrote this" stopped
+/// being one fact the moment a strand could schedule onto a strand it
+/// spawned. A heartbeat firing on a child says the parent set it; a
+/// heartbeat that told the child *it* had scheduled the thing would be
+/// inviting the child to treat a sibling authority's instruction as its
+/// own earlier intent.
 pub type Origin {
   /// An operator's `[[schedule]]` table. Standing configuration the model
   /// had no hand in.
   OperatorConfigured
 
-  /// A schedule the model created for itself through `tools/schedule` or
-  /// the `schedule.*` capabilities.
-  ModelCreated
+  /// A schedule the strand being fired on created for itself, through
+  /// `tools/schedule` or the `schedule.*` capabilities.
+  SelfScheduled
+
+  /// A schedule another strand — the one that spawned this target —
+  /// created onto it. Carries the owner's name, because a reader that
+  /// cannot see who set a heartbeat cannot weigh it.
+  OwnerScheduled(owner: String)
+}
+
+/// Whose text one schedule's fire is, derived from the schedule itself.
+///
+/// The origin used to be a property of the *store* a schedule was read
+/// out of, which is why `client/schedulescan` used to pair the two by
+/// hand. `Owner` makes it a property of the value: an operator's table
+/// parses to `OperatorOwned`, a config cell always decodes to
+/// `StrandOwned` (`decode` has no path to the other), and the remaining
+/// question — self or owner — is one comparison.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.origin_of(operator_table) == schedule.OperatorConfigured
+/// ```
+///
+/// ```gleam
+/// // a strand's own heartbeat
+/// // schedule.origin_of(sched) == schedule.SelfScheduled
+/// ```
+///
+pub fn origin_of(schedule: Schedule) -> Origin {
+  case schedule.owner {
+    OperatorOwned -> OperatorConfigured
+    StrandOwned(strand:) ->
+      case strand == schedule.target {
+        True -> SelfScheduled
+        False -> OwnerScheduled(owner: strand)
+      }
+  }
 }
 
 /// How a fire attributes itself, which is the whole point of the fence.
 ///
-/// Both origins say the same two things — this is not a turn from the
-/// user, and it arrived on a timer — and then diverge on the one question
-/// the fence exists to answer: *whose text is this*. Getting that wrong
-/// in the model-created direction is the sharper error, because a model
-/// reading "this is standing operator configuration" above text it wrote
-/// itself has been handed an authority nobody granted, on a schedule it
-/// set. So the model-created line says plainly that the reader wrote it.
+/// Every origin says the same two things — this is not a turn from the
+/// user, and it arrived on a timer — and then diverges on the one
+/// question the fence exists to answer: *whose text is this*. Getting
+/// that wrong in the model's direction is the sharper error, because a
+/// model reading "this is standing operator configuration" above text it
+/// wrote itself has been handed an authority nobody granted, on a
+/// schedule it set. So the self-scheduled line says plainly that the
+/// reader wrote it.
+///
+/// The owner-scheduled line is the same error one step along. Text a
+/// *parent* scheduled onto a child is neither the operator's nor the
+/// child's own earlier intent, and telling the child "you scheduled
+/// this" would let a strand's instruction reach it disguised as its own
+/// memory. So that line names the owner and says exactly what the
+/// instruction is worth: as much as a steer from that strand, and no
+/// more.
 fn attribution(origin: Origin) -> String {
   case origin {
     OperatorConfigured ->
@@ -1107,12 +1263,23 @@ fn attribution(origin: Origin) -> String {
       <> "prompted it — and no reply is expected; treat it as scheduled "
       <> "instruction and carry on with the work in hand."
 
-    ModelCreated ->
+    SelfScheduled ->
       "This is a heartbeat *you* scheduled earlier, firing automatically "
       <> "on a timer. It is not a turn from the user, and it is not "
       <> "operator configuration — it carries no authority beyond what you "
       <> "already had when you set it. No reply is expected; treat it as a "
       <> "note to self and carry on with the work in hand."
+
+    OwnerScheduled(owner:) ->
+      "This heartbeat was scheduled by "
+      <> owner
+      <> ", the strand that spawned you, and is firing automatically on a "
+      <> "timer. It is not a turn from the user, it is not operator "
+      <> "configuration, and it is not something you scheduled: it carries "
+      <> "no authority beyond a steer from that strand would. No reply is "
+      <> "expected; weigh it as you would any instruction from "
+      <> owner
+      <> " and carry on with the work in hand."
   }
 }
 
@@ -1138,7 +1305,7 @@ fn attribution(origin: Origin) -> String {
 /// ```
 ///
 /// ```gleam
-/// // schedule.injection(sched, schedule.Late, schedule.ModelCreated)
+/// // schedule.injection(sched, schedule.Late, schedule.SelfScheduled)
 /// ```
 ///
 pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
@@ -1325,15 +1492,32 @@ pub const config_key_prefix = api.schedule_fact_prefix <> "config/"
 /// ```
 ///
 pub fn encode(schedule: Schedule) -> JsonValue {
-  json.Object(list.append(
+  json.Object(
     [
       #("name", json.String(schedule.name)),
       #("target", json.String(schedule.target)),
       #("wake", json.Bool(stored_wake(schedule.wake))),
       #("body", json.String(schedule.body)),
-    ],
-    timing_fields(schedule.timing),
-  ))
+    ]
+    |> list.append(owner_fields(schedule.owner))
+    |> list.append(timing_fields(schedule.timing)),
+  )
+}
+
+// The owner as the cell carries it: one string naming the owning strand.
+//
+// `OperatorOwned` writes no field, and that is not an omission. An
+// operator's schedule has no cell in this store at all — it is read from
+// `loom.toml` every boot, exactly as a `[[rule]]` is — so the only way
+// this arm is reached is a caller encoding a parsed table for a test.
+// Writing a spelling for it would create the one thing the reserved
+// namespace is meant to make impossible: a stored value that decodes as
+// the operator's voice.
+fn owner_fields(owner: Owner) -> List(#(String, JsonValue)) {
+  case owner {
+    OperatorOwned -> []
+    StrandOwned(strand:) -> [#("owner", json.String(strand))]
+  }
 }
 
 // The stored cell keeps `wake` a JSON boolean rather than following the
@@ -1385,11 +1569,38 @@ pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {
   use fields <- result.try(object_fields(value))
   use name <- result.try(string_field(fields, "name"))
   use target <- result.try(string_field(fields, "target"))
+  use owner <- result.try(owner_field(fields, "owner", target))
   use wake <- result.try(wake_field(fields, "wake"))
   use body <- result.try(string_field(fields, "body"))
   use timing <- result.try(decode_timing(fields))
-  build(name:, target:, timing:, wake:, body:)
+  build(name:, target:, owner:, timing:, wake:, body:)
   |> result.replace_error(Nil)
+}
+
+// The owner a cell names, defaulting to the target.
+//
+// A cell written before ownership existed carries no `owner` field, and
+// the schedule it describes was created by the strand it targets — that
+// was the only shape the door could produce — so the absent field means
+// `StrandOwned(target)` and every such cell keeps working, cancellable
+// by the strand that made it. The default is also the safe one: it can
+// only ever name the strand the schedule already fires onto, so no
+// missing field can widen who owns a schedule.
+//
+// There is deliberately no spelling of `OperatorOwned` here. A model's
+// cell that could decode as the operator's would fire with the
+// operator's attribution and be uncancellable through the door that
+// created it.
+fn owner_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  target: String,
+) -> Result(Owner, Nil) {
+  case field(fields, key) {
+    Ok(json.String(value: strand)) -> Ok(StrandOwned(strand:))
+    Error(Nil) -> Ok(StrandOwned(strand: target))
+    Ok(_other) -> Error(Nil)
+  }
 }
 
 fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
@@ -1471,6 +1682,7 @@ fn wake_field(
 ///
 /// ```gleam
 /// // schedule.build(name: "poll", target: "main",
+/// //   owner: schedule.StrandOwned("main"),
 /// //   timing: schedule.OneShot(at: 0), wake: schedule.SteersOnly,
 /// //   body: "look")
 /// ```
@@ -1478,15 +1690,17 @@ fn wake_field(
 pub fn build(
   name name: String,
   target target: String,
+  owner owner: Owner,
   timing timing: Timing,
   wake wake: Wake,
   body body: String,
 ) -> Result(Schedule, String) {
   use Nil <- result.try(checked_name(name))
   use Nil <- result.try(checked_target(target))
+  use Nil <- result.try(checked_owner(owner))
   use Nil <- result.try(checked_body(body))
   use Nil <- result.try(checked_timing(timing))
-  Ok(Schedule(name:, target:, timing:, wake:, body:))
+  Ok(Schedule(name:, target:, owner:, timing:, wake:, body:))
 }
 
 fn checked_name(name: String) -> Result(Nil, String) {
@@ -1528,6 +1742,28 @@ fn checked_target(target: String) -> Result(Nil, String) {
         <> " characters",
       )
     False, False -> Ok(Nil)
+  }
+}
+
+// An owning strand is a strand address like the target, so it owes the
+// same two bounds. Held here rather than trusted from the seam because
+// `decode` reaches this constructor too, and a cell claiming a
+// pathological owner is exactly the value a re-validating decoder is
+// for.
+fn checked_owner(owner: Owner) -> Result(Nil, String) {
+  case owner {
+    OperatorOwned -> Ok(Nil)
+    StrandOwned(strand:) ->
+      case strand == "", too_long(strand, max_target_length) {
+        True, _ -> Error("owner must not be empty")
+        _, True ->
+          Error(
+            "owner must be at most "
+            <> int.to_string(max_target_length)
+            <> " characters",
+          )
+        False, False -> Ok(Nil)
+      }
   }
 }
 

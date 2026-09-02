@@ -20,6 +20,7 @@
 import client/schedule
 import client/schedulescan
 import core/clock.{type Clock}
+import core/ids
 import core/json.{type JsonValue}
 import core/message
 import gleam/erlang/process.{type Name, type Subject}
@@ -30,10 +31,13 @@ import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
+import machine/codec
+import machine/operation
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/lineage
 import session/session
 
 // --- a tiny deterministic timer wheel ---------------------------------------
@@ -396,6 +400,7 @@ fn interval_schedule(
   schedule.Schedule(
     name:,
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.Interval(
       seconds:,
       expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
@@ -417,6 +422,7 @@ fn aging_schedule(
   schedule.Schedule(
     name:,
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.Interval(
       seconds:,
       expiry: schedule.Expiry(max_fires: 1000, expires_after_s:),
@@ -430,6 +436,7 @@ fn one_shot_schedule(name name: String, at at: Int) -> schedule.Schedule {
   schedule.Schedule(
     name:,
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.OneShot(at:),
     wake: schedule.WakesIdle,
     body: "reminder",
@@ -529,6 +536,7 @@ pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
     schedule.Schedule(
       name: "stuck",
       target: "main",
+      owner: schedule.OperatorOwned,
       timing: schedule.OneShot(at: 100),
       wake: schedule.SteersOnly,
       body: "reminder",
@@ -593,6 +601,7 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
     schedule.Schedule(
       name: "capped",
       target: "main",
+      owner: schedule.OperatorOwned,
       timing: schedule.Interval(
         seconds: 60,
         expiry: schedule.Expiry(max_fires: 1, expires_after_s: 604_800),
@@ -711,6 +720,292 @@ pub fn a_planted_observation_instant_is_honoured_test() {
   stop(rig)
 }
 
+// --- a settled target ends the schedule ------------------------------------
+
+// Issue #163's sharp half, in the scanner. A subagent has one run; once
+// it has ended, a schedule keyed to that strand must not fire — and a
+// `WakesIdle` one must certainly not open a fresh run on a driver whose
+// task is over, which is a child extending its own liveness outside the
+// spawn budget its parent was held to.
+//
+// The strand here is real and idle, with a live driver, which is what
+// makes the assertion mean something: the fire would land if the check
+// were not there, and the control test below proves exactly that.
+pub fn a_reaped_target_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: True)
+  plant_config(rig, child, "watch")
+
+  // The wheel already holds the scanner's first armed tick and each
+  // strand driver's own checkpoint poll (parked far out by `harness`), so
+  // the assertion is against that baseline rather than a count: an
+  // `Active` schedule would add exactly one deadline to it.
+  let before = fake_pending(rig.fc)
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a schedule on a reaped strand must not fire"
+  assert idle(rig, child) as "and must certainly not open a run on it"
+  assert fake_pending(rig.fc) == before
+    as "a schedule whose target has stopped must stop re-arming"
+  stop(rig)
+}
+
+// The same schedule with a live target fires and opens the run, which is
+// what makes the two tests above and below a measurement rather than a
+// pair of vacuous truths: what changes between them is one durable fact
+// about the target, not whether the strand is reachable.
+pub fn a_live_child_target_still_fires_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: False)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "a schedule on a live child must fire"
+  stop(rig)
+}
+
+// The second of the two facts a settled target is read from, and the one
+// an ordinary subagent actually ends by: its brief has a terminal
+// result. The Agency reads exactly this pair (`is_live`, `reap`), so the
+// scanner agreeing with it is the point rather than a coincidence.
+pub fn a_settled_brief_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  let brief = an_op()
+  plant_lineage(rig, child, brief, reaped: False)
+  plant_settled(rig, brief)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a schedule on a strand whose brief has settled must not fire"
+  assert idle(rig, child) as "and must not open a run on it"
+  stop(rig)
+}
+
+// Fails closed: a `sub:` target with no lineage cell is not a strand
+// this session started, and a schedule naming one is over rather than
+// waiting. The direction is deliberately the opposite of
+// `client/rulescan`'s hold, because a held rule costs a tick and a fired
+// schedule may open a run.
+pub fn a_target_with_no_lineage_cell_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a subagent-shaped target with no ledger cell must not fire"
+  assert idle(rig, child) as "and must not open a run on it"
+  stop(rig)
+}
+
+// A root strand is idle between runs rather than finished, so none of
+// the above may leak onto `main`: a terminal result there says the last
+// prompt ended, not that the next one will never arrive.
+pub fn a_settled_root_target_still_fires_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let assert Ok(op) = api.prompt(rig.runtime, [user("hello")])
+    as "the prompt must open a run on main"
+  plant_settled(rig, op)
+
+  let planted =
+    schedule.Schedule(
+      name: "mine",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.OneShot(at: 0),
+      wake: schedule.WakesIdle,
+      body: "look at the build",
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.config_key(strand: "main", name: "mine"),
+      schedule.encode(planted),
+    )
+    as "the config cell must be writable"
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: "main", name: "mine", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "a root strand's own schedule must fire whatever its last result was"
+  stop(rig)
+}
+
+// A parent-owned schedule firing on a child must not tell the child it
+// scheduled the thing itself. The attribution names the owner and says
+// what the instruction is worth — as much as a steer from that strand,
+// and no more — because a strand's instruction reaching a child
+// disguised as the child's own earlier intent is an authority nobody
+// granted.
+pub fn a_parent_owned_fire_is_attributed_to_the_parent_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: False)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "the schedule must fire onto the live child"
+
+  let text = injected_text(rig, child)
+  assert string.contains(text, "scheduled by main")
+  assert string.contains(text, "no authority beyond a steer")
+  assert !string.contains(text, "you* scheduled")
+  assert !string.contains(text, "standing operator configuration")
+  stop(rig)
+}
+
+// --- fixtures for a child target -------------------------------------------
+
+// A real, idle subagent strand with a live driver — `api.create_idle_strand`
+// is the same door the `fork` and `create_strand` protocol commands use.
+// Real rather than planted because every test above turns on whether a
+// fire *lands*, and a strand nothing is listening on would refuse one for
+// reasons that have nothing to do with the check under test.
+fn start_child(rig: Rig) -> String {
+  let child = "sub:main/worker-abc123"
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      rig.runtime,
+      named: child,
+      configuration: machine_strand.StrandConfiguration(
+        model: machine_strand.ModelIdentity(
+          provider: "acme",
+          model_id: "loom-1",
+        ),
+        thinking_level: machine_strand.ThinkingOff,
+        active_tool_names: [],
+      ),
+      at: None,
+    )
+    as "the child strand must be creatable"
+  child
+}
+
+// The child's lineage cell, as the Agency would have written it. The two
+// facts the scanner reads from it are `reaped` and `brief`; everything
+// else is filled in to make a well-formed cell.
+fn plant_lineage(
+  rig: Rig,
+  child: String,
+  brief: ids.OpId,
+  reaped reaped: Bool,
+) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      lineage.register_key(child),
+      lineage.encode(lineage.Lineage(
+        strand: child,
+        parent: "main",
+        depth: 1,
+        minted_by: lineage.CallSite(
+          operation: brief,
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        brief:,
+        tools: [],
+        deadline: None,
+        detached: False,
+        reaped:,
+      )),
+    )
+    as "the ledger must accept a cell written by the harness"
+  Nil
+}
+
+// A terminal result for one operation, under the reserved
+// `operation-result/` key `api.await_strand_result` reads — the same fact
+// a real run's terminal transaction writes, which is what makes "this
+// strand's brief has settled" a durable question.
+fn plant_settled(rig: Rig, op: ids.OpId) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      operation.result_fact_key(op),
+      codec.encode_last_result(operation.RunLastResult(
+        operation: op,
+        leaf: None,
+        outcome: operation.RunCompleted(
+          completion: operation.CompletedByAssistant,
+        ),
+        final_assistant: None,
+      )),
+    )
+    as "a terminal result must be plantable"
+  Nil
+}
+
+// A parent-owned, waking schedule onto a child, planted straight into
+// the store: the seam refuses to grant `WakesIdle` on a subagent target,
+// and what these tests exercise is the scanner's own refusal to act on
+// one however it got there — an operator's `[[schedule]]`, or a cell an
+// older build wrote.
+fn plant_config(rig: Rig, child: String, name: String) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.config_key(strand: child, name:),
+      schedule.encode(schedule.Schedule(
+        name:,
+        target: child,
+        owner: schedule.StrandOwned(strand: "main"),
+        timing: schedule.OneShot(at: 0),
+        wake: schedule.WakesIdle,
+        body: "check on the review",
+      )),
+    )
+    as "the config cell must be writable"
+  Nil
+}
+
+fn an_op() -> ids.OpId {
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
+  op
+}
+
 // --- one chain, however many wakes ----------------------------------------
 
 // Every scan ends by arming the next wake, so anything delivering a wake
@@ -805,6 +1100,7 @@ pub fn a_model_created_schedule_fires_attributed_to_the_model_test() {
     schedule.Schedule(
       name: "mine",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.OneShot(at: 0),
       wake: schedule.WakesIdle,
       body: "look at the build",

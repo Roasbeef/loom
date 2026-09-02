@@ -125,6 +125,9 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
       process.send(seen, ScheduleCreateAsked(request.name))
       Ok(workspace.ScheduleCreated(
         name: request.name,
+        // The host resolves an absent target to the execution's own
+        // strand; this fake stands in for the one the bridge binds.
+        target: option.unwrap(request.target, "main"),
         when: "every 60s, at most 1000 times",
         wake: request.wake,
       ))
@@ -134,6 +137,7 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
       Ok([
         workspace.ScheduleRow(
           name: "poll",
+          target: "main",
           when: "every 60s, at most 1000 times",
           wake: workspace.WakesIdle,
           fired: 2,
@@ -141,7 +145,7 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
         ),
       ])
     },
-    schedule_cancel: fn(name) {
+    schedule_cancel: fn(name, _target) {
       process.send(seen, ScheduleCancelAsked(name))
       Ok(Nil)
     },

@@ -29,13 +29,31 @@
 //// rather than refusing and inviting a retry loop against a wall that
 //// will not move.
 ////
-//// Two further things this door does not do, both deliberate. A
-//// model-created schedule always targets the strand that created it:
-//// there is no `target` argument, so no strand can schedule work onto
-//// another strand's context. And there is no way to create one on behalf
-//// of a subagent — the case the design note names as the motivating one
-//// for `wake` — because that needs a lineage check this package cannot
-//// perform and an ownership argument nobody has written down yet.
+//// # Onto itself, or onto something it spawned
+////
+//// A schedule has an owner and a target, and this door lets a caller
+//// name the second. `target` defaults to the calling strand — the
+//// ordinary heartbeat, and every schedule this door could create before
+//// — and may otherwise name a strand the caller *spawned*. The host
+//// decides that from the durable lineage ledger, which is the only
+//// place the answer exists; a target that is neither the caller nor a
+//// descendant of it is refused as `Invalid`, and no strand can put text
+//// into an unrelated strand's context.
+////
+//// The point of the argument is the case the design ruling named as the
+//// motivating one for `wake` and could not reach: a parent watching a
+//// subagent it started, with nobody present. What it costs is one more
+//// thing to say plainly to the model — `list` and `cancel` are keyed on
+//// the **owner**, so a caller sees and retires the schedules it made
+//// wherever they fire, and never another strand's.
+////
+//// Waking is the one thing a target changes. A schedule onto a subagent
+//// never wakes it, whatever the operator's policy says and whatever the
+//// call asked for: a subagent has exactly one run, and starting a fresh
+//// one after its task has ended would extend a child's life outside the
+//// spawn budget its parent was held to. Such a schedule steers the
+//// child's open run and holds when there is none, and the result says
+//// so, exactly as it already does under a `steer` policy.
 ////
 //// # A seam of closures, like `remember`
 ////
@@ -56,16 +74,17 @@
 //// # Replay and batching
 ////
 //// `replay: Never` for `schedule_create` and `schedule_cancel` — both
-//// write a durable cell, and a replayed call would act on it twice. The
+//// write durable state, and a replayed call would act on it twice. The
 //// host claims a config cell on its absence, so a replayed `create` whose
 //// first attempt landed is refused as `NameTaken` rather than replacing
 //// anything; what replay still cannot make honest is a `create` whose
 //// name was cancelled between the two attempts, which would be admitted
 //// as a fresh schedule the model believes it already has. `cancel`
-//// deletes the cell, and a second deletion is a no-op in effect but a
-//// `NotFound` in answer. Neither is a quiet difference a crash should
-//// produce, so neither replays. `schedule_list` reads nothing durable
-//// and is `Safe`.
+//// deletes the cell *and* the schedule's record of what it has fired, so
+//// a name is genuinely free afterwards; a second deletion is a no-op in
+//// effect but a `NotFound` in answer. Neither is a quiet difference a
+//// crash should produce, so neither replays. `schedule_list` reads
+//// nothing durable and is `Safe`.
 ////
 //// `execution_mode: Exclusive` for the two writers, because two of them
 //// in one batch race for the same ceiling count and one would be refused
@@ -136,6 +155,11 @@ pub type Listed {
   Listed(
     /// The name the model gave it, which is also how it cancels it.
     name: String,
+    /// The strand it fires onto: the caller's own, or one the caller
+    /// spawned. Two schedules the same caller owns may share a name
+    /// across different targets, so a row without this is ambiguous and
+    /// a cancellation built from it would be a guess.
+    target: String,
     /// A rendered description of when it fires — `"every 300s"` or a UTC
     /// instant — built by the seam, which owns the timing vocabulary.
     when: String,
@@ -157,13 +181,15 @@ pub type Refusal {
   /// This session already holds `limit` model-created schedules.
   CeilingReached(limit: Int)
 
-  /// A schedule of this name already exists on this strand. Creation
+  /// A schedule of this name already fires onto the target. Creation
   /// never silently replaces: the model cancels and creates again, so
   /// that replacing one is a thing it decided rather than a thing it did
   /// by reusing a name.
   NameTaken(name: String)
 
-  /// No schedule of this name exists on this strand to cancel.
+  /// The caller owns no schedule of this name on that target. A name
+  /// another strand owns answers the same way: a caller learns what is
+  /// its own to cancel and nothing about anyone else's.
   NotFound(name: String)
 
   /// The durable store could not be read or written.
@@ -183,7 +209,7 @@ pub type Schedules {
   Schedules(
     create: fn(Ctx, Request) -> Result(Created, Refusal),
     list: fn(Ctx) -> Result(List(Listed), Refusal),
-    cancel: fn(Ctx, String) -> Result(Nil, Refusal),
+    cancel: fn(Ctx, String, Option(String)) -> Result(Nil, Refusal),
   )
 }
 
@@ -192,6 +218,11 @@ pub type Schedules {
 pub type Request {
   Request(
     name: String,
+    /// The strand this schedule should fire onto, or `None` for the
+    /// caller's own. The seam admits only the caller itself or a strand
+    /// the caller spawned; nothing on this side of it can tell those
+    /// apart, which is why the argument travels as the model wrote it.
+    target: Option(String),
     /// A recurring interval in seconds, or a one-shot UTC instant. The
     /// tool refuses to build a `Request` that names neither or both, so
     /// the seam never sees that case.
@@ -216,10 +247,15 @@ pub type RequestedTiming {
 pub type Created {
   Created(
     name: String,
+    /// The strand it will fire onto, resolved: the caller's own when the
+    /// request named none. Echoed because a confirmation that does not
+    /// say where a heartbeat lands is one a caller cannot check.
+    target: String,
     when: String,
     /// What `wake` ended up being. Under a `steer` policy this is
-    /// `SteersOnly` however the model asked, and the tool says so in the
-    /// result.
+    /// `SteersOnly` however the model asked, and so is every schedule
+    /// onto a subagent whatever the policy — the tool says which in the
+    /// result rather than refusing the call.
     wake: Wake,
   )
 }
@@ -243,9 +279,9 @@ pub fn tools(schedules: Schedules, limits: Limits) -> List(Tool) {
 fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
   tool.Tool(
     name: create_tool_name,
-    description: "Schedule a heartbeat: text that will be injected back "
-      <> "into your own context later, on a timer, whether or not anyone is "
-      <> "watching. Use it to check back on long-running work, to poll "
+    description: "Schedule a heartbeat: text that will be injected into a "
+      <> "strand's context later — your own, by default — on a timer, "
+      <> "whether or not anyone is watching. Use it to check back on long-running work, to poll "
       <> "something that changes on its own, or to leave yourself a "
       <> "reminder at a fixed time. Give either `every_seconds` for a "
       <> "recurring heartbeat (at least "
@@ -254,13 +290,15 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
       <> "recurring schedule always expires on its own — after "
       <> int.to_string(limits.default_max_fires)
       <> " fires or a week, whichever comes first — so it cannot run "
-      <> "forever. The schedule fires onto this strand only, and this "
-      <> "session holds at most "
+      <> "forever. This session holds at most "
       <> int.to_string(limits.max_schedules)
       <> " of them at a time; cancel one you no longer need with "
       <> cancel_tool_name
       <> ". Write the body as an instruction to your future self, which "
-      <> "will read it with none of this moment's context.",
+      <> "will read it with none of this moment's context. It fires onto "
+      <> "this strand unless you name a `target`, which may only be a "
+      <> "strand you spawned — a heartbeat onto one of those steers its "
+      <> "open run and never starts a new one.",
     prompt_snippet: Some(
       "`schedule_create` has text injected back into your own context "
       <> "later, on a timer.",
@@ -309,6 +347,16 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
             <> "only steer",
           ),
         ),
+        #(
+          "target",
+          tool.string_property(
+            "which strand the heartbeat fires onto. Defaults to this one. "
+            <> "The only other strand you may name is one you spawned; a "
+            <> "schedule onto it steers its open run, never wakes it, and "
+            <> "ends when its work does. You still own it: it is yours to "
+            <> "list and cancel",
+          ),
+        ),
       ],
       ["name", "body"],
     ),
@@ -325,12 +373,13 @@ fn run_create(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use every <- tool.with_arg(tool.optional_int(args, "every_seconds"))
   use at <- tool.with_arg(tool.optional_string(args, "at"))
   use wanted <- tool.with_arg(requested_wake(args))
+  use target <- tool.with_arg(tool.optional_string(args, "target"))
   use timing <- tool.with_arg(requested_timing(every, at))
   use created <- tool.or_outcome(
-    schedules.create(ctx, Request(name:, timing:, wake: wanted, body:)),
+    schedules.create(ctx, Request(name:, target:, timing:, wake: wanted, body:)),
     refusal_outcome,
   )
-  created_outcome(created, asked_for_wake: wanted)
+  created_outcome(created, ctx, asked_for_wake: wanted)
 }
 
 // The model writes an ordinary JSON boolean and may leave the argument
@@ -372,23 +421,37 @@ fn requested_timing(
 
 fn created_outcome(
   created: Created,
+  ctx: Ctx,
   asked_for_wake wanted: Wake,
 ) -> ToolOutcome {
-  // The one case where what happened differs from what was asked: the
-  // operator's policy allows steering only. Saying so plainly, once, is
-  // what stops a model retrying the same call expecting a different
-  // answer.
+  // The one case where what happened differs from what was asked, and
+  // it has two causes the model cannot tell apart from here: an operator
+  // policy that allows steering only, or a target that is a subagent and
+  // therefore never woken. Saying plainly that it will steer is what
+  // stops a retry expecting a different answer; which of the two reasons
+  // it was is the host's business and changes nothing the model can do.
   let note = case wanted, created.wake {
     WakesIdle, SteersOnly ->
-      " This session's operator has not enabled waking, so it will steer a "
-      <> "run that is already open and hold when the strand is idle."
+      " Waking was not granted for this schedule, so it will steer a run "
+      <> "that is already open and hold when the strand is idle."
 
     WakesIdle, WakesIdle | SteersOnly, WakesIdle | SteersOnly, SteersOnly -> ""
+  }
+
+  // Where it fires is named only when it is somewhere other than here.
+  // The common heartbeat is onto the caller's own strand, and a
+  // confirmation that says so every time trains a reader to skip the
+  // clause that matters on the rare call.
+  let onto = case created.target == ctx.strand {
+    True -> ""
+    False -> " onto " <> created.target
   }
   tool.success(
     "scheduled \""
     <> created.name
-    <> "\", firing "
+    <> "\""
+    <> onto
+    <> ", firing "
     <> created.when
     <> "."
     <> note,
@@ -396,6 +459,7 @@ fn created_outcome(
   |> tool.with_details(
     json.Object([
       #("name", json.String(created.name)),
+      #("target", json.String(created.target)),
       #("when", json.String(created.when)),
       #("wake", json.Bool(wake_flag(created.wake))),
     ]),
@@ -405,10 +469,11 @@ fn created_outcome(
 fn list_tool(schedules: Schedules) -> Tool {
   tool.Tool(
     name: list_tool_name,
-    description: "List the heartbeats you have scheduled on this strand, "
-      <> "with how often each fires, how many times it has fired, and what "
-      <> "it injects. Schedules the operator configured are not listed: "
-      <> "those are not yours to cancel.",
+    description: "List the heartbeats you have scheduled — this strand's "
+      <> "own and any you set onto a strand you spawned — with which "
+      <> "strand each fires onto, how often, how many times it has fired, "
+      <> "and what it injects. Schedules the operator configured are not "
+      <> "listed: those are not yours to cancel.",
     prompt_snippet: Some(
       "`schedule_list` lists the heartbeats you scheduled on this strand.",
     ),
@@ -424,12 +489,12 @@ fn run_list(schedules: Schedules, ctx: Ctx) -> ToolOutcome {
   use listed <- tool.or_outcome(schedules.list(ctx), refusal_outcome)
   case listed {
     [] ->
-      tool.success("no schedules on this strand.")
+      tool.success("you have no schedules.")
       |> tool.with_details(json.Object([#("schedules", json.Array([]))]))
     schedules ->
       tool.success(
         schedules
-        |> list.map(describe_listed)
+        |> list.map(fn(row) { describe_listed(row, ctx) })
         |> string.join("\n"),
       )
       |> tool.with_details(
@@ -450,14 +515,23 @@ fn wake_flag(wake: Wake) -> Bool {
   }
 }
 
-fn describe_listed(listed: Listed) -> String {
+fn describe_listed(listed: Listed, ctx: Ctx) -> String {
   let waking = case listed.wake {
     WakesIdle -> ", wakes an idle strand"
     SteersOnly -> ", steers an open run only"
   }
+
+  // Same rule as a creation's confirmation: name the target only when it
+  // is not the strand doing the reading.
+  let onto = case listed.target == ctx.strand {
+    True -> ""
+    False -> " onto " <> listed.target
+  }
   "\""
   <> listed.name
-  <> "\" — "
+  <> "\""
+  <> onto
+  <> " — "
   <> listed.when
   <> waking
   <> ", fired "
@@ -469,6 +543,7 @@ fn describe_listed(listed: Listed) -> String {
 fn listed_json(listed: Listed) -> JsonValue {
   json.Object([
     #("name", json.String(listed.name)),
+    #("target", json.String(listed.target)),
     #("when", json.String(listed.when)),
     #("wake", json.Bool(wake_flag(listed.wake))),
     #("fired", json.Int(listed.fired)),
@@ -479,9 +554,11 @@ fn listed_json(listed: Listed) -> JsonValue {
 fn cancel_tool(schedules: Schedules) -> Tool {
   tool.Tool(
     name: cancel_tool_name,
-    description: "Cancel one heartbeat you scheduled on this strand, by "
-      <> "name. It will not fire again. Schedules the operator configured "
-      <> "cannot be cancelled this way.",
+    description: "Cancel one heartbeat you scheduled, by name. It will "
+      <> "not fire again, and its record of past fires is cleared with it, "
+      <> "so the name is free to use again. Name the `target` too if you "
+      <> "set it onto a strand you spawned. Only schedules you created can "
+      <> "be cancelled: not another strand's, and not the operator's.",
     prompt_snippet: Some(
       "`schedule_cancel` cancels one heartbeat you scheduled, by name.",
     ),
@@ -491,6 +568,14 @@ fn cancel_tool(schedules: Schedules) -> Tool {
           "name",
           tool.string_property(
             "the name you gave the schedule when you " <> "created it",
+          ),
+        ),
+        #(
+          "target",
+          tool.string_property(
+            "the strand it fires onto, if that is not this one — "
+            <> list_tool_name
+            <> " shows it. Defaults to this strand",
           ),
         ),
       ],
@@ -505,7 +590,11 @@ fn cancel_tool(schedules: Schedules) -> Tool {
 
 fn run_cancel(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use name <- tool.with_arg(tool.required_string(args, "name"))
-  use Nil <- tool.or_outcome(schedules.cancel(ctx, name), refusal_outcome)
+  use target <- tool.with_arg(tool.optional_string(args, "target"))
+  use Nil <- tool.or_outcome(
+    schedules.cancel(ctx, name, target),
+    refusal_outcome,
+  )
   tool.success("cancelled \"" <> name <> "\". It will not fire again.")
   |> tool.with_details(
     json.Object([
@@ -570,12 +659,12 @@ fn describe(refusal: Refusal) -> String {
     NameTaken(name:) ->
       "a schedule named \""
       <> name
-      <> "\" already exists on this strand. Cancel it first, or choose "
+      <> "\" already fires onto that strand. Cancel it first, or choose "
       <> "another name — creating never silently replaces one."
     NotFound(name:) ->
-      "no schedule named \""
+      "you have no schedule named \""
       <> name
-      <> "\" on this strand. "
+      <> "\" on that strand. "
       <> list_tool_name
       <> " shows the ones you can cancel."
     Unavailable(reason:) ->
