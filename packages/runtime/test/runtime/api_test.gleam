@@ -606,6 +606,43 @@ pub fn put_reserved_fact_expecting_claims_a_cell_once_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The set form of the same retirement: everything under one prefix, in
+// one transaction, and nothing outside it. The neighbour here shares a
+// string prefix with the target (`hb` and `hb-2`), which is the mistake
+// this door hands to its caller — a prefix is a path, and the namespace's
+// owner is the only party that knows where its segments end.
+pub fn delete_reserved_prefix_removes_exactly_the_prefix_test() {
+  let rt = fact_runtime()
+  let marks = ["schedule/fired/main/hb/0", "schedule/fired/main/hb/60"]
+  let neighbour = "schedule/fired/main/hb-2/0"
+  let assert Ok(Nil) = api.put_reserved_fact(rt, neighbour, json.Null)
+    as "the neighbour must be writable"
+  list.each(marks, fn(key) {
+    let assert Ok(Nil) = api.put_reserved_fact(rt, key, json.Null)
+      as "each mark must be writable"
+    Nil
+  })
+
+  assert api.delete_reserved_prefix(rt, prefix: "schedule/fired/main/hb/")
+    == Ok(2)
+  let assert Ok([]) = api.reserved_facts(rt, prefix: "schedule/fired/main/hb/")
+    as "every cell under the prefix must be gone"
+  let assert Ok(Some(json.Null)) = api.fact(rt, neighbour)
+    as "a similarly named neighbour must survive"
+
+  // Nothing under the prefix is success and commits nothing: the count
+  // is the only observation left to make afterwards.
+  assert api.delete_reserved_prefix(rt, prefix: "schedule/fired/main/hb/")
+    == Ok(0)
+
+  // Unreserved prefixes are refused here exactly as they are to every
+  // other door on this side of the reservation, so this can never become
+  // a bulk delete over the model-writable blackboard.
+  assert api.delete_reserved_prefix(rt, prefix: "review/")
+    == Error(api.UnreservedFactKey(key: "review/"))
+  process.kill(rt.tree.supervisor)
+}
+
 // Retiring a reserved record leaves nothing behind for a prefix scan to
 // read and discard, and frees the key to be claimed afresh (issue #164).
 pub fn delete_reserved_fact_removes_the_cell_test() {

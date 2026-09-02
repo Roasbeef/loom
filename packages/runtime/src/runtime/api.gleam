@@ -1631,6 +1631,65 @@ pub fn delete_reserved_fact(
   }
 }
 
+/// Deletes every reserved `fact.custom` cell under one prefix in a single
+/// transaction, and answers how many there were.
+///
+/// `delete_reserved_fact` retires one record; this retires a *set* of
+/// them, which is a different operation and not a loop over the first
+/// one. A harness component that owns a namespace sometimes has to
+/// retire everything a subject wrote there — every fired-mark of a
+/// cancelled schedule, every durable trace of a strand whose run has
+/// ended — and doing that one commit at a time leaves the set half
+/// retired for as long as the loop takes, which is a state no reader of
+/// the prefix is written to expect. One `core/tx.Tx` of
+/// `DeleteRegister` writes lands all of them or none.
+///
+/// The count is the answer rather than `Nil` because "how much was
+/// there" is the only observation a caller can make afterwards: the
+/// cells are gone, so a caller that wants to log or assert what it
+/// retired has nothing left to count. Zero is an ordinary answer and
+/// commits nothing at all.
+///
+/// The prefix must itself be reserved, exactly as `reserved_facts`
+/// requires, so this can never be pressed into service as a bulk delete
+/// over the model-writable blackboard — where a delete door does not
+/// exist at all, and deliberately (see `delete_reserved_fact`).
+///
+/// **A prefix is a path, and the caller owns that discipline.** This
+/// door deletes what the store matches, so a prefix that stops mid-
+/// segment reaches a differently-named neighbour: `schedule/fired/main`
+/// would take `mainly`'s marks too. Callers here pass prefixes ending in
+/// the separator (`client/schedule.strand_prefixes` is the worked
+/// example) rather than relying on a check this door cannot make, since
+/// only the namespace's owner knows where its segments end.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.delete_reserved_prefix(runtime, prefix: "schedule/fired/main/hb/")
+/// // -> Ok(3)
+/// ```
+///
+pub fn delete_reserved_prefix(
+  runtime: Runtime,
+  prefix prefix: String,
+) -> Result(Int, ApiError) {
+  use cells <- result.try(reserved_facts(runtime, prefix:))
+
+  // Nothing there is success, and committing an empty transaction to
+  // say so would journal a row for a decision that changed nothing.
+  use <- bool.guard(when: cells == [], return: Ok(0))
+  let writes =
+    list.map(cells, fn(pair) {
+      let #(key, _value) = pair
+      tx.DeleteRegister(ns: register.FactCustom, key:)
+    })
+  case writer.commit(writer_subject(runtime), tx.Tx(writes:, expected: [])) {
+    Ok(_result) -> Ok(list.length(cells))
+    Error(error) -> Error(commit_failure(error))
+  }
+}
+
 /// Lists `fact.custom` cells under one reserved prefix — the harness-only
 /// read path for a namespace `facts` filters out.
 ///
