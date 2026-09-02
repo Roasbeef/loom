@@ -19,10 +19,22 @@ orchestrates effects. The *orchestration* seam is `cap/strand` +
 two sets are disjoint but for `cap/report`, and that disjointness is the
 point: an orchestrator that could also write files is a materially worse
 thing to hand a model than one that cannot. The *extension* seam is the
-workspace seam widened by `cap/ext` and the `ext` prelude, and its
-relation to the other two is a superset rather than a disjointness on
-purpose — an installed extension's tool is a workspace program with a
-different entry point.
+workspace seam widened by the `ext` prelude alone, and its relation to
+the other two is a superset rather than a disjointness on purpose — an
+installed extension's tool is a workspace program with a different entry
+point. It widens by no *capability* at all: `cap/ext.call` was phase 1's
+"which call am I serving?" pull, and `protocol-change/012` deleted it,
+because a satellite that lives for a session is *told* what to answer
+over a `hook_call`.
+
+This package therefore serves **two boot shapes**. `cap/runtime.run`
+boots one program, writes one terminal `outcome` frame and dies — code
+mode's disposable node. `cap/runtime.serve` boots the same channel over
+the same socket and then waits, answering `hook_call`s until the harness
+cancels or the channel closes — an installed extension's session-lived
+satellite. The capability language beneath them is identical; what
+differs is where a node's authority comes from, which is the invariants
+below.
 
 ## Key Types
 
@@ -81,19 +93,22 @@ different entry point.
   adds it to write the code down and look at the paired list. Adding a
   variant on one side and not the other still compiles everywhere; the
   alarm is that you were made to read the sentence saying so.
-- `cap/ext.{Call, CallRefused}` — the one capability only an extension
-  makes, and the first thing an extension satellite does: `call()` asks
-  the harness which tool this execution is for, answered with
-  `{tool, args, strand, deadline_ms}`. `args` is **JSON text** rather
-  than a msgpack value, because an `ext.Tool` takes a `Dynamic` and
-  `gleam_json`'s parser is the only total route to one the extension
-  seam admits; decoding a msgpack value into a `Dynamic` would need an
-  FFI the prelude deliberately does not offer. On the extension seam and
-  no other, for the reason `cap/strand` is on exactly one.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry
   module calls; `boot` is the testable core beneath it.
+- `cap/runtime.{Invocation, Answer, Asked}` with `serve`/`serve_over` —
+  the other boot shape, and a persistent satellite's whole main loop.
+  `serve(answer)` reads the environment, boots the channel and waits;
+  `serve_over(token, transport, answer)` is the same loop over an injected
+  transport, the seam `boot` takes and for the same reason. `Asked(
+  invocation, args, deadline_ms)` is one `hook_call` with its `kind`
+  string already turned into a closed set — `Tool(name)` or `Event(name)`,
+  anything else refused `bad_kind` — and `Answer` is `Answered(value)` /
+  `Refused(code, message)`, mirroring the `hook_result` body. The three
+  codes this loop mints itself are `bad_kind`, `busy` and `crashed`;
+  every other code is the serving function's own vocabulary
+  (`packages/ext`'s, in practice).
 - `cap/schedule.{Schedule, Created, Wake, ScheduleError}` — heartbeats a
   program sets for the strand it is running on, the code-mode half of the
   door `tools/schedule` opens for a tool call. Both land on one
@@ -158,6 +173,8 @@ different entry point.
   `cap/*` function makes; `Deliver(id, outcome)` and `Fail(reason)` are
   casts from the boot runtime's read loop; `CallerDown(down)` is the
   monitor firing when a caller is killed; `Stop` is teardown.
+  `SetToken(token)` is the serving loop's alone: it installs the
+  invocation's token before the answer starts and clears it after.
   `cap/actor` and `cap/task` spawn their own processes but exchange no
   package-level protocol.
 - **Wire** — one AF_UNIX stream, length-prefixed msgpack, protocol version
@@ -165,11 +182,17 @@ different entry point.
   the marshalled args, and a deadline) and `cancel`. `strand.wait` is the
   one call that sets its own deadline — the join window plus
   `wait_margin_ms` — because the harness answers `Pending` at the window
-  rather than hanging, and the channel must outlast that. In: `cap_result`,
-  which is the only kind the satellite acts on. Out, exactly once per
-  execution: the terminal `outcome` frame
+  rather than hanging, and the channel must outlast that. In:
+  `cap_result`, the answer to something this node asked, and `hook_call`,
+  the one frame the harness asks *it* (`protocol-change/012`) — a
+  single-shot node's reader drops the second, and both shapes drop every
+  other well-formed kind and keep the channel open. Out, once per
+  invocation on a serving node: `hook_result`, carrying the frame `id` of
+  the `hook_call` it answers. Out, exactly once per execution on a
+  single-shot node: the terminal `outcome` frame
   (`{v: 1, id: 0, kind: "outcome", body}`) carrying
-  `report.to_msgpack(outcome)`.
+  `report.to_msgpack(outcome)`. A serving node writes **no** `outcome`
+  frame at all, because it ends no execution.
 - **Commits / registers**: none. This package never touches durable
   storage; it has no way to.
 
@@ -195,7 +218,33 @@ different entry point.
   actor is still alive, making the executor's reaping obligation fail
   loudly instead of silently lending authority. `release` is a
   compare-and-clear, so a slow teardown cannot clear a later execution's
-  slot.
+  slot. Under the single-shot shape that guard never fires, because every
+  execution gets a fresh node; under the serving shape it is what would
+  catch a host that started a second satellite for one extension without
+  reaping the first, which is why `codemode/satellite` states the reaping
+  obligation as *a host reaps its node before the session's next host for
+  that extension starts*.
+- **A serving node's authority belongs to the invocation, not to the
+  node.** The token file `read_token` reads is deliberately not a working
+  token for a serving satellite; it satisfies the boot sequence and
+  nothing else. Every token that works arrives on a `hook_call`, is
+  installed with `channel.set_token` before the worker starts, and is
+  cleared to empty bytes after the answer ends — so a process the
+  extension kept alive between invocations frames its `cap_call`s with
+  bytes the harness has already revoked. **An extension may compute
+  between invocations and may not act**, and the ordering is what makes
+  that true: install, then spawn; answer, then clear.
+- **One invocation at a time, and a crash is an answer.** A second
+  `hook_call` arriving while one is open is answered `busy` on the spot
+  and never queued — a queue would mean a second token installed under
+  the first invocation's worker, and the harness serialises anyway, so a
+  second is a fault to name rather than work to schedule. The invocation
+  runs on a monitored child of the loop, so a `panic` in extension code
+  becomes `crashed` on the wire and the loop goes on to the next
+  invocation; that child is also what keeps the loop in its selector, so
+  the `busy` answer is not stuck behind an invocation that may run for
+  its whole deadline. The loop ends on a `cancel` frame or a closed
+  channel, in both cases by returning.
 - **Cancellation is real, not advisory.** The channel monitors the caller
   of every in-flight call. Killing a `race` loser therefore produces a
   `DOWN`, which emits a `cancel` frame for that call id, which makes the

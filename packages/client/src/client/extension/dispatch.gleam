@@ -238,12 +238,13 @@ type Dispatching {
 // construction: the one thing an extension has that a built-in read does
 // not is `net.request`, and a replay after a crash could repeat a POST
 // nobody meant to send twice. `execution_mode: tool.Exclusive` for the
-// same reason `code_mode` is — the call spends a jailed node, a socket
-// and a token file under a directory keyed on `{op_id, step_id,
-// source_index}`, and `Exclusive` is what the batch scheduler reads to
-// keep two of them from starting together. The manifest declares neither,
-// deliberately: both are judgements about what the harness may do with a
-// call, and an extension author is not the party who gets to relax them.
+// same reason `code_mode` is — the call holds the extension's one
+// satellite for the whole of its deadline, because the protocol allows
+// one outstanding invocation per node, and `Exclusive` is what the batch
+// scheduler reads to keep two of them from starting together. The
+// manifest declares neither, deliberately: both are judgements about what
+// the harness may do with a call, and an extension author is not the
+// party who gets to relax them.
 fn tool_for(
   config: Config,
   written: Record,
@@ -732,7 +733,8 @@ fn failure_text(written: Record, failure: hosts.HookFailure) -> String {
       "the extension's code crashed while answering: " <> reason
     hosts.Deadline ->
       "the call did not finish inside the extension's own timeout, so its "
-      <> "satellite was destroyed; a later call will start a new one"
+      <> "satellite was destroyed and this extension is unavailable for the "
+      <> "rest of this session"
     hosts.Gone(reason:) ->
       "the extension `"
       <> written.name

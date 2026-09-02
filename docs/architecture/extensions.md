@@ -16,8 +16,9 @@ model-adjacent code beside the storage writer, the state machine and the
 broker, which is exactly what Rule Zero exists to prevent
 (`docs/loom-design.md` §7). So an extension does not run in the harness.
 It runs in the same jailed satellite a code-mode program runs in, against
-the same capability prelude, judged by the same broker, one execution per
-call. Installing one changes nothing in the harness VM, which is why the
+the same capability prelude, judged by the same broker, one authorised
+invocation at a time. Installing one changes nothing in the harness VM,
+which is why the
 freeze test #33 asks for is satisfied by construction rather than by
 argument.
 
@@ -25,8 +26,8 @@ The ruling is `docs/adr/007-extension-tiers-and-brokered-egress.md`, and
 the argument behind it — the vocabulary, the manifest, the pi survey, the
 phases — is `docs/design-notes/extension-architecture.md`. This document
 is what the tree actually holds, section by section, and it says so per
-section: **built**, **in flight**, or **planned**. The acceptance
-extension is a real repository,
+section: **built** or **planned**. The acceptance extension is a real
+repository,
 [loom-web-search](https://github.com/Roasbeef/loom-web-search), and its
 `extension.toml` is the worked example throughout.
 
@@ -35,13 +36,13 @@ extension is a real repository,
 | Phase | What it is | Status |
 |---|---|---|
 | 1 | `packages/ext`, the extension seam, the manifest, the install pipeline, install records, discovery, `loom ext` | **Built** (#177, #178, #179, #182) |
-| 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **In flight** on `ext/dispatch` |
-| 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Planned**; `protocol-change/012-hook-call.md` is proposed on `ext/phase-3-proposal` |
+| 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **Built** (#196) |
+| 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **In flight**: the satellite host and the frame pair are built, `protocol-change/012-hook-call.md` is ACCEPTED; the hook bus is the wave after |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | **Planned** (#32, #33) |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
 
 Everything below is marked against that table. Where a section describes
-phase 2 or later it says so in its first sentence, so a reader who wants
+phase 3 or later it says so in its first sentence, so a reader who wants
 only the tree as it stands can skip on sight.
 
 ## Two tiers, and why jailed is the default
@@ -51,12 +52,11 @@ An installed extension has one manifest and up to two bodies.
 **Tier J, the jailed body**, is the only one phase 1 admits — literally,
 since `manifest.Tier` has one variant and the decoder accepts one string
 (`extension/manifest.gleam:74`). It runs in a satellite under the
-*extension seam*: the workspace seam's capability modules, `cap/ext`
-for the call itself, and the `ext` prelude that carries the typed
-behaviours. A tool call is one execution of the extension's compiled
-source with the call's arguments; the capability channel is the only way
-out; the broker judges every effect per call exactly as it does for a
-code-mode program.
+*extension seam*: the workspace seam's capability modules plus the `ext`
+prelude that carries the typed behaviours. A tool call is one invocation
+of the extension's compiled source with the call's arguments; the
+capability channel is the only way out; the broker judges every effect
+per invocation exactly as it does for a code-mode program.
 
 **Tier H, the harness-resident body**, is design §7's L3: hot-loaded
 under a harness-controlled module name, confined to the typed behaviours,
@@ -74,16 +74,16 @@ flowchart LR
       BRK[ToolBroker: policy, token, budget]
       EG[broker/egress: the HTTP request, and the key]
     end
-    subgraph J["Kernel jail — one satellite per call"]
+    subgraph J["Kernel jail — one satellite per extension, per session"]
       SAT[extension artifact + cap prelude + ext prelude]
     end
     M[Model] -->|tool call| REG
-    REG -->|arguments| SAT
+    REG -->|hook_call: token, name, args| SAT
     SAT -->|cap_call| BRK
     BRK -->|net.request| EG
     EG -->|response, no credential| BRK
     BRK -->|cap_result| SAT
-    SAT -->|outcome frame| REG
+    SAT -->|hook_result| REG
 ```
 
 The rule that makes this shippable is **a tool is always tier J, and a
@@ -101,10 +101,10 @@ seam.
 **Built.** The extension seam is the third of code mode's three, and
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
-exactly `cap/ext` and `ext` (`vet/policy.gleam:453`), and
+exactly one name, `ext` (`vet/policy.gleam:455`), and
 `extension_stdlib_modules` is the shared pure subset widened by
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json` (`vet/policy.gleam:480`).
+and `gleam/json` (`vet/policy.gleam:482`).
 
 Disjointness exists between the workspace and orchestration seams because
 an orchestrator and an effect program are different kinds of thing, and
@@ -113,13 +113,17 @@ is not a different kind of thing from a workspace program: it reads
 files, runs processes and, under ADR-007, makes brokered HTTP requests.
 It differs in its *entry point*. The harness knows a code-mode program's
 arguments when it launches the node; an extension is compiled once at
-install and run many times, so the call is what varies and something has
-to fetch it. That something is `cap/ext`.
+install and invoked many times, so the call is what varies. Phase 1
+answered that with a capability the node pulled on, `cap/ext.call`.
+Phase 3 deleted it: the harness now *tells* a satellite what to answer,
+over a `hook_call` frame (`protocol-change/012`), so the question has no
+caller left and the widening is one name shorter.
 
-The widening is pinned rather than trusted. `the_extension_seam_widens_by_exactly_two_names_test`
-asserts the set difference is exactly those two names and that
-`cap/strand` is not among them
-(`codemode/test/codemode_test.gleam:578`) — because the superset test
+The widening is pinned rather than trusted:
+`the_extension_seam_widens_by_exactly_two_names_test`
+(`codemode/test/codemode_test.gleam:577`) asserts the set difference is
+exactly `ext` and that `cap/strand` is not among it — because the
+superset test
 alone would pass if the extension seam had quietly picked up agent
 orchestration, putting the disk and the lineage in one program after all.
 The five extra standard-library names live on a list of their own so that
@@ -242,7 +246,7 @@ sequenceDiagram
   C->>D: rename staging into place
 ```
 
-`run` (`extension/install.gleam:188`) is that sequence read top to bottom
+`run` (`extension/install.gleam:198`) is that sequence read top to bottom
 in five `use` lines and a `stage` call. Every failure removes its staging
 directory, including the ones that happen after a build has written
 megabytes into it, so a directory under `~/.loom/extensions` is either a
@@ -332,7 +336,7 @@ it is not part of what an operator approves.
 
 Three orderings carry the weight.
 
-`installed_tree` runs **first** (`extension/install.gleam:194`), ahead of
+`installed_tree` runs **first** (`extension/install.gleam:208`), ahead of
 the UTF-8 decode, the manifest, the vetting, the digest and the write. So
 the recorded digest describes the installed tree, and a later load
 compares like with like rather than re-deriving the prune and hoping it
@@ -366,8 +370,8 @@ and then asserts the recorded digest verifies against the pruned tree.
 
 ## Discovery, and what a load re-derives
 
-**Built** for the re-derivation; **phase 2** for the registration at
-boot. `installed.discover` (`extension/installed.gleam:82`) reads the
+**Built**, both the re-derivation and the registration at boot.
+`installed.discover` (`extension/installed.gleam:82`) reads the
 extensions root, filters entries through the same name grammar the
 manifest uses, and returns `Ready` or `Refused` for each — a refusal is a
 *value*, not a shorter list, because an operator who installed something
@@ -390,13 +394,14 @@ accident. Recomputing it would mean an operator's yes silently followed
 the harness's current idea of the seam; storing it turns a widened seam
 into a question the operator gets asked again.
 
-Two honest gaps. The workspace-local root — `<workspace>/.loom/extensions`,
-listed but never loaded until approved — is a design ruling and not yet
-code: today the only root is `<home>/.loom/extensions`
-(`extension/record.gleam:154`), resolved from `--home` or `HOME`. And
-`discover` has no caller in `client/serve` yet; today only `loom ext
-list` and `loom ext verify` read the records. Registering an extension's
-tools into a session at boot is phase 2.
+One honest gap remains. The workspace-local root —
+`<workspace>/.loom/extensions`, listed but never loaded until approved —
+is a design ruling and not yet code: today the only root is
+`<home>/.loom/extensions` (`extension/record.gleam:154`), resolved from
+`--home` or `HOME`. Discovery's other caller is now the boot itself:
+`client/serve` reads the same records `loom ext list` and `loom ext
+verify` read, and the section on dispatch below says what it does with
+them.
 
 ### `loom ext`
 
@@ -426,8 +431,9 @@ one server's world and then starting another.
 
 ## Inside the satellite
 
-**Built** for the runtime; **phase 2** for the harness end that answers
-it. `packages/ext` is `cap`'s sibling: a second small package vendored
+**Built**, and the harness end that answers it is built too — the
+section on dispatch below is that half. `packages/ext` is `cap`'s
+sibling: a second small package vendored
 into every extension build root, published on its own, and running
 *inside* the jailed node rather than in the harness VM. The split is
 deliberate — `cap` is the capability language, what a jailed program may
@@ -452,40 +458,237 @@ The install writes a generated `loom_satellite` entry module whose whole
 body is one call:
 
 ```gleam
-runtime.serve([#("web_search", tool.run)])
+runtime.serving(
+  tools: [#("web_search", tool.run)],
+  events: [#("session_start", tool.warm)],
+)
 ```
 
-`serve` (`ext/runtime.gleam:84`) hands `answer`
-(`ext/runtime.gleam:101`) to `cap/runtime.run`, which is the same boot
+`serving` (`ext/runtime.gleam:161`) hands `answer`
+(`ext/runtime.gleam:182`) to `cap/runtime.serve`, which is the same boot
 runtime a code-mode program uses — reused rather than reimplemented, so
-the token file, the socket, the exclusive channel slot and the terminal
-`outcome` frame stay in one place and this module could not read a token
-if it tried. `answer` then does exactly three things: it asks the harness
-which call this execution is for, it dispatches on the name, and it
-returns an outcome.
+the token file, the socket and the exclusive channel slot stay in one
+place and this module could not read a token if it tried. `serve`
+(`ext/runtime.gleam:137`) is the same call with an empty event table,
+which is what an artifact declaring no `[[hook]]` gets, and the generated
+entry writes whichever of the two the manifest asked for
+(`entry_source` at `extension/install.gleam:579`).
 
-The asking is `cap/ext.call` (`cap/ext.gleam:77`), capability
-`ext.call`, arguments the empty map, result
-`{tool, args, strand, deadline_ms}` with `args` as **JSON text** rather
-than a msgpack value. Two reasons: `gleam_json`'s parser is the only
-route from bytes to a `Dynamic` that the extension seam's allowlist
-admits, and text means the harness hands over exactly the bytes the
-model's tool call carried with no re-encoding step in between to disagree
-about numbers. The alternative — smuggling the call in through the node's
-environment — would be untyped, size-limited, and visible to every
-process in the jail.
+`answer` then does exactly two things: it dispatches on what the harness
+asked for, and it returns a value or an in-band code. There is no third
+step, because the asking is no longer the node's job. Phase 1 had the
+node pull its call through `cap/ext.call`; phase 3 deleted that
+capability along with the module that declared it, and a satellite is now
+*told* over a `hook_call` frame. What it is told is a `kind` — `tool` or
+`event` — a name, the arguments, and how long it has
+(`runtime.Asked` at `cap/runtime.gleam:529`).
 
-**One satellite serves exactly one call.** `serve` fetches a call,
-dispatches it, and returns; `cap/runtime` writes one `outcome` frame and
-the node exits. A second `ext.call` would be a second admission against
-the same token, so there is no loop here to make one. An unknown tool
-name is an error outcome naming both the name asked for and the sorted
-list this artifact serves, because the only way it can happen is a
-manifest and an artifact that disagree, and an operator reading that
-needs the disagreement rather than half of it.
-`the_runtime_fetches_its_call_and_answers_test`
-(`ext/test/ext_test.gleam:123`) drives the whole round trip over a faked
-channel and asserts exactly one outcome frame comes back.
+A tool's arguments still arrive as `{args, strand}` with `args` as **JSON
+text** rather than as a msgpack map, and for the reason phase 1 chose it:
+`gleam_json`'s parser is the only route from bytes to a `Dynamic` that the
+extension seam's allowlist admits, and text means the harness hands over
+exactly the bytes the model's tool call carried with no re-encoding step
+in between to disagree about numbers. An event's payload is whatever the
+harness sends — `Handler` (`ext/runtime.gleam:118`) is deliberately
+untyped in it, because wave B is what fixes the seven per-event shapes
+and doing it there costs no change here.
+
+**One satellite serves many invocations, one at a time.** The refusal
+vocabulary is what the harness reads a failure through, so it is worth
+naming: `unknown_tool` and `bad_arguments` are the artifact and the
+manifest disagreeing about what this build serves, `refused` is the
+extension declining a call it understood, and `unhandled` is the ordinary
+answer for an event nobody registered a handler for — an extension is
+asked about every moment and cares about almost none of them.
+`the_runtime_answers_two_invocations_on_one_node_test`
+(`ext/test/ext_test.gleam:152`) drives two round trips over one faked
+channel, and `a_cap_call_presents_the_invocation_token_test`
+(`ext/test/ext_test.gleam:181`) is the one that matters for authority: a
+capability call made inside an invocation carries the token that
+invocation was handed, not the boot token the node read off disk.
+
+## Dispatch
+
+**Built** (#196), and rewired by phase 3 onto a host that outlives the
+call. Discovery answers what is installed; dispatch is what turns one of
+those answers into a tool the model can call and then into an
+invocation. The path runs boot to answer in one direction, and every
+step of it is a value the step before produced.
+
+**At boot**, `serve.assemble` reads `installed.discover` for the
+extensions root before it builds the registry
+(`extension_contributions` at `client/serve.gleam:1369`). A `Refused`
+is logged and registers nothing; a `Ready` on a host with no code-mode
+toolchain is logged and registers nothing too, because no `erl` means no
+satellite to boot and a tool definition that can only fail still costs a
+place in the provider's cached prefix on every request.
+
+**Everything else becomes a contribution.** `dispatch.tools`
+(`extension/dispatch.gleam:171`) turns the record and the manifest into
+`tools.Tool` values, and the boot appends one
+`Contribution(Extension(name), tools)` after the built-ins. From there
+the registry knows nothing special: an extension tool is dispatched by
+name through `tool.dispatch` like every other, and the collision rule
+that refuses a boot when two contributions claim one name is the same
+rule that guards `bash`.
+
+**A call is one invocation of a satellite the session already has.**
+Phase 2 launched a jailed `erl` per call and destroyed it on the way out;
+phase 3 keeps one host per installed extension, started lazily on that
+extension's first use (`hosts.invoke` at
+`client/extension/hosts.gleam:294`, over `dispatch.hosting` at
+`extension/dispatch.gleam:379`). No build happens — that was the
+install's job — and now no node launch happens either, except the first
+time. The declared tool timeout is still clamped: `within`
+(`extension/dispatch.gleam:573`) takes the minimum of the manifest's
+`timeout_ms` and the operator's `max_within_ms`, because an install is
+not a way to raise how long this host will hold a strand.
+
+**The harness tells the node what to answer.** The satellite receives the
+tool name in neither its environment nor a capability it pulls on: the
+host writes a `hook_call` carrying a freshly minted token, the kind, the
+name, the JSON arguments and the deadline, and the satellite writes back
+one `hook_result`. That token is bound to *this* invocation's `{op_id,
+step_id}` and revoked when the answer arrives, which is what keeps a
+session-lived node from being a wider node — an extension may compute
+between invocations and may not act. `docs/architecture/code-mode.md`,
+"A satellite kept alive across calls", is the depth on the host.
+
+**A `net.request` is judged by the manifest an operator approved.**
+`policy.egress_for` (`extension/policy.gleam:142`) is the whole
+translation: the manifest's hosts, methods and secret *names* verbatim,
+and `redirects`, `timeout_ms` and `trust` fixed by the harness, because
+none of the three is something an author should be able to state about
+themselves. Two of the manifest's numbers are requests rather than
+settings — `max_response_bytes` is clamped to the harness ceiling
+(`max_response_bytes` at `extension/policy.gleam:64`, the install
+fetch's own archive cap, so the two egress callers share one bound), and
+`requests_per_call` becomes an admission ceiling on the invocation
+(`ceilings` at `extension/policy.gleam:184`) — the tally is reset per
+invocation, which is what still makes it mean *per call* now that the
+node is not. A manifest with no `[net]` table is `ReachesNothing`, refused
+`network_off` rather than refused against an allowlist nobody wrote.
+
+**The answer is settled into a `ToolOutcome`.** `settle`
+(`extension/dispatch.gleam:698`) reads what the `hook_result` carried —
+content blocks and an optional `terminate` — or, when there is no answer
+at all, turns a `hosts.HookFailure` into a sentence the model can act on:
+a refusal is text the extension wrote, a crash is the extension's bug,
+and a departed host says it will stay departed so a model reading it
+stops retrying. Either way it hands back the same type a built-in tool
+hands back, so the strand's driver cannot tell which kind of tool it just
+ran.
+
+Two things the dispatch deliberately does *not* do. A `Ctx.grants` an
+escalation approved for *this call* is not composed onto the run phase:
+the operator approved this extension once, at install, having read a
+manifest, and a mid-run widening would run it past the terms of that
+approval. And no arm here adds to the node's environment, which is why
+the credential claim below is a claim about the whole path rather than
+about one arm of it.
+
+## The satellite the session keeps
+
+**Built** — this is phase 3's first wave, and the hook bus that rides on
+it is the second. Phase 2 stood a node up for one call and destroyed it
+on the way out. That was ADR-007's accepted cost, and
+`protocol-change/012-hook-call.md` (ACCEPTED) is what removes it: an
+extension's artifact is compiled once at install, so a call was paying a
+node boot for nothing, and an extension could keep no state at all
+between calls — no HTTP client, no cache, no actor of its own.
+
+**Two frames, in the direction the channel never had one.**
+`framing.HookCall` (`broker/framing.gleam:135`) carries a token, a kind
+(`tool` or `event`), a name, the arguments and a deadline; `HookResult`
+(`broker/framing.gleam:147`) carries the `CapOutcome` that answers it,
+correlated by the same frame id. Spec §1.4's frozen `kinds` list gained
+both names. They cross the *capability* socket and nothing else: a helper
+on the exec channel that sends one is marked dead as a protocol violation
+(`framing.HookCall` at `broker/exec.gleam:1475`), because the two
+channels are two protocols and a peer that confuses them is a peer whose
+next frame cannot be trusted either.
+
+**The invocation is the unit of authority.** A token is minted for one
+`{op_id, step_id}` and checked on every `cap_call`, so a node that
+outlives an execution has no token of its own. `invoke`
+(`codemode/satellite.gleam:2094`) mints one for *this* invocation, sends
+it on the `hook_call`, and revokes it when the answer comes back; between
+invocations the host holds none, and a `cap_call` arriving then is
+refused `unauthorized` before any router sees it. The node's boot token
+file is not an exception to that — it holds thirty-two bytes this host
+minted nothing for, and exists only because `cap/runtime`'s boot sequence
+reads one. `a_token_is_dead_once_its_invocation_closes_test`
+(`codemode/test/codemode/host_test.gleam:239`) is the pin.
+
+**One slot, and a breach costs the node.** The protocol allows one
+outstanding `hook_call` per satellite, so `Host`
+(`codemode/satellite.gleam:1900`) is a `weft/state_machine` over `Idle |
+Answering(id) | Destroyed(reason)`, and the invocation's deadline is
+`Answering`'s own state timeout — which is the whole reason those are
+states rather than a field, since leaving the state cancels the timer and
+a fire that raced its own cancellation is dropped by weft rather than
+delivered. A second `invoke` while one is open is `Busy`
+(`InvokeError` at `codemode/satellite.gleam:1924`), and the satellite
+answers a second `hook_call` `busy` on its own side rather than queueing
+it, because a queue would mean a second token installed under the first
+invocation's worker. The two ways the far side can break the rule both
+destroy the node: a deadline that passes with no answer, and a
+`hook_result` that correlates to nothing. A destroyed host stays
+destroyed for the rest of the session — restarting one silently would
+hand an extension a fresh set of the actors it just lost without telling
+anybody it had lost them — and the session's next boot is where a restart
+belongs. `a_deadline_destroys_the_node_test`
+(`codemode/test/codemode/host_test.gleam:271`) and
+`a_stray_hook_result_destroys_the_node_test`
+(`codemode/test/codemode/host_test.gleam:303`) hold both.
+
+**The reaping invariant, restated.** `docs/architecture/code-mode.md`
+states it for the disposable node: the executor reaps every process a
+program spawned before the next execution installs its channel. For a
+satellite that lives for the session it becomes **a host reaps its node
+before the session's next host for that extension starts**, and the guard
+is the one that was already there —
+`cap/internal/dispatch.install_exclusive` refuses to claim the VM-global
+channel slot while a previous channel actor is alive, so a breach fails
+the next boot outright instead of silently lending it authority.
+
+**Who owns the hosts.** `client/extension/hosts` is one supervised actor
+per session (`extension_hosts.supervised` at `client/serve.gleam:2051`)
+holding at most one host per installed extension, started lazily on that
+extension's first use under whichever call happened to be first — sound
+because every extension call in a session runs under one workspace and
+one session base. Its work root is keyed on the extension's *name* rather
+than on `{op_id, step_id, source_index}` (`host_root` at
+`client/codemode.gleam:1487`), because a host outlives all three. The
+actor performs each invocation on its own timeline, so its mailbox is the
+queue and a second caller waits rather than reading `Busy`. That makes it
+a session-wide serialiser rather than a per-extension one, which is a
+deliberate simplification: an extension tool is `tool.Exclusive` and hook
+events fire on a serialised timeline, so the case it costs is two
+*different* extensions invoked from two strands at the same moment. A
+per-extension lease is the shape to reach for when that case is measured
+rather than imagined.
+
+What a caller reads is `HookFailure`
+(`extension/hosts.gleam:80`) — `Unhandled`, `Refused`, `Crashed`,
+`Deadline`, `Gone` — deliberately smaller than the host's own
+`InvokeError`, because what a caller does about a failure depends on
+whether the extension answered, died mid-answer, ran out of time, or is
+not there any more, and not on which of the host's internal endings
+produced the last of those. `invoke` (`extension/hosts.gleam:294`) is
+what a tool call goes through; `invoke_event`
+(`extension/hosts.gleam:319`) is the function the hook bus calls, and
+`Unhandled` is the ordinary answer there rather than a failure to report,
+since the bus asks every installed extension and most of them care about
+none of the moments on offer.
+
+**What this wave deliberately did not do.** There is no hook bus yet:
+nothing in the harness fires `session_start` or `tool_call` at anybody,
+and the per-event payload shapes are left open on purpose at both ends —
+`ext/runtime`'s `Handler` takes an untyped `report.Value` and
+`hosts.invoke_event` an untyped `MsgPackValue` — so that fixing them
+costs a change in the bus and not in the transport under it. That is the
+next wave, and the section below says what it is.
 
 ## Egress, and the key that never enters the jail
 
@@ -580,12 +783,16 @@ exactly the names, by equality, so a field added later cannot smuggle a
 value in unnoticed —
 `client/test/client/extension_test.gleam:213`).
 
-**Not built, and in flight as phase 2**: anything that turns a
-`manifest.Net` into an `egress.Policy` at dispatch, any router arm
-serving `net.request` (`cap/net.gleam:71` marshals and labels; nothing
-answers it), and the per-execution `requests_per_call` ledger. Today the
-only production caller of egress is the install fetch. The web-search
-extension therefore *installs* on `main` and cannot yet be *called*.
+**Also built** (#196), and named here because an earlier edition of
+this document listed it as owed: `policy.egress_for`
+(`extension/policy.gleam:142`) turns a `manifest.Net` into an
+`egress.Policy`, the extension seam's `net.request` arm serves it
+(`routing` at `extension/seam.gleam:131` — `cap/net.gleam:71` marshals
+and labels, and this is what answers), and `policy.ceilings`
+(`extension/policy.gleam:184`) is the `requests_per_call` ledger, now
+tallied per invocation rather than per node. Egress has two production
+callers, the install fetch and a dispatched extension, and the web-search
+extension both installs and is called on `main`.
 
 **The one exception to the rule, stated once.** MCP servers keep
 `api_key_env`, and their credential is in the environment of an unjailed
@@ -605,6 +812,15 @@ behind the jail; the harness links none of it. Were it otherwise,
 installing an extension would be model-adjacent code beside the storage
 writer, and every Rule Zero argument in the tree would be about the wrong
 process.
+
+**A satellite that outlives an execution outlives no authority.** The
+host mints a token per invocation, hands it over on the `hook_call`, and
+revokes it on the answer, so an extension may compute between
+invocations and may not act — a `cap_call` made by an actor it kept
+alive is refused `unauthorized` before any router sees it. Without the
+per-invocation binding, holding a node open would quietly convert a
+per-call grant into a session-long one, which is exactly the widening
+phase 2's disposable node avoided by accident rather than by design.
 
 **The record is written last and the tree is renamed into place after
 it.** Everything happens under `<root>/.staging/<random>/`. Without the
@@ -682,30 +898,66 @@ relaxes verification, and the session-reuse test runs against TLS 1.2 on
 purpose, since 1.3 resumes through tickets that are off by default in
 OTP's client.
 
-What is **not** proved yet, and will be by phase 2's exit criteria: that
-the model can call `web_search` in a real drive; that a request to a host
-outside the allowlist is refused in band; and that the API key is absent
-both from the jail's environment and from every frame on the capability
-channel, asserted by an end-to-end that reads both.
+The dispatch has an end-to-end of its own.
+`an_installed_extension_reaches_the_network_test_`
+(`client/test/client/extension_e2e_test.gleam:113`) installs a fixture
+extension with a real jailed build, holds a real satellite open against a
+real TLS origin on loopback whose root it pinned, and asserts nine
+things:
+
+- the registry carries the fixture's tool and the manifest's
+  `prompt_snippet` reaches the prompt index, so what was installed is
+  what the model is offered;
+- a call answers `200` through the brokered request, and the origin saw
+  the credential in the header the manifest bound it to — read out of
+  band by the harness rather than off the wire;
+- the binding's variable name and its value are in **neither half** of
+  the node's environment: not in `launch.node_env`, what the launcher
+  sets, and not in `env_allow`, what the kernel would pass through at
+  all;
+- the value is on **no frame** in either direction, asserted by a tap
+  that records every byte on the capability channel around the
+  production launcher — so the claim is about the channel rather than
+  about the one arm that could plausibly carry one;
+- a host the manifest does not name is refused in band, as a denial the
+  extension read and turned into a sentence naming the host;
+- the request after `requests_per_call` is refused while the ones under
+  it are answered, which is what makes it a ceiling rather than a
+  failure;
+- a **second call reaches the same node** — counted from the launcher's
+  specs rather than inferred from how quick it felt, which is the whole
+  claim phase 3 makes;
+- a `hook_call` of kind `event` is dispatched to the handler the
+  manifest's `[[hook]]` named, with an empty payload because wave B is
+  what fixes the per-event shapes;
+- and an extension that does not answer inside its own deadline **loses
+  its satellite**, and is told so on the call after — the one claim only
+  a real node can make.
+
+The origin deliberately does not echo the request, because an echoing
+one would put the credential in the response body and make the absence
+claims false for a reason that has nothing to do with the design.
+
+The model half was driven for real on 2026-09-02: `loom ext install
+https://github.com/Roasbeef/loom-web-search` over codeload, pinned at
+`677199c` and producing the same tree digest a local-path install of the
+same revision produces, then a Kimi K3 session called `web_search` and
+answered from Brave's results, with `BRAVE_API_KEY` in `loomd`'s
+environment on the host and nowhere else. That is phase 2's remaining
+exit criterion, and it is met.
 
 ## Phases 3 to 5
 
-**Phase 3, planned: a persistent satellite and callbacks.** Hooks need
-the harness to call *into* the extension, and `cap_call` only flows
-satellite → broker. Phase 3 adds a `hook_call` frame in the other
-direction over the same authenticated channel, answered by `hook_result`,
-with the deadline discipline of a cap call, and a satellite that lives
-for the session — the "kept alive across calls" mode
-`docs/architecture/code-mode.md` describes as not built, whose reaping
-invariant already has its guard in `cap/runtime`'s refusal to install
-over a live channel. That is a `protocol-change/` proposal rather than
-drift, and it is written before the phase starts:
-`protocol-change/012-hook-call.md` is proposed on `ext/phase-3-proposal`.
+**Phase 3, second wave: the hook bus.** The transport it rides on is
+built and has its own section above; what is still owed is the harness
+side that decides *when* to call, and the seven payload shapes both ends
+are deliberately untyped about until it lands.
 
-The harness side is one `weft/event_manager` per session with a handler
+That harness side is one `weft/event_manager` per session with a handler
 per installed extension: an ordered list, each holding private state (its
-satellite handle, its request budget, its failure count), a broken one
-dropped and logged while its siblings carry on. Notifications
+request budget, its failure count) over the host
+`client/extension/hosts` already holds for it, a broken one dropped and
+logged while its siblings carry on. Notifications
 (`session_start`, `before_agent_start`, `agent_end`, `agent_settled`) are
 `notify`; the gate (`tool_call`) is a `sync_notify` whose event carries a
 reply subject, so any `Block` wins after the fan-out returns. The two
@@ -747,30 +999,38 @@ exists today as an allowlisted stub, and this route retires it.
 | Path | What it holds |
 |---|---|
 | `packages/ext/src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, and the `Tool` alias at `packages/ext/src/ext.gleam:110`. No effects, no FFI. |
-| `ext/runtime.gleam` | The satellite's whole main loop: `serve` (`ext/runtime.gleam:84`), `answer`, `dispatch`, and the outcome body. |
-| `cap/ext.gleam` | The one capability an extension calls before anything else: `call` (`cap/ext.gleam:77`), and the wire shape it pins. |
-| `codemode/vet/policy.gleam` | The three seams. `extension_cap_modules` (`vet/policy.gleam:453`) and `extension_stdlib_modules` (`vet/policy.gleam:480`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `ext/runtime.gleam` | What an extension's generated entry serves from: `serve` (`ext/runtime.gleam:137`), `serving` (`ext/runtime.gleam:161`), `answer` (`ext/runtime.gleam:182`), and the four refusal codes. |
+| `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
+| `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1900`) with `start`, `invoke` (`codemode/satellite.gleam:2094`) and `stop`. |
+| `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:80`), `invoke` (`extension/hosts.gleam:294`), `invoke_event` (`extension/hosts.gleam:319`), and the reaping on the way out. |
+| `codemode/vet/policy.gleam` | The three seams. `extension_cap_modules` (`vet/policy.gleam:455`) and `extension_stdlib_modules` (`vet/policy.gleam:482`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:207`), the closed key lists, the name grammars, and `no_net()`. |
-| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:188`), the staging discipline, the generated satellite entry. |
+| `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:198`), the staging discipline, the generated satellite entry. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:114`), `terms`, `root_for`. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
 | `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
+| `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
+| `client/extension/seam.gleam` | The one router arm a jailed extension has that a code-mode program does not, now that `ext.call` is gone: `routing` (`extension/seam.gleam:131`) over `serviced_caps` (`extension/seam.gleam:64`). Msgpack in, msgpack out, and no policy at all. |
+| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:171`), `hosting` (`extension/dispatch.gleam:379`), the timeout clamp `within` (`extension/dispatch.gleam:573`), the jail's `requirements` (`extension/dispatch.gleam:298`), and `settle` (`extension/dispatch.gleam:698`). |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_contributions` (`client/serve.gleam:1369`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:191`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:348`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
+| `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
+| `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |
 | `broker/test/broker/egress_test.gleam` | The credential canary, the header-injection refusals, and the live TLS origin. |
 
 Each Gleam path is relative to its package's source root —
 `extension/install.gleam` is
 `packages/client/src/client/extension/install.gleam` — except
-`packages/ext/src/ext.gleam`, whose root-relative name would collide with
-`cap/ext.gleam`, and the last two rows, which are under their packages'
-`test/`.
+`packages/ext/src/ext.gleam`, written out in full because a bare
+`ext.gleam` would read as the `cap/ext` module phase 3 deleted, and the
+last four rows, which are under their packages' `test/`.
 
 `docs/architecture/code-mode.md` is the depth on the pipeline an
 extension's artifact is compiled into and on what each of its layers

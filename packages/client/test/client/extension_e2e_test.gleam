@@ -1,14 +1,17 @@
 //// An installed extension, dispatched for real: a jailed build at
-//// install, a jailed satellite per call, a brokered `net.request` to a
-//// real TLS origin, and a credential that reaches the origin without ever
-//// reaching the jail.
+//// install, one jailed satellite held open for the session, a brokered
+//// `net.request` to a real TLS origin, and a credential that reaches the
+//// origin without ever reaching the jail.
 ////
-//// This is phase 2's exit criterion minus the model. The orchestrator's
-//// real drive is what proves a provider calls `web_search`; what is
-//// proved here is everything under that: the registry contribution, the
-//// `ext.call` hand-over, the `net.request` arm, the egress policy the
-//// manifest translated to, the per-execution request ceiling, and the two
-//// absence claims the whole design rests on —
+//// This is phases 2 and 3 minus the model. The orchestrator's real drive
+//// is what proves a provider calls `web_search`; what is proved here is
+//// everything under that: the registry contribution, the `net.request`
+//// arm, the egress policy the manifest translated to, the per-invocation
+//// request ceiling, the persistent host's own three claims — two tool
+//// calls reach one node launch, an `Event` invocation reaches the
+//// handler a `[[hook]]` named, and an extension that ignores its
+//// deadline loses its satellite for the session — and the two absence
+//// claims the whole design rests on —
 ////
 //// - **the key is not in the jail's environment.** The satellite's
 ////   `LaunchSpec` is captured on the way past and both halves are read:

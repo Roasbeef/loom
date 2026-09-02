@@ -404,7 +404,13 @@ pub fn a_refused_install_leaves_no_staging_test() {
   assert !exists(record.directory(root, "hostile_ffi"))
 }
 
-pub fn a_hook_is_refused_until_phase_three_test() {
+/// A `[[hook]]` used to be decoded and then refused: the harness had no
+/// way to call into a satellite, so an extension carrying one would have
+/// installed and never fired. `protocol-change/012` is that reverse frame,
+/// and this is the refusal's removal made falsifiable — the install goes
+/// all the way through and the hook's handler is in the entry the build
+/// compiled.
+pub fn a_hook_installs_now_that_the_harness_can_call_test() {
   let root = fresh_root("hooked")
   let tree =
     extensions.materialise(
@@ -413,14 +419,21 @@ pub fn a_hook_is_refused_until_phase_three_test() {
       }),
       extensions.scratch("hooked-src"),
     )
-  let assert Error(failure) =
+  let assert Ok(done) =
     install.run(
       config(root, never_fetch),
       source.LocalPath(path: tree),
       rev: None,
     )
-    as "an extension with a hook installs in phase 3, not phase 1"
-  assert string.contains(install.describe(failure), "phase 3")
+    as "an extension with a hook installs"
+  assert list.map(done.manifest.hooks, fn(hook) { hook.event }) == ["tool_call"]
+
+  // And it is the entry the build compiled that carries the handler, not
+  // merely the manifest that named it.
+  assert string.contains(
+    install.entry_source(done.manifest.tools, done.manifest.hooks),
+    "#(\"tool_call\", ext_entry_0." <> install.hook_function <> ")",
+  )
 }
 
 pub fn a_second_install_of_the_same_name_is_refused_test() {

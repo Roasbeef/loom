@@ -58,7 +58,12 @@ reasons, and name the primitive in the commit:
   state, and a message the current state cannot handle is `postpone`d and
   replayed on the next transition. In-tree: `broker/exec` (the helper
   lifecycle), `codemode/launch` (the node-report holder), `provider/gateway`
-  (the request guard), `client/provider_relay` (the relay guard).
+  (the request guard), `client/provider_relay` (the relay guard), and
+  `codemode/satellite`'s `Host`, the persistent extension satellite —
+  `Idle | Answering(id) | Destroyed(reason)`, where the open invocation's
+  deadline is `Answering`'s own state timeout, so leaving the state
+  cancels it and a fire that raced its own cancellation is dropped rather
+  than mistaken for a real expiry.
 - **Something owns work that outlives its own process.** A request worker
   whose socket belongs to a client library, an effect whose provider
   stream drains after the effect returns. That is a managed task with a

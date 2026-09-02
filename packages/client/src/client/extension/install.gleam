@@ -394,22 +394,12 @@ fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
       Manifest("the tree holds no " <> manifest_file)
     }),
   )
-  use decoded <- result.try(
-    manifest.decode(text, surroundings(files)) |> result.map_error(Manifest),
-  )
-  case decoded.hooks {
-    [] -> Ok(decoded)
-
-    // Decoded, then refused. The vocabulary is fixed by the ruling and an
-    // author's event name is worth checking, but the harness cannot call
-    // into a satellite until phase 3 adds the reverse frame — so an
-    // extension carrying a hook would install and never fire it.
-    [_, ..] ->
-      Error(Manifest(
-        "this extension registers a [[hook]]; hooks arrive in phase 3, when "
-        <> "the harness can call into a satellite",
-      ))
-  }
+  // A `[[hook]]` used to be decoded and then refused, because the harness
+  // had no way to call into a satellite and an extension carrying one
+  // would have installed and never fired. `protocol-change/012` is the
+  // reverse frame, so the refusal is gone: a hook's entry module is
+  // written into the generated entry's event table alongside the tools.
+  manifest.decode(text, surroundings(files)) |> result.map_error(Manifest)
 }
 
 const manifest_file = "extension.toml"
@@ -572,7 +562,7 @@ fn prepare_build(
   )
 }
 
-/// The generated satellite entry module for a manifest's tools.
+/// The generated satellite entry module for a manifest's tools and hooks.
 ///
 /// Public so a test can read it rather than infer it from a build
 /// failure: the aliases are positional, and that is the property worth
@@ -583,7 +573,10 @@ fn prepare_build(
 /// ## Examples
 ///
 /// ```gleam
-/// assert string.contains(install.entry_source(tools), "runtime.serve")
+/// assert string.contains(
+///   install.entry_source(tools, hooks),
+///   "runtime.serving",
+/// )
 /// ```
 ///
 pub fn entry_source(

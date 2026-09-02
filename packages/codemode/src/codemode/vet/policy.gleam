@@ -92,10 +92,10 @@ import gleam/list
 import gleam/set.{type Set}
 import gleam/string
 
-/// Which seam a submission is judged against. Two variants and no third:
-/// the set of seams is closed here rather than left to whoever builds a
-/// policy, so "which capabilities travel together" is a decision this
-/// module owns and a caller selects from.
+/// Which seam a submission is judged against. The set is closed here
+/// rather than left to whoever builds a policy, so "which capabilities
+/// travel together" is a decision this module owns and a caller selects
+/// from.
 pub type Seam {
   /// The workspace seam: a program that orchestrates effects.
   WorkspaceSeam
@@ -359,9 +359,8 @@ pub fn orchestration() -> VetPolicy {
 /// Decision 2 of the extension ruling) makes brokered HTTP requests — so
 /// carving it a fourth, narrower capability set would buy nothing and
 /// would have to be kept in step by hand. What it additionally needs is
-/// the vocabulary its entry point is typed against (`ext`), the client
-/// it is typed against (`ext`), and enough of the standard library
-/// to decode arguments and encode a reply.
+/// the vocabulary its tools and hooks are typed against (`ext`), and
+/// enough of the standard library to decode arguments and encode a reply.
 ///
 /// ## Examples
 ///

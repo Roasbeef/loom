@@ -55,7 +55,16 @@ protocol (spec Part 1.4). WP-G.
   `unenforced_helper_args` and `unjailed_skip_reason` are the only
   sanctioned answers to an unjailed host.
 - `broker/framing.{Frame, Body, Deframer, Fault}` — the wire protocol with
-  its pure incremental deframer.
+  its pure incremental deframer. `Body` additionally carries the one pair
+  that flows the *other* way, harness → satellite and back
+  (`protocol-change/012`): `HookCall(token, kind, name, args, deadline_ms)`
+  asks a session-lived extension satellite to answer one invocation, and
+  `HookResult(outcome)` is its answer, correlated by the frame `id`.
+  `HookResult` mirrors `cap_result` minus `usage` — an invocation reserves
+  no budget of its own, because everything it spends it spends through the
+  `cap_call`s it makes under the invocation's token — and both share
+  `outcome_entries`/`decode_outcome_error` with `cap_result` so the two
+  result kinds cannot drift into two spellings of one shape.
 - `broker/escalation.{Escalation, Denial, Event}` — denial → approval →
   single consume.
 - `broker/egress.{Policy, Request, Response, Refusal, Method, Redirects,
@@ -155,9 +164,14 @@ protocol (spec Part 1.4). WP-G.
 - **Wire** — `frame := u32_be length ++ msgpack(map)` with keys
   `"v":1, "id":u64, "kind":str, "body":map`. Kinds: `hello`, `exec_start`,
   `exec_stdin`, `exec_out`, `exec_exit`, `cap_call`, `cap_result`,
-  `cancel`, `heartbeat`, `error`. `protocol_version` is 1;
-  `max_frame_bytes` is 16 MiB. The base policy additionally travels on
-  fd 3 at spawn (see below).
+  `hook_call`, `hook_result`, `cancel`, `heartbeat`, `error`.
+  `protocol_version` is 1; `max_frame_bytes` is 16 MiB. The base policy
+  additionally travels on fd 3 at spawn (see below). **`hook_call` and
+  `hook_result` never cross the exec channel**: they belong to the
+  capability socket between the harness and a persistent satellite, so the
+  Go helper neither sends nor parses them, and `broker/exec` marks a helper
+  that sends either one dead with a `ProtocolViolation` naming the kind —
+  exactly as it does for a helper that sends a `cap_call`.
 
 ## Invariants
 

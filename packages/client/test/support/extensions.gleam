@@ -518,7 +518,7 @@ pub fn run(
   _arguments: dynamic.Dynamic,
   _ctx: ext.Ctx,
 ) -> Result(ext.Outcome, ext.Refusal) {
-  let _slept = proc.run([\"/bin/sleep\", \"120\"])
+  let _slept = proc.run(proc.command([\"/bin/sleep\", \"120\"]))
   Ok(ext.text(\"awake\"))
 }
 "
