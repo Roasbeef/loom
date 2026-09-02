@@ -144,6 +144,7 @@
 import broker/escalation.{type Denial}
 import broker/policy.{type Grant}
 import client/grants
+import client/internal/timebase
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -160,6 +161,7 @@ import runtime/escalation as durable
 import runtime/internal/ffi_sup
 import tools/blob
 import tools/tool
+import weft/poll
 
 /// The holder's mailbox: one message, answered with a plain data value.
 pub type Message {
@@ -673,64 +675,107 @@ fn until(config: Config, refused: Refused) -> Int {
   int.min(now + config.park_timeout_ms, refused.deadline_ms)
 }
 
-// The park loop. Every pass re-asks whether anyone is still attached and
+// The park: a bounded wait on the session's own clock, whose probe is
+// one look at the record.
+//
+// The loop itself is `weft/poll`, which is what deletes the recursion,
+// the deadline arithmetic and the slice that used to be spread across
+// three mutually recursive functions here. What is left in this module is
+// the only part that was ever about escalations: what one look at the
+// record means. Every pass re-asks whether anyone is still attached and
 // re-reads the record, so a disconnect, a denial, a decision by another
 // path, a claim taken over by another call, and the window closing all
 // un-park the call at the next slice.
+//
+// The wait runs on `config.clock` rather than on the monotonic clock
+// because a simulated session never sleeps — `client/internal/timebase`
+// has the whole of that argument, and the ruling on the successor clock
+// the read hands back.
+//
+// One difference from the hand-rolled loop is worth naming: that one
+// checked the deadline before looking at the record, so a window already
+// shut settled without a read. `weft/poll` always makes its first attempt
+// immediately and its last at the deadline, so a park entered with no
+// window left costs one read and no slice. It also means an approval that
+// lands exactly on the deadline is honoured rather than missed, which is
+// the better of the two answers.
 fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
   let #(now, _clock) = clock.read(config.clock)
-  case now >= parked.until {
-    True -> Settle
-    False ->
-      // The *cell*, not just the record: whatever this slice decides is
-      // a statement about the record at that seq, and the consume that
-      // acts on it has to assert the same seq (#68).
-      case api.escalation_cell(runtime, parked.id) {
-        // The record went away underneath the park (a reset store, a
-        // read fault). Nothing to wait for.
-        Error(_error) -> Settle
-        Ok(cell) -> park_on_record(config, runtime, parked, cell)
-      }
+
+  // The probe never reports `Fail`: a record that cannot be waited for is
+  // an answer (`Settle`) rather than an error, so every terminal arm
+  // below is a `Done`. The annotation is what tells the compiler that.
+  let outcome: poll.Outcome(Decision, Nil) =
+    poll.until_on(
+      clock: timebase.on(config.clock, config.rest),
+      within: parked.until - now,
+      every: poll.Fixed(config.poll_interval_ms),
+      attempt: fn() { look(config, runtime, parked) },
+    )
+
+  case outcome {
+    poll.Answered(decision) -> decision
+
+    // The window closed with the record still pending and nobody having
+    // decided it. The call settles on the refusal it came in with.
+    poll.Expired -> Settle
+
+    // Unreachable: `look` never reports `Fail`, because a record that
+    // cannot be waited for is an answer rather than an error. The arm is
+    // written out because that is what makes it checkable.
+    poll.Failed(Nil) -> Settle
   }
 }
 
-// The record's own status, once read: settled either way, or (still
-// pending) another slice of the same park.
+// One look at the record: settled either way, or (still pending) another
+// slice of the same park.
 //
 // A record that no longer names this call is settled rather than waited
 // on. Another call wanting the same thing has taken the claim, and the
 // decision a human is about to make will be spent by that one — waiting
 // for it here could only end in the scope check refusing, one slice
 // before the window closes.
-fn park_on_record(
+fn look(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+) -> poll.Attempt(Decision, Nil) {
+  // The *cell*, not just the record: whatever this slice decides is a
+  // statement about the record at that seq, and the consume that acts on
+  // it has to assert the same seq (#68).
+  case api.escalation_cell(runtime, parked.id) {
+    // The record went away underneath the park (a reset store, a read
+    // fault). Nothing to wait for.
+    Error(_error) -> poll.Done(Settle)
+
+    Ok(cell) -> look_at_record(config, runtime, parked, cell)
+  }
+}
+
+fn look_at_record(
   config: Config,
   runtime: api.Runtime,
   parked: Parked,
   cell: api.EscalationCell,
-) -> Decision {
+) -> poll.Attempt(Decision, Nil) {
   let record = cell.record
   use <- bool.guard(
     when: !durable.scoped_to(record, parked.scope),
-    return: Settle,
+    return: poll.Done(Settle),
   )
   case record.status {
-    durable.Approved -> spend(config, runtime, parked, cell)
-    durable.Rejected | durable.Consumed -> Settle
-    durable.Pending -> park_pending(config, runtime, parked)
-  }
-}
+    durable.Approved -> poll.Done(spend(config, runtime, parked, cell))
+    durable.Rejected | durable.Consumed -> poll.Done(Settle)
 
-fn park_pending(
-  config: Config,
-  runtime: api.Runtime,
-  parked: Parked,
-) -> Decision {
-  case config.interactive() {
-    False -> Settle
-    True -> {
-      config.rest(config.poll_interval_ms)
-      park(config, runtime, parked)
-    }
+    // Still undecided. Whether that is worth another slice is a question
+    // about the *client*, not about the record: a session nobody is
+    // attached to has nobody to decide it, so the park ends rather than
+    // running out its window against an empty seat.
+    durable.Pending ->
+      case config.interactive() {
+        False -> poll.Done(Settle)
+        True -> poll.Retry
+      }
   }
 }
 
