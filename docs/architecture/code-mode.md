@@ -443,15 +443,31 @@ spec and taps every byte in both directions to say so.
 
 Vetting an extension is also vetting a *package* rather than a program,
 which `codemode/vet/package` owns. Three rules a single file does not
-need: `src/` admits `.gleam` and nothing else (Gleam compiles a native
-module found there and links it into the artifact, which is `@external`
-with the declaration moved out of the source the lint reads); the
-package's `gleam.toml` may name only `gleam_stdlib`, `gleam_json`, `cap`
-and `ext`; and each file is judged against the seam widened by the
-package's own module names and exactly those, so an import of an absent
-sibling is a vetting refusal naming the import and a module named
-`cap/fs` is refused before it can become the `cap/fs` a sibling
-resolves.
+need.
+
+First, **a repository is not an installed extension**. What is installed
+is `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
+`gleam.toml`, `README*` and `LICENSE*`; `installed_subset` prunes
+everything else — `test/`, `.gitignore`, `.github/`, `docs/`, `build/`,
+Gleam's own resolved `manifest.toml` — before anything else touches the
+tree. Pruned rather than refused, because every real Gleam repository has
+all of those, and the first acceptance test of a real one found the rule
+refusing it for having a test and a `.gitignore`. The precedent is the
+`.git` directory `archive.from_directory` already walks past: the
+installed tree is what the extension *is*, and the repository around it
+is not part of what an operator approves. The digest is taken over what
+survives, so it describes the installed tree and a later load compares
+like with like rather than re-deriving the prune. One shape stays a
+refusal: a non-`.gleam` file under `src/`, which Gleam compiles and links
+into the artifact — `@external` with the declaration moved out of the
+source the lint reads — and which pruning would silently drop.
+
+Second, the package's `gleam.toml` may name only `gleam_stdlib`,
+`gleam_json`, `cap` and `ext`. Third, each file is judged against the
+seam widened by the package's own module names and exactly those, so an
+import of an absent sibling is a vetting refusal naming the import and a
+module named `cap/fs` is refused before it can become the `cap/fs` a
+sibling resolves.
 
 ### Who chooses the seam
 

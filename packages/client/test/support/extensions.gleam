@@ -165,6 +165,47 @@ pub fn hostile_secret_host() -> List(#(String, String)) {
   )
 }
 
+/// The working extension as a real repository carries it: tests, a
+/// `.gitignore`, a CI workflow, Gleam's own resolved `manifest.toml`,
+/// documentation with a binary in it, and a `build/` directory.
+///
+/// None of that is installed, and none of it may refuse the install —
+/// which is the whole point of the fixture: `git archive` of any real
+/// Gleam repository looks like this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let dir = extensions.materialise(extensions.repository(), scratch)
+/// ```
+///
+pub fn repository() -> List(#(String, String)) {
+  list.append(hello(), [
+    #("test/hello_test.gleam", "import simplifile\npub fn main() { 1 }\n"),
+    #(".gitignore", "build\n*.beam\n"),
+    #(".github/workflows/ci.yml", "on: push\njobs: {}\n"),
+    #("manifest.toml", "packages = []\n\n[requirements]\n"),
+    #("docs/design.md", "# design\n"),
+    #("Makefile", "all:\n\t@echo hi\n"),
+    #("build/dev/erlang/hello/ebin/hello.app", "{application, hello, []}.\n"),
+  ])
+}
+
+/// The paths `repository` carries that an install keeps, sorted. What the
+/// record's digest must describe.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(extensions.installed_paths(), "extension.toml")
+/// ```
+///
+pub fn installed_paths() -> List(String) {
+  hello()
+  |> list.map(fn(file) { file.0 })
+  |> list.sort(string.compare)
+}
+
 /// Writes a fixture tree into `into`, creating directories as needed, and
 /// returns the directory it wrote to.
 ///

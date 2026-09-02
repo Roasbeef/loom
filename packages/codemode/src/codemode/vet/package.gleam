@@ -6,14 +6,22 @@
 //// run?" for one module; this module answers the three questions a package
 //// asks that a single file does not:
 ////
-//// 1. **Which files may be here at all.** Everything under `src/` is
-////    compiled, so a `.erl` or `.mjs` sitting there is foreign code the
-////    Gleam-source lint never sees — Gleam compiles native modules found
-////    in `src/` and links them into the artifact, which is `@external`
-////    with the declaration moved out of view. So `src/` admits `.gleam`
-////    and nothing else, `test/` is refused outright (it is not installed
-////    and its dependencies are not vetted), and the rest of the tree is a
-////    short allowlist of things that are read rather than run.
+//// 1. **Which files are installed at all.** A repository is not an
+////    installed extension. It has tests, a `.gitignore`, `.github/`,
+////    documentation, Gleam's own resolved `manifest.toml` and a `build/`
+////    directory, and none of those is part of what an operator is
+////    approving. So the installed tree is a short, positive list —
+////    `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
+////    `gleam.toml`, `README*`, `LICENSE*` — and **everything else is
+////    pruned rather than refused** (`installed_subset`), the precedent
+////    `archive.from_directory` already sets for a checkout's `.git`.
+////
+////    One shape survives as a hard refusal, and it is the one that runs:
+////    a non-`.gleam` file under `src/`. Gleam compiles a native module
+////    found there and links it into the artifact, which is `@external`
+////    with the declaration moved out of the source the lint reads.
+////    Pruning that would silently drop something the author expected to
+////    be part of their package, so it is named instead.
 //// 2. **What the project file may name.** The build is generated from
 ////    `compile.default_dependencies` and the extension's own `gleam.toml`
 ////    is never handed to the compiler, so a dependency named here would
@@ -30,6 +38,16 @@
 ////    compiler, and a module that shadows an allowlisted one is refused
 ////    before it can be the `cap/fs` a sibling resolves.
 ////
+//// # The pruned tree is the installed tree
+////
+//// Pruning happens once, in one function, and everything downstream sees
+//// only what survived: the vetting, the digest recorded at install, the
+//// bytes written under the extension's `src/`, and the digest recomputed
+//// at every later load. That is what makes the record's digest a claim
+//// about the *installed* tree rather than about an archive nobody kept —
+//// and why a re-verify compares like with like instead of re-deriving the
+//// prune and hoping it lands the same way twice.
+////
 //// # Every refusal names its file
 ////
 //// The result carries `#(path, rejection)` pairs and never a bare reason.
@@ -40,6 +58,7 @@ import codemode/vet.{type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/dict.{type Dict}
 import gleam/list
+import gleam/result
 import gleam/string
 import tom
 
@@ -128,23 +147,79 @@ pub fn vet_package(
   files: List(#(String, String)),
   policy: VetPolicy,
 ) -> Result(VettedPackage, List(#(String, Rejection))) {
-  let sources = list.filter(files, fn(file) { is_module(file.0) })
+  // Pruned here as well as by the caller. It is idempotent, and it means
+  // no caller can vet a wider tree than the one that gets installed by
+  // forgetting a step.
+  use installed <- result.try(installed_subset(files))
+  let sources = list.filter(installed, fn(file) { is_module(file.0) })
   let widened = widen(policy, list.map(sources, fn(file) { module_of(file.0) }))
   let judged =
     list.map(sources, fn(file) { #(file.0, vet.vet(file.1, widened)) })
 
-  // Three independent sweeps, concatenated rather than short-circuited:
+  // Two independent sweeps, concatenated rather than short-circuited:
   // an author fixing an extension wants the whole list, not the first
   // thing that stopped the reader.
   let refusals =
     list.flatten([
-      list.filter_map(files, layout_refusal),
-      project_refusals(files),
+      project_refusals(installed),
       list.flat_map(judged, fn(entry) { source_refusals(entry, policy) }),
     ])
   case refusals {
     [] -> Ok(VettedPackage(modules: passed(judged)))
     [_, ..] -> Error(refusals)
+  }
+}
+
+/// The files of `files` that an install keeps, in the order given, or the
+/// refusals that stop the install.
+///
+/// The installed tree is `src/**/*.gleam`, `schema/**`, `skills/**`,
+/// `extension.toml`, `gleam.toml`, `README*` and `LICENSE*`. Everything
+/// else an archive or a checkout happens to carry — `test/`, `.gitignore`,
+/// `.github/`, `docs/`, `build/`, Gleam's resolved `manifest.toml` — is
+/// **pruned**, because a repository is not an installed extension and
+/// refusing one for having a test would refuse every real Gleam
+/// repository there is.
+///
+/// The one refusal left is a non-`.gleam` file under `src/`: Gleam
+/// compiles a native module found there and links it into the artifact,
+/// so pruning it would silently drop something the author expected to
+/// run. Generic in the payload so the same prune applies to a tree of
+/// bytes before decoding and to a list of text after.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert package.installed_subset([#("test/x_test.gleam", "")]) == Ok([])
+/// ```
+///
+/// ```gleam
+/// let assert Error([#("src/x.erl", _)]) =
+///   package.installed_subset([#("src/x.erl", "")])
+/// ```
+///
+pub fn installed_subset(
+  files: List(#(String, payload)),
+) -> Result(List(#(String, payload)), List(#(String, Rejection))) {
+  case list.filter_map(files, native_refusal) {
+    [] -> Ok(list.filter(files, fn(file) { is_installed(file.0) }))
+    [_, ..] as refusals -> Error(refusals)
+  }
+}
+
+/// Whether one path is part of the installed tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert package.is_installed("schema/x.json")
+/// assert !package.is_installed(".gitignore")
+/// ```
+///
+pub fn is_installed(path: String) -> Bool {
+  case classify(path) {
+    Module | Data -> True
+    Native | Excluded -> False
   }
 }
 
@@ -192,38 +267,23 @@ pub fn describe(rejection: Rejection) -> String {
 
 // --- layout ---------------------------------------------------------------
 
-// One refusal for a path that may not be installed, or `Error(Nil)` for a
-// path that may. The order of the arms is the order the reasons are worth
-// hearing: `src/` first, because that is the directory whose contents run.
-fn layout_refusal(
-  file: #(String, String),
+// The one file shape that is named rather than dropped. Everything else
+// outside the installed tree is pruned in silence, because a repository
+// carrying a test or a `.gitignore` is a repository, not a mistake.
+fn native_refusal(
+  file: #(String, payload),
 ) -> Result(#(String, Rejection), Nil) {
-  let path = file.0
-  case admissible(path) {
-    Ok(Nil) -> Error(Nil)
-    Error(reason) -> Ok(#(path, FileNotAllowed(reason:)))
-  }
-}
-
-fn admissible(path: String) -> Result(Nil, String) {
-  case classify(path) {
-    Module | Data -> Ok(Nil)
+  case classify(file.0) {
     Native ->
-      Error(
-        "a file under src/ that is not .gleam is compiled into the artifact "
-        <> "and linked, which is a foreign interface the source lint cannot "
-        <> "see; move it out of src/ or delete it",
-      )
-    Tests ->
-      Error(
-        "test/ is not installed and its dependencies are never vetted, so a "
-        <> "package carrying one is refused rather than silently ignored",
-      )
-    Foreign ->
-      Error(
-        "an installed extension carries only src/, schema/, skills/, "
-        <> "extension.toml, gleam.toml, README* and LICENSE*",
-      )
+      Ok(#(
+        file.0,
+        FileNotAllowed(
+          reason: "a file under src/ that is not .gleam is compiled into the "
+          <> "artifact and linked, which is a foreign interface the source "
+          <> "lint cannot see; move it out of src/ or delete it",
+        ),
+      ))
+    Module | Data | Excluded -> Error(Nil)
   }
 }
 
@@ -235,14 +295,11 @@ type Kind {
   // A non-Gleam file under `src/`: compiled and linked, so refused.
   Native
 
-  // A file under `test/`.
-  Tests
-
-  // A file that is read rather than run.
+  // A file that is read rather than run, and installed.
   Data
 
-  // Anything else.
-  Foreign
+  // Anything else the repository happens to carry: pruned.
+  Excluded
 }
 
 fn classify(path: String) -> Kind {
@@ -252,21 +309,17 @@ fn classify(path: String) -> Kind {
         True -> Module
         False -> Native
       }
-    False -> classify_outside_source(path)
-  }
-}
-
-fn classify_outside_source(path: String) -> Kind {
-  case string.starts_with(path, "test/") {
-    True -> Tests
     False ->
       case is_data(path) {
         True -> Data
-        False -> Foreign
+        False -> Excluded
       }
   }
 }
 
+// The installed tree outside `src/`. `README*` and `LICENSE*` match at the
+// root only, because a relative path elsewhere begins with its directory
+// — `docs/README.md` starts with `docs/` and is pruned, which is right.
 fn is_data(path: String) -> Bool {
   string.starts_with(path, "schema/")
   || string.starts_with(path, "skills/")
