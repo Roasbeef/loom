@@ -225,7 +225,7 @@ pub fn main() -> report.Report {
 ```
 
 That is the shape of the thing rather than a demonstration of it. Of the
-nine modules the workspace seam admits, the shipped capability router
+ten modules the workspace seam admits, the shipped capability router
 services exactly one call, `proc.run`; every other capability vets,
 compiles, and comes back refused in band as `unsupported_cap` — a routing
 table still being filled in (issue #16), not a security property.
@@ -309,10 +309,11 @@ loom ext list
 `loom ext` also has `remove` and `verify`; every install is
 content-addressed, and a load re-derives the tree digest, the manifest,
 the vetting, the recorded allowlist and the artifact's own content
-address before an extension is used. The install pipeline is built; the
-dispatch that lets the model *call* an installed tool, and the
-broker-served `net.request` behind it, is the milestone in flight.
-`docs/architecture/extensions.md` says what stands where.
+address before an extension is used. Install and dispatch are both
+built: a booting server registers what it finds installed, a tool call
+spends one jailed satellite on the artifact the install compiled, and
+`net.request` is served host-side under the policy the manifest
+declared. `docs/architecture/extensions.md` says what stands where.
 
 [ws]: https://github.com/Roasbeef/loom-web-search
 
@@ -439,11 +440,10 @@ tree part company. Each line names the issue that tracks it.
   (#109). Its credential, named by `api_key_env`, is in that unjailed
   process's environment.
 - **Self-improvement is operator-driven only.** An operator installs an
-  extension with `loom ext` and it runs jailed. Not built: the
-  agent-authored on-ramp (no skill store, no extension candidate
-  pipeline), the harness-resident tier and its hot code loading, and —
-  until the next milestone lands — the dispatch that lets the model call
-  an installed extension's tool at all.
+  extension with `loom ext` and it runs jailed, and the model can call
+  it. Not built: the agent-authored on-ramp (no skill store, no
+  extension candidate pipeline), the harness-resident tier and its hot
+  code loading, and the persistent satellite that hooks need.
 - **The chaos runner is unbuilt.** `make soak` is the deterministic seed
   soak; random process kills under load are not tested.
 - **Distribution is single-platform and unpublished.** `make dist` builds

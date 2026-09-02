@@ -217,15 +217,17 @@ guarantees no other path exists. Permissions are not a configuration
 attached to the program from outside; they are visible in the first few
 lines the program wrote.
 
-Only one of those nine modules reaches a real effect today. The host's
-`default_router` maps exactly one capability, `proc.run`, onto a jailed
-`broker.clear_call`; the rest of the prelude compiles, marshals, and calls
-as designed, and comes back refused in band with `unsupported_cap`. The
-harness-side bridge that maps `fs.*` and `report.emit` onto the existing
-tools and `net.*` onto the egress proxy lands with the fuller runtime, and
-a caller holding that bridge injects a fuller router, since the host is
-generic over the table. None of that refusal is a security property — it
-is a routing table still being filled in.
+No one router services all ten. `satellite.default_router` maps exactly
+one capability, `proc.run`, onto a jailed `broker.clear_call`, and a
+caller stacks the harness-side bridges over it, since the host is
+generic over the table: `codemode/workspace.routing` serves `fs.*`,
+`kv.*`, `schedule.*` and `report.emit` against the session's own tools,
+`client/mcp.routing` serves the generated per-server modules, and for an
+installed extension `client/extension/seam.routing` serves `ext.call`
+and `net.request`. What no layer in a given stack answers comes back
+refused in band as `unsupported_cap` — `lsp.*` is the one still owed
+(#25). None of that refusal is a security property; it is a routing
+table still being filled in.
 
 The deny-by-default story about `cap/net` is easy to credit to the wrong
 place. Nothing in `cap/net` refuses anything: its functions marshal
@@ -298,7 +300,7 @@ timeout. The refusals a program reads are `mcp_unavailable`,
 There is not one prelude but three, and a submission is vetted against
 exactly one of them (`codemode/vet/policy.Seam`).
 
-The **workspace seam** is the nine modules above: a program that
+The **workspace seam** is the ten modules above: a program that
 orchestrates *effects*. The **orchestration seam** is `cap/strand` and
 `cap/report`, and nothing else: a program that orchestrates *agents*.
 `cap/strand` gives `spawn`, `wait` — a list of handles against one shared
@@ -308,7 +310,7 @@ tools call, judged against the same `Caller`. The authorization model is
 reused rather than invented: descendant-only addressing, the depth and
 fan-out caps, the lineage ledger, and the refusal names are the tools'.
 
-Why a second allowlist rather than a tenth capability: **which
+Why a second allowlist rather than an eleventh capability: **which
 capabilities travel together is the point.** An orchestrator that could
 also write files, run a process, or reach the network is a materially
 worse thing to hand a model than one that cannot. A compromised
@@ -344,7 +346,7 @@ caller may mint, so the tally is keyed to that identity by construction.
 
 The **extension seam** is the workspace seam widened, and its relation to
 the other two is deliberately not disjointness. It is
-`extension_cap_modules` — the nine workspace capabilities plus `cap/ext`
+`extension_cap_modules` — the ten workspace capabilities plus `cap/ext`
 and `ext` — over `extension_stdlib_modules`, the shared pure subset plus
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
 and `gleam/json`.

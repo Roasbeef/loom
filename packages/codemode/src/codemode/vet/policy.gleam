@@ -92,10 +92,10 @@ import gleam/list
 import gleam/set.{type Set}
 import gleam/string
 
-/// Which seam a submission is judged against. Two variants and no third:
-/// the set of seams is closed here rather than left to whoever builds a
-/// policy, so "which capabilities travel together" is a decision this
-/// module owns and a caller selects from.
+/// Which seam a submission is judged against. Three variants and no
+/// fourth: the set of seams is closed here rather than left to whoever
+/// builds a policy, so "which capabilities travel together" is a
+/// decision this module owns and a caller selects from.
 pub type Seam {
   /// The workspace seam: a program that orchestrates effects.
   WorkspaceSeam
