@@ -176,6 +176,7 @@ import client/codemode as codemode_wiring
 import client/contributions
 import client/escalate
 import client/extension/dispatch as extension_dispatch
+import client/extension/hooks as extension_hooks
 import client/extension/installed
 import client/extension/manifest as extension_manifest
 import client/extension/record as extension_record
@@ -1351,11 +1352,23 @@ fn code_mode_seam(
 // `Contribution` per extension, and a name two contributions both claim
 // refuses the boot in `contributions.registry`.
 
-fn extension_contributions(
+// One installed extension, registered: the tools it contributes to the
+// registry, and its subscription on the hook bus. The two travel
+// together because discovery is the expensive half — it re-derives four
+// content addresses per extension — and doing it twice would let the
+// tool side and the hook side disagree about what is installed.
+type Registration {
+  Registration(
+    contribution: contributions.Contribution,
+    subscription: Option(extension_hooks.Extension),
+  )
+}
+
+fn extension_registrations(
   settings: Settings,
   logger: Logger,
   host: Option(codemode_wiring.Config),
-) -> List(contributions.Contribution) {
+) -> List(Registration) {
   case settings.home {
     // No home is no extensions root, which is the same fact to a booting
     // server as an empty one: there is nothing installed and nothing to
@@ -1376,7 +1389,7 @@ fn extension_contribution(
   found: installed.Discovered,
   logger: Logger,
   host: Option(codemode_wiring.Config),
-) -> Result(contributions.Contribution, Nil) {
+) -> Result(Registration, Nil) {
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
@@ -1398,7 +1411,7 @@ fn extension_registered(
   artifact: String,
   logger: Logger,
   host: Option(codemode_wiring.Config),
-) -> Result(contributions.Contribution, Nil) {
+) -> Result(Registration, Nil) {
   case host {
     None -> {
       log.warn(logger, "extension.unavailable", [
@@ -1453,13 +1466,109 @@ fn extension_registered(
               value: extension_dispatch.summary(written, decoded),
             ),
           ])
-          Ok(contributions.Contribution(
-            origin: contributions.Extension(name: written.name),
-            tools:,
+          Ok(Registration(
+            contribution: contributions.Contribution(
+              origin: contributions.Extension(name: written.name),
+              tools:,
+            ),
+            subscription: extension_subscription(decoded, logger),
           ))
         }
       }
   }
+}
+
+// The bus subscription an extension's `[[hook]]` declarations become,
+// or nothing when it declares none. Two events are deliberately not
+// subscriptions: `context` and `tool_result` are chained transforms
+// folded over the same list rather than fanned out, and they are carried
+// on the same `Extension` value, so the declared list here is the whole
+// of what the extension asked for and the bus decides which plane each
+// name belongs to.
+fn extension_subscription(
+  decoded: extension_manifest.Manifest,
+  logger: Logger,
+) -> Option(extension_hooks.Extension) {
+  case list.map(decoded.hooks, fn(hook) { hook.event }) {
+    [] -> None
+    events -> {
+      inert_hooks(decoded.name, events, logger)
+
+      // The invoker is `unwired` until the persistent satellite host
+      // lands beside this: the subscription is real, and the first event
+      // it receives drops it saying the satellite is not there. That is
+      // the honest failure, and the join is one call.
+      Some(extension_hooks.Extension(
+        name: decoded.name,
+        events:,
+        invoke: extension_hooks.unwired(),
+      ))
+    }
+  }
+}
+
+// A declared event with no producer in the harness. `agent_settled` is
+// the only one: nothing signals "the run and every follow-up it queued
+// are done", so an extension subscribing to it would wait forever
+// without being told. Said once, at boot, where an operator reads it.
+fn inert_hooks(name: String, events: List(String), logger: Logger) -> Nil {
+  case list.contains(events, extension_manifest.agent_settled_event) {
+    False -> Nil
+    True ->
+      log.warn(logger, "extension.hook.inert", [
+        field.ident(key: "name", value: name),
+        field.ident(key: "event", value: extension_manifest.agent_settled_event),
+        field.text(
+          key: "reason",
+          value: "the harness has no signal for a run and every follow-up it "
+            <> "queued being done, so this hook never fires",
+        ),
+      ])
+  }
+}
+
+// The hook bus, started over every subscribed extension and composed
+// into the session's effects. A bus that will not start is logged and
+// skipped: extensions are an addition to a session, never a
+// precondition for one, so a boot that cannot fan hooks out still
+// serves.
+fn with_extension_hooks(
+  built: effects.Effects,
+  registrations: List(Registration),
+  session: session.Session,
+  clock: Clock,
+  logger: Logger,
+) -> effects.Effects {
+  case list.filter_map(registrations, subscription_of) {
+    [] -> built
+    subscribed ->
+      case extension_hooks.start(subscribed, logger) {
+        Error(_reason) -> {
+          log.warn(logger, "extension.hooks.unavailable", [
+            field.text(
+              key: "reason",
+              value: "the hook bus would not start; extension hooks are off "
+                <> "for this session",
+            ),
+          ])
+          built
+        }
+
+        Ok(bus) -> {
+          // The first event, sent once the bus exists and before the
+          // runtime opens: `session_start` means "the session server
+          // booted the extension", and that is now.
+          extension_hooks.session_start(bus)
+          extension_hooks.wire(built, bus, session, clock)
+        }
+      }
+  }
+}
+
+fn subscription_of(
+  registration: Registration,
+) -> Result(extension_hooks.Extension, Nil) {
+  option.to_result(registration.subscription, Nil)
 }
 
 /// Whether the seams this server offers can reach an MCP server at all.
@@ -1774,6 +1883,12 @@ fn assemble(
   // every resolution silently changes what one of the two names means;
   // no built-in host can produce one, and an extension that would is
   // exactly the install an operator has to be told about.
+  // Discovery happens once, here, and answers two questions: which tools
+  // each installed extension contributes, and which hook events it
+  // subscribed to. The hook half is used further down, after the effects
+  // record exists to compose it into.
+  let extensions = extension_registrations(settings, logger, code_mode_host)
+
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
@@ -1788,7 +1903,7 @@ fn assemble(
       // not what makes an extension unable to shadow `bash` — but the
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
-      extension_contributions(settings, logger, code_mode_host),
+      list.map(extensions, fn(registration) { registration.contribution }),
     )
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
@@ -1902,6 +2017,14 @@ fn assemble(
         // check. Absent file, nothing injected, no tokens spent.
         |> memory.digest_hooks(memory.read_digest(memory_digest), clock),
     )
+
+  // The extension hook bus goes on last, over the composed record, so an
+  // extension's `before_agent_start` injection lands after the harness's
+  // own digests and its `context` fold is the final thing to touch a
+  // request's messages. Wrapping rather than replacing is what lets the
+  // two layers coexist at all.
+  let effects_record =
+    with_extension_hooks(effects_record, extensions, opened, clock, logger)
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
