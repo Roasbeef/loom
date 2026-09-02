@@ -74,8 +74,8 @@ literate register", gives the complete conventions and examples.
 - Gleam >= 1.18, Erlang/OTP >= 29. All code passes `gleam format --check`
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
-  `protocol-change/NNN.md` proposal, never silent drift. There are seven
-  (`protocol-change/001`–`007`); `001` and `006` are the format precedent —
+  `protocol-change/NNN.md` proposal, never silent drift. There are twelve
+  (`protocol-change/001`–`012`); `001` and `006` are the format precedent —
   the problem, what was considered, the decision, and what it costs.
 - Pure packages (`core`, `machine`, `prompt`) perform no I/O. Every
   durability/wire boundary uses total decoders.

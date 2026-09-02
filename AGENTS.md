@@ -74,8 +74,8 @@ literate register", gives the complete conventions and examples.
 - Gleam >= 1.18, Erlang/OTP >= 29. All code passes `gleam format --check`
   and compiles warning-free before commit.
 - Interfaces in spec Part 1 are frozen. Changing one requires a
-  `protocol-change/NNN.md` proposal, never silent drift. There are seven
-  (`protocol-change/001`–`007`); `001` and `006` are the format precedent —
+  `protocol-change/NNN.md` proposal, never silent drift. There are twelve
+  (`protocol-change/001`–`012`); `001` and `006` are the format precedent —
   the problem, what was considered, the decision, and what it costs.
 - Pure packages (`core`, `machine`, `prompt`) perform no I/O. Every
   durability/wire boundary uses total decoders.
@@ -100,6 +100,18 @@ literate register", gives the complete conventions and examples.
   counts them; `docs/gleam-style.md` Part III, "No naked `Bool`", has the
   three escapes, one of which is that a frozen Part-1 field costs a
   `protocol-change/NNN.md` rather than an edit.
+- **Process machinery goes through weft.** A deadline-bounded spawn, a
+  phase machine written as mutually recursive functions, a timer whose
+  handler checks for a stale fire, a list of waiters flushed on a state
+  change, an ad-hoc ledger of monitored pids, a poll-until-deadline loop:
+  each is a weft primitive (`weft` runs and managed tasks, `weft/actor`,
+  `weft/state_machine`, `weft/poll`), and a hand-rolled copy is a review
+  finding. `docs/weft.md` says which shape maps to which primitive, the
+  standing rejections (`core`/`machine`/`prompt` never import it; `pg`
+  fan-outs, untrappable-kill janitors, per-key deadline tables and
+  logical-clock loops stay hand-rolled), and the rules a port is held to.
+  Weft is the sibling checkout `../weft`; extending it is part of the job,
+  not a workaround.
 - Chain fallible steps with `use` + `result.try`, or a small `or_*`
   combinator where the two sides are not both `Result`; `case` is for
   ADT dispatch, never for stacking `Result`s — and never buy a shallower
@@ -229,6 +241,8 @@ one.
 - **Review waves** — `docs/review/`, one file per wave with its triage.
 - **Operations** — `docs/distribution.md` (what a release carries and why),
   `docs/execution.md` (how work gets done), `docs/next.md` (what to do next).
+- **Concurrency** — `docs/weft.md` (when and why a process is built on
+  weft, the in-tree ports to copy from, and how to extend the library).
 - **Style** — `docs/gleam-style.md`.
 
 ## Per-package docs
