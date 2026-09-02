@@ -22,11 +22,21 @@
 ////    whatever the program calls itself, on disk it is `loom_program`, and
 ////    the real `cap/fs` is the only `cap/fs` in the build.
 ////
-//// 2. **The generated build pins exactly the vendored prelude and stdlib and
-////    nothing else** (design rule 3). The `gleam.toml` this service writes
-////    lists only those dependencies, and the build runs offline in the
-////    jail, so no *third-party* package at any version can enter the build
-////    even if the source named one.
+//// 2. **The generated build pins exactly the vendored preludes and stdlib
+////    and nothing else** (design rule 3). The `gleam.toml` this service
+////    writes lists only those dependencies, and the build runs offline in
+////    the jail, so no *third-party* package at any version can enter the
+////    build even if the source named one.
+////
+////    "Preludes", plural, since extensions: the table names `cap`, `ext`,
+////    `gleam_stdlib` and `gleam_json`, and it is *one* table rather than
+////    one per seam. That is forced rather than chosen — `seed.verify`
+////    compares the seed's table against this one byte for byte, and a
+////    second table would mean a second seed to prepare, ship and keep in
+////    step. What a build *may import* is still decided per seam by
+////    `codemode/vet/policy`, so a workspace program that names `ext`
+////    is refused by vetting long before the compiler would have found
+////    the module sitting there.
 ////
 ////    Be precise about the reach of this. `cap` itself depends on
 ////    `gleam_erlang`, `gleam_otp`, and `core`, so their compiled modules
@@ -109,11 +119,24 @@ pub const package_name = "loom_codemode_program"
 /// elsewhere on the host.
 pub const prelude_path = "vendor/cap"
 
+/// Where the extension prelude (`packages/ext`) is vendored inside a build
+/// root, relative for the same reason `prelude_path` is. Present in every
+/// build root, importable only by a submission judged against the
+/// extension seam.
+pub const ext_path = "vendor/ext"
+
 /// The exact standard-library version every code-mode program is built
 /// against. A single version, never a range: an offline build cannot
 /// resolve a range, and "deterministic" is the whole point of pinning
 /// (M4 triage CH-F2).
 pub const stdlib_version = "1.0.5"
+
+/// The exact `gleam_json` version every build is pinned to, for the reason
+/// `stdlib_version` is a single version rather than a range: an offline
+/// build cannot resolve one. It is here because the extension prelude
+/// speaks JSON — a tool's arguments arrive as JSON text and its reply is
+/// built as JSON — and the dependency table is shared by every build.
+pub const json_version = "3.1.0"
 
 /// A compiled code-mode program ready to run in a satellite node.
 pub type Artifact {
@@ -249,16 +272,25 @@ pub fn generated_path(build_root: String, module: String) -> String {
   build_root <> "/" <> prelude_path <> "/src/" <> module <> ".gleam"
 }
 
-/// The production dependency set: exactly one standard-library version
-/// and the prelude vendored inside the build root, and nothing else.
+/// The production dependency set: two pinned hex versions and the two
+/// preludes vendored inside the build root, and nothing else.
 ///
-/// Both are pinned rather than ranged. A range would need version
+/// Every one is pinned rather than ranged. A range would need version
 /// resolution, resolution needs Hex, and the build runs with the network
 /// off — so a range is not merely loose here, it does not build at all.
+///
+/// One table serves every seam, extensions included. `seed.verify`
+/// compares the seed's `gleam.toml` against the rendering of this list
+/// byte for byte, so a second table would be a second seed; and a
+/// dependency a submission may not import costs it nothing, because
+/// `codemode/vet/policy` decides what may be imported and the compiler
+/// never sees a module the vetting refused.
 pub fn default_dependencies() -> List(Dependency) {
   [
     HexDependency(name: "gleam_stdlib", requirement: stdlib_version),
+    HexDependency(name: "gleam_json", requirement: json_version),
     PathDependency(name: "cap", path: prelude_path),
+    PathDependency(name: "ext", path: ext_path),
   ]
 }
 

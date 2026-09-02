@@ -540,7 +540,79 @@ pub fn a_harness_only_capability_is_on_no_seam_test() {
   assert list.all(harness_only, fn(name) {
     !policy.contains(policy.default(), name)
     && !policy.contains(policy.orchestration(), name)
+    && !policy.contains(policy.extension(), name)
   })
+}
+
+/// The extension seam is the workspace seam widened, and says so as a
+/// superset rather than as a snapshot.
+///
+/// This is the one relation between two seams here that is deliberately
+/// *not* disjointness: an extension tool is a workspace program with a
+/// different entry point, so narrowing it would buy nothing and would
+/// have to be kept in step by hand. Stating the intended relation as a
+/// property is what stops the coupling from being an accident — a
+/// capability removed from the extension seam alone now fails a test
+/// rather than passing quietly.
+pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
+  let workspace = policy.default_cap_modules()
+  let extension = policy.extension_cap_modules()
+  assert list.all(workspace, fn(name) { list.contains(extension, name) })
+  assert list.all(policy.default_stdlib_modules(), fn(name) {
+    list.contains(policy.extension_stdlib_modules(), name)
+  })
+
+  // And the widening is real rather than an equality dressed up as one.
+  assert list.length(extension) > list.length(workspace)
+  assert list.contains(extension, "cap/ext")
+  assert list.contains(extension, "ext")
+}
+
+/// The extension seam reaches no capability the workspace seam does not.
+///
+/// The superset test above would pass just as well if the extension seam
+/// had picked up `cap/strand` on the way, which would put agent
+/// orchestration and effects in one program — the exact pairing the
+/// workspace/orchestration split exists to prevent. So the widening is
+/// pinned to its two named entries.
+pub fn the_extension_seam_widens_by_exactly_two_names_test() {
+  let extra =
+    list.filter(policy.extension_cap_modules(), fn(name) {
+      !list.contains(policy.default_cap_modules(), name)
+    })
+  assert extra == ["cap/ext", "ext"]
+  assert !policy.contains(policy.extension(), "cap/strand")
+}
+
+/// The extension seam's own standard-library list holds no capability
+/// module, for the reason the shared list does not: a `cap/*` name added
+/// where a pure helper belongs would widen a seam without appearing in
+/// any capability list.
+pub fn the_extension_stdlib_list_admits_no_capability_test() {
+  assert list.all(policy.extension_stdlib_modules(), fn(name) {
+    !string.starts_with(name, "cap/")
+  })
+}
+
+/// An extension's own source is judged against its seam and no other.
+pub fn an_extension_module_passes_only_its_own_seam_test() {
+  let source =
+    "import ext
+import gleam/dynamic
+import gleam/dynamic/decode
+import gleam/json
+
+pub fn run(arguments: dynamic.Dynamic, _ctx: ext.Ctx) {
+  let decoder = decode.success(json.to_string(json.null()))
+  case ext.decode_args(arguments, decoder) {
+    Ok(text) -> Ok(ext.text(text))
+    Error(refusal) -> Error(refusal)
+  }
+}
+"
+  assert is_passed(vet.vet(source, policy.extension()))
+  assert has_rule(vet.vet(source, policy.default()), ImportNotAllowed)
+  assert has_rule(vet.vet(source, policy.orchestration()), ImportNotAllowed)
 }
 
 /// `for_seam` is the selector, and it selects the two allowlists above.
@@ -549,6 +621,8 @@ pub fn for_seam_selects_the_allowlist_test() {
     == policy.allowed_imports(policy.default())
   assert policy.allowed_imports(policy.for_seam(policy.OrchestrationSeam))
     == policy.allowed_imports(policy.orchestration())
+  assert policy.allowed_imports(policy.for_seam(policy.ExtensionSeam))
+    == policy.allowed_imports(policy.extension())
 }
 
 /// An orchestration program that stays inside its seam passes, and the

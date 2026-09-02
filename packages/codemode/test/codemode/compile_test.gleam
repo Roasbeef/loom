@@ -153,13 +153,20 @@ pub fn manifest_pins_only_prelude_and_stdlib_test() {
     "gleam_stdlib = \"" <> compile.stdlib_version <> "\"",
   )
   // The whole dependency table, byte for byte: nothing else is in it, and
-  // no entry carries a range.
+  // no entry carries a range. The extension prelude and `gleam_json` are
+  // in it too — one table serves every seam, because `seed.verify`
+  // compares this rendering against the seed's byte for byte and a second
+  // table would be a second seed (see `compile.default_dependencies`).
   assert string.contains(
     toml,
     "[dependencies]\ngleam_stdlib = \""
       <> compile.stdlib_version
+      <> "\"\ngleam_json = \""
+      <> compile.json_version
       <> "\"\ncap = { path = \""
       <> compile.prelude_path
+      <> "\" }\next = { path = \""
+      <> compile.ext_path
       <> "\" }\n",
   )
 }
@@ -172,6 +179,8 @@ pub fn the_prelude_is_vendored_at_a_relative_path_test() {
   // a path *inside* the root is stable.
   assert !string.starts_with(compile.prelude_path, "/")
   assert !string.starts_with(compile.prelude_path, "..")
+  assert !string.starts_with(compile.ext_path, "/")
+  assert !string.starts_with(compile.ext_path, "..")
 }
 
 pub fn build_rejection_is_in_band_test() {

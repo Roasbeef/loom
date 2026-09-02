@@ -55,7 +55,7 @@
 #
 # So every `cap/*` module must appear either on a seam's allowlist or on
 # `harness_only_cap_modules`, the written-down "reachable by nobody, on
-# purpose" list — all three read out of the allowlist source itself. This
+# purpose" list — all four read out of the allowlist source itself. This
 # script is where the check belongs because it already enumerates the
 # package and already runs in `make check`, and because it needs no
 # toolchain to do either: the lists are string literals and the modules
@@ -141,12 +141,12 @@ cap_modules() {
 	done | LC_ALL=C sort
 }
 
-# Every `cap/*` name on any of the three lists that decide reachability.
+# Every `cap/*` name on any of the four lists that decide reachability.
 # Read out of the function bodies rather than the whole file, because the
 # doc comments quote module names too and a quote is not a decision.
 listed_caps() {
 	awk '
-		/^pub fn (default_cap_modules|orchestration_cap_modules|harness_only_cap_modules)\(\)/ {
+		/^pub fn (default_cap_modules|orchestration_cap_modules|extension_cap_modules|harness_only_cap_modules)\(\)/ {
 			inside = 1
 			next
 		}
