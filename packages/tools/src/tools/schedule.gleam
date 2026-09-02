@@ -256,6 +256,10 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
       <> cancel_tool_name
       <> ". Write the body as an instruction to your future self, which "
       <> "will read it with none of this moment's context.",
+    prompt_snippet: Some(
+      "`schedule_create` has text injected back into your own context "
+      <> "later, on a timer.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -400,6 +404,9 @@ fn list_tool(schedules: Schedules) -> Tool {
       <> "with how often each fires, how many times it has fired, and what "
       <> "it injects. Schedules the operator configured are not listed: "
       <> "those are not yours to cancel.",
+    prompt_snippet: Some(
+      "`schedule_list` lists the heartbeats you scheduled on this strand.",
+    ),
     schema: tool.object_schema([], []),
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
@@ -470,6 +477,9 @@ fn cancel_tool(schedules: Schedules) -> Tool {
     description: "Cancel one heartbeat you scheduled on this strand, by "
       <> "name. It will not fire again. Schedules the operator configured "
       <> "cannot be cancelled this way.",
+    prompt_snippet: Some(
+      "`schedule_cancel` cancels one heartbeat you scheduled, by name.",
+    ),
     schema: tool.object_schema(
       [
         #(

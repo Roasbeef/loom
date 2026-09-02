@@ -72,6 +72,60 @@ pub fn dispatch_runs_the_named_tool_test() {
   assert outcome.is_error == False
 }
 
+pub fn registered_keeps_registration_order_test() {
+  // `names` is sorted for the provider cache's byte prefix; `registered`
+  // is not, because the prompt's index reads in contribution order and
+  // sorting there would scatter a host's own tools through the built-ins.
+  let ordered = tool.registered(full_registry())
+  assert list.map(ordered, fn(each) { each.name })
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
+}
+
+pub fn snippets_follow_registration_order_and_omit_the_silent_test() {
+  // pi's rule, adopted whole: a tool with no `prompt_snippet` is absent
+  // from the prompt's index and callable all the same, because the
+  // authoritative definition is the wire tool array.
+  let silent = tool.Tool(..fs.read_tool(), prompt_snippet: None)
+  let registry =
+    tool.registry([grep.tool(), silent, fs.write_tool(), bash.tool()])
+  let assert Some(grep_snippet) = grep.tool().prompt_snippet
+  let assert Some(write_snippet) = fs.write_tool().prompt_snippet
+  let assert Some(bash_snippet) = bash.tool().prompt_snippet
+  assert tool.snippets(registry) == [grep_snippet, write_snippet, bash_snippet]
+
+  // Omission from the index is not removal from the registry.
+  let assert Ok(_) = tool.lookup(registry, "fs_read")
+}
+
+pub fn every_core_tool_carries_a_snippet_test() {
+  // A built-in with no snippet would be invisible in the prompt's index
+  // while still being on the wire, which is the one inconsistency the
+  // omission rule must not be used to create by accident.
+  list.each(tool.registered(full_registry()), fn(each) {
+    assert each.prompt_snippet != None
+  })
+}
+
+pub fn snippet_rendering_is_deterministic_test() {
+  // The tool bytes are the provider cache's prefix and the prompt is
+  // pinned behind a one-hour breakpoint, so two renders of one registry
+  // must be the same string, not merely the same set.
+  assert tool.snippets(full_registry()) == tool.snippets(full_registry())
+}
+
+// --- terminate -----------------------------------------------------------
+
+pub fn outcome_constructors_continue_the_run_test() {
+  // Ending a run is a thing a tool has to say, never a thing it can
+  // fall into: every constructor defaults to `ContinueRun`.
+  assert tool.success("ok").terminate == tool.ContinueRun
+  assert tool.failure("no").terminate == tool.ContinueRun
+  assert tool.with_details(tool.success("ok"), json.Object([])).terminate
+    == tool.ContinueRun
+  assert tool.dispatch(full_registry(), ctx(), "teleport", json.Null).terminate
+    == tool.ContinueRun
+}
+
 pub fn duplicate_name_keeps_later_tool_test() {
   let first = fs.read_tool()
   let second = tool.Tool(..fs.read_tool(), description: "override")

@@ -47,6 +47,7 @@
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
 import gleam/int
+import gleam/option.{Some}
 import gleam/string
 import tools/tool.{type Tool, type ToolOutcome}
 
@@ -138,6 +139,10 @@ pub fn tool(memory: Memory) -> Tool {
       <> " for the life of this repository's memory. There is no tool to "
       <> "read them back: what memory says reaches a later session on its "
       <> "own, as quoted context.",
+    prompt_snippet: Some(
+      "`remember` writes one durable note for the sessions that come after "
+      <> "this one.",
+    ),
     schema: tool.object_schema(
       [
         #(

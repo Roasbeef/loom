@@ -53,6 +53,9 @@ pub fn tool() -> tool.Tool {
     description: "Run a shell command in the sandboxed workspace. The "
       <> "command runs as `bash -lc` with the workspace as the working "
       <> "directory and no network access.",
+    prompt_snippet: option.Some(
+      "`bash` runs a shell command in the workspace, jailed and offline.",
+    ),
     schema: tool.object_schema(
       [
         #("command", tool.string_property("the shell command to run")),
@@ -219,12 +222,14 @@ fn exited(
         content: [tool.text_block(body)],
         details: option.Some(details),
         is_error:,
+        terminate: tool.ContinueRun,
       )
     Ok(bounded) ->
       tool.ToolOutcome(
         content: [tool.text_block(blob.bounded_text(bounded))],
         details: option.Some(details),
         is_error:,
+        terminate: tool.ContinueRun,
       )
       |> blob.with_blob_details(bounded)
   }
