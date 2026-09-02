@@ -1456,7 +1456,7 @@ design names it as the mechanism for the self-improvement loop; no
 release-upgrade machinery, no upgrade handling, and no extension zone
 exists in the tree. The single `code_change/3` in the source is the
 SIGTERM relay's gen_event boilerplate — a no-op
-`code_change` (`client_ffi.erl:131`). **Distribution is not used
+`code_change` (`client_ffi.erl:180`). **Distribution is not used
 either**: the bus is a single node's, and the control-plane half of the
 two-channel doctrine has no code behind it yet.
 
