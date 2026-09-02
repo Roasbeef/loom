@@ -16,12 +16,12 @@
 //// One abnormal `Down` is not a failure, and telling it apart is what keeps
 //// a healthy session alive. `noproc` is what a monitor answers when its
 //// target was already gone; it is never a reason a process exits with. A
-//// claim travels to this actor as a message, so a reaper that drains and
-//// exits in the gap between the claim leaving its claimant and this actor
-//// installing the monitor can only be met that way. Reading that as a
-//// destroyed proof killed the ledger, and with it — this being a
-//// significant child — the whole session, over a generation that had in
-//// fact drained cleanly.
+//// claim travels to this actor as a message and the monitor it installs
+//// travels on as a signal, so a reaper that drains and exits any time
+//// before that signal lands — including after its claimant was released —
+//// can only be met that way. Reading that as a destroyed proof killed the
+//// ledger, and with it — this being a significant child — the whole
+//// session, over a generation that had in fact drained cleanly.
 ////
 //// ```text
 //// old driver Down -> old reaper drains -----------+
@@ -152,18 +152,21 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Drained -> retire(state, pid)
 
         // Gone before the monitor reached it. The only monitor this actor
-        // installs on a reaper is the one in `Claim`, so `noproc` can only
-        // name a reaper that died between its driver sending the claim and
-        // this actor reading it. At that moment a reaper owns nothing but
-        // the parked claimant leaf: the driver adopts effects only after
-        // the claim is answered. A scope whose owners are all leaves cannot
-        // lose its drain proof, because a leaf's exit completes it whatever
-        // the reason, so however that reaper ended it left nothing running,
-        // which is the fact the barrier needs. The exit reason it left with
-        // is only the account of how it got there. Nothing in the tree kills
-        // a scope where it stands, and a reaper that has adopted a real
-        // effect is one this actor is already monitoring live, so its exit
-        // arrives with its true reason and is judged by the arms above.
+        // installs on a reaper is the one in `Claim`, and that monitor is a
+        // request in flight rather than a fact settled by the time the
+        // claim is answered, so `noproc` names any reaper that ended before
+        // the request landed — one that died while the claim was still in
+        // this mailbox, and equally one killed moments after its claimant
+        // was released.
+        //
+        // What makes the whole of that window safe is the reaper, not the
+        // timing. A weft scope holds itself alive until every effect it
+        // adopted has exited and says `weft_drain_proof_lost` out loud when
+        // it cannot, and nothing in this tree kills a scope where it
+        // stands, so a scope that is gone has drained however the monitor
+        // came to hear of it. The exit reason is only the account of how it
+        // got there. A reaper still under watch when it died killed or
+        // abnormal carries that reason to the arms above.
         Absent -> retire(state, pid)
 
         Destroyed -> {

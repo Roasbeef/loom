@@ -74,11 +74,12 @@ extended by the M3 runtime wave.
   inventing an empty ownership history. `noproc` is the exception, and
   `drain_registry.Verdict` is where the three are told apart: it is what a
   monitor answers about a pid that was already gone, never a reason a process
-  exits with, and a claim reaches this actor as a message, so a reaper that
-  drains and exits in that gap can be met no other way. A weft scope holds
-  itself alive until every effect it adopted has exited and says
-  `weft_drain_proof_lost` when it cannot, so a pid met as `noproc` left
-  nothing running: it retires like a normal exit.
+  exits with, and both the claim and the monitor it installs travel as
+  signals, so a reaper that ends before the monitor request lands — after
+  its claimant was released as readily as before — can be met no other way.
+  A weft scope holds itself alive until every effect it adopted has exited
+  and says `weft_drain_proof_lost` when it cannot, so a pid met as `noproc`
+  left nothing running: it retires like a normal exit.
 - `runtime/internal/provider_custodian.Prepared` — one provider request as a
   parked owner plus the one-way `begin` permit that releases it. The worker
   behind it is a `weft/state_machine`, `Parked → Forwarding → Cancelling →
@@ -277,7 +278,8 @@ extended by the M3 runtime wave.
     live pid — a claim made from the driver instead let a driver killed
     mid-claim leave the ledger monitoring a scope that had already drained.
     That ordering is the claim protocol's own guarantee and not the ledger's
-    safety net: the ledger reads a `noproc` claim as a departure whatever
+    safety net: the monitor is still a signal in flight when the claim is
+    answered, and the ledger reads a `noproc` claim as a departure whatever
     the claimant did. The driver blocks
     on the claimant's verdict in its guaranteed-first `AwaitPredecessors`
     handler; meanwhile an abort simply queues in the mailbox behind the
