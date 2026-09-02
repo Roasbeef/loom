@@ -1,15 +1,27 @@
 //// Local session discovery, selection, and replacement attachment.
 ////
 //// The selector reads only bootstrap records under the private launcher state
-//// root. Resolution and websocket startup run outside the terminal process;
-//// the caller adopts a successful socket before discarding its current one.
+//// root. Resolution and websocket startup run outside the terminal process,
+//// as one weft task under a deadline; the terminal pulls its outcome once per
+//// tick and adopts a successful socket before discarding its current one.
 ////
-//// Ownership is split deliberately. The worker owns the replacement socket
-//// until adoption, but every mailbox the terminal will later read is created
-//// by the terminal itself: a `Subject` delivers to the process that created
-//// it, and `gleam/erlang/process.receive` refuses a subject owned by another
-//// process. A worker-created frame inbox would therefore route the new
-//// session's snapshot to the worker and panic the terminal on its next tick.
+//// Ownership is split deliberately. The task process owns the replacement
+//// socket while it resolves and connects, so the deadline that kills the task
+//// closes the socket with it, but every mailbox the terminal will later read
+//// is created by the terminal itself: a `Subject` delivers to the process that
+//// created it, and `gleam/erlang/process.receive` refuses a subject owned by
+//// another process. A task-created frame inbox would therefore route the new
+//// session's snapshot to the task and panic the terminal on its next tick.
+////
+//// The spawn, the monitor, the monotonic deadline and the kill-and-join this
+//// once hand-rolled are weft's: `weft.start_detached` runs the task under a
+//// scope linked to the terminal, so a terminal that dies mid-switch takes the
+//// attempt down with it, and `weft.pull` with a zero wait is the non-blocking
+//// poll the tick makes. One window is accepted and stated here rather than
+//// closed with a handshake: between the task returning its socket and the
+//// terminal linking it in `connection.adopt`, the socket is linked to nobody.
+//// That window is inside the terminal's own tick handler, and a terminal that
+//// dies there ends the VM the socket lives in.
 
 import etui/buffer
 import etui/geometry.{type Rect, Fill, Length}
@@ -17,25 +29,30 @@ import etui/keys
 import etui/span
 import etui/widgets/block
 import etui/widgets/paragraph
-import gleam/erlang/process.{type Monitor, type Pid, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/string
 import tui/bootstrap.{type Options, type SessionChoice, SessionChoice}
 import tui/connection
-import tui/internal/ffi_bootstrap
 import tui/protocol
 import tui/text_hygiene
 import tui/theme
+import weft
 
-// The outer deadline must outlast the phases resolve can run in sequence: a
-// 30 s launch lock, a 30 s daemon start, and two 10 s probes. A shorter bound
-// would kill a worker mid-launch on a contended cold start and leave nothing
+// The deadline must outlast the phases resolve can run in sequence: a 30 s
+// launch lock, a 30 s daemon start, and two 10 s probes. A shorter bound
+// would kill a task mid-launch on a contended cold start and leave nothing
 // worse than an abandoned starting record, but it would also fail a switch
 // that was about to succeed.
 const switch_timeout_ms = 90_000
 
 const discard_limit = 4096
+
+// How long `cancel` waits for the scope to account for a killed task before
+// giving up on closing a socket the task may have returned. The kill is
+// immediate; the wait covers the scope's delivery, not the work.
+const cancel_drain_ms = 1000
 
 /// The session selector's local interaction state.
 pub type State {
@@ -66,28 +83,23 @@ pub type SwitchStatus {
   /// No replacement attachment is in flight.
   Idle
 
-  /// A worker is resolving or connecting to the named session.
+  /// A task is resolving or connecting to the named session.
   Resolving(
     /// The session name shown while the replacement is opening.
     session: String,
-    /// The process that owns the replacement until terminal adoption.
-    worker: Pid,
-    /// The monitor that turns an untyped worker exit into a typed result.
-    monitor: Monitor,
-    /// The mailbox used only by this replacement attempt.
-    inbox: Subject(Outcome),
+    /// The detached run whose one task owns the replacement until it
+    /// returns. Its deadline is the whole timeout story.
+    run: weft.Detached(Opened, String),
     /// The terminal-owned frame inbox the replacement socket delivers to.
     frames: Subject(connection.Message),
-    /// The absolute monotonic deadline for this replacement attempt.
-    deadline_ms: Int,
   )
 }
 
 /// One result the terminal observes for a replacement attachment.
 ///
-/// `receive` builds these from the worker's `Outcome` and from its monitor,
-/// so the frame inbox a `Ready` carries is always the one the terminal
-/// created in `start`; the worker never gets to name it.
+/// `receive` builds these from the run's outcome, so the frame inbox a
+/// `Ready` carries is always the one the terminal created in `start`; the
+/// task never gets to name it.
 pub type Message {
   /// A replacement websocket is ready for terminal-process adoption.
   Ready(
@@ -101,34 +113,28 @@ pub type Message {
     inbox: Subject(connection.Message),
     /// The replacement websocket actor awaiting terminal adoption.
     socket: connection.Connection,
-    /// The acknowledgement that releases the worker after adoption.
-    adopted: Subject(Nil),
   )
 
   /// Resolution or connection failed while the old session remained active.
   Failed(session: String, reason: String)
 
-  /// The replacement worker crashed before returning a typed result.
+  /// The replacement task crashed before returning a typed result.
   WorkerCrashed(session: String, reason: String)
 }
 
-/// What a replacement-attachment worker sends back over its attempt mailbox.
+/// What a replacement-attachment task returns when it succeeds.
 ///
-/// It is exposed so tests can stand in for a worker; the terminal only ever
+/// It is exposed so tests can stand in for a task; the terminal only ever
 /// sees the `Message` that `receive` derives from it.
 @internal
-pub type Outcome {
-  /// The worker resolved the session and holds an open socket for adoption.
+pub type Opened {
+  /// The task resolved the session and holds an open socket for adoption.
   Opened(
     choice: SessionChoice,
     options: Options,
     target: bootstrap.Target,
     socket: connection.Connection,
-    adopted: Subject(Nil),
   )
-
-  /// Resolution or connection failed while the old session remained active.
-  Refused(reason: String)
 }
 
 /// Opens a selector over discovered launcher records.
@@ -198,27 +204,41 @@ pub fn update(key: keys.Key, state: State) -> Action {
 /// ```
 pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
   let options = bootstrap.session_options(base, choice)
-  let owner = process.self()
-  let receiver = process.new_subject()
+  start_with(
+    choice.session,
+    fn(frames) { resolve_and_connect(choice, options, frames) },
+    within: switch_timeout_ms,
+  )
+}
 
-  // Both subjects are created here so they deliver to the terminal. Frames
+/// Starts a replacement attachment whose work is `attempt`, bounded by
+/// `within` milliseconds.
+///
+/// `start` is this with the real resolve-and-connect; tests hand in an
+/// attempt that fails, sleeps, or crashes to drive each outcome without a
+/// server. The attempt runs on the task's own process, so a socket it opens
+/// is linked there and dies with the task when the deadline kills it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.start_with("demo", fn(_frames) { Error("refused") }, within: 100)
+/// ```
+@internal
+pub fn start_with(
+  session: String,
+  attempt: fn(Subject(connection.Message)) -> Result(Opened, String),
+  within within: Int,
+) -> SwitchStatus {
+  // The frame inbox is created here so it delivers to the terminal. Frames
   // the replacement socket emits before adoption queue in the terminal's
   // mailbox under this attempt's tag and are drained only once it adopts.
   let frames = connection.new_inbox()
-  let worker =
-    process.spawn_unlinked(fn() {
-      let outcome = resolve_and_connect(choice, options, frames, owner)
-      process.send(receiver, outcome)
-      await_adoption(outcome)
-    })
-  Resolving(
-    session: choice.session,
-    worker:,
-    monitor: process.monitor(worker),
-    inbox: receiver,
-    frames:,
-    deadline_ms: ffi_bootstrap.monotonic_time_ms() + switch_timeout_ms,
-  )
+  let run =
+    weft.new([fn() { attempt(frames) }])
+    |> weft.deadline(within)
+    |> weft.start_detached
+  Resolving(session:, run:, frames:)
 }
 
 /// Receives one completed replacement attachment, when ready.
@@ -231,30 +251,59 @@ pub fn start(choice: SessionChoice, base: Options) -> SwitchStatus {
 pub fn receive(status: SwitchStatus) -> Result(Message, Nil) {
   case status {
     Idle -> Error(Nil)
-    Resolving(session:, worker:, monitor:, inbox:, frames:, deadline_ms:) ->
-      case receive_monitored(inbox, session, monitor, frames) {
+    Resolving(session:, run:, frames:) ->
+      case settle(session, frames, weft.pull(run, within: 0)) {
+        Error(Nil) -> Error(Nil)
         Ok(Ready(..) as message) -> Ok(message)
+
+        // Every terminal answer but adoption leaves the frames the socket
+        // already delivered with nobody to read them; a failed attempt
+        // must leave no unread frames behind for the mailbox scan of every
+        // later selective receive.
         Ok(message) -> {
           discard(frames)
           Ok(message)
         }
-        Error(Nil) ->
-          case ffi_bootstrap.monotonic_time_ms() >= deadline_ms {
-            True -> {
-              process.kill(worker)
-              process.demonitor_process(monitor)
-
-              // The worker owned any socket it opened through a link, so the
-              // kill closes it. A `Ready` that raced the deadline is dropped
-              // with the frames it already delivered, which keeps a late
-              // attempt from ever being adopted by a later switch.
-              discard(inbox)
-              discard(frames)
-              Ok(Failed(session, "session startup timed out"))
-            }
-            False -> Error(Nil)
-          }
       }
+  }
+}
+
+// The translation from weft's account of the one task to the terminal's
+// vocabulary. All seven outcomes are named: a plain task never produces the
+// two drain variants, and the arms exist so a run that grows an owner fails
+// exhaustiveness here rather than taking a catch-all.
+fn settle(
+  session: String,
+  frames: Subject(connection.Message),
+  pulled: weft.Pulled(Opened, String),
+) -> Result(Message, Nil) {
+  case pulled {
+    weft.NotYet -> Error(Nil)
+    weft.PulledOutcome(weft.Completed(
+      value: Opened(choice:, options:, target:, socket:),
+      ..,
+    )) -> Ok(Ready(choice:, options:, target:, inbox: frames, socket:))
+    weft.PulledOutcome(weft.Failed(error:, ..)) -> Ok(Failed(session, error))
+    weft.PulledOutcome(weft.Crashed(reason:, ..)) ->
+      Ok(WorkerCrashed(session, string.inspect(reason)))
+
+    // The deadline killed the task, or the run ended before it got a slot,
+    // which a zero deadline can do. Either way the socket it may have
+    // opened died with the task's process, and the frames it already
+    // delivered are dropped with it below, which keeps a late attempt from
+    // ever being adopted by a later switch.
+    weft.PulledOutcome(weft.Abandoned(..))
+    | weft.PulledOutcome(weft.NeverStarted(..)) ->
+      Ok(Failed(session, "session startup timed out"))
+    weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+      Ok(WorkerCrashed(session, string.inspect(reason)))
+    weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      Ok(Failed(session, "session startup was cancelled"))
+
+    // The run is over with nothing delivered, which a one-task run only
+    // reaches once its outcome has already been pulled and acted on.
+    weft.AllDelivered -> Ok(Failed(session, "session startup ended early"))
+    weft.RunLost(reason:) -> Ok(WorkerCrashed(session, string.inspect(reason)))
   }
 }
 
@@ -283,6 +332,12 @@ fn discard_up_to(inbox: Subject(a), remaining: Int) -> Nil {
 
 /// Stops an unfinished replacement attachment before terminal exit.
 ///
+/// Cancelling kills a task still running, and the socket linked to it dies
+/// too. A task that had already returned its socket is the one case the
+/// link cannot cover, so the account is drained here and any socket it
+/// carries is closed by hand: nothing an unadopted attempt opened outlives
+/// this call.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -291,10 +346,32 @@ fn discard_up_to(inbox: Subject(a), remaining: Int) -> Nil {
 pub fn cancel(status: SwitchStatus) -> Nil {
   case status {
     Idle -> Nil
-    Resolving(worker:, monitor:, ..) -> {
-      process.kill(worker)
-      process.demonitor_process(monitor)
+    Resolving(run:, frames:, ..) -> {
+      weft.cancel_detached(run)
+      close_unadopted(run)
+      discard(frames)
     }
+  }
+}
+
+// Pull until the scope says the run is over, closing any socket a task
+// returned before the cancel landed. The wait is bounded per pull, and a
+// cancelled one-task run delivers at most one outcome, so this is a short
+// drain rather than a loop that can hang teardown.
+fn close_unadopted(run: weft.Detached(Opened, String)) -> Nil {
+  case weft.pull(run, within: cancel_drain_ms) {
+    weft.PulledOutcome(weft.Completed(value: Opened(socket:, ..), ..)) -> {
+      connection.close(socket)
+      close_unadopted(run)
+    }
+    weft.PulledOutcome(weft.Failed(..))
+    | weft.PulledOutcome(weft.Crashed(..))
+    | weft.PulledOutcome(weft.Abandoned(..))
+    | weft.PulledOutcome(weft.NeverStarted(..))
+    | weft.PulledOutcome(weft.DrainProofLost(..))
+    | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      close_unadopted(run)
+    weft.NotYet | weft.AllDelivered | weft.RunLost(..) -> Nil
   }
 }
 
@@ -310,33 +387,6 @@ pub fn busy(status: SwitchStatus) -> Bool {
   case status {
     Idle -> False
     Resolving(..) -> True
-  }
-}
-
-fn receive_monitored(
-  inbox: Subject(Outcome),
-  session: String,
-  monitor: Monitor,
-  frames: Subject(connection.Message),
-) -> Result(Message, Nil) {
-  let selector =
-    process.new_selector()
-    |> process.select_map(inbox, fn(outcome) {
-      case outcome {
-        Opened(choice:, options:, target:, socket:, adopted:) ->
-          Ready(choice:, options:, target:, inbox: frames, socket:, adopted:)
-        Refused(reason) -> Failed(session, reason)
-      }
-    })
-    |> process.select_specific_monitor(monitor, fn(down) {
-      WorkerCrashed(session, string.inspect(down))
-    })
-  case process.selector_receive(from: selector, within: 0) {
-    Error(Nil) -> Error(Nil)
-    Ok(message) -> {
-      process.demonitor_process(monitor)
-      Ok(message)
-    }
   }
 }
 
@@ -379,61 +429,51 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   }
 }
 
-fn resolve_and_connect(
+/// The real attempt `start` runs: resolve the session locally, then open
+/// and subscribe a websocket that delivers to `frames`.
+///
+/// Exposed so a test can wrap it — to learn the socket's pid before the
+/// outcome is pulled, say — and still exercise the shipped path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// sessions.start_with(choice.session, fn(frames) {
+///   sessions.resolve_and_connect(choice, options, frames)
+/// }, within: 90_000)
+/// ```
+@internal
+pub fn resolve_and_connect(
   choice: SessionChoice,
   options: Options,
   frames: Subject(connection.Message),
-  owner: Pid,
-) -> Outcome {
+) -> Result(Opened, String) {
   case bootstrap.resolve(options) {
-    Error(reason) -> Refused(reason)
-    Ok(target) ->
-      case process.is_alive(owner) {
-        False -> Refused("the terminal closed during startup")
-        True -> connect_target(choice, options, target, frames, owner)
-      }
+    Error(reason) -> Error(reason)
+    Ok(target) -> connect_target(choice, options, target, frames)
   }
 }
 
-fn await_adoption(outcome: Outcome) -> Nil {
-  case outcome {
-    Opened(socket:, adopted:, ..) ->
-      case process.receive(adopted, switch_timeout_ms) {
-        Ok(Nil) -> Nil
-        Error(Nil) -> connection.close(socket)
-      }
-    Refused(..) -> Nil
-  }
-}
-
-// The socket actor links to this worker inside `connection.connect`, so a
-// killed or crashed worker takes an unadopted socket down with it. The
-// terminal re-links on adoption, and the worker's later normal exit does not
-// disturb an actor that traps nothing. One window is accepted: between the
-// actor's starter exiting and `connect` linking it to this worker, a kill
-// leaves an authenticated but unread socket alive. It is microseconds wide
-// and no link order inside `connect` can close it, so do not reorder that.
+// The socket actor links to the task's process inside `connection.connect`,
+// so a killed task takes an unadopted socket down with it. The terminal
+// re-links on adoption, and the task's later normal exit does not disturb
+// an actor that traps nothing. One window is accepted: between the actor's
+// starter exiting and `connect` linking it to this process, a kill leaves an
+// authenticated but unread socket alive. It is microseconds wide and no link
+// order inside `connect` can close it, so do not reorder that.
 fn connect_target(
   choice: SessionChoice,
   options: Options,
   target: bootstrap.Target,
   inbox: Subject(connection.Message),
-  owner: Pid,
-) -> Outcome {
+) -> Result(Opened, String) {
   case connection.connect(target.address, target.token, inbox) {
-    Error(reason) -> Refused("connect: " <> reason)
+    Error(reason) -> Error("connect: " <> reason)
     Ok(socket) -> {
-      let adopted = process.new_subject()
       connection.send(socket, protocol.subscribe(1, target.session))
       connection.send(socket, protocol.models(2))
       connection.send(socket, protocol.config(3, "main"))
-      case process.is_alive(owner) {
-        True -> Opened(choice:, options:, target:, socket:, adopted:)
-        False -> {
-          connection.close(socket)
-          Refused("the terminal closed during startup")
-        }
-      }
+      Ok(Opened(choice:, options:, target:, socket:))
     }
   }
 }

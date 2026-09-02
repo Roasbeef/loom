@@ -345,13 +345,11 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     target: switched,
     inbox: switched_inbox,
     socket: switched_socket,
-    adopted:,
     ..,
   )) = wait_for_switch(switch, 40_000)
     as "session switch should connect"
   assert switched.session == first.session
   assert connection.adopt(switched_socket) == Ok(Nil)
-  process.send(adopted, Nil)
 
   // Adoption is only real if the replacement session's frames reach the
   // process that adopted it: the worker's subscribe must produce a full
@@ -364,16 +362,43 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert snapshot_session == first.session
   connection.close(switched_socket)
 
-  // A cancelled attempt must take its unadopted socket down through the
-  // worker link; the kill is synchronous but the link's exit signal is not.
-  let cancelled = sessions.start(choice, options)
-  let assert Ok(sessions.Ready(socket: abandoned, ..)) =
-    wait_for_switch(cancelled, 40_000)
+  // A cancelled attempt must take its unadopted socket down. Two paths
+  // cover it: a task that has returned its socket but whose outcome nobody
+  // pulled is closed by the cancel's drain, and a task still running has
+  // its socket killed through the link. Both attempts publish the socket's
+  // pid on the side so the proof never pulls the outcome itself.
+  let told = process.new_subject()
+  let returned =
+    sessions.start_with(
+      choice.session,
+      fn(frames) {
+        let opened = sessions.resolve_and_connect(choice, options, frames)
+        process.send(told, socket_owner(opened))
+        opened
+      },
+      within: 90_000,
+    )
+  let assert Ok(Ok(returned_pid)) = process.receive(told, 40_000)
     as "a second switch should connect"
-  let assert Ok(abandoned_pid) = connection.owner(abandoned)
-  assert process.is_alive(abandoned_pid)
-  sessions.cancel(cancelled)
-  assert_process_exits(abandoned_pid, 100)
+  assert process.is_alive(returned_pid)
+  sessions.cancel(returned)
+  assert_process_exits(returned_pid, 100)
+  let running =
+    sessions.start_with(
+      choice.session,
+      fn(frames) {
+        let opened = sessions.resolve_and_connect(choice, options, frames)
+        process.send(told, socket_owner(opened))
+        process.sleep_forever()
+        opened
+      },
+      within: 90_000,
+    )
+  let assert Ok(Ok(running_pid)) = process.receive(told, 40_000)
+    as "a third switch should connect"
+  assert process.is_alive(running_pid)
+  sessions.cancel(running)
+  assert_process_exits(running_pid, 100)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
   let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
@@ -441,6 +466,15 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
       process.sleep(50)
       assert_process_stops(pid, attempts - 1)
     }
+  }
+}
+
+fn socket_owner(
+  opened: Result(sessions.Opened, String),
+) -> Result(process.Pid, Nil) {
+  case opened {
+    Ok(sessions.Opened(socket:, ..)) -> connection.owner(socket)
+    Error(_reason) -> Error(Nil)
   }
 }
 

@@ -1473,11 +1473,10 @@ fn handle_session_switch_message(
         "open session " <> session <> " crashed: " <> reason,
       )
       |> mark_activity
-    sessions.Ready(choice, options, target, inbox, socket, adopted) ->
+    sessions.Ready(choice, options, target, inbox, socket) ->
       case connection.adopt(socket) {
         Error(reason) -> {
           connection.close(socket)
-          process.send(adopted, Nil)
           sessions.discard(inbox)
           append_error(
             Model(..model, session_switch: sessions.Idle),
@@ -1485,10 +1484,7 @@ fn handle_session_switch_message(
           )
           |> mark_activity
         }
-        Ok(Nil) -> {
-          process.send(adopted, Nil)
-          adopt_session(model, choice, options, target, inbox, socket)
-        }
+        Ok(Nil) -> adopt_session(model, choice, options, target, inbox, socket)
       }
   }
 }

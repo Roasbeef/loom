@@ -20,7 +20,6 @@ import tui/command
 import tui/composer
 import tui/connection
 import tui/image_drop
-import tui/internal/ffi_bootstrap
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/markdown
@@ -330,46 +329,42 @@ pub fn session_selector_uses_database_identity_test() {
 }
 
 pub fn queued_session_result_wins_over_timeout_test() {
-  let inbox = process.new_subject()
-  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
-  let monitor = process.monitor(worker)
   let status =
-    sessions.Resolving(
-      session: "queued",
-      worker:,
-      monitor:,
-      inbox:,
-      frames: connection.new_inbox(),
-      deadline_ms: expired_deadline(),
+    sessions.start_with(
+      "queued",
+      fn(_frames) { Error("arrived before timeout") },
+      within: 5000,
     )
-  process.send(inbox, sessions.Refused("arrived before timeout"))
-  assert sessions.receive(status)
+  assert wait_for_switch(status, 5000)
     == Ok(sessions.Failed("queued", "arrived before timeout"))
-  process.kill(worker)
 }
 
 pub fn session_attempts_have_isolated_mailboxes_test() {
-  let stale = process.new_subject()
-  process.send(stale, sessions.Refused("stale result"))
-  let current = process.new_subject()
-  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
-  let status =
-    sessions.Resolving(
-      session: "new",
-      worker:,
-      monitor: process.monitor(worker),
-      inbox: current,
-      frames: connection.new_inbox(),
-      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
+  let stale =
+    sessions.start_with(
+      "stale",
+      fn(_frames) { Error("stale result") },
+      within: 5000,
     )
-  assert sessions.receive(status) == Error(Nil)
-  sessions.cancel(status)
+  let assert Ok(sessions.Failed("stale", "stale result")) =
+    wait_for_switch(stale, 5000)
+  let current =
+    sessions.start_with(
+      "new",
+      fn(_frames) {
+        process.sleep(5000)
+        Error("never")
+      },
+      within: 5000,
+    )
+  assert sessions.receive(current) == Error(Nil)
+  sessions.cancel(current)
 }
 
 // A subject delivers to the process that created it, and receiving on one
 // owned by another process panics. The frame inbox a replacement socket writes
 // to must therefore belong to the terminal from the moment the attempt starts,
-// not to the worker that opens the socket.
+// not to the task that opens the socket.
 pub fn session_switch_frames_are_owned_by_the_terminal_test() {
   let root = "build/tui-session-frames"
   let choice =
@@ -384,6 +379,7 @@ pub fn session_switch_frames_are_owned_by_the_terminal_test() {
       session_file: choice.session_file,
       server: root <> "/no-such-loomd",
       state_directory: root <> "/state",
+      config: "",
     )
   let status = sessions.start(choice, options)
   let assert sessions.Resolving(frames:, ..) = status
@@ -396,74 +392,63 @@ pub fn session_switch_frames_are_owned_by_the_terminal_test() {
 }
 
 pub fn failed_session_attempt_discards_queued_frames_test() {
-  let inbox = process.new_subject()
-  let frames = connection.new_inbox()
-  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
   let status =
-    sessions.Resolving(
-      session: "failed",
-      worker:,
-      monitor: process.monitor(worker),
-      inbox:,
-      frames:,
-      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
+    sessions.start_with(
+      "failed",
+      fn(frames) {
+        process.send(frames, connection.Connected)
+        process.send(frames, connection.Incoming("{}"))
+        Error("connect refused")
+      },
+      within: 5000,
     )
-  process.send(frames, connection.Connected)
-  process.send(frames, connection.Incoming("{}"))
-  process.send(inbox, sessions.Refused("connect refused"))
-  assert sessions.receive(status)
+  let assert sessions.Resolving(frames:, ..) = status
+  assert wait_for_switch(status, 5000)
     == Ok(sessions.Failed("failed", "connect refused"))
   assert connection.receive(frames) == Error(Nil)
-  process.kill(worker)
 }
 
 pub fn crashed_session_worker_becomes_a_typed_result_test() {
-  let inbox = process.new_subject()
-  let frames = connection.new_inbox()
-  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
   let status =
-    sessions.Resolving(
-      session: "crashed",
-      worker:,
-      monitor: process.monitor(worker),
-      inbox:,
-      frames:,
-      deadline_ms: ffi_bootstrap.monotonic_time_ms() + 5000,
+    sessions.start_with(
+      "crashed",
+      fn(frames) {
+        process.send(frames, connection.Connected)
+        process.kill(process.self())
+        Error("unreachable")
+      },
+      within: 5000,
     )
-  process.send(frames, connection.Connected)
-  process.kill(worker)
+  let assert sessions.Resolving(frames:, ..) = status
   let assert Ok(sessions.WorkerCrashed("crashed", reason)) =
     wait_for_switch(status, 5000)
-    as "a killed worker should surface as a crash"
+    as "a killed task should surface as a crash"
   assert string.contains(reason, "Killed")
   assert connection.receive(frames) == Error(Nil)
 }
 
+// The deadline is weft's: it kills the task and joins it before the outcome
+// is delivered, so by the time the terminal reads the timeout the socket the
+// task may have opened is already gone and its queued frames are dropped.
 pub fn timed_out_session_attempt_discards_late_results_test() {
-  let inbox = process.new_subject()
-  let frames = connection.new_inbox()
-  let worker = process.spawn_unlinked(fn() { process.sleep(5000) })
+  let alive = process.new_subject()
   let status =
-    sessions.Resolving(
-      session: "late",
-      worker:,
-      monitor: process.monitor(worker),
-      inbox:,
-      frames:,
-      deadline_ms: expired_deadline(),
+    sessions.start_with(
+      "late",
+      fn(frames) {
+        process.send(frames, connection.Connected)
+        process.send(alive, process.self())
+        process.sleep(5000)
+        Error("never")
+      },
+      within: 50,
     )
-  process.send(frames, connection.Connected)
-  assert sessions.receive(status)
+  let assert sessions.Resolving(frames:, ..) = status
+  let assert Ok(task) = process.receive(alive, 1000)
+  assert wait_for_switch(status, 5000)
     == Ok(sessions.Failed("late", "session startup timed out"))
   assert connection.receive(frames) == Error(Nil)
-  assert process.receive(inbox, 0) == Error(Nil)
-  assert process.is_alive(worker) == False
-}
-
-// BEAM monotonic time starts far below zero, so a literal `0` deadline is
-// decades in the future; an expired deadline must be derived from the clock.
-fn expired_deadline() -> Int {
-  ffi_bootstrap.monotonic_time_ms() - 1
+  assert process.is_alive(task) == False
 }
 
 fn wait_for_switch(
