@@ -36,7 +36,7 @@ repository,
 |---|---|---|
 | 1 | `packages/ext`, the extension seam, the manifest, the install pipeline, install records, discovery, `loom ext` | **Built** (#177, #178, #179, #182) |
 | 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **Built** (#196) |
-| 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Planned**; `protocol-change/012-hook-call.md` is proposed on `ext/phase-3-proposal` |
+| 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **In flight**. The bus, the runtime slots, the manifest and record halves are built (`client/extension/hooks.gleam`); the persistent satellite that answers a `hook_call` is the other half, and until it lands every invoker is `hooks.unwired()` |
 | 4 | Tier H: the harness-resident loader, the artifact import check, rollback | **Planned** (#32, #33) |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
 
@@ -172,7 +172,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:207`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:230`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -185,7 +185,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:168`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:191`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -385,7 +385,7 @@ about the *bytes that actually run*, and
 from reopening.
 
 The allowlist is **stored** in the record rather than recomputed
-(`extension/record.gleam:114`), and that is a decision rather than an
+(`extension/record.gleam:121`), and that is a decision rather than an
 accident. Recomputing it would mean an operator's yes silently followed
 the harness's current idea of the seam; storing it turns a widened seam
 into a question the operator gets asked again.
@@ -808,15 +808,42 @@ over a live channel. That is a `protocol-change/` proposal rather than
 drift, and it is written before the phase starts:
 `protocol-change/012-hook-call.md` is proposed on `ext/phase-3-proposal`.
 
-The harness side is one `weft/event_manager` per session with a handler
-per installed extension: an ordered list, each holding private state (its
-satellite handle, its request budget, its failure count), a broken one
-dropped and logged while its siblings carry on. Notifications
-(`session_start`, `before_agent_start`, `agent_end`, `agent_settled`) are
-`notify`; the gate (`tool_call`) is a `sync_notify` whose event carries a
-reply subject, so any `Block` wins after the fan-out returns. The two
-chained transforms (`context`, `tool_result`) are a fold rather than a
-fan-out, because each handler must see its predecessor's output.
+The harness side is built, and it is one `weft/event_manager` per session
+with a handler per installed extension: an ordered list, each holding
+private state (its name, the events it declared, its invoker, how many
+answers it has declined), a broken one dropped and logged while its
+siblings carry on. Notifications (`session_start`, `agent_end`,
+`agent_settled`) are `notify`; the two events that need an answer —
+`before_agent_start`, whose answer is an injection, and `tool_call`,
+whose answer is a verdict — are a `sync_notify` whose event carries a
+reply subject, drained after the fan-out returns, so any `Block` wins.
+The two chained transforms (`context`, `tool_result`) are a fold rather
+than a fan-out, because each handler must see its predecessor's output;
+they run on the caller's process and a failure there discards one
+transform rather than removing a handler, which the bus module states
+rather than leaves to be discovered.
+
+Where each event lands in the harness:
+
+| Event | Where it fires |
+|---|---|
+| `session_start` | `serve.assemble`, once the session's extension hosts are wired |
+| `before_agent_start` | `effects.Hooks.run_start`, appended after the harness's own digests; the text is fenced `<extension name=…>` and attributed by the harness, never by the extension |
+| `context` | `effects.Hooks.context`, a phase-3 slot on the frozen-in-shape hooks record, applied in `runtime/strand_runtime` to the projection a generation attempt is about to send. A transform that grows the context past its allowance is discarded and logged |
+| `tool_call` | `effects.ToolSurface.clear`, **after** the built-in clearance; a `Block` becomes the `ClearanceRefused` the driver turns into the in-band error the model reads, reading `<extension> blocked <tool>: <reason>` |
+| `tool_result` | `effects.ToolSurface.run`, over the settled reply before the driver commits it. A transform that changes which call the reply settles, or whether it failed, is discarded whole |
+| `agent_end` | `effects.Hooks.run_end`, beside the follow-up the harness was already placing |
+| `agent_settled` | nowhere yet; see the design note's table for why it is not faked |
+
+Every payload crosses as a msgpack string holding JSON, the shape
+`cap/ext` already uses for a tool call's arguments and the only one the
+extension seam can read: it admits `gleam/json` and no msgpack decoder.
+A conversation message is `core/codec`'s durable JSON, decoded back
+through the same total decoder, so a transform that no longer decodes is
+discarded rather than half-applied. `client/extension/hooks.gleam`'s
+module documentation is the normative table of the seven shapes, and
+`packages/ext/src/ext/hook.gleam` is the extension's side of the same
+wire.
 
 The vocabulary is pi's where the moment and the handler's power match,
 and diverges openly where they do not. The sharpest divergence:
@@ -859,9 +886,11 @@ exists today as an allowlisted stub, and this route retires it.
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:207`), the closed key lists, the name grammars, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:230`), the closed key lists, the name grammars, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:188`), the staging discipline, the generated satellite entry. |
-| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:114`), `terms`, `root_for`. |
+| `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:121`), `terms`, `root_for`. Format 2 carries the hooks an operator approved. |
+| `client/extension/hooks.gleam` | The hook bus: the `Event` type, `Invoker`/`HookFailure`, the five fan-out events, the two folds, the fence an injection is rendered in, and `wire`, which composes the bus into a session's `Effects`. |
+| `packages/ext/src/ext/hook.gleam` | The extension's side: the typed `Hook` behaviours, `Verdict`, and the JSON marshalling of every event's payload. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
 | `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
 | `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:157`), the per-execution `ceilings` (`extension/policy.gleam:199`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
