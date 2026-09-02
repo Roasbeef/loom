@@ -690,6 +690,73 @@ and the per-event payload shapes are left open on purpose at both ends —
 costs a change in the bus and not in the transport under it. That is the
 next wave, and the section below says what it is.
 
+## Dispatch
+
+**Built** (#196). Discovery answers what is installed; dispatch is what
+turns one of those answers into a tool the model can call and then into
+an execution. The path runs boot to outcome in one direction, and every
+step of it is a value the step before produced.
+
+**At boot**, `serve.assemble` reads `installed.discover` for the
+extensions root before it builds the registry
+(`extension_contributions` at `client/serve.gleam:1354`). A `Refused`
+is logged and registers nothing; a `Ready` on a host with no code-mode
+toolchain is logged and registers nothing too, because no `erl` means no
+satellite to boot and a tool definition that can only fail still costs a
+place in the provider's cached prefix on every request.
+
+**Everything else becomes a contribution.** `dispatch.tools`
+(`extension/dispatch.gleam:160`) turns the record and the manifest into
+`tools.Tool` values, and the boot appends one
+`Contribution(Extension(name), tools)` after the built-ins. From there
+the registry knows nothing special: an extension tool is dispatched by
+name through `tool.dispatch` like every other, and the collision rule
+that refuses a boot when two contributions claim one name is the same
+rule that guards `bash`.
+
+**A call is one satellite execution of the artifact the install
+compiled.** No build happens — that was the install's job — so the call
+pays a node launch and nothing else. The declared tool timeout is
+clamped: `within` (`extension/dispatch.gleam:365`) takes the minimum of
+the manifest's `timeout_ms` and the operator's `max_within_ms`, because
+an install is not a way to raise how long this host will hold a strand.
+
+**The node pulls its own call.** The satellite does not receive the tool
+name in its environment; it asks, once, over the capability channel, and
+the extension seam's `ext.call` arm answers with the tool, the JSON
+arguments, the strand and the deadline (`routing` at
+`extension/seam.gleam:151`). A second ask is refused by a lifetime
+ceiling of one admission, since a satellite is launched to serve exactly
+one call.
+
+**A `net.request` is judged by the manifest an operator approved.**
+`policy.egress_for` (`extension/policy.gleam:157`) is the whole
+translation: the manifest's hosts, methods and secret *names* verbatim,
+and `redirects`, `timeout_ms` and `trust` fixed by the harness, because
+none of the three is something an author should be able to state about
+themselves. Two of the manifest's numbers are requests rather than
+settings — `max_response_bytes` is clamped to the harness ceiling
+(`max_response_bytes` at `extension/policy.gleam:67`, the install
+fetch's own archive cap, so the two egress callers share one bound), and
+`requests_per_call` becomes a per-execution admission ceiling alongside
+`ext.call`'s one (`ceilings` at `extension/policy.gleam:199`). A
+manifest with no `[net]` table is `ReachesNothing`, refused
+`network_off` rather than refused against an allowlist nobody wrote.
+
+**The outcome is settled into a `ToolOutcome`.** `settle`
+(`extension/dispatch.gleam:556`) reads the terminal `outcome` frame —
+content blocks, an optional `terminate`, or an error naming what went
+wrong — and hands back the same type a built-in tool hands back, so the
+strand's driver cannot tell which kind of tool it just ran.
+
+Two things the dispatch deliberately does *not* do. A `Ctx.grants` an
+escalation approved for *this call* is not composed onto the run phase:
+the operator approved this extension once, at install, having read a
+manifest, and a mid-run widening would run it past the terms of that
+approval. And no arm here adds to the node's environment, which is why
+the credential claim below is a claim about the whole path rather than
+about one arm of it.
+
 ## Egress, and the key that never enters the jail
 
 `cap/net` exists and refuses everything, because the design's egress

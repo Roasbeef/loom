@@ -455,6 +455,24 @@ and the deadline bounds that.
 All four phases are commissioned; phase 2 is the milestone the user
 named and phase 4 exists so that the design does not say "never".
 
+**Status, and one divergence this note did not anticipate.** Phases 1
+and 2 are built and merged — #175, #177, #178, #179 and #182 for the
+install pipeline, the manifest, the seam and `loom ext`, and #196 for
+boot registration, jailed dispatch and the broker-served `net.request`.
+Phase 2's exit criteria are met, the last of them by a real drive on
+2026-09-02: `loom ext install
+https://github.com/Roasbeef/loom-web-search` over codeload, and a Kimi K3
+session that called `web_search` and answered from Brave's results with
+`BRAVE_API_KEY` in the server's environment and nowhere else.
+`docs/architecture/extensions.md` is what the tree holds, section by
+section. The divergence: this note adopted pi's rule that a tool without
+a `prompt_snippet` is silently omitted from the available-tools section,
+and the manifest decoder instead makes the field **required**, so a tool
+that would be invisible is refused at install rather than installed and
+quietly unlisted. A tool the model cannot see is a bug the author cannot
+observe, and an install is the one moment where the author is still
+present to read the refusal.
+
 **Phase 5, named but not commissioned: LSP and DAP as extensions.** A
 language server or a debug adapter is a long-lived JSON-RPC process over
 stdio plus a small tool set (`lsp_definition`, `lsp_references`,
