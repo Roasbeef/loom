@@ -28,11 +28,17 @@
 //// `client/rulescan` keeps a `Progress` map between hints — a cursor, a
 //// hold flag — because it must not re-scan a whole branch on every
 //// commit. A schedule has no branch to scan: whether an occurrence is
-//// due, how many times a schedule has fired, and how long ago the first
-//// fire was are all questions a bounded prefix scan of the write-once
-//// fire-marks (`read_prefix`, below, under
-//// `client/schedule.fired_key_prefix`) answers exactly, every time. So
-//// this actor holds nothing across ticks beyond the static, parsed
+//// due and how many times a schedule has fired are both questions a
+//// bounded prefix scan of the write-once fire-marks (`read_prefix`,
+//// below, under `client/schedule.fired_key_prefix`) answers exactly,
+//// every time. The one question those marks cannot answer is when a
+//// schedule's `expires_after_s` window opened, because a schedule that
+//// has never fired has no earliest mark to read it off — so that
+//// instant is recorded durably instead, once per schedule ever, in the
+//// cell `client/schedule.seen_key` names (`observed_since`, below).
+//// That is a durable fact and not actor state, so the paragraph's claim
+//// survives it: this actor holds nothing across ticks beyond the
+//// static, parsed
 //// `List(client/schedule.Schedule)` it started with — a restart loses
 //// nothing, because there was nothing to lose, and the first tick after
 //// a restart (armed immediately, at start) re-derives the same due/not
@@ -77,14 +83,17 @@
 //// (`runtime/api.send_to_strand_marking`, landing `Started`), which is
 //// safe only because every recurring schedule expires (`client/schedule`
 //// bounds `max_fires`/`expires_after_s` unconditionally) — see the
-//// design note's "The crux" section for the full argument. The expiry
-//// clock only starts on a schedule's first landed fire (`expires_after_s`
-//// counts from the earliest fired-mark, per `client/schedule`), so a
-//// schedule that never once fires — held forever on a strand nobody ever
-//// opens a run on — never expires either: it keeps ticking, and keeps
-//// costing nothing durable, for the life of the session. That is a cost
-//// question, not a safety one: no fires means no liveness extension and
-//// no rows, which is the property `wake = true` actually needs.
+//// design note's "The crux" section for the full argument. Holding
+//// costs nothing durable, and it does not postpone the end either: the
+//// expiry clock starts when this scanner first *observes* a schedule,
+//// not when one first fires, so a `wake = false` heartbeat held forever
+//// on a strand nobody ever opens a run on stops costing a tick once
+//// `expires_after_s` has passed, exactly like a schedule that fired
+//// every slot. That is what issue #157 changed. The clock used to start
+//// at the earliest fired-mark, which gave a schedule that never landed
+//// one no clock at all: it ticked for the life of the session, and
+//// `expires_after_s` named a week to the operator that would never
+//// begin.
 ////
 //// ## Isolation
 ////
@@ -93,8 +102,10 @@
 //// `runtime.session.store`), never through the writer's mailbox — the
 //// same door `client/rulescan` reads through and for the same reason: a
 //// slow tick's up-to-`max_schedules` bounded scans must never queue in
-//// front of a settlement. The only thing this actor sends the writer is
-//// the fire itself — an ordinary marked admission — on its own process.
+//// front of a settlement. The writer hears exactly two things from this
+//// actor, both on its own process: the fire itself — an ordinary marked
+//// admission — and, once per schedule ever, the expect-absent claim of
+//// that schedule's observation instant (`observed_since`).
 //// It is a restartable service (`client/serve`'s service supervisor):
 //// killing it mid-tick costs the tick in flight and nothing else, and the
 //// replacement's first tick (armed at start, per the module doc above)
@@ -360,8 +371,9 @@ fn scan(state: State) -> actor.Next(State, Message) {
 // ticks, and this actor is restartable, so a cached list would be a
 // second source of truth that a restart, a cancellation, or a create on
 // another incarnation could each make stale. The scan is one indexed
-// prefix read over a list bounded by `schedule.max_model_schedules`,
-// against a tick that never runs tighter than `schedule.min_interval_s`.
+// prefix read, against a tick that never runs tighter than
+// `schedule.min_interval_s`, over a list whose bound `model_schedules`
+// below states and argues.
 //
 // A failed read yields the operator's schedules alone rather than an
 // empty list: a transient store fault must not look like "the model
@@ -389,6 +401,17 @@ type Due {
   Due(schedule: Schedule, origin: schedule.Origin)
 }
 
+// Every model-created schedule this session currently holds, decoded
+// from the config cells under one prefix.
+//
+// The read is bounded by `schedule.max_model_schedules`, and that is
+// true only because cancelling a schedule *deletes* its config cell
+// rather than overwriting it with a tombstone. The ceiling counts live
+// schedules, so a cancelled one leaving a row behind would let this
+// prefix grow without bound while the ceiling still read as satisfied,
+// and every tick reads the whole of it (issue #164). A cell that does
+// not decode is dropped rather than failing the tick: a schedule stored
+// by a build with looser bounds is not a schedule that runs today.
 fn model_schedules(state: State) -> List(Schedule) {
   case read_prefix(state, schedule.config_key_prefix) {
     Error(Nil) -> []
@@ -558,7 +581,16 @@ fn interval_with_marks(
       let #(key, _value) = pair
       key |> string.drop_start(string.length(prefix)) |> int.parse
     })
-  case schedule.interval_expired(occurrences:, expiry:, now_s:) {
+
+  // The age half of expiry needs an instant these marks cannot supply,
+  // so it comes from the schedule's own seen cell — claimed here if this
+  // is the first tick that ever saw this schedule. It is read before the
+  // expiry test because the test needs it, so a schedule that expires on
+  // `max_fires` at the very first tick that sees it does leave one seen
+  // cell behind: one row, and no further ticks to write another.
+  let since_s = observed_since(state, due, now_s)
+
+  case schedule.interval_expired(occurrences:, expiry:, now_s:, since_s:) {
     True -> Expired
     False -> {
       let occurrence = schedule.interval_occurrence(seconds:, now_s:)
@@ -566,6 +598,120 @@ fn interval_with_marks(
       Active(next_delay_ms: next_interval_delay_ms(occurrence, seconds, now_ms))
     }
   }
+}
+
+// The instant this schedule's `expires_after_s` window opened: the epoch
+// second at which a running scanner first observed it, read off the
+// store or — on that first observation — claimed here.
+//
+// One invariant carries the whole mechanism: **the cell is written at
+// most once per `{strand, name}`, so every reader of it agrees on one
+// instant** — this tick, every later tick, and every later incarnation
+// alike. Two things enforce it. The write is an expect-absent
+// compare-and-set, so a writer racing through the gap between this
+// tick's read and its write loses instead of overwriting; and the loser
+// then re-reads the winner's value rather than keeping the one it
+// proposed, so the tick that lost the race agrees too. Nothing here ever
+// writes the cell a second time, which is why an operator's schedule and
+// a model's need no separate treatment: whichever store the schedule
+// came from, its clock started when this scanner first saw it.
+fn observed_since(state: State, due: Due, now_s: Int) -> Int {
+  let key =
+    schedule.seen_key(strand: due.schedule.target, name: due.schedule.name)
+  case read_fact(state, key) {
+    Some(recorded) -> recorded_since(state, key, recorded, now_s)
+    None -> claim_since(state, key, now_s)
+  }
+}
+
+// A cell that is present but does not decode cannot have come from this
+// scanner — the key is reserved, so nothing else may write it — and
+// carries no honest instant to recover. It is read as an observation
+// this tick failed to establish rather than overwritten with `now_s`: a
+// schedule's life must not be re-based because one tick met a corrupt
+// cell.
+fn recorded_since(
+  state: State,
+  key: String,
+  recorded: JsonValue,
+  now_s: Int,
+) -> Int {
+  case schedule.decode_seen(recorded) {
+    Ok(since_s) -> since_s
+    Error(Nil) ->
+      unrecorded(state, key, "the stored instant did not decode", now_s)
+  }
+}
+
+// The first observation, claimed with an expect-absent compare-and-set
+// rather than a blind write, so two incarnations ticking across the same
+// gap cannot each record their own idea of when this schedule began.
+fn claim_since(state: State, key: String, now_s: Int) -> Int {
+  case
+    api.put_reserved_fact_expecting(
+      state.runtime,
+      key,
+      schedule.seen_value(since_s: now_s),
+      expected: None,
+    )
+  {
+    Ok(_seq) -> now_s
+    Error(error) -> unclaimed_since(state, key, error, now_s)
+  }
+}
+
+// Why a claim did not land, and what each answer means for this tick.
+fn unclaimed_since(
+  state: State,
+  key: String,
+  error: api.ApiError,
+  now_s: Int,
+) -> Int {
+  case error {
+    // Another incarnation claimed the cell in the gap between this
+    // tick's read and its write. Its instant is the one every reader has
+    // to agree on, so it is read back rather than assumed to equal the
+    // `now_s` this tick proposed.
+    api.FactConflict(..) -> reclaimed_since(state, key, now_s)
+
+    api.AcceptRejected(..)
+    | api.QueueRejected(..)
+    | api.ReadFailed(..)
+    | api.CommitFailed(..)
+    | api.SessionStolen(..)
+    | api.RaceLost
+    | api.ReservedFactKey(..)
+    | api.UnreservedFactKey(..)
+    | api.EscalationExists(..)
+    | api.EscalationNotFound(..)
+    | api.EscalationWrongStatus(..) ->
+      unrecorded(state, key, string.inspect(error), now_s)
+  }
+}
+
+// The instant the winner of a lost claim recorded. Read back, never
+// inferred: the two ticks proposed different values and only the one that
+// landed is this schedule's age.
+fn reclaimed_since(state: State, key: String, now_s: Int) -> Int {
+  case read_fact(state, key) {
+    Some(recorded) -> recorded_since(state, key, recorded, now_s)
+    None -> unrecorded(state, key, "the winning claim was not readable", now_s)
+  }
+}
+
+// An observation this tick could neither read nor record. `now_s` stands
+// in for this tick alone: nothing durable is written, nothing expires by
+// age (`now_s - now_s` is zero and `expires_after_s` is at least one),
+// and the next tick tries the claim again. A store fault must not
+// shorten a schedule's life, and it must not silently lengthen one
+// either — hence a warning rather than silence, because a cell that
+// never lands is an age bound that never arrives.
+fn unrecorded(state: State, key: String, reason: String, now_s: Int) -> Int {
+  log.warn(state.options.logger, "schedule.seen_unrecorded", [
+    field.text(key: "key", value: key),
+    field.text(key: "reason", value: reason),
+  ])
+  now_s
 }
 
 // The current slot's occurrence, fired if its mark is still absent. The
@@ -813,6 +959,13 @@ fn report(state: State, sched: Schedule, verdict: Fire) -> Nil {
 // genuinely faulting the commit fails too (`Failed`, retried on the
 // held/failed floor). Either way the CAS is what stays safe, not this
 // read; nothing here needs the two helpers' error handling to match.
+//
+// `observed_since` reads through this same door and the argument holds
+// there for the same reason: a fault read as absence proposes a claim,
+// the claim's own expect-absent CAS refuses it if the cell really
+// exists (`FactConflict`, whose handler re-reads), and a store faulting
+// on both leaves the tick measuring age from `now_s` — which expires
+// nothing and writes nothing.
 fn read_fact(state: State, key: String) -> Option(JsonValue) {
   storage.get_register(state.runtime.session.store, register.FactCustom, key)
   |> result.unwrap(None)

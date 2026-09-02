@@ -454,6 +454,52 @@ pub fn distinct_targets_produce_distinct_key_prefixes_test() {
   assert one != other
 }
 
+// --- seen_key / seen_value / decode_seen --------------------------------
+
+pub fn the_seen_key_is_reserved_and_addressable_test() {
+  let key = schedule.seen_key(strand: "main", name: "heartbeat")
+  assert key == "schedule/seen/main/heartbeat"
+  assert string.starts_with(key, "schedule/")
+}
+
+// The three shapes under `schedule/` are kept apart by their second
+// segment alone, so none may be a prefix of another: a seen cell read as
+// a fired-mark would say an occurrence was spent that never was, and a
+// fired-mark read as a seen cell would restart an age clock.
+pub fn the_seen_key_is_disjoint_from_the_mark_and_config_keys_test() {
+  let seen = schedule.seen_key(strand: "main", name: "heartbeat")
+  let marks = schedule.fired_key_prefix(strand: "main", name: "heartbeat")
+  let config = schedule.config_key(strand: "main", name: "heartbeat")
+  assert !string.starts_with(seen, marks)
+  assert !string.starts_with(seen, schedule.config_key_prefix)
+  assert !string.starts_with(config, seen)
+  assert !string.starts_with(marks, seen)
+}
+
+pub fn distinct_targets_produce_distinct_seen_keys_test() {
+  assert schedule.seen_key(strand: "main", name: "heartbeat")
+    != schedule.seen_key(strand: "sub:main/child", name: "heartbeat")
+}
+
+pub fn the_seen_value_round_trips_through_its_decoder_test() {
+  assert schedule.decode_seen(schedule.seen_value(since_s: 1_700_000_000))
+    == Ok(1_700_000_000)
+  assert schedule.decode_seen(schedule.seen_value(since_s: 0)) == Ok(0)
+}
+
+// Total on junk, like every other decoder at a durability boundary: a
+// cell that is not an epoch second yields nothing rather than a number
+// the scanner would measure a schedule's whole life against.
+pub fn decode_seen_refuses_anything_that_is_not_an_epoch_second_test() {
+  assert schedule.decode_seen(json.Null) == Error(Nil)
+  assert schedule.decode_seen(json.String("1700000000")) == Error(Nil)
+  assert schedule.decode_seen(json.Float(1.5)) == Error(Nil)
+  assert schedule.decode_seen(json.Bool(True)) == Error(Nil)
+  assert schedule.decode_seen(json.Array([json.Int(0)])) == Error(Nil)
+  assert schedule.decode_seen(json.Object([#("since_s", json.Int(0))]))
+    == Error(Nil)
+}
+
 // --- interval occurrence arithmetic ------------------------------------
 //
 // Direct, deterministic tests of the pure functions `client/schedulescan`
@@ -507,6 +553,7 @@ pub fn expiry_is_reached_by_fire_count_alone_test() {
     occurrences: [0, 60],
     expiry: schedule.Expiry(max_fires: 2, expires_after_s: 604_800),
     now_s: 120,
+    since_s: 0,
   )
 }
 
@@ -515,6 +562,7 @@ pub fn expiry_is_reached_by_age_alone_test() {
     occurrences: [0],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 100),
     now_s: 101,
+    since_s: 0,
   )
 }
 
@@ -523,14 +571,44 @@ pub fn expiry_is_not_reached_below_either_bound_test() {
     occurrences: [0],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     now_s: 120,
+    since_s: 0,
   )
 }
 
-pub fn a_schedule_that_has_never_fired_is_never_expired_by_age_test() {
-  assert !schedule.interval_expired(
+// Issue #157, pinned from the other side. Nothing has ever fired — the
+// shape a `wake = false` heartbeat held on a strand nobody opens a run
+// on takes — and the window it was given has closed all the same,
+// because the clock runs from the observation rather than from a fire
+// that never happened. The predecessor of this test asserted the
+// opposite and was the bug's own witness.
+pub fn a_schedule_that_never_fired_still_expires_by_age_test() {
+  assert schedule.interval_expired(
     occurrences: [],
-    expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 1),
-    now_s: 1_000_000,
+    expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+    now_s: 604_800,
+    since_s: 0,
+  )
+}
+
+pub fn age_is_measured_from_first_observation_not_first_fire_test() {
+  // Every mark is recent, so the earliest of them is young; the schedule
+  // itself was first seen a week ago, and that is the clock the bound
+  // reads.
+  assert schedule.interval_expired(
+    occurrences: [600_000, 600_060],
+    expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+    now_s: 604_800,
+    since_s: 0,
+  )
+
+  // The reverse, which is what stops the fix from being "expire sooner":
+  // an old mark under the same prefix must not end a schedule this
+  // scanner only just observed.
+  assert !schedule.interval_expired(
+    occurrences: [0, 60],
+    expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+    now_s: 604_800,
+    since_s: 604_700,
   )
 }
 
@@ -772,8 +850,12 @@ pub fn a_schedule_survives_the_round_trip_test() {
   assert schedule.decode(schedule.encode(one_shot)) == Ok(one_shot)
 }
 
-pub fn a_cancelled_cell_is_not_a_schedule_test() {
-  assert schedule.decode(schedule.cancelled_value) == Error(Nil)
+// Cancellation deletes the config cell rather than tombstoning it, so
+// nothing writes a null here any more — but `decode` is a total decoder
+// at a durability boundary and a null cell is one of the values it may
+// meet, so it still owes an answer.
+pub fn a_null_cell_is_not_a_schedule_test() {
+  assert schedule.decode(json.Null) == Error(Nil)
 }
 
 // The decoder re-checks the bounds rather than trusting what was stored,

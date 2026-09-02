@@ -159,6 +159,13 @@ body = "Never force-push a shared branch. Open a new branch instead."
 # one-shot needs neither key and refuses both: it fires once by
 # construction.
 #
+# `expires_after_s` is counted from when a running server first loads the
+# schedule — from creation, for one the model made — and NOT from its
+# first fire. So a schedule that never manages to fire at all still ends
+# after its window: one that only steers, on a strand where no run ever
+# opens, stops costing anything once the window closes rather than
+# waiting for a fire that may never come.
+#
 # Each fire is durable and exactly-once: a crash between deciding to fire
 # and committing cannot double-fire on restart. A window missed because
 # the server was not running coalesces to at most ONE late fire, marked

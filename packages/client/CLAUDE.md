@@ -447,9 +447,10 @@ over one session file. WP-L.
 - `client/schedule.{Schedule, Timing, Expiry, Wake, Lateness, Policy,
   parse, parse_policy,
   default_policy, policy_opens_the_door, wake_under, build,
-  encode, decode, config_key, config_key_prefix, cancelled_value,
+  encode, decode, config_key, config_key_prefix,
   parse_instant, render_instant, fired_key,
-  fired_key_prefix, fired_value, injection, interval_occurrence,
+  fired_key_prefix, fired_value, seen_key, seen_value, decode_seen,
+  injection, interval_occurrence,
   interval_late, interval_expired, max_schedules, max_model_schedules,
   min_interval_s,
   max_name_length, max_body_length, max_target_length,
@@ -483,7 +484,21 @@ over one session file. WP-L.
   active, defaulted when unset, and whichever is reached first ends the
   schedule — the guardrail that caps one schedule's durable fire-mark
   footprint at exactly 1,000 rows and makes `WakesIdle` (below) safe to
-  offer at all. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
+  offer at all. The two bounds read two different durable facts.
+  `max_fires` counts the fired-marks; `expires_after_s` is measured from
+  `since_s`, **the instant the scanner first observed the schedule**,
+  which it records once in the cell `seen_key` names (`seen_value`,
+  `decode_seen`) — a third corner of `schedule/`, disjoint from the
+  `fired/` marks and the `config/` cells by its second segment, and
+  unreachable by `put_fact` like both. Measuring age from the earliest
+  fired-mark, which is how this shipped, gave a schedule that never
+  landed a fire no clock at all: a steer-only heartbeat on a strand
+  nobody opens a run on ticked for the life of the session while
+  `expires_after_s` read to an operator as a week (issue #157). The
+  cancellation tombstone is gone with it — `cancelled_value` no longer
+  exists, because cancelling a model-created schedule now deletes its
+  config cell (`api.delete_reserved_fact`), which is what keeps
+  `config_key_prefix` a list of live schedules. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
   `OnTime | Late`: both are two-variant types rather than the `Bool`s
   they were, because each is read at one end and written at another and
   neither name carries its own polarity. The TOML `wake` key, the stored
@@ -537,7 +552,19 @@ over one session file. WP-L.
   (`client/schedule.fired_key_prefix`) rather than through the writer's
   mailbox — the same isolation `client/rulescan`'s direct reads give it,
   for the same reason: a slow tick must never queue in front of a
-  settlement. The same "durable-derived beats durable-stored" argument
+  settlement. The one fact the marks cannot supply is when a schedule's
+  `expires_after_s` window opened — a schedule that never fired has no
+  earliest mark — so the scanner is also the **single writer** of that
+  schedule's `client/schedule.seen_key` cell, and claiming it is its only
+  write besides the fire itself. `observed_since` reads the cell off the
+  store like a mark and, finding it absent, claims it with
+  `api.put_reserved_fact_expecting(expected: None)`; a `FactConflict`
+  means another incarnation won the gap, so the winner's instant is read
+  back rather than assumed. The cell is written at most once per
+  `{strand, name}` — the invariant every reader of it rests on — and a
+  store fault that leaves it unrecorded logs `schedule.seen_unrecorded`
+  and measures that one tick from `now`, which expires nothing: a fault
+  must neither shorten a schedule's life nor lengthen it. The same "durable-derived beats durable-stored" argument
   keeps `client/rulescan`'s cursor a checkpoint rather than a source of
   truth.
   A fire is one `api.steer_marking` when `Schedule.wake` is `SteersOnly`

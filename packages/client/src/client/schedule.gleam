@@ -80,6 +80,19 @@
 //// carries no `Expiry` at all: its occurrence count is 1 by
 //// construction, so there is nothing left for a bound to protect.
 ////
+//// **The age bound counts from when a running scanner first observed
+//// the schedule**, not from its first fire. `client/schedulescan`
+//// records that instant once, durably, in the cell `seen_key` names,
+//// and `interval_expired` measures `expires_after_s` against it. The
+//// alternative — measuring from the earliest fired-mark — left a
+//// schedule that had never once landed a fire with no clock at all, so
+//// a `wake = false` heartbeat held forever on a strand nobody opens a
+//// run on ticked for the life of the session, and `expires_after_s`
+//// promised an operator a week that would never begin (issue #157).
+//// Counting from first observation is what makes the key mean what it
+//// reads as: the schedule ends after its window whether anything ever
+//// fired or not.
+////
 //// ## `wake`: opt-in, and why it may default to something rules cannot
 ////
 //// A rule may only steer an already-open run, because content arrives
@@ -791,10 +804,12 @@ pub fn fired_key(
 
 /// The prefix every one of one schedule's fired-marks on one strand
 /// shares — `fired_key` with the occurrence number left off. This is
-/// what `client/schedulescan` scans with `runtime/api.reserved_facts` to
-/// count a schedule's total fires and find its earliest occurrence,
-/// which is the whole of how expiry is computed: no separate counter,
-/// no cached "started at," just a bounded scan of the marks themselves.
+/// what `client/schedulescan` scans to count a schedule's fires and to
+/// see whether the immediately preceding slot landed one — `max_fires`
+/// and `Lateness` out of a single bounded scan, with no separate
+/// counter. Expiry's other half, the age bound, is not derivable from
+/// these marks at all: a schedule that has never fired has none. That
+/// instant lives in its own cell instead (`seen_key`).
 ///
 /// ## Examples
 ///
@@ -819,6 +834,82 @@ pub fn fired_key_prefix(strand strand: String, name name: String) -> String {
 ///
 pub fn fired_value(schedule: Schedule) -> JsonValue {
   json.String(schedule.name)
+}
+
+/// The reserved key holding the epoch second a schedule was first
+/// observed by a running scanner — where its `expires_after_s` clock
+/// starts.
+///
+/// `schedule/seen/…`, its own corner of the namespace, disjoint from the
+/// `schedule/fired/…` marks and the `schedule/config/…` cells by its
+/// second segment. That is the argument `config_key` makes, arriving a
+/// third time: each of the three shapes means a different thing, is
+/// written under a different rule — a mark once per occurrence, a config
+/// cell once per creation, this one once per schedule, ever — and
+/// sharing a prefix would let a malformed key of one shape be read as
+/// another. It sits under `runtime/api.schedule_fact_prefix` like the
+/// other two, so it is unreachable by `put_fact`: a model can neither
+/// forge an observation instant nor delete one to restart its own
+/// schedule's clock.
+///
+/// One writer, `client/schedulescan`, claims this cell with an
+/// expect-absent compare-and-set on the first tick that sees the
+/// schedule and never writes it again — so every reader of it, on any
+/// later tick or any later incarnation, agrees on one instant. It is
+/// keyed on `{strand, name}` exactly as the marks are, which is what
+/// makes it the same clock for the operator's schedules and the model's
+/// alike.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.seen_key(strand: "main", name: "heartbeat")
+///   == "schedule/seen/main/heartbeat"
+/// ```
+///
+pub fn seen_key(strand strand: String, name name: String) -> String {
+  api.schedule_fact_prefix <> "seen/" <> strand <> "/" <> name
+}
+
+/// The seen cell's stored value: the epoch second of the observation,
+/// and nothing else. The key already carries the strand and the name, so
+/// the instant is the whole of what this cell has to say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.seen_value(1_700_000_000) == json.Int(1_700_000_000)
+/// ```
+///
+pub fn seen_value(since_s since_s: Int) -> JsonValue {
+  json.Int(since_s)
+}
+
+/// Reads a seen cell back, total: anything that is not a plain epoch
+/// second is `Error(Nil)`, which the scanner treats as an observation it
+/// has not recorded rather than as an instant to measure a life against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.decode_seen(schedule.seen_value(since_s: 42)) == Ok(42)
+/// ```
+///
+/// ```gleam
+/// assert schedule.decode_seen(json.String("42")) == Error(Nil)
+/// ```
+///
+pub fn decode_seen(value: JsonValue) -> Result(Int, Nil) {
+  case value {
+    json.Int(value: since_s) -> Ok(since_s)
+
+    json.Object(..)
+    | json.Array(..)
+    | json.String(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Null -> Error(Nil)
+  }
 }
 
 // --- interval occurrence arithmetic --------------------------------------
@@ -919,10 +1010,22 @@ pub fn interval_late(
   }
 }
 
-/// Whether a recurring schedule's expiry has been reached against what
-/// has actually fired: both bounds, always, earliest wins — the same
-/// rule `parse` enforces on the *configured* values, checked here against
-/// the durable fired-marks themselves.
+/// Whether a recurring schedule's expiry has been reached: both bounds,
+/// always, earliest wins — the same rule `parse` enforces on the
+/// *configured* values, checked here against what the store actually
+/// holds.
+///
+/// The two bounds read two different durable facts. `max_fires` counts
+/// the schedule's fired-marks, which is exactly what has been spent.
+/// `expires_after_s` is measured from `since_s`, the instant a running
+/// scanner first observed this schedule (`seen_key`) — *not* from its
+/// earliest fired-mark, which is how this was first written and which
+/// gave a schedule that had never landed a fire no age clock at all
+/// (issue #157). A held `wake = false` heartbeat on a strand nobody
+/// opens a run on is exactly that schedule, and it ticked forever.
+/// Reading the start instant off a cell written once, when the schedule
+/// was first seen, makes the bound mean the window an operator reads it
+/// as and ends a schedule that never fires.
 ///
 /// ## Examples
 ///
@@ -931,6 +1034,17 @@ pub fn interval_late(
 ///   occurrences: [0, 60],
 ///   expiry: schedule.Expiry(max_fires: 2, expires_after_s: 604_800),
 ///   now_s: 120,
+///   since_s: 0,
+/// )
+/// ```
+///
+/// ```gleam
+/// // never fired, and its window has closed: expired all the same
+/// assert schedule.interval_expired(
+///   occurrences: [],
+///   expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 100),
+///   now_s: 101,
+///   since_s: 0,
 /// )
 /// ```
 ///
@@ -939,6 +1053,7 @@ pub fn interval_late(
 ///   occurrences: [0],
 ///   expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
 ///   now_s: 120,
+///   since_s: 0,
 /// )
 /// ```
 ///
@@ -946,24 +1061,18 @@ pub fn interval_expired(
   occurrences occurrences: List(Int),
   expiry expiry: Expiry,
   now_s now_s: Int,
+  since_s since_s: Int,
 ) -> Bool {
   // "Has this many-or-more fired" only needs the elements up to the
   // bound, not a full walk to count them (lint R5) — the same
   // `too_long`-shaped idiom `client/rules` uses for a string length.
   case list.drop(occurrences, int.max(expiry.max_fires - 1, 0)) != [] {
     True -> True
-    False ->
-      case earliest(occurrences) {
-        None -> False
-        Some(first) -> now_s - first >= expiry.expires_after_s
-      }
-  }
-}
 
-fn earliest(occurrences: List(Int)) -> Option(Int) {
-  case occurrences {
-    [] -> None
-    [first, ..rest] -> Some(list.fold(rest, first, int.min))
+    // The age bound needs no scan at all now that the start instant is
+    // recorded rather than inferred: one subtraction against the cell
+    // the scanner claimed the first time it saw this schedule.
+    False -> now_s - since_s >= expiry.expires_after_s
   }
 }
 
@@ -1175,13 +1284,22 @@ pub const max_model_schedules = 16
 
 /// The reserved key one model-created schedule's config lives under.
 ///
-/// `schedule/config/…`, disjoint from the `schedule/fired/…` marks: a
-/// fired-mark says an occurrence is spent and is written once, a config
-/// cell says a schedule exists and is overwritten when it is cancelled.
-/// Sharing a prefix would let a malformed key of one shape be read as the
-/// other. Both sit under `runtime/api.schedule_fact_prefix`, so neither
-/// is reachable by `put_fact` — a model reaches this cell through the
-/// tool seam, which is harness code, and never by writing a fact itself.
+/// `schedule/config/…`, disjoint from both the `schedule/fired/…` marks
+/// and the `schedule/seen/…` instants: a fired-mark says an occurrence
+/// is spent, a seen cell says when a schedule's age clock started, and a
+/// config cell says a schedule exists. Sharing a prefix would let a
+/// malformed key of one shape be read as another. All three sit under
+/// `runtime/api.schedule_fact_prefix`, so none is reachable by
+/// `put_fact` — a model reaches this cell through the tool seam, which
+/// is harness code, and never by writing a fact itself.
+///
+/// The cell exists for exactly as long as the schedule does: it is
+/// written once, with an expect-absent compare-and-set so two concurrent
+/// creations cannot both believe they won, and **deleted** when the
+/// schedule is cancelled rather than overwritten with a tombstone. That
+/// is what keeps this prefix a list of the live schedules and nothing
+/// else, so the `max_model_schedules` ceiling bounds what one tick and
+/// one seam call read (issue #164).
 ///
 /// ## Examples
 ///
@@ -1197,15 +1315,6 @@ pub fn config_key(strand strand: String, name name: String) -> String {
 /// The prefix every model-created schedule's config cell shares, which is
 /// what `client/schedulescan` scans once per tick to find them.
 pub const config_key_prefix = api.schedule_fact_prefix <> "config/"
-
-/// A cancelled schedule's cell value.
-///
-/// Cancellation overwrites rather than deletes, because the register is a
-/// cell and "there is no such key" and "there was one and it is finished"
-/// are worth telling apart when reading the reserved namespace by hand.
-/// `decode` refuses it, so a tombstone is simply not a schedule to every
-/// caller that matters.
-pub const cancelled_value = json.Null
 
 /// Renders one schedule as the JSON its config cell holds.
 ///
@@ -1269,7 +1378,7 @@ fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
 /// ```
 ///
 /// ```gleam
-/// assert schedule.decode(schedule.cancelled_value) == Error(Nil)
+/// assert schedule.decode(json.Null) == Error(Nil)
 /// ```
 ///
 pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {

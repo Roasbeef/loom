@@ -20,6 +20,7 @@
 import client/schedule
 import client/schedulescan
 import core/clock.{type Clock}
+import core/json.{type JsonValue}
 import core/message
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -367,6 +368,17 @@ fn fired_count(runtime: api.Runtime, prefix: String) -> Int {
   }
 }
 
+// The instant recorded for a schedule on `main`, as the store holds it —
+// the cell `client/schedule.seen_key` names, read through the same door
+// the fired-marks are read through. `None` covers both "never recorded"
+// and an unreadable store, which no assertion here needs to tell apart.
+fn seen(runtime: api.Runtime, name: String) -> Option(JsonValue) {
+  case api.fact(runtime, schedule.seen_key(strand: "main", name:)) {
+    Ok(cell) -> cell
+    Error(_reason) -> None
+  }
+}
+
 fn idle(rig: Rig, strand: String) -> Bool {
   case session.strand_state(rig.session, strand) {
     Ok(Some(session.Cell(value: state, ..))) -> state.current_operation == None
@@ -389,6 +401,27 @@ fn interval_schedule(
       expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     ),
     wake:,
+    body: "heartbeat",
+  )
+}
+
+// An interval schedule whose age bound is short enough for a test to
+// step over, and whose fire-count bound is deliberately not the one under
+// test. `SteersOnly` on an idle strand is the shape issue #157 was about:
+// every fire holds, so no mark ever lands to date the schedule by.
+fn aging_schedule(
+  name name: String,
+  seconds seconds: Int,
+  expires_after_s expires_after_s: Int,
+) -> schedule.Schedule {
+  schedule.Schedule(
+    name:,
+    target: "main",
+    timing: schedule.Interval(
+      seconds:,
+      expiry: schedule.Expiry(max_fires: 1000, expires_after_s:),
+    ),
+    wake: schedule.SteersOnly,
     body: "heartbeat",
   )
 }
@@ -587,6 +620,94 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
   // re-arm from the now-expired schedule.
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "an expired schedule must stop contributing to the re-arm"
+  stop(rig)
+}
+
+// --- 6. the observation instant: one write, and the clock it starts -------
+
+// Issue #157 end to end. A `wake = false` heartbeat on a strand nobody
+// ever opens a run on holds on every tick, so no fired-mark ever lands —
+// and while `expires_after_s` was measured from the earliest mark, that
+// meant a schedule with no clock at all, ticking for the life of the
+// session behind a config key that read as a week. The first tick now
+// records when it observed the schedule, and that recording is what ends
+// it.
+pub fn a_held_schedule_expires_from_its_observation_instant_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  assert idle(rig, "main") as "the strand must start idle"
+
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { seen(rig.runtime, "hb") == Some(json.Int(0)) }, 2000)
+    as "the first tick must record the instant it observed the schedule"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "a held fire leaves no mark, which is why the marks cannot date it"
+
+  // Past the schedule's window, with nothing having fired inside it.
+  fake_jump_to(rig.fc, 4_000_000)
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+
+  // The one deadline left in the wheel is the strand driver's own
+  // checkpoint poll (parked far out by `harness`), not a re-arm from a
+  // schedule — the same reading the max_fires expiry test above takes.
+  // Settled before it is read, never polled: a count taken in the gap
+  // between the pop and the re-arm reads `1` for a schedule that is
+  // still very much arming, which would pass against the bug.
+  process.sleep(200)
+  assert fake_pending(rig.fc) == 1
+    as "a schedule expired by age must stop contributing to the re-arm"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "an expired schedule must not fire on its way out"
+  stop(rig)
+}
+
+// The cell is written at most once per schedule, and that is the whole
+// invariant: a later tick re-basing the clock to its own `now` would give
+// a schedule an age that never grows, which is the bug this fix is for
+// wearing a different hat.
+pub fn the_observation_instant_is_written_once_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { seen(rig.runtime, "hb") == Some(json.Int(0)) }, 2000)
+    as "the first tick must record its own instant"
+
+  // A second scan, out of band, at a later logical time: same cell, same
+  // instant, because the cell was not absent this time.
+  fake_jump_to(rig.fc, 120_000)
+  replay_tick(rig)
+  process.sleep(150)
+  assert seen(rig.runtime, "hb") == Some(json.Int(0))
+    as "a later tick must not re-base the clock to its own now"
+  stop(rig)
+}
+
+// An instant already in the store belongs to the schedule, not to
+// whichever incarnation ticks next — which is what makes a restart
+// harmless. Planted an hour and more back with nothing ever fired, the
+// very first tick of this scanner must find the schedule finished rather
+// than starting its clock afresh.
+pub fn a_planted_observation_instant_is_honoured_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 4_000_000) as "the harness must boot"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.seen_key(strand: "main", name: "hb"),
+      schedule.seen_value(since_s: 0),
+    )
+    as "the seen cell must be writable"
+
+  // The first tick has been armed since `harness` returned and has not
+  // run yet, so the plant lands before this scanner has ever looked.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(200)
+  assert fake_pending(rig.fc) == 1
+    as "a schedule planted as observed long ago must expire on sight"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "an expired schedule must not fire"
+  assert seen(rig.runtime, "hb") == Some(json.Int(0))
+    as "the planted instant must survive the tick that read it"
   stop(rig)
 }
 
