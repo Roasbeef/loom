@@ -614,11 +614,20 @@ fn listed(runtime: Runtime, sched: Schedule) -> schedule_tool.Listed {
   )
 }
 
-// A failed read reports zero rather than propagating: the count is
-// context for a model deciding what to cancel, and a listing that fails
-// entirely because one counter could not be read is worse than a listing
-// with one optimistic number in it. Nothing branches on this value.
-fn fire_count(runtime: Runtime, sched: Schedule) -> Int {
+/// How many times one schedule has fired, counted off its durable marks.
+///
+/// A failed read reports zero rather than propagating: the count is
+/// context for a model deciding what to cancel, and a listing that fails
+/// entirely because one counter could not be read is worse than a listing
+/// with one optimistic number in it. Nothing branches on this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scheduleseam.fire_count(runtime, sched)
+/// ```
+///
+pub fn fire_count(runtime: Runtime, sched: Schedule) -> Int {
   api.reserved_facts(
     runtime,
     prefix: schedule.fired_key_prefix(strand: sched.target, name: sched.name),
@@ -665,30 +674,43 @@ fn cancel(
   Ok(Nil)
 }
 
-// Everything one schedule durably owns, removed: its fired-marks, its
-// observation instant, and last its config cell.
-//
-// **All three, because a name is reusable afterwards.** The marks and
-// the seen cell are keyed on `{target, name}` — the schedule's identity,
-// not its creation — so a name recreated over a surviving clock
-// inherits it: a one-shot at the same instant reads as `AlreadyFired`
-// for the life of the session, and a recurring schedule whose 1000
-// marks are still there expires on the first tick that sees it. That is
-// the third leg of issue #163, and cancelling the whole footprint is
-// the ruling rather than minting a per-creation nonce, because the
-// nonce would put a value nobody reads into every key shape in the
-// namespace.
-//
-// The order is the crash story. Three commits rather than one, because
-// the keys share no prefix (`config/`, `seen/` and `fired/` are
-// disjoint corners of `schedule/` by construction), so the config cell
-// goes **last**: a fault partway through leaves the schedule live with
-// a reset count and a caller told the cancel failed, which a retry
-// finishes. Deleting the config cell first would answer the caller with
-// a failure over a schedule that was in fact gone, leaving its clock
-// behind for the next schedule to inherit — precisely the bug this
-// function exists to prevent.
-fn retire(
+/// Retires one schedule's whole durable footprint — its fired-marks, its
+/// observation instant and its config cell — as the host does on cancel.
+/// Public so an operator-facing surface ends a schedule exactly as the
+/// model door does, rather than by a second deletion order that could get
+/// the crash story wrong.
+///
+/// Everything one schedule durably owns, removed: its fired-marks, its
+/// observation instant, and last its config cell.
+///
+/// **All three, because a name is reusable afterwards.** The marks and
+/// the seen cell are keyed on `{target, name}` — the schedule's identity,
+/// not its creation — so a name recreated over a surviving clock
+/// inherits it: a one-shot at the same instant reads as `AlreadyFired`
+/// for the life of the session, and a recurring schedule whose 1000
+/// marks are still there expires on the first tick that sees it. That is
+/// the third leg of issue #163, and cancelling the whole footprint is
+/// the ruling rather than minting a per-creation nonce, because the
+/// nonce would put a value nobody reads into every key shape in the
+/// namespace.
+///
+/// The order is the crash story. Three commits rather than one, because
+/// the keys share no prefix (`config/`, `seen/` and `fired/` are
+/// disjoint corners of `schedule/` by construction), so the config cell
+/// goes **last**: a fault partway through leaves the schedule live with
+/// a reset count and a caller told the cancel failed, which a retry
+/// finishes. Deleting the config cell first would answer the caller with
+/// a failure over a schedule that was in fact gone, leaving its clock
+/// behind for the next schedule to inherit — precisely the bug this
+/// function exists to prevent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scheduleseam.retire(runtime, "main", "poll")
+/// ```
+///
+pub fn retire(
   runtime: Runtime,
   target: String,
   name: String,
@@ -829,17 +851,28 @@ fn retire_strand(runtime: Runtime, strand: String) -> Nil {
 
 // --- shared reads ---------------------------------------------------------
 
-// Every live model-created schedule in the session, keyed by its cell.
-// A cell that does not decode is dropped rather than failing the read:
-// `client/schedule.decode` refuses a schedule an older build stored
-// under bounds this one has since tightened, and anything else that ever
-// appears under this prefix reads the same way. Both are "not a schedule
-// that runs today", which is exactly what every caller here is asking.
-//
-// The drop is also why `create` cannot let this read decide a name: a
-// cell dropped here is a name reported free, and only the claiming write
-// sees what is actually in the store.
-fn live_schedules(
+/// Every live model-created schedule in the session, each paired with the
+/// key of the cell it was read from. Public for the host's own listings;
+/// the model door filters this by owner before showing it.
+///
+/// Every live model-created schedule in the session, keyed by its cell.
+/// A cell that does not decode is dropped rather than failing the read:
+/// `client/schedule.decode` refuses a schedule an older build stored
+/// under bounds this one has since tightened, and anything else that ever
+/// appears under this prefix reads the same way. Both are "not a schedule
+/// that runs today", which is exactly what every caller here is asking.
+///
+/// The drop is also why `create` cannot let this read decide a name: a
+/// cell dropped here is a name reported free, and only the claiming write
+/// sees what is actually in the store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scheduleseam.live_schedules(runtime)
+/// ```
+///
+pub fn live_schedules(
   runtime: Runtime,
 ) -> Result(List(#(String, Schedule)), schedule_tool.Refusal) {
   use cells <- result.try(
