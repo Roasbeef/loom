@@ -39,7 +39,22 @@ and no frame on the capability channel carries it.
 Hooks arrive in a later phase through a `hook_call` frame from harness to
 satellite over the same authenticated channel, with a satellite that
 lives for the session; that reverse direction is a `protocol-change/`
-proposal written before the phase begins.
+proposal written before the phase begins. The harness side of it is one
+`weft/event_manager` per session with a handler per installed extension.
+
+The install is the same decision applied to the operator's host: an
+install needs a tree fetched, not a git session. `loom ext install`
+invokes no git client. It fetches an archive through the broker's HTTP
+client under a one-host install policy, extracts it totally into
+staging (regular files and directories only, capped, confined), digests
+the tree, vets the source, compiles it offline inside the code-mode
+sandbox, and records the resolved revision and digest last. Every later
+load re-digests the tree against the record.
+
+The client's moments (`input`, `user_bash`, prompts, commands, widgets)
+are not in the harness vocabulary. They are the TUI's own extension
+surface, in the operator's terminal process, ruled separately and
+operator-installed only.
 
 ## Why
 
@@ -84,3 +99,8 @@ lever: a port becomes mechanical for the subset where it is meaningful.
 - Extensions written in JavaScript are a second satellite runtime
   speaking the same frames under the same token and policy, not a second
   extension system.
+- The install path and the extension path share one HTTP client and one
+  policy shape, so a cap raised for one is raised for both, on purpose.
+- A client-side extension surface, when ruled, adds a `[client]` table to
+  the manifest and a body that runs in the TUI; until then the table is
+  an unknown key and refuses the manifest.

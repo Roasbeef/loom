@@ -166,12 +166,12 @@ openly where they do not. The table is the whole vocabulary of phase 3.
 
 Divergences stated once: no `before_provider_headers`, `before_provider_request`
 or `after_provider_response` (provider ownership is TCB); no `input`,
-`user_bash`, `ui_prompt_*` or any `ctx.ui` (the client is a separate
-process over a frozen gateway, and a projection surface, if one is ever
-wanted, is a tier-H `ExtProjection` under its own ruling); no
-`session_before_*` cancellation hooks in phase 3 (navigation and
-compaction are durable-plane decisions; a veto from the jail on a commit
-boundary needs an argument this note does not make); no
+`user_bash`, `ui_prompt_*` or any `ctx.ui` **in the harness vocabulary**,
+because those are the client's moments and the client is a separate
+process over a frozen gateway (the client surface has its own ruling,
+below); no `session_before_*` cancellation hooks in phase 3 (navigation
+and compaction are durable-plane decisions; a veto from the jail on a
+commit boundary needs an argument this note does not make); no
 `registerProvider`, `setModel`, `setActiveTools` (routing and the tool
 set are the operator's, through `loom.toml` and `set_config`).
 
@@ -185,8 +185,18 @@ set are the operator's, through `loom.toml` and `set_config`).
   session's own admission doors (`api.steer_marking`-shaped), which is
   how scheduled heartbeats already speak.
 - `exec` is `cap/proc` under policy, which is what it should have been.
-- `registerCommand`, `registerShortcut`, `registerFlag` are client
-  concerns and are out.
+- `registerCommand`, `registerShortcut`, `registerFlag`, `input`,
+  `user_bash`, `ui_prompt_*` and `ctx.ui` are the **client surface**, and
+  it is a different surface area rather than a missing one. The TUI is
+  its own process over the gateway, so an extension's client body would
+  run there, in the operator's terminal and outside the harness VM: Rule
+  Zero is not the question, keystroke custody is. That surface is ruled
+  separately, once the harness surface below is built, with the manifest
+  growing a `[client]` table under that ruling; the one constraint fixed
+  now is that a client body is operator-installed only and never
+  agent-authored, because the promotion ladder's on-ramp ends at the
+  jail. Phases 1 to 4 decode no `[client]` table, and a manifest carrying
+  one is refused as an unknown key until the ruling lands.
 - Skills: an extension may ship `skills/<name>/SKILL.md` in the Agent
   Skills format. The server surfaces name, description and location the
   way pi does, in the system prompt after the guidance files, and the
@@ -248,18 +258,66 @@ recorded rather than implied by editing a file.
   extension is listed and never loaded until the operator approves it,
   the posture `AGENTS.md` takes toward workspace files and pi takes with
   project trust.
-- `loom ext install <git-url | path>` clones or copies into the operator
-  directory, decodes the manifest, vets the source, compiles it against
-  the toolchain the release already ships for code mode, and writes an
-  **install record**: name, version, source digest, the allowlist and net
-  policy it was vetted against, and the approval. Anything that fails
-  vetting is refused naming the layer. `loom ext list` and
+- `loom ext install <source>` fetches the tree into a staging directory,
+  decodes the manifest, vets the source, compiles it against the
+  toolchain the release already ships for code mode, and writes an
+  **install record**: name, version, the resolved revision, the source
+  tree digest, the allowlist and net policy it was vetted against, and
+  the approval. Anything that fails is refused naming the layer, and the
+  staging directory goes with it; the record is written last and the
+  tree is renamed into place only once it exists. `loom ext list` and
   `loom ext remove <name>` complete the set. No hot install in phase 1:
   the session server reads the records at boot.
 - `loom.toml` gains nothing per extension. The manifest is the source of
   truth and the install record is the approval. The one operator-side
   knob is the env variables the secret bindings name, which live in the
   server's environment exactly as `api_key_env` values do.
+
+### Hardening the install
+
+The install is the one network-bound step in the whole design, and it
+runs as the operator on the host, outside any jail. So it gets the same
+treatment Decision 2 gives the extension: **it needs a tree fetched, not
+a git session**, and the fetch is made by the broker's HTTP client under
+an install policy rather than by a git binary.
+
+- **No git client.** `git clone` is a large, remotely driven attack
+  surface (a hostile remote chooses the pack, the refs, the attributes,
+  the submodules), and nothing in an install needs it. A source is one
+  of: a local path, copied; an `https://` URL naming a `.tar.gz`; or an
+  `https://github.com/<owner>/<repo>` URL, which resolves to the host's
+  archive URL for the revision. `git://`, `ssh://`, scp-style and
+  `file://` sources are refused by the decoder.
+- **Pinned by content.** `--rev` names a commit, tag or branch; without
+  it the default branch head is resolved once. Either way the record
+  stores the resolved revision and the digest of the extracted tree,
+  and every later load re-digests the tree against the record. A
+  changed tree is refused until it is re-installed, so an install is
+  content-addressed from the moment it is recorded, whatever the remote
+  does afterwards.
+- **The fetch is a policed request.** Host is the URL's host and
+  nothing else, method `GET`, redirects followed only to the same host
+  and at most twice (GitHub's archive redirect is one), a response cap
+  of 32 MiB, one deadline for the whole transfer. This is Decision 2's
+  policy shape with a fixed allowlist of one, served by the same
+  client, so the extension path and the install path share one HTTP
+  surface and one set of caps.
+- **The archive is untrusted input.** Extraction is total: every entry
+  must be a regular file or a directory under one top-level directory;
+  symlinks, hard links, devices and absolute or `..` paths refuse the
+  whole archive; names are confined to a printable subset with no
+  control characters; there is a per-file cap, a total-bytes cap and an
+  entry-count cap. Extraction writes into staging, never into the
+  extension directory, and the digest is computed over the extracted
+  tree, not the archive bytes.
+- **The compile is offline and jailed.** The toolchain runs inside the
+  same sandbox code mode builds in, with the network namespace empty:
+  a `gleam.toml` that names any dependency beyond `loom_ext` and the
+  standard library is refused before the build starts, the shipped
+  cache is the only package source, `manifest.toml` in the archive is
+  ignored and regenerated, and a build that tries to reach out finds
+  nothing to reach. Vetting runs on the source before the compiler sees
+  it, so the compiler is never the first thing to touch a hostile file.
 
 ## Tool registration and dispatch
 
@@ -290,26 +348,66 @@ hooks exist, tool calls stop paying a boot each, and tier H shrinks to
 what genuinely needs harness state. This is a `protocol-change/` proposal,
 not drift, and it is written before phase 3 starts.
 
+**The hook bus is a `weft/event_manager`.** The harness side of phase 3
+is an ordered list of extensions, each holding private state (its
+satellite handle, its request budget, its failure count), receiving
+every hook event in load order, with a broken one dropped and logged
+while its siblings carry on. That is `gen_event`'s shape exactly, and
+`weft/event_manager` is the typed binding of it: one handler per
+installed extension, the state sealed in the handler's closure, the
+`hook_call` round trip made from inside the handler under the cap-call
+deadline, and `Failed` as the answer to a satellite that has died. The
+notification events (`session_start`, `before_agent_start`, `agent_end`,
+`agent_settled`) are `notify`; the gate (`tool_call`) is a `sync_notify`
+whose event carries a reply subject, so the harness reads every verdict
+after the fan-out returns and any `Block` wins. The two chained
+transforms (`context`, `tool_result`) are not a fan-out, because each
+handler must see its predecessor's output; they are a fold over the same
+ordered list, written in the harness, and if a second consumer of a
+chained fan-out appears weft grows the shape rather than Loom growing
+a second bus. The manager's own limit applies and is the intended
+semantics: a handler stalls the bus for as long as its round trip takes,
+and the deadline bounds that.
+
 ## Phases and the acceptance test
 
 1. **`loom_ext`, the manifest, vetting, install records, `loom ext`.**
    Exit: `loom ext install` of a fixture extension records an install; a
    hostile fixture (FFI, forbidden import, oversleep at load) is refused
-   naming the layer that caught it.
+   naming the layer that caught it; a hostile archive (symlink, `..`,
+   oversize, off-host redirect, a `gleam.toml` naming a dependency) is
+   refused at the fetch or the extraction, and no staging is left
+   behind.
 2. **Tool registration and jailed dispatch; broker-served `net.request`
    with allowlist, caps and secret bindings.** Exit: the web-search
    repository installs and the model calls `web_search` in a real drive;
    a request to a host outside the allowlist is refused in band; the API
    key is absent from the jail's environment and from every frame on the
    channel, asserted by an e2e that reads both.
-3. **Persistent satellite and `hook_call`** (protocol change). Exit: a
-   tier-J `tool_call` gate from a fixture extension blocks a call and the
-   refusal names the extension; `context` transforms a request within
-   the cap; a hook that oversleeps is killed and reported in band.
-4. **Tier H behaviours, hot load, rollback, TCB freeze** (#32, #33), only
-   for what phase 3 cannot express.
+3. **Persistent satellite, `hook_call`, and the hook bus** (protocol
+   change). Exit: a tier-J `tool_call` gate from a fixture extension
+   blocks a call and the refusal names the extension; `context`
+   transforms a request within the cap; a hook that oversleeps is killed
+   and reported in band; a satellite that dies mid-session is dropped
+   from the bus with its reason logged and the run continues.
+4. **Tier H: the loader, rollback, and the TCB freeze** (#32, #33). The
+   loader compiles a tier-H body from vetted source under a
+   harness-controlled module name, checks the compiled artifact's import
+   table against the tier-H allowlist before loading it (the runtime
+   half of #33's two mechanisms; the vetting lint is the compile-time
+   half), runs it under a supervised, time-boxed wrapper, and rolls back
+   to the previous artifact when a load or a first call fails. Exit: a
+   fixture tier-H `context` hook loads, transforms, and is replaced
+   without a restart; a body whose beam imports anything outside the
+   allowlist is refused at load naming the module; the freeze test walks
+   the TCB modules and shows none is reachable from a loaded body; a
+   hook that oversleeps is killed by the wrapper and the extension is
+   marked failed in its record.
 
-Phase 2 is the milestone the user named. Phases 1 and 2 touch `broker`
+All four phases are commissioned; phase 2 is the milestone the user
+named and phase 4 exists so that the design does not say "never".
+
+Phases 1 and 2 touch `broker`
 (serving `net.request`), `codemode` (a third seam and its router arm),
 `client` (discovery, install records, the registry as a list, dispatch),
 `tools` (the prelude digest gate, since `cap/net` grows a served surface),
