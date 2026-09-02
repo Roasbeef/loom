@@ -28,6 +28,9 @@ pub type Command {
   /// Inspect the session's agents and sub-agents.
   Agents
 
+  /// Choose another locally managed session.
+  Sessions
+
   /// Browse the active strand's injected agent-note digest.
   Notes
 
@@ -150,6 +153,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/help", "show the command reference", False),
     Suggestion("/model", "choose a model", False),
     Suggestion("/agents", "inspect agents and sub-agents", False),
+    Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/strands", "list session strands", False),
@@ -202,6 +206,7 @@ pub fn parse(input: String) -> Command {
     "/model" -> Models
     "/strands" -> Strands
     "/agents" -> Agents
+    "/sessions" -> Sessions
     "/notes" -> Notes
     "/details" -> Details
     "/compact" -> Compact
@@ -259,6 +264,7 @@ pub fn help_text() -> String {
   <> "/model            open the model selector\n"
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
+  <> "/sessions         switch locally managed sessions\n"
   <> "/notes            browse the active strand's agent notes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/strands          list session strands\n"

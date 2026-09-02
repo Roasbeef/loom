@@ -201,6 +201,42 @@ pub fn close(connection: Connection) -> Nil {
   process.send(subject, stratus.to_user_message(Stop))
 }
 
+/// Links an established websocket actor to the calling process.
+///
+/// Session resolution opens replacement sockets in an unlinked worker. The
+/// terminal adopts the successful actor before it replaces the active socket,
+/// restoring the same lifecycle ownership as an ordinary startup connection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// connection.adopt(socket)
+/// ```
+pub fn adopt(connection: Connection) -> Result(Nil, String) {
+  let Connection(subject) = connection
+  use owner <- result.try(
+    process.subject_owner(subject)
+    |> result.replace_error("the websocket actor exited before adoption"),
+  )
+  case process.link(owner) {
+    True -> Ok(Nil)
+    False -> Error("the websocket actor exited before adoption")
+  }
+}
+
+/// Names the process that owns a websocket, for lifecycle assertions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(pid) = connection.owner(socket)
+/// ```
+@internal
+pub fn owner(connection: Connection) -> Result(process.Pid, Nil) {
+  let Connection(subject) = connection
+  process.subject_owner(subject)
+}
+
 /// Receives one queued connection message, if one is ready.
 ///
 /// ## Examples

@@ -24,7 +24,15 @@ pub fn discover() -> Context {
   }
 }
 
-fn discover_from(path: String) -> Context {
+/// Discovers the nearest repository surrounding an explicit directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// workspace.discover_from("/home/me/work/project/src")
+/// ```
+@internal
+pub fn discover_from(path: String) -> Context {
   case repository_marker(path) {
     Ok(#(root, marker)) ->
       Context(path: root, branch: read_branch(root, marker))

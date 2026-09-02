@@ -7,7 +7,10 @@ import gleam/result
 import gleam/string
 import simplifile
 import tui/bootstrap
+import tui/connection
 import tui/internal/ffi_bootstrap
+import tui/protocol
+import tui/sessions
 
 pub fn workspace_names_are_stable_and_distinct_test() {
   let first = bootstrap.workspace_name("/work/alpha")
@@ -102,6 +105,118 @@ pub fn private_file_round_trip_is_bounded_test() {
   assert bit_array.to_string(bytes) == Ok("ready\n")
   assert ffi_bootstrap.read_regular_bounded(path, 3)
     == Error("file exceeds the bounded read limit")
+  let _ = simplifile.delete(root)
+}
+
+pub fn private_directory_listing_is_bounded_test() {
+  let root = test_root("bounded-directory")
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(filepath.join(root, "first"), "one")
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(filepath.join(root, "second"), "two")
+  assert ffi_bootstrap.list_directory_bounded(root, 1)
+    == Error("directory exceeds the entry limit")
+  let assert Ok(entries) = ffi_bootstrap.list_directory_bounded(root, 2)
+  assert list.length(entries) == 2
+  let _ = simplifile.delete(root)
+}
+
+pub fn local_session_discovery_validates_launcher_records_test() {
+  let root = test_root("session-discovery")
+  let workspace = filepath.join(root, "workspace")
+  let state = filepath.join(root, "state")
+  let session_directory = filepath.join(state, "sessions")
+  let session = filepath.join(session_directory, "review.db")
+  let endpoint_directory = filepath.join(state, "endpoints")
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(state)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(session_directory)
+  let assert Ok(Nil) =
+    ffi_bootstrap.ensure_private_directory(endpoint_directory)
+  let assert Ok(Nil) = simplifile.write(session, "")
+  let assert Ok(canonical_workspace) =
+    ffi_bootstrap.canonical_directory(workspace)
+  let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
+  let assert Ok(canonical_session) = ffi_bootstrap.canonical_path(session)
+  let key = digest_prefix(canonical_session, 24)
+  let endpoint = filepath.join(endpoint_directory, key <> ".json")
+  let record =
+    json.Object([
+      #("version", json.Int(2)),
+      #("gateway_protocol", json.Int(1)),
+      #("status", json.String("ready")),
+      #("workspace", json.String(canonical_workspace)),
+      #("session_file", json.String(canonical_session)),
+      #("session", json.String("review")),
+      #("address", json.String("ws://127.0.0.1:44123/v1/ws")),
+      #(
+        "token_file",
+        json.String(filepath.join(
+          filepath.join(canonical_state, "tokens"),
+          key <> ".token",
+        )),
+      ),
+      #(
+        "log_file",
+        json.String(filepath.join(
+          filepath.join(canonical_state, "logs"),
+          key <> ".log",
+        )),
+      ),
+      #("server_pid", json.Int(0)),
+      #("server_birth", json.String("")),
+      #("started_at_ms", json.Int(ffi_bootstrap.system_time_ms())),
+    ])
+    |> json.to_string
+  let assert Ok(Nil) = ffi_bootstrap.atomic_write_private(endpoint, record)
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(
+      filepath.join(endpoint_directory, "malformed.json"),
+      "not json",
+    )
+
+  // A second, otherwise identical record proves the exclusion below is the
+  // status alone: it is listed while ready and vanishes once it says
+  // starting, as a record a failed spawn abandoned would.
+  let pending = filepath.join(session_directory, "pending.db")
+  let assert Ok(Nil) = simplifile.write(pending, "")
+  let assert Ok(canonical_pending) = ffi_bootstrap.canonical_path(pending)
+  let pending_key = digest_prefix(canonical_pending, 24)
+  let pending_endpoint =
+    filepath.join(endpoint_directory, pending_key <> ".json")
+  let pending_record =
+    record
+    |> string.replace(canonical_session, canonical_pending)
+    |> string.replace("\"review\"", "\"pending\"")
+    |> string.replace(key, pending_key)
+  let options = bootstrap.Options(workspace, session, "/bin/loomd", state, "")
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(pending_endpoint, pending_record)
+  let assert Ok([_, _]) = bootstrap.discover_sessions(options)
+    as "a ready sibling record is listed"
+  let assert Ok(Nil) =
+    ffi_bootstrap.atomic_write_private(
+      pending_endpoint,
+      string.replace(pending_record, "\"ready\"", "\"starting\""),
+    )
+  let assert Ok([choice]) = bootstrap.discover_sessions(options)
+  assert choice
+    == bootstrap.SessionChoice(
+      session: "review",
+      workspace: canonical_workspace,
+      session_file: canonical_session,
+    )
+  assert bootstrap.session_options(options, choice)
+    == bootstrap.Options(
+      workspace: canonical_workspace,
+      session_file: canonical_session,
+      server: "/bin/loomd",
+      state_directory: state,
+      config: "",
+    )
   let _ = simplifile.delete(root)
 }
 
@@ -223,6 +338,67 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert first.session == "multi"
   assert first.session == second.session
   assert first.token == second.token
+  let assert Ok([choice]) = bootstrap.discover_sessions(options)
+  assert choice.session == first.session
+  let switch = sessions.start(choice, options)
+  let assert Ok(sessions.Ready(
+    target: switched,
+    inbox: switched_inbox,
+    socket: switched_socket,
+    ..,
+  )) = wait_for_switch(switch, 40_000)
+    as "session switch should connect"
+  assert switched.session == first.session
+  assert connection.adopt(switched_socket) == Ok(Nil)
+
+  // Adoption is only real if the replacement session's frames reach the
+  // process that adopted it: the worker's subscribe must produce a full
+  // snapshot that this process, not the worker, can drain from the inbox.
+  let assert Ok(connection.Connected) = process.receive(switched_inbox, 10_000)
+    as "the adopted inbox should report the handshake"
+  let assert Ok(protocol.FullSnapshot(session: snapshot_session, ..)) =
+    receive_snapshot(switched_inbox, 20_000)
+    as "the adopted inbox should deliver the replacement snapshot"
+  assert snapshot_session == first.session
+  connection.close(switched_socket)
+
+  // A cancelled attempt must take its unadopted socket down. Two paths
+  // cover it: a task that has returned its socket but whose outcome nobody
+  // pulled is closed by the cancel's drain, and a task still running has
+  // its socket killed through the link. Both attempts publish the socket's
+  // pid on the side so the proof never pulls the outcome itself.
+  let told = process.new_subject()
+  let returned =
+    sessions.start_with(
+      choice.session,
+      fn(frames) {
+        let opened = sessions.resolve_and_connect(choice, options, frames)
+        process.send(told, socket_owner(opened))
+        opened
+      },
+      within: 90_000,
+    )
+  let assert Ok(Ok(returned_pid)) = process.receive(told, 40_000)
+    as "a second switch should connect"
+  assert process.is_alive(returned_pid)
+  sessions.cancel(returned)
+  assert_process_exits(returned_pid, 100)
+  let running =
+    sessions.start_with(
+      choice.session,
+      fn(frames) {
+        let opened = sessions.resolve_and_connect(choice, options, frames)
+        process.send(told, socket_owner(opened))
+        process.sleep_forever()
+        opened
+      },
+      within: 90_000,
+    )
+  let assert Ok(Ok(running_pid)) = process.receive(told, 40_000)
+    as "a third switch should connect"
+  assert process.is_alive(running_pid)
+  sessions.cancel(running)
+  assert_process_exits(running_pid, 100)
   let assert Ok(pid) = endpoint_pid(state)
   let assert Ok(token_file) = endpoint_string(state, "token_file")
   let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
@@ -293,6 +469,64 @@ fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
   }
 }
 
+fn socket_owner(
+  opened: Result(sessions.Opened, String),
+) -> Result(process.Pid, Nil) {
+  case opened {
+    Ok(sessions.Opened(socket:, ..)) -> connection.owner(socket)
+    Error(_reason) -> Error(Nil)
+  }
+}
+
+fn assert_process_exits(pid: process.Pid, attempts: Int) -> Nil {
+  case process.is_alive(pid), attempts <= 0 {
+    False, _ -> Nil
+    True, True -> panic as "the abandoned socket actor should have exited"
+    True, False -> {
+      process.sleep(10)
+      assert_process_exits(pid, attempts - 1)
+    }
+  }
+}
+
+fn receive_snapshot(
+  inbox: process.Subject(connection.Message),
+  remaining_ms: Int,
+) -> Result(protocol.Event, Nil) {
+  let started = ffi_bootstrap.monotonic_time_ms()
+  case process.receive(inbox, remaining_ms) {
+    Error(Nil) -> Error(Nil)
+    Ok(connection.Incoming(text)) ->
+      case protocol.decode_event(text) {
+        Ok(protocol.FullSnapshot(..) as event) -> Ok(event)
+        _ ->
+          receive_snapshot(
+            inbox,
+            remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
+          )
+      }
+    Ok(_) ->
+      receive_snapshot(
+        inbox,
+        remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
+      )
+  }
+}
+
+fn wait_for_switch(
+  status: sessions.SwitchStatus,
+  remaining_ms: Int,
+) -> Result(sessions.Message, Nil) {
+  case sessions.receive(status), remaining_ms <= 0 {
+    Ok(message), _ -> Ok(message)
+    Error(Nil), True -> Error(Nil)
+    Error(Nil), False -> {
+      process.sleep(10)
+      wait_for_switch(status, remaining_ms - 10)
+    }
+  }
+}
+
 fn endpoint_pid(state: String) -> Result(Int, String) {
   use fields <- result.try(endpoint_fields(state))
   case list.key_find(fields, "server_pid") {
@@ -340,4 +574,11 @@ fn test_root(name: String) -> String {
   <> name
   <> "-"
   <> string.inspect(ffi_bootstrap.system_time_ms())
+}
+
+fn digest_prefix(value: String, length: Int) -> String {
+  ffi_bootstrap.sha256(<<value:utf8>>)
+  |> bit_array.base16_encode
+  |> string.lowercase
+  |> string.slice(at_index: 0, length:)
 }

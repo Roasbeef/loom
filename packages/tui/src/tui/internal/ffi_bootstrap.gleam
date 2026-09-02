@@ -24,6 +24,24 @@ pub type ProcessIdentity {
 @external(erlang, "tui_ffi", "system_time_ms")
 pub fn system_time_ms() -> Int
 
+/// Stops every OTP logger handler from writing to the terminal.
+///
+/// Uses OTP `logger:set_primary_config/2` with level `none`. Once etui owns
+/// the alternate screen, a dependency's error report or a crash report has
+/// nowhere to go except over the rendered frame, where it stays until those
+/// cells repaint; a stale endpoint probe during a session switch is one
+/// producer. Failures the operator must see already reach the transcript as
+/// typed errors.
+@external(erlang, "tui_ffi", "silence_logger")
+pub fn silence_logger() -> Nil
+
+/// Returns monotonic milliseconds for process-local elapsed-time bounds.
+///
+/// Uses OTP `erlang:monotonic_time/1`; the value has no wall-clock meaning and
+/// is valid only for deadline comparisons within this VM.
+@external(erlang, "tui_ffi", "monotonic_time_ms")
+pub fn monotonic_time_ms() -> Int
+
 /// Returns a cryptographic SHA-256 digest.
 ///
 /// Uses OTP `crypto:hash/2`; a workspace digest must remain stable across
@@ -69,6 +87,16 @@ pub fn absolute_path(path: String) -> Result(String, String)
 /// must not follow a final symlink or expose launch credentials to peers.
 @external(erlang, "tui_ffi", "ensure_private_directory")
 pub fn ensure_private_directory(path: String) -> Result(Nil, String)
+
+/// Lists one directory only when its entry count is within `limit`.
+///
+/// Uses OTP `file:list_dir/1`; the bound limits the launcher records returned
+/// to Gleam and therefore the number of endpoint files the client will parse.
+@external(erlang, "tui_ffi", "list_directory_bounded")
+pub fn list_directory_bounded(
+  path: String,
+  limit: Int,
+) -> Result(List(String), String)
 
 /// Attempts to acquire an automatically released cross-process file lock.
 ///

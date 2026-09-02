@@ -38,6 +38,8 @@ const max_endpoint_bytes = 16_384
 
 const max_token_bytes = 16_384
 
+const max_endpoint_records = 1024
+
 const startup_log_tail_bytes = 4096
 
 const endpoint_future_skew_ms = 5000
@@ -77,6 +79,18 @@ pub type Target {
     session: String,
     /// The bearer token read from the private token file.
     token: String,
+  )
+}
+
+/// One locally managed session that the terminal can open.
+pub type SessionChoice {
+  SessionChoice(
+    /// The stable session name published by the server.
+    session: String,
+    /// The canonical workspace supplied to the server.
+    workspace: String,
+    /// The canonical durable session database path.
+    session_file: String,
   )
 }
 
@@ -132,7 +146,7 @@ type ProcessMatch {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.resolve(bootstrap.Options("", "", "", ""))
+/// bootstrap.resolve(bootstrap.Options("", "", "", "", ""))
 /// // -> Ok(bootstrap.Target(..))
 /// ```
 pub fn resolve(options: Options) -> Result(Target, String) {
@@ -143,6 +157,148 @@ pub fn resolve(options: Options) -> Result(Target, String) {
   let outcome = resolve_locked(options, workspace, paths)
   ffi_bootstrap.release_launch_lock(lock)
   outcome
+}
+
+/// Discovers locally managed sessions from validated launcher records.
+///
+/// Endpoint files remain hints: malformed, misplaced, incompatible, and
+/// non-loopback records are omitted, and so is a record still marked
+/// `starting`, whether a launcher is mid-flight behind it or a failed spawn
+/// abandoned it. Selecting a result still calls `resolve`, which verifies
+/// process identity and authenticates a real gateway snapshot. Two surviving
+/// records cannot name one database: each must live at the endpoint path
+/// derived from its own session file, and that path is one file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.discover_sessions(bootstrap.Options("", "", "", "", ""))
+/// ```
+pub fn discover_sessions(
+  options: Options,
+) -> Result(List(SessionChoice), String) {
+  use unresolved_state <- result.try(state_directory(options.state_directory))
+  use Nil <- result.try(
+    ffi_bootstrap.ensure_private_directory(unresolved_state)
+    |> result.map_error(fn(reason) {
+      "prepare Loom state " <> unresolved_state <> ": " <> reason
+    }),
+  )
+  use state <- result.try(
+    ffi_bootstrap.canonical_directory(unresolved_state)
+    |> result.map_error(fn(reason) { "resolve state directory: " <> reason }),
+  )
+  let directory = filepath.join(state, "endpoints")
+  use Nil <- result.try(
+    ffi_bootstrap.ensure_private_directory(directory)
+    |> result.map_error(fn(reason) {
+      "prepare Loom state " <> directory <> ": " <> reason
+    }),
+  )
+  use names <- result.try(
+    ffi_bootstrap.list_directory_bounded(directory, max_endpoint_records)
+    |> result.map_error(fn(reason) { "list local sessions: " <> reason }),
+  )
+  let choices =
+    names
+    |> list.filter_map(fn(name) {
+      discover_session(options, state, directory, name)
+    })
+    |> list.sort(by: fn(left, right) {
+      string.compare(
+        left.session
+          <> "\u{0}"
+          <> left.workspace
+          <> "\u{0}"
+          <> left.session_file,
+        right.session
+          <> "\u{0}"
+          <> right.workspace
+          <> "\u{0}"
+          <> right.session_file,
+      )
+    })
+  Ok(choices)
+}
+
+/// Rebuilds local-launch inputs for one discovered session.
+///
+/// The server, state root and catalogue file carry over from the launch
+/// the terminal was started with: a switch that has to cold-start the
+/// chosen session boots it the way the operator asked this terminal to
+/// boot its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.session_options(options, choice)
+/// ```
+pub fn session_options(base: Options, choice: SessionChoice) -> Options {
+  Options(
+    workspace: choice.workspace,
+    session_file: choice.session_file,
+    server: base.server,
+    state_directory: base.state_directory,
+    config: base.config,
+  )
+}
+
+/// Resolves the canonical database identity selected by local launch options.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bootstrap.session_file(bootstrap.Options("", "", "", "", ""))
+/// ```
+@internal
+pub fn session_file(options: Options) -> Result(String, String) {
+  use workspace <- result.try(canonical_workspace(options.workspace))
+  use paths <- result.try(resolve_paths(options, workspace))
+  Ok(paths.session)
+}
+
+fn discover_session(
+  base: Options,
+  state: String,
+  directory: String,
+  name: String,
+) -> Result(SessionChoice, Nil) {
+  case string.ends_with(name, ".json") {
+    False -> Error(Nil)
+    True -> {
+      let path = filepath.join(directory, name)
+      use endpoint <- result.try(discard_reason(read_endpoint(path)))
+      let options =
+        Options(
+          workspace: endpoint.workspace,
+          session_file: endpoint.session_file,
+          server: base.server,
+          state_directory: state,
+          config: base.config,
+        )
+      use workspace <- result.try(
+        discard_reason(canonical_workspace(endpoint.workspace)),
+      )
+      use paths <- result.try(discard_reason(resolve_paths(options, workspace)))
+      case
+        paths.endpoint == path
+        && endpoint.status == "ready"
+        && endpoint_matches(endpoint, workspace, paths)
+      {
+        False -> Error(Nil)
+        True ->
+          Ok(SessionChoice(
+            session: endpoint.session,
+            workspace:,
+            session_file: paths.session,
+          ))
+      }
+    }
+  }
+}
+
+fn discard_reason(value: Result(a, String)) -> Result(a, Nil) {
+  result.replace_error(value, Nil)
 }
 
 fn resolve_locked(

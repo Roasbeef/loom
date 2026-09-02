@@ -26,8 +26,16 @@ that tree separately from the self-contained server.
   successful connection restores the runtime link.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
-  connection path. Bootstrap policy, record validation, retry timing,
-  executable discovery order, and lifecycle decisions remain in Gleam.
+  connection path. `tui/bootstrap.SessionChoice` is the canonical workspace
+  and database identity recovered from one statically validated launcher
+  record. Bootstrap policy, record validation, retry timing, executable
+  discovery order, and lifecycle decisions remain in Gleam.
+- `tui/sessions.State` owns the `/sessions` selection cursor, while
+  `tui/sessions.SwitchStatus` holds the detached `weft` run whose one task
+  resolves and connects one replacement attachment, and the terminal-owned
+  frame inbox its socket delivers to. The run's deadline is the whole timeout
+  story, and the old connection remains authoritative until the terminal
+  pulls the outcome and adopts the socket.
 - `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
   unavailable in pure Gleam: private and bounded file operations, process
   identity and launch, a kernel lock, loopback port reservation, time, and
@@ -82,12 +90,13 @@ that tree separately from the self-contained server.
   errors. Unknown event names are accepted and ignored for forward
   compatibility.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
-  actions. `/model` opens the selector, `/agents` opens the inspector,
-  `/notes` opens the latest durable agent-note digest, `Shift+Tab` toggles the
-  compact rail, `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down
-  traverse transcript scrollback. Escape closes an open surface before it
-  requests an active-operation interrupt. Mouse-wheel events share that same
-  tail-relative scroll law.
+  actions. `/model` opens the model selector, `/agents` opens the inspector,
+  `/sessions` opens the locally managed session selector, `/notes` opens the
+  latest durable agent-note digest, `Shift+Tab` toggles the compact rail,
+  `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down traverse
+  transcript scrollback. Escape closes an open surface before it requests an
+  active-operation interrupt. Mouse-wheel events share that same tail-relative
+  scroll law.
 - **Command and agent selection**: typing `/` opens the prefix-filtered command
   palette. Up and Down move palette or inspector selection, Tab completes a
   command, and Enter on an agent opens its strand transcript. A strand switch
@@ -122,6 +131,10 @@ that tree separately from the self-contained server.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.
+  `main` also sets the OTP logger's primary level to `none` before anything
+  else runs, because once etui owns the alternate screen a dependency's error
+  report, such as a websocket refusal while `/sessions` probes a stale
+  record, would print over the frame and stay until those cells repaint.
 
 ## Invariants
 
@@ -129,6 +142,9 @@ that tree separately from the self-contained server.
   canonical workspace, session path and name, loopback address, and protocol
   version. Its private token must then authenticate a real `subscribe` whose
   full snapshot names the expected session before the endpoint is reusable.
+  `/sessions` reads at most 1024 record names and omits malformed, misplaced,
+  incompatible, and duplicate records before presenting a choice. Selection
+  still runs the complete bootstrap resolution and authenticated probe.
 - **A cold start is single-winner.** Launchers serialize on a kernel lock and
   re-check state after taking it. A live birth-qualified process is preserved
   through transient probe failure; stale identities and abandoned starting
@@ -214,14 +230,39 @@ that tree separately from the self-contained server.
   its styled spans so transcript attributes cannot bleed into the overlay.
   `Ctrl+C` remains global so every overlay can be escaped by terminating the
   client.
+- **Session replacement is fail-preserving.** Resolution, optional daemon
+  startup, and websocket startup run as one `weft` task under
+  `weft.start_detached` with a 90-second deadline; the terminal pulls its
+  outcome with a zero wait once per tick. Weft's deadline kills the task and
+  joins it before the outcome is delivered, so a timed-out attempt cannot
+  leak a result or socket into a later switch, and each attempt is its own
+  run, so a stale outcome has no later attempt to land on. Failure leaves the
+  old socket and model intact and discards any frames the attempt already
+  queued. Success gives the replacement a fresh
+  connection inbox, the terminal process links to its socket actor, and only
+  then does it close the prior socket and await the new authoritative full
+  snapshot. Late frames and close notices from the abandoned inbox cannot
+  mutate the replacement session.
+- **Every inbox the terminal reads is created by the terminal.** A `Subject`
+  delivers to the process that created it, and receiving on one owned by
+  another process panics. `sessions.start` therefore creates the replacement
+  frame inbox in the terminal before starting the run; the task returns an
+  outcome that names no inbox, and `sessions.receive` attaches the terminal's
+  own. The real-server lifecycle test drains the full snapshot from that inbox
+  in the adopting process, which is the only check that catches a task-created
+  inbox. One window is accepted and documented in the module: between the
+  task returning its socket and `connection.adopt` linking it, the socket is
+  linked to nobody, inside the terminal's own tick handler.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
   this client cannot approve or deny an action. The server still enforces the
   same frozen approval contract, and the client must not synthesize a weaker
   approval from the visible policy diff.
-- **Reconnect is not catch-up.** A dropped websocket ends the current native
-  connection. Automatic reconnect and sequence-based catch-up remain follow-up
-  work; the client never pretends a disconnected view is current.
+- **Manual replacement is not catch-up.** `/sessions` deliberately opens a
+  fresh authenticated subscription and clears the prior projection while it
+  waits for the new full snapshot. A dropped websocket still ends the current
+  native connection. Automatic reconnect and sequence-based catch-up remain
+  follow-up work; the client never pretends a disconnected view is current.
 
 ## Toolchain Boundary
 
