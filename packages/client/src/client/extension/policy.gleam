@@ -55,6 +55,17 @@ pub const net_cap = "net.request"
 /// The capability a satellite asks for its call with, once.
 pub const call_cap = "ext.call"
 
+/// The most a single response may occupy in the harness, whatever the
+/// manifest asks for.
+///
+/// `[net].max_response_bytes` is the author's number, approved by the
+/// operator at install, but a number in somebody else's repository does
+/// not get to size a buffer in this VM: the manifest's value is a
+/// request the harness clamps, the same treatment `[[tool]].timeout_ms`
+/// gets against `max_within_ms`. The ceiling is the install fetch's own
+/// archive cap, so the two egress callers share one bound.
+pub const max_response_bytes = 33_554_432
+
 /// The code an extension with no `[net]` table meets on every request.
 ///
 /// One of `cap/net.map_error`'s four denial codes, so it arrives inside
@@ -150,7 +161,7 @@ pub fn egress_for(net: Net, trust trust: egress.Trust) -> Egress {
       Reaches(egress.Policy(
         hosts: net.hosts,
         methods: list.filter_map(net.methods, method),
-        max_response_bytes: net.max_response_bytes,
+        max_response_bytes: int.min(net.max_response_bytes, max_response_bytes),
         redirects: egress.SameHost(at_most: redirect_hops),
         timeout_ms: request_timeout_ms,
         secrets: list.map(net.secrets, secret),

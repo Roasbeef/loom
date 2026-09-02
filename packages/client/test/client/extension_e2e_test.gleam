@@ -219,6 +219,11 @@ fn drive(ready: Ready) -> Nil {
       assert string.contains(rendered(refused), "1 denied")
       assert string.contains(rendered(refused), "example.invalid")
 
+      // The refusal's frames are held to the same rule as the answer's.
+      assert !list.any(drain(taps, []), fn(bytes) {
+        carries(bytes, secret_value)
+      })
+
       // And a call past the manifest's `requests_per_call` is refused in
       // band too, on the request after the ceiling — the first two are
       // still answered, which is what makes it a ceiling rather than a
@@ -230,6 +235,9 @@ fn drive(ready: Ready) -> Nil {
       assert string.contains(capped_text, "2 ok 200")
       assert string.contains(capped_text, "3 denied")
       assert string.contains(capped_text, "lifetime cap")
+      assert !list.any(drain(taps, []), fn(bytes) {
+        carries(bytes, secret_value)
+      })
 
       origin.stop(server)
       stop(installed_at)

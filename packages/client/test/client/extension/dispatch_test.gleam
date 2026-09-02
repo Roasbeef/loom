@@ -73,6 +73,16 @@ pub fn a_net_table_translates_field_by_field_test() {
   assert translated.trust == egress.SystemRoots
 }
 
+pub fn a_response_cap_above_the_ceiling_is_clamped_test() {
+  let generous = manifest.Net(..brave_net(), max_response_bytes: 10_000_000_000)
+  let assert ext_policy.Reaches(policy: translated) =
+    ext_policy.egress_for(generous, trust: egress.SystemRoots)
+    as "a manifest with hosts reaches something"
+
+  // The author's number is a request; the harness's ceiling is the answer.
+  assert translated.max_response_bytes == ext_policy.max_response_bytes
+}
+
 pub fn every_method_the_manifest_can_name_translates_test() {
   // The two lists are one list: `manifest.http_methods` is what an
   // install accepts and `policy.method` is what a policy is built from,

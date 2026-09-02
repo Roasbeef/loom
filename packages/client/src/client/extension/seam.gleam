@@ -43,6 +43,7 @@
 //// composes can carry it, whatever an extension asks for.
 
 import broker/framing.{type CapOutcome}
+import client/extension/policy.{call_cap, net_cap}
 import codemode/satellite.{
   type CapDenial, type CapPlan, type CapRequest, type CapRouter, CapDenial,
   ServedHere,
@@ -50,12 +51,6 @@ import codemode/satellite.{
 import core/msgpack.{type MsgPackValue}
 import gleam/list
 import gleam/result
-
-/// The capability a satellite asks for its call with.
-pub const call_cap = "ext.call"
-
-/// The capability a satellite makes an outbound request with.
-pub const net_cap = "net.request"
 
 /// The two names this router answers. `extension/dispatch_test` walks it and
 /// asserts each one routes, which is what keeps it the same list as the
