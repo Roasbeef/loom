@@ -50,6 +50,7 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/codemode as codemode_wiring
+import client/contributions
 import client/extension/archive
 import client/extension/cli
 import client/extension/dispatch
@@ -58,7 +59,6 @@ import client/extension/installed
 import client/extension/manifest as extension_manifest
 import client/extension/record
 import client/extension/source
-import client/contributions
 import client/internal/ffi_os
 import client/serve
 import codemode/launch
@@ -136,9 +136,7 @@ fn drive(ready: Ready) -> Nil {
   case install_fixture(ready, host) {
     Error(reason) -> {
       origin.stop(server)
-      io.println(
-        "SKIP an_installed_extension_reaches_the_network: " <> reason,
-      )
+      io.println("SKIP an_installed_extension_reaches_the_network: " <> reason)
     }
 
     Ok(installed_at) -> {
@@ -173,16 +171,18 @@ fn drive(ready: Ready) -> Nil {
         "fetcher: fetch a url",
       ))
 
-      let answered =
-        call(registry, installed_at, url, times: 1)
+      let answered = call(registry, installed_at, url, times: 1)
       assert !answered.is_error
       let text = rendered(answered)
       assert string.contains(text, "1 ok 200 the origin answered")
 
       // The origin saw the credential, in the header the manifest bound
       // it to, having read it out of band rather than off the wire.
-      let seen = string.join(origin.seen(server), "\n")
-      assert string.contains(string.lowercase(seen), "x-fixture-token: " <> secret_value)
+      let seen = string.join(list.flatten(origin.seen(server)), "\n")
+      assert string.contains(
+        string.lowercase(seen),
+        "x-fixture-token: " <> secret_value,
+      )
 
       // And the jail did not. Both halves of the node's environment: what
       // the launcher sets, and what the kernel will pass through at all.
@@ -190,7 +190,8 @@ fn drive(ready: Ready) -> Nil {
         as "the launcher must have been handed a spec"
       let node_env = launch.node_env(spec)
       assert !list.any(node_env, fn(pair) {
-        pair.0 == extensions.fetcher_env || string.contains(pair.1, secret_value)
+        pair.0 == extensions.fetcher_env
+        || string.contains(pair.1, secret_value)
       })
       let #(now, _clock) = clock.read(wall_clock())
       assert !list.contains(
@@ -212,7 +213,8 @@ fn drive(ready: Ready) -> Nil {
 
       // A host the manifest does not name is refused in band, as a
       // `NetDenied` the extension read and turned into a sentence.
-      let refused = call(registry, installed_at, "https://example.invalid/get", times: 1)
+      let refused =
+        call(registry, installed_at, "https://example.invalid/get", times: 1)
       assert !refused.is_error
       assert string.contains(rendered(refused), "1 denied")
       assert string.contains(rendered(refused), "example.invalid")
@@ -221,7 +223,8 @@ fn drive(ready: Ready) -> Nil {
       // band too, on the request after the ceiling — the first two are
       // still answered, which is what makes it a ceiling rather than a
       // failure.
-      let capped = call(registry, installed_at, url, times: requests_per_call + 1)
+      let capped =
+        call(registry, installed_at, url, times: requests_per_call + 1)
       let capped_text = rendered(capped)
       assert string.contains(capped_text, "1 ok 200")
       assert string.contains(capped_text, "2 ok 200")
@@ -432,7 +435,9 @@ fn install_fixture(ready: Ready, host: String) -> Result(Installed, String) {
       install.Config(
         root: extensions_root,
         caps: archive.default_caps(),
-        fetch: fn(_url, _max) { Error("an install from a local path fetches nothing") },
+        fetch: fn(_url, _max) {
+          Error("an install from a local path fetches nothing")
+        },
         build: cli.build_for(plane, exec.BestEffort),
         clock: wall_clock(),
         entropy: fn() { 7 },

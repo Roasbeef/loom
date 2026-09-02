@@ -38,7 +38,8 @@ pub fn start() -> #(Server, Int, BitArray)
 @external(erlang, "client_test_ffi", "origin_stop")
 pub fn stop(server: Server) -> Nil
 
-/// The headers of every request this origin has answered, newest first,
-/// each rendered as one lowercased `name: value` line.
+/// The headers of every request this origin has answered, newest first:
+/// one inner list per request, each entry a lowercased `name: value`
+/// line.
 @external(erlang, "client_test_ffi", "origin_seen")
-pub fn seen(server: Server) -> List(String)
+pub fn seen(server: Server) -> List(List(String))

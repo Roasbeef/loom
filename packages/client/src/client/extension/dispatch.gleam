@@ -234,16 +234,7 @@ fn tool_for(
     // execution then composes its own far narrower requirements.
     requirements: fn(workspace_root) { requirements(workspace_root) },
     run: fn(ctx, arguments) {
-      call(
-        config,
-        written,
-        decoded,
-        declared,
-        egress,
-        artifact,
-        ctx,
-        arguments,
-      )
+      call(config, written, decoded, declared, egress, artifact, ctx, arguments)
     },
   )
 }
@@ -442,10 +433,7 @@ fn router(
       },
       egress: reaching(config, written, decoded, egress),
     ),
-    over: workspace.routing(
-      bridge(config, ctx),
-      over: satellite.default_router,
-    ),
+    over: workspace.routing(bridge(config, ctx), over: satellite.default_router),
   )
 }
 
@@ -768,7 +756,12 @@ fn failed(
 ) -> ToolOutcome {
   bounded(
     ctx,
-    "the extension `" <> extension <> "` could not serve " <> name <> ": " <> reason,
+    "the extension `"
+      <> extension
+      <> "` could not serve "
+      <> name
+      <> ": "
+      <> reason,
     json.Object([
       #("status", json.String("dispatch_failed")),
       #("extension", json.String(extension)),
@@ -830,13 +823,13 @@ fn schema_of(
     }),
   )
   json.parse(text)
-  |> result.replace_error(
+  |> result.map_error(fn(_report) {
     "the schema for the tool `"
     <> declared.name
     <> "` at "
     <> path
-    <> " is not valid JSON",
-  )
+    <> " is not valid JSON"
+  })
 }
 
 // --- msgpack rendering ------------------------------------------------------

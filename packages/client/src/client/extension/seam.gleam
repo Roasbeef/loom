@@ -228,10 +228,7 @@ fn call_plan(call: fn() -> Call) -> Result(CapPlan, CapDenial) {
 // consuming an admission against the ceiling: a call refused by argument
 // decoding was never admitted, which is the rule `satellite.CapRequest`'s
 // `ordinal` doc states.
-fn net_plan(
-  egress: Egress,
-  request: CapRequest,
-) -> Result(CapPlan, CapDenial) {
+fn net_plan(egress: Egress, request: CapRequest) -> Result(CapPlan, CapDenial) {
   case egress {
     ReachesNothing(refusal:) -> Ok(ServedHere(fn() { refused(refusal) }))
     Reaches(perform:) -> {
@@ -304,7 +301,10 @@ fn string_field(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
 // and for the same reason: `cap/net` marshals the body with
 // `wire.binary`, but an extension that built its body by string
 // concatenation and sent it as text meant exactly those bytes.
-fn binary_field(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
+fn binary_field(
+  value: MsgPackValue,
+  key: String,
+) -> Result(BitArray, CapDenial) {
   use found <- result.try(field(value, key))
   case found {
     msgpack.BinaryValue(bytes:) -> Ok(bytes)

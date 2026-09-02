@@ -79,10 +79,14 @@ pub fn every_method_the_manifest_can_name_translates_test() {
   // approved could not make the request they approved.
   let assert ext_policy.Reaches(policy: translated) =
     ext_policy.egress_for(
-      manifest.Net(
-        ..brave_net(),
-        methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
-      ),
+      manifest.Net(..brave_net(), methods: [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "PATCH",
+        "HEAD",
+      ]),
       trust: egress.SystemRoots,
     )
     as "a manifest with hosts reaches something"
@@ -120,16 +124,22 @@ pub fn a_test_trust_pins_only_what_it_was_given_test() {
 
 pub fn the_ceilings_are_the_manifests_request_count_and_one_call_test() {
   let ceilings = ext_policy.ceilings(brave_net())
-  assert list.contains(ceilings, satellite.CapCeiling(
-    cap: ext_policy.net_cap,
-    admissions: 4,
-    code: ext_policy.ceiling_code,
-  ))
-  assert list.contains(ceilings, satellite.CapCeiling(
-    cap: ext_policy.call_cap,
-    admissions: 1,
-    code: ext_policy.call_ceiling_code,
-  ))
+  assert list.contains(
+    ceilings,
+    satellite.CapCeiling(
+      cap: ext_policy.net_cap,
+      admissions: 4,
+      code: ext_policy.ceiling_code,
+    ),
+  )
+  assert list.contains(
+    ceilings,
+    satellite.CapCeiling(
+      cap: ext_policy.call_cap,
+      admissions: 1,
+      code: ext_policy.call_ceiling_code,
+    ),
+  )
 }
 
 pub fn an_extension_with_no_net_has_a_zero_request_ceiling_test() {
@@ -181,7 +191,8 @@ pub fn a_secret_value_is_in_no_refusal_message_test() {
   // Structural rather than a convention: no `egress.Refusal` variant has
   // a field a value could occupy, so `describe` has nothing to redact.
   // Asserted on the one variant that names a binding at all.
-  let message = ext_policy.denial(egress.SecretMissing(env: "BRAVE_API_KEY")).message
+  let message =
+    ext_policy.denial(egress.SecretMissing(env: "BRAVE_API_KEY")).message
   assert string.contains(message, "BRAVE_API_KEY")
   assert !string.contains(message, "secret-value")
 }
@@ -210,7 +221,8 @@ pub fn ext_call_answers_the_shape_cap_ext_decodes_test() {
       deadline_ms: 19_000,
     ))
   assert field(value, "tool") == Ok(msgpack.StringValue("web_search"))
-  assert field(value, "args") == Ok(msgpack.StringValue("{\"query\":\"gleam\"}"))
+  assert field(value, "args")
+    == Ok(msgpack.StringValue("{\"query\":\"gleam\"}"))
   assert field(value, "strand") == Ok(msgpack.StringValue("main"))
   assert field(value, "deadline_ms") == Ok(msgpack.IntValue(19_000))
 }
@@ -219,20 +231,20 @@ pub fn ext_call_is_read_when_the_satellite_asks_test() {
   // The deadline is what is *left*, so the thunk has to be evaluated at
   // serve time. A value computed when the router was built would hand
   // every extension the whole timeout however long the launch took.
-  let counted = seam.routing(
-    seam.Extension(
-      call: fn() {
-        seam.Call(tool: "t", args: "{}", strand: "main", deadline_ms: 5)
-      },
-      egress: seam.ReachesNothing(refusal: ext_policy.network_off("x")),
-    ),
-    over: refusing_router,
-  )
+  let counted =
+    seam.routing(
+      seam.Extension(
+        call: fn() {
+          seam.Call(tool: "t", args: "{}", strand: "main", deadline_ms: 5)
+        },
+        egress: seam.ReachesNothing(refusal: ext_policy.network_off("x")),
+      ),
+      over: refusing_router,
+    )
   let assert Ok(satellite.ServedHere(serve:)) =
     counted(a_request("ext.call", msgpack.MapValue([])))
     as "ext.call routes"
-  let assert framing.CapOk(value:) = serve()
-    as "ext.call is always answered"
+  let assert framing.CapOk(value:) = serve() as "ext.call is always answered"
   assert field(value, "deadline_ms") == Ok(msgpack.IntValue(5))
 }
 
@@ -241,18 +253,26 @@ pub fn ext_call_is_read_when_the_satellite_asks_test() {
 pub fn a_request_reaches_the_injected_egress_verbatim_test() {
   // Every field the extension sent, unchanged: a header this arm dropped
   // would be a request the extension believes it made and did not.
-  let #(router, seen) = recording(fn(_ask) {
-    Ok(seam.Answer(status: 200, headers: [#("x", "y")], body: <<"hi":utf8>>))
-  })
+  let #(router, seen) =
+    recording(fn(_ask) {
+      Ok(seam.Answer(status: 200, headers: [#("x", "y")], body: <<"hi":utf8>>))
+    })
   let assert Ok(satellite.ServedHere(serve:)) =
-    router(a_request("net.request", ask_args("GET", "https://h/p", [
-      #("Accept", "application/json"),
-    ], <<"b":utf8>>)))
+    router(a_request(
+      "net.request",
+      ask_args(
+        "GET",
+        "https://h/p",
+        [
+          #("Accept", "application/json"),
+        ],
+        <<"b":utf8>>,
+      ),
+    ))
     as "net.request routes"
   let answer = serve()
 
-  let assert Ok(ask) = seen()
-    as "the injected egress was called"
+  let assert Ok(ask) = seen() as "the injected egress was called"
   assert ask
     == seam.Ask(
       method: "GET",
@@ -272,14 +292,21 @@ pub fn a_request_reaches_the_injected_egress_verbatim_test() {
 }
 
 pub fn a_refusal_travels_back_under_its_own_code_test() {
-  let #(router, _seen) = recording(fn(_ask) {
-    Error(ext_policy.denial(egress.HostNotAllowed(
-      host: "evil.example",
-      allowed: ["api.search.brave.com"],
-    )))
-  })
+  let #(router, _seen) =
+    recording(fn(_ask) {
+      Error(
+        ext_policy.denial(
+          egress.HostNotAllowed(host: "evil.example", allowed: [
+            "api.search.brave.com",
+          ]),
+        ),
+      )
+    })
   let assert Ok(satellite.ServedHere(serve:)) =
-    router(a_request("net.request", ask_args("GET", "https://evil.example/", [], <<>>)))
+    router(a_request(
+      "net.request",
+      ask_args("GET", "https://evil.example/", [], <<>>),
+    ))
     as "net.request routes"
   let assert framing.CapErr(code:, message:) = serve()
     as "a refused request answers with a denial"
@@ -316,9 +343,8 @@ pub fn a_malformed_request_is_refused_before_it_is_admitted_test() {
   // Refused by the *plan* rather than inside the served closure, so the
   // call consumes no ordinal and no admission against the ceiling — the
   // rule `satellite.CapRequest.ordinal` states.
-  let #(router, seen) = recording(fn(_ask) {
-    Ok(seam.Answer(status: 200, headers: [], body: <<>>))
-  })
+  let #(router, seen) =
+    recording(fn(_ask) { Ok(seam.Answer(status: 200, headers: [], body: <<>>)) })
   let assert Error(denial) =
     router(a_request(
       "net.request",
@@ -333,9 +359,8 @@ pub fn a_malformed_request_is_refused_before_it_is_admitted_test() {
 }
 
 pub fn a_header_map_that_is_not_text_is_refused_test() {
-  let #(router, _seen) = recording(fn(_ask) {
-    Ok(seam.Answer(status: 200, headers: [], body: <<>>))
-  })
+  let #(router, _seen) =
+    recording(fn(_ask) { Ok(seam.Answer(status: 200, headers: [], body: <<>>)) })
   let assert Error(denial) =
     router(a_request(
       "net.request",
@@ -359,9 +384,8 @@ pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
   // Gleam patterns cannot name a constant, so `serviced_caps` and the
   // `case` arms are two lists that could drift. This is what keeps them
   // one.
-  let #(router, _seen) = recording(fn(_ask) {
-    Ok(seam.Answer(status: 200, headers: [], body: <<>>))
-  })
+  let #(router, _seen) =
+    recording(fn(_ask) { Ok(seam.Answer(status: 200, headers: [], body: <<>>)) })
   list.each(seam.serviced_caps, fn(cap) {
     let routed = router(a_request(cap, ask_args("GET", "https://h/", [], <<>>)))
     assert case routed {
@@ -371,8 +395,7 @@ pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
   })
 
   // And a name neither arm answers reaches the router beneath.
-  let assert Error(denial) =
-    router(a_request("fs.read", msgpack.MapValue([])))
+  let assert Error(denial) = router(a_request("fs.read", msgpack.MapValue([])))
     as "an unanswered name falls through"
   assert denial.code == "beneath"
 }
@@ -386,16 +409,19 @@ pub fn a_completed_outcome_is_the_extensions_content_blocks_test() {
       a_record(),
       a_tool(),
       satellite.Run(
-        outcome: Ok(satellite.Completed(value: reply_value(
-          [#("text", "the answer"), #("json", "{\"n\":1}")],
-          False,
-        ))),
+        outcome: Ok(
+          satellite.Completed(value: reply_value(
+            [#("text", "the answer"), #("json", "{\"n\":1}")],
+            False,
+          )),
+        ),
         node: enforcement.Unreported("a fixture run"),
       ),
     )
   assert outcome.is_error == False
   assert outcome.terminate == tool.ContinueRun
-  let assert [message.ToolResultText(text:, text_signature: _)] = outcome.content
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
     as "one text block carries the reply"
   assert string.contains(text, "the answer")
   assert string.contains(text, "{\"n\":1}")
@@ -410,10 +436,9 @@ pub fn a_terminating_outcome_ends_the_run_test() {
       a_record(),
       a_tool(),
       satellite.Run(
-        outcome: Ok(satellite.Completed(value: reply_value(
-          [#("text", "done")],
-          True,
-        ))),
+        outcome: Ok(
+          satellite.Completed(value: reply_value([#("text", "done")], True)),
+        ),
         node: enforcement.Unreported("a fixture run"),
       ),
     )
@@ -441,7 +466,8 @@ pub fn an_errored_outcome_is_in_band_and_never_terminates_test() {
     )
   assert outcome.is_error == True
   assert outcome.terminate == tool.ContinueRun
-  let assert [message.ToolResultText(text:, text_signature: _)] = outcome.content
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
     as "one text block carries the refusal"
   assert string.contains(text, "no such city")
   assert string.contains(text, "hello")
@@ -462,7 +488,8 @@ pub fn a_run_that_produced_no_outcome_says_what_confined_the_node_test() {
     )
   assert outcome.is_error == True
   assert outcome.terminate == tool.ContinueRun
-  let assert [message.ToolResultText(text:, text_signature: _)] = outcome.content
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
     as "one text block carries the failure"
   assert string.contains(text, "timeout")
   assert string.contains(text, "no enforcement report")
@@ -483,7 +510,8 @@ pub fn a_malformed_outcome_renders_rather_than_vanishing_test() {
       ),
     )
   assert outcome.is_error == False
-  let assert [message.ToolResultText(text:, text_signature: _)] = outcome.content
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
     as "one text block carries the value"
   assert string.contains(text, "bare")
 }

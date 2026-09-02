@@ -215,7 +215,10 @@ pub fn ceilings(net: Net) -> List(CapCeiling) {
 /// ```
 ///
 pub fn denial(refusal: egress.Refusal) -> CapDenial {
-  satellite.CapDenial(code: code_for(refusal), message: egress.describe(refusal))
+  satellite.CapDenial(
+    code: code_for(refusal),
+    message: egress.describe(refusal),
+  )
 }
 
 /// The denial an extension that named no `[net]` table meets on every

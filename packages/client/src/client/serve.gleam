@@ -1462,7 +1462,6 @@ fn extension_registered(
   }
 }
 
-
 /// Whether the seams this server offers can reach an MCP server at all.
 ///
 /// A server's tools are a module a **workspace** program may import, and
@@ -1731,6 +1730,7 @@ fn assemble(
   let schedule_wiring =
     schedule_wiring(settings, agency_config, schedulescan_name)
   let schedule_door = option.map(schedule_wiring, scheduleseam.door)
+
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
